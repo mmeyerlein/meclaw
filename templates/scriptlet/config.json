@@ -1,0 +1,62 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "runner_mode": "cold",
+    "script_inline": "import sys, json\n\n# A scriptlet ships BLANK on purpose: it hands the turns it was given straight\n# back, and whatever it should do instead arrives as `script_inline` in the\n# override_params of the declaration that instantiates it. That is the whole\n# template -- a `code` cell with a name, a runner and no opinion of its own.\n#\n# The three objects on stdin are always set, even when empty: `envelope` (what\n# the substrate wraps around the payload -- header, target, trace_id, ttl),\n# `body` (the message's own slots) and `params` (this cell's configuration,\n# minus credentials and minus this script). Read the payload out of `body`.\n# Never win it by subtracting a hardcoded list of envelope keys: that is the\n# error class the three-object form was built to end.\n#\n# stdout is one content JSON -- an optional `header` section the colony reads\n# as `hop`, plus the body slots. `context` is edge authority and is never\n# written here. This template declares `multi_send_capable`, so a replacement\n# script may write a JSON ARRAY instead and emit one message per element.\ndoc = json.load(sys.stdin)\nbody = doc[\"body\"]\nsys.stdout.write(json.dumps({\"messages\": body.get(\"messages\") or []}))\n",
+    "external_timeout_ms": 10000,
+    "max_concurrency": 4
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "multi_send_capable": true,
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "exit_code": {
+          "type": "number",
+          "required": false
+        },
+        "duration_ms": {
+          "type": "number",
+          "required": false
+        },
+        "had_stderr": {
+          "type": "boolean",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "A script a manifest can name: one code cell as a whole template, shipped BLANK -- it hands its turns straight back, and the logic arrives as `script_inline` in the override_params of the declaration that instantiates it. Five shipped templates hold a single code cell (door, terminal, retry, dispatcher, archive-bridge) and every one of them carries a script and a purpose of its own; this one carries neither, which is the point.",
+    "use_when": "Wherever a topology needs application logic between two cells: reshaping a body, extracting the calls out of an answer, turning one message into many. Instantiate it under a name that says what it does and hand it its script in the same declaration.",
+    "not_in_scope": "No cell.db -- a code cell has none, so state that has to survive a message goes to a store over the topology, not into a variable. No sandbox key either: a cell instantiated without one gets the default-deny profile, and this template does not declare the key, so a manifest cannot widen it through here. No opinion about the wire: what the replacement script emits is what leaves.",
+    "emits_meaning": "Whatever the script writes on stdout, validated against contract.emits ALWAYS-ON -- a code cell is the one user-script-driven trust boundary, so an emission missing messages[] comes back as contract_violation rather than travelling. The cell stamps exit_code, duration_ms and had_stderr itself and a script cannot hijack them; every other hop key is the script's word.",
+    "consumes_meaning": "messages[]: the turns of the inbound message. The whole message reaches the script as three stdin objects -- envelope, body, params -- and the shipped script reads body.messages and writes it back unchanged.",
+    "examples": [
+      "the shipped script: any message in -> the same messages[] out, hop { exit_code: 0, duration_ms: 12 }",
+      "override_params {\"script_inline\": \"...\"} -> the same template, a different cell; that override is what makes a manifest ask its colony the `code.author` question",
+      "a replacement script writing a JSON array -> one outbound message per element, each evaluated against this cell's edges independently"
+    ]
+  }
+}

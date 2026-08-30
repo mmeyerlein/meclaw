@@ -15,6 +15,11 @@
           "route": "in_build_result",
           "context": [],
           "because": "the builder's answer on its way back into the tool round that asked -- a draft manifest, or the receipt of one that was submitted. It enters here and not at a tool's own path because a caller subscribes to a lane, never to a cell: which of the two occupants it belongs to is decided by `hop.build_op` inside this hive, the same way `hop.tool_name` decides the way in"
+        },
+        {
+          "route": "in_schemas",
+          "context": [],
+          "because": "a cell of this assistant asking which tools it may offer its model, by NAME -- `{\"tools\": [\"web_search\", \"web_fetch\"]}`, or `[\"*\"]` for everything the hive has. It is not a tool round and carries no `tool_name`: what travels is the list the ASKING template declared, because whoever designed that template decided what it uses, and that decision belongs where the rest of its contract is. The hive keeps no record of who asked -- a subscriber table here would be a second copy of a decision already visible one level up"
         }
       ],
       "emits": [
@@ -25,6 +30,10 @@
         {
           "route": "build",
           "because": "a structural wish leaving this assistant, or a manifest being submitted by whoever drafted it. This is the one lane on which a tool of this surface reaches OUT of the assistant, and it is DECLARED rather than hidden. The note beside `tool_result` still holds and is about tool RESULTS: a second result lane would put the choice of tool back into the caller's edge table. This is a different class -- the REACH of the surface -- and a contract that did not name it would be the same defect `sandbox_union` was written to fix one level down, where a radius existed collectively and was invisible because it was spread over four files"
+        },
+        {
+          "route": "tool_schemas",
+          "because": "the declarations, one `{name, description, parameters}` per tool the hive has under a name that was asked for, plus the names it does not have in `unknown` -- named rather than dropped, because a menu that is silently one tool short is a model that never calls it and a builder who never learns why. It is a lane of its own and NOT `tool_result`: a result belongs to a call somebody made, this belongs to a start-up question, and folding the two would make every collector guess which of them it was handed"
         }
       ]
     },
@@ -38,6 +47,11 @@
         "accepts": "in_build_result",
         "emits": "build",
         "because": "a level that carries the builder's answer DOWN into this hive and does not carry the request UP has wired the half of the lane pair that can only deliver into nothing: the tool round waits for a turn that was never asked for. The two edges are one decision, exactly as `tool_call`/`tool_result` are"
+      },
+      {
+        "accepts": "in_schemas",
+        "emits": "tool_schemas",
+        "because": "a caller that asks this hive what there is and does not subscribe to the answer starts with an empty menu and no way to learn it is empty -- the model is offered nothing, calls nothing, and the round looks like a model that chose not to use a tool. The two edges are one decision, exactly as `tool_call`/`tool_result` are"
       }
     ],
     "graph": {
@@ -56,6 +70,16 @@
           "from": ".",
           "to": "./web_search",
           "condition": "has(hop.route) && hop.route == 'tool_call' && has(hop.tool_name) && hop.tool_name == 'web_search'"
+        },
+        {
+          "from": ".",
+          "to": "./file",
+          "condition": "has(hop.route) && hop.route == 'tool_call' && has(hop.tool_name) && hop.tool_name == 'file'"
+        },
+        {
+          "from": ".",
+          "to": "./edit",
+          "condition": "has(hop.route) && hop.route == 'tool_call' && has(hop.tool_name) && hop.tool_name == 'edit'"
         },
         {
           "from": ".",
@@ -97,6 +121,26 @@
           "from": "./unknown",
           "to": ".",
           "condition": "has(hop.operation) && hop.operation == 'unknown'",
+          "modifier": {
+            "set_hop": {
+              "route": "'tool_result'"
+            }
+          }
+        },
+        {
+          "from": "./file",
+          "to": ".",
+          "condition": "has(hop.operation) && (hop.operation == 'read' || hop.operation == 'write' || hop.operation == 'list' || hop.operation == 'stat' || hop.operation == 'unknown')",
+          "modifier": {
+            "set_hop": {
+              "route": "'tool_result'"
+            }
+          }
+        },
+        {
+          "from": "./edit",
+          "to": ".",
+          "condition": "has(hop.operation) && (hop.operation == 'find_replace' || hop.operation == 'insert_at_line' || hop.operation == 'unknown')",
           "modifier": {
             "set_hop": {
               "route": "'tool_result'"
@@ -176,15 +220,30 @@
               "route": "'tool_result'"
             }
           }
+        },
+        {
+          "from": ".",
+          "to": "./schemas",
+          "condition": "has(hop.route) && hop.route == 'in_schemas'"
+        },
+        {
+          "from": "./schemas",
+          "to": ".",
+          "condition": "has(hop.operation) && (hop.operation == 'schemas')",
+          "modifier": {
+            "set_hop": {
+              "route": "'tool_schemas'"
+            }
+          }
         }
       ]
     }
   },
   "description": {
-    "purpose": "The tool surface of one assistant as one node -- what goes in and what comes out is a contract, so the whole implementation is one `swap_nodes` away from being something else.",
+    "purpose": "The tool surface of one assistant as one node -- what goes in and what comes out is a contract, so the whole implementation is one `swap_nodes` away from being something else. It also HANDS OUT what it has: a caller names the tools it uses and gets their schemas back.",
     "use_when": "Instantiate once per assistant and draw ONE edge to the hive path, stamping `hop.route = 'tool_call'`, plus one back off it on `tool_result`. Adding, removing or replacing a tool is a change INSIDE this hive; the caller's edges do not move. `params.ports` is empty, so no edge from outside reaches a cell in here -- a caller names the hive and the lane.",
-    "not_in_scope": "No tool schemas -- they live in the calling brain's `system.tools`, because the model that has to choose is the one that has to be told what there is to choose from. No per-tool credentials: a cell that needs one binds it itself. And no judgement about which tool to call, or whether it should have been called at all -- that decision was made before the message arrived, and a hive that second-guessed it would be a second brain with no conversation in front of it.",
-    "contract_in": "One lane, at the hive path. tool_call -- run this call. Which cell serves it is this hive's business.",
-    "contract_out": "One lane, out of the hive path. tool_result -- what the tool answered, whatever the tool was."
+    "not_in_scope": "No judgement about which tool to call, or whether it should have been called at all -- that decision was made before the message arrived, and a hive that second-guessed it would be a second brain with no conversation in front of it. No per-tool credentials: a cell that needs one binds it itself. And no record of who asked for which schemas: what a cell uses is declared in that cell's own template, and a subscriber table here would be a second copy of it.",
+    "contract_in": "Two lanes, at the hive path. tool_call -- run this call; which cell serves it is this hive's business. in_schemas -- name the tools you use and take their declarations back.",
+    "contract_out": "Two lanes, out of the hive path. tool_result -- what the tool answered, whatever the tool was. tool_schemas -- the declarations that were asked for, plus the names the hive does not have."
   }
 }

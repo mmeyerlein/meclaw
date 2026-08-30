@@ -201,6 +201,7 @@ fn build_root(root: &std::path::Path) {
          MODEL_BRAIN=gpt-4o-mock\n\
          MODEL_CORE=gpt-4o-mock\n\
          MODEL_CORE_FAST=gpt-4o-mock-fast\n\
+         MODEL_SURFACE=gpt-4o-mock-surface\n\
          MODEL_CLOSER=gpt-4o-mock\n\
          MODEL_DIALECTIC=gpt-4o-mock\n\
          MODEL_DREAMER=gpt-4o-mock\n\

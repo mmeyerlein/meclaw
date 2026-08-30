@@ -336,15 +336,19 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str, silent_advisor: bool, idle
         v["params"]["schedules"][0]["schedule_id"] = json!(SCHEDULE_ID);
         v["params"]["schedules"][0]["cron"] = json!(NEVER);
     });
-    for rel in [
-        "main/talky/brain/config.json",
-        "main/talky/summarizer/writer/config.json",
-    ] {
-        patch(root, rel, |v| {
-            v["params"]["base_url"] = json!(base_url);
-            v["params"]["model"] = json!("gpt-4o-mock");
-        });
-    }
+    // GH #464 -- the second timer of a shipped composite, and the same two
+    // patches for the same two reasons: `${uuid7:*}` is an INSTANTIATION
+    // substitution and a tree written straight to disk carries a literal, and a
+    // menu tick during a test run would ask a tools hive this colony does not
+    // have.
+    patch(root, "main/talky/collector/menu-clock/config.json", |v| {
+        v["params"]["schedules"][0]["schedule_id"] = json!(SCHEDULE_ID);
+        v["params"]["schedules"][0]["cron"] = json!(NEVER);
+    });
+    patch(root, "main/talky/brain/config.json", |v| {
+        v["params"]["base_url"] = json!(base_url);
+        v["params"]["model"] = json!("gpt-4o-mock");
+    });
     if silent_advisor {
         write(
             root,
@@ -361,6 +365,10 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str, silent_advisor: bool, idle
     );
     patch(root, "main/cogny/collector/assemble/config.json", |v| {
         v["params"]["round_idle_ms"] = json!(idle_ms);
+    });
+    patch(root, "main/cogny/collector/menu-clock/config.json", |v| {
+        v["params"]["schedules"][0]["schedule_id"] = json!(SCHEDULE_ID);
+        v["params"]["schedules"][0]["cron"] = json!(NEVER);
     });
     std::fs::create_dir_all(root.join("main/cogny/dispatcher")).unwrap();
     std::fs::copy(
@@ -544,8 +552,11 @@ async fn a_consult_answers_the_channel_at_once_and_the_advice_follows_later() {
         "the advisor ran its OWN tool round and the result came home: {second}"
     );
     assert!(
-        second.contains(r#"content":"ADVICE|21C and sunny (weather in berlin)","role":"user"#),
-        "an advisor event is INBOUND on the wire, not the agent's own words: {second}"
+        second.contains(
+            r#"content":"[advice from your reasoning core, consult call-1]\nADVICE|21C and sunny (weather in berlin)","role":"user"#
+        ),
+        "an advisor event is INBOUND on the wire, not the agent's own words -- and since \
+         GH #540 it says which of the two inbound voices it is: {second}"
     );
     assert!(
         second.contains("one moment, i am asking"),

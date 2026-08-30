@@ -39,6 +39,7 @@ fn entry(path: &Path) -> RegistryEntry {
         eager_on_reconnect: true,
         active: true,
         failed: false,
+        dormant: false,
         stop_tx: None,
         death_ack_rx: None,
     }

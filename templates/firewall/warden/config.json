@@ -1,0 +1,190 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {
+      "firewall_hold_ttl_ms": {
+        "type": "number",
+        "secret": false,
+        "default": 3600000,
+        "description": "FIREWALL_HOLD_TTL_MS -- how long a parked turn waits for a person before it expires. An expired hold can never become a 'pass': the release refuses it with 'hold_expired', and a sweep emits the same receipt on the reject lane unasked. A hold without an expiry is a leak, so there is no value that switches it off."
+      },
+      "firewall_hold_max": {
+        "type": "number",
+        "secret": false,
+        "default": 100,
+        "description": "FIREWALL_HOLD_MAX -- how many turns may be parked at once. A turn that would exceed it is REJECTED ('hold_pile_full'), never silently dropped. It may only LOWER the hardline ceiling of 1024, never raise it."
+      }
+    },
+    "multi_send_capable": true,
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "wdstore",
+            "hold",
+            "pass",
+            "reject"
+          ],
+          "required": true
+        },
+        "phase": {
+          "type": "string",
+          "required": false
+        },
+        "channel": {
+          "type": "string",
+          "required": false
+        },
+        "user_id": {
+          "type": "string",
+          "required": false
+        },
+        "hold_id": {
+          "type": "string",
+          "required": false
+        },
+        "rule_id": {
+          "type": "string",
+          "required": false
+        },
+        "reject_reason": {
+          "type": "string",
+          "required": false
+        },
+        "held_at": {
+          "type": "string",
+          "required": false
+        },
+        "expires_at": {
+          "type": "string",
+          "required": false
+        },
+        "wd_body": {
+          "type": "string",
+          "required": false
+        },
+        "wd_meta": {
+          "type": "string",
+          "required": false
+        },
+        "wd_now": {
+          "type": "string",
+          "required": false
+        },
+        "store_error": {
+          "type": "string",
+          "required": false
+        },
+        "store_operation": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "context": {
+        "wd_phase": {
+          "type": "string",
+          "required": false
+        },
+        "wd_body": {
+          "type": "string",
+          "required": false
+        },
+        "wd_meta": {
+          "type": "string",
+          "required": false
+        },
+        "wd_now": {
+          "type": "string",
+          "required": false
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "required": false
+        },
+        "hold_id": {
+          "type": "string",
+          "required": false
+        },
+        "decision": {
+          "type": "string",
+          "required": false
+        },
+        "decided_by": {
+          "type": "string",
+          "required": false
+        },
+        "rule_id": {
+          "type": "string",
+          "required": false
+        },
+        "reject_reason": {
+          "type": "string",
+          "required": false
+        },
+        "channel": {
+          "type": "string",
+          "required": false
+        },
+        "user_id": {
+          "type": "string",
+          "required": false
+        },
+        "fw_now": {
+          "type": "string",
+          "required": false
+        },
+        "operation": {
+          "type": "string",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json, uuid, datetime\n\n# Substituted at instantiation, like every knob of this hive (a `code` cell\n# never sees its own params). Both are LOWER bounds on safety only: neither can\n# raise the hardline ceiling below.\nHOLD_TTL_MS = \"${FIREWALL_HOLD_TTL_MS:-3600000}\"\nHOLD_MAX = \"${FIREWALL_HOLD_MAX:-100}\"\n\n# ==================================================== THE HARDLINE (GH #449)\n# The one hardline this cell can fire. It is a constant of the TEMPLATE -- not\n# a row, not a knob, not reachable by an `update`. `FIREWALL_HOLD_MAX` may\n# LOWER the pile cap and nothing may lift it above this number.\n#\n# A pile is a queue of turns that reached no verdict yet. An unbounded one is\n# exactly the leak GH #450 names, and a row that could raise it would turn a\n# screen into a buffer -- which is the one thing a screen must never become,\n# because a full buffer is an outage of the channel it stands in front of.\nHARDLINE_HOLD_CEILING = 1024\n\nSTAMP = \"%Y-%m-%dT%H:%M:%S.%fZ\"\nSTORE_ROUTE = \"wdstore\"\nTABLE = \"held\"\n# What the pile read costs: five columns, never the parked body. Expiring a\n# thousand holds must not carry a thousand turns through the hive.\nPILE_COLUMNS = [\"hold_id\", \"expires_at\", \"channel\", \"user_id\", \"rule_id\"]\n# What ONE named hold costs: the whole row, because releasing it means putting\n# the turn back on the wire exactly as it arrived.\nROW_COLUMNS = [\"hold_id\", \"status\", \"expires_at\", \"channel\", \"user_id\",\n               \"rule_id\", \"reason\", \"context\", \"body\", \"held_at\"]\n\n\ndef knob(raw, fallback):\n    \"\"\"A knob is a number or it is the documented default -- never a crash.\"\"\"\n    try:\n        return int(str(raw).strip())\n    except Exception:\n        return fallback\n\n\nHOLD_TTL_MS = max(knob(HOLD_TTL_MS, 3600000), 1)\nHOLD_MAX = max(min(knob(HOLD_MAX, 100), HARDLINE_HOLD_CEILING), 0)\n\ndoc = json.load(sys.stdin)\nd = doc[\"body\"]\nh = doc[\"envelope\"].get(\"header\", {})\nctx = h.get(\"context\", {})\nhop = h.get(\"hop\", {})\nlane = str(hop.get(\"route\", \"\"))\nphase = str(ctx.get(\"wd_phase\", \"\"))\nop = hop.get(\"operation\")\nerr = str(hop.get(\"error_code\", \"\") or \"\")\n\n\ndef emit(msgs):\n    sys.stdout.write(json.dumps(msgs))\n    sys.exit(0)\n\n\ndef park():\n    \"\"\"Terminal by design, like the screen's: a custody cell that cannot name\n    what it is looking at emits NOTHING rather than guessing.\"\"\"\n    emit([])\n\n\ndef stamped(given):\n    try:\n        datetime.datetime.strptime(str(given or \"\"), STAMP)\n        return str(given)\n    except Exception:\n        return datetime.datetime.now(datetime.timezone.utc).strftime(STAMP)\n\n\n# One turn has one time -- the screen's stamp travels with it, and only a lane\n# that arrives without one (a sweep, a release) is stamped here.\nnow = stamped(ctx.get(\"wd_now\", \"\") or hop.get(\"fw_now\", \"\"))\n\n\ndef plus_ms(base, ms):\n    try:\n        t = datetime.datetime.strptime(base, STAMP)\n    except Exception:\n        return base\n    return (t + datetime.timedelta(milliseconds=ms)).strftime(STAMP)\n\n\ndef js(raw, fallback):\n    \"\"\"A JSON slot as the object it stands for -- whether it arrived as a\n    string (a context key, which is always text) or already parsed (a `json`\n    column the store handed back).\"\"\"\n    if isinstance(raw, type(fallback)):\n        return raw\n    try:\n        out = json.loads(str(raw or \"\"))\n    except Exception:\n        return fallback\n    return out if isinstance(out, type(fallback)) else fallback\n\n\ndef rows_of(dd):\n    msgs = dd.get(\"messages\", [])\n    if not msgs:\n        return []\n    rows = js(msgs[0].get(\"text\", \"[]\"), [])\n    return [r for r in rows if isinstance(r, dict)]\n\n\ndef col(r, name):\n    return str(r.get(name) or \"\")\n\n\n# ------------------------------------------------------------- THE KEY SET\n# All three exits of this hive -- `pass`, `reject` and `hold` -- carry the SAME\n# hop keys, and the screen carries them too. A parent edge that promotes\n# hop.rule_id or hop.hold_id must not break on the lane that happens not to\n# have filled it: a CEL modifier that fails skips the WHOLE edge, so a missing\n# key is a vanished turn rather than an empty string.\ndef head(route, reason, rule_id, channel, user_id, hold_id, extra=None):\n    out = {\"route\": route, \"reject_reason\": reason, \"rule_id\": rule_id,\n           \"channel\": channel, \"user_id\": user_id, \"hold_id\": hold_id,\n           \"store_error\": \"\", \"store_operation\": \"\"}\n    if extra:\n        out.update(extra)\n    return out\n\n\ndef store_op(args, ph, body_json=\"\", meta_json=\"\"):\n    \"\"\"Every store emission carries the full key set the hive edge reads.\"\"\"\n    return {\"header\": {\"route\": STORE_ROUTE, \"phase\": ph, \"wd_body\": body_json,\n                       \"wd_meta\": meta_json, \"wd_now\": now},\n            \"messages\": [{\"origin\": \"assistant\", \"type\": \"tool_call\",\n                          \"id\": \"wd-\" + ph, \"text\": json.dumps(args)}]}\n\n\ndef note(hold_id, text):\n    return [{\"origin\": \"tool\", \"type\": \"tool_result\",\n             \"id\": \"wd-\" + (hold_id or \"none\"), \"text\": text}]\n\n\ndef refuse(reason, rule_id, hold_id, channel=\"\", user_id=\"\", body=None,\n           store_error=\"\", store_op_name=\"\"):\n    \"\"\"The custody path's fail-closed exit: the reject lane the screen already\n    uses, and the one the parent already drains.\"\"\"\n    out = {\"header\": head(\"reject\", reason, rule_id, channel, user_id, hold_id,\n                          {\"store_error\": store_error,\n                           \"store_operation\": store_op_name})}\n    out.update(body if isinstance(body, dict) and body.get(\"messages\")\n               else {\"messages\": note(hold_id, reason)})\n    return [out]\n\n\n# =============================================================== FAIL CLOSED\n# A store that does not answer the read or the write a custody decision rests\n# on refuses the turn, exactly as the screen refuses one whose rule read failed\n# (GH #343). Custody has no fail-open half: a hold whose row was never written\n# is a turn that vanished, and a release whose row was never flipped is a turn\n# that could be released twice.\nif err and op and phase in (\"pile\", \"sweep\", \"find\", \"park\", \"decide\"):\n    meta = js(ctx.get(\"wd_meta\", \"\"), {})\n    emit(refuse(\"store_refused\", \"store-refused\",\n                str(meta.get(\"hold_id\", \"\")), str(meta.get(\"channel\", \"\")),\n                str(meta.get(\"user_id\", \"\")),\n                js(ctx.get(\"wd_body\", \"\"), {}), err, str(op)))\n\n# The expiry write is the one fire-and-forget op here, for the reason the\n# screen's arrival mark is one: its receipt has not been emitted yet, so a\n# refusal costs nothing but a sweep that runs again. It is said, not hidden.\nif err and op and phase == \"expire\":\n    sys.stderr.write(\"firewall/warden: expiry write refused (\" + err\n                     + \"), those holds stay pending until the next sweep\\n\")\n    park()\n\n\ndef pile_read(ph, body_json=\"\", meta_json=\"\"):\n    \"\"\"The bounded pile read. CEILING + 1 rows decide both questions this cell\n    asks of the pile -- which holds are due, and whether there is room.\"\"\"\n    return store_op({\"operation\": \"select\", \"table\": TABLE,\n                     \"columns\": PILE_COLUMNS, \"where\": {\"status\": \"held\"},\n                     \"order_by\": [{\"col\": \"expires_at\", \"dir\": \"asc\"}],\n                     \"limit\": HARDLINE_HOLD_CEILING + 1},\n                    ph, body_json, meta_json)\n\n\n# ===================================================================== LANES\nif lane == \"hold\":\n    # The screen decided HOLD and hands the turn over whole. Nothing is written\n    # before the pile has been counted: the cap is not advice.\n    meta = {\"hold_id\": uuid.uuid4().hex,\n            \"rule_id\": str(hop.get(\"rule_id\", \"\") or \"\"),\n            \"reason\": str(hop.get(\"reject_reason\", \"\") or \"held\"),\n            \"channel\": str(hop.get(\"channel\", \"\") or \"\"),\n            \"user_id\": str(hop.get(\"user_id\", \"\") or \"\"),\n            \"held_at\": now,\n            \"expires_at\": plus_ms(now, HOLD_TTL_MS),\n            \"context\": {k: v for k, v in ctx.items() if isinstance(v, str)}}\n    emit([pile_read(\"pile\", json.dumps(d), json.dumps(meta))])\n\nif lane == \"in_sweep\":\n    emit([pile_read(\"sweep\")])\n\nif lane == \"in_release\":\n    hold_id = str(hop.get(\"hold_id\", \"\") or \"\")\n    if not hold_id:\n        emit(refuse(\"release_unaddressed\", \"hold-release\", \"\"))\n    decision = str(hop.get(\"decision\", \"\") or \"release\")\n    if decision not in (\"release\", \"refuse\"):\n        emit(refuse(\"release_unknown_decision\", \"hold-release\", hold_id))\n    meta = {\"hold_id\": hold_id, \"decision\": decision,\n            \"decided_by\": str(hop.get(\"decided_by\", \"\") or \"\")}\n    emit([store_op({\"operation\": \"select\", \"table\": TABLE,\n                    \"columns\": ROW_COLUMNS, \"where\": {\"hold_id\": hold_id},\n                    \"limit\": 1}, \"find\", \"\", json.dumps(meta))])\n\nif lane:\n    park()\n\n# ==================================================================== PHASES\nmeta = js(ctx.get(\"wd_meta\", \"\"), {})\n\nif phase in (\"pile\", \"sweep\") and op == \"select\" and not err:\n    rows = rows_of(d)\n    due = [r for r in rows if col(r, \"expires_at\") <= now]\n    live = len(rows) - len(due)\n    out = []\n    if due:\n        # The write comes FIRST and the receipts come out of its reply: a\n        # receipt for an expiry that did not land would let a turn be released\n        # after its operator was told it had expired.\n        out.append(store_op({\"operation\": \"update\", \"table\": TABLE,\n                             \"set\": {\"status\": \"expired\", \"decided_at\": now,\n                                     \"decided_by\": \"timeout\",\n                                     \"decision\": \"expired\"},\n                             \"where\": {\"hold_id\": {\"in\": [col(r, \"hold_id\")\n                                                          for r in due]}}},\n                            \"expire\", \"\", json.dumps({\"due\": due})))\n    if phase == \"sweep\":\n        emit(out)\n    body = js(ctx.get(\"wd_body\", \"\"), {})\n    if live >= HARDLINE_HOLD_CEILING:\n        emit(out + refuse(\"hardline_blocked\", \"hardline:hold-ceiling\",\n                          \"\", str(meta.get(\"channel\", \"\")),\n                          str(meta.get(\"user_id\", \"\")), body))\n    if live >= HOLD_MAX:\n        emit(out + refuse(\"hold_pile_full\", str(meta.get(\"rule_id\", \"\")),\n                          \"\", str(meta.get(\"channel\", \"\")),\n                          str(meta.get(\"user_id\", \"\")), body))\n    emit(out + [store_op({\"operation\": \"insert\", \"table\": TABLE,\n                          \"row\": {\"hold_id\": str(meta.get(\"hold_id\", \"\")),\n                                  \"status\": \"held\",\n                                  \"held_at\": str(meta.get(\"held_at\", \"\")),\n                                  \"expires_at\": str(meta.get(\"expires_at\", \"\")),\n                                  \"channel\": str(meta.get(\"channel\", \"\")),\n                                  \"user_id\": str(meta.get(\"user_id\", \"\")),\n                                  \"rule_id\": str(meta.get(\"rule_id\", \"\")),\n                                  \"reason\": str(meta.get(\"reason\", \"\")),\n                                  \"context\": meta.get(\"context\", {}),\n                                  \"body\": body,\n                                  \"decided_at\": \"\", \"decided_by\": \"\",\n                                  \"decision\": \"\"}},\n                         \"park\", json.dumps(body), json.dumps(meta))])\n\nif phase == \"expire\" and not err:\n    # One receipt per expired hold, on the lane the parent already drains. It\n    # NAMES the turn; it does not carry it -- the row keeps the body for an\n    # operator to read, and a sweep of a thousand holds must not put a thousand\n    # turns back on the wire.\n    out = []\n    for r in js(meta.get(\"due\"), []):\n        if isinstance(r, dict):\n            out.append({\"header\": head(\"reject\", \"hold_expired\",\n                                       col(r, \"rule_id\"), col(r, \"channel\"),\n                                       col(r, \"user_id\"), col(r, \"hold_id\")),\n                        \"messages\": note(col(r, \"hold_id\"),\n                                         \"held turn expired unanswered at \"\n                                         + col(r, \"expires_at\"))})\n    emit(out)\n\nif phase == \"park\" and op == \"insert\" and not err:\n    # The row is written; only NOW does anyone hear that the turn was parked.\n    # A notice naming a hold that does not exist is a lie an operator would\n    # act on.\n    body = js(ctx.get(\"wd_body\", \"\"), {})\n    out = {\"header\": head(\"hold\", str(meta.get(\"reason\", \"held\")),\n                          str(meta.get(\"rule_id\", \"\")),\n                          str(meta.get(\"channel\", \"\")),\n                          str(meta.get(\"user_id\", \"\")),\n                          str(meta.get(\"hold_id\", \"\")),\n                          {\"expires_at\": str(meta.get(\"expires_at\", \"\")),\n                           \"held_at\": str(meta.get(\"held_at\", \"\"))})}\n    out.update(body if body.get(\"messages\") else\n               {\"messages\": note(str(meta.get(\"hold_id\", \"\")), \"held\")})\n    emit([out])\n\nif phase == \"find\" and op == \"select\" and not err:\n    rows = rows_of(d)\n    hold_id = str(meta.get(\"hold_id\", \"\"))\n    if not rows:\n        emit(refuse(\"hold_unknown\", \"hold-release\", hold_id))\n    row = rows[0]\n    if col(row, \"status\") != \"held\":\n        emit(refuse(\"hold_not_pending\", \"hold-release\", hold_id,\n                    col(row, \"channel\"), col(row, \"user_id\")))\n    decision = str(meta.get(\"decision\", \"release\"))\n    expired = col(row, \"expires_at\") <= now\n    state = \"expired\" if expired else (\"released\" if decision == \"release\"\n                                       else \"refused\")\n    carry = {\"hold_id\": hold_id, \"state\": state,\n             \"rule_id\": col(row, \"rule_id\"), \"reason\": col(row, \"reason\"),\n             \"channel\": col(row, \"channel\"), \"user_id\": col(row, \"user_id\"),\n             \"expires_at\": col(row, \"expires_at\"),\n             \"context\": js(row.get(\"context\"), {})}\n    emit([store_op({\"operation\": \"update\", \"table\": TABLE,\n                    \"set\": {\"status\": state, \"decided_at\": now,\n                            \"decision\": state,\n                            \"decided_by\": str(meta.get(\"decided_by\", \"\"))\n                            or (\"timeout\" if expired else \"\")},\n                    \"where\": {\"hold_id\": hold_id, \"status\": \"held\"}},\n                   \"decide\", json.dumps(js(row.get(\"body\"), {})),\n                   json.dumps(carry))])\n\nif phase == \"decide\" and op == \"update\" and not err:\n    # The row said so first. A released turn leaves on `pass` with the body it\n    # arrived with, and every context key its original ingress edge promoted\n    # rides back as a hop key `ctx_<name>` -- the only way a cell can hand a\n    # dimension back to an edge, because a `set_context` key is static and a\n    # cell cannot write a context map.\n    state = str(meta.get(\"state\", \"\"))\n    body = js(ctx.get(\"wd_body\", \"\"), {})\n    hold_id = str(meta.get(\"hold_id\", \"\"))\n    if state == \"expired\":\n        emit(refuse(\"hold_expired\", str(meta.get(\"rule_id\", \"\")), hold_id,\n                    str(meta.get(\"channel\", \"\")), str(meta.get(\"user_id\", \"\")),\n                    body))\n    if state == \"refused\":\n        emit(refuse(\"hold_refused\", str(meta.get(\"rule_id\", \"\")), hold_id,\n                    str(meta.get(\"channel\", \"\")), str(meta.get(\"user_id\", \"\")),\n                    body))\n    carried = {}\n    for k, v in js(meta.get(\"context\"), {}).items():\n        if isinstance(v, str) and k not in (\"fw_body\", \"fw_now\", \"fw_phase\",\n                                            \"fw_hold\", \"store_origin\",\n                                            \"wd_body\", \"wd_meta\", \"wd_now\",\n                                            \"wd_phase\"):\n            carried[\"ctx_\" + k] = v\n    out = {\"header\": head(\"pass\", \"\", \"\", str(meta.get(\"channel\", \"\")),\n                          str(meta.get(\"user_id\", \"\")), hold_id, carried)}\n    out.update(body if body.get(\"messages\") else {\"messages\": []})\n    emit([out])\n\npark()\n",
+    "external_timeout_ms": 10000,
+    "max_concurrency": 1
+  },
+  "description": {
+    "purpose": "The custody of a held turn, and nothing else. The screen decides that a turn is HELD; this cell writes it down whole -- body, hop and the context its ingress edge promoted -- announces it on the 'hold' lane, and holds it there until a person releases it, refuses it, or its timeout runs out. A released turn re-enters on 'pass' with the body it arrived with; a refused or expired one ends on 'reject'. So the promise the two-lane screen made survives the third verdict: every turn still ends on exactly one of 'pass' and 'reject' -- a held one just ends later (GH #450).",
+    "use_when": "Never on its own -- it travels with firewall@2.2.0 and is reached by the screen's 'hold' route and by the hive's own 'in_release' and 'in_sweep' lanes. Wire them only if this colony has hold rows: a rule table with no enabled 'hold' row never reaches this cell, which is why the lanes are opt-in and the shipped example row ships disabled.",
+    "not_in_scope": "No verdict: which turn is held is the screen's decision and stays there. No notification: announcing a hold to a person is what the 'hold' lane is for, and who reads it is the parent tree's business -- this cell never speaks outbound. No clock of its own: a timeout is measured whenever custody is touched (a new hold, a release, an 'in_sweep'), because a cell that woke itself would be a timer, and a timer is a different cell type. No model, like every other cell of this hive.",
+    "emits_meaning": "route 'wdstore': the store ops of the current step (hop.phase names it: 'pile' and 'sweep' read the pile, 'expire' writes the timeouts, 'park' writes the new row, 'find' reads one named hold, 'decide' writes its answer); hop.wd_body carries the parked turn in transit and hop.wd_meta the decision in progress, both promoted to context by the hive edge. route 'hold': the turn was parked AND the row is written -- the notice carries hop.hold_id, hop.rule_id, hop.expires_at, hop.held_at and the body itself, so a cell on that lane can show a person what is waiting without a store read. It is emitted only after the insert came back clean: a notice naming a hold that does not exist is a lie an operator would act on. route 'pass': a released turn, the body byte for byte as it arrived, with every context key its original ingress edge promoted returned as a hop key 'ctx_<name>' -- the only way a cell can hand a dimension back to an edge, because a set_context key is static and a cell cannot write a context map. route 'reject': hop.reject_reason is one of 'hold_expired' (the timeout ran out -- also emitted unasked by a sweep, one receipt per expired hold, naming the turn without carrying it), 'hold_refused' (a person said no), 'hold_pile_full' (FIREWALL_HOLD_MAX reached -- the turn is refused rather than parked), 'hardline_blocked' with rule_id 'hardline:hold-ceiling' (the pile is at the 1024 no knob can lift), 'hold_unknown' / 'hold_not_pending' / 'release_unaddressed' / 'release_unknown_decision' (the release names no hold, an unknown one, one already decided, or a word this cell does not know), or 'store_refused' (GH #343 -- custody has no fail-open half, so a store that will not answer refuses the turn).",
+    "consumes_meaning": "Three entry routes: 'hold' from ./screen (the turn to park, with hop.rule_id naming the row that held it and hop.fw_now the turn's own stamp -- a held turn keeps the time it arrived at), 'in_release' from outside (hop.hold_id names ONE parked turn, hop.decision is 'release' or 'refuse' and defaults to 'release', hop.decided_by is who answered and is recorded as it stands), and 'in_sweep' from outside (no keys: expire whatever is due). Store replies are dispatched by context.wd_phase together with hop.operation.",
+    "examples": [
+      "route 'hold' with rule_id 'hold-unvouched-sender' -> a select on `held` bounded by 1025 rows; the reply writes the row and only then does the 'hold' notice leave the hive",
+      "in_release with hop.hold_id and hop.decided_by 'operator' -> the row flips to 'released' first and the turn leaves on 'pass' second; the update names status 'held' in its where clause, so two releases of one hold produce one delivery",
+      "in_release for a hold whose expires_at has passed -> the row flips to 'expired' and the turn ends on 'reject' with 'hold_expired'. An expired hold can never become a pass, and that is the property, not a side effect",
+      "in_sweep on a hive with three overdue holds -> one update, then three receipts on the reject lane naming hold_id, rule_id, channel and user_id. The receipt names the turn; it does not carry it, because a sweep of a thousand holds must not put a thousand turns back on the wire",
+      "route 'hold' while 100 turns are already parked at the default FIREWALL_HOLD_MAX -> 'reject' with 'hold_pile_full'. A full pile refuses; it never drops, and it never grows"
+    ]
+  }
+}

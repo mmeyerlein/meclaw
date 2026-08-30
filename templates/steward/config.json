@@ -162,17 +162,47 @@
         {
           "from": "./mutator",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'mutate'"
+          "condition": "has(hop.route) && hop.route == 'mutate'",
+          "modifier": {
+            "delete_context": [
+              "st_carry",
+              "st_cycle",
+              "st_goal",
+              "st_phase",
+              "st_reason",
+              "steward_origin"
+            ]
+          }
         },
         {
           "from": "./mutator",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'error'"
+          "condition": "has(hop.route) && hop.route == 'error'",
+          "modifier": {
+            "delete_context": [
+              "st_carry",
+              "st_cycle",
+              "st_goal",
+              "st_phase",
+              "st_reason",
+              "steward_origin"
+            ]
+          }
         },
         {
           "from": "./meter",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'error'"
+          "condition": "has(hop.route) && hop.route == 'error'",
+          "modifier": {
+            "delete_context": [
+              "st_carry",
+              "st_cycle",
+              "st_goal",
+              "st_phase",
+              "st_reason",
+              "steward_origin"
+            ]
+          }
         },
         {
           "from": "./meter",
@@ -187,7 +217,17 @@
         {
           "from": "./probe",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'error'"
+          "condition": "has(hop.route) && hop.route == 'error'",
+          "modifier": {
+            "delete_context": [
+              "st_carry",
+              "st_cycle",
+              "st_goal",
+              "st_phase",
+              "st_reason",
+              "steward_origin"
+            ]
+          }
         }
       ]
     }

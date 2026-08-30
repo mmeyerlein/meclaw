@@ -8,8 +8,8 @@ repository = "https://github.com/mmeyerlein/meclaw"
 license.workspace = true
 
 [dependencies]
-meclaw-core = { path = "../meclaw-core", version = "0.27.0" }
-meclaw-colony = { path = "../meclaw-colony", version = "0.27.0" }
+meclaw-core = { path = "../meclaw-core", version = "0.28.0" }
+meclaw-colony = { path = "../meclaw-colony", version = "0.28.0" }
 # GH #380 / R-W8-4 (sanctioned with the W8 spec, 2026-08-24): the `web` cell
 # owns an HTTP + WebSocket listener, so a server library enters `meclaw-cells`
 # for the first time. R-W8-4 released the library choice for exactly this
@@ -20,7 +20,7 @@ meclaw-colony = { path = "../meclaw-colony", version = "0.27.0" }
 axum = { version = "0.7", features = ["ws"] }
 # GH #381: the LiveView serving machinery, extracted so a cell can speak the
 # protocol without depending on the HTTP API.
-meclaw-surface = { path = "../meclaw-surface", version = "0.27.0" }
+meclaw-surface = { path = "../meclaw-surface", version = "0.28.0" }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "process", "io-util"] }
 tracing = "0.1"
 serde = { version = "1", features = ["derive"] }

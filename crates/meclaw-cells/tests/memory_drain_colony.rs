@@ -200,6 +200,13 @@ fn main_config() -> Value {
         {"from": "./drain/ledger", "to": "/park"},
         {"from": "./memory/writer", "to": "./void",
          "condition": "has(hop.route) && hop.route == 'enqueue'"},
+        // GH #519: the writer also hands the turn's text to the embedding lane.
+        // This colony has no embedder -- it is the WRITE path under test -- so
+        // the lane is drained into the void beside the extraction queue. Both
+        // are the same kind of exception: a route the shipped writer emits and
+        // this fixture deliberately does not run.
+        {"from": "./memory/writer", "to": "./void",
+         "condition": "has(hop.route) && hop.route == 'embed'"},
         {"from": "./memory/store", "to": "./void",
          "condition": "context.store_origin == 'episode'"}
     ]}}})
@@ -237,10 +244,11 @@ const ROOM: &str = "c-drain";
 /// A closed session, arriving with the provenance of the round it happened in.
 ///
 /// The keys sit in the ingress `context` because that is where a real colony
-/// puts them -- the door of a channel generation declares the participant set
-/// once and the connector promotes the room (ADR-0002 E8, and since GH #303 the
-/// `channels` level of `assistant@1.0.0` rather than a `channel` hive) -- and
-/// from there they are simply carried, hop by hop, all the way in.
+/// puts them -- the door of a channel declares the participant set once and the
+/// connector promotes the room (ADR-0002 E8; since GH #303 a channel is a node
+/// in a `channels` container rather than a `channel` hive, and since GH #454
+/// that container stands in the MEMBER, not in one generation of its agent) --
+/// and from there they are simply carried, hop by hop, all the way in.
 fn day(session: &str, turns: &[(&str, &str)]) -> Message {
     day_with_provenance(
         session,

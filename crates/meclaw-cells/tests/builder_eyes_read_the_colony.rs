@@ -2,7 +2,7 @@
 //! (activity is edge-derived, so `graph_read` SHOWS it instead of describing
 //! it) and the wrong template choice (`registry_read` says what actually stands
 //! where). Both answer into a fresh trace, so both carry a tag -- the whole
-//! memory of the round, exactly as the steward's probe carries one.
+//! memory of the round, exactly as the argus's probe carries one.
 
 use meclaw_core::serde_json::{Value, json};
 use meclaw_testing::{emit_one, shipped_script};

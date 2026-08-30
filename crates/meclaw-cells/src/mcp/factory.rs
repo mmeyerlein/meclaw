@@ -268,6 +268,14 @@ fn make_build(
                 query_timeout_ms,
                 provider_key_cap.clone(),
             ),
+            // GH #489: no provider named. Builds no client and starts no
+            // handshake — the cell exists, holds its `cell.db` and answers
+            // `endpoint_unset`.
+            McpTransport::Unset => McpCell::new_unset(
+                external_timeout_ms,
+                query_timeout_ms,
+                provider_key_cap.clone(),
+            ),
         };
         // 4. DbConn bauen (sync), create the mailbox, then funnel the LR spawn
         //    through `build_long_running_task` — the single LR-spawn site. The
@@ -312,8 +320,13 @@ mod tests {
         f.clone()
             .validate_params(&json!({"endpoint": "https://x.example/rpc"}))
             .unwrap();
-        let err = f.validate_params(&json!({})).unwrap_err();
-        assert!(err.contains("endpoint"));
+        // GH #489: no endpoint is the unnamed-provider state, not an error.
+        f.validate_params(&json!({})).unwrap();
+        // A transport nobody implements is still a refusal.
+        let err = f
+            .validate_params(&json!({"transport": "carrier-pigeon"}))
+            .unwrap_err();
+        assert!(err.contains("transport"));
     }
 
     #[test]

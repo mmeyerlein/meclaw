@@ -308,8 +308,9 @@ fn five_verbatim_copies_leave_one_episode_line() {
         "bundle: {bundle}"
     );
     assert_eq!(bundle["candidates"][0]["seen"], 5, "bundle: {bundle}");
-    // #281: the run's header, the section the row belongs to, and the one row.
-    assert_eq!(rendered_of(&msgs).lines().count(), 3);
+    // #281: the run's header, the section the row belongs to, that section's own
+    // caveat (#537), and the one row.
+    assert_eq!(rendered_of(&msgs).lines().count(), 4);
 }
 
 /// The slot belongs to the best-ranked copy, the wording to the newest one: a

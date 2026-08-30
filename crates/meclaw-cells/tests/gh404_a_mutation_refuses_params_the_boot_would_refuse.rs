@@ -13,12 +13,12 @@
 //! job, and the failure surfaced at the *next* process start — a deploy, a
 //! crash, a host reboot — as `bootstrap failed`, in front of whoever restarted
 //! it rather than whoever grew it. GH #401 was one instance of that class:
-//! `templates/steward/clock` shipped a schedule the `timer` type rejects, and
+//! `templates/argus/clock` shipped a schedule the `timer` type rejects, and
 //! `examples/organism` ran until it was restarted and then would not start.
 //!
 //! WHY THIS FILE IS NOT GH #401'S FILE
 //! ==================================
-//! `gh401_a_grown_steward_survives_a_reboot.rs` proves a *healthy* declaration
+//! `gh401_a_grown_argus_survives_a_reboot.rs` proves a *healthy* declaration
 //! reboots. It cannot see this class: with the template repaired, there is
 //! nothing left for the guard to catch, and with the template broken it proves
 //! only that the second boot dies — which is the symptom. This file deliberately
@@ -40,10 +40,10 @@ fn templates_root() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../templates")
 }
 
-/// The steward template, or `None` where it does not ship (the documented R2b
+/// The argus template, or `None` where it does not ship (the documented R2b
 /// exception form — this file reads a bare `templates/` path).
-fn shipped_steward() -> Option<std::path::PathBuf> {
-    let root = templates_root().join("steward");
+fn shipped_argus() -> Option<std::path::PathBuf> {
+    let root = templates_root().join("argus");
     for rel in [
         "config.json",
         "template.json",
@@ -73,7 +73,7 @@ fn copy_tree(src: &std::path::Path, dst: &std::path::Path) {
 
 /// The reference colony's own seed plus the templates this test grows from.
 ///
-/// `broken` re-introduces the GH #401 defect into the copied steward: the
+/// `broken` re-introduces the GH #401 defect into the copied argus: the
 /// `timer` schema requires `schedule_id`, and a schedule without one is exactly
 /// what shipped. The template on disk is untouched — this is a copy.
 fn tree(broken: bool) -> tempfile::TempDir {
@@ -84,15 +84,15 @@ fn tree(broken: bool) -> tempfile::TempDir {
     copy_tree(&example.join("seed"), root);
     let templates = root.join("templates");
     copy_tree(
-        &shipped_steward().expect("checked by the caller"),
-        &templates.join("steward"),
+        &shipped_argus().expect("checked by the caller"),
+        &templates.join("argus"),
     );
     copy_tree(
         &templates_root().join("terminal"),
         &templates.join("terminal"),
     );
     copy_tree(&templates_root().join("door"), &templates.join("door"));
-    let clock = templates.join("steward/clock/config.json");
+    let clock = templates.join("argus/clock/config.json");
     let raw = std::fs::read_to_string(&clock).unwrap();
     // A cron this run will never reach: the point here is the staging, not a tick.
     let mut cfg: Value =
@@ -183,7 +183,7 @@ async fn mutate(h: &ColonyHandle, payload: Value) -> meclaw_colony::mutation::Mu
 fn grow_declaration() -> Value {
     let raw = std::fs::read_to_string(
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../examples/meclaw-os/grow-steward.json"),
+            .join("../../examples/meclaw-os/grow-argus.json"),
     )
     .expect("the shipped declaration");
     let mut v: Value = meclaw_core::serde_json::from_str(&raw).expect("it parses");
@@ -193,7 +193,7 @@ fn grow_declaration() -> Value {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_declaration_the_boot_would_refuse_is_refused_at_the_mutation() {
-    let Some(_) = shipped_steward() else {
+    let Some(_) = shipped_argus() else {
         return;
     };
     let td = tree(true);
@@ -242,7 +242,7 @@ async fn a_declaration_the_boot_would_refuse_is_refused_at_the_mutation() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_same_declaration_with_the_shipped_params_still_commits() {
-    let Some(_) = shipped_steward() else {
+    let Some(_) = shipped_argus() else {
         return;
     };
     let td = tree(false);
@@ -256,7 +256,7 @@ async fn the_same_declaration_with_the_shipped_params_still_commits() {
             outcome,
             meclaw_colony::mutation::MutationOutcome::Committed { .. }
         ),
-        "the guard is a parser, not a wall: the shipped steward must still \
+        "the guard is a parser, not a wall: the shipped argus must still \
          instantiate unchanged: {outcome:?}"
     );
     h.shutdown().await;

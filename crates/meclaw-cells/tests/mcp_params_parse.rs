@@ -38,11 +38,19 @@ fn parse_with_full_fields() {
     assert_eq!(p.query_timeout_ms, 678);
 }
 
+/// GH #489: a missing endpoint is no longer a rejection — it is the
+/// `Unset` transport, the state of a bridge whose far side was never named.
+/// A bearer without an endpoint names no server either; the token is simply
+/// unused until one is named.
 #[test]
-fn parse_missing_endpoint_rejected() {
+fn parse_missing_endpoint_yields_the_unnamed_provider() {
     let v = json!({ "auth": { "bearer": "x" } });
-    let err = McpParams::parse(&v).unwrap_err();
-    assert!(err.contains("endpoint"), "got: {err}");
+    let p = McpParams::parse(&v).expect("a missing endpoint must parse (GH #489)");
+    assert!(
+        matches!(p.transport, McpTransport::Unset),
+        "expected the unnamed-provider transport, got {:?}",
+        p.transport
+    );
 }
 
 #[test]

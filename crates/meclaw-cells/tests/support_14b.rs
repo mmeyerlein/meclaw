@@ -9,6 +9,7 @@ mod topology_svg;
 use meclaw_cells::LlmCellFactory;
 use meclaw_cells::code::CodeCellFactory;
 use meclaw_cells::store::StoreCellFactory;
+use meclaw_cells::timer::TimerCellFactory;
 use meclaw_colony::api_dto::{GraphEdgeDto, GraphNodeDto, ReadGraphReply};
 use meclaw_colony::{CellFactory, CellFactoryRegistry, ColonyMsg, bootstrap_from_filesystem};
 use meclaw_core::serde_json::{Value, json, to_string_pretty};
@@ -103,6 +104,13 @@ async fn boot_inner(
     registry.insert("llm".to_string(), llm_f);
     registry.insert("code".to_string(), code_f);
     registry.insert("store".to_string(), store_f);
+    // GH #464: `collector` ships a `menu-clock`, so every tree that carries the
+    // shipped hive carries a `timer` cell -- a boot without the factory is an
+    // `UnknownCellType`, not a quiet skip.
+    registry.insert(
+        "timer".to_string(),
+        Arc::new(TimerCellFactory) as Arc<dyn CellFactory>,
+    );
     bootstrap_from_filesystem(td.path(), &registry, &h.runtime())
         .await
         .expect("bootstrap_from_filesystem must succeed");
@@ -128,6 +136,7 @@ pub async fn boot(
             ),
             ("code".to_string(), Arc::new(CodeCellFactory)),
             ("store".to_string(), Arc::new(StoreCellFactory)),
+            ("timer".to_string(), Arc::new(TimerCellFactory)),
         ],
     );
     boot_inner(td, h).await
@@ -153,6 +162,7 @@ pub async fn boot_with_blobs(
             ),
             ("code".to_string(), Arc::new(CodeCellFactory)),
             ("store".to_string(), Arc::new(StoreCellFactory)),
+            ("timer".to_string(), Arc::new(TimerCellFactory)),
         ],
     );
     boot_inner(td, h).await

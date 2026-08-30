@@ -39,17 +39,17 @@ adr	status	anchor_home	target
 0012-per-turn-extraction-and-what-is-left-of-the-drain.md	accepted	self	test:two_turns_of_one_session_carry_two_different_speakers
 0013-a-level-owns-what-its-siblings-must-share.md	accepted	self	test:the_level_wires_the_screen_the_memory_and_the_record
 0013-a-level-owns-what-its-siblings-must-share.md	accepted	self	test:c_a_second_assistant_is_one_instantiation_with_its_own_parameters
-0013-a-level-owns-what-its-siblings-must-share.md	accepted	self	test:the_level_ships_two_refs_and_one_empty_container
-0013-a-level-owns-what-its-siblings-must-share.md	accepted	self	test:d_a_second_channel_is_two_instantiations_and_no_intermediate_hive
+0013-a-level-owns-what-its-siblings-must-share.md	accepted	self	test:the_level_ships_three_refs_and_no_container
+0013-a-level-owns-what-its-siblings-must-share.md	accepted	self	test:d_a_second_channel_is_one_instantiation_in_the_member
 0013-a-level-owns-what-its-siblings-must-share.md	accepted	self	test:every_config_in_the_level_is_a_hive_and_there_are_exactly_two
 0013-a-level-owns-what-its-siblings-must-share.md	accepted	self	test:no_shipped_template_directory_takes_a_name_from_the_substrate_glossary
-0013-a-level-owns-what-its-siblings-must-share.md	accepted	self	test:the_container_declares_no_contract_because_the_level_wires_it
+0013-a-level-owns-what-its-siblings-must-share.md	accepted	self	test:neither_container_declares_a_contract_because_the_level_wires_them
 0013-a-level-owns-what-its-siblings-must-share.md	accepted	self	test:the_member_declares_the_lanes_that_cross_its_boundary
 0013-a-level-owns-what-its-siblings-must-share.md	accepted	self	file:templates/member/README.md#a level owns what its siblings must share
 0014-the-web-cell-owns-its-listener.md	accepted	self	test:a_web_cell_serves_its_shell_on_its_own_port
 0014-the-web-cell-owns-its-listener.md	accepted	self	test:two_web_cells_serve_two_ports_independently
 0014-the-web-cell-owns-its-listener.md	accepted	self	test:registry_wires_proxy_timer_mcp_factories
-0015-the-builder-belongs-to-the-os-level.md	accepted	self	test:the_shell_holds_four_refs_and_one_empty_container
+0015-the-builder-belongs-to-the-os-level.md	accepted	self	test:the_shell_holds_five_refs_and_one_empty_container
 0015-the-builder-belongs-to-the-os-level.md	accepted	self	test:no_config_in_the_builder_draws_an_edge_onto_the_control_plane
 0015-the-builder-belongs-to-the-os-level.md	accepted	self	test:no_config_in_the_builder_draws_an_edge_onto_the_mutation_door
 0015-the-builder-belongs-to-the-os-level.md	accepted	self	test:no_script_in_the_builder_spells_the_mutation_door
@@ -63,3 +63,21 @@ adr	status	anchor_home	target
 0016-a-shutdown-is-a-loop-phase-not-a-break.md	accepted	self	test:a_three_second_drain_under_the_default_watchdog_exits_clean
 0016-a-shutdown-is-a-loop-phase-not-a-break.md	accepted	self	code:LoopPhase
 0016-a-shutdown-is-a-loop-phase-not-a-break.md	accepted	self	file:crates/meclaw-colony/src/drain.rs#is_quiescent
+0017-a-declared-sleep-is-durable.md	accepted	self	test:a_mutation_that_does_not_name_it_never_wakes_it
+0017-a-declared-sleep-is-durable.md	accepted	self	test:the_marker_survives_a_restart
+0017-a-declared-sleep-is-durable.md	accepted	self	test:a_node_slept_by_remove_edges_carries_no_marker
+0017-a-declared-sleep-is-durable.md	accepted	self	test:migrate_v7_to_v8_opens_an_old_db_and_adds_the_dormancy_marker
+0017-a-declared-sleep-is-durable.md	accepted	self	code:RegistryEntry
+0017-a-declared-sleep-is-durable.md	accepted	self	file:crates/meclaw-colony/src/persist/writer.rs#SetRegistryDormant
+0018-a-registration-writes-down-the-activity-it-registers.md	accepted	self	test:an_island_derived_asleep_is_still_asleep_on_the_second_boot
+0018-a-registration-writes-down-the-activity-it-registers.md	accepted	self	test:a_cell_grown_into_a_sleeping_island_is_persisted_asleep
+0018-a-registration-writes-down-the-activity-it-registers.md	accepted	self	test:an_edge_into_the_island_wakes_it_and_the_third_boot_agrees
+0018-a-registration-writes-down-the-activity-it-registers.md	accepted	self	test:an_edgeless_cell_keeps_its_grace_across_a_reboot
+0018-a-registration-writes-down-the-activity-it-registers.md	accepted	self	file:crates/meclaw-colony/src/bootstrap_apply.rs#GH #437 / GH #495
+0019-one-hive-several-askers-the-reply-to-token.md	accepted	self	test:two_simultaneous_recalls_come_home_to_the_two_askers
+0019-one-hive-several-askers-the-reply-to-token.md	accepted	self	test:a_refused_recall_reaches_the_asker_instead_of_its_idle_window
+0019-one-hive-several-askers-the-reply-to-token.md	accepted	self	test:the_hive_hands_the_token_back_on_the_hop_and_never_deletes_it
+0019-one-hive-several-askers-the-reply-to-token.md	accepted	self	test:the_core_reads_a_hop_key_and_the_surface_is_the_default
+0019-one-hive-several-askers-the-reply-to-token.md	accepted	self	test:each_asker_stamps_its_own_name_on_the_way_out
+0019-one-hive-several-askers-the-reply-to-token.md	accepted	self	test:a_bundle_with_no_token_still_goes_where_every_bundle_went
+0019-one-hive-several-askers-the-reply-to-token.md	accepted	self	file:templates/assistant/README.md#One hive, two askers

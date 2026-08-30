@@ -34,6 +34,22 @@ fn default_attachment_timeout_ms() -> u64 {
     5_000
 }
 
+/// GH #457: default bound on the turns parked while the sealed credential is in
+/// flight. Sixteen is a conversation's worth of backlog, not a queue: the round
+/// it covers is one in-colony hop pair, so anything beyond this is a vault that
+/// is not answering, and that is what the receipt is for.
+fn default_credential_wait_max() -> usize {
+    16
+}
+
+/// GH #457: default A-timeout for the sealed-credential round, in ms. An
+/// in-colony round trip, so it sits with `attachment_timeout_ms`'s order rather
+/// than with the provider budget — generous enough for a loaded host, far below
+/// anything a chat user would call "silence".
+fn default_credential_wait_ms() -> u64 {
+    10_000
+}
+
 /// How the cell authenticates against the provider (P10).
 ///
 /// Vendor-neutral by design: `OauthSubscription` describes "a rotating OAuth
@@ -79,7 +95,7 @@ pub struct LlmParams {
     /// GH #387). `"openai"` is the OpenAI-compatible HTTP API and the first
     /// and currently only implemented protocol; the vendor is chosen through
     /// `base_url` (OpenAI itself, OpenRouter, vLLM, …). Further protocols get
-    /// added when a real consumer concretely needs one (`docs/roadmap.md`
+    /// added when a real consumer concretely needs one (`docs/defer-register.md`
     /// carries the defer plus its trigger).
     pub provider: String,
     /// Model id (e.g. `"gpt-4o"`).
@@ -96,6 +112,30 @@ pub struct LlmParams {
     /// granted (R-AC-2 applied to the vault).
     #[serde(default)]
     pub credential_grant_id: Option<String>,
+    /// GH #457: how many turns this cell parks while its sealed credential is
+    /// in flight, before the next one is refused with `credential_pending`.
+    ///
+    /// The buffer exists so the turn that TRIGGERS the vault round is answered
+    /// rather than dropped; the bound exists so a vault that never answers
+    /// cannot grow the buffer without limit. Overflow is not silence: the turn
+    /// that does not fit gets its receipt immediately.
+    ///
+    /// Only meaningful together with `credential_grant_id` — a cell that holds
+    /// its own key never parks anything.
+    #[serde(default = "default_credential_wait_max")]
+    pub credential_wait_max: usize,
+    /// GH #457: how long this cell waits for the sealed box before it gives up
+    /// and hands every parked turn its `credential_pending` receipt, in
+    /// milliseconds; default 10_000.
+    ///
+    /// This is an A-timeout on an IN-COLONY round trip (cell → broker → vault →
+    /// cell), not on a provider call, so it is derived from
+    /// `attachment_timeout_ms`'s order of magnitude rather than from
+    /// `external_timeout_ms`. It is also the only way a cell learns that the
+    /// round failed: a broker refusal is routed to the topology's error lane,
+    /// never back to the asking cell, so silence is the only signal there is.
+    #[serde(default = "default_credential_wait_ms")]
+    pub credential_wait_ms: u64,
     /// P10: how this cell authenticates. Default `api_key` — every pre-P10
     /// config keeps its exact behaviour.
     #[serde(default)]
@@ -355,6 +395,9 @@ pub(crate) const KNOWN_PARAM_KEYS: &[&str] = &[
     "api_key",
     // R3 / GH #421: the sealed credential delivery.
     "credential_grant_id",
+    // GH #457: the parking bound + deadline of that same delivery.
+    "credential_wait_max",
+    "credential_wait_ms",
     "base_url",
     "temperature",
     "max_tokens",

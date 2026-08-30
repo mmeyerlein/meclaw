@@ -5,8 +5,8 @@
 //! `sandbox_isolation.rs`.
 //!
 //! The schema is a security boundary, so its key sets are CLOSED: an unknown
-//! key is an error, never a silently ignored typo. Design in
-//! `plans/s4-sandbox/design.md`.
+//! key is an error, never a silently ignored typo. The shipped schema is
+//! documented in `docs/config.md` § `sandbox`.
 
 use meclaw_cells::sandbox::{NetworkPolicy, SandboxProfile};
 use meclaw_core::serde_json::json;

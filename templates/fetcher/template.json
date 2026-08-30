@@ -1,0 +1,24 @@
+{
+  "name": "fetcher",
+  "version": "1.0.0",
+  "description": {
+    "purpose": "An outbound HTTP GET a manifest can name, as one `web_fetch` cell: a timeout, a size cap and an egress policy, all parameters, and nothing else. It exists because three shipped templates carried a `web_fetch` cell INSIDE them and none of them was instantiable on its own, so no manifest could give a running colony the ability to fetch a URL (GH #482). It fetches what it is ASKED for: the URL rides in the tool_call args on the wire, not in the config, because a `web_fetch` cell has no URL of its own.",
+    "use_when": "Whenever something in a colony has to read a document off the network. Instantiate it under a name that says what it fetches -- `feed`, `page`, `endpoint` -- and draw TWO edges in the SAME mutation: one in, from whoever composes the `{\"url\": ...}` tool_call, and one out, to whoever reads the answer. The knobs are `override_params` on the node per instance -- a FLAT params object here, because a single-cell template has no inner cell to address.",
+    "not_in_scope": "GET and nothing else: `POST`/`PUT`/`PATCH`/`DELETE` and the `method`/`headers`/`body` control that goes with them are a core roadmap defer, and this template cannot ship what the cell type does not have. No retries, no caching, no parsing -- a non-2xx answer is a NORMAL tool_result carrying `hop.http_status`, and what to do about it is the edge's decision. No URL in the config either: a fetcher with a target baked in would be a fetcher for one caller.",
+    "examples": [
+      "PORTS - Entry: one message carrying a tool_call turn whose text is the JSON args `{\"url\": \"https://...\"}`. Exit: one tool_result turn with the response body, carrying `operation`, `http_status`, `content_type`, `duration_ms` and `bytes` on the hop, plus `truncated` when the size cap cut it and `redirects` + `final_url` when the body came from somewhere other than the address that was asked for.",
+      "a feed a colony reads every ten minutes: { \"add_nodes\": [{\"name\": \"feed\", \"template\": \"fetcher\", \"override_params\": {\"max_bytes\": 65536, \"external_timeout_ms\": 15000}}], \"add_edges\": [{\"from\": \"./ask\", \"to\": \"./feed\"}, {\"from\": \"./feed\", \"to\": \"./parse\", \"condition\": \"has(hop.http_status) && hop.http_status >= 200 && hop.http_status < 300\"}] }",
+      "a target the egress policy refuses -> `error_code: target_blocked` on its own lane, never `io_error` and never `invalid_input`: a blocked address is neither a flaky network nor a broken call, and the only repair is a different target"
+    ]
+  },
+  "tags": [
+    "fetcher",
+    "web_fetch",
+    "http",
+    "get",
+    "url",
+    "tool"
+  ],
+  "author": "@mmeyerlein",
+  "license": "MIT"
+}

@@ -1,0 +1,23 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "graph": {
+      "edges": [
+        {
+          "from": "./os",
+          "to": "/colony/mutations",
+          "condition": "has(hop.route) && hop.route == 'mutate'"
+        }
+      ]
+    }
+  },
+  "description": {
+    "purpose": "The root of a colony whose OS is DECLARED rather than checked in: one empty hive, one edge, and one `cell.type: \"ref\"` marker in `os/`. Not one cell is written here -- the whole shell arrives on the first boot, out of the template library, through the very resolution and staging a mutation takes.",
+    "use_when": "As the --root of stage one. It is a checked-in file and never the output of a scaffolding script: a root tree somebody generates is a tree nobody can diff, and the two things that make it a colony rather than a directory -- the marker and this one edge -- are precisely the two a generator would silently get wrong.",
+    "not_in_scope": "No broker, no control loop, no authoring path, no front door and no organisation: none of that is written here, all of it is instantiated. And no drain for `error`, `reject` or `receipt` -- an emission nobody consumes localises itself in the dead-letter queue with its sender and its trace, which is a record; a cell that accepts it and drops it would be a silence with a name on it (GH #284).",
+    "contract_in": "None. The root of a colony is addressed by path, not by lane.",
+    "contract_out": "None."
+  }
+}

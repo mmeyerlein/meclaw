@@ -1,6 +1,15 @@
 {
   "cell": {
     "type": "ref",
-    "template": "collector@3.0.2"
+    "template": "collector@3.4.0"
+  },
+  "override_params": {
+    "assemble": {
+      "tools": [
+        "web_search",
+        "web_fetch"
+      ],
+      "inline_extraction": "1"
+    }
   }
 }

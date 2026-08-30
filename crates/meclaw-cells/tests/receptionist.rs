@@ -747,12 +747,9 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str) {
     // The talky the receptionist instantiates lives in the TEMPLATE directory,
     // which is where a mutation looks for it.
     copy_template("talky", &root.join("templates"));
-    for rel in [
-        "templates/talky/brain/config.json",
-        "templates/summarizer/writer/config.json",
-    ] {
-        patch(root, rel, |v| v["params"]["base_url"] = json!(base_url));
-    }
+    patch(root, "templates/talky/brain/config.json", |v| {
+        v["params"]["base_url"] = json!(base_url)
+    });
 }
 
 async fn boot(

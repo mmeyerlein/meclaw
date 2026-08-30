@@ -5,6 +5,7 @@
 
 use crate::proxy::io::{ProxyEvent, ProxyReconfig, RunIoConfig, run_io};
 use crate::proxy::telegram::TelegramClient;
+use crate::proxy::typing::{TypingCadence, TypingKeepers};
 use meclaw_colony::{DbConn, LongRunningCell};
 use meclaw_core::{Message, OriginSink, OutputSink, Path};
 use std::future::Future;
@@ -31,6 +32,11 @@ pub struct ProxyCell {
     pub(crate) base_url: String,
     /// β: live `query_timeout_ms` (path C, cell.db ops via DbConn).
     pub(crate) query_timeout_ms: u64,
+    /// GH #515: the typing keepers, one per chat with a turn in flight.
+    /// `handle_event` starts one, `handle` stops it once the answer is out.
+    /// This is the only place that sees both ends of a turn — the I/O sub-task
+    /// sees the poll and could never stop anything.
+    pub(crate) typing: TypingKeepers,
     /// Initial I/O config, consumed exactly once by `split_io`.
     pub(crate) initial_io_cfg: Option<RunIoConfig>,
 }
@@ -59,6 +65,7 @@ impl ProxyCell {
             long_poll_request_secs,
             base_url,
             query_timeout_ms,
+            typing: TypingKeepers::default(),
             initial_io_cfg: Some(RunIoConfig {
                 client: io_client,
                 initial_offset,
@@ -69,6 +76,19 @@ impl ProxyCell {
                 liveness: meclaw_colony::IoLivenessMark::disabled(),
             }),
         }
+    }
+
+    /// GH #515: overrides the typing cadence (`TypingCadence::default` is the
+    /// production one: 4 s under Telegram's ~5 s decay, 60 s ceiling).
+    ///
+    /// A test/ops seam, deliberately NOT a params surface: the numbers follow
+    /// from the Bot API's own decay and from what a stuck turn may cost, not
+    /// from a topology's taste, and a settable one would be a new promise on a
+    /// template that is only supposed to grow a behaviour. What it buys is a
+    /// test that measures the real mechanism in under two seconds instead of
+    /// sitting out a 60 s ceiling.
+    pub fn set_typing_cadence(&mut self, cadence: TypingCadence) {
+        self.typing.set_cadence(cadence);
     }
 }
 
@@ -283,7 +303,13 @@ impl LongRunningCell for ProxyCell {
 
             // 4. sendMessage call (W7 A timeout via the client). Errors → T13.
             let timeout = std::time::Duration::from_millis(self.send_timeout_ms);
-            match self.client.send_message(chat_id, &text, timeout).await {
+            let sent = self.client.send_message(chat_id, &text, timeout).await;
+            // GH #515: the answer is on the wire (or has definitively failed) —
+            // the keeper for this chat has nothing left to say. Stopping AFTER
+            // the call, not before, is deliberate: the status should stand for
+            // the whole time the send itself takes.
+            self.typing.stop(chat_id);
+            match sent {
                 Ok(()) => {} // Pure sink: no emit on success.
                 Err(e) => {
                     crate::proxy::emit::emit_inbound_error(
@@ -320,6 +346,17 @@ impl LongRunningCell for ProxyCell {
                 message_id,
                 text,
             } = event;
+
+            // GH #515: the sign of life goes FIRST — before the cursor write and
+            // before the emission. The whole point is that the chat sees
+            // something in the first moment of the turn, not after the topology
+            // behind the connector has had its say; and `start` only spawns a
+            // task, so nothing here waits on Telegram.
+            self.typing.start(
+                &self.client,
+                chat_id,
+                std::time::Duration::from_millis(self.send_timeout_ms),
+            );
 
             // 1. State before emit (phase-5 canon): persist the cursor BEFORE emitting.
             let next_offset = update_id + 1;

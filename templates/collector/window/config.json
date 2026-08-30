@@ -29,6 +29,12 @@
         "session_id": "text",
         "batched_at": "text",
         "pruned_at": "text"
+      },
+      "menu": {
+        "answerer": "text",
+        "tools": "json",
+        "unknown": "text",
+        "recorded_at": "text"
       }
     },
     "query_timeout_ms": 5000

@@ -16,7 +16,15 @@
 //! | Sq | `t1-qvec-park` | 1 (the embedder's half -- the one that carries on) |
 //! | S3 | `t1-join` | 1 |
 //! | S4 | `t1-legs` | 1 |
+//! | S4a | `t1-graph` | 1, and ONLY when the graph walk reached a node (GH #520) |
 //! | S5 | `t1-emit` | 1 (park, hydration, axis page, verdicts, read-back) |
+//!
+//! S4a is the one conditional message of the chain: the nodes a walk passed
+//! through are known only after the walk, so the facts they are about cost a
+//! bundle that a request with no anchors — or one whose walk came back empty —
+//! never sends. Every fixture in this file answers the walk with `{"paths":
+//! []}`, so what it counts is the six below; the seventh is counted in
+//! `gh520_from_an_entity_to_a_fact.rs`.
 //!
 //! **Six.** The reply to S5 renders and emits the answer; it asks the store
 //! nothing more. Tier 2 costs a seventh, and it is deliberately NOT on the

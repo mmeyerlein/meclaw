@@ -50,15 +50,28 @@ The ordinary case. Scope is the hive the cell should live in; `name` is a
 }
 ```
 
-The `diff` knows seven operations — `add_nodes`, `remove_nodes`, `swap_nodes`,
-`move_nodes`, `add_edges`, `remove_edges`, `add_templates` — and **only** those
-seven: a key none of them reads is `schema`, not a silent no-op. The refusal
+The `diff` knows eight operations — `add_nodes`, `remove_nodes`, `swap_nodes`,
+`move_nodes`, `add_edges`, `remove_edges`, `add_templates`, `seed_rows` — and
+**only** those eight: a key none of them reads is `schema`, not a silent no-op. The refusal
 names the key and the legal vocabulary before anything is written.
+
+Edge endpoints are paths relative to the `scope`, at any depth — and **`.` names the
+scope root itself** (GH #487). `{"from": "./telegram", "to": "."}` is therefore the lane
+that leaves the level, and `{"from": ".", "to": "./talky"}` the door into it — the very
+spelling a `params.graph` uses for its own level, and the one the recipes below use
+throughout. Until GH #487 it was legal at boot only; `add_edges` refused it as
+`edge_schema`, which forced the lane to be declared one level up and widened the
+declaration's `scope` for no reason. `remove_edges` reads the same vocabulary. It is
+resolved at the point of use: the diff keeps the spelling it was submitted in.
 
 An `add_nodes` entry may optionally carry `"birth": "inactive"` (GH #437): the cell is
 then wired, registered and persisted inactive **without** starting — useful for a cell
-whose counterpart tolerates only one consumer. The next mutation whose recompute
-reaches it wakes it.
+whose counterpart tolerates only one consumer. The next mutation that **addresses it
+itself** wakes it — one that names its path, as an endpoint of an `add_edges`, say. The
+declaration is durable (GH #491): it survives a restart, and a mutation elsewhere in the
+tree never wakes the cell, however far its connectivity recompute reaches. That is the
+difference from sleeping a node with `remove_edges`, which achieves the same thing from
+the other side: there the node has no edge left, here it carries a marker.
 
 ```bash
 curl -X POST http://<host>:<port>/colony/mutations \
@@ -432,7 +445,7 @@ Scope is `channels`, the hive that already exists.
     "add_nodes": [
       {"name": "telegram", "template": "telegram-connector@2.0.1",
        "override_params": {"bot_token": "${TELEGRAM_BOT_TOKEN}"}},
-      {"name": "talky", "template": "talky@4.2.3"}
+      {"name": "talky", "template": "talky@4.5.1"}
     ]
   }
 }

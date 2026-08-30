@@ -1351,7 +1351,9 @@ pub fn stage_subtree(
     // GH #277: whatever the traversed `ref`s parameterised is the default layer;
     // this mutation's own `override_params` sit on top of it, param key by param
     // key. Built once, used for every cell below.
-    let overrides = overrides.with_ref_defaults(&template.ref_overrides);
+    // GH #516: the ref layer is read off a template tree, so it takes the
+    // instance pass here — `ctx` reaches the cells a ref marker parameterises.
+    let overrides = overrides.with_ref_defaults(&template.ref_overrides, ctx)?;
 
     // 2. Copy the whole nested tree into `.staging/<mid>/<name>/`.
     let root_staging_path = root.join(".staging").join(mutation_id).join(name);
@@ -1687,8 +1689,43 @@ impl SubtreeOverrides {
     ///
     /// Empty `defaults` (every ref-free template) returns this set unchanged, so
     /// such a template stages byte-identically to before.
-    pub fn with_ref_defaults(&self, defaults: &HashMap<String, JsonValue>) -> Self {
-        let mut by_rel_path = defaults.clone();
+    ///
+    /// GH #516 — `defaults` takes the INSTANCE-CLASS pass first
+    /// ([`crate::mutation::substitute::substitute_instance_only`]), and `ctx` is
+    /// the only reason this function needs an argument it does not merge. The
+    /// two sides of the merge are read from two different places and only one of
+    /// them had been substituted: the mutation's own `override_params` arrive
+    /// pre-substituted from `substitute_mutation_diff`, while `defaults` is read
+    /// off a template TREE, where every other value gets the instance pass in
+    /// `patch_and_substitute_config`. Without this a ref marker could hand a
+    /// LITERAL down into the template it names but not the outer instantiation's
+    /// own `${ctx.X}` — that token survived into the env pass and was refused
+    /// there as an environment variable called `ctx.X`. A composite that
+    /// references one template twice (a conversation surface and a reasoning
+    /// core, both `talky`-shaped, both reading `${ctx.model}`) then had no way to
+    /// give the two different models, which is the defect GH #516 was opened for.
+    ///
+    /// Environment tokens keep surviving literally, exactly as in every other
+    /// value read off a template tree (GH #20): a secret a ref marker passes down
+    /// is still never materialised on disk.
+    ///
+    /// # Errors
+    /// [`MutationError`] for whatever the instance pass reports about `defaults`
+    /// — a `${ctx.X}` the mutation does not supply, or an operator form that can
+    /// never resolve. Both are authoring errors in the TEMPLATE, and both are
+    /// raised here, before the first byte of the tree is copied.
+    pub fn with_ref_defaults(
+        &self,
+        defaults: &HashMap<String, JsonValue>,
+        ctx: &HashMap<String, String>,
+    ) -> Result<Self, MutationError> {
+        let mut by_rel_path = HashMap::with_capacity(defaults.len());
+        for (rel_path, params) in defaults {
+            by_rel_path.insert(
+                rel_path.clone(),
+                crate::mutation::substitute::substitute_instance_only(params, ctx)?,
+            );
+        }
         for (rel_path, params) in &self.by_rel_path {
             match by_rel_path.get_mut(rel_path) {
                 Some(under) => layer_params(under, params),
@@ -1697,7 +1734,7 @@ impl SubtreeOverrides {
                 }
             }
         }
-        Self { by_rel_path }
+        Ok(Self { by_rel_path })
     }
 
     /// The synthetic `add_nodes` entry for one cell — the shape
@@ -1866,8 +1903,10 @@ fn stage_rename_root(
     let root_final_path = final_path_for(root, scope, name, root_rel);
 
     // GH #277: same layering as the fresh path — a subtree that grows a missing
-    // branch through a ref gets that ref's params as its default.
-    let overrides = overrides.with_ref_defaults(&template.ref_overrides);
+    // branch through a ref gets that ref's params as its default, and (GH #516)
+    // the same instance pass over it: a merge stages its missing children
+    // exactly like a fresh instantiation, so it substitutes exactly like one.
+    let overrides = overrides.with_ref_defaults(&template.ref_overrides, ctx)?;
 
     let mut cells: Vec<StagedCellMeta> = Vec::new();
     let mut hive_scopes: Vec<Path> = Vec::new();
@@ -4219,7 +4258,9 @@ mod tests {
         let mutation = SubtreeOverrides::from_add_node(&serde_json::json!({
             "override_params": {"a": {"q": 7}}
         }));
-        let layered = mutation.with_ref_defaults(&parsed.ref_overrides);
+        let layered = mutation
+            .with_ref_defaults(&parsed.ref_overrides, &HashMap::new())
+            .expect("a ref-free template substitutes nothing");
         assert_eq!(layered.for_cell("a"), mutation.for_cell("a"));
         assert_eq!(layered.for_cell("b"), mutation.for_cell("b"));
     }

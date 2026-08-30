@@ -1,7 +1,7 @@
 //! GH #47: a batch pipe must not lose the answers that were still in flight
 //! when stdin hit EOF.
 //!
-//! The measurement of 2026-06-15 (`docs/roadmap.md` § Async-Cell-Shutdown-Drain)
+//! The measurement of 2026-06-15 (`docs/defer-register.md` § Async-Cell-Shutdown-Drain)
 //! piped 20 lines into a colony with a real `llm` cell and got 0 answers back,
 //! while the same 20 lines with stdin held open produced all 20. This test is
 //! that measurement, without a provider: the cell sleeps 300 ms inside its

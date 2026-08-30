@@ -104,6 +104,9 @@ fn the_store_is_sealed_against_writers_from_outside_the_scope() {
         ("requester", "text"),
         ("kind", "text"),
         ("manifest", "json"),
+        // GH #504 — the one thing the flight row keeps of a diff it no longer
+        // holds: whether the manifest carried an `add_templates`.
+        ("registers", "int"),
     ] {
         assert_eq!(cols[col], ty, "column {col}");
     }
@@ -236,7 +239,9 @@ fn phase_b_asks_the_store_before_it_renders() {
     // and `limit` without `order_by` returns an UNSPECIFIED row.
     assert_eq!(
         op["columns"],
-        json!(["id", "tool_call_id", "manifest_sha256"])
+        // `registers` since GH #504: the colony's answer carries no diff, so
+        // the fact travels back out of the row it was written into.
+        json!(["id", "tool_call_id", "manifest_sha256", "registers"])
     );
     assert_eq!(op["where"], json!({ "kind": "flight" }));
     assert_eq!(

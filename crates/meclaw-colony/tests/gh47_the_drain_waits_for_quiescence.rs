@@ -1,6 +1,6 @@
 //! GH #47: the drain waits for the system to go idle, not for a number of
 //! answers. That distinction is the whole reason this is buildable in a
-//! non-deterministic substrate (`docs/roadmap.md` § Async cell shutdown drain,
+//! non-deterministic substrate (`docs/defer-register.md` § Async cell shutdown drain,
 //! clarification note): a quiescence drain waits for *system idle*, never for
 //! "N replies", so a message that died on the way contributes nothing to the
 //! wait.

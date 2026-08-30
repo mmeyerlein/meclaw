@@ -411,7 +411,7 @@ fn every_shipped_template_instantiates_unchanged() {
     // Measured, in BOTH tree shapes, and it has to hold in the smaller one:
     // 31 top-level templates carry a `template.json` in the private tree
     // (2026-08-22), 19 in the subset the export publishes (`PUBLIC_TEMPLATES`
-    // in `plans/export-fixtures/make_export.py`). The floor first read 20 --
+    // in the maintainers' export script). The floor first read 20 --
     // calibrated against the private directory only, one above what the public
     // tree can ever reach -- and the published clone went red on it while this
     // tree stayed green. Same defect class as the vacuity floor in

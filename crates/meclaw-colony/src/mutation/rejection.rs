@@ -1,8 +1,8 @@
 //! The structured rejection (GH #293).
 //!
 //! **Safety statement: what is accepted and what is refused does not change.**
-//! Same verdicts, complete report (spec `plans/composition-reference/spec.md`
-//! § Part 3 — the collecting validator).
+//! Same verdicts, complete report (the composition-reference spec, part 3 —
+//! the collecting validator; GH #293).
 //!
 //! Today each mutation check returns `Result<(), MutationError>` and the first
 //! violation ends validation, so a mutation with eight problems costs eight

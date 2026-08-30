@@ -9,3 +9,4 @@
 {"audience": "agent:aiden", "audience_set": ["agent:aiden"], "decided_at": "2026-01-01T00:00:00Z", "entity_id": "entity:aiden", "field_path": "aieos.motivations", "id": "disc:aiden-self-motivations", "mode": "share"}
 {"audience": "agent:aiden", "audience_set": ["agent:aiden"], "decided_at": "2026-01-01T00:00:00Z", "entity_id": "entity:aiden", "field_path": "aieos.linguistics.text_style", "id": "disc:aiden-self-style", "mode": "share"}
 {"audience": "agent:aiden", "audience_set": ["agent:aiden"], "decided_at": "2026-01-01T00:00:00Z", "entity_id": "entity:robin", "field_path": "aieos.identity.names", "id": "disc:robin-aiden-names", "mode": "share"}
+{"audience": "agent:aiden", "audience_set": ["agent:aiden"], "decided_at": "2026-01-01T00:00:00Z", "entity_id": "entity:aiden", "field_path": "mx.brain", "id": "disc:aiden-self-brain", "mode": "share"}

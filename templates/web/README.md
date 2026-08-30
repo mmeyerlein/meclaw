@@ -281,8 +281,7 @@ so pin the provider — and the fastest first token is not the fastest picture. 
 model that streams sooner but emits a second JSON document after the first one
 produces no picture at all.
 
-The measurement, the full ranking and its limits are in
-`plans/wellen-2026-08-21/receipts/w8-brain-ranking.md` (GH #384).
+The measurement, the full ranking and its limits are recorded in GH #384.
 
 ## What it is not
 

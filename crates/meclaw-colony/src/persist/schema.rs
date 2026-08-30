@@ -79,7 +79,8 @@ CREATE TABLE IF NOT EXISTS registry (
   template         TEXT,
   template_version TEXT,
   instantiated_at  INTEGER,
-  template_chain   TEXT
+  template_chain   TEXT,
+  dormant          INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_registry_template ON registry(template);
 CREATE TABLE IF NOT EXISTS edges (
@@ -126,6 +127,7 @@ CREATE TABLE IF NOT EXISTS mutation_log (
   trace_id        TEXT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_mutlog_status ON mutation_log(status);
+CREATE INDEX IF NOT EXISTS idx_mutlog_created ON mutation_log(created_at);
 CREATE TABLE IF NOT EXISTS templates (
   template_id      TEXT PRIMARY KEY,
   name             TEXT NOT NULL,
@@ -154,7 +156,7 @@ CREATE TABLE IF NOT EXISTS meta (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
-INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '7');
+INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '8');
 ";
 
 /// Setup a colony.db connection: PRAGMAs + DDL (all phase-5 tables + indexes).
@@ -395,8 +397,8 @@ mod tests {
     }
 
     #[test]
-    fn setup_colony_db_seeds_schema_version_7() {
-        // GH #283: the edges `is_default` column → schema v7.
+    fn setup_colony_db_seeds_schema_version_8() {
+        // GH #491: the registry `dormant` column → schema v8.
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         setup_colony_db(&conn).unwrap();
         let v: String = conn
@@ -406,7 +408,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(v, "7");
+        assert_eq!(v, "8");
     }
 
     #[test]
@@ -432,10 +434,10 @@ mod tests {
     }
 
     #[test]
-    fn read_schema_version_returns_7_after_colony_setup() {
+    fn read_schema_version_returns_8_after_colony_setup() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         setup_colony_db(&conn).unwrap();
-        assert_eq!(read_schema_version(&conn).unwrap(), 7);
+        assert_eq!(read_schema_version(&conn).unwrap(), 8);
     }
 
     #[test]
@@ -498,6 +500,115 @@ mod tests {
         assert_eq!(cnt, 1, "idx_mutlog_status missing");
     }
 
+    /// GH #462 — `mutation_log` gets the `created_at` index the other two
+    /// windowed tables have had all along.
+    ///
+    /// `/colony/ledger` reads every one of its counts out of a window
+    /// (`WHERE created_at >= ?since AND created_at < ?until LIMIT ?budget`) and
+    /// it STALLS the colony inbox loop while it does. `message_log` and
+    /// `dead_letters` each answered that window from an index; `mutation_log`
+    /// answered it with a full table scan whose only bound was the scan budget
+    /// — and the two shipped callers, the control loop's meter and its probe,
+    /// both ask with the maximum. This is the additive half of the repair: the
+    /// index. Additive means the schema version does not move, and an existing
+    /// database picks it up on its next open, because the DDL batch is
+    /// idempotent and runs on every `setup_colony_db`.
+    #[test]
+    fn setup_colony_db_creates_mutation_log_created_at_index() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        setup_colony_db(&conn).unwrap();
+        let cnt: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_mutlog_created'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(cnt, 1, "idx_mutlog_created missing");
+    }
+
+    /// The index EXISTING is half a promise; the ledger's own window query
+    /// USING it is the other half. Asserting only the first would pass on an
+    /// index the planner never picks — and the whole reason for the row is that
+    /// the query stops being a table scan.
+    ///
+    /// The SQL below is the mutation sub-query of `handle_read_ledger`
+    /// verbatim. If that query is rewritten so the planner drops the index,
+    /// this test is the thing that says so.
+    #[test]
+    fn the_ledger_mutation_window_reads_that_index_instead_of_scanning() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        setup_colony_db(&conn).unwrap();
+        let plan: Vec<String> = conn
+            .prepare(
+                "EXPLAIN QUERY PLAN
+                 SELECT status, COUNT(*)
+                   FROM (SELECT status FROM mutation_log
+                          WHERE created_at >= ?1 AND created_at < ?2
+                          LIMIT ?3)
+                  GROUP BY status",
+            )
+            .unwrap()
+            .query_map(rusqlite::params![0_i64, i64::MAX, 200_000_i64], |r| {
+                r.get::<_, String>(3)
+            })
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        let joined = plan.join(" | ");
+        assert!(
+            joined.contains("idx_mutlog_created"),
+            "the ledger's mutation window must read the created_at index: {joined}"
+        );
+        assert!(
+            !joined.contains("SCAN mutation_log"),
+            "the ledger's mutation window must not be a table scan any more: {joined}"
+        );
+    }
+
+    /// A database that predates the index picks it up on its next open. That is
+    /// what "additive migration" means here, and it is the reason the schema
+    /// version does not move: nothing about an existing row changes.
+    #[test]
+    fn an_existing_colony_db_picks_up_the_index_on_reopen() {
+        let td = tempfile::TempDir::new().unwrap();
+        let path = td.path().join("colony.db");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            setup_colony_db(&conn).unwrap();
+            conn.execute("DROP INDEX idx_mutlog_created", []).unwrap();
+            let cnt: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE name='idx_mutlog_created'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                cnt, 0,
+                "the pre-#462 shape has to be reachable for this test"
+            );
+        }
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        setup_colony_db(&conn).unwrap();
+        let cnt: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name='idx_mutlog_created'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            cnt, 1,
+            "reopening an older database has to create the index"
+        );
+        assert_eq!(
+            read_schema_version(&conn).unwrap(),
+            8,
+            "an additive index does not move the schema version"
+        );
+    }
+
     #[test]
     fn setup_colony_db_creates_templates_table() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
@@ -556,7 +667,7 @@ mod tests {
             .collect();
         assert!(cols.contains(&"condition".to_string()));
         assert!(cols.contains(&"modifier".to_string()));
-        assert_eq!(read_schema_version(&conn).unwrap(), 7);
+        assert_eq!(read_schema_version(&conn).unwrap(), 8);
     }
 
     #[test]
@@ -579,7 +690,7 @@ mod tests {
             .collect();
         assert!(cols.contains(&"condition".to_string()));
         assert!(cols.contains(&"modifier".to_string()));
-        assert_eq!(read_schema_version(&conn).unwrap(), 7);
+        assert_eq!(read_schema_version(&conn).unwrap(), 8);
     }
 
     /// GH #90: a pre-v5 database whose `registry` already exists without the
@@ -602,7 +713,7 @@ mod tests {
         )
         .unwrap();
         setup_colony_db(&conn).unwrap();
-        assert_eq!(read_schema_version(&conn).unwrap(), 7);
+        assert_eq!(read_schema_version(&conn).unwrap(), 8);
         let idx: i64 = conn
             .query_row(
                 "SELECT count(*) FROM sqlite_master WHERE type='index' AND name='idx_registry_template'",

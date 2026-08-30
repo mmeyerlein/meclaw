@@ -1,40 +1,38 @@
 {
-  "scope": "/os/orgs/acme/members/alex/assistants/scribe",
+  "scope": "/os/orgs/acme/members/alex/channels",
   "ctx": {
-    "model": "${MODEL_BRAIN}"
+    "member_person": "alex"
   },
   "diff": {
     "add_nodes": [
       {
-        "name": "channels/telegram-connector",
-        "template": "telegram-connector@2.0.1"
-      },
-      {
-        "name": "channels/talky",
-        "template": "talky@4.2.3"
+        "name": "telegram",
+        "template": "telegram-connector@2.0.1",
+        "birth": "inactive"
       }
     ],
     "add_edges": [
       {
-        "from": "./channels/telegram-connector",
-        "to": "./channels",
+        "from": "./telegram",
+        "to": ".",
         "condition": "!has(hop.error_code)",
         "modifier": {
           "set_hop": {
             "route": "'turn'"
           },
           "set_context": {
-            "channel": "'telegram'",
-            "agent": "'scribe'",
-            "chat_id": "hop.chat_id",
-            "user_id": "hop.user_id",
-            "audience_set": "'[\"member:alex\",\"agent:scribe\"]'"
+            "channel_node": "'telegram'",
+            "channel": "has(hop.chat_id) ? hop.chat_id : ''",
+            "assistant": "has(context.assistant) && context.assistant != '' ? context.assistant : (has(hop.addressed_to) && hop.addressed_to != '' ? hop.addressed_to : 'scribe')",
+            "chat_id": "has(hop.chat_id) ? hop.chat_id : ''",
+            "user_id": "has(hop.user_id) ? hop.user_id : ''",
+            "audience_set": "'[\"agent:scribe\",\"member:alex\"]'"
           }
         }
       },
       {
-        "from": "./channels/telegram-connector",
-        "to": "./channels",
+        "from": "./telegram",
+        "to": ".",
         "condition": "has(hop.error_code)",
         "modifier": {
           "set_hop": {
@@ -43,79 +41,9 @@
         }
       },
       {
-        "from": "./channels/talky",
-        "to": "./channels/telegram-connector",
-        "condition": "has(hop.route) && hop.route == 'answer'"
-      },
-      {
-        "from": "./channels",
-        "to": "./channels/talky",
-        "condition": "has(hop.route) && hop.route == 'in_turn'"
-      },
-      {
-        "from": "./channels",
-        "to": "./channels/talky",
-        "condition": "has(hop.route) && hop.route == 'in_bundle'"
-      },
-      {
-        "from": "./channels",
-        "to": "./channels/talky",
-        "condition": "has(hop.route) && hop.route == 'in_advice'"
-      },
-      {
-        "from": "./channels",
-        "to": "./channels/talky",
-        "condition": "has(hop.route) && hop.route == 'in_sweep'"
-      },
-      {
-        "from": "./channels",
-        "to": "./channels/talky",
-        "condition": "has(hop.route) && hop.route == 'in_prune'"
-      },
-      {
-        "from": "./channels",
-        "to": "./channels/talky",
-        "condition": "has(hop.route) && hop.route == 'in_round_sweep'"
-      },
-      {
-        "from": "./channels",
-        "to": "./channels/talky",
-        "condition": "has(hop.route) && hop.route == 'in_tool'"
-      },
-      {
-        "from": "./channels/talky",
-        "to": "./channels",
-        "condition": "has(hop.route) && hop.route == 'write'"
-      },
-      {
-        "from": "./channels/talky",
-        "to": "./channels",
-        "condition": "has(hop.route) && hop.route == 'turn_write'"
-      },
-      {
-        "from": "./channels/talky",
-        "to": "./channels",
-        "condition": "has(hop.route) && hop.route == 'extraction'"
-      },
-      {
-        "from": "./channels/talky",
-        "to": "./channels",
-        "condition": "has(hop.route) && hop.route == 'recall'"
-      },
-      {
-        "from": "./channels/talky",
-        "to": "./channels",
-        "condition": "has(hop.route) && hop.route == 'tool'"
-      },
-      {
-        "from": "./channels/talky",
-        "to": "./channels",
-        "condition": "has(hop.route) && hop.route == 'prune'"
-      },
-      {
-        "from": "./channels/talky",
-        "to": "./channels",
-        "condition": "has(hop.route) && hop.route == 'error'"
+        "from": ".",
+        "to": "./telegram",
+        "condition": "has(hop.route) && hop.route == 'answer' && has(context.channel_node) && context.channel_node == 'telegram'"
       }
     ]
   }

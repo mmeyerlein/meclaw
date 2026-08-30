@@ -3,6 +3,20 @@
 //! default in the cell that documents them. Two places, one number — or the
 //! knob and the guard drift apart silently, which is the failure mode this file
 //! exists to make loud.
+//!
+//! Since GH #482 the round bound is written a THIRD time: in prose, in the
+//! briefing head, because a composer that does not know how many rounds it has
+//! spends all of them looking and ends on `no_manifest_in_answer` — the one
+//! ending that is paid for and delivers nothing. A number in a prompt is still
+//! a number on the edge, so it is held here with the other two.
+//!
+//! The composer's completion ceiling is held here for the same reason and by
+//! the same rule (`docs/development-rules.md` § 2d): it is a number in template
+//! prose, so it is derived from the shipped setting inside the test rather than
+//! typed a second time. It had already drifted once — the description said
+//! 16 384 while the cell shipped twice that, which is a description arguing
+//! against its own value, and a reader who believes the prose tunes the wrong
+//! thing.
 
 use meclaw_core::serde_json::Value;
 use std::path::PathBuf;
@@ -94,5 +108,61 @@ fn the_idle_window_is_declared_even_though_no_edge_reads_it() {
     assert!(
         setting > 0,
         "an idle window of zero closes every round on arrival"
+    );
+}
+
+/// The third spelling: prose, in the head of the drafting prompt (GH #482).
+#[test]
+fn the_round_budget_in_the_briefing_is_the_max_iter_default() {
+    let setting = weave()["contract"]["settings"]["max_iter"]["default"]
+        .as_u64()
+        .expect("max_iter declared");
+    let brief = json_at("templates/builder/brief/config.json");
+    let script = brief["params"]["script_inline"]
+        .as_str()
+        .expect("the shipped brief script");
+    let needle = "at most ";
+    let i = script
+        .find(needle)
+        .expect("the head has to say how many rounds there are, in words");
+    let digits: String = script[i + needle.len()..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    assert_eq!(
+        digits.parse::<u64>().ok(),
+        Some(setting),
+        "the number the composer is told is the number the edge enforces"
+    );
+    assert!(
+        script[i..].starts_with(&format!("at most {setting} more rounds")),
+        "and it is told as RE-ENTRIES, which is what the edge counts: the \
+         composer is asked once out of the brief and `max_iter` times after \
+         that, so `{setting} rounds` would understate its own budget by one"
+    );
+}
+
+/// The completion ceiling, and the prose that explains it (GH #480 wave).
+#[test]
+fn the_completion_ceiling_the_description_names_is_the_one_that_ships() {
+    let compose = json_at("templates/builder/compose/config.json");
+    let shipped = compose["params"]["max_tokens"]
+        .as_u64()
+        .expect("the composer declares a completion ceiling");
+    let prose = compose["description"]["not_in_scope"]
+        .as_str()
+        .expect("the composer's description says why");
+    assert!(
+        prose.contains(&format!("budget is {shipped}")),
+        "the description names a completion budget the cell does not ship, so \
+         the argument in it is about a different cell: {prose}"
+    );
+    // The mechanism half of the drift lock: a ceiling is only free while nothing
+    // deliberates into it, which is the sentence the number is argued on.
+    assert_eq!(
+        compose["params"]["reasoning"]["enabled"], false,
+        "the description argues the ceiling is free because nothing spends it \
+         on reasoning -- turn that on and the argument is gone: {}",
+        compose["params"]
     );
 }

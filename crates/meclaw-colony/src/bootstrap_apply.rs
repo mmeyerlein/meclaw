@@ -207,6 +207,12 @@ pub async fn apply_bootstrap_plan(
                         active: c.active,
                         // Paket-6 C: overlay-derived failure flag.
                         failed: c.failed,
+                        // GH #491: rehydrated dormancy marker. A lazy cell that
+                        // reaches this arm is ACTIVE (the inactive ones go
+                        // through `register_inactive_non_spawned`), so this is
+                        // normally `false` — it is passed rather than hardcoded
+                        // because the planner owns the answer, not this arm.
+                        dormant: c.dormant,
                         // Lazy stateful (Dormant factory kind) → wake-on-message.
                         eager_on_reconnect: false,
                         ack: ack_tx,
@@ -316,10 +322,12 @@ async fn register_inactive_non_spawned(
     runtime: &ColonyRuntime,
     factories: &CellFactoryRegistry,
     c: &crate::bootstrap::PlannedCell,
-    // GH #437: `true` iff a `ref` marker DECLARED this node's inactivity. Then,
-    // and only then, the row is written `'inactive'` — `UpsertRegistry` seeds
-    // `'active'` and never overwrites it, so without this the next boot would
-    // start exactly the cell the declaration exists to keep asleep.
+    // GH #437: `true` iff a `ref` marker DECLARED this node's inactivity. Since
+    // GH #495 the `'inactive'` ROW is written for every boot-inactive cell (the
+    // derivation has to be written down too, or the second boot re-derives
+    // nothing and believes the seeded `'active'`); this flag now decides only the
+    // durable dormancy MARKER of ADR-0017, which a declared sleep gets and a
+    // derived one deliberately does not.
     declared_inactive: bool,
 ) {
     use tokio::sync::oneshot;
@@ -480,6 +488,10 @@ async fn register_inactive_non_spawned(
             cell_type: c.cell_type.clone(),
             active: c.active,
             failed: c.failed,
+            // GH #491: the declaration, from either of its two sources — a
+            // `ref` marker's `birth` at first boot (`declared_inactive`) or the
+            // persisted marker of an earlier one (`c.dormant`).
+            dormant: c.dormant || declared_inactive,
             eager_on_reconnect,
             ack: ack_tx,
         })
@@ -504,8 +516,23 @@ async fn register_inactive_non_spawned(
         .await
         .expect("colony inbox closed");
     nc_ack_rx.await.expect("SetNodeContract ack");
-    // GH #437: after the row exists (RegisterDormant acked above), not before.
-    if declared_inactive {
+    // GH #437 / GH #495: after the row exists (RegisterDormant acked above), not
+    // before. The row says what this boot REGISTERED — and this function is only
+    // ever called with `c.active == false`, so that is `'inactive'`, whether the
+    // sleep was declared by a `ref` marker or DERIVED from the edge table.
+    //
+    // GH #495 widened the condition from `declared_inactive` to every
+    // boot-inactive cell. `UpsertRegistry` seeds `'active'` on INSERT and never
+    // touches `status` on conflict, and the boot-time connectivity recompute
+    // (`bootstrap.rs`) runs only for nodes WITHOUT a registry row — so a node the
+    // FIRST boot derived inactive left the seeded `'active'` standing, and the
+    // second boot read it back as the truth and spawned the whole island. The
+    // derivation was right and was simply never written down.
+    //
+    // `failed` is the one status this must not overwrite: it is a third value in
+    // the same column (Paket-6), it already implies `active == false`, and it
+    // carries a fact `'inactive'` does not.
+    if !c.failed {
         let (st_ack_tx, st_ack_rx) = oneshot::channel();
         runtime
             .inbox_tx
@@ -517,6 +544,40 @@ async fn register_inactive_non_spawned(
             .await
             .expect("colony inbox closed");
         st_ack_rx.await.expect("SetRegistryStatus ack");
+    }
+    // GH #491: and, for a DECLARED sleep only, the marker that makes the row
+    // hold against a later recompute. Without it the next connectivity recompute
+    // that reaches this node writes `active` over the declaration — the node is
+    // fully wired, so it always would. A DERIVED sleep gets no marker and needs
+    // none: it is asleep for the ordinary reason, its edges, and any recompute
+    // that finds it connected may wake it (ADR-0017 § 4).
+    if declared_inactive {
+        let (dm_ack_tx, dm_ack_rx) = oneshot::channel();
+        // Loud, not fatal. The neighbouring status write predates the
+        // unwrap/expect ratchet and still panics on a closed inbox; a marker
+        // that cannot be written is worth an operator's attention, and a panic
+        // in the boot path buys nothing on top of that (CONTRIBUTING: no
+        // `expect` outside tests).
+        if runtime
+            .inbox_tx
+            .send(ColonyMsg::SetRegistryDormant {
+                path: c.path.clone(),
+                dormant: true,
+                ack: dm_ack_tx,
+            })
+            .await
+            .is_err()
+        {
+            tracing::error!(
+                path = %c.path.as_str(),
+                "the colony inbox closed before the dormancy marker was written"
+            );
+        } else if dm_ack_rx.await.is_err() {
+            tracing::error!(
+                path = %c.path.as_str(),
+                "the colony never acknowledged the dormancy marker"
+            );
+        }
     }
     index_provenance(runtime, c).await;
 }
@@ -978,6 +1039,7 @@ mod tests {
             message_timeout: None,
             active: true,
             failed: false,
+            dormant: false,
             mailbox_size: None,
             header_view: crate::mutation::validate::HeaderNodeView::default(),
             provenance: None,

@@ -1,0 +1,34 @@
+{
+  "scope": "/",
+  "ctx": {},
+  "diff": {
+    "add_nodes": [
+      {
+        "name": "operator",
+        "template": "operator"
+      }
+    ],
+    "add_edges": [
+      {
+        "from": "./door",
+        "to": "./operator",
+        "condition": "has(hop.route) && hop.route == 'turn' && has(hop.chat_id) && hop.chat_id == 'operator'",
+        "modifier": {
+          "set_hop": {
+            "route": "'in_lifecycle'"
+          }
+        }
+      },
+      {
+        "from": "./operator",
+        "to": "./sink",
+        "condition": "has(hop.route) && hop.route == 'receipt'"
+      },
+      {
+        "from": "./operator",
+        "to": "./sink",
+        "condition": "has(hop.route) && hop.route == 'apply'"
+      }
+    ]
+  }
+}

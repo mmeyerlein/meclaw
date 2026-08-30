@@ -1,0 +1,24 @@
+{
+  "name": "scriptlet",
+  "version": "1.0.1",
+  "description": {
+    "purpose": "A script a manifest can name, as one `code` cell shipped BLANK: a runner, a timeout and a pass-through, and nothing else. It exists because the five shipped templates that hold a single `code` cell each carry a script and a purpose of their own, so a composer that needed a plain one had nothing to name and spent seven rounds looking (GH #482). It runs, it decides nothing: WHAT it does is the `script_inline` the declaration hands it.",
+    "use_when": "Wherever a topology needs application logic between two cells -- reshaping a body, extracting the calls out of an answer, turning one message into several. Instantiate it under a name that says what it does, hand it its script in the SAME declaration as `override_params` (a FLAT params object here, because a single-cell template has no inner cell to address), and draw the edges around it.",
+    "not_in_scope": "No state: a `code` cell has no `cell.db`, so anything that must outlive a message goes to a store over the topology. No sandbox either -- a cell instantiated without the key gets the default-deny profile, and this template does not declare the key, so no manifest can widen it through here. And no free lunch: an `override_params` that carries a `script_inline` is EXECUTABLE BEHAVIOUR arriving with a manifest, which is the `code.author` question the submitter asks its colony, disabled by default -- a refusal is `code_author_denied` and means THIS COLONY DOES NOT ALLOW IMPORTED EXECUTION, never that the manifest was malformed.",
+    "examples": [
+      "PORTS - Entry: any message; the shipped script reads `body.messages` and hands it straight back. Exit: one message per content json the script writes (SCRIPT, below) -- an object is one, an ARRAY one per element because `multi_send_capable` is declared here, each evaluated against this cell's edges independently. The cell stamps `exit_code`, `duration_ms` and `had_stderr` on the hop and a script cannot hijack them.",
+      "SCRIPT - stdin is ONE json doc of THREE objects (`envelope`, `body`, `params`): the payload is `doc[\"body\"][\"messages\"]`, and a turn carries `text`, never `turns`. `hop` and `context` sit in `doc[\"envelope\"][\"header\"]`, never at `envelope[\"context\"]`. stdout is ONE content json of BODY SLOTS -- `messages` plus an optional `header` the colony reads as `hop`; a `{\"content\": ...}` is not a body slot and comes back `contract_violation`. PASS-THROUGH:\n```\nimport sys, json\ndoc = json.load(sys.stdin)\nprint(json.dumps({\"messages\": doc[\"body\"][\"messages\"]}))\n```\nTRANSFORM:\n```\nimport sys, json\ndoc = json.load(sys.stdin)\nargs = json.dumps({\"url\": doc[\"body\"][\"messages\"][-1][\"text\"]})\ncall = {\"origin\": \"assistant\", \"type\": \"tool_call\", \"id\": \"q1\", \"text\": args}\nprint(json.dumps({\"header\": {\"route\": \"fetch\"}, \"messages\": [call]}))\n```",
+      "one document per new item: { \"add_nodes\": [{\"name\": \"dedupe\", \"template\": \"scriptlet\", \"override_params\": {\"script_inline\": \"...\"}}], \"add_edges\": [{\"from\": \"./dedupe\", \"to\": \"./headlines\", \"condition\": \"has(hop.route) && hop.route == 'store'\"}] }"
+    ]
+  },
+  "tags": [
+    "scriptlet",
+    "code",
+    "script",
+    "python",
+    "transform",
+    "multi-send"
+  ],
+  "author": "@mmeyerlein",
+  "license": "MIT"
+}

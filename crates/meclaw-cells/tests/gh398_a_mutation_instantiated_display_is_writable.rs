@@ -39,6 +39,7 @@ use meclaw_colony::{CellFactory, ColonyMsg, MutationOutcome};
 use meclaw_core::serde_json::{Value, json};
 use meclaw_core::{Body, Message, MessageBuilder, Path, Uuid};
 use meclaw_testing::ColonyHandle;
+use meclaw_testing::free_port;
 use meclaw_testing::topologies::phase_3a::CaptureCell;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -54,18 +55,6 @@ const NODE: &str = "display";
 /// than a fixture that only looks like it.
 fn core_root() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
-}
-
-/// A port nothing is listening on, obtained by binding and letting go.
-///
-/// `params.port` is required, so it is chosen before the cell exists and
-/// written into the template the mutation instantiates. Since GH #410 it can
-/// also be changed afterwards; this test is about the instantiation moment.
-fn free_port() -> u16 {
-    let l = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind an ephemeral port");
-    let port = l.local_addr().expect("read the bound address").port();
-    drop(l);
-    port
 }
 
 /// Copy a directory tree — the staging path copies a template's whole directory

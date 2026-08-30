@@ -35,13 +35,22 @@
 //! `default` because `DEFAULT` is a SQL reserved word. ALTER TABLE in-place;
 //! rows written before the phase existed read `0`, which is what they were
 //! routed as — an old lane must never be rehydrated as a default.
+//! v8 (GH #491 durable dormancy): `registry` gains `dormant` as an
+//! `INTEGER NOT NULL DEFAULT 0` column — the durable record of an EXPLICIT
+//! decision that this node is asleep (`add_nodes[].birth: "inactive"`, and the
+//! `ref` marker's equivalent). Activity stays edge-derived; the marker only
+//! tells a recompute that this node's inactivity was DECLARED, so a mutation
+//! that merely reaches it must not derive it active again. A mutation that
+//! ADDRESSES the node clears it. ALTER TABLE in-place; rows written before the
+//! marker existed read `0`, which is the honest answer for a node whose sleep
+//! nobody ever declared — it keeps behaving exactly as it did.
 //!
 //! IMPORTANT: affects `colony.db` exclusively. `cell.db` stays at v1.
 
 use rusqlite::Connection;
 
 /// Target schema version for `colony.db` after this slice.
-pub(crate) const TARGET_SCHEMA_VERSION: u32 = 7;
+pub(crate) const TARGET_SCHEMA_VERSION: u32 = 8;
 
 /// Error during the `colony.db` schema migration.
 #[derive(Debug, thiserror::Error)]
@@ -69,7 +78,7 @@ pub(crate) fn migrate(conn: &Connection) -> Result<(), MigrationError> {
     let current = super::schema::read_schema_version(conn)?;
     match current {
         v if v == TARGET_SCHEMA_VERSION => Ok(()),
-        1..=6 => {
+        1..=7 => {
             let tx = conn.unchecked_transaction()?;
             // v1→v2: durable-edges CEL columns. `table_exists`-guarded like
             // v4→v5 below: since GH #90 this runs BEFORE the DDL batch, so a
@@ -167,6 +176,19 @@ pub(crate) fn migrate(conn: &Connection) -> Result<(), MigrationError> {
                     [],
                 )?;
             }
+            // v7→v8 (GH #491): the durable dormancy marker. `NOT NULL
+            // DEFAULT 0`, so every pre-existing row is a node whose sleep was
+            // never declared — exactly what it was before the column existed.
+            // Same two guards and the same rationale as the stages above.
+            if current <= 7
+                && table_exists(&tx, "registry")?
+                && !column_exists(&tx, "registry", "dormant")?
+            {
+                tx.execute(
+                    "ALTER TABLE registry ADD COLUMN dormant INTEGER NOT NULL DEFAULT 0",
+                    [],
+                )?;
+            }
             tx.execute(
                 "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",
                 rusqlite::params![TARGET_SCHEMA_VERSION.to_string()],
@@ -228,6 +250,55 @@ mod tests {
             .unwrap()
             .map(Result::unwrap)
             .collect()
+    }
+
+    /// GH #491 (v7→v8): an OLD database opens. A v7 `colony.db` — every column
+    /// of the shipped v7 shape, rows and all — migrates in place, keeps every
+    /// row it had, and reads `dormant = 0` for each of them: nobody ever
+    /// declared those nodes asleep, so nothing about them changes.
+    #[test]
+    fn migrate_v7_to_v8_opens_an_old_db_and_adds_the_dormancy_marker() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO meta (key, value) VALUES ('schema_version', '7');
+             CREATE TABLE registry (
+               path TEXT PRIMARY KEY, cell_id TEXT NOT NULL, cell_type TEXT NOT NULL,
+               status TEXT NOT NULL, created_at INTEGER NOT NULL,
+               updated_at INTEGER NOT NULL, template TEXT, template_version TEXT,
+               instantiated_at INTEGER, template_chain TEXT);
+             INSERT INTO registry (path, cell_id, cell_type, status, created_at, updated_at)
+               VALUES ('/awake', 'id-a', 'echo', 'active', 1, 1);
+             INSERT INTO registry (path, cell_id, cell_type, status, created_at, updated_at)
+               VALUES ('/asleep', 'id-b', 'echo', 'inactive', 1, 1);",
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        migrate(&conn).unwrap(); // idempotent second pass
+        assert!(
+            registry_columns(&conn).contains(&"dormant".to_string()),
+            "the v8 column is missing: {:?}",
+            registry_columns(&conn)
+        );
+        assert_eq!(
+            super::super::schema::read_schema_version(&conn).unwrap(),
+            TARGET_SCHEMA_VERSION
+        );
+        for path in ["/awake", "/asleep"] {
+            let d: i64 = conn
+                .query_row(
+                    "SELECT dormant FROM registry WHERE path = ?1",
+                    [path],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                d, 0,
+                "{path}: a row written before the marker existed carries no \
+                 declaration, and an inactive one is inactive for the reason it \
+                 always was — its edges"
+            );
+        }
     }
 
     /// GH #62 (v4→v5): the `registry` table gains the three provenance columns.

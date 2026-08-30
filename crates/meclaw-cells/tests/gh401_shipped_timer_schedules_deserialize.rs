@@ -1,6 +1,6 @@
 //! GH #401 — every `timer` the library ships carries params the boot accepts.
 //!
-//! The companion file (`gh401_a_grown_steward_survives_a_reboot.rs`) proves one
+//! The companion file (`gh401_a_grown_argus_survives_a_reboot.rs`) proves one
 //! grown colony restarts. This one proves the defect was singular: a template
 //! whose `params` the boot rejects commits happily through `add_nodes` and kills
 //! the NEXT boot, so a second such template would be a second colony that runs

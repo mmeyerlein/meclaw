@@ -9,7 +9,7 @@
 //!
 //! | cell | key | what an empty value did |
 //! |---|---|---|
-//! | `mcp` (http) | `endpoint` | every request failed at URL build, per call |
+//! | `mcp` (http) | `endpoint` | every request failed at URL build, per call — **superseded by GH #489**, see below |
 //! | `mcp` (stdio) | `command` | the child spawn failed, per call |
 //! | `proxy` (telegram) | `bot_token` | polls `…/bot/getUpdates` forever, 404 |
 //! | `proxy` (slack) | `app_token` | `Authorization: Bearer ` → `invalid_auth` |
@@ -75,10 +75,34 @@ fn assert_rejected_like_absent(result: Result<(), String>, key: &str, what: &str
     );
 }
 
+/// GH #489 moved this row, and only this row, off the refusal.
+///
+/// The rule this file is about — an empty value and an absent one are ONE
+/// outcome, never two — still holds for `mcp`'s `endpoint` and is asserted
+/// here. What changed is which outcome: an mcp `endpoint` is no longer a
+/// REQUIRED value, so the premise of the refusal is gone. A bridge whose far
+/// side was never named is idle by declaration and answers `endpoint_unset` on
+/// every call, which is a named state rather than the silent "healthy cell that
+/// fails at a third party" this file exists against. The other four rows are
+/// untouched: they are credentials of a cell that has work to do either way.
+///
+/// The pin for the new state lives in
+/// `gh489_an_unnamed_mcp_provider_is_idle_not_failed.rs`.
 #[test]
-fn an_empty_mcp_endpoint_is_refused_by_name() {
-    let raw = json!({"endpoint": ""});
-    assert_rejected_like_absent(McpParams::parse(&raw).map(|_| ()), "endpoint", "mcp/http");
+fn an_empty_mcp_endpoint_lands_where_an_absent_one_does() {
+    let empty = McpParams::parse(&json!({"endpoint": ""}));
+    let absent = McpParams::parse(&json!({}));
+    assert!(
+        matches!(
+            (&empty, &absent),
+            (Ok(e), Ok(a))
+                if matches!(e.transport, meclaw_cells::mcp::McpTransport::Unset)
+                    && matches!(a.transport, meclaw_cells::mcp::McpTransport::Unset)
+        ),
+        "mcp/http: `endpoint: \"\"` and an absent endpoint must be ONE state (GH #270's rule), \
+         and since GH #489 that state is the unnamed provider, not a refusal — got \
+         empty={empty:?}, absent={absent:?}"
+    );
 }
 
 #[test]

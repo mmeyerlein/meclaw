@@ -8,8 +8,10 @@
       "accepts": [
         {
           "route": "in_turn",
-          "context": [],
-          "because": "a question for this agent core -- a consult or a lookup. `context.consult_class` picks the model tier when the caller promotes it; without it the default tier answers, so the lane demands no context of its own"
+          "context": [
+            "session_id"
+          ],
+          "because": "an errand for this agent core: ONE class since 4.4.0 ([#528](https://github.com/mmeyerlein/meclaw/issues/528)) -- synthesis, a development over time, multi-step work, research. The body is the `consult_cogny` tool_call turn the asking dispatcher split out, and its two required arguments are `question` and `context`: the asker sends the context in full and does not deduplicate it against what it thinks this core already knows, because the core's curator discards what it does not need and cannot recover a sentence that was left out. `session_id` is REQUIRED context and the ingress edge promotes it -- a consultation happens inside the conversation that asked for it, and this core's `memory_recall` tool is worth nothing if it cannot say which session it is asking about. `context.consult_class` is read by nobody since 4.4.0: there is one seam lane, so a class key changes nothing"
         },
         {
           "route": "in_tool",
@@ -19,7 +21,20 @@
         {
           "route": "in_bundle",
           "context": [],
-          "because": "a memory bundle, coming back from whatever keeps this agent's memory. R-CG-1 moved the memory leg off the talkies onto this collector, so this is the lane its answer arrives on"
+          "because": "a memory bundle, coming back from whatever keeps this agent's memory. Since 4.4.0 it is the answer to a TOOL call and not to an ambient leg: `memory_tier` stays empty here -- a problem solver asks on purpose -- and what leaves on `recall` carries `hop.memory_call_id`, which is what tells the collector to file the returning bundle as the `tool_result` of that call rather than as the memory leg of the turn. One port, two meanings, told apart by what the request carried out ([#528](https://github.com/mmeyerlein/meclaw/issues/528))"
+        },
+        {
+          "route": "in_pack",
+          "because": "a durable `system.*` slot for this core's brain -- the door in the wall (GH #458). This composite is sealed: an edge naming `./brain` is refused with `hive_port_boundary`, so until this lane existed there was no way at all for an identity to reach it from outside. The pack enters at this path and the collector turns it into a system-slot upsert. It is a LANE rather than a body flag because what lands in `system.*` is UPSERTed into the brain's own `cell.db` and stands until something overwrites that exact path -- durable state, told apart from the evidence of one round by the topology and not by a key a model could have written. Body: `system` carrying one or more slot subtrees (what `affinity`'s push lane emits: the slots and NO turn beside them, so the update costs a write and not an inference, GH #263), or `slot` + `content` for a single one written by hand. Only `identity`, `persona`, `handover` and `instructions` may be written -- a subset of the collector's `SYS_KEEP`, so what arrives is out of the curator's reach at any budget. `instructions` joined that list in GH #488: holding the charter out of the lane assumed it had another owner, and it had none -- nothing exported it and no template seeded it, so a rebuilt core came up with an empty charter and answered as the vendor's default assistant. What guards it now is the edge that stamps the lane, drawn only where a brain may draw its OWN push edge, from a source whose single writer is `affinity`'s audited gate; anything else refuses the WHOLE pack with `slot_unknown`, an empty one with `pack_empty`. The owner is taken from `envelope.reply_to` and never from the body. PAIRED with `pack_ack` in `params.required_drains`"
+        },
+        {
+          "route": "in_menu",
+          "because": "the tool declarations coming back from a tools hive the parent wired (GH #464). Since cogny@4.3.0 this core ASKS what its tools look like instead of carrying a menu somebody typed, and it declares `[\"*\"]`: a reasoning core is the one caller of an assistant that should be able to reach everything the surface can, and a list typed here would be a second copy of the hive's own catalogue that drifts on the first tool added. `./menu-clock` ticks, the request leaves on `schemas`, and the answer is written into `./brain` as durable `system.tools` -- the collector emits `menu` once and this template's edge carries it, exactly as it does with `pack`. Since 4.4.0 the menu the collector writes also carries the two tools it serves ITSELF -- `memory_recall` and `thread_recall` (`collector@3.3.1`, GH #512) -- because this core routes both by name and no tools hive has a declaration for either. PAIRED with `schemas`. The full account of the lane pair lives in `templates/talky/README.md` § The menu is asked for; everything there holds here"
+        },
+        {
+          "route": "in_schemas",
+          "context": [],
+          "because": "somebody asking this core what its OWN errand looks like, by name -- `{\"tools\": [\"consult_cogny\"]}`, or `[\"*\"]` for everything it declares ([#528](https://github.com/mmeyerlein/meclaw/issues/528)). Whoever is reached declares themselves: this core is not a tool cell, so no tools hive has the `consult_cogny` schema, and when #464 replaced typed menus with asked-for ones the declaration lost its last owner and every caller came up with a menu that did not contain the one tool the core exists for. It is not a tool round and carries no `tool_name`. The lane, the body and the answer are the tools hive's own, byte for byte (`templates/tools/README.md` § Asking for the declarations), so a collector can ask two answerers the same question and cut the two menus together without knowing which of them was a hive of tools. PAIRED with `tool_schemas` in `params.required_drains`"
         }
       ],
       "emits": [
@@ -29,15 +44,27 @@
         },
         {
           "route": "tool",
-          "because": "a tool call for a cell the parent wired; hop.tool_name says which one. `escalate_to_deep` is reserved and never leaves -- it is this composite's own lane between the two brains. Since cogny@4.0.3 the exit is a GUARDED DEFAULT edge (GH #283, ruling Q1) instead of the negation chain it shipped as: `{\"from\": \"./dispatcher\", \"to\": \".\", \"default\": true, \"condition\": \"has(hop.route) && hop.route == 'tool'\"}`. The reserved name is now held by the ordinary edge that always claimed it, and an ordinary edge that fires silences the default for that message -- so the exclusion term `(!has(hop.tool_name) || hop.tool_name != 'escalate_to_deep')` is gone rather than merely shorter, and a SECOND reserved name costs one ordinary edge and no change here at all. Behaviour is unchanged for every message this composite can produce. The guard is not decoration: ./dispatcher emits four sorts (calls, result, answer, tool) and suppression is SENDER-WIDE, so an unguarded default would try to carry calls/result/answer outward whenever nothing ordinary fired for them. And the no-tee requirement holds at this tree: ./dispatcher has five out-edges (calls, result, answer and escalate_to_deep into ./collector, plus this one), each conditioned on its own lane, and there is NO unconditional tee -- one added later would silence this default for every tool call. The sender inventory of the whole composite, for the same reason: five senders (., ./collector, ./brain, ./brain_fast, ./dispatcher) over 17 edges, four of which reach `.` -- and the sender-wide rule counts an edge a PARENT draws from ./cogny/dispatcher too"
+          "because": "a tool call for a cell the parent wired; hop.tool_name says which one. Since cogny@4.0.3 the exit is a GUARDED DEFAULT edge (GH #283, ruling Q1) instead of a negation chain: `{\"from\": \"./dispatcher\", \"to\": \".\", \"default\": true, \"condition\": \"has(hop.route) && hop.route == 'tool'\"}`. A reserved name is held by an ordinary edge, and an ordinary edge that fires silences the default for that message -- so a reserved name costs exactly one ordinary edge and no change here. TWO names are reserved since 4.4.0 and both are served by this composite's own collector: `thread_recall` (GH #451), which redeems a stub the curator left, and `memory_recall` ([#528](https://github.com/mmeyerlein/meclaw/issues/528)), which asks the member's memory about a time range or a session. `escalate_to_deep` was the third until 4.4.0 and is gone with the lane it escalated to. The guard is not decoration: ./dispatcher emits four sorts (calls, result, answer, tool) and suppression is SENDER-WIDE, so an unguarded default would try to carry calls/result/answer outward whenever nothing ordinary fired for them. And the no-tee requirement holds at this tree: ./dispatcher has five out-edges (calls, result, answer, thread_recall and memory_recall into ./collector, plus this one), each conditioned on its own lane, and there is NO unconditional tee -- one added later would silence this default for every tool call. The sender inventory of the whole composite, for the same reason: five senders (., ./collector, ./brain, ./dispatcher, ./declare) over 20 edges since 4.4.0, five of which reach `.` -- and the sender-wide rule counts an edge a PARENT draws from ./cogny/dispatcher too"
         },
         {
           "route": "recall",
-          "because": "a memory read this turn needs; `memory_tier` on ./collector/assemble decides how deep it asks"
+          "because": "a memory read the brain ASKED for. Since 4.4.0 this lane carries a tool call and not an ambient leg: `memory_tier` is empty here on purpose, `memory_call_tier` is `\"1\"`, and the request goes out with `hop.memory_call_id` set to the call it belongs to -- plus `hop.recall_query` and the two window keys the model filled in. Whoever answers it MUST carry `memory_call_id` back on `in_bundle`, or the bundle is filed as a turn's memory leg and the round waits for a tool result that never comes ([#528](https://github.com/mmeyerlein/meclaw/issues/528))"
         },
         {
           "route": "error",
-          "because": "a failed inference on either brain, normalised onto one lane by the exit edge itself -- this composite carries no errors cell. The parent MUST wire it -- unwired it dead-letters, loudly"
+          "because": "a failed inference on the brain, normalised onto one lane by the exit edge itself -- this composite carries no errors cell. The parent MUST wire it -- unwired it dead-letters, loudly"
+        },
+        {
+          "route": "pack_ack",
+          "because": "the receipt of one pack, unconditionally -- accepted and refused alike (GH #458). `hop.pack_owner` is the sender off the envelope, `hop.pack_slots` what was named, `hop.error_code` empty or `slot_unknown` / `pack_empty`, `hop.pack_unknown` the slots that were refused. It answers even on success because from the sending side a push that landed and a push that reached nothing are otherwise the same silence (`docs/development-rules.md` § 2c). Every key is present and empty rather than absent, so a CEL guard never fails on a missing hop key"
+        },
+        {
+          "route": "schemas",
+          "because": "the tool names this core declares it uses, for a tools hive's `in_schemas` door (GH #464). The body is `{\"tools\": [\"*\"]}` unless an instance narrows `./collector`'s `params.tools`, and the hive keeps no record of who asked. Unwired it dead-letters once per tick, which is why the pair with `in_menu` is one decision and not two"
+        },
+        {
+          "route": "tool_schemas",
+          "because": "this core's OWN declarations, one `{name, description, parameters}` per name that was asked for and exists -- which is the single errand `consult_cogny` -- plus in `unknown[]` the asked names it does not serve ([#528](https://github.com/mmeyerlein/meclaw/issues/528)). Provider-neutral on purpose, exactly like the tools hive's answer: wrapping the envelope is the caller's job, because the caller is the one that knows which provider it talks to. `hop.operation` is `schemas`, `hop.schema_count` and `hop.unknown_count` count the two lists, and `hop.error_code` is `tool_unknown` or `tools_missing`. PAIRED with `in_schemas`"
         }
       ]
     },
@@ -51,12 +78,17 @@
         {
           "from": ".",
           "to": "./collector",
-          "condition": "has(hop.route) && (hop.route == 'in_tool' || hop.route == 'in_bundle')"
+          "condition": "has(hop.route) && (hop.route == 'in_tool' || hop.route == 'in_bundle' || hop.route == 'in_pack' || hop.route == 'in_menu')"
+        },
+        {
+          "from": ".",
+          "to": "./declare",
+          "condition": "has(hop.route) && hop.route == 'in_schemas'"
         },
         {
           "from": "./collector",
           "to": "./brain",
-          "condition": "has(hop.route) && hop.route == 'brain' && has(hop.iter) && int(hop.iter) < 12 && (!has(context.consult_class) || context.consult_class != 'lookup')",
+          "condition": "has(hop.route) && hop.route == 'brain' && has(hop.iter) && int(hop.iter) < 12",
           "modifier": {
             "set_context": {
               "turn_id": "hop.turn_id",
@@ -68,16 +100,13 @@
         },
         {
           "from": "./collector",
-          "to": "./brain_fast",
-          "condition": "has(hop.route) && hop.route == 'brain' && has(hop.iter) && int(hop.iter) < 12 && has(context.consult_class) && context.consult_class == 'lookup'",
-          "modifier": {
-            "set_context": {
-              "turn_id": "hop.turn_id",
-              "session_id": "hop.session_id",
-              "iter": "hop.iter"
-            },
-            "restore_ttl": true
-          }
+          "to": "./brain",
+          "condition": "has(hop.route) && hop.route == 'pack'"
+        },
+        {
+          "from": "./collector",
+          "to": "./brain",
+          "condition": "has(hop.route) && hop.route == 'menu'"
         },
         {
           "from": "./brain",
@@ -85,22 +114,7 @@
           "condition": "has(hop.finish_reason) && (hop.finish_reason == 'stop' || hop.finish_reason == 'tool_calls')"
         },
         {
-          "from": "./brain_fast",
-          "to": "./dispatcher",
-          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'stop' || hop.finish_reason == 'tool_calls')"
-        },
-        {
           "from": "./brain",
-          "to": "./collector",
-          "condition": "has(hop.finish_reason) && hop.finish_reason == 'length'",
-          "modifier": {
-            "set_hop": {
-              "route": "'in_answer'"
-            }
-          }
-        },
-        {
-          "from": "./brain_fast",
           "to": "./collector",
           "condition": "has(hop.finish_reason) && hop.finish_reason == 'length'",
           "modifier": {
@@ -142,33 +156,83 @@
         {
           "from": "./dispatcher",
           "to": "./collector",
-          "condition": "has(hop.tool_name) && hop.tool_name == 'escalate_to_deep'",
+          "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'thread_recall'",
           "modifier": {
             "set_hop": {
-              "route": "'in_turn'"
-            },
-            "set_context": {
-              "consult_class": "'consult'",
-              "col_phase": "''"
-            },
-            "restore_ttl": true
+              "route": "'in_thread_call'"
+            }
+          }
+        },
+        {
+          "from": "./dispatcher",
+          "to": "./collector",
+          "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'memory_recall'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_memory_call'"
+            }
           }
         },
         {
           "from": "./collector",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'answer'"
+          "condition": "has(hop.route) && hop.route == 'answer'",
+          "modifier": {
+            "delete_context": [
+              "col_phase"
+            ]
+          }
         },
         {
           "from": "./dispatcher",
           "to": ".",
           "default": true,
-          "condition": "has(hop.route) && hop.route == 'tool'"
+          "condition": "has(hop.route) && hop.route == 'tool'",
+          "modifier": {
+            "delete_context": [
+              "col_phase"
+            ]
+          }
         },
         {
           "from": "./collector",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'recall'"
+          "condition": "has(hop.route) && hop.route == 'recall'",
+          "modifier": {
+            "delete_context": [
+              "col_phase"
+            ]
+          }
+        },
+        {
+          "from": "./collector",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'pack_ack'",
+          "modifier": {
+            "delete_context": [
+              "col_phase"
+            ]
+          }
+        },
+        {
+          "from": "./collector",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'schemas'",
+          "modifier": {
+            "delete_context": [
+              "col_phase"
+            ]
+          }
+        },
+        {
+          "from": "./declare",
+          "to": ".",
+          "condition": "has(hop.operation) && hop.operation == 'schemas'",
+          "modifier": {
+            "set_hop": {
+              "route": "'tool_schemas'"
+            }
+          }
         },
         {
           "from": "./brain",
@@ -177,25 +241,30 @@
           "modifier": {
             "set_hop": {
               "route": "'error'"
-            }
-          }
-        },
-        {
-          "from": "./brain_fast",
-          "to": ".",
-          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'error' || hop.finish_reason == 'content_filter')",
-          "modifier": {
-            "set_hop": {
-              "route": "'error'"
-            }
+            },
+            "delete_context": [
+              "col_phase"
+            ]
           }
         }
       ]
-    }
+    },
+    "required_drains": [
+      {
+        "accepts": "in_pack",
+        "emits": "pack_ack",
+        "because": "a pack answers unconditionally -- with the slots it wrote, or with the code that refused it. Undrained, every push dead-letters its own receipt and the sender's `sent_at` stamp records a delivery nobody can confirm. Drain it with a PLAIN `hop.route == 'pack_ack'` edge"
+      },
+      {
+        "accepts": "in_schemas",
+        "emits": "tool_schemas",
+        "because": "a caller that asks this core what it serves and does not subscribe to the answer offers its model a menu without `consult_cogny` in it -- and the round then looks like a model that chose not to consult, which is the one failure nobody can see from the outside. The two edges are one decision, exactly as the tools hive's own `in_schemas`/`tool_schemas` pair is"
+      }
+    ]
   },
   "description": {
-    "purpose": "Scope marker of the cogny composite: the agent core as ONE hive - the proven tool-loop core (collector fan-in, dispatcher fan-out, a thinking brain) behind ONE consult ingress and ONE advice exit. Since 3.0.1 five further lanes meet at the same path (GH #240): in_tool and in_bundle in, tool, recall and error out, so the tool round it is built around can actually call something, the memory leg R-CG-1 put on this collector has somewhere to ask, and a failed inference on either brain leaves on one normalised lane instead of dead-lettering. Its own seam, its own iteration bound, its own restore_ttl. Since 1.1.0 the seam has TWO lanes (GH #124): the same assembled errand goes to ./brain or to ./brain_fast, decided by context.consult_class, so a lookup never queues behind a research answer in one serial mailbox. No keeper, no summarizer, no proxy: the core has no channel, no sessions and no night, so nothing here mints an id or closes a day.",
-    "use_when": "One per agent, never one per channel voice. Instantiate it as a SIBLING of the talkies and wire the two advisor ports plus the tool, memory and error lanes in the same mutation; the composite is an island until an edge crosses into it. The lookup lane needs nothing extra to exist - it needs the ingress edge of the second tool name to set context.consult_class, and without that every errand takes the deep lane exactly as before.",
-    "not_in_scope": "No tool cells (they are wired per instance on hop.tool_name), no memory hive, no channel surface, no session lifecycle, and no errors cell -- the two brains are joined onto the error lane by the exit edges' own set_hop.route. The core's identity, instructions and tool schemas live in the brains' own cell.db - the composite carries the topology, never the persona; the ONE exception is the `brevity` system slot of ./brain_fast, which is the lane's length discipline and therefore topology. The class is not decided here either: an edge outside this hive reads the tool name the asking model chose."
+    "purpose": "Scope marker of the cogny composite: the agent core as ONE hive -- the proven tool-loop core (collector fan-in, dispatcher fan-out, ONE brain) behind one consult ingress and one advice exit, plus the cell that declares what that ingress takes. Since 3.0.1 five further lanes meet at the same path (GH #240): in_tool and in_bundle in, tool, recall and error out. Its own seam, its own iteration bound, its own restore_ttl. No keeper, no summarizer, no proxy: the core has no channel, no sessions and no night, so nothing here mints an id or closes a day. Since 4.2.0 (GH #458) it has the one door it never had: `in_pack`, through which a durable `system.*` slot -- an identity, a persona, a handover -- reaches the brain from outside a composite that is otherwise sealed against exactly that. Since 4.3.0 (GH #464) the tool menu is asked for rather than typed: `./menu-clock` ticks, `./collector`'s `params.tools` ([\"*\"]) leaves on `schemas`, and the declarations come back on `in_menu` and are written into the brain as durable `system.tools`. Since 4.4.0 ([#528](https://github.com/mmeyerlein/meclaw/issues/528)) the core is the PROBLEM SOLVER and nothing else: ONE brain, one seam lane, no lookup class; it declares its own errand on `in_schemas`/`tool_schemas`, and its memory leg is a TOOL (`memory_call_tier` \"1\") rather than an ambient bundle.",
+    "use_when": "One per agent, never one per channel voice. Instantiate it as a SIBLING of the channel voices and wire the consult ingress, the advice exit and the tool, memory, error and declaration lanes in the same mutation; the composite is an island until an edge crosses into it. The ingress edge MUST promote `session_id` -- the lane contract demands it, because the core's memory tool asks about sessions.",
+    "not_in_scope": "No tool cells (they are wired per instance on hop.tool_name), no memory hive, no channel surface, no session lifecycle, and no errors cell -- the brain is joined onto the error lane by the exit edges' own set_hop.route. The core's identity and instructions live in the brain's own cell.db - the composite carries the topology, never the persona. The one schema it DOES carry is its own errand, and that is the opposite of a persona: a caller cannot reach what nobody declared. And no class decision: since 4.4.0 there is one class and one lane, so nothing anywhere picks between them."
   }
 }

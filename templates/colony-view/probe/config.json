@@ -1,0 +1,55 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "external_timeout_ms": 10000,
+    "script_inline": "\"\"\"The topology snapshot: ask the colony's graph endpoint, hand the answer on.\n\nTHIS FILE IS THE SOURCE. `config.json` carries a byte-identical copy in\n`script_inline`, and a drift lock compares the two. Edit here.\n\n# Why this is a separate cell on a timer\n\nA reply from a `/colony/*` endpoint is built as a **fresh** message: new trace,\nno `parent_message_id`, no `correlation_id`, and **no `context`**\n(`crates/meclaw-colony/src/colony_dispatch.rs`, `emit_reply_or_done`). So that\nleg can never be part of somebody's request: the answer would come back carrying\nnothing that says who asked, and a cell has no way to supply the pairing\nafterwards. An on-disk pointer would only be sound under a lease that guarantees\none request at a time, which is not a promise anything here makes.\n\nThere is no request path in this hive for it to be part of either, and that is\nthe deeper reason. An app produces a VIEW: it says what the picture is, on a\ntimer, and a display holds it and serves it. Nobody is waiting on this cell when\nit runs, so nothing has to be correlated back to anybody. A colony's graph\nchanges on mutation, not on mouse movement, which makes a minute an honest\ninterval rather than a compromise.\n\n# Two passes\n\nPass 1 (the timer ticked, or somebody asked on `in_refresh`): emit one read to\nthe colony's graph endpoint. Nothing else.\n\nPass 2 (the colony answered): hand the graph to the layout on the `snapshot`\nlane, unread. What a picture needs out of it is the layout's business, and this\ncell deliberately knows none of it -- it is the lane to the colony's own\nread-only topology endpoint and nothing more.\n\nThere is no third pass. The layout never answers this cell, so there is no\nacknowledgement to recognise: the loop that has to be guarded against elsewhere\n([#161](https://github.com/mmeyerlein/meclaw/issues/161), one tick becoming two\nbecoming four) cannot form here, because the reply flows on to the display\ninstead of back.\n\"\"\"\nimport json\nimport sys\n\n\ndef main():\n    doc = json.load(sys.stdin)\n    body = doc.get(\"body\") or {}\n\n    # ---- pass 2: the colony's graph reply nests its answer under a `graph` slot\n    # -- verified against a live reply, because the first version of this cell\n    # looked for `nodes` at the top level and therefore re-asked on every tick\n    # without ever producing a snapshot.\n    #\n    # A body check and not a header check, and that is forced: a `/colony/*` reply\n    # arrives on a fresh envelope with no `context` and no `hop` of ours, so there\n    # is nothing else to look at.\n    reply = body.get(\"graph\")\n    if isinstance(reply, dict) and isinstance(reply.get(\"nodes\"), list):\n        return [{\n            \"header\": {\"route\": \"snapshot\"},\n            \"messages\": [],\n            \"graph\": {\n                \"scope\": reply.get(\"scope\") or \"/\",\n                \"nodes\": reply.get(\"nodes\") or [],\n                \"edges\": reply.get(\"edges\") or [],\n            },\n        }]\n\n    # ---- pass 1: ask.\n    #\n    # The target is NOT set here and cannot be: a `code` cell's stdout is a body,\n    # and where it goes is the edge's decision. The lane to the graph endpoint\n    # is declared by this hive's OWN config.json and travels with the template\n    # (GH #163). That endpoint is one of the absolute endpoints a mutation may\n    # draw: it is not a cell but the colony's read-only topology endpoint, and it\n    # is the sanctioned way to learn topology -- § Database isolation forbids\n    # reading `colony.db`, so refusing the lane would only have pushed somebody\n    # there. `MUTATION_DRAWABLE_VIRTUAL_ENDPOINTS` enumerates the drawable\n    # endpoints by name; the counts-never-content `/colony/ledger` joined it with\n    # GH #267.\n    #\n    # `reply_to` is not set here either, and also cannot be: the substrate stamps\n    # every cell emission with the emitting cell's own path, so the colony's answer\n    # comes back to this cell without anybody asking for it.\n    return [{\"header\": {\"route\": \"ask_colony\"}, \"messages\": [], \"query\": {\"scope\": \"/\"}}]\n\n\nif __name__ == \"__main__\":\n    out = main()\n    # A single emission is written as an object, several as an array -- and an\n    # empty list stays an empty array, which is how a `code` cell says \"nothing to\n    # send\" (`parse_stdout_json`: a top-level array of length 0 is zero emissions).\n    sys.stdout.write(json.dumps(out[0] if len(out) == 1 else out))\n",
+    "sandbox": {
+      "trust": "restricted",
+      "network": "deny",
+      "filesystem": {
+        "runtime": true
+      }
+    }
+  },
+  "contract": {
+    "version": "0.1.0",
+    "settings": {},
+    "multi_send_capable": true,
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "query": {
+          "type": "object",
+          "required": false
+        },
+        "graph": {
+          "type": "object",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "graph": {
+          "type": "object",
+          "required": false
+        }
+      }
+    }
+  },
+  "description": {
+    "purpose": "Takes the topology snapshot: asks the colony's read-only graph endpoint and hands the answer on, unread.",
+    "use_when": "Inside a colony-view hive whose PARENT config.json granted the lane to that endpoint. An absolute endpoint is out of scope for any mutation, so that lane is bootstrap-only -- the same shape and the same reason as the receptionist's mutation lane.",
+    "not_in_scope": "It is deliberately not part of anybody's request path, and an app has no such path to be part of: it produces a view on a timer and a display serves it. A colony reply also arrives on a fresh envelope with no context, so it could never be correlated back to a browser anyway.",
+    "examples": [
+      "a tick becomes one read of the colony's graph",
+      "the colony's nodes and edges become one snapshot, on its way to be drawn"
+    ]
+  }
+}

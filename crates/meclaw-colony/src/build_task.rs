@@ -478,8 +478,8 @@ mod tests {
         #[allow(clippy::manual_async_fn)]
         fn run_io(
             _io: Self::Io,
-            _events_tx: tokio::sync::mpsc::Sender<Self::Event>,
-            _reconfig_rx: tokio::sync::mpsc::Receiver<Self::Reconfig>,
+            events_tx: tokio::sync::mpsc::Sender<Self::Event>,
+            reconfig_rx: tokio::sync::mpsc::Receiver<Self::Reconfig>,
         ) -> impl std::future::Future<Output = ()> + Send {
             // Pend for the cell's entire lifetime — the LongRunningCell contract
             // (A1′, see `long_running_cell.rs`): a clean, voluntary `run_io`
@@ -493,7 +493,21 @@ mod tests {
             // deterministic regardless of scheduler load. Shutdown is unchanged:
             // dropping the mailbox sender ends the handler, which aborts this
             // pending I/O task.
-            async {
+            //
+            // And the future has to HOLD the two channel ends, which is why they
+            // are moved in rather than dropped as `_`-named parameters. This is
+            // NOT cosmetic: a non-capturing `async { pending().await }` drops
+            // `events_tx` the moment `run_io` returns its future, which closes
+            // the handler loop's events channel — `cell_task::handler_loop`
+            // breaks on `events_rx.recv() == None`, the cell task ends, and the
+            // unsent `peace_tx` drops. The assertion below then reads
+            // `Err(Closed)` instead of `Empty`, and does so ONLY when the worker
+            // wins the race against the test thread. Measured 2026-08-28 with the
+            // CPUs saturated: 1 of 30 runs, never once idle. A real LR cell keeps
+            // its emitter for as long as it lives; so does this one now.
+            async move {
+                let _events_tx = events_tx;
+                let _reconfig_rx = reconfig_rx;
                 std::future::pending::<()>().await;
             }
         }
@@ -571,12 +585,10 @@ mod tests {
         // No early peace. Deterministic without a clock: nothing has been sent
         // and `run_io` pends for the cell's lifetime, so the only writer to
         // this channel is a real stop — which has not been asked for yet.
+        let peace = peace_rx.try_recv();
         assert!(
-            matches!(
-                peace_rx.try_recv(),
-                Err(oneshot::error::TryRecvError::Empty)
-            ),
-            "peace_rx must be empty right after spawn"
+            matches!(peace, Err(oneshot::error::TryRecvError::Empty)),
+            "peace_rx must be empty right after spawn, got {peace:?}"
         );
 
         // The liveness receipt, and the whole of it: close the mailbox and the

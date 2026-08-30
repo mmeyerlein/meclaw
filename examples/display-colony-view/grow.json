@@ -1,0 +1,64 @@
+{
+  "manifest": [
+    {
+      "scope": "/",
+      "diff": {
+        "add_nodes": [
+          {
+            "name": "display",
+            "template": "display@1.0.0",
+            "override_params": {
+              "web": {
+                "port": 7899
+              }
+            }
+          },
+          {
+            "name": "colony-view",
+            "template": "colony-view@1.0.0"
+          },
+          {
+            "name": "sink",
+            "template": "terminal"
+          }
+        ],
+        "add_edges": [
+          {
+            "from": "./colony-view",
+            "to": "./display",
+            "condition": "has(hop.route) && hop.route == 'view'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_view'"
+              }
+            }
+          },
+          {
+            "from": "./scribe",
+            "to": "./display",
+            "condition": "has(hop.route) && hop.route == 'view'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_view'"
+              }
+            }
+          },
+          {
+            "from": "./tick",
+            "to": "./scribe"
+          },
+          {
+            "from": "./display",
+            "to": "./sink",
+            "condition": "has(hop.route) && hop.route == 'event'"
+          },
+          {
+            "from": "./display",
+            "to": "./sink",
+            "condition": "has(hop.route) && hop.route == 'receipt'"
+          }
+        ]
+      }
+    }
+  ]
+}

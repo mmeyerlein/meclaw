@@ -1,0 +1,15 @@
+{
+  "name": "display",
+  "version": "1.0.0",
+  "description": {
+    "purpose": "One screen, on a port of its own, that many agents and applications write onto at once. A view is a named, owned, optionally expiring piece of that screen: whoever sends one owns it, replaces it under the same name, and takes it down again. A store holds what is up, a code cell keeps that set and the display's object tree in agreement, and a display cell serves the page.",
+    "use_when": "A person should be able to look at what several agents and applications are doing, in one browser tab, without those agents knowing about each other or about HTML. One screen is one instance with one port: a second screen is a second instance, which is what makes one reverse-proxy rule a complete access statement for one of them.",
+    "not_in_scope": "Not a window manager -- nothing overlaps, nothing has a z-order, nothing is resized, and there is no camera. No model and no layout judgement beyond an order: newest view first, ties broken on identity. It never invents content and never edits it -- an application brings its own components and its own tree, and this scope only wraps, places and removes them. It does not sweep: an expired view stops being drawn at the next write, not by itself. No authentication and no TLS (R-W8-2): the display binds loopback by default and a reverse proxy in front of it is the whole access story. No interior address either -- `params.ports` is empty, so a caller names the hive and a lane (in_view and in_withdraw in, event and receipt out).",
+    "examples": [
+      "an assistant sends in_view {view_id: 'today', kind: 'prose', content: {title: 'Today', body: '...'}, ttl_ms: 3600000} -- a card appears, and stops being drawn an hour later",
+      "an application sends in_view {view_id: 'colony-view', kind: 'component', components: [{name: 'colony-view-node', ...}], content: {component: 'colony-view-node', props: {...}, keep: ['x','y']}} -- it brings its own vocabulary and its own tree",
+      "a person clicks something on that tree -- the event leaves the hive carrying the owner and view_id it belongs to, and the member routes it back to the one agent that put the view up"
+    ]
+  },
+  "author": "meclaw"
+}

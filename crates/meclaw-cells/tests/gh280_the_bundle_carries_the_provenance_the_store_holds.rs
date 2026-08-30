@@ -875,7 +875,12 @@ fn the_fused_payload_carries_the_caps_the_pages_reported() {
     );
     assert_eq!(
         f["leg_sizes"],
-        serde_json::json!({"keyword": 1, "semantic": 0, "graph": 0, "temporal": 0}),
+        serde_json::json!({"keyword": 1, "semantic": 0, "graph": 0, "temporal": 0,
+                           // GH #536 added a fifth leg; this fixture parks no
+                           // `self` page, so it reads as the empty list every
+                           // absent leg reads as — present as empty, never
+                           // absent, which is what makes an empty leg visible.
+                           "self": 0}),
         "while the sizes — the number this used to be derived from — say 1 and 0: {f}"
     );
 }

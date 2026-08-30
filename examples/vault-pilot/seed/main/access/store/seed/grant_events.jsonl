@@ -1,0 +1,2 @@
+{"schema": {"actor": "text", "at": "text", "detail": "json", "event": "text", "grant_id": "text", "id": "text", "reason_code": "text"}}
+{"actor": "operator", "at": "2026-01-01T00:00:00.000000Z", "detail": {"why": "seeded with the colony: the grant handle has to exist before ./brain boots, because credential_grant_id is immutable and no message may repoint it"}, "event": "granted", "grant_id": "grant:example-provider-primary@member-example", "id": "ev-pilot-0000000001", "reason_code": ""}

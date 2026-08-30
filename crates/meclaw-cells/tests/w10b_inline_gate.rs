@@ -1,6 +1,6 @@
 //! meclaw-os W10b -- the `remember` tool form of the inline ingress, and the
-//! quality gate the review asks for (`plans/meclaw-os/v8-inline-extraction-review.md`
-//! sections 5.1, 6.3, E4/E7).
+//! quality gate the v8 inline-extraction review asks for (its sections 5.1,
+//! 6.3, E4/E7).
 //!
 //! Two halves, both measured against the SHIPPED `extract-glue` script.
 //!

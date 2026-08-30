@@ -10,72 +10,120 @@
           "context": [
             "requester"
           ],
-          "because": "ask the broker whether this actor may do this thing -- the level carries the lane because every organisation under it asks the SAME broker; the edge that brings it in MUST promote the caller to context.requester, or the grant is issued to whoever asked loudest. Derived from access@2.3.0"
+          "because": "ask the broker whether this actor may do this thing -- the level carries the lane because every organisation under it asks the SAME broker; the edge that brings it in MUST promote the caller to context.requester, or the grant is issued to whoever asked loudest. Derived from access@2.3.2"
         },
         {
           "route": "in_invoke",
           "context": [
             "requester"
           ],
-          "because": "spend a grant the broker already issued; same promotion, because a grant belongs to somebody and the shell does not know who that is. Derived from access@2.3.0"
+          "because": "spend a grant the broker already issued; same promotion, because a grant belongs to somebody and the shell does not know who that is. Derived from access@2.3.2"
         },
         {
           "route": "in_cycle",
-          "because": "run the control loop NOW rather than at its next tick -- a cost alert or a dead-letter spike is a reason not to wait for the clock, and the loop is one per colony, so the lane is the shell's. Derived from steward@2.0.12"
+          "because": "run the control loop NOW rather than at its next tick -- a cost alert or a dead-letter spike is a reason not to wait for the clock, and the loop is one per colony, so the lane is the shell's. Derived from argus@1.0.0"
         },
         {
           "route": "in_turn",
-          "because": "one turn on its way to an organisation. The LEVEL declares this lane and routes it into `./orgs`, because the container is empty by construction and a contract on an empty hive would have doors that lead nowhere (W7-R2). Derived from org@1.1.0"
+          "because": "one turn on its way to an organisation. The LEVEL declares this lane and routes it into `./orgs`, because the container is empty by construction and a contract on an empty hive would have doors that lead nowhere (W7-R2). Derived from org@1.3.0"
         },
         {
           "route": "in_recall",
-          "because": "a question against a member's memory, asked from outside the organisation that holds it. Derived from org@1.1.0"
+          "because": "a question against a member's memory, asked from outside the organisation that holds it. Derived from org@1.3.0"
         },
         {
           "route": "in_brief",
-          "because": "a read against a member's curated record -- who is this person, who are they to the asker. Derived from org@1.1.0"
+          "because": "a read against a member's curated record -- who is this person, who are they to the asker. Derived from org@1.3.0"
         },
         {
           "route": "in_propose",
-          "because": "a write against that same record: a correction, a trust or disclosure decision, a subscription. Derived from org@1.1.0"
+          "because": "a write against that same record: a correction, a trust or disclosure decision, a subscription. Derived from org@1.3.0"
+        },
+        {
+          "route": "in_build",
+          "because": "a build somebody wants DRAFTED, asked from outside the colony. It is a lane of this level for a reason that only holds once and holds absolutely: the container beneath is empty by construction, so the FIRST build of a fresh colony has no assistant to raise `build` -- the one caller the `./orgs -> ./builder` edge was written for does not exist yet, and stage two would be reachable only by a manifest somebody wrote by hand. The operator is the only sender there is at that moment. The lane carries NO identity and demands none: nothing at this level emits a mutation, and the identity a submission is attributed under is read exactly once, at the submitter, off the `envelope.reply_to` the substrate stamps on the front door's own emission. What the level's door does stamp is `context.build_caller`, because which door a round came in at is a fact of this level and decides where the draft goes back to. Derived from builder@1.5.1 Since GH #474 the lane also takes `hop.auto_submit`, and the DEFAULT is the halt: without it the draft goes back to the front door as `in_draft`, is parked under its own digest and answered, and nothing is applied until the operator quotes that digest on `in_submit`. `auto_submit: true` is the older road, kept for the caller that genuinely wants one act -- a rebuild script replaying wishes it has already read. A proposal that applies itself by default is the surprising one, which is why the word turns the halt OFF rather than on."
+        },
+        {
+          "route": "in_submit",
+          "because": "a manifest somebody wants applied. It lands at this level because the front door stands here: a POST carries no sender, and `reply_to` is stamped on a CELL's emission, so the request has to BECOME one before the submitter can attribute it. TWO producers reach the front door on this lane and only one of them is outside the colony -- the rim door is the operator with a shell, and this level's own `./orgs -> ./operator` edge re-stamps an assistant's `build`/`build_op == 'apply'` onto the same lane (R-Zielfluss (a)). One submission front door and not two: an agent's manifest travels the same road, digest and gate and broker included, and the only thing that differs is which identity the door was lent to. Derived from operator@1.0.0 Since GH #474 it takes a second SHAPE as well as a second sender: a body with no manifest and the digest of a draft the front door parked. The road is the same one -- the digest, the gate and the broker are unchanged; what differs is that the bytes come off the front door's own store rather than off the request, which is what makes `submit <digest>` a decision about the bytes somebody was shown."
+        },
+        {
+          "route": "in_dump",
+          "because": "produce a dump of a member's memory, triggered from the OS side rather than from inside the organisation that holds it. The shell carries the lane because the trigger belongs to the operator and the record belongs to the member, and those are two different levels. It is NOT `in_export`: that is the name the memory accepts, and this level's own `./operator -> ./orgs` edge is what turns one into the other. Derived from operator@1.0.0"
+        },
+        {
+          "route": "in_lifecycle",
+          "because": "birth, sleep or wake for a node somewhere in the colony. It is a lane of the shell for the same reason `in_submit` is: what it becomes is a manifest, and the one authoring path is here. Derived from operator@1.0.0"
+        },
+        {
+          "route": "in_export",
+          "because": "a demand that one of an organisation's members hand out its memory as a versioned document. The level carries it because the namespace beneath declares it and a lane an occupant accepts is a lane no caller can reach unless the level does too. The usual sender is the front door -- `./operator` raises `export` and this level's own edge re-stamps it onto this lane -- and the rim door exists because a colony may also trigger one from outside without going through the front door. Derived from org@1.3.0"
+        },
+        {
+          "route": "in_import",
+          "because": "one part of a memory document, on its way to the member whose hive it belongs to. It is the return leg of `in_export`, and the shell carries it for the same reason: nothing at this level produces memory parts and nothing here consumes them, so a lane the organisations below can answer would die as `no_route` at the outermost boundary if the shell did not declare it. It crosses untouched -- the shell reads no part and decides nothing about what may enter -- and the receipt comes back on the `dump` lane the member already drains. Derived from the accepts list of org@1.3.0"
         }
       ],
       "emits": [
         {
           "route": "grant",
-          "because": "the broker's verdict on a request -- a handle, never a credential; the shell hands it straight back out because the caller lives above the shell. Derived from access@2.3.0"
+          "because": "the broker's verdict on a request -- a handle, never a credential; the shell hands it straight back out because the caller lives above the shell. Derived from access@2.3.2"
         },
         {
           "route": "ack",
-          "because": "an outcome that was decided rather than answered: the broker spending a grant (ok or denied plus a reason_code), or an organisation acknowledging a proposed change to a member's record. TWO senders, ONE lane -- a caller subscribes to the lane, not to whoever raised it. Derived from access@2.3.0 and org@1.1.0"
+          "because": "an outcome that was decided rather than answered: the broker spending a grant (ok or denied plus a reason_code), or an organisation acknowledging a proposed change to a member's record. TWO senders, ONE lane -- a caller subscribes to the lane, not to whoever raised it. Derived from access@2.3.2 and org@1.3.0"
         },
         {
           "route": "mutate",
-          "because": "the change the control loop decided on, as an ordinary params update naming the cell it belongs to; a colony that draws no edge for it runs a loop that measures and receipts and changes nothing, which is a legitimate way to run it. Derived from steward@2.0.12 Since R6 (GH #425) this lane has TWO senders: the control loop, and the SUBMITTER that carries an agentically drafted manifest to the same door under the requester's own identity. That is the shape this file already runs twice -- `ack` and `error` each carry two senders on one lane, and a caller subscribes to the lane rather than to whoever raised it. One lane means one privileged edge out of the shell, and one privileged edge means one audit trail, which is the whole of R6's guardrail."
+          "because": "the change the control loop decided on, as an ordinary params update naming the cell it belongs to; a colony that draws no edge for it runs a loop that measures and receipts and changes nothing, which is a legitimate way to run it. Derived from argus@1.0.0 Since R6 (GH #425) this lane has TWO senders: the control loop, and the SUBMITTER that carries an agentically drafted manifest to the same door under the requester's own identity. That is the shape this file already runs twice -- `ack` and `error` each carry two senders on one lane, and a caller subscribes to the lane rather than to whoever raised it. One lane means one privileged edge out of the shell, and one privileged edge means one audit trail, which is the whole of R6's guardrail."
+        },
+        {
+          "route": "alert",
+          "because": "a symptom the control loop WATCHED for crossed zero -- the metric, the goal that counted it, the count and the window it was counted over. It is not a decision and not a refusal: the meter raises it deterministically on its own `observe` branch, with no model asked and nothing proposed, which is why it leaves on a lane of its own rather than beside `mutate`. It is the colony's business precisely because nothing at this level can act on it, and a level that drains nothing here loses every warning it was given before any cycle ever proposes a change. Derived from argus@1.0.0"
         },
         {
           "route": "answer",
-          "because": "what an organisation produced for whoever asked -- a turn answered, a brief read. Note that `turn` is NOT a lane of this level: it is consumed inside the member that raised it, and a shell that re-declared it would offer an exit no message ever takes. Derived from org@1.1.0"
+          "because": "what an organisation produced for whoever asked -- a turn answered, a brief read. Note that `turn` is NOT a lane of this level: it is consumed inside the member that raised it, and a shell that re-declared it would offer an exit no message ever takes. Derived from org@1.3.0"
+        },
+        {
+          "route": "bundle",
+          "because": "the bundle a member's memory produced for an asker outside that member, carried out of the organisation and out of the shell (GH #533). It is the return leg of `in_recall`, which this level has accepted since it was written: a lane that goes down and does not come back is a question with no answer, and the answer died at the first boundary that had not declared it. This level neither reads the bundle nor the reply-to token that addresses it. Derived from org@1.3.0"
         },
         {
           "route": "reject",
-          "because": "a refusal from inside an organisation that is a VERDICT rather than a failure -- a screened turn, a proposal the record would not take. It is not `error`, because the two are drained by different readers. Derived from org@1.1.0"
+          "because": "a refusal from inside an organisation that is a VERDICT rather than a failure -- a screened turn, a proposal the record would not take. It is not `error`, because the two are drained by different readers. Derived from org@1.3.0"
         },
         {
           "route": "error",
-          "because": "a lane of the broker, of the control loop or of an organisation failed and it was not a verdict; which of the three produced it is not the caller's business, and a colony that drains nothing loses every refusal. Derived from access@2.3.0, steward@2.0.12 and org@1.1.0"
+          "because": "a lane of the broker, of the control loop or of an organisation failed and it was not a verdict; which of the three produced it is not the caller's business, and a colony that drains nothing loses every refusal. Derived from access@2.3.2, argus@1.0.0 and org@1.3.0"
         },
         {
           "route": "write",
-          "because": "the batched conversation write of an assistant inside an organisation, handed straight out of the shell. The shell owns no archive: what is done with a conversation record is the colony operator's decision, and a shell that consumed it would have made that decision for them. Derived from org@1.1.0"
+          "because": "the batched conversation write of an assistant inside an organisation, handed straight out of the shell. The shell owns no archive: what is done with a conversation record is the colony operator's decision, and a shell that consumed it would have made that decision for them. Derived from org@1.3.0"
         },
         {
           "route": "turn_write",
-          "because": "one finished turn, offered for archiving as it is produced rather than at the close. Same reasoning as `write`, and the same non-consumption -- the shell is the outermost boundary, not the last consumer. Derived from org@1.1.0"
+          "because": "one finished turn, offered for archiving as it is produced rather than at the close. Same reasoning as `write`, and the same non-consumption -- the shell is the outermost boundary, not the last consumer. It is NOT the only consumer either, and until GH #527 it effectively was: no shipped topology routed the lane anywhere, so every stored turn climbed nine hops and dead-lettered here as `hive_no_route`. The member fans it into its own memory hive now; what still arrives at this rim is the copy, and a distribution that wants an archive of its own wires it -- `examples/meclaw-os/` routes it to `./sink` and says so. Derived from org@1.3.0"
         },
         {
           "route": "prune",
-          "because": "a housekeeping report raised inside an organisation. Nothing in this shell schedules it -- the control loop's cycle is its own lane -- so the shell only refuses to swallow it. Derived from org@1.1.0"
+          "because": "a housekeeping report raised inside an organisation. Nothing in this shell schedules it -- the control loop's cycle is its own lane -- so the shell only refuses to swallow it. Derived from org@1.3.0"
+        },
+        {
+          "route": "receipt",
+          "because": "what the front door answered -- a submission's counts, an export's result, a refusal, or a lane nobody wired. It is not `ack`: `ack` is a decided outcome of the broker or of an organisation, and a receipt is the record of a change an operator asked for. Only the receipts of a caller OUTSIDE the colony leave here: a receipt marked `hop.submitter_kind == 'agent'` belongs to the assistant that submitted, and this level's own `./operator -> ./orgs` edge carries it back down as `in_build_result` instead. The colony that instantiates this shell MUST drain what does leave, or an operator learns nothing about a manifest that has no rollback. Derived from operator@1.0.0"
+        },
+        {
+          "route": "close_report",
+          "because": "the receipt of one close pass -- what the strong model added, sharpened, corrected, closed or restated when it read an ended session whole. Nothing in this shell triggers the pass (a member fires it on its own closed sessions) and nothing here reads the receipt, so the outermost boundary does the one thing it can honestly do: it refuses to swallow it. Derived from org@1.3.0"
+        },
+        {
+          "route": "pack_ack",
+          "because": "the receipt of one identity pack, on its way out of the level (GH #458). Nothing in here consumes it and nothing in here can: the record that pushed the identity keeps its own delivery stamp, and a receipt is evidence for whoever operates the colony. TWO travel per pack, one per occupant of the generation it reached. Derived from the emits list of org@1.3.0 -- a level that did not declare it would let a real, recurring message die as no_route at its own boundary"
+        },
+        {
+          "route": "catalogue",
+          "because": "the baumeister's corpus said what it reconciled: how many templates the colony's registry holds, how many the corpus already carried, how many rows were written and which names. It is a REPORT and it is a lane rather than a silence for the reason `pack_ack` is one -- the level that drives the nudge is the level that has to be able to prove it ran, and a shell that swallowed the counts would leave 'the corpus was already current' and 'the nudge never fired' looking exactly alike. Nothing at this level subscribes to it: like every other report at this rim, a composition that wants it draws one edge, and `seed-ref` deliberately draws none (GH #284)"
         }
       ]
     },
@@ -94,32 +142,79 @@
         {
           "from": "./access",
           "to": ".",
-          "condition": "!has(context.sub_ask) && has(hop.route) && hop.route == 'grant'"
+          "condition": "!has(context.sub_ask) && has(hop.route) && hop.route == 'grant'",
+          "modifier": {
+            "delete_context": [
+              "operator_caller",
+              "requester_build_op",
+              "sub_sha"
+            ]
+          }
         },
         {
           "from": "./access",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'ack'"
+          "condition": "has(hop.route) && hop.route == 'ack'",
+          "modifier": {
+            "delete_context": [
+              "operator_caller",
+              "requester_build_op",
+              "sub_sha"
+            ]
+          }
         },
         {
           "from": "./access",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'error'"
+          "condition": "has(hop.route) && hop.route == 'error'",
+          "modifier": {
+            "delete_context": [
+              "operator_caller",
+              "requester_build_op",
+              "sub_sha"
+            ]
+          }
         },
         {
           "from": ".",
-          "to": "./steward",
+          "to": "./argus",
           "condition": "has(hop.route) && hop.route == 'in_cycle'"
         },
         {
-          "from": "./steward",
+          "from": "./argus",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'mutate'"
+          "condition": "has(hop.route) && hop.route == 'mutate'",
+          "modifier": {
+            "delete_context": [
+              "operator_caller",
+              "requester_build_op",
+              "sub_sha"
+            ]
+          }
         },
         {
-          "from": "./steward",
+          "from": "./argus",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'error'"
+          "condition": "has(hop.route) && hop.route == 'alert'",
+          "modifier": {
+            "delete_context": [
+              "operator_caller",
+              "requester_build_op",
+              "sub_sha"
+            ]
+          }
+        },
+        {
+          "from": "./argus",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'error'",
+          "modifier": {
+            "delete_context": [
+              "operator_caller",
+              "requester_build_op",
+              "sub_sha"
+            ]
+          }
         },
         {
           "from": ".",
@@ -142,39 +237,110 @@
           "condition": "has(hop.route) && hop.route == 'in_propose'"
         },
         {
-          "from": "./orgs",
-          "to": ".",
-          "condition": "has(hop.route) && hop.route == 'answer'"
+          "from": ".",
+          "to": "./orgs",
+          "condition": "has(hop.route) && hop.route == 'in_export'"
+        },
+        {
+          "from": ".",
+          "to": "./orgs",
+          "condition": "has(hop.route) && hop.route == 'in_import'"
         },
         {
           "from": "./orgs",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'ack'"
+          "condition": "has(hop.route) && hop.route == 'answer'",
+          "modifier": {
+            "delete_context": [
+              "operator_caller",
+              "requester_build_op",
+              "sub_sha"
+            ]
+          }
         },
         {
           "from": "./orgs",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'reject'"
+          "condition": "has(hop.route) && hop.route == 'bundle'",
+          "modifier": {
+            "delete_context": [
+              "operator_caller",
+              "requester_build_op",
+              "sub_sha"
+            ]
+          }
         },
         {
           "from": "./orgs",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'error'"
+          "condition": "has(hop.route) && hop.route == 'ack'",
+          "modifier": {
+            "delete_context": [
+              "operator_caller",
+              "requester_build_op",
+              "sub_sha"
+            ]
+          }
         },
         {
           "from": "./orgs",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'write'"
+          "condition": "has(hop.route) && hop.route == 'reject'",
+          "modifier": {
+            "delete_context": [
+              "operator_caller",
+              "requester_build_op",
+              "sub_sha"
+            ]
+          }
         },
         {
           "from": "./orgs",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'turn_write'"
+          "condition": "has(hop.route) && hop.route == 'error'",
+          "modifier": {
+            "delete_context": [
+              "operator_caller",
+              "requester_build_op",
+              "sub_sha"
+            ]
+          }
         },
         {
           "from": "./orgs",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'prune'"
+          "condition": "has(hop.route) && hop.route == 'write'",
+          "modifier": {
+            "delete_context": [
+              "operator_caller",
+              "requester_build_op",
+              "sub_sha"
+            ]
+          }
+        },
+        {
+          "from": "./orgs",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'turn_write'",
+          "modifier": {
+            "delete_context": [
+              "operator_caller",
+              "requester_build_op",
+              "sub_sha"
+            ]
+          }
+        },
+        {
+          "from": "./orgs",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'prune'",
+          "modifier": {
+            "delete_context": [
+              "operator_caller",
+              "requester_build_op",
+              "sub_sha"
+            ]
+          }
         },
         {
           "from": "./orgs",
@@ -191,21 +357,43 @@
         },
         {
           "from": "./orgs",
-          "to": "./submit",
+          "to": "./operator",
           "condition": "has(hop.route) && hop.route == 'build' && has(hop.build_op) && hop.build_op == 'apply'",
           "modifier": {
             "set_hop": {
-              "route": "'in_apply'"
+              "route": "'in_submit'"
             },
             "set_context": {
+              "operator_caller": "'agent'",
               "requester_build_op": "'apply'"
             }
           }
         },
         {
+          "from": ".",
+          "to": "./builder",
+          "condition": "has(hop.route) && hop.route == 'in_build' && (!has(hop.auto_submit) || hop.auto_submit != true)",
+          "modifier": {
+            "set_context": {
+              "build_caller": "'operator'"
+            }
+          }
+        },
+        {
+          "from": ".",
+          "to": "./builder",
+          "condition": "has(hop.route) && hop.route == 'in_build' && has(hop.auto_submit) && hop.auto_submit == true",
+          "modifier": {
+            "set_context": {
+              "build_caller": "'operator'",
+              "build_auto_submit": "'yes'"
+            }
+          }
+        },
+        {
           "from": "./builder",
           "to": "./orgs",
-          "condition": "has(hop.route) && hop.route == 'manifest'",
+          "condition": "has(hop.route) && hop.route == 'manifest' && (!has(context.build_caller) || context.build_caller != 'operator')",
           "modifier": {
             "set_hop": {
               "route": "'in_build_result'",
@@ -216,7 +404,7 @@
         {
           "from": "./builder",
           "to": "./orgs",
-          "condition": "has(hop.route) && hop.route == 'error'",
+          "condition": "has(hop.route) && hop.route == 'error' && (!has(context.build_caller) || context.build_caller != 'operator')",
           "modifier": {
             "set_hop": {
               "route": "'in_build_result'",
@@ -225,14 +413,47 @@
           }
         },
         {
-          "from": "./submit",
-          "to": "./orgs",
-          "condition": "has(hop.route) && hop.route == 'receipt'",
+          "from": "./builder",
+          "to": "./operator",
+          "condition": "has(hop.route) && hop.route == 'manifest' && has(context.build_caller) && context.build_caller == 'operator' && (!has(context.build_auto_submit) || context.build_auto_submit != 'yes')",
           "modifier": {
             "set_hop": {
-              "route": "'in_build_result'",
-              "build_op": "'apply'"
+              "route": "'in_draft'"
             }
+          }
+        },
+        {
+          "from": "./builder",
+          "to": "./operator",
+          "condition": "has(hop.route) && hop.route == 'manifest' && has(context.build_caller) && context.build_caller == 'operator' && has(context.build_auto_submit) && context.build_auto_submit == 'yes'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_submit'"
+            }
+          }
+        },
+        {
+          "from": "./builder",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'error' && has(context.build_caller) && context.build_caller == 'operator'",
+          "modifier": {
+            "delete_context": [
+              "operator_caller",
+              "requester_build_op",
+              "sub_sha"
+            ]
+          }
+        },
+        {
+          "from": "./builder",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'catalogue'",
+          "modifier": {
+            "delete_context": [
+              "operator_caller",
+              "requester_build_op",
+              "sub_sha"
+            ]
           }
         },
         {
@@ -247,8 +468,25 @@
         },
         {
           "from": "./submit",
+          "to": "./builder",
+          "condition": "has(hop.route) && hop.route == 'receipt' && !has(hop.error_code) && has(hop.registers_class) && hop.registers_class == true",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_ingest'"
+            }
+          }
+        },
+        {
+          "from": "./submit",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'mutate'"
+          "condition": "has(hop.route) && hop.route == 'mutate'",
+          "modifier": {
+            "delete_context": [
+              "operator_caller",
+              "requester_build_op",
+              "sub_sha"
+            ]
+          }
         },
         {
           "from": "./submit",
@@ -274,15 +512,112 @@
               "route": "'in_verdict'"
             }
           }
+        },
+        {
+          "from": ".",
+          "to": "./operator",
+          "condition": "has(hop.route) && hop.route == 'in_submit'"
+        },
+        {
+          "from": ".",
+          "to": "./operator",
+          "condition": "has(hop.route) && hop.route == 'in_dump'"
+        },
+        {
+          "from": ".",
+          "to": "./operator",
+          "condition": "has(hop.route) && hop.route == 'in_lifecycle'"
+        },
+        {
+          "from": "./operator",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'receipt' && (!has(hop.submitter_kind) || hop.submitter_kind != 'agent')",
+          "modifier": {
+            "delete_context": [
+              "operator_caller",
+              "requester_build_op",
+              "sub_sha"
+            ]
+          }
+        },
+        {
+          "from": "./operator",
+          "to": "./orgs",
+          "condition": "has(hop.route) && hop.route == 'receipt' && has(hop.submitter_kind) && hop.submitter_kind == 'agent'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_build_result'",
+              "build_op": "'apply'"
+            }
+          }
+        },
+        {
+          "from": "./operator",
+          "to": "./submit",
+          "condition": "has(hop.route) && hop.route == 'apply'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_apply'"
+            }
+          }
+        },
+        {
+          "from": "./submit",
+          "to": "./operator",
+          "condition": "has(hop.route) && hop.route == 'receipt'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_receipt'"
+            }
+          }
+        },
+        {
+          "from": "./operator",
+          "to": "./orgs",
+          "condition": "has(hop.route) && hop.route == 'export'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_export'"
+            }
+          }
+        },
+        {
+          "from": "./orgs",
+          "to": "./operator",
+          "condition": "has(hop.route) && hop.route == 'export_done'"
+        },
+        {
+          "from": "./orgs",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'close_report'",
+          "modifier": {
+            "delete_context": [
+              "operator_caller",
+              "requester_build_op",
+              "sub_sha"
+            ]
+          }
+        },
+        {
+          "from": "./orgs",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'pack_ack'",
+          "modifier": {
+            "delete_context": [
+              "operator_caller",
+              "requester_build_op",
+              "sub_sha"
+            ]
+          }
         }
       ]
     }
   },
   "description": {
-    "purpose": "Scope marker of the colony shell: the outermost of the four composition levels, authored under one rule -- A LEVEL OWNS WHAT ITS SIBLINGS MUST SHARE. What every organisation in a colony shares is exactly two things, so exactly two stand here: the capability broker (`access`, a ref) and the control loop (`steward`, a ref). Beside them stands `orgs`, a real but empty container hive: the address an organisation is instantiated AT. Nineteen internal edges, all of them doors and exits -- the shell routes, decides nothing and holds no state.",
+    "purpose": "Scope marker of the colony shell: the outermost of the four composition levels, authored under one rule -- A LEVEL OWNS WHAT ITS SIBLINGS MUST SHARE. What every organisation in a colony shares stands here as a ref: the capability broker (`access`), the control loop (`argus`), the two halves of the one authoring path (`builder`, `submit`) and the one front door a person addresses the OS through (`operator`). Beside them stands `orgs`, a real but empty container hive: the address an organisation is instantiated AT. Doors, exits and the edges that wire two occupants to each other -- the shell routes, decides nothing and holds no state. There is exactly ONE road to the mutation door and it starts at the front door: `./orgs` reaches `./operator`, never `./submit` -- and since 1.5.0 an operator-initiated draft joins that same road, because `./builder` reaches `./operator` too when the round came in at the rim. Since GH #474 it joins it with a HALT in the middle: the draft lands at the front door on `in_draft`, is parked and answered, and reaches the submitter only on a second act naming its digest -- unless the wish said `auto_submit: true`.",
     "use_when": "Once per colony, as the tree an operator grows everything else into. Instantiate it, then instantiate an organisation into `./orgs` with a mutation that draws that organisation's own edges in the SAME mutation. Both broker lanes MUST promote the caller to `context.requester` before the message reaches this level: a level forwards a requirement, it cannot satisfy one.",
-    "not_in_scope": "No second vault -- `access` carries its own interior one, and the standalone `vault` template attests its inbound edges against `params.broker`, so a copy at this level would boot locked and inert (ruling Q20). No sink: nothing here accepts a refusal and emits nothing, because the dead-letter queue is the record (ruling Q2). No `connect` lane outward -- the broker requires that lane to be the ONE edge reaching a connector cell, and that edge is drawn where the connector stands, four levels down. No contract on the container: the level declares the transit lanes and carries them with its own edges (W7-R2). And no memory, no model, no persona: a shell that grew one of those would own something its siblings do not share.",
-    "contract_in": "Seven lanes, all at the hive path, and every one of them the union rule's doing: a level declares what its occupants accept, minus what a sibling inside the level consumes itself. in_request and in_invoke reach the broker, both demanding a promoted `context.requester`. in_cycle reaches the control loop. in_turn, in_recall, in_brief and in_propose reach the `orgs` container and, once one is instantiated, the organisation inside it. Nothing addresses a cell inside this level by name -- the occupants are refs, and their interiors belong to their own templates.",
-    "contract_out": "Six lanes, all out of the hive path. grant is the broker's verdict, mutate the loop's decided params update, answer and reject what an organisation produced, ack an outcome that was decided -- and ack and error each have TWO senders and ONE declaration. `turn` is deliberately absent: a member consumes its own turn behind its screen, so an exit for it here could never fire. The colony that instantiates this shell MUST drain error and reject."
+    "not_in_scope": "No second vault -- `access` carries its own interior one, and the standalone `vault` template attests its inbound edges against `params.broker`, so a copy at this level would boot locked and inert (ruling Q20). No sink: nothing here accepts a refusal and emits nothing, because the dead-letter queue is the record (ruling Q2). No `connect` lane outward -- the broker requires that lane to be the ONE edge reaching a connector cell, and that edge is drawn where the connector stands, four levels down. No contract on the container: the level declares the transit lanes and carries them with its own edges (W7-R2). And no memory, no model, no persona: a shell that grew one of those would own something its siblings do not share. And no authentication anywhere on this level: the front door supplies an IDENTITY -- the path the substrate stamps on a cell's own emission -- and never verifies a claim. A token check here would be a permission layer the substrate does not have, in the one place that must stay readable.",
+    "contract_in": "Thirteen lanes, all at the hive path, and every one of them the union rule's doing: a level declares what its occupants accept, minus what a sibling inside the level consumes itself. in_request and in_invoke reach the broker, both demanding a promoted `context.requester`. in_cycle reaches the control loop. in_turn, in_recall, in_brief and in_propose reach the `orgs` container and, once one is instantiated, the organisation inside it. in_build reaches the baumeister and in_submit, in_dump and in_lifecycle reach the front door -- what an operator asks the OS for, drafted or applied -- and in_export and in_import reach the container: the lane a member's memory is handed out on, and the return leg that carries one part of such a document back into the hive it belongs to. in_build is the youngest of them and the one that is only ever used once per colony: the first build of a fresh colony has no assistant to raise `build`, so the operator asks for the draft and this level's door stamps `context.build_caller` on the way in, which is what sends the manifest to the front door rather than back into an empty container. The door reads one more word off the wish: `hop.auto_submit`. Without it the draft arrives at the front door as `in_draft` and STOPS there to be looked at (GH #474); with it the older road runs, straight onto `in_submit`. Nothing addresses a cell inside this level by name -- the occupants are refs, and their interiors belong to their own templates.",
+    "contract_out": "Fifteen lanes, all out of the hive path. grant is the broker's verdict, mutate the decided change on its way to the door, alert a symptom the control loop counted and asked no model about, answer and reject what an organisation produced, bundle the answer to a question asked at a member's own in_recall door (GH #533 -- the question has crossed this level since it was written and had no answer lane at any of the three levels it has to leave), ack an outcome that was decided, receipt what the front door answered, catalogue what one reconciliation of the baumeister's corpus reported; write, turn_write, prune, close_report and pack_ack are what an organisation hands out and nothing at this level consumes -- and ack and error each have TWO senders and ONE declaration. `turn` is deliberately absent: a member consumes its own turn behind its screen, so an exit for it here could never fire. The colony that instantiates this shell MUST drain error, reject and receipt."
   }
 }

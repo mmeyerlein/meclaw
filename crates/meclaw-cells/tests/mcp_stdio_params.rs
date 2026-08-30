@@ -96,10 +96,21 @@ fn stdio_without_command_is_rejected() {
     assert!(err.contains("command"), "got: {err}");
 }
 
+/// Since GH #489 an http transport without an endpoint is no longer a parse
+/// error. It names no provider, so the cell spawns, stays idle and answers
+/// `endpoint_unset` — the state an operator who never set `MCP_ENDPOINT`
+/// actually wants, instead of a cell that cannot boot. The explicit
+/// `transport: "http"` spelling must land in exactly the same place as the
+/// implicit one (`gh489_an_unnamed_mcp_provider_is_idle_not_failed.rs`).
 #[test]
-fn http_without_endpoint_is_rejected() {
-    let err = McpParams::parse(&json!({"transport": "http"})).expect_err("must reject");
-    assert!(err.contains("endpoint"), "got: {err}");
+fn http_without_endpoint_is_idle_not_rejected() {
+    let p = McpParams::parse(&json!({"transport": "http"}))
+        .expect("an unnamed provider must parse, GH #489");
+    assert!(
+        matches!(p.transport, McpTransport::Unset),
+        "expected the unnamed-provider transport, got {:?}",
+        p.transport
+    );
 }
 
 #[test]

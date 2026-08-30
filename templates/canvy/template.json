@@ -1,6 +1,6 @@
 {
   "name": "canvy",
-  "version": "2.1.9",
+  "version": "2.1.10",
   "description": {
     "purpose": "An interactive canvas of the colony, on a port of its own. A timer takes a topology snapshot, a code cell turns it into display objects, and a `web` cell holds them and serves the page. The browser owns the drag and the camera; nothing else.",
     "use_when": "Somebody should see and rearrange something the colony knows, in a browser. One canvy per canvas: two canvases are two hives on two ports, which is what makes one reverse-proxy rule a complete access statement for one of them.",

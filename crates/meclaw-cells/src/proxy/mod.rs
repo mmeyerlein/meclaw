@@ -12,5 +12,6 @@ pub mod params;
 pub mod platform;
 pub mod slack;
 pub mod telegram;
+pub mod typing;
 
 pub use factory::ProxyCellFactory;

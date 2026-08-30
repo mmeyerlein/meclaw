@@ -1,0 +1,25 @@
+{
+  "name": "shelf",
+  "version": "1.0.2",
+  "description": {
+    "purpose": "A place to put rows, as one `store` cell: one declared table and a query timeout, and nothing else. Eighteen shipped templates carry a `store` INSIDE them; none was instantiable on its own (GH #482). It holds, it decides nothing: WHAT goes on it is the `schema` an instance declares, WHO may write is the edge the parent draws.",
+    "use_when": "Whenever something a colony produces has to outlive the message that produced it. Instantiate it under a name that says what it keeps (`headlines`, `receipts`, `seen`) and give it its shape in the SAME declaration: `override_params` carrying a `schema`, a FLAT params object. Then draw the edges -- see RETURN.",
+    "not_in_scope": "No policy, no schedule, no trim, no opinion about the contents. Constraints are not shippable -- a column is `text`, `int` or `json`, and PRIMARY KEY, UNIQUE and NOT NULL are core defers of the cell type -- so a duplicate row is a question for whoever writes, not an error the shelf raises.",
+    "examples": [
+      "PORTS - Entry: one message carrying one or more tool_call turns whose text is the JSON args of a store operation (`insert`, `select`, `update`, `delete`, `create_table`, `search`). Exit: ONE answer per message -- a tool_result turn per operation in call order, with `operation`, `rows_affected` and `duration_ms` on the hop, plus `bundle_errors` and a `results[]` slot as soon as the message carried more than one call. A READ's turn TEXT is a bare JSON ARRAY of row objects, never `{\"rows\": [...]}`. An SQL error rides in a regular tool_result as `error_code`, never a crash.",
+      "ARGS - beside `operation` and `table` each operation reads keys of its OWN, and an unread key is REFUSED, not ignored (`unknown argument`, naming the whole set). `insert` takes `row` -- an object, NOT `values`. `select` takes `columns`, `where`, `order_by`, `limit`, `distinct`; `update` takes `set` and `where`; `delete` takes `where`; `create_table` takes `columns`; `search` takes `match` beside the `select` keys. Worked: {\"operation\": \"insert\", \"table\": \"headlines\", \"row\": {\"id\": \"a1\", \"title\": \"a headline\"}} and {\"operation\": \"select\", \"table\": \"headlines\", \"columns\": [\"id\"], \"where\": {\"id\": \"a1\"}}.",
+      "RETURN - a store answers EVERY message, and the answer's `hop` is the STORE's own: `hop` is single-hop and REPLACED on every emission, so a `route` stamped outbound is gone; `context` is persistent, so it is IDENTICAL on both legs. `hop.operation` is the only field that names the leg, so a return edge is guarded POSITIVELY on it: [{\"from\": \"./shelf\", \"to\": \"./dedupe\", \"condition\": \"has(hop.operation) && hop.operation == 'select'\"}, {\"from\": \"./shelf\", \"to\": \"./dedupe\", \"default\": true}] -- the guard takes the READ answer back, the default takes every other answer (a write says `insert`, or `bundle` above one call) so it does not dead-letter as `no_route`. Guard on `context` and BOTH legs match: the insert answer re-enters the insert branch and the pair loops to the TTL (GH #521)."
+    ]
+  },
+  "tags": [
+    "shelf",
+    "store",
+    "table",
+    "rows",
+    "schema",
+    "persistence",
+    "sqlite"
+  ],
+  "author": "@mmeyerlein",
+  "license": "MIT"
+}

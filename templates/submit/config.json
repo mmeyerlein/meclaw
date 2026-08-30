@@ -71,12 +71,26 @@
         {
           "from": "./gate",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'mutate'"
+          "condition": "has(hop.route) && hop.route == 'mutate'",
+          "modifier": {
+            "delete_context": [
+              "sub_origin",
+              "sub_phase",
+              "sub_carry"
+            ]
+          }
         },
         {
           "from": "./gate",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'receipt'"
+          "condition": "has(hop.route) && hop.route == 'receipt'",
+          "modifier": {
+            "delete_context": [
+              "sub_origin",
+              "sub_phase",
+              "sub_carry"
+            ]
+          }
         },
         {
           "from": ".",
@@ -86,7 +100,14 @@
         {
           "from": "./gate",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'ask'"
+          "condition": "has(hop.route) && hop.route == 'ask'",
+          "modifier": {
+            "delete_context": [
+              "sub_origin",
+              "sub_phase",
+              "sub_carry"
+            ]
+          }
         }
       ]
     }

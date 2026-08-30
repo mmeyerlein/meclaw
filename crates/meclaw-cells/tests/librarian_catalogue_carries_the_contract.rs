@@ -3,7 +3,7 @@
 //! Measured, not supposed. With the mutation grammar in the briefing head, a
 //! hosted model walked S12 and encoded every `add_nodes` entry correctly —
 //! `name` plus `template`, three times wrong before, right now. The door refused
-//! it one level higher (`plans/welle-2026-08-27/receipts/s12-luna-run.md`):
+//! it one level higher (the S12 build runs, `CHANGELOG.md` § 0.26.0):
 //!
 //! ```text
 //! cogny: ctx key "model" is required — the model the brain infers with
@@ -215,12 +215,30 @@ fn the_contract_spans_the_refs_it_is_built_from() {
     // naming a ctx key its own descriptor does not declare — otherwise the line
     // was built from the outer `template.json` alone and under-reports exactly
     // the composites a builder reaches for first.
+    //
+    // GH #516 — the question is INHERITANCE, not silence, and the two used to be
+    // the same sentence here because `assistant` was the one composite declaring
+    // nothing at all. It declares `model_surface` now (a level's own model key,
+    // which no ref can own), and an "own declaration is empty" proxy would read
+    // that as the union having disappeared. So the row is asked what it actually
+    // has to prove: a key it NAMES that its own descriptor does not DECLARE.
     let inherited = shipped_templates().into_iter().any(|(name, descriptor)| {
         let Some(text) = rows.get(&name) else {
             return false;
         };
         let lead = text.lines().next().unwrap_or_default();
-        declared_ctx_keys(&descriptor).is_empty() && lead.contains("ctx keys:")
+        let Some((_, listed)) = lead.split_once("ctx keys:") else {
+            return false;
+        };
+        let declared = declared_ctx_keys(&descriptor);
+        listed
+            .split(" — ")
+            .next()
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|k| !k.is_empty())
+            .any(|key| !declared.iter().any(|d| d == key))
     });
     assert!(
         inherited,

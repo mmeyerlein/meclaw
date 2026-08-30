@@ -1,0 +1,96 @@
+{
+  "cell": {
+    "type": "timer",
+    "timeout": -1
+  },
+  "params": {
+    "query_timeout_ms": 5000,
+    "schedules": [
+      {
+        "schedule_id": "${CLOCK_SCHEDULE_ID:-0190a3f2-0000-7000-8000-000000000484}",
+        "schedule_name": "tick",
+        "cron": "${CLOCK_CRON:-0 */5 * * * *}",
+        "emit_to": ".",
+        "emit_body": {
+          "messages": []
+        },
+        "emit_headers": {}
+      }
+    ]
+  },
+  "contract": {
+    "version": "1.0.0",
+    "write_surface": "internal",
+    "settings": {
+      "cron": {
+        "type": "string",
+        "secret": false,
+        "default": "0 */5 * * * *",
+        "description": "6-field Quartz cron of the tick (CLOCK_CRON). Cron runs in UTC, and a missed firing is dropped rather than caught up. Per instance it is an override_params entry on the node itself; colony-wide it is the env knob."
+      },
+      "schedule_id": {
+        "type": "string",
+        "secret": false,
+        "default": "0190a3f2-0000-7000-8000-000000000484",
+        "description": "The key the runtime ops (add/modify/remove/trigger) address this schedule by (CLOCK_SCHEDULE_ID). It is a LITERAL UUID v7 and not a uuid7 substitution token: such a token is resolved at instantiation and has no filesystem-side producer, so a tree written straight to disk would refuse to boot on it, and a config that merely NAMES the token in its prose is refused the same way -- the substitution engine reads the whole file. A timer's key space is its own cell.db and this template ships exactly one schedule, so the token would buy nothing a constant does not."
+      }
+    },
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "event_id": {
+          "type": "string",
+          "required": true
+        },
+        "schedule_id": {
+          "type": "string",
+          "required": true
+        },
+        "schedule_name": {
+          "type": "string",
+          "required": true
+        },
+        "scheduled_at": {
+          "type": "string",
+          "required": true
+        },
+        "fired_at": {
+          "type": "string",
+          "required": true
+        },
+        "iteration_n": {
+          "type": "number",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "op": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "A clock a manifest can name: one timer cell as a whole template, so a running colony can be given a periodic tick by a declaration instead of by a hand-built subtree. It sends, it decides nothing -- WHAT the tick means is the lane the parent's edge stamps on it.",
+    "use_when": "Wherever something needs to happen on the minute rather than at the next touch: a firewall's in_sweep, a store's trim, any hive that measures time only when somebody knocks. Instantiate it under a name that says what it drives, and draw ONE edge out of it in the same mutation.",
+    "not_in_scope": "No condition, no filter, no store, no catch-up. A clock that knew what it was ticking for would be a second scheduler, and a missed firing is dropped rather than replayed: the next tick asks the same question.",
+    "emits_meaning": "A plain trigger. The body is empty because a clock has nothing to say; the six auto headers say which schedule fired and when, and the parent's edge names the lane.",
+    "consumes_meaning": "Schedule ops (add/modify/remove/trigger by schedule_id) as body.op -- the cadence is retunable at runtime without a restart.",
+    "examples": [
+      "every five minutes -> the parent's edge stamps 'in_sweep' -> a firewall emits its expiry receipts on the minute instead of at the next touch",
+      "{\"op\": \"modify\", \"schedule_id\": \"...\", \"cron\": \"0 0 * * * *\"} -> the same clock ticks hourly from now on",
+      "no edge out of it -> the tick dead-letters as no_route naming the clock itself, because emit_to is '.' and an edge is what gives a tick a destination"
+    ]
+  }
+}

@@ -58,13 +58,16 @@ contains no `.en.md` file at all, which is why every link on this page points at
 the plain name. Drift between a pair is a release gate, not a matter of
 diligence.
 
-**`roadmap.md`** in this directory is an internal register of deferred spec
-items and is not part of a published tree. (`deferred.md`, the transient
-phase-14 cycle log, was archived on 2026-08-20 to `archive/deferred.md` — the
-cycle closed in June. Both are named here rather than linked: neither travels,
-and a link to a file the published tree does not carry is a dead link in the
-only tree that matters.) The forward-looking list a reader wants is
-[`../ROADMAP.md`](../ROADMAP.md).
+**`defer-register.md`** in this directory is an internal register of what is
+deliberately **not** built — one row per topic, each with the trigger that would
+make it due. It was called `roadmap.md` until 2026-08-28, when the name turned
+out to be doing two jobs: the ordering job moved to
+[`../ROADMAP.md`](../ROADMAP.md), which is the forward-looking list a reader
+wants and which does travel. Neither the register nor `deferred.md` (the
+transient phase-14 cycle log, archived on 2026-08-20 to `archive/deferred.md`
+when that cycle closed) is part of a published tree, which is why both are
+named here rather than linked: a link to a file the published tree does not
+carry is a dead link in the only tree that matters.
 
 **`demo.sh`, `demo.cast` and `demo.svg`** are the terminal recording embedded in
 the repo README: `docs/demo.sh` driving [`../examples/swarm/`](../examples/swarm/),

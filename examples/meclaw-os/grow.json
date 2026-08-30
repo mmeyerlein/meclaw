@@ -26,7 +26,7 @@
       {
         "from": "./door",
         "to": "./firewall",
-        "condition": "has(hop.route) && hop.route == 'turn'",
+        "condition": "has(hop.route) && hop.route == 'turn' && has(hop.chat_id) && hop.chat_id != 'operator'",
         "modifier": {
           "set_hop": {
             "route": "'in_turn'"

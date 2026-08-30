@@ -1,0 +1,54 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "ports": [],
+    "contract": {
+      "accepts": [
+        {
+          "route": "in_request",
+          "context": [
+            "requester"
+          ],
+          "because": "ask whether this actor may do this thing on this resource; the edge that carries it MUST promote the caller to context.requester, or the answer is requester_unknown"
+        },
+        {
+          "route": "in_invoke",
+          "context": [
+            "requester"
+          ],
+          "because": "spend a grant: perform one operation the broker already said yes to; same promotion, because a grant belongs to somebody"
+        }
+      ],
+      "emits": [
+        {
+          "route": "grant",
+          "because": "the verdict on a request -- granted, allowed (a check_only request: a yes with no grant behind it), denied with a reason_code, or pending; a handle and never a credential"
+        },
+        {
+          "route": "ack",
+          "because": "the outcome of spending a grant, ok or denied plus a reason_code"
+        },
+        {
+          "route": "connect",
+          "because": "the one call that leaves for the connector, addressed from the grant and from nothing else"
+        },
+        {
+          "route": "error",
+          "because": "a lane failed; which cell inside produced it is not the caller's business, and a parent that drains nothing loses every refusal"
+        }
+      ]
+    },
+    "graph": {
+      "edges": []
+    }
+  },
+  "description": {
+    "purpose": "Scope marker of the pilot's access hive, checked in with an EMPTY graph. It is a verbatim copy of the shipped `templates/access` hive config in every respect but one: `params.graph.edges` is empty here, because the fourteen internal edges are drawn by the instantiation in `grow.json` and drawing them twice is drawing them once plus a duplicate. `params.ports` and `params.contract` are the shipped ones, so the boundary this marker declares is the boundary the template declares -- the hive path is the address, and no edge reaches a cell inside it. This file exists at all so that `./store` can be checked in UNDER it: a subtree instantiation MERGES, and a cell that is already on disk is left untouched.",
+    "use_when": "In this example only. A deployment instantiates `access` whole and has no reason to check any part of it in.",
+    "not_in_scope": "No model of any kind -- every verdict in this hive is a comparison. No PLAINTEXT credential on the wire either: `./vault` holds them, and what leaves it is a ciphertext under a key only the requester holds for that one call (GH #421). `cred_refs` stays the CATALOGUE of names, and it is the catalogue the grant reads its `cred_ref` out of. And no enforcement of its own monopoly: that exactly one edge reaches the connector is a fact about the topology a parent draws, not a rule the substrate applies (see README, `The honest limit`).",
+    "contract_in": "Two lanes, both at the hive path. in_request -- an access.request tool_call turn: may this actor do this. in_invoke -- an access.invoke tool_call turn: spend a grant. Older wirings named ./policy and ./invoke directly and declared them as `ports`; those are cell names, not lanes, and they moved the boundary one step instead of drawing it.",
+    "contract_out": "Four lanes, all out of the hive path. grant -- the verdict. ack -- the outcome of an invocation. connect -- the one call for the connector, addressed from the grant. error -- any lane failed, and the parent MUST drain it."
+  }
+}

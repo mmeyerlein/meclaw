@@ -13,4 +13,4 @@ license.workspace = true
 # `include_str!`. It binds neither a server nor a runtime: the socket that used
 # to need `axum`/`tokio`/`tracing` and a colony handle went with `render` and
 # `socket`, and JSON comes through `meclaw_core::serde_json` as it always did.
-meclaw-core = { path = "../meclaw-core", version = "0.27.0" }
+meclaw-core = { path = "../meclaw-core", version = "0.28.0" }

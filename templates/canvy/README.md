@@ -1,4 +1,6 @@
-# `canvy@2.1.9`
+# `canvy@2.1.10`
+
+> **Deprecated since GH #455.** This template fuses two things the library now keeps apart: a SURFACE (a screen, which belongs to a person and is shared by everybody who writes to it) and a VIEW of the colony (which is one application among many). Those are `display` and `colony-view` in the table next door. `canvy` is not removed and not going to break -- an instance grown from it keeps running, because instantiation copies -- but it takes no further work, and a new screen should be a `display` with `colony-view` writing onto it.
 
 One interactive canvas of the colony, served on a port of its own. A timer takes
 a topology snapshot, a `code` cell turns it into display objects, and a `web`
@@ -183,7 +185,7 @@ ships `7810`; a second canvas in the same colony needs a different one, because
 two displays sharing a port is a bind race rather than a configuration.
 
 ```json
-{"add_nodes": [{"path": "/ops", "name": "canvy", "template": "canvy@2.1.9",
+{"add_nodes": [{"path": "/ops", "name": "canvy", "template": "canvy@2.1.10",
                 "override_params": {"web": {"port": 7900}}}]}
 ```
 

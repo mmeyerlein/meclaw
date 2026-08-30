@@ -1,0 +1,24 @@
+{
+  "cell": {
+    "type": "ref",
+    "template": "talky@4.5.1"
+  },
+  "override_params": {
+    "brain": {
+      "model": "${ctx.model_surface}"
+    },
+    "collector/assemble": {
+      "tools": [
+        "web_search",
+        "web_fetch",
+        "consult_cogny"
+      ],
+      "memory_tier": "1"
+    }
+  },
+  "description": {
+    "purpose": "The conversation surface of this generation: the sealed talky that keeps the sessions, calls the brain, splits the answer and raises the extraction. It is a REF and it ships with the level, because since GH #454 an assistant has exactly one of them -- the channels moved up to the member, and what used to be one surface per channel is one surface per generation with the channels talking to it from outside.",
+    "use_when": "Never on its own -- it travels with the assistant level. This ref marker already gives the surface its MODEL: override_params.brain.model names the level's own ctx key, model_surface, and that is the one thing about this occupant the level cannot leave to `talky` (GH #516). Standalone, talky's brain reads the ctx key `model` and is right to -- it is THE agent of its instantiation. Inside a level that ALSO references `cogny`, one flat ctx reaches both, so both brains resolved that same key and the conversation surface ran the reasoning model: every turn paid core latency for the half whose whole job is to answer fast. The distinction belongs to the LEVEL, not to either occupant, so it is drawn here and neither `talky` nor `cogny` moved -- both stand standalone elsewhere and keep reading `model`. Point `override_params` at `<assistant>/surface/brain` and `<assistant>/surface/collector` for anything further -- a prompt, a temperature; a mutation's own override wins over this one, param key by param key. What is deliberately NOT overridden here is `collector/assemble.max_iter` (GH #538): a low tool-round cap on the surface reads like a fence against the surface doing the core's work, and is not one -- the measured case did the whole job in ONE round, and the cap's exit is the assembled context on the `answer` lane under `hop.round_capped`, which nothing between here and the person branches on. The boundary between the two occupants is stated where a reader of it can act on it, in the `consult_cogny` description; an iteration counter cannot see what kind of question it is looking at. Everything else is talky's own. The lanes are already wired: the entry lanes of the level reach it through the level's own edges, its `answer` leaves the level on the level's own lane, and `tool`/`in_tool` are paired with ./tools inside. Since GH #529 this ref marker also gives the surface its DECLARED TOOL LIST, and for the same reason it gives it its model: `consult_cogny` is not a tool of any hive, it is the errand this LEVEL routes from the surface to the core, so only the level can declare it. Standalone, `talky` declares its two search tools and is right to -- there is no core beside it to consult. The list is written out in full rather than appended to, because an override replaces a param and not the elements of a list; the two search tools are talky's own default repeated here on purpose, so what this generation's model is offered can be read in one place. Since [#535](https://github.com/mmeyerlein/meclaw/issues/535) the same marker gives the surface its AMBIENT MEMORY LEG, and it is the third statement of exactly one kind: `memory_tier` is \"1\" here and stays empty in `talky`, because whether there is a memory to read from BEFORE the brain is called is a fact about the composition and not about the occupant. Standalone, `talky` is right to ship it empty -- no hive stands beside it, so a per-turn `recall` would leave for an address nobody wired. This level is instantiated into a member that HAS one, and the member's own edges already carry `recall` up and `in_bundle` back down; until the knob was set, a whole generation remembered only when its model decided to ask, and the half whose job is to answer fast paid a second round trip for what a cheap leg puts in front of the first call. The tool does not move: `memory_call_tier` stays \"1\", `memory_recall` is the DELIBERATE lookup a model asks for by name, and the two legs answer different questions. The audience gate needs nothing new either -- the member's `./assistants -> ./memory-hive` edge derives `context.audience_now` from the `audience_set` the ingress screened onto the turn, on the very edge the tool call already travels.",
+    "not_in_scope": "No connector and no channel: a channel is the MEMBER's (GH #454), it is instantiated into <member>/channels, and it reaches this surface by addressing the assistant path -- never by standing beside the surface. No second surface either: two surfaces of one generation would be two session stores of one agent, and which one a closed session belongs to would have to be decided before the sweep ran."
+  }
+}

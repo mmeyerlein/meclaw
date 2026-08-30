@@ -1,4 +1,4 @@
-# `memory-drain@2.0.5`
+# `memory-drain@2.0.6`
 
 The adapter between a write batch and the central memory (GitHub #101).
 
@@ -17,7 +17,7 @@ The adapter between a write batch and the central memory (GitHub #101).
 > in the distribution owns is the **ledger** — a re-delivered transcript is a
 > skip, which is the property an interrupted import needs and which neither
 > shipped importer has. ADR 0012 decided to keep it on that ground and named the
-> trigger that would retract it (`docs/roadmap.md` § W5-Nachtrag): a transfer
+> trigger that would retract it (`docs/defer-register.md` § W5-Nachtrag): a transfer
 > lane that learns raw-transcript import, or a second bulk importer written
 > without anybody reaching for this one.
 
@@ -244,8 +244,36 @@ the minter and its `turns` table is the gate, so the drain beside it is the seco
 One minter, one gate — that principle is unchanged, and it is now what keeps this hive
 off the live path.
 
+**And it is measured, not merely ruled** ([GH #523](https://github.com/mmeyerlein/meclaw/issues/523)).
+A second minter is the *lesser* half of what the retracted edge costs. The ledger is a
+**per-session high-water mark over one closed batch** — the newest parked `batch` row plus
+a single `drained_upto` number — and one delivery reads it in two steps, `park` then
+`probe`, with the mark arriving a hop after the probe it belongs to. A per-turn cadence
+hands the adapter two batches of one session at once, so the two steps of one delivery
+straddle the two steps of the other:
+
+```
+park(user) -> park(assistant) -> probe(user) -> probe(assistant)
+```
+
+Both probes then read the same ledger, both take the **last** parked batch for "the day",
+and neither sees a mark. What a colony wired that way wrote for one exchange, under
+parallel load: two `assistant` episodes under `<session_id>#0`, no `user` episode at all,
+and an empty dead-letter queue — nothing was refused, the wrong thing was written, and the
+inline annotation of that turn then had nothing to bind to. This adapter is not defective
+there; it is being handed something it never promised to take. The lock that keeps the edge
+from being drawn a third time is
+`crates/meclaw-cells/tests/gh523_the_per_turn_lane_is_not_a_batch.rs`, and it carries the
+measurement above as two cases.
+
 ## Known limits
 
+- **One session, one batch, one delivery at a time.** The ledger is a per-session
+  high-water mark, so the adapter's idempotence holds for *a session's batch redelivered*
+  and not for *two batches of one session in flight*. A bulk import that walks its
+  transcripts one after another is inside that envelope; a producer that hands the same
+  `session_id` two batches concurrently is not, and what it costs is measured in
+  § *Retracted* above (GH #523).
 - **`happened_at` is usually empty.** The collector's close batch carries no per-turn
   timestamp, so the writer stamps its own clock and event time equals ingest time for a
   drained day. A batch that *does* know its event times (a replay out of a day archive)

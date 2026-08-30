@@ -1,0 +1,59 @@
+{
+  "name": "operator",
+  "version": "1.0.0",
+  "description": {
+    "purpose": "One front door into the OS. A sealed hive with one occupant per subject -- `submit` carries a manifest to the submitter and holds a DRAFT still until somebody says yes, `export` triggers a dump of a member's memory, `lifecycle` composes a birth, a sleep or a wake -- a fourth that turns a lane nobody wired into an ordinary receipt, and a `drafts` store that is the whole of what this hive remembers. The whole of what it adds is IDENTITY: a POST from outside has no sender, because the substrate stamps `reply_to` on a CELL's emission and a person with a shell is not a cell; a request that becomes a message emitted by an occupant of this hive has one, so the submitter's gate has somebody to attribute the mutation to instead of refusing it as anonymous.",
+    "use_when": "Once per colony, at the OS level. It is the standard occupant of `meclaw-os`: every colony has one, and everything asked OF the OS arrives on one of its lanes -- from a person with a shell at the rim, and, since R-Zielfluss (a), from an assistant inside the colony too: the shell re-stamps `build` / `build_op == 'apply'` onto `in_submit` so that a colony has ONE submission front door and not two. Adding a further subject is an occupant directory plus a door inside this hive -- never a change to the caller's edges, which is what the seal buys.",
+    "not_in_scope": "IDENTITY, NEVER AUTHENTICATION. No token, no header check, no caller allow-list, no secret and no session. This hive says who the sender IS -- it never asks whether they are who they claim. Authentication belongs to a reverse proxy in front of the API, authorisation to the capability broker behind this hive, and neither is a lane here. Beyond that: no decision (every manifest still travels the submitter, the gate and the broker), no edge onto the mutation door from any cell in here, no drafting and no model. **RETRACTED with GH #474: `no state between two requests`.** There is exactly one thing remembered now -- a manifest the baumeister drew, parked under its digest until an operator quotes it back -- and it is a PROPOSAL rather than a request's state: losing the store loses offers nobody accepted, never a change that was made. It is also not the control loop: the loop is an ACTOR with a charter of its own, this is the hand of a person.",
+    "examples": [
+      "LANES - the hive path is the address and `hop.route` is the lane. in_submit takes a manifest; in_export takes `{target}`; in_lifecycle takes `{op, scope, ...}`. in_receipt and export_done bring the two answers back in. Everything leaves on `receipt`, whichever occupant raised it -- one lane, four senders, so a caller subscribes to the lane and never to a cell.",
+      "LANES - the second act. in_draft parks what the baumeister drew and answers `receipt` with `hop.draft_state = 'draft_ready'`, `hop.manifest_sha256` and `hop.draft_path`; NOTHING is applied. The operator then posts in_submit with that digest and NO manifest, and the draft is read back out of `drafts` under it. A digest nothing is parked under is `digest_mismatch` and never a submission.",
+      "IDENTITY IS A PATH - a submission that leaves `./submit` carries `envelope.reply_to = /os/operator/submit`, stamped by the substrate on the emission itself. That is what the submitter's gate reads, and it is why an operator's mutations stop being anonymous in the mutation log. A body that named its own sender would be a claim, and a claim is not an identity. It is the SAME path for an assistant's apply: the front door is the subject the broker rules, and a per-caller subject is the operator-as-member shape R4 parked for `>1 operator`.",
+      "AN UNKNOWN LANE IS AN ANSWER - a request on a lane nobody wired reaches the guarded default door and comes back as a receipt with `hop.error_code = 'unknown_route'`, naming the lane verbatim. Not a dead letter: a dead letter is a message the colony lost, and this is one it read, understood as unaddressed, and answered.",
+      "SLEEP AND WAKE ARE EDGES - the substrate has no activate and no deactivate operation; activity is derived from the edge table. So `wake` is an `add_edges` and `sleep` a `remove_edges`, and a request that names no edge is refused rather than guessed at. `birth` is the one lifecycle state a declaration carries directly (`add_nodes[].birth`), and `inactive` is this hive's default -- the reason to grow a cell in two steps is to look at it before it runs.",
+      "IT IS NOT A SHORTCUT - `apply` reaches the submitter and nothing else. The digest is drawn over the bytes that are forwarded, the broker is asked over the manifest's scope root, and the mutation door is as far away from this hive as it is from a model's tool call. What an operator gains here is a NAME on the record, not a way past it.",
+      "TWO DOORS, TWO MARKERS - the shell sets `context.operator_caller = 'agent'` on the edge that re-stamps an assistant's apply, and `submit` writes the same fact into the correlation id as `op:agent:<id>`. On the way back BOTH are read, because neither survives every road: context survives a refusal the gate raises inside the level (where the id comes back EMPTY, because a refused manifest is never parked and no flight row was written), and the marked id survives the mutation door (whose answer begins a fresh trace carrying no promoted context). The occupant then puts `hop.submitter_kind` on the receipt and the shell routes on that: an agent's receipt goes DOWN as `in_build_result`, a person's leaves the colony. The marker never leaves this hive -- the receipt carries the id the caller used, because a fan-in that waits for `c2` is not answered by `op:agent:c2`."
+    ]
+  },
+  "sandbox_union": {
+    "trust": "restricted",
+    "network": "deny",
+    "filesystem": {
+      "runtime": true
+    },
+    "because": "The widest value of every axis over every occupant that runs a process, and here all four code occupants carry the same block -- the tightest one the library ships. The fifth occupant is a `store` and spawns nothing, so it widens no axis; its reach is `db:own` and lives in its own contract. Nothing in this hive fetches, executes a caller's string or reads a path: the four cells parse a request, format a message and emit it. That is the honest reading of what handing this hive a request can set in motion, and it is written down so that a replacement is measured against it: an occupant that needs more than this is, visibly, a widening in the diff of this file. The REACH of the hive is a different fact and lives where reach belongs -- in `params.contract`, on the `apply` and `in_export` lanes."
+  },
+  "reentrancy": {
+    "submit": {
+      "reentrant": true,
+      "because": "It reads a request and writes a message: no disk, no network and no state of its own. Two submissions in flight are two manifests the colony rolls off one after the other, in the order they reach the mutation door -- and because a manifest has no rollback, that order is the colony's to decide and never this cell's to assume."
+    },
+    "export": {
+      "reentrant": true,
+      "because": "It turns an address into a message. Nothing is held between two exports, and which member each one names travels in its own message."
+    },
+    "lifecycle": {
+      "reentrant": true,
+      "because": "It composes one declaration out of one request and keeps nothing. Two lifecycle changes in flight are two manifests, and their ORDER is the mutation door's to decide -- the same reading `submit` carries, one composition step earlier."
+    },
+    "drafts": {
+      "reentrant": true,
+      "because": "A `store` cell, one table, one row per parked draft, keyed by the digest. Two drafts in flight are two rows and never a shared cursor: what a round needs to find its own row travels in the message that asks for it, and the digest is the whole of the correlation. Declared although it is not a subject, for the reason the occupant below carries: a declaration with a hole cannot catch a swap that quietly turns a parallel round sequential."
+    },
+    "unknown": {
+      "reentrant": true,
+      "because": "It formats a string out of the hop it was handed and emits it. It reads nothing, writes nothing and executes nothing, so there is no state for a concurrent request to reach. Declared explicitly although it is not a subject: a declaration with a hole cannot catch a swap that quietly turns a parallel round sequential, and the occupant nobody declared is the one whose serialisation surprises the caller."
+    }
+  },
+  "tags": [
+    "operator",
+    "hive",
+    "os",
+    "submit",
+    "export",
+    "lifecycle",
+    "draft"
+  ],
+  "author": "@mmeyerlein",
+  "license": "MIT"
+}

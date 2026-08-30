@@ -18,7 +18,7 @@
 //! deltas are dropped and the full body is folded into ONE assistant turn.
 
 use crate::llm::params::{AuthMode, LlmParams};
-use crate::llm::translate::{TranslateError, TranslatedResponse};
+use crate::llm::translate::{TranslateError, TranslatedResponse, usage_cost, usage_tokens_cached};
 use serde_json::Value;
 
 /// Build a Responses-API request body from UBF input.
@@ -271,6 +271,8 @@ pub(crate) fn parse_responses_sse(body: &str) -> Result<TranslatedResponse, Tran
     let mut response_id = String::new();
     let mut tokens_prompt = None;
     let mut tokens_completion = None;
+    let mut tokens_cached = None;
+    let mut cost = None;
     let mut completed = false;
     let mut incomplete_reason: Option<String> = None;
 
@@ -298,6 +300,8 @@ pub(crate) fn parse_responses_sse(body: &str) -> Result<TranslatedResponse, Tran
                 if let Some(u) = resp.get("usage") {
                     tokens_prompt = u.get("input_tokens").and_then(|v| v.as_u64());
                     tokens_completion = u.get("output_tokens").and_then(|v| v.as_u64());
+                    tokens_cached = usage_tokens_cached(Some(u));
+                    cost = usage_cost(Some(u));
                 }
                 if event.get("type").and_then(|v| v.as_str()) == Some("response.completed") {
                     completed = true;
@@ -339,8 +343,12 @@ pub(crate) fn parse_responses_sse(body: &str) -> Result<TranslatedResponse, Tran
         &items,
         model,
         response_id,
-        tokens_prompt,
-        tokens_completion,
+        UsageFigures {
+            tokens_prompt,
+            tokens_completion,
+            tokens_cached,
+            cost,
+        },
         incomplete_reason,
     )
 }
@@ -368,12 +376,16 @@ pub(crate) fn parse_responses_response(json: &Value) -> Result<TranslatedRespons
         &items,
         model,
         response_id,
-        usage
-            .and_then(|u| u.get("input_tokens"))
-            .and_then(|v| v.as_u64()),
-        usage
-            .and_then(|u| u.get("output_tokens"))
-            .and_then(|v| v.as_u64()),
+        UsageFigures {
+            tokens_prompt: usage
+                .and_then(|u| u.get("input_tokens"))
+                .and_then(|v| v.as_u64()),
+            tokens_completion: usage
+                .and_then(|u| u.get("output_tokens"))
+                .and_then(|v| v.as_u64()),
+            tokens_cached: usage_tokens_cached(usage),
+            cost: usage_cost(usage),
+        },
         json.get("incomplete_details")
             .and_then(|d| d.get("reason"))
             .and_then(|v| v.as_str())
@@ -385,12 +397,27 @@ pub(crate) fn parse_responses_response(json: &Value) -> Result<TranslatedRespons
 ///
 /// Order mirrors the chat-completions dialect: tool-call turns first, then the
 /// text turn, so downstream topologies see one shape regardless of dialect.
+/// The four usage figures the Responses lane carries from wire to hop header,
+/// bundled so `build_translated` keeps one parameter per concept instead of
+/// four positional `Option`s that are trivially swappable at a call site
+/// (GH #463).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct UsageFigures {
+    /// `usage.input_tokens`.
+    pub(crate) tokens_prompt: Option<u64>,
+    /// `usage.output_tokens`.
+    pub(crate) tokens_completion: Option<u64>,
+    /// Cache-read tokens (`usage.input_tokens_details.cached_tokens`).
+    pub(crate) tokens_cached: Option<u64>,
+    /// The provider's own cost figure, when it reports one.
+    pub(crate) cost: Option<f64>,
+}
+
 fn build_translated(
     items: &[Value],
     model: String,
     response_id: String,
-    tokens_prompt: Option<u64>,
-    tokens_completion: Option<u64>,
+    usage: UsageFigures,
     incomplete_reason: Option<String>,
 ) -> Result<TranslatedResponse, TranslateError> {
     use serde_json::json;
@@ -463,8 +490,10 @@ fn build_translated(
     Ok(TranslatedResponse {
         assistant_turn,
         finish_reason,
-        tokens_prompt,
-        tokens_completion,
+        tokens_prompt: usage.tokens_prompt,
+        tokens_completion: usage.tokens_completion,
+        tokens_cached: usage.tokens_cached,
+        cost: usage.cost,
         model,
         response_id,
     })

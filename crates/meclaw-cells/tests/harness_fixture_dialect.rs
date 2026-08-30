@@ -6,8 +6,8 @@
 //! event stream itself, separately from the cell that consumes it.
 //!
 //! Vocabulary mirrored from the installed Claude Code CLI (2.1.219), verified
-//! against `claude --help` and the binary's own strings — see
-//! `plans/p8-harness-cell.md` § b2.
+//! against `claude --help` and the binary's own strings, not against a
+//! document.
 
 use meclaw_cells::stdio_child::{ChildSpec, Frame, StdioChild};
 use serde_json::Value as JsonValue;

@@ -5,7 +5,7 @@
 //! all four runs the number was 0, and in all four runs the loop had looked --
 //! the composer called tools, `lib` and `eyes` answered, `weave` closed the
 //! round and fired over the re-entry edge
-//! (`plans/welle-2026-08-27/receipts/builder-agentic-loop-messlauf.md`, the
+//! (the builder agentic-loop run series, the
 //! acceptance table, line 4). The number is off by one because it is not the number it was read as:
 //!
 //!   * `weave` stamps the iteration it FINDS (`ctx.get("iter")`) -- the round it

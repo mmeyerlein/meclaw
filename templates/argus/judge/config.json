@@ -1,0 +1,85 @@
+{
+  "cell": {
+    "type": "llm",
+    "message_timeout": 180000
+  },
+  "params": {
+    "provider": "${ARGUS_JUDGE_PROVIDER:-openai}",
+    "base_url": "${ARGUS_JUDGE_BASE_URL:-https://openrouter.ai/api/v1}",
+    "model": "${ARGUS_JUDGE_MODEL:-anthropic/claude-opus-4}",
+    "api_key": "${OPENROUTER_API_KEY}",
+    "external_timeout_ms": 120000,
+    "max_tokens": 4000,
+    "system_order": [
+      "role",
+      "method",
+      "radius",
+      "revert_plan",
+      "quality",
+      "answer"
+    ]
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {
+      "judge_model": {
+        "type": "string",
+        "secret": false,
+        "default": "anthropic/claude-opus-4",
+        "description": "ARGUS_JUDGE_MODEL -- the thinking model. This is the one cell in the hive where a weaker model is a false economy: it decides what the colony does to itself."
+      },
+      "judge_provider": {
+        "type": "string",
+        "secret": false,
+        "default": "openrouter",
+        "description": "ARGUS_JUDGE_PROVIDER -- provider adapter."
+      },
+      "judge_base_url": {
+        "type": "string",
+        "secret": false,
+        "default": "https://openrouter.ai/api/v1",
+        "description": "ARGUS_JUDGE_BASE_URL -- provider endpoint."
+      },
+      "api_key": {
+        "type": "string",
+        "secret": true,
+        "description": "OPENROUTER_API_KEY -- bound late, never stored in the tree."
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "model": {
+          "type": "string",
+          "required": false
+        },
+        "finish_reason": {
+          "type": "string",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        }
+      }
+    }
+  },
+  "description": {
+    "purpose": "The thinking step: evaluate the measurement against the charter, simulate the counterfactual on the numbers it was given, and decide. It never measures and never mutates -- it reasons about numbers it did not produce and hands its decision to a cell that checks it.",
+    "use_when": "One per argus hive. The system prompt carries the charter's own language, so what the judge may do is readable without reading code.",
+    "not_in_scope": "No topology change (radius v1 -- it may only propose one), no access to any ledger of its own, and no authority: everything it decides is re-checked deterministically by ./mutator, which is what makes a model in this position safe to have."
+  }
+}

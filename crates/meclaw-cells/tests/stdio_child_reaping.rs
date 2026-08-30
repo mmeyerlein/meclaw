@@ -108,7 +108,7 @@ async fn read_grandchild_pid(child: &mut StdioChild) -> u32 {
     }
 }
 
-/// P8, the registered P7 follow-up (`docs/roadmap.md`): killing the direct
+/// P8, the registered P7 follow-up (`docs/defer-register.md`): killing the direct
 /// child is not enough for a harness — it spawns process trees.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn terminating_a_process_group_reaps_the_grandchild_too() {

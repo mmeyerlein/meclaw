@@ -1,10 +1,16 @@
-# `tools@1.1.0`
+# `tools@1.2.0`
 
 The tool surface of one assistant as **one node with one contract**: `tool_call` in,
 `tool_result` out.
 
 That sentence is the whole template. Everything below is either a consequence of it or an
 honest note about what it does not yet cover.
+
+Since 1.2.0 the node answers a second question, and it is a question about **itself**: a
+cell that uses tools names them, and the hive hands back their schemas. That is the other
+half of the same sentence -- a surface that decides which cell serves a call, and never
+tells anyone which calls there are to make, is a contract with a hole in it that every
+caller patches by hand.
 
 ## The contract
 
@@ -14,6 +20,8 @@ honest note about what it does not yet cover.
 | out | `tool_result` | what the tool answered -- **whatever the tool was**. |
 | out | `build` | a structural wish, or a manifest being submitted -- the one lane on which a tool of this surface reaches OUT of the assistant. |
 | in | `in_build_result` | the answer to that: a draft manifest, or the receipt of a submission. |
+| in | `in_schemas` | the names a caller declares it uses -- `{"tools": ["web_search", "web_fetch"]}`, or `["*"]` for everything. |
+| out | `tool_schemas` | their declarations, plus the names the hive does not have. |
 
 **One RESULT lane and no second.** A tool that failed answers on `tool_result` too: a
 non-zero exit code, a 404, an empty result list are ordinary results and the round
@@ -29,9 +37,10 @@ own identity. That fact is declared here rather than left to be discovered in an
 table -- the same reason `sandbox_union` exists one level down, where a process radius
 existed collectively and was invisible while it was spread over several files.
 
-`params.required_drains` pairs both directions in the lane form: *a caller that sends me
-`tool_call` must subscribe to `tool_result`*, and *a level that sends me `in_build_result`
-must subscribe to `build`*. A mutation that wires one half without the other is refused
+`params.required_drains` pairs all three directions in the lane form: *a caller that sends
+me `tool_call` must subscribe to `tool_result`*, *a level that sends me `in_build_result`
+must subscribe to `build`*, and *a caller that sends me `in_schemas` must subscribe to
+`tool_schemas`*. A mutation that wires one half without the other is refused
 with `required_drain_missing` before anything is staged. There is no topology in which
 handing this hive a call and not taking the answer back is the intended shape -- the tool
 would run, cost whatever it costs, and answer into nothing while the brain waits for a turn
@@ -42,9 +51,9 @@ that was produced and delivered nowhere.
 `params.ports` is `[]`. The hive path is the only address, and that is the point rather
 than a restriction: **the tool surface is a contract, not a set of addresses.** If a caller
 could draw an edge to a single tool cell, the set of tools would live in the caller's edge
-table, and every change to it would be a change to the caller. Sealed, adding a fourth tool
-is one occupant directory and two internal edges -- a door and an exit; the caller's single
-edge does not move.
+table, and every change to it would be a change to the caller. Sealed, adding a tool
+is one occupant directory, two internal edges -- a door and an exit -- and one row in the
+`schemas` cell's table; the caller's single edge does not move.
 
 This is also what makes the acceptance in GH #286 reachable: replacing three tool cells
 with one code-executing cell is a `swap_nodes` on this node. The caller does not change,
@@ -57,9 +66,52 @@ because the contract does not change.
 | `bash/` | `bash` | `hop.tool_name == 'bash'` | `{"trust": "restricted", "network": "deny", "filesystem": {"runtime": true}}` |
 | `web_fetch/` | `web_fetch` | `hop.tool_name == 'web_fetch'` | none |
 | `web_search/` | `web_search` | `hop.tool_name == 'web_search'` | none |
-| `unknown/` | `code` | nothing else fired | `{"trust": "restricted", "network": "deny", "filesystem": {"runtime": true}}` |
+| `file/` | `file` | `hop.tool_name == 'file'` | none |
+| `edit/` | `edit` | `hop.tool_name == 'edit'` | none |
 | `build/` | `code` | `hop.tool_name == 'build_topology'` | `{"trust": "restricted", "network": "deny", "filesystem": {"runtime": true}}` |
 | `apply/` | `code` | `hop.tool_name == 'apply_manifest'` | `{"trust": "restricted", "network": "deny", "filesystem": {"runtime": true}}` |
+| `schemas/` | `code` | the `in_schemas` lane | `{"trust": "restricted", "network": "deny", "filesystem": {"runtime": true}}` |
+| `unknown/` | `code` | nothing else fired | `{"trust": "restricted", "network": "deny", "filesystem": {"runtime": true}}` |
+| `mcp/` | `mcp` | **nothing -- unwired** | none |
+| `vault/` | `vault` | **nothing -- unwired** | none |
+
+`file` and `edit` share ONE root (`TOOLS_FILE_ROOT`, § *The environment surface*), and that
+is a decision rather than a convenience: one assistant has one file root, and a tool that
+could edit what its neighbour cannot read would be a boundary nobody could state.
+
+**`mcp/` and `vault/` stand here and are not wired**, and the two facts belong together.
+Activity in this substrate is derived from the edges alone -- a cell no edge touches is an
+island, and the boot registers it, keeps its `cell_id` and never spawns it. So an occupant
+directory with no door is the template-level way to ship a cell asleep, and it costs
+nothing: waking one is one `add_edges` pair inside this hive, not a new directory and not a
+change to any caller. Each of the two is unwired for a reason that is a DECISION somebody
+has to make first, and that no template can make for them:
+
+* `mcp` bridges one MCP server, and nobody has named the server. It is a long-running cell:
+  wired at a loopback placeholder it would reconnect to nothing, in every colony that ever
+  grew this template. Name `MCP_ENDPOINT`, then draw the pair.
+* `vault` answers exactly ONE sender -- its broker -- and attests its own inbound edges
+  before it will accept key material. There is no broker in this hive; the shipped
+  arrangement puts a vault in the capability broker's own hive, beside the `invoke` cell
+  that is allowed to spend it. Wired here with no broker beside it, every call would come
+  back `attestation_failed`, which is the refusal working rather than the cell failing.
+
+The pair that wakes either of them, written out so it is a copy rather than a design:
+
+```json
+[
+  { "from": ".", "to": "./mcp",
+    "condition": "has(hop.route) && hop.route == 'tool_call' && has(hop.tool_name) && hop.tool_name == 'mcp'" },
+  { "from": "./mcp", "to": ".",
+    "condition": "has(hop.mcp_tool)",
+    "modifier": { "set_hop": { "route": "'tool_result'" } } }
+]
+```
+
+The exit condition reads `hop.mcp_tool` and not `hop.operation`, because the `mcp` cell
+stamps no `operation` at all -- an exit that asked for one would leave every answer standing
+at the hive path. A schema row in `schemas/` goes with the pair; § *The declarations* says
+why the two edits travel together.
 
 `build` and `apply` are the two halves of one round and carry the tightest block in the
 tree: they compute nothing, reach nothing and store nothing. What they do is carry -- a
@@ -68,16 +120,23 @@ of both cells are recognised POSITIVELY, and the correlation of the round travel
 CONTEXT (`build_call_id`), because `hop` is a one-hop compartment and the builder is eight
 hops away.
 
-The three tools are each a copy of a shape the library already carries -- `bash` after the
-coder pipeline's runner, `web_fetch` after the daily digest's fetcher, `web_search` after
-the minimal `web_search` cell type -- so no cell type is invented here. `unknown` is not a
-tool at all; it is the subject of the dispatch section below.
+Every occupant is a copy of a shape the library already carries -- `bash` after the coder
+pipeline's runner, `web_fetch` after the daily digest's fetcher, `web_search`, `file`,
+`edit`, `mcp` and `vault` after the cell types of the same names -- so no cell type is
+invented here. `unknown` is not a tool at all; it is the subject of the dispatch section
+below, and `schemas` is not a tool either: it answers a lane of its own and no `tool_call`
+ever reaches it.
 
-**The two `none` rows are the shipped truth, not an oversight.** Egress is what those two
-cells are for: `network: "deny"` would turn them off, and a process sandbox has no notion
-of an allowed host. They are written down as they are so that the blast radius of this hive
-is a thing one can read instead of a thing one discovers. `bash` carries the block GH #286
-measured on the shipped instance, verbatim.
+**The `none` rows are the shipped truth, not an oversight**, and they are two different
+sentences. For `web_fetch` and `web_search`, egress is what those cells are for:
+`network: "deny"` would turn them off, and a process sandbox has no notion of an allowed
+host. For `file`, `edit`, `mcp` and `vault`, a process sandbox has nothing to bound at all
+-- those cells do their own I/O rather than starting a runner, so the fence is somewhere
+else: `params.base_path` for the two file cells, checked lexically and again after
+canonicalisation, and the broker attestation for the vault. Either way the rows are written
+down as they are so that the blast radius of this hive is a thing one can read instead of a
+thing one discovers. `bash` carries the block GH #286 measured on the shipped instance,
+verbatim.
 
 ## The declared blast radius
 
@@ -88,41 +147,58 @@ writing down. `template.json` writes it down, in two machine-readable blocks.
 
 | axis | union | who sets it |
 |---|---|---|
-| `trust` | `full` | `web_fetch`, `web_search` -- neither declares a block |
-| `network` | `allow` | the same two |
-| `filesystem` | `unrestricted` | the same two |
+| `trust` | `full` | the six occupants that declare no block: `web_fetch`, `web_search`, `file`, `edit`, `mcp`, `vault` |
+| `network` | `allow` | the same six |
+| `filesystem` | `unrestricted` | the same six |
 
-A union is not an average. `bash` and `unknown` are as restricted as the library gets, and
-they tighten **nothing** about the hive as a whole: what they bound is what happens once
-dispatch has already chosen them. Either unsandboxed occupant alone puts every axis at its
-widest, and that is the honest reading of what handing this hive a `tool_call` can set in
-motion.
+A union is not an average. `bash`, `unknown`, `build`, `apply` and `schemas` are as
+restricted as the library gets, and they tighten **nothing** about the hive as a whole: what
+they bound is what happens once dispatch has already chosen them. Any single unsandboxed
+occupant alone puts every axis at its widest, and that is the honest reading of what handing
+this hive a `tool_call` can set in motion.
+
+`mcp` and `vault` are counted here although no edge reaches them. That is deliberate, and it
+is the argument the block itself rests on: a union that leaves a directory out of the
+calculation is the invisibility this declaration exists to end, and waking one of the two is
+one `add_edges` pair rather than a new file -- so a reader who takes them out of the sum is
+reading a radius that is one mutation away from being wrong.
 
 That is uncomfortable to read, and it is supposed to be. The radius is not new -- GH #286
-measured it on the shipped instance -- it was merely spread across four files where nobody
-had to look at it whole. **The union is what a replacement is measured against: a
-code-executing cell that needs exactly this is not a widening; one that needs more is.**
+measured it on the shipped instance -- it was merely spread across files where nobody had to
+look at it whole. **The union is what a replacement is measured against: a code-executing
+cell that needs exactly this is not a widening; one that needs more is.**
 
-**`reentrancy` -- one entry per occupant, all six `true` today.**
+**`reentrancy` -- one entry per occupant, and since 1.2.0 they are not all the same word.**
 
 | occupant | reentrant | why |
 |---|---|---|
 | `bash` | yes | one-shot, no session state, no working directory carried between calls |
 | `web_fetch` | yes | stateless request/response, one GET per call |
 | `web_search` | yes | stateless request/response, no cursor, no pagination state |
+| `file` | yes | one op per call, no handle and no cursor between calls |
+| `edit` | **no** | a read-modify-write with no lock; two edits of one file race in the filesystem, and the caller cannot see that |
 | `unknown` | yes | it formats a string; there is no state to reach |
+| `schemas` | yes | it reads names and writes declarations out of a table compiled into its own script |
 | `build` | yes | it reads a hop and a turn and writes a turn; the correlation runs over the round's own context |
 | `apply` | yes | the same, and the ORDER of two submissions is the colony's to decide at the door, never this cell's to assume |
+| `mcp` | yes | one in-flight request per JSON-RPC id -- declared although the occupant is unwired |
+| `vault` | yes | one op per message against its own `cell.db` -- declared although the occupant is unwired |
 
-`params.max_concurrency` (4 / 4 / 8) is a queue, not a serialisation: the call over the cap
-waits and still answers on its own `tool_result`.
+`params.max_concurrency` is a queue and not a serialisation wherever the verdict is `yes`:
+the call over the cap waits and still answers on its own `tool_result`. **`edit` is the one
+exception, and its cap of one is the verdict, not a tuning.** An edit is a read-modify-write
+without a lock and without tempfile+rename (`docs/cell-types.md` § `edit`), so two edits of
+the same path race at the filesystem -- a hazard a caller cannot see from outside. This
+occupant serialises rather than asking the caller to. A brain may still fan a round out
+across the other occupants; the edits in that round run one after another.
 
-All four are stated even though the answer is four times the same word, because the hazard
-this declaration exists for is a **swap** that quietly makes a parallel tool round
-sequential -- and an occupant nobody declared is exactly the one whose serialisation
-surprises the caller. The check runs in both directions: every occupant directory has an
-entry, and every entry names a directory that exists, so an entry cannot outlive the cell
-it described.
+Every entry is stated even where the answer repeats, because the hazard this declaration
+exists for is a **swap** that quietly makes a parallel tool round sequential -- and an
+occupant nobody declared is exactly the one whose serialisation surprises the caller. The
+two unwired occupants are declared for the same reason: an entry that appears only once
+somebody draws an edge is an entry nobody read at the moment it would have mattered. The
+check runs in both directions: every occupant directory has an entry, and every entry names
+a directory that exists, so an entry cannot outlive the cell it described.
 
 Both blocks are additive to the substrate: `parse_template_json` reads `name`, `version`,
 `description` and `tags` and ignores every other top-level key, so nothing here changes how
@@ -162,20 +238,20 @@ three tools behind the contract or thirty. That sentence is the whole reason the
 distribution lives here rather than in the caller's edge table, and it is what GH #286
 asked to be said out loud.
 
-Eight edges do it, and every one of them is `from` or `to` the hive path itself -- no
-caller can name any of them, because `params.ports` is `[]`.
+Every edge that does it is `from` or `to` the hive path itself -- no caller can name any of
+them, because `params.ports` is `[]`.
 
-**Four doors, out of `.`.** Three ordinary conditioned edges, one per tool, each asking for
-the accepted lane first and then narrowing *within* it on `hop.tool_name`:
+**The doors, out of `.`.** Ordinary conditioned edges, one per tool, each asking for the
+accepted lane first and then narrowing *within* it on `hop.tool_name`:
 
 ```json
 { "from": ".", "to": "./bash",
   "condition": "has(hop.route) && hop.route == 'tool_call' && has(hop.tool_name) && hop.tool_name == 'bash'" }
 ```
 
-They are mutually exclusive by construction -- three equality tests against three distinct
-literals -- so a known tool name selects exactly one of them. Overlapping positives would
-not be an error, they would simply stay fan-out; none is authored, and none should be.
+They are mutually exclusive by construction -- equality tests against distinct literals --
+so a known tool name selects exactly one of them. Overlapping positives would not be an
+error, they would simply stay fan-out; none is authored, and none should be.
 
 **The lane term is not decoration.** An occupant's answer travels back out through this
 same hive path, so a door that asked only about `hop.tool_name` would also be offered every
@@ -183,7 +259,7 @@ answer -- and an answer that happened to carry the name would be handed straight
 its own sender, round after round until the TTL ran out. Asking for the lane first says
 what the door is actually for: *inbound calls*, not everything that passes the hive path.
 
-Then the fourth door, which is the one worth reading twice:
+Then the guarded default, which is the door worth reading twice:
 
 ```json
 { "from": ".", "to": "./unknown", "default": true,
@@ -206,7 +282,8 @@ about what it consumes. The guard names the traffic out loud -- *this default is
 `tool_call` lane* -- so a second lane added to the contract tomorrow does not silently
 inherit a refusal cell that was never meant for it.
 
-**Four exits, into `.`.** One per occupant, each stamping the hive's single outward lane:
+**The exits, into `.`.** One per occupant, each stamping the outward lane that occupant's
+answer belongs on -- `tool_result` for every tool, `tool_schemas` for `schemas`:
 
 ```json
 { "from": "./bash", "to": ".",
@@ -217,14 +294,27 @@ inherit a refusal cell that was never meant for it.
 Ordinary conditioned fan-in edges, and **none of them is a default**. Default suppression
 is per *sender*; these senders are the occupants, not the hive path, so they cannot
 interact with the call-side default at all. The condition reads `hop.operation` because
-that is what each of the three tool cells stamps on every emission it has -- success,
-non-zero exit, 404, timeout alike -- and `unknown` stamps `operation: "unknown"` for the
-same reason: the exit says *which occupant answered*, and the lane says *what kind of
-message it is*.
+that is what each tool cell stamps on every emission it has -- success, non-zero exit, 404,
+timeout alike -- and `unknown` stamps `operation: "unknown"` for the same reason: the exit
+says *which occupant answered*, and the lane says *what kind of message it is*.
+
+**`file` and `edit` name more than one value, and one of the values is `unknown`.** Those
+two cells label the operation they RAN, so their exits list the four and the two:
+
+```json
+{ "from": "./edit", "to": ".",
+  "condition": "has(hop.operation) && (hop.operation == 'find_replace' || hop.operation == 'insert_at_line' || hop.operation == 'unknown')",
+  "modifier": { "set_hop": { "route": "'tool_result'" } } }
+```
+
+`unknown` is in both lists because that is the label those cells put on a call whose
+arguments did not parse far enough to say which op was meant -- a refusal that has to reach
+the caller like every other. It cannot be confused with the `unknown/` occupant: suppression
+and matching are per SENDER, and these edges leave `./file` and `./edit`.
 
 **And one thing an author adding a tool should keep anyway.** The lane guard above makes it
 safe, but an answer still has no business carrying the key the dispatch runs on: a cell
-emission mints a fresh hop, and none of the three shipped cells writes `tool_name` into it
+emission mints a fresh hop, and no shipped tool cell writes `tool_name` into it
 -- they stamp `operation` and their own outcome keys. `./unknown` is the deliberate
 exception, because naming the tool that was asked for is the whole content of its refusal.
 Both halves are pinned:
@@ -255,6 +345,60 @@ which boots this tree in a colony: one named call reaches one occupant and the d
 stays silent, and an unknown name comes back as one typed `tool_result` with no dead letter
 anywhere.
 
+## The declarations
+
+**A tool schema now lives in this hive, and until 1.2.0 this file said the opposite.** The
+retracted sentence was *"Tool schemas belong in the calling brain's `system.tools`... a
+schema here would be a second copy of the same list, and the two would drift on the first
+tool anyone added."* The first half of that was right about the DESTINATION and wrong about
+the SOURCE, and the second half described the state it produced rather than prevented: with
+no source in the hive, every caller typed the list into its own prompt, and adding a tool by
+mutation meant editing every one of those prompts by hand. There were as many copies as
+there were callers, and no two of them had to agree. There is one copy now, it is here, and
+what a caller keeps is the NAMES it uses -- which is a decision, not a copy.
+
+The occupant is `schemas/`, a `code` cell on a lane of its own.
+
+| | |
+|---|---|
+| reached on | `in_schemas` at the hive path -- never a `tool_call`, never a `tool_name` |
+| asked with | `{"tools": ["web_search", "web_fetch"]}`, or `{"tools": ["*"]}` for everything |
+| answers on | `tool_schemas`, with `schemas[]` and `unknown[]` |
+
+```json
+{ "schemas": [ { "name": "web_search",
+                 "description": "Query the configured search endpoint ...",
+                 "parameters": { "type": "object",
+                                 "properties": { "query": { "type": "string" } },
+                                 "required": ["query"] } } ],
+  "unknown": ["telepathy"] }
+```
+
+**A name the hive does not have comes back in `unknown`, never dropped**, and
+`hop.error_code` is `tool_unknown` when that list is non-empty. A menu that is silently one
+tool short is a model that never calls it and an author who never learns why; a partial
+answer is still an answer, so the schemas that WERE found travel beside the names that were
+not. An `in_schemas` request carrying no `tools` slot at all is a third state and gets its
+own code, `tools_missing` -- an absent list and an empty one are two different requests, and
+a caller that declares no tools is entitled to an empty menu rather than to everything.
+
+**Where the schemas come from, and why they are written down here rather than derived.** No
+tool cell in this library publishes an argument schema anywhere a machine can read. Each one
+declares a `contract` -- which body slots it consumes, which hop keys it emits -- and that is
+a different document: `contract` answers *what does the substrate carry*, a schema answers
+*what may I fill in*. The only description of the arguments that exists today is prose, in
+each occupant's `description.consumes_meaning` and its example line. So this table is the
+**first** machine-readable copy rather than a second one, and it is deliberately compiled
+into the `schemas` cell's own script rather than kept in a store: a store would be a second
+cell to reach, a second round trip inside the hive, and a `cell.db` whose content nobody
+reviews in a diff. In the script, adding a tool stays what it already was -- one occupant
+directory, two edges and one row, all three in this one directory, all three in one diff.
+
+The two halves cannot drift apart in silence: a test walks the dispatch graph and requires
+that every tool a door names has a row, and that every row names a tool a door dispatches
+to. The unwired occupants (`mcp`, `vault`) are in neither, by the same rule -- a schema for
+a tool no edge reaches would offer a model a call that goes nowhere.
+
 ## Wiring it
 
 One edge in, one edge out, in the same mutation:
@@ -272,6 +416,64 @@ One edge in, one edge out, in the same mutation:
 The names on the caller's side are whatever that level calls its brain and its fan-in; what
 is fixed is the pair of lanes and the fact that there are two edges, never one.
 
+### Asking for the declarations
+
+The second pair, for a caller that wants its menu from here instead of from a typed list.
+It is a lane pair like the first one, and `params.required_drains` refuses a mutation that
+draws only half of it:
+
+```json
+[
+  { "from": "./collector", "to": "./tools",
+    "condition": "has(hop.route) && hop.route == 'schemas'",
+    "modifier": { "set_hop": { "route": "'in_schemas'" } } },
+  { "from": "./tools", "to": "./collector",
+    "condition": "has(hop.route) && hop.route == 'tool_schemas'" }
+]
+```
+
+**What a caller sends.** A body with one slot:
+
+```json
+{ "tools": ["web_search", "web_fetch"] }
+```
+
+`["*"]` asks for every tool the hive has. The list is the caller's own declaration -- the
+names its template said it uses -- and the hive keeps no record of who asked: whoever
+designed that template decided what it uses, and that decision belongs where the rest of its
+contract is, not in a subscriber table over here that drifts on the first rewiring.
+
+**What comes back**, on `tool_schemas`, in the body:
+
+| slot | what it is |
+|---|---|
+| `schemas[]` | one `{name, description, parameters}` per name the hive has, in the order asked (sorted, for `*`) |
+| `unknown[]` | the names it does not have, verbatim |
+| `messages[]` | empty -- this is not a turn and no model reads it |
+
+and in the hop: `operation: "schemas"`, `schema_count`, `unknown_count`, and `error_code`
+`tool_unknown` (at least one name was not found) or `tools_missing` (the request carried no
+`tools` slot at all).
+
+**The answer is provider-neutral on purpose.** `{name, description, parameters}` is not the
+shape any model provider wants; wrapping it -- `{"type": "function", "function": {...}}` for
+an OpenAI-dialect provider -- is the caller's job, because the caller is the one that knows
+its provider. A hive that wrapped would be a hive that had to be told which provider its
+caller talks to, which is a second thing a caller has to tell it and a first thing this hive
+would be wrong about.
+
+**When to ask.** Not per turn: the answer is a durable `system.*` slot on the caller's side,
+written once and read by every turn after it. Asking it AGAIN is how a caller learns that a
+tool was added, and nothing here pushes -- the hive answers questions and raises nothing of
+its own.
+
+That makes the ask a **tick** rather than a birth, and the shipped caller says so out loud:
+the substrate hands a cell no message at spawn, so there is no moment called "start-up" at
+which anything could ask. `collector` carries a `timer` for it (`MENU_CRON`), the
+first firing is the first ask, and every later one costs two selects over unchanged data on
+this side -- see [`templates/collector/README.md`](../collector/README.md) § *The menu is
+asked for*.
+
 ## The environment surface
 
 `template.json`'s `requires.env` declares the two tokens the `web_search` occupant binds,
@@ -281,6 +483,9 @@ and says which value each one fills:
 |---|---|---|
 | `SEARCH_ENDPOINT` | `web_search`'s `params.endpoint`, written `${SEARCH_ENDPOINT:-http://127.0.0.1:8080/search}` | no |
 | `SEARCH_API_KEY` | `web_search`'s `params.api_key`, written `${SEARCH_API_KEY:-}` | no |
+| `TOOLS_FILE_ROOT` | `params.base_path` of BOTH `file` and `edit`, written `${TOOLS_FILE_ROOT:-/tmp}` | no |
+| `MCP_ENDPOINT` | `mcp`'s `params.endpoint` -- an occupant that is unwired until somebody answers this | no |
+| `TOOLS_VAULT_BROKER` | `vault`'s `params.broker` -- likewise unwired until somebody answers this | no |
 
 Neither is required, and that is a decision worth stating rather than leaving to be
 inferred. Both tokens carry a `:-` default, so an instantiation without them succeeds --
@@ -296,14 +501,29 @@ search occupant at a loopback placeholder, and a machine with no search shim beh
 answers nothing. That is not an error and nothing anywhere reports it -- which is precisely
 why the key is written down here.
 
-Neither token carries a value in this tree and neither ever should: what is declared is the
-name of a secret, never the secret.
+**`TOOLS_FILE_ROOT` is the one whose default is a real reach, and that is the honest part.**
+`base_path` must name a directory that EXISTS or the cell refuses to spawn, and the only
+directory that exists on every machine is the scratch one. So unset, this assistant's file
+surface is rooted at `/tmp`: nobody's mistake, nothing anywhere reports it, and the same
+argument as the search endpoint one line up -- which is why it is written down rather than
+discovered. Set it to the directory this assistant may actually touch.
+
+`MCP_ENDPOINT` and `TOOLS_VAULT_BROKER` are the other shape: they are not defaults anybody
+falls back on, they are the questions that keep two occupants unwired (§ *The occupants*).
+Answering one is the first half of waking a cell; drawing its two edges is the second.
+
+No token carries a value in this tree and none ever should: what is declared is the name of
+a secret or the address of a service, never the secret itself.
 
 ## What does NOT live here
 
-- **Tool schemas.** They belong in the calling brain's `system.tools`, next to the model
-  that has to choose. A schema here would be a second copy of the same list, and the two
-  would drift on the first tool anyone added.
+- ~~**Tool schemas.**~~ **RETRACTED in 1.2.0** ([#464](https://github.com/mmeyerlein/meclaw/issues/464)).
+  This list used to say a schema here would be a second copy of the calling brain's
+  `system.tools`. The destination was right and the source was wrong: with no schema in the
+  hive there was no first copy, only one per caller, typed by hand and free to disagree. The
+  schemas live in `schemas/` now and a caller asks for the ones it declared -- § *The
+  declarations*. What still does not live here is the DECISION: which tools a caller uses is
+  its own template's business, and this hive keeps no list of who asked.
 - **Per-tool credentials.** A cell that needs one binds it itself, late, from the
   environment. This hive holds none and can therefore leak none.
 - **Judgement.** Which tool to call, and whether it should have been called at all, was

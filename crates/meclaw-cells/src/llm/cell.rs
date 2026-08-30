@@ -13,6 +13,140 @@ use meclaw_colony::{AttachmentReadError, AttachmentReader};
 use meclaw_core::serde_json::Value;
 use meclaw_core::{Body, Message, OutputSink};
 
+/// GH #457: the `credential_pending` receipt's wording. One constant because
+/// three code paths hand it out — the deadline, a broken delivery, and the
+/// overflow — and a receipt that reads differently depending on which of them
+/// fired would be three receipts to a reader who only has the log.
+const CREDENTIAL_PENDING_DETAIL: &str =
+    "the bearer credential was requested from the access hive but did not arrive; retry";
+
+/// GH #457: one turn held back while the sealed credential is in flight.
+///
+/// It carries its own `OutputSink`, not the cell's: a sink is per-message (it
+/// stamps `parent_message_id`, `trace_id`, ttl and the input headers onto every
+/// emission), so answering a parked turn through the sink of whatever message
+/// happened to release it would file the answer under the wrong parent. The
+/// turn keeps the sink it arrived with, and the receipt or the answer lands on
+/// the trace that asked for it.
+struct ParkedTurn {
+    msg: Message,
+    sink: OutputSink,
+    reply_target: meclaw_core::Path,
+    started_at_unix_ms: i64,
+}
+
+/// GH #457: the warden of ONE in-flight credential round.
+///
+/// It is a task that OWNS the parked turns, not a lock over them — `AGENTS.md`
+/// forbids `Mutex`/`RwLock`/atomics in cell state, and the substrate's standing
+/// answer to "two timelines, one piece of state" is the same one
+/// `llm::token_broker` uses: hand the state to a task and talk to it over
+/// channels. A turn is therefore owned by exactly one side at every instant —
+/// the cell until `try_send`, the warden until it hands the batch back.
+///
+/// A task rather than a check on the next message, because there may not BE a
+/// next message: a broker refusal is routed to the topology's error lane, never
+/// back to the asking cell, so a cell that only ever looked at its own inbox
+/// would hold the parked turns forever and reproduce the very silence GH #457
+/// is about.
+struct CredentialWait {
+    /// The parking lot. Its CAPACITY is `params.credential_wait_max`, so the
+    /// bound is the channel's and `try_send` reports the overflow — there is no
+    /// counter anywhere that could disagree with the buffer's real length.
+    turns: tokio::sync::mpsc::Sender<ParkedTurn>,
+    /// Ask the warden for its batch back: send it the channel to answer on.
+    /// `Err` means the warden is gone — the deadline fired and every turn it
+    /// held already has its receipt.
+    release: tokio::sync::oneshot::Sender<tokio::sync::oneshot::Sender<Vec<ParkedTurn>>>,
+}
+
+/// What [`LlmCell::park_turn`] did with a turn that found no credential.
+enum ParkOutcome {
+    /// Parked, and this turn opened the round — the caller asks the vault.
+    Asked,
+    /// Parked into a round that is already asking. No second request: the vault
+    /// is asked once per round, not once per message.
+    Parked,
+    /// Not parked, because the bound is full. The turn gets its receipt now
+    /// rather than a place in a queue that is not moving. Boxed because a
+    /// `ParkedTurn` carries a whole `Message` and this enum is otherwise a tag.
+    Refused(Box<ParkedTurn>),
+}
+
+/// GH #457: the warden task of one credential round.
+///
+/// It never reads the parking channel while it waits — the CHANNEL is the
+/// buffer, so its capacity is the bound and `try_send` on the cell's side is
+/// the overflow check. Draining early would free slots the operator never
+/// granted, which is exactly the "grows without limit" the issue rules out.
+///
+/// It ends in one of two ways. Either the box arrived — then `release` hands
+/// the batch back to the cell, in arrival order, and the cell answers them. Or
+/// `wait_ms` elapsed — then every turn it is holding gets its
+/// `credential_pending` receipt right here. That is the only place in this
+/// design where a receipt is produced without a message having arrived, and the
+/// reason a vault that never answers cannot turn into silence.
+///
+/// A dropped cell (sleep, death, panic) closes the release channel; that is the
+/// third exit, and it takes the receipt branch for the same reason — nobody is
+/// left who could answer these turns.
+async fn credential_warden(
+    mut turns: tokio::sync::mpsc::Receiver<ParkedTurn>,
+    release: tokio::sync::oneshot::Receiver<tokio::sync::oneshot::Sender<Vec<ParkedTurn>>>,
+    wait_ms: u64,
+) {
+    let reply = tokio::select! {
+        // Biased, release first: a box that arrived in the same instant the
+        // deadline elapsed wins. Answering a turn beats refusing it, and a coin
+        // flip between the two would be a flaky receipt.
+        biased;
+        asked = release => asked.ok(),
+        () = tokio::time::sleep(std::time::Duration::from_millis(wait_ms)) => {
+            tracing::warn!(wait_ms, "llm: the sealed credential did not arrive in time");
+            None
+        }
+    };
+    // One drain, whichever way this ended. `try_recv` empties a channel whose
+    // sender may already be gone, and it yields the turns in the order they
+    // were parked.
+    let mut held = Vec::new();
+    while let Ok(turn) = turns.try_recv() {
+        held.push(turn);
+    }
+    match reply {
+        Some(reply) => {
+            let _ = reply.send(held);
+        }
+        None => {
+            for turn in held {
+                emit_credential_pending(&turn).await;
+            }
+        }
+    }
+}
+
+/// GH #457: hand one parked turn its `credential_pending` receipt.
+///
+/// A free function on purpose: the deadline task holds no `&LlmCell` and must
+/// not — the cell's state belongs to the cell task alone, and everything this
+/// emission needs travels with the turn.
+async fn emit_credential_pending(turn: &ParkedTurn) {
+    output::emit_error(
+        &turn.sink,
+        turn.reply_target.clone(),
+        "credential_pending",
+        CREDENTIAL_PENDING_DETAIL,
+        "auth",
+        vec![],
+        turn.started_at_unix_ms,
+        0,
+        None,
+        None,
+        None,
+    )
+    .await;
+}
+
 /// How a provider call failed, with everything `emit_error` needs.
 ///
 /// Exists so the Responses lane can hand one value back to `handle()` instead
@@ -250,6 +384,17 @@ pub struct LlmCell {
     /// The ephemeral X25519 recipient key of the credential request in flight.
     /// `Some` between emitting the request and opening the box.
     pending_recipient: Option<crate::sealed::RecipientKeypair>,
+    /// GH #457: the credential round currently in flight, with the turns it is
+    /// holding. `None` between rounds — which is the state a cell that holds a
+    /// key of its own never leaves.
+    credential_wait: Option<CredentialWait>,
+    /// GH #457: turns the arriving box released, waiting to be run.
+    ///
+    /// They are NOT run from inside the delivery's own `handle_one` — that
+    /// would be `handle_one` calling itself, and an async fn that awaits itself
+    /// has no finite size. `handle` drains this queue after the delivery is
+    /// done, which is the same order with a flat call stack.
+    released: std::collections::VecDeque<ParkedTurn>,
 }
 
 impl LlmCell {
@@ -264,6 +409,94 @@ impl LlmCell {
             attachments: None,
             credential: None,
             pending_recipient: None,
+            credential_wait: None,
+            released: std::collections::VecDeque::new(),
+        }
+    }
+
+    /// GH #457: hold this turn back until the sealed box arrives.
+    ///
+    /// Three outcomes, and the caller acts on all three: the turn opened a new
+    /// round (ask the vault, exactly once per round), it joined a round already
+    /// asking (say nothing more), or it did not fit (receipt now).
+    ///
+    /// A round whose warden is gone — the deadline fired — is no round at all:
+    /// the turn opens a fresh one and the vault is asked again. That is the
+    /// retry lane the old code did not have, and it costs one request per
+    /// round rather than one per message.
+    fn park_turn(&mut self, turn: ParkedTurn) -> ParkOutcome {
+        let turn = match &self.credential_wait {
+            Some(wait) => match wait.turns.try_send(turn) {
+                Ok(()) => return ParkOutcome::Parked,
+                Err(tokio::sync::mpsc::error::TrySendError::Full(t)) => {
+                    return ParkOutcome::Refused(Box::new(t));
+                }
+                // The warden timed out and dropped its receiver. Fall through:
+                // this turn opens the next round.
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(t)) => t,
+            },
+            None => turn,
+        };
+        // A zero bound would be a channel that cannot be built; one slot is the
+        // smallest buffer that still parks the turn that triggers the round,
+        // which is the whole point of the issue.
+        let (turn_tx, turn_rx) = tokio::sync::mpsc::channel(self.params.credential_wait_max.max(1));
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        turn_tx
+            .try_send(turn)
+            .unwrap_or_else(|_| unreachable!("a fresh channel with >=1 slot has room"));
+        tokio::spawn(credential_warden(
+            turn_rx,
+            release_rx,
+            self.params.credential_wait_ms,
+        ));
+        self.credential_wait = Some(CredentialWait {
+            turns: turn_tx,
+            release: release_tx,
+        });
+        ParkOutcome::Asked
+    }
+
+    /// GH #457: take the round's turns back from its warden.
+    ///
+    /// `None` (rather than an empty batch) when there was no round, or when the
+    /// warden had already given up — in the latter case every turn it held has
+    /// its receipt, and there is nothing left to do about them here.
+    async fn reclaim_parked(&mut self) -> Option<Vec<ParkedTurn>> {
+        let wait = self.credential_wait.take()?;
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        // `turns` stays alive across the handshake on purpose: dropping it first
+        // would close the warden's inbox in the same breath as the request.
+        let CredentialWait { turns, release } = wait;
+        release.send(reply_tx).ok()?;
+        let batch = reply_rx.await.ok();
+        drop(turns);
+        batch
+    }
+
+    /// GH #457: the box arrived — queue what the round was holding.
+    ///
+    /// The turns are not run here: this is called from inside `handle_one`, and
+    /// running them here would be `handle_one` awaiting itself. `handle` drains
+    /// the queue afterwards, same order, flat call stack.
+    async fn release_parked(&mut self) {
+        if let Some(batch) = self.reclaim_parked().await {
+            self.released.extend(batch);
+        }
+    }
+
+    /// GH #457: the round failed — every turn it was holding gets its receipt.
+    ///
+    /// The delivery-failure counterpart of [`Self::release_parked`]: a box that
+    /// does not open is, for a parked turn, the same outcome as a vault that
+    /// refused. Waiting for the deadline would only make the same answer
+    /// slower.
+    async fn refuse_parked(&mut self) {
+        let Some(batch) = self.reclaim_parked().await else {
+            return;
+        };
+        for turn in batch {
+            emit_credential_pending(&turn).await;
         }
     }
 
@@ -609,6 +842,33 @@ impl StatefulCell for LlmCell {
         db: &'a mut meclaw_colony::DbConn,
     ) -> impl std::future::Future<Output = ()> + Send + 'a {
         async move {
+            self.handle_one(msg, sink, db).await;
+            // GH #457: a sealed delivery releases the turns that were parked
+            // waiting for it. They run here, one after the other and in the
+            // order they arrived, each through the sink it came in with — the
+            // flat drain that keeps `handle_one` from having to call itself.
+            //
+            // The loop terminates because a released turn finds the credential
+            // in RAM and therefore never parks: `release_parked` is reached only
+            // from the delivery path, and the delivery is what set it.
+            while let Some(turn) = self.released.pop_front() {
+                let ParkedTurn { msg, sink, .. } = turn;
+                self.handle_one(msg, &sink, db).await;
+            }
+        }
+    }
+}
+
+impl LlmCell {
+    /// One message, start to finish. The Reihenfolge this doc-comment describes
+    /// lives here; [`StatefulCell::handle`] wraps it with the GH #457 drain.
+    async fn handle_one(
+        &mut self,
+        msg: Message,
+        sink: &OutputSink,
+        db: &mut meclaw_colony::DbConn,
+    ) {
+        {
             // GH #124: one stopwatch for the whole call. It only reads the
             // monotonic clock at the phase boundaries and is dropped with the
             // call — it can never itself be the reason a call is slow.
@@ -749,6 +1009,10 @@ impl StatefulCell for LlmCell {
                                     tracing::info!(
                                         "llm: bearer credential received sealed and opened in RAM"
                                     );
+                                    // GH #457: the round is over. Everything it
+                                    // was holding moves to the drain queue and
+                                    // is answered by `handle` after this call.
+                                    self.release_parked().await;
                                 }
                                 Err(_) => {
                                     self.emit_credential_reject(
@@ -758,6 +1022,7 @@ impl StatefulCell for LlmCell {
                                         started_at_unix_ms,
                                     )
                                     .await;
+                                    self.refuse_parked().await;
                                 }
                             },
                             Err(e) => {
@@ -768,6 +1033,11 @@ impl StatefulCell for LlmCell {
                                     started_at_unix_ms,
                                 )
                                 .await;
+                                // GH #457: a box that does not open is a round
+                                // that failed. The turns it was holding get
+                                // their receipt now — waiting for the deadline
+                                // would only make the same answer slower.
+                                self.refuse_parked().await;
                             }
                         },
                         None => {
@@ -788,6 +1058,11 @@ impl StatefulCell for LlmCell {
                             started_at_unix_ms,
                         )
                         .await;
+                        // GH #457: same class as a box that does not open —
+                        // a delivery came back and was not usable. With no
+                        // round in flight (a stranger's malformed slot) this
+                        // is a no-op.
+                        self.refuse_parked().await;
                     }
                 }
                 return;
@@ -817,18 +1092,24 @@ impl StatefulCell for LlmCell {
                 return;
             }
 
-            // Step 3 (pre): R3 / GH #421. A cell that spends a grant for its
-            // credential does not call a provider without one. It asks, says
-            // so, and the next message finds the credential in RAM. Placed here
-            // because it is the first point at which this is known to be a real
-            // inference message, and because it covers BOTH wire dialects with
-            // one guard rather than one per lane.
+            // Step 3 (pre): R3 / GH #421 + GH #457. A cell that spends a grant
+            // for its credential does not call a provider without one — and it
+            // does not throw the turn away either. It PARKS the turn, asks the
+            // vault once, and answers the whole batch in order when the box
+            // arrives. Placed here because it is the first point at which this
+            // is known to be a real inference message, and because it covers
+            // BOTH wire dialects with one guard rather than one per lane.
             //
-            // Why not queue the message and answer it once the box arrives: the
-            // concurrency invariant is one task, one state, no lock — a queue
-            // with a timeout and a re-delivery would be a second state machine
-            // in a cell that has none. Refusing this one turn and serving the
-            // next is the honest shape for the first consumer.
+            // The credential lives only in RAM (`self.credential`), so this is
+            // the state after every wake, not once per lifetime — which is why
+            // GH #421's "refuse this one turn, serve the next" was a turn lost
+            // on every wake, and a chat user's silence.
+            //
+            // `credential_pending` survives as the receipt for the three ways
+            // this can genuinely fail: the round times out (the warden), the
+            // delivered box does not open (`refuse_parked`), or the bound is
+            // full (here). Every one of them names a message; none of them is
+            // silence.
             if self.bearer().is_none()
                 && let Some(grant) = self
                     .params
@@ -836,23 +1117,23 @@ impl StatefulCell for LlmCell {
                     .clone()
                     .filter(|g| !g.is_empty())
             {
-                self.ask_for_credential(sink, &reply_target, &grant).await;
-                output::emit_error(
-                    sink,
+                let ask_target = reply_target.clone();
+                let turn = ParkedTurn {
+                    msg,
+                    sink: sink.clone(),
                     reply_target,
-                    "credential_pending",
-                    "the bearer credential has been requested from the access hive; retry \
-                     once it arrived",
-                    "auth",
-                    vec![],
                     started_at_unix_ms,
-                    0,
-                    None,
-                    None,
-                    None,
-                )
-                .await;
-                self.log_phases(&clock, "credential_pending");
+                };
+                match self.park_turn(turn) {
+                    ParkOutcome::Asked => {
+                        self.ask_for_credential(sink, &ask_target, &grant).await;
+                    }
+                    ParkOutcome::Parked => {}
+                    ParkOutcome::Refused(turn) => {
+                        emit_credential_pending(&turn).await;
+                        self.log_phases(&clock, "credential_pending");
+                    }
+                }
                 return;
             }
 
@@ -1153,13 +1434,13 @@ impl StatefulCell for LlmCell {
                 let latency_ms = (unix_ms_now() - started_at_unix_ms).max(0) as u64;
                 match outcome {
                     Ok(t) => {
+                        let usage = output::HopUsage::of(&t);
                         output::emit_assistant_turn(
                             sink,
                             reply_target,
                             t.assistant_turn,
                             &t.finish_reason,
-                            t.tokens_prompt,
-                            t.tokens_completion,
+                            usage,
                             &t.model,
                             &t.response_id,
                             started_at_unix_ms,
@@ -1322,13 +1603,13 @@ impl StatefulCell for LlmCell {
 
             // Step 8: emit the assistant turn as an atomic UBF body (end).
             let latency_ms = (unix_ms_now() - started_at_unix_ms).max(0) as u64;
+            let usage = output::HopUsage::of(&translated);
             output::emit_assistant_turn(
                 sink,
                 reply_target,
                 translated.assistant_turn,
                 &translated.finish_reason,
-                translated.tokens_prompt,
-                translated.tokens_completion,
+                usage,
                 &translated.model,
                 &translated.response_id,
                 started_at_unix_ms,
@@ -1427,12 +1708,18 @@ mod tests {
     }
 
     /// A cell that spends a grant for its credential and has no static key.
+    ///
+    /// GH #457: `credential_wait_ms` is deliberately short. These tests measure
+    /// the parking, not the deadline, and a warden holding a clone of the sink
+    /// keeps the receiver open until it exits — so a long default would only
+    /// make every drain here wait for it.
     fn credential_cell() -> LlmCell {
         let raw = json!({
             "provider": "openai", "model": "gpt-4o", "api_key": "",
             "credential_grant_id": "grant:abc",
             "base_url": "http://127.0.0.1:1/never-reached",
             "external_timeout_ms": 100u64,
+            "credential_wait_ms": 400u64,
         });
         LlmCell::new(
             LlmParams::parse(&raw).expect("parse"),
@@ -1448,8 +1735,9 @@ mod tests {
             .build()
     }
 
-    /// R3 / GH #421: the box opens into RAM, and a delivery is answered with
-    /// silence — exactly like a params-only message.
+    /// R3 / GH #421: the box opens into RAM. GH #457: and the turn that asked
+    /// for it is the turn that gets answered — the delivery message itself is
+    /// still answered with silence, exactly like a params-only message.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_sealed_credential_is_opened_into_ram_and_answered_with_silence() {
         let td = TempDir::new().unwrap();
@@ -1484,11 +1772,23 @@ mod tests {
         while let Some(em) = rx.recv().await {
             after.push(em.content);
         }
-        // Two emissions from the FIRST call; the sealed one answers with silence.
+        // Exactly two emissions, and neither is a refusal of the user's turn:
+        // the credential REQUEST from the first call, and the answer the parked
+        // turn produced once the box released it. That answer is a
+        // `provider_error` here because the base_url points at a closed port —
+        // the point is that the turn reached the wire lane at all, which under
+        // GH #421 it never did.
+        assert_eq!(after.len(), 2, "unexpected emissions: {after:?}");
+        assert_eq!(after[0]["header"]["route"], "credential_request");
         assert_eq!(
-            after.len(),
-            2,
-            "the sealed delivery must emit nothing: {after:?}"
+            after[1]["header"]["error_code"], "provider_error",
+            "the parked turn was answered, not refused: {after:?}"
+        );
+        assert!(
+            !after
+                .iter()
+                .any(|c| c["header"]["error_code"] == "credential_pending"),
+            "GH #457: a turn that got its credential is never `credential_pending`: {after:?}"
         );
     }
 
@@ -1578,22 +1878,19 @@ mod tests {
 
     /// R3 / GH #421: a cell that declares a credential grant and holds no
     /// credential asks for one instead of calling a provider without a key.
+    ///
+    /// GH #457 changed what happens to the turn that triggered the ask: it is
+    /// PARKED, not refused. What the drain below then sees is the request and,
+    /// once the (short) deadline passes with no box, the parked turn's
+    /// `credential_pending` — the receipt for a vault that did not answer,
+    /// which is the only case it is still emitted in.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_cell_with_a_credential_grant_and_no_credential_asks_before_it_calls() {
         let td = TempDir::new().unwrap();
         let conn =
             meclaw_colony::persist::open_or_create_cell_db(&td.path().join("cell.db")).unwrap();
         let mut db = meclaw_colony::DbConn::wrap(conn, None);
-        let raw = json!({
-            "provider": "openai", "model": "gpt-4o", "api_key": "",
-            "credential_grant_id": "grant:abc",
-            "base_url": "http://127.0.0.1:1/never-reached",
-            "external_timeout_ms": 100u64,
-        });
-        let mut cell = LlmCell::new(
-            LlmParams::parse(&raw).expect("parse"),
-            reqwest::Client::builder().build().unwrap(),
-        );
+        let mut cell = credential_cell();
         let (sink, mut rx) = mk_sink();
 
         let msg = MessageBuilder::new(Path::new("/llm"))
@@ -1623,14 +1920,129 @@ mod tests {
             "an X25519 public key is 32 bytes of hex"
         );
 
+        // GH #457: the receipt exists, but it is the DEADLINE's, not the
+        // guard's — it arrives after `credential_wait_ms` with no box, and it
+        // carries the parked turn's own trace. A second message would not have
+        // produced a second request; one round asks once.
         assert!(
             seen.iter()
                 .any(|c| c["header"]["error_code"] == "credential_pending"),
-            "and it said so instead of calling a provider without a key: {seen:?}"
+            "the parked turn was never accounted for: {seen:?}"
+        );
+        assert_eq!(
+            seen.len(),
+            2,
+            "one request, one receipt, and nothing else: {seen:?}"
         );
         assert!(
             cell.pending_recipient.is_some(),
             "the private half stays in RAM until the box arrives"
+        );
+    }
+
+    /// GH #457: one round, one request — however many turns pile up behind it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_second_turn_joins_the_round_instead_of_asking_again() {
+        let td = TempDir::new().unwrap();
+        let conn =
+            meclaw_colony::persist::open_or_create_cell_db(&td.path().join("cell.db")).unwrap();
+        let mut db = meclaw_colony::DbConn::wrap(conn, None);
+        let mut cell = credential_cell();
+        let (sink, mut rx) = mk_sink();
+
+        cell.handle(user_turn(), &sink, &mut db).await;
+        cell.handle(user_turn(), &sink, &mut db).await;
+        cell.handle(user_turn(), &sink, &mut db).await;
+        drop(sink);
+
+        let mut seen: Vec<meclaw_core::serde_json::Value> = Vec::new();
+        while let Some(em) = rx.recv().await {
+            seen.push(em.content);
+        }
+        assert_eq!(
+            seen.iter()
+                .filter(|c| c["header"]["route"] == "credential_request")
+                .count(),
+            1,
+            "the vault was asked more than once for one round: {seen:?}"
+        );
+        assert_eq!(
+            seen.iter()
+                .filter(|c| c["header"]["error_code"] == "credential_pending")
+                .count(),
+            3,
+            "every parked turn gets its own receipt when the round times out: {seen:?}"
+        );
+    }
+
+    /// GH #457: the bound is a bound. The turn that does not fit is refused
+    /// immediately — it does not wait for the deadline, and it is not dropped.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_turn_past_the_bound_is_refused_at_once_and_the_first_ones_are_answered() {
+        let td = TempDir::new().unwrap();
+        let conn =
+            meclaw_colony::persist::open_or_create_cell_db(&td.path().join("cell.db")).unwrap();
+        let mut db = meclaw_colony::DbConn::wrap(conn, None);
+        let raw = json!({
+            "provider": "openai", "model": "gpt-4o", "api_key": "",
+            "credential_grant_id": "grant:abc",
+            "base_url": "http://127.0.0.1:1/never-reached",
+            "external_timeout_ms": 100u64,
+            "credential_wait_ms": 60_000u64,
+            "credential_wait_max": 2usize,
+        });
+        let mut cell = LlmCell::new(
+            LlmParams::parse(&raw).expect("parse"),
+            reqwest::Client::builder().build().unwrap(),
+        );
+        let (sink, mut rx) = mk_sink();
+
+        cell.handle(user_turn(), &sink, &mut db).await;
+        cell.handle(user_turn(), &sink, &mut db).await;
+        // The third does not fit. Its receipt is here, now — the deadline is a
+        // minute away and nothing about this turn is going to change.
+        cell.handle(user_turn(), &sink, &mut db).await;
+        let mut early = Vec::new();
+        while let Ok(em) = rx.try_recv() {
+            early.push(em.content);
+        }
+        assert_eq!(
+            early
+                .iter()
+                .filter(|c| c["header"]["error_code"] == "credential_pending")
+                .count(),
+            1,
+            "the overflow turn was not refused on the spot: {early:?}"
+        );
+
+        // And the two that did fit are still parked: the box releases them.
+        let public = cell.pending_recipient.as_ref().expect("pair").public_hex();
+        let sealed = crate::sealed::seal_to(&public, b"sk-or-v1-DELIVERED").expect("seal");
+        cell.handle(
+            MessageBuilder::new(Path::new("/llm"))
+                .body(Body::Inline(json!({"sealed": sealed.to_json()})))
+                .build(),
+            &sink,
+            &mut db,
+        )
+        .await;
+        drop(sink);
+        let mut late = Vec::new();
+        while let Some(em) = rx.recv().await {
+            late.push(em.content);
+        }
+        assert_eq!(
+            late.iter()
+                .filter(|c| c["header"]["error_code"] == "provider_error")
+                .count(),
+            2,
+            "both parked turns must reach the wire lane after the box: {late:?}"
+        );
+        assert!(
+            !late
+                .iter()
+                .any(|c| c["header"]["error_code"] == "credential_pending"),
+            "a released turn is answered, never refused: {late:?}"
         );
     }
 

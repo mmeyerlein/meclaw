@@ -1,0 +1,133 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "ports": [],
+    "contract": {
+      "accepts": [
+        {
+          "route": "in_view",
+          "because": "put this view up, or replace the one already standing under the same name. The sender's own `reply_to` is the owner, so two senders never collide and neither can withdraw the other's"
+        },
+        {
+          "route": "in_withdraw",
+          "because": "take my view down again. A view outlives the turn that produced it, so ending it has to be a message rather than an absence -- a `ttl_ms` is the timer version of the same wish and does not replace it"
+        }
+      ],
+      "emits": [
+        {
+          "route": "event",
+          "because": "somebody did something on the screen that the display could not absorb locally -- a button, a form. It leaves carrying the `owner` and `view_id` its object id parses back to, which is what lets the member route it to the one agent whose view it was. An event whose id will not parse leaves anyway, without them, and dead-letters where a person can read it"
+        },
+        {
+          "route": "receipt",
+          "because": "a write was refused, and the sender has to hear which one and why. The closed code list is in the README; every receipt carries `error_code`, `owner`, `view_id` and a detail string, and nothing at all is written when one goes out"
+        }
+      ]
+    },
+    "graph": {
+      "edges": [
+        {
+          "from": ".",
+          "to": "./compose",
+          "condition": "has(hop.route) && hop.route == 'in_view'"
+        },
+        {
+          "from": ".",
+          "to": "./compose",
+          "condition": "has(hop.route) && hop.route == 'in_withdraw'"
+        },
+        {
+          "from": "./compose",
+          "to": "./views",
+          "condition": "has(hop.route) && hop.route == 'views'",
+          "modifier": {
+            "set_context": {
+              "display_origin": "'views'",
+              "display_request": "has(hop.display_request) ? hop.display_request : ''"
+            }
+          }
+        },
+        {
+          "from": "./views",
+          "to": "./compose",
+          "condition": "context.display_origin == 'views'"
+        },
+        {
+          "from": "./compose",
+          "to": "./web",
+          "condition": "has(hop.route) && hop.route == 'read'",
+          "modifier": {
+            "set_context": {
+              "display_origin": "'read'",
+              "display_views": "has(hop.display_views) ? hop.display_views : ''"
+            },
+            "delete_context": [
+              "display_request"
+            ]
+          }
+        },
+        {
+          "from": "./compose",
+          "to": "./web",
+          "condition": "has(hop.route) && hop.route == 'patch'",
+          "modifier": {
+            "set_context": {
+              "display_origin": "'patch'"
+            },
+            "delete_context": [
+              "display_views"
+            ]
+          }
+        },
+        {
+          "from": "./web",
+          "to": "./compose",
+          "condition": "context.display_origin == 'read'"
+        },
+        {
+          "from": "./web",
+          "to": "./compose",
+          "condition": "context.display_origin == 'patch'"
+        },
+        {
+          "from": "./web",
+          "to": "./compose",
+          "condition": "has(hop.route) && hop.route == 'event'"
+        },
+        {
+          "from": "./compose",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'event'",
+          "modifier": {
+            "delete_context": [
+              "display_origin",
+              "display_request",
+              "display_views"
+            ]
+          }
+        },
+        {
+          "from": "./compose",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'receipt'",
+          "modifier": {
+            "delete_context": [
+              "display_origin",
+              "display_request",
+              "display_views"
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "description": {
+    "purpose": "One screen, on a port of its own, that many agents and applications write onto at the same time. A view is a named, owned, optionally expiring piece of that screen: whoever sends one owns it, replaces it under the same name, and takes it down again. A store holds what is up, a code cell keeps that set and the display's object tree in agreement, and a `web` cell serves the page. THE HIVE IS THE ADDRESS: `params.ports` is empty, so no edge reaches a cell in here; a caller names the hive and a lane on `hop.route`.",
+    "use_when": "A person should be able to look at what several agents and applications are doing, in one browser tab, without those agents knowing about each other or about HTML. One screen is one instance with one port; a second screen is a second instance, which is what makes one reverse-proxy rule a complete access statement for one of them.",
+    "not_in_scope": "It is not a window manager: nothing overlaps, nothing has a z-order, nothing is resized, and there is no camera. It runs no model and makes no layout judgement beyond an order -- newest view first, ties broken on identity. It never invents content and never edits it: an application brings its own components and its own tree, and this scope only wraps, places and removes them. It does not sweep either: an expired view stops being drawn at the next write, not by itself. No authentication and no TLS -- the display binds loopback by default and everything in front of it is somebody else's job (R-W8-2). And no interior address: a caller names the hive and a lane.",
+    "contract_in": "Two lanes, at the hive path. in_view -- put this view up under this name, replacing whatever stood there. in_withdraw -- take it down. The sender's `reply_to` is the owner in both cases; a body that claims a different one is refused.",
+    "contract_out": "Two lanes, out of the hive path. event -- something a person did on the screen that the display could not absorb locally, carrying the owner and view_id it belongs to. receipt -- a write was refused, with the code, the identity and a detail string."
+  }
+}

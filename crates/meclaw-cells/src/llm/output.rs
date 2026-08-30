@@ -4,7 +4,8 @@
 //!
 //! - `emit_assistant_turn` — success path. Pushes a UBF body with the assistant
 //!   turn(s), full `meta` (provider/model/response_id/latency_ms/started_at)
-//!   and `header` (finish_reason/tokens_prompt/tokens_completion/model).
+//!   and `header` (finish_reason/model plus the whole usage block:
+//!   tokens_prompt/tokens_completion/tokens_cached/cost/latency_ms).
 //! - `emit_error` — error path. Gate-1 pass-through: `messages` is the caller's
 //!   `input_messages` UNCHANGED so that failover-edges-on-finish_reason="error"
 //!   can route the original conversation to a backup llm-cell. `meta.error.*`
@@ -14,8 +15,61 @@
 //! `"header"` object; Colony extracts `content.header` into `message.headers`
 //! via the Phase-3b mechanism.
 
+use crate::llm::translate::TranslatedResponse;
 use meclaw_core::serde_json::{Map, Value};
 use meclaw_core::{CellOutput, OutputSink, Path};
+
+/// The usage block of one provider call, as it travels into the hop header.
+///
+/// GH #463: before this struct, `tokens_cached` and the provider's own `cost`
+/// were parsed off the wire and then dropped, and `latency_ms` lived only in
+/// `meta` — which `/colony/ledger` never reads. A watcher therefore had the
+/// numbers in the log and no way to sum them. Every field here is `Option`
+/// and every `None` is omitted from the header: a figure the provider did not
+/// report must not arrive downstream as a measured zero.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct HopUsage {
+    /// `usage.prompt_tokens` / `usage.input_tokens`.
+    pub(crate) tokens_prompt: Option<u64>,
+    /// `usage.completion_tokens` / `usage.output_tokens`.
+    pub(crate) tokens_completion: Option<u64>,
+    /// Cache-read tokens, in whichever spelling the provider used.
+    pub(crate) tokens_cached: Option<u64>,
+    /// The provider's own cost figure for the call. Never computed here.
+    pub(crate) cost: Option<f64>,
+}
+
+impl HopUsage {
+    /// Lift the usage figures out of a parsed provider response.
+    pub(crate) fn of(t: &TranslatedResponse) -> Self {
+        Self {
+            tokens_prompt: t.tokens_prompt,
+            tokens_completion: t.tokens_completion,
+            tokens_cached: t.tokens_cached,
+            cost: t.cost,
+        }
+    }
+
+    /// Write every reported figure into a hop header. Absent figures are
+    /// absent keys, never zeroes.
+    fn write_into(&self, header: &mut Map<String, Value>) {
+        if let Some(t) = self.tokens_prompt {
+            header.insert("tokens_prompt".into(), Value::from(t));
+        }
+        if let Some(t) = self.tokens_completion {
+            header.insert("tokens_completion".into(), Value::from(t));
+        }
+        if let Some(t) = self.tokens_cached {
+            header.insert("tokens_cached".into(), Value::from(t));
+        }
+        // `Value::from(f64)` yields `Null` for a non-finite float, and a null
+        // in a summed header column is worse than a missing key: SQLite would
+        // read it as "present, unreadable" rather than "not reported".
+        if let Some(c) = self.cost.filter(|c| c.is_finite()) {
+            header.insert("cost".into(), Value::from(c));
+        }
+    }
+}
 
 /// Success-path emission: build UBF body with the assistant turn(s), full `meta`
 /// and nested `header`, then push via the per-message `OutputSink`.
@@ -29,8 +83,7 @@ pub(crate) async fn emit_assistant_turn(
     target: Path,
     assistant_turns: Vec<Value>,
     finish_reason: &str,
-    tokens_prompt: Option<u64>,
-    tokens_completion: Option<u64>,
+    usage: HopUsage,
     model: &str,
     response_id: &str,
     started_at_unix_ms: i64,
@@ -41,12 +94,12 @@ pub(crate) async fn emit_assistant_turn(
         "finish_reason".into(),
         Value::String(finish_reason.to_string()),
     );
-    if let Some(t) = tokens_prompt {
-        header.insert("tokens_prompt".into(), Value::from(t));
-    }
-    if let Some(t) = tokens_completion {
-        header.insert("tokens_completion".into(), Value::from(t));
-    }
+    usage.write_into(&mut header);
+    // GH #463: the measured wall time belongs in the header, because that is
+    // the compartment `/colony/ledger` sums over. It STAYS in `meta` as well —
+    // dropping it there would break every reader that has been reading it
+    // since Phase 8, and one number in two places is cheaper than a migration.
+    header.insert("latency_ms".into(), Value::from(latency_ms));
     header.insert("model".into(), Value::String(model.to_string()));
 
     let mut meta = Map::new();
@@ -97,6 +150,10 @@ pub(crate) async fn emit_error(
     let mut header = Map::new();
     header.insert("finish_reason".into(), Value::String("error".into()));
     header.insert("error_code".into(), Value::String(error_code.to_string()));
+    // GH #463: a failed call took time too, and a timeout is the one hop whose
+    // latency an operator most wants summed. The error path carries no usage
+    // block — a call that failed reports no tokens and no cost.
+    header.insert("latency_ms".into(), Value::from(latency_ms));
 
     let mut error_obj = Map::new();
     error_obj.insert("source".into(), Value::String(error_source.to_string()));
@@ -165,8 +222,12 @@ mod tests {
             Path::new("/sink"),
             turns.clone(),
             "stop",
-            Some(10),
-            Some(5),
+            HopUsage {
+                tokens_prompt: Some(10),
+                tokens_completion: Some(5),
+                tokens_cached: Some(8),
+                cost: Some(0.000_25),
+            },
             "gpt-4o",
             "chatcmpl-1",
             1234567890,
@@ -179,12 +240,86 @@ mod tests {
         assert_eq!(em.content["header"]["finish_reason"], "stop");
         assert_eq!(em.content["header"]["tokens_prompt"], 10);
         assert_eq!(em.content["header"]["tokens_completion"], 5);
+        assert_eq!(em.content["header"]["tokens_cached"], 8);
+        assert_eq!(em.content["header"]["cost"], 0.000_25);
+        // GH #463: the ledger sums the HOP header, so the measured wall time
+        // has to be there — and it stays in `meta` for the readers that had it.
+        assert_eq!(em.content["header"]["latency_ms"], 42);
         assert_eq!(em.content["header"]["model"], "gpt-4o");
         assert_eq!(em.content["meta"]["provider"], "openai");
         assert_eq!(em.content["meta"]["model"], "gpt-4o");
         assert_eq!(em.content["meta"]["response_id"], "chatcmpl-1");
         assert_eq!(em.content["meta"]["latency_ms"], 42);
         assert_eq!(em.content["meta"]["started_at"], 1234567890);
+    }
+
+    /// GH #463: a figure the provider did not report is an ABSENT header key,
+    /// never a zero. A summed zero and an unreported figure are the same number
+    /// in a ledger total and two completely different facts — the ledger can
+    /// only tell them apart if the header does.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_usage_figure_the_provider_never_reported_is_absent_not_zero() {
+        let (sink, mut rx) = mk_sink();
+        emit_assistant_turn(
+            &sink,
+            Path::new("/sink"),
+            vec![json!({"origin":"assistant","type":"text","text":"hi"})],
+            "stop",
+            HopUsage {
+                tokens_prompt: Some(10),
+                tokens_completion: Some(5),
+                tokens_cached: None,
+                cost: None,
+            },
+            "gpt-4o",
+            "chatcmpl-1",
+            1,
+            7,
+        )
+        .await;
+        let em = rx.recv().await.unwrap();
+        let header = em.content["header"].as_object().expect("header object");
+        assert!(
+            !header.contains_key("tokens_cached"),
+            "an unreported cache count must not appear as 0: {header:?}"
+        );
+        assert!(
+            !header.contains_key("cost"),
+            "an unreported cost must not appear as 0: {header:?}"
+        );
+        assert_eq!(header["tokens_prompt"], 10);
+        assert_eq!(header["latency_ms"], 7, "latency is always measured");
+    }
+
+    /// GH #463: a non-finite cost is a broken field, not a price. It never
+    /// reaches the header, because `SUM()` over one NaN poisons a whole window.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_non_finite_cost_never_reaches_the_header() {
+        let (sink, mut rx) = mk_sink();
+        emit_assistant_turn(
+            &sink,
+            Path::new("/sink"),
+            vec![],
+            "stop",
+            HopUsage {
+                cost: Some(f64::NAN),
+                ..HopUsage::default()
+            },
+            "gpt-4o",
+            "chatcmpl-1",
+            1,
+            0,
+        )
+        .await;
+        let em = rx.recv().await.unwrap();
+        assert!(
+            !em.content["header"]
+                .as_object()
+                .expect("header object")
+                .contains_key("cost"),
+            "NaN is not a cost: {}",
+            em.content["header"]
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -212,6 +347,8 @@ mod tests {
         assert_eq!(em.content["messages"][0], user_turn);
         assert_eq!(em.content["header"]["finish_reason"], "error");
         assert_eq!(em.content["header"]["error_code"], "rate_limit");
+        // GH #463: a failed call still took 25 ms, and that is summable.
+        assert_eq!(em.content["header"]["latency_ms"], 25);
         assert_eq!(em.content["meta"]["error"]["source"], "wire");
         assert_eq!(em.content["meta"]["error"]["detail"], "429 from OpenAI");
         assert_eq!(em.content["meta"]["provider"], "openai");

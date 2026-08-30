@@ -78,6 +78,10 @@ pub struct PersistedRegistryEntry {
     pub cell_type: String,
     /// Last persisted status string (e.g. `"active"`, `"idle"`).
     pub status: String,
+    /// GH #491: `true` when this node's sleep was DECLARED (`birth:
+    /// "inactive"`) rather than derived from its edges. A recompute honours it;
+    /// only a mutation that addresses the node clears it.
+    pub dormant: bool,
     /// GH #62: the template identity this node was instantiated from, or `None`
     /// for a node whose origin was never recorded (hand-written tree, adopted
     /// directory, anything born before the stamp existed).
@@ -426,7 +430,7 @@ impl ColonyDb {
     pub fn read_registry(&self) -> rusqlite::Result<Vec<PersistedRegistryEntry>> {
         let mut stmt = self.read_conn.prepare(
             "SELECT path, cell_id, cell_type, status, template, template_version, \
-                 instantiated_at, template_chain FROM registry ORDER BY path",
+                 instantiated_at, template_chain, dormant FROM registry ORDER BY path",
         )?;
         let rows = stmt.query_map([], |r| {
             let path_str: String = r.get(0)?;
@@ -448,6 +452,10 @@ impl ColonyDb {
             let template_chain = template_chain
                 .as_deref()
                 .and_then(|json| meclaw_core::serde_json::from_str(json).ok());
+            // GH #491: the durable dormancy marker (schema v8). A row from
+            // before the column existed reads `0` — no declaration was ever
+            // made about it.
+            let dormant: bool = r.get(8)?;
             let provenance = template.map(|template| crate::config::NodeProvenance {
                 template,
                 template_version,
@@ -466,6 +474,7 @@ impl ColonyDb {
                 cell_id,
                 cell_type,
                 status,
+                dormant,
                 provenance,
             })
         })?;
@@ -697,6 +706,46 @@ pub fn read_persisted_edges(
     read_edges_from(&conn)
 }
 
+/// GH #491: read the set of paths whose sleep was DECLARED (`registry.dormant`)
+/// from the `colony.db` at `db_path`, via a fresh read-only connection.
+///
+/// A companion to [`read_registry_overlay`] rather than a widening of it: the
+/// overlay answers "who lived here and under what status", which every boot
+/// needs; this answers "whose inactivity is a decision rather than a
+/// derivation", which only the connectivity recompute needs. Returns an empty
+/// set when the file does not exist (first boot) or when the database predates
+/// the column — in both cases nothing was ever declared.
+pub fn read_dormant_paths(
+    db_path: &std::path::Path,
+) -> rusqlite::Result<std::collections::HashSet<meclaw_core::Path>> {
+    use std::collections::HashSet;
+    if !db_path.exists() {
+        return Ok(HashSet::new());
+    }
+    let conn =
+        rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    // GH #98: boot-path read — carry the busy budget.
+    crate::persist::apply_busy_timeout(&conn)?;
+    // A pre-v8 database has no `dormant` column. The boot planner runs before
+    // the migration touches the file (it is a read-only probe), so an absent
+    // column is answered with "nothing declared" instead of an error.
+    let has_column = {
+        let mut stmt = conn.prepare("PRAGMA table_info(registry)")?;
+        stmt.query_map([], |r| r.get::<_, String>(1))?
+            .filter_map(Result::ok)
+            .any(|name| name == "dormant")
+    };
+    if !has_column {
+        return Ok(HashSet::new());
+    }
+    let mut stmt = conn.prepare("SELECT path FROM registry WHERE dormant = 1")?;
+    let rows = stmt.query_map([], |r| {
+        let path_str: String = r.get(0)?;
+        Ok(meclaw_core::Path::new(&path_str))
+    })?;
+    rows.collect()
+}
+
 /// Read the identity overlay from the `registry` table of the `colony.db` at
 /// `db_path` via a fresh read-only connection.
 ///
@@ -737,10 +786,10 @@ mod tests {
         let db_path = td.path().join("colony.db");
         let db = ColonyDb::open(&db_path).unwrap();
         assert!(db_path.exists(), "colony.db file created");
-        // Schema check: the meta table has schema_version='7' (GH #283: the
-        // edges `is_default` column, on top of the GH #277 registry
-        // `template_chain`, the GH #62 provenance triple and the W6d
-        // dead_letters table).
+        // Schema check: the meta table has schema_version='8' (GH #491: the
+        // registry `dormant` column, on top of the GH #283 edges `is_default`,
+        // the GH #277 registry `template_chain`, the GH #62 provenance triple
+        // and the W6d dead_letters table).
         let v: String = db
             .read_conn
             .query_row(
@@ -749,7 +798,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(v, "7");
+        assert_eq!(v, "8");
         // Single-owner invariant: writer_tx is present (not consumed)
         let _ = &db.writer_tx;
         drop(db);

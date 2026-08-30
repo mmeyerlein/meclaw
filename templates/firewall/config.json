@@ -11,20 +11,85 @@
           "context": [
             "channel"
           ],
-          "because": "a turn to screen before it reaches the agent. The caller MUST promote the identity to context.channel, or every surface shares one bucket and is rate-limited as one. context.user_id is the SECOND identity dimension and is OPTIONAL: the sender rules address it by name (field 'user_id'), but the screen reads it as the empty string when nobody promotes it and screens it like any other value -- a dimension with no enabled allow row is unconstrained (RULE 4), and a deny row on the empty string cannot exist because a row without a value is refused as rules_unreadable (RULE 2). The shipped seed's two user_id rows are enabled: 0, so an unpromoted user_id costs a shipped colony nothing. It starts costing the moment an operator enables an allow row on that dimension: from then on every turn without a promoted user_id is rejected with sender_not_allowed / allowlist:user_id. Promote it if this colony has per-user rules -- that is a wiring decision, and this lane will not make it for you"
+          "because": "a turn to screen before it reaches the agent. The caller MUST promote the identity to context.channel, or every surface shares one bucket and is rate-limited as one. context.user_id is the SECOND identity dimension and is OPTIONAL: the sender rules address it by name (field 'user_id'), but the screen reads it as the empty string when nobody promotes it and screens it like any other value -- a dimension with no enabled allow row is unconstrained (RULE 4), and a deny row on the empty string cannot exist because a row without a value is not a rule at all -- it is skipped, and the reject lane carries a `rule_unreadable` receipt naming it (RULE 2, GH #506). The shipped seed's two user_id rows are enabled: 0, so an unpromoted user_id costs a shipped colony nothing. It starts costing the moment an operator enables an allow row on that dimension: from then on every turn without a promoted user_id is rejected with sender_not_allowed / allowlist:user_id. Promote it if this colony has per-user rules -- that is a wiring decision, and this lane will not make it for you"
+        },
+        {
+          "route": "in_export",
+          "because": "a demand that this hive hand out everything it holds, as a versioned document. The walk reads `rules`, one `dump` part per table -- schema declaration first, rows after it -- and the last part carries the completeness marker. The caller sends no keys with it: an export is about the whole hive rather than about a round, and what may leave is not a question this lane asks (GH #471)",
+          "context": []
+        },
+        {
+          "route": "in_import",
+          "because": "one part of such a document, for a hive that is already running. It is the other half of `in_export` and the return leg of the same document: the seed set under this hive was read once, when the `cell.db` was created, and is inert for ever after -- so everything the source decided AFTER the walk has no way in except a message. The body is ONE export part, and applying the same part twice leaves the same state, which is what makes a partial transfer repairable by repeating it (GH #471)",
+          "context": []
+        },
+        {
+          "route": "in_release",
+          "context": [],
+          "because": "a person's answer about ONE parked turn. `hop.hold_id` names it, `hop.decision` is 'release' or 'refuse' (default 'release') and `hop.decided_by` is who answered. The released turn re-enters on `pass` with the body it arrived with; a refused one ends on `reject`. This is the half of GH #450 that makes a hold a verdict rather than a parking bay: without a way back out, a held turn is a turn that vanished politely."
+        },
+        {
+          "route": "in_sweep",
+          "context": [],
+          "because": "expire whatever is due. It carries no keys and answers about no particular turn. Custody measures its timeouts whenever it is touched -- a new hold, a release -- so a hive with traffic expires its pile without this lane; what the lane adds is a receipt ON TIME in a hive that went quiet, which is exactly when a forgotten hold is easiest to forget. Wire it to a timer if the answer matters more than the traffic does."
         }
       ],
       "emits": [
         {
           "route": "pass",
-          "because": "the turn survived every rule; this is the only lane into the agent behind it"
+          "because": "the turn survived every rule; this is the only lane into the agent behind it. Since 2.2.0 it has a SECOND producer: a turn a person released out of the hold pile re-enters here with the body it arrived with, and every context key its original ingress edge promoted comes back as a hop key `ctx_<name>` -- a cell cannot write a context map, so an edge that wants one of them back reads it with `has(hop.ctx_<name>) ? hop.ctx_<name> : context.<name>` (GH #450)"
         },
         {
           "route": "reject",
-          "because": "the turn was refused. hop.reject_reason and hop.rule_id say what happened; what to do about it is the parent's decision. One of the reasons is not a rule at all: 'store_refused' (rule_id 'store-refused') means the rules store did not answer, and the screen fails CLOSED on that the way it fails closed on an unreadable rule row -- hop.store_error then carries the store's own error_code and hop.store_operation the refused op (GH #343)"
+          "because": "the turn was refused. hop.reject_reason and hop.rule_id say what happened; what to do about it is the parent's decision. One of the reasons is not a rule at all: 'store_refused' (rule_id 'store-refused') means the rules store did not answer, and the screen fails CLOSED on that -- hop.store_error then carries the store's own error_code and hop.store_operation the refused op (GH #343). Since GH #506 the lane also carries something that is not a verdict: a RECEIPT about one rule ROW, reason 'rule_unreadable', hop.rule_id the row and hop.rule_fault why. It has an EMPTY body, which is how a drain tells it from a verdict -- a verdict always carries the turn. The row it names is skipped and the turn walks on, because a table with one wrong field value must not close the lane it screens Since 2.1.0 a SECOND producer takes the same lane: `./porter` refuses a transfer it would not carry out -- an export whose read failed mid-walk, or an import part whose format, schema did not survive -- and names the case in the same `hop.reject_reason`. The two are told apart by the reason code, and a drain that takes the lane at all takes both (GH #471). Since 2.2.0 a THIRD producer takes it, and it is the receipt half of the hold verdict: `./warden` ends a parked turn here when a person refused it (`hold_refused`), when its timeout ran out (`hold_expired`, emitted unasked by a sweep as well), when the pile was full (`hold_pile_full`) or at its hardline ceiling (`hardline_blocked`, rule_id `hardline:hold-ceiling`), and when a release named no hold, an unknown one or one already decided. That is what keeps the two-lane promise true through a third verdict: every turn still ends on exactly one of `pass` and `reject` -- a held one just ends later (GH #450)."
+        },
+        {
+          "route": "dump",
+          "because": "the transfer lane's output: `hop.dump_kind == 'export_part'` is one part of the exported document (`hop.export_part` of `hop.export_of`, `hop.export_final` marking the last, `hop.port_hive` naming which hive it came out of), `hop.dump_kind == 'import_receipt'` says what one applied part wrote (`hop.rows_written`). Drain it with a PLAIN `hop.route == 'dump'` edge -- an edge that also tests `dump_kind` reads as no drain under the required_drains probe. Undrained, an export runs and reaches nobody"
+        },
+        {
+          "route": "hold",
+          "because": "a turn was parked and its row is written. The notice carries hop.hold_id, hop.rule_id, hop.expires_at, hop.held_at and the turn ITSELF, so a cell on this lane can show a person what is waiting without a store read. It is the one lane of this hive that is NOT required: a colony with no enabled `hold` row never produces one, and a colony that enables one without drawing this edge still learns -- the notice is a recorded, self-localising no_route in the DLQ, and the turn's expiry receipt arrives on `reject`, which every parent already drains (GH #450)"
         }
       ]
     },
+    "required_drains": [
+      {
+        "accepts": "in_export",
+        "emits": "dump",
+        "because": "the export IS the dump lane -- wired without it, the walk runs, reads the whole store and delivers the document to nobody"
+      },
+      {
+        "accepts": "in_export",
+        "emits": "reject",
+        "because": "an export that aborts mid-walk (the store refused a read) has already emitted parts; undrained, the caller keeps a partial document that looks complete"
+      },
+      {
+        "accepts": "in_import",
+        "emits": "dump",
+        "because": "the receipt of an applied part is the only positive signal an import has -- undrained, nobody ever learns whether a transfer landed"
+      },
+      {
+        "accepts": "in_import",
+        "emits": "reject",
+        "because": "a part this hive will not take leaves here; undrained, a refused transfer looks exactly like a successful one"
+      },
+      {
+        "accepts": "in_release",
+        "emits": "pass",
+        "because": "a release whose released turn reaches nobody is a person answering yes into a wall -- and the row already says 'released', so nothing will offer that turn again"
+      },
+      {
+        "accepts": "in_release",
+        "emits": "reject",
+        "because": "the answers that are NOT a delivery leave here: a refusal, an expired hold, an unknown id. Undrained, saying no to a held turn looks exactly like saying yes to it"
+      },
+      {
+        "accepts": "in_sweep",
+        "emits": "reject",
+        "because": "the sweep's only output is the expiry receipt. Undrained, the sweep is a job that silently empties the pile -- which is the leak this lane exists to close, wearing the opposite mask"
+      }
+    ],
     "graph": {
       "edges": [
         {
@@ -43,7 +108,8 @@
               "channel": "hop.channel",
               "user_id": "hop.user_id",
               "fw_body": "hop.fw_body",
-              "fw_now": "hop.fw_now"
+              "fw_now": "hop.fw_now",
+              "fw_hold": "hop.fw_hold"
             }
           }
         },
@@ -61,7 +127,16 @@
               "fw_body",
               "fw_now",
               "fw_phase",
-              "store_origin"
+              "fw_hold",
+              "store_origin",
+              "port_phase",
+              "port_run",
+              "port_table",
+              "user_id",
+              "wd_body",
+              "wd_meta",
+              "wd_now",
+              "wd_phase"
             ]
           }
         },
@@ -74,7 +149,216 @@
               "fw_body",
               "fw_now",
               "fw_phase",
+              "fw_hold",
+              "store_origin",
+              "port_phase",
+              "port_run",
+              "port_table",
+              "user_id",
+              "wd_body",
+              "wd_meta",
+              "wd_now",
+              "wd_phase"
+            ]
+          }
+        },
+        {
+          "from": ".",
+          "to": "./porter",
+          "condition": "has(hop.route) && hop.route == 'in_export'",
+          "modifier": {
+            "set_context": {
+              "port_phase": "'export'"
+            }
+          }
+        },
+        {
+          "from": ".",
+          "to": "./porter",
+          "condition": "has(hop.route) && hop.route == 'in_import'",
+          "modifier": {
+            "set_context": {
+              "port_phase": "'import'"
+            }
+          }
+        },
+        {
+          "from": "./porter",
+          "to": "./rules",
+          "condition": "has(hop.route) && hop.route == 'fwstore'",
+          "modifier": {
+            "set_context": {
+              "store_origin": "'fwporter'",
+              "port_phase": "hop.phase",
+              "port_run": "hop.port_run",
+              "port_table": "hop.port_table"
+            }
+          }
+        },
+        {
+          "from": "./rules",
+          "to": "./porter",
+          "condition": "context.store_origin == 'fwporter'",
+          "modifier": {
+            "set_context": {
+              "port_phase": "context.port_phase"
+            }
+          }
+        },
+        {
+          "from": "./porter",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'dump'",
+          "modifier": {
+            "delete_context": [
+              "fw_body",
+              "fw_hold",
+              "fw_now",
+              "fw_phase",
+              "port_phase",
+              "port_run",
+              "port_table",
+              "store_origin",
+              "user_id",
+              "wd_body",
+              "wd_meta",
+              "wd_now",
+              "wd_phase"
+            ]
+          }
+        },
+        {
+          "from": "./porter",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'reject'",
+          "modifier": {
+            "delete_context": [
+              "fw_body",
+              "fw_hold",
+              "fw_now",
+              "fw_phase",
+              "port_phase",
+              "port_run",
+              "port_table",
+              "store_origin",
+              "user_id",
+              "wd_body",
+              "wd_meta",
+              "wd_now",
+              "wd_phase"
+            ]
+          }
+        },
+        {
+          "from": "./screen",
+          "to": "./warden",
+          "condition": "has(hop.route) && hop.route == 'hold'",
+          "modifier": {
+            "delete_context": [
+              "fw_body",
+              "fw_now",
+              "fw_phase",
+              "fw_hold",
               "store_origin"
+            ]
+          }
+        },
+        {
+          "from": ".",
+          "to": "./warden",
+          "condition": "has(hop.route) && hop.route == 'in_release'"
+        },
+        {
+          "from": ".",
+          "to": "./warden",
+          "condition": "has(hop.route) && hop.route == 'in_sweep'"
+        },
+        {
+          "from": "./warden",
+          "to": "./rules",
+          "condition": "has(hop.route) && hop.route == 'wdstore'",
+          "modifier": {
+            "set_context": {
+              "store_origin": "'fwwarden'",
+              "wd_phase": "hop.phase",
+              "wd_body": "hop.wd_body",
+              "wd_meta": "hop.wd_meta",
+              "wd_now": "hop.wd_now"
+            }
+          }
+        },
+        {
+          "from": "./rules",
+          "to": "./warden",
+          "condition": "context.store_origin == 'fwwarden'"
+        },
+        {
+          "from": "./warden",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'pass'",
+          "modifier": {
+            "set_context": {
+              "channel": "hop.channel",
+              "user_id": "hop.user_id"
+            },
+            "delete_context": [
+              "wd_body",
+              "wd_meta",
+              "wd_now",
+              "wd_phase",
+              "store_origin",
+              "fw_body",
+              "fw_hold",
+              "fw_now",
+              "fw_phase",
+              "port_phase",
+              "port_run",
+              "port_table",
+              "user_id"
+            ]
+          }
+        },
+        {
+          "from": "./warden",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'reject'",
+          "modifier": {
+            "delete_context": [
+              "wd_body",
+              "wd_meta",
+              "wd_now",
+              "wd_phase",
+              "store_origin",
+              "fw_body",
+              "fw_hold",
+              "fw_now",
+              "fw_phase",
+              "port_phase",
+              "port_run",
+              "port_table",
+              "user_id"
+            ]
+          }
+        },
+        {
+          "from": "./warden",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'hold'",
+          "modifier": {
+            "delete_context": [
+              "wd_body",
+              "wd_meta",
+              "wd_now",
+              "wd_phase",
+              "store_origin",
+              "fw_body",
+              "fw_hold",
+              "fw_now",
+              "fw_phase",
+              "port_phase",
+              "port_run",
+              "port_table",
+              "user_id"
             ]
           }
         }
@@ -82,8 +366,8 @@
     }
   },
   "description": {
-    "purpose": "Scope marker of the firewall: bundles the deterministic screen and its rule store behind one entry lane and two exit routes. Every inbound turn of a channel passes it before anything agentic is reached, and leaves either unchanged on 'pass' or refused on 'reject' with the rule that fired named on the hop.",
-    "use_when": "One per ingress channel, between the surface and the agent's intake. Instantiate it in the same mutation that wires the ingress lane and BOTH exits; the hive is an island until an edge crosses into it.",
-    "not_in_scope": "No model anywhere -- whether a turn is admissible is decided by comparisons and a clock. No outbound speech: the firewall never answers the sender. No rewriting: a passed turn is byte-identical to the one that arrived."
+    "purpose": "Scope marker of the firewall: bundles the deterministic screen, its rule store, the transfer lane and the custody of a parked turn behind one entry lane for traffic and three exit routes. Every inbound turn of a channel passes it before anything agentic is reached, and ends either unchanged on 'pass' or refused on 'reject' with the rule that fired named on the hop -- a turn a hold row parks ends on one of those two later, after a person answered or its timeout ran out. Above every row stands a hardline layer that lives in code and can only ever refuse.",
+    "use_when": "One per ingress channel, between the surface and the agent's intake. Instantiate it in the same mutation that wires the ingress lane and BOTH exits; the hive is an island until an edge crosses into it. The hold lanes ('in_release', 'in_sweep', 'hold') are opt-in and only pay for themselves in a colony that enables a hold row -- wire them together with the row, and `params.required_drains` will hold you to both exits of each.",
+    "not_in_scope": "No model anywhere -- whether a turn is admissible is decided by comparisons and a clock. No outbound speech: the firewall never answers the sender, and it never notifies anyone about a held turn either; it emits the notice and what becomes of it is the parent's. No rewriting: a passed turn is byte-identical to the one that arrived, released or not. And no grant path in the hardline layer: it can refuse and nothing else, because a layer that could allow would be an authority mechanism."
   }
 }

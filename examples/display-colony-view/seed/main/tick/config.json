@@ -1,0 +1,78 @@
+{
+  "cell": {
+    "type": "timer"
+  },
+  "params": {
+    "query_timeout_ms": 5000,
+    "schedules": [
+      {
+        "schedule_id": "0190a3f2-0000-7000-8000-00000000455a",
+        "schedule_name": "display-colony-view-scribe-tick",
+        "cron": "${SCRIBE_TICK_CRON:-0 * * * * *}",
+        "emit_to": "../scribe",
+        "emit_body": {
+          "messages": []
+        },
+        "emit_headers": {}
+      }
+    ]
+  },
+  "contract": {
+    "version": "0.1.0",
+    "settings": {
+      "cron": {
+        "type": "string",
+        "secret": false,
+        "default": "0 * * * * *",
+        "description": "6-field Quartz cron of the prose view (SCRIBE_TICK_CRON). Cron runs in UTC."
+      }
+    },
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "event_id": {
+          "type": "string",
+          "required": true
+        },
+        "schedule_id": {
+          "type": "string",
+          "required": true
+        },
+        "schedule_name": {
+          "type": "string",
+          "required": true
+        },
+        "scheduled_at": {
+          "type": "string",
+          "required": true
+        },
+        "fired_at": {
+          "type": "string",
+          "required": true
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "op": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "Wakes the scribe once a minute, and knows nothing else.",
+    "use_when": "In this example only. A real agent writes a view when it has something to say; a timer stands in for that here because an example has to show something without anybody typing.",
+    "not_in_scope": "It does not know what a view is and never touches the screen.",
+    "examples": ["every minute -> ../scribe"]
+  }
+}

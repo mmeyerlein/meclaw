@@ -1,0 +1,234 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "ports": [],
+    "contract": {
+      "accepts": [
+        {
+          "route": "in_submit",
+          "context": [],
+          "because": "a manifest somebody wants applied. It enters HERE rather than at the submitter because a POST has no sender: the substrate stamps `reply_to` on a CELL's emission, and an operator with a shell is not a cell. This hive lends them one, and the identity that reaches the mutation door is the path of the occupant that served this lane. TWO callers reach it and only one of them is outside the colony: the level above also re-stamps an assistant's `build` / `build_op == 'apply'` onto this lane, so that a colony has ONE submission front door and not two (R-Zielfluss (a)). The level says which by setting `context.operator_caller` to 'agent', and that is the only thing that differs -- the digest, the submitter, the gate and the broker are the same road for both."
+        },
+        {
+          "route": "in_dump",
+          "context": [],
+          "because": "produce a dump of a member's memory, asked from the OS side. The lane is named for what the caller WANTS -- a dump -- rather than for the lane it becomes further down: `in_export` is the name the memory accepts, and it is the level below that re-stamps this hive's `export` onto it. Two names because they are two directions, and one name would have made a door and an exit out of the same string"
+        },
+        {
+          "route": "in_lifecycle",
+          "context": [],
+          "because": "birth, sleep or wake, in the vocabulary the substrate has -- a node born asleep, an edge drawn, an edge cut. It is a lane rather than a second front door because a lifecycle change is a MANIFEST like any other and takes the same road: the submitter, the gate and the broker"
+        },
+        {
+          "route": "in_draft",
+          "context": [],
+          "because": "a manifest the baumeister DREW for an operator, on its way to a halt rather than to the mutation door (GH #474). It is a lane of this hive and not of the rim: the only sender is the level's own `./builder -> ./operator` edge, which takes the draft of a round that came in at `in_build` and re-stamps it here. What happens on this lane is the opposite of `in_submit` -- the manifest is parked under its own digest in the `drafts` store beside the submission occupant and answered with a receipt naming that digest, and NOTHING is applied. The second act is the operator's own `in_submit` quoting the digest and carrying no manifest. It exists because the builder's contract calls what it emits a PROPOSAL -- `a sentence a human can read before saying yes` -- and between GH #469 and GH #474 that sentence travelled past the human"
+        },
+        {
+          "route": "in_receipt",
+          "context": [],
+          "because": "the submitter's answer to a submission this hive made, on its way back to whoever asked for it. A separate lane rather than a reply on the asking one because the level has to re-stamp it: `submit` answers on `receipt`, and `receipt` at this level is this hive's own lane out"
+        },
+        {
+          "route": "export_done",
+          "context": [],
+          "because": "what the export lane answered, coming back up. Same reasoning as `in_receipt`, and the same shape: this hive asked, so this hive owes the answer to whoever asked it"
+        }
+      ],
+      "emits": [
+        {
+          "route": "apply",
+          "because": "a manifest, digested and stamped with the identity of the cell that emitted it, on its way to the submitter. This hive has no edge onto the mutation door and cannot acquire one: what leaves here is a REQUEST, and every check the colony has -- the digest, the broker's verdict, the door's own grammar -- still stands between it and a change"
+        },
+        {
+          "route": "export",
+          "because": "an export request leaving this hive, carrying `hop.target` -- the path of the member whose memory is to be exported. The level below re-stamps it onto the lane the memory accepts (`in_export`) and relays it unchanged from there, which is the same shape this hive's own doors use: a lane says what the caller wants, and the edge that receives it knows where that belongs"
+        },
+        {
+          "route": "receipt",
+          "because": "what happened, for whoever asked -- a submission's counts, an export's answer, a refusal, or a lane nobody wired. FOUR senders, ONE lane: a caller subscribes to the lane and never to whichever occupant raised it, which is the whole reason a new subject costs an occupant and an edge instead of a change to every caller. It carries `hop.submitter_kind` when the round came in from an assistant rather than from the rim, because the level above has two places to put a receipt and one lane to read it off."
+        }
+      ]
+    },
+    "required_drains": [
+      {
+        "accepts": "in_submit",
+        "emits": "receipt",
+        "because": "a caller that hands this hive a manifest and does not take the receipt back has asked for a change to the colony and arranged never to learn whether it happened. A manifest rolls forward with no rollback, so 'I do not know' is the one answer that cannot be recovered from"
+      },
+      {
+        "accepts": "in_lifecycle",
+        "emits": "receipt",
+        "because": "the same decision, one composition step earlier: a birth, a sleep or a wake becomes a manifest, and a manifest owes its requester an outcome"
+      },
+      {
+        "accepts": "in_draft",
+        "emits": "receipt",
+        "because": "the whole POINT of the lane is the answer: a draft that is parked and never announced is a manifest nobody was shown, which is the defect GH #474 names with the halt removed instead of added. A level that wires the draft in and the receipt nowhere has built a silence with extra steps"
+      },
+      {
+        "accepts": "in_dump",
+        "emits": "receipt",
+        "because": "an export that answers into nothing is indistinguishable from one that never ran. The pair is one decision"
+      },
+      {
+        "accepts": "in_receipt",
+        "emits": "apply",
+        "because": "a level that carries the submitter's answer INTO this hive and does not carry the request OUT has wired the half of the lane pair that can only deliver into nothing. The two edges are one decision"
+      },
+      {
+        "accepts": "export_done",
+        "emits": "export",
+        "because": "the same pair on the export side: a level that subscribes to the answer and never forwards the question has arranged for an answer that can never arrive"
+      }
+    ],
+    "graph": {
+      "edges": [
+        {
+          "from": ".",
+          "to": "./submit",
+          "condition": "has(hop.route) && hop.route == 'in_submit'"
+        },
+        {
+          "from": ".",
+          "to": "./submit",
+          "condition": "has(hop.route) && hop.route == 'in_receipt'"
+        },
+        {
+          "from": ".",
+          "to": "./submit",
+          "condition": "has(hop.route) && hop.route == 'in_draft'"
+        },
+        {
+          "from": ".",
+          "to": "./export",
+          "condition": "has(hop.route) && hop.route == 'in_dump'"
+        },
+        {
+          "from": ".",
+          "to": "./export",
+          "condition": "has(hop.route) && hop.route == 'export_done'"
+        },
+        {
+          "from": ".",
+          "to": "./lifecycle",
+          "condition": "has(hop.route) && hop.route == 'in_lifecycle'"
+        },
+        {
+          "from": ".",
+          "to": "./unknown",
+          "default": true,
+          "condition": "has(hop.route) && hop.route != 'apply' && hop.route != 'export' && hop.route != 'receipt'"
+        },
+        {
+          "from": "./lifecycle",
+          "to": "./submit",
+          "condition": "has(hop.route) && hop.route == 'submit'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_submit'"
+            }
+          }
+        },
+        {
+          "from": "./submit",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'apply'",
+          "modifier": {
+            "delete_context": [
+              "op_carry",
+              "op_origin",
+              "op_phase"
+            ]
+          }
+        },
+        {
+          "from": "./submit",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'receipt'",
+          "modifier": {
+            "delete_context": [
+              "op_carry",
+              "op_origin",
+              "op_phase"
+            ]
+          }
+        },
+        {
+          "from": "./export",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'export'",
+          "modifier": {
+            "delete_context": [
+              "op_carry",
+              "op_origin",
+              "op_phase"
+            ]
+          }
+        },
+        {
+          "from": "./export",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'receipt'",
+          "modifier": {
+            "delete_context": [
+              "op_carry",
+              "op_origin",
+              "op_phase"
+            ]
+          }
+        },
+        {
+          "from": "./lifecycle",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'receipt'",
+          "modifier": {
+            "delete_context": [
+              "op_carry",
+              "op_origin",
+              "op_phase"
+            ]
+          }
+        },
+        {
+          "from": "./submit",
+          "to": "./drafts",
+          "condition": "has(hop.route) && hop.route == 'dstore'",
+          "modifier": {
+            "set_context": {
+              "op_origin": "'drafts'",
+              "op_phase": "hop.phase",
+              "op_carry": "hop.carry"
+            }
+          }
+        },
+        {
+          "from": "./drafts",
+          "to": "./submit",
+          "condition": "context.op_origin == 'drafts'"
+        },
+        {
+          "from": "./unknown",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'receipt'",
+          "modifier": {
+            "delete_context": [
+              "op_carry",
+              "op_origin",
+              "op_phase"
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "description": {
+    "purpose": "The colony's front door, and the one place a person addresses it: ONE sealed hive at the OS level with one occupant per subject -- a submission, an export, a lifecycle change, and since GH #474 a DRAFT that waits -- reached by naming the lane and never the cell. It decides nothing. What it supplies is the one thing a POST from outside does not have: an IDENTITY, because the substrate stamps the emitting CELL's path as reply_to and an operator with a shell is not a cell. It remembers exactly one thing, and the sentence `it holds nothing` is RETRACTED with GH #474: a manifest the baumeister drew for an operator is parked in `drafts` under its own digest until that operator quotes the digest back. Nothing else is remembered between two requests, and the parked draft is a proposal rather than state a request depends on -- a colony that lost the store would lose offers nobody accepted, never a change it made.",
+    "use_when": "Once per colony, at the OS level, beside the submitter it hands its manifests to. Draw ONE edge to the hive path per lane, and one back off it on `receipt`. `in_draft` is the exception to `a lane is drawn from the rim`: its only sender is the level's own `./builder -> ./operator` edge. A new subject -- a further thing an operator may ask the OS for -- is an occupant and a door INSIDE this hive; the caller's edges do not move.",
+    "not_in_scope": "No authentication, ever. There is no token here, no header check, no allow-list of callers and no secret: this hive answers WHO the sender is, never WHETHER they are who they say. Who may reach the front door is a reverse proxy's question, and what the holder of an identity may DO is the capability broker's answer. No decision either -- every manifest that leaves here travels the submitter, the gate and the broker exactly as a model's does, and there is no edge from any cell in here onto the mutation door. And no state a request DEPENDS on: the `drafts` store holds proposals nobody has said yes to, and nothing else survives between two requests.",
+    "contract_in": "Six lanes, all at the hive path. in_submit, in_dump and in_lifecycle are what a caller asks for; in_receipt and export_done are the answers to the two of those that leave the hive, re-stamped by the level that carries them back; in_draft is a manifest the baumeister drew for an operator, and its only sender is the level's own `./builder -> ./operator` edge. in_submit has two callers -- a person at the rim, and an assistant inside the colony whose apply the level re-stamps onto it -- and `context.operator_caller == 'agent'` is how the level says which. It also takes TWO shapes since GH #474: a manifest in the body, or the digest of a parked draft and no manifest at all.",
+    "contract_out": "Three lanes, all out of the hive path. apply is a manifest for the submitter, export a request for the memory that holds the record -- the level below re-stamps it onto `in_export` and relays it from there -- and receipt is what happened, with FOUR senders and one declaration. A draft that was parked answers on `receipt` too, marked `hop.draft_state == 'draft_ready'` and carrying `hop.manifest_sha256` and `hop.draft_path`: a new subject costs an occupant and an edge, never a new lane every caller has to learn. A receipt carries `hop.submitter_kind` back when the round began inside the colony, because the level above sends that one DOWN to the assistant that asked instead of out of the colony."
+  }
+}

@@ -1,4 +1,4 @@
-# `receptionist@2.0.4`
+# `receptionist@2.0.5`
 
 One agent per channel, built the moment a channel first speaks. Two cells under
 one hive: `greet` (a `code` cell) and `ledger` (a `store`). No new cell type, no

@@ -9,8 +9,8 @@
 //! Vocabulary verified against the installed CLI (2.1.219) rather than taken
 //! from documentation: `--output-format stream-json`, the `system`/`assistant`/
 //! `user`/`result` event types, and the `control_request`/`control_response`
-//! pair with subtype `can_use_tool`. See `plans/p8-harness-cell.md` § b2 for
-//! the receipts.
+//! pair with subtype `can_use_tool` — each one read off `claude --help` and
+//! the binary's own strings, not off a document.
 
 use crate::harness::params::HarnessParams;
 use crate::harness::task::TaskRequest;

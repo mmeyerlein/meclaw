@@ -42,7 +42,13 @@ async fn rescan_templates(h: &ColonyHandle, templates_root: std::path::PathBuf) 
         })
         .await
         .unwrap();
-    ack_rx.await.unwrap();
+    // GH #440: the ack carries the scan outcome. Assert it — a silently aborted
+    // rescan would leave `echo-tpl` unknown, and the mutation below would then
+    // fail for a reason that has nothing to do with the injected rename fault.
+    ack_rx
+        .await
+        .unwrap()
+        .expect("the template rescan must succeed");
 }
 
 /// A two-`add_nodes` mutation whose SECOND rename is injected to fail after the

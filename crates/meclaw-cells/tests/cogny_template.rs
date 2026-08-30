@@ -18,13 +18,17 @@
 //! 3. **The correlation survives.** `consult_id` is promoted to context on the
 //!    ingress edge and is still on the message that comes home -- which is the
 //!    only reason a talky can tell one consultation from another.
-//! 4. **The seam has two lanes (1.1.0, GH #124).** The same assembled errand
-//!    reaches `./brain` or `./brain_fast`, decided by `context.consult_class`,
-//!    which the ingress edge lifts from the tool name the asking model chose.
-//!    Pinned twice: the lookup lane answers on the fast model under its own
-//!    length cap, and a fast lane that says "not enough" escalates back into
-//!    the seam so the DEEP lane answers instead. A misclassification costs one
-//!    extra recall, never a wrong answer.
+//! 4. **One brain, and the core declares its own errand (4.4.0, GH #528).**
+//!    The seam had two lanes until 4.4.0 and the class was a second tool name;
+//!    both are gone, because a fast memory question belongs to the surface that
+//!    already holds the window. Pinned three ways: the composite is
+//!    `collector` + `dispatcher` + `brain` + `declare` and nothing else,
+//!    `ask_memory` / `escalate_to_deep` / `brain_fast` survive in no config of
+//!    the template, and an `in_schemas` request comes back on `tool_schemas`
+//!    carrying the `consult_cogny` schema with `question` and `context` both
+//!    required. The last one is the whole of "whoever is reached declares
+//!    themselves": with no owner for that schema a grown caller offers its
+//!    model a menu without the one tool the core exists for.
 //!
 //! Free of a real provider by construction: the brain is the SHIPPED `llm` cell
 //! pointed at the mock OpenAI wire, the tool is a `code` cell.
@@ -81,17 +85,17 @@ fn templates_root() -> std::path::PathBuf {
 const COGNY_FILES: &[&str] = &[
     "config.json",
     "brain/config.json",
-    "brain_fast/config.json",
     "collector/config.json",
+    "declare/config.json",
     "dispatcher/config.json",
 ];
 
-/// The one non-`config.json` file the composite ships (GH #124). The length
-/// discipline of the lookup lane is the only piece of SYSTEM state this
-/// template owns -- identity, instructions and tool schemas stay instance
-/// business, and `brevity` is a slot of its own precisely so the instance's
-/// `instructions` write never collides with it (one writer per system path).
-const COGNY_SEEDS: &[&str] = &["brain_fast/seed/system.jsonl"];
+/// The composite ships no seed at all since 4.4.0 (GH #528). The one it used to
+/// ship was `brain_fast/seed/system.jsonl` -- the lookup lane's length
+/// discipline -- and it went with the lane. Identity, instructions and the tool
+/// menu are instance business, and the menu is asked for rather than seeded
+/// since 4.3.0.
+const COGNY_SEEDS: &[&str] = &[];
 
 /// The template root, or `None` where it does not ship.
 ///
@@ -175,10 +179,14 @@ fn patch(root: &std::path::Path, rel: &str, f: impl FnOnce(&mut Value)) {
 /// The correlation of the one consultation this file runs.
 const CONSULT_ID: &str = "k-9";
 
-/// The two lanes are told apart on the wire by the model id alone -- the one
-/// thing a caller cannot fake and the substrate cannot mix up.
+/// The one brain's model id on the wire -- the one thing a caller cannot fake
+/// and the substrate cannot mix up.
 const DEEP_MODEL: &str = "gpt-4o-mock-deep";
-const FAST_MODEL: &str = "gpt-4o-mock-fast";
+
+/// The session the errand belongs to. `in_turn` DEMANDS it in context since
+/// 4.4.0 (GH #528): a core whose memory tool asks about sessions has to be able
+/// to say which one.
+const SESSION_ID: &str = "s-1";
 
 // ────────────────────────────────────────────────────────── the test-only cells
 
@@ -220,24 +228,35 @@ fn code_cell(script: &str, routes: &[&str], extra_hop: Value) -> Value {
 /// talky's own machinery matters here -- that half is pinned in
 /// `talky_cogny_advisor.rs`.
 ///
-/// The tool name is the whole class hook of GH #124: the asking model declares
-/// `consult_cogny` or `ask_memory`, and the ingress edge turns that choice into
-/// `context.consult_class`. A closed value set the model names beats a duration
-/// estimate nobody measured, which is why `hop.consult_eta` stays observe-only.
+/// There is ONE errand name since 4.4.0 (GH #528). `ask_memory` picked the
+/// lookup lane and both are gone, so the stand-in emits `consult_cogny` and
+/// nothing else.
+///
+/// It also emits `session_id` on the HOP, which a real talky does not: over
+/// there the session keeper puts the key in CONTEXT on the first edge of every
+/// turn, and the documented ingress edge re-states it from there
+/// (`"session_id": "context.session_id"`). This stand-in has no keeper and no
+/// turn chain in front of it, so the same requirement is met from the hop --
+/// same key, same lane contract, one cell fewer in a test about the core.
 const ASKER: &str = r#"
 import sys, json
 d = json.load(sys.stdin)["body"]
 msgs = d.get("messages", [])
 args = str(msgs[-1].get("text", "")) if msgs else "{}"
-try:
-    a = json.loads(args)
-except Exception:
-    a = {}
-tool = str((a or {}).get("tool") or "consult_cogny")
 sys.stdout.write(json.dumps({"header": {"route": "consult", "consult_id": "k-9",
-                                        "tool_name": tool},
+                                        "session_id": "s-1",
+                                        "tool_name": "consult_cogny"},
                              "messages": [{"origin": "assistant", "type": "tool_call",
                                            "id": "k-9", "text": args}]}))
+"#;
+
+/// The declaration asker (GH #528): a cell that wants to know what this core's
+/// errand looks like, asking exactly the way a collector's menu tick asks a
+/// tools hive.
+const MENU_ASKER: &str = r#"
+import sys, json
+sys.stdout.write(json.dumps({"header": {"route": "ask"},
+                             "tools": ["*"], "messages": []}))
 "#;
 
 /// The core's own tool -- an ordinary, synchronous one, wired on the one lane
@@ -266,26 +285,18 @@ fn main_config() -> Value {
     json!({"cell": {"type": "hive"}, "params": {"graph": {"edges": [
         // ── port 1: the errand enters, exactly as the talky's dispatcher sends it ──
         // `consult_id` becomes context because the hop decays at the next cell,
-        // and `col_phase` is cleared because this message comes out of ANOTHER
+        // `session_id` because the `in_turn` lane declares it (GH #528), and
+        // `col_phase` is cleared because this message comes out of ANOTHER
         // collector's chain and would otherwise arrive mid-assembly.
         //
-        // ONE port, TWO edges (GH #124): the tool name the asking model chose
-        // is lifted into `context.consult_class` here and nowhere else. The
-        // errand itself is identical on both -- the class picks the lane, never
-        // the evidence.
+        // ONE edge since 4.4.0. The second one carried `ask_memory` and set
+        // `context.consult_class`; the class, the lane and the name are gone.
         {"from": "./asker", "to": "./cogny/collector",
          "condition": "has(hop.route) && hop.route == 'consult' \
                        && has(hop.tool_name) && hop.tool_name == 'consult_cogny'",
          "modifier": {"set_hop": {"route": "'in_turn'"},
                       "set_context": {"consult_id": "hop.consult_id",
-                                      "consult_class": "'consult'", "col_phase": "''"},
-                      "restore_ttl": true}},
-        {"from": "./asker", "to": "./cogny/collector",
-         "condition": "has(hop.route) && hop.route == 'consult' \
-                       && has(hop.tool_name) && hop.tool_name == 'ask_memory'",
-         "modifier": {"set_hop": {"route": "'in_turn'"},
-                      "set_context": {"consult_id": "hop.consult_id",
-                                      "consult_class": "'lookup'", "col_phase": "''"},
+                                      "session_id": "hop.session_id", "col_phase": "''"},
                       "restore_ttl": true}},
         // ── port 2: the advice goes home on the return lane ──
         {"from": "./cogny/collector", "to": "/sink",
@@ -293,6 +304,15 @@ fn main_config() -> Value {
          "modifier": {"set_hop": {"route": "'in_advice'"},
                       "set_context": {"col_phase": "''"},
                       "restore_ttl": true}},
+        // ── port 3+4: the declaration pair (GH #528). It enters at the HIVE
+        //    PATH, not at a cell: proving the door is half of what the pin is
+        //    for, because the composite is sealed and `./declare` is not an
+        //    address a caller may name.
+        {"from": "./menu-asker", "to": "./cogny",
+         "condition": "has(hop.route) && hop.route == 'ask'",
+         "modifier": {"set_hop": {"route": "'in_schemas'"}}},
+        {"from": "./cogny", "to": "/sink",
+         "condition": "has(hop.route) && hop.route == 'tool_schemas'"},
         // ── the one per-instance lane: which cell answers to `lookup` ──
         {"from": "./cogny/dispatcher", "to": "./lookup",
          "condition": "has(hop.tool_name) && hop.tool_name == 'lookup'"},
@@ -304,46 +324,36 @@ fn main_config() -> Value {
 
 fn build_tree(td: &tempfile::TempDir, root_template: &std::path::Path, base_url: &str) {
     let root = td.path();
-    // `escalate_to_deep` is the core's OWN HANDOFF tool: the fast lane's ticket
-    // out is answered on a lane of its own (a fresh turn on the deep lane), so
-    // the fan-in must open no expectation for it -- otherwise the round it left
-    // behind sits open until the idle exit. A handoff is async by definition
-    // (the dispatcher unions the two lists), and it says the second half as
-    // well: the turn is over, even though the escalation carries no sentence of
-    // its own -- since GH #372 that second half is what keeps a bare async call
-    // WITHOUT a handoff mark (a fire-and-forget `remember`) from ending its
-    // round in silence.
-    std::fs::write(
-        root.join(".env"),
-        "OPENROUTER_API_KEY=test-key\nDISPATCHER_HANDOFF_TOOLS=escalate_to_deep\n",
-    )
-    .unwrap();
+    // No handoff tool of the core's own since 4.4.0 (GH #528): `escalate_to_deep`
+    // was the only one and it went with the lookup lane. `consult_cogny` is a
+    // handoff on the ASKING side, which is not this tree.
+    std::fs::write(root.join(".env"), "OPENROUTER_API_KEY=test-key\n").unwrap();
     write(root, "main/config.json", &main_config());
     write(root, "main/asker/config.json", &{
         code_cell(
             ASKER,
             &["consult"],
             json!({"consult_id": {"type": "string", "required": false},
+                   "session_id": {"type": "string", "required": false},
                    "tool_name": {"type": "string", "required": false}}),
         )
     });
+    write(
+        root,
+        "main/menu-asker/config.json",
+        &code_cell(MENU_ASKER, &["ask"], json!({})),
+    );
     write(
         root,
         "main/lookup/config.json",
         &code_cell(LOOKUP, &["res"], json!({})),
     );
     copy_cells(root_template, &root.join("main/cogny"));
-    // `${ctx.model}` / `${ctx.model_fast}` are INSTANTIATION-side
-    // substitutions; a raw copy has to be told which wire to talk to, and here
-    // that wire is the mock. The two model ids differ on purpose: they are what
-    // the assertions below read the lane off.
+    // `${ctx.model}` is an INSTANTIATION-side substitution; a raw copy has to be
+    // told which wire to talk to, and here that wire is the mock.
     patch(root, "main/cogny/brain/config.json", |v| {
         v["params"]["base_url"] = json!(base_url);
         v["params"]["model"] = json!(DEEP_MODEL);
-    });
-    patch(root, "main/cogny/brain_fast/config.json", |v| {
-        v["params"]["base_url"] = json!(base_url);
-        v["params"]["model"] = json!(FAST_MODEL);
     });
 }
 
@@ -537,174 +547,219 @@ async fn a_consult_runs_the_cores_own_tool_round_and_answers_on_the_return_lane(
         "the core ran its OWN tool round and the result re-entered the seam: {second}"
     );
 
-    // 3. And both of them were the DEEP lane. `consult_cogny` is the class the
-    //    two-laned seam of 1.1.0 has to leave exactly where it was.
+    // 3. Both calls were the one brain. There is no second lane to reach since
+    //    4.4.0, and the model id is what proves the seam did not grow one.
     for (i, r) in reqs.iter().enumerate() {
         assert_eq!(
             lane_of(r),
             DEEP_MODEL,
-            "call {i} of a consult_cogny errand belongs on the thinking lane"
+            "call {i} of a consult errand belongs on the core's one brain"
         );
     }
 
+    // 4. And the session came with it. `in_turn` DEMANDS `session_id` in
+    //    context (GH #528) because the core's memory tool asks about sessions,
+    //    and it has to survive the whole chain the same way `consult_id` does.
+    assert_eq!(
+        ctx_of(&advice, "session_id"),
+        SESSION_ID,
+        "the errand's session survived the core's chain: {:?}",
+        advice.headers.context
+    );
+
     h.shutdown().await;
 }
 
-/// The lookup lane (GH #124), the whole claim in one errand: the SAME ingress,
-/// the SAME collector, the SAME assembly -- and a different lane, because the
-/// asking model named `ask_memory` instead of `consult_cogny`. One inference,
-/// on the fast model, under the length cap the template ships.
+/// The core declares its OWN errand (GH #528). An `in_schemas` request enters
+/// at the HIVE PATH -- `./declare` is not an address a caller may name, the
+/// composite is sealed -- and the answer comes back on `tool_schemas` in the
+/// shape a tools hive answers in, so the asking collector can cut two menus
+/// together without knowing which answerer produced which half.
 ///
-/// This is what buys the seconds: the two `llm` cells are two mailboxes, so a
-/// lookup no longer queues behind whatever the deep lane is writing. A single
-/// process cannot show wall-clock queueing without a second consult in flight;
-/// what IS provable here, and what the queueing follows from, is that the two
-/// classes reach two different cells.
+/// The whole point of the pin is the OWNERSHIP. Until 4.4.0 the `consult_cogny`
+/// schema was typed by hand into every calling brain's `system.tools`; GH #464
+/// replaced typed menus with asked-for ones, every caller stopped typing, and
+/// the schema had no owner left at all -- so a grown assistant offered its model
+/// a menu without the one tool the core exists for.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_lookup_errand_takes_the_fast_lane_with_its_own_length_cap() {
+async fn the_core_answers_in_schemas_with_its_own_errand() {
     let Some(cogny) = shipped_cogny() else {
         return;
     };
-    let mock = MockOpenAI::start(vec![canned_chat_completion(
-        "you were born in berlin.",
-        "stop",
-    )])
-    .await;
+    let mock = MockOpenAI::start(vec![]).await;
     let td = tempfile::TempDir::new().unwrap();
     build_tree(&td, &cogny, &mock.base_url);
     let (h, mut sink_rx) = boot(&td).await;
 
-    h.send(consult(
-        r#"{"tool":"ask_memory","question":"where was i born"}"#,
-    ))
+    h.send(
+        MessageBuilder::new(Path::new("/menu-asker"))
+            .body(Body::Inline(json!({"messages": []})))
+            .ttl(64)
+            .build(),
+    )
     .await;
 
-    // 1. Same port, same correlation, same return lane as a deep consult.
-    let advice = recv_bounded(&mut sink_rx).await.expect("the advice");
-    assert_eq!(answer_text(&advice), "you were born in berlin.");
+    let answer = recv_bounded(&mut sink_rx).await.expect("the declarations");
     assert_eq!(
-        hop_of(&advice, "route"),
-        "in_advice",
-        "the lookup comes home on the SAME advice port: {:?}",
-        advice.headers.hop
+        hop_of(&answer, "route"),
+        "tool_schemas",
+        "the declaration lane is the tools hive's own: {:?}",
+        answer.headers.hop
     );
     assert_eq!(
-        ctx_of(&advice, "consult_id"),
-        CONSULT_ID,
-        "and under the same correlation: {:?}",
-        advice.headers.context
-    );
-    assert_eq!(
-        ctx_of(&advice, "consult_class"),
-        "lookup",
-        "the class rode along in context, which is what the seam edge reads: {:?}",
-        advice.headers.context
+        hop_of(&answer, "operation"),
+        "schemas",
+        "and so is the operation key: {:?}",
+        answer.headers.hop
     );
 
-    // 2. ONE inference, and it was the fast cell -- not the thinking one.
-    let reqs = mock.recorded_requests().await;
+    let schemas = body_of(&answer)["schemas"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
     assert_eq!(
-        reqs.len(),
+        schemas.len(),
         1,
-        "a lookup verbalises a bundle: no tool round, one call. Got {}",
-        reqs.len()
+        "this core serves exactly one errand: {schemas:?}"
     );
+    let one = &schemas[0];
     assert_eq!(
-        lane_of(&reqs[0]),
-        FAST_MODEL,
-        "the tool name picked the lane; the errand itself was identical"
+        one["name"].as_str(),
+        Some("consult_cogny"),
+        "and it is named the way the ingress edge conditions on it: {one:?}"
     );
 
-    // 3. The two halves of H1b, on the wire: the cap and the sentence.
+    // `question` AND `context`, both required. The second one is the ruling:
+    // the asker sends what it knows in full and does not deduplicate it against
+    // what it believes the core already has, because the core's curator
+    // discards what it does not need and cannot recover what was never sent.
+    let required: Vec<String> = one["parameters"]["required"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|v| v.as_str().map(str::to_string))
+        .collect();
     assert_eq!(
-        reqs[0].body.get("max_tokens").and_then(|v| v.as_u64()),
-        Some(512),
-        "the length cap is the lane's, not the instance's: {:?}",
-        reqs[0].body.get("max_tokens")
+        required,
+        vec!["question".to_string(), "context".to_string()],
+        "both are required, and `context` is the half a caller would otherwise \
+         filter: {one:?}"
     );
-    let wire = wire_of(&reqs[0]);
+    for optional in ["eta", "consult_id"] {
+        assert!(
+            one["parameters"]["properties"][optional].is_object(),
+            "{optional} is declared and optional: {one:?}"
+        );
+    }
+    // The description is the class boundary and the one place it lives.
+    let desc = one["description"]
+        .as_str()
+        .unwrap_or_default()
+        .to_lowercase();
     assert!(
-        wire.contains("Length discipline of this lane"),
-        "the shipped `brevity` seed reached the provider -- a cap without the \
-         instruction only truncates: {wire}"
+        desc.contains("do not"),
+        "the description says what NOT to send here -- that sentence IS the \
+         class boundary: {desc}"
+    );
+
+    // Provider-neutral: `{name, description, parameters}` and no envelope. The
+    // caller is the one that knows its provider, so wrapping is its job.
+    assert!(
+        one.get("type").is_none() && one.get("function").is_none(),
+        "the answer carries no provider envelope: {one:?}"
     );
 
     h.shutdown().await;
 }
 
-/// The north-star guard (GH #124): the class picks the lane, so a WRONG class
-/// must not produce a wrong answer. The fast lane says "not enough" the only
-/// way an `llm` cell can say anything -- as a tool call -- and the split hands
-/// that ticket back into the seam with the class flipped. The deep lane then
-/// answers the same question, one extra recall later.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_fast_lane_that_says_not_enough_escalates_to_the_thinking_lane() {
+/// The lookup lane is gone, and gone means gone from the MECHANISM (GH #528).
+///
+/// A prose retraction is required and is not enough, so this pin reads neither
+/// prose nor the absence of a word: the README and the `because` sentences keep
+/// naming `ask_memory`, `escalate_to_deep` and `brain_fast` on purpose, because
+/// a promise is retired by an explicit retraction rather than a silent rewrite
+/// (`docs/development-rules.md` § 3). What must not survive is a MECHANISM -- a
+/// cell directory, an edge, a ctx key -- so every `because` and `description`
+/// is stripped out first and the assertion runs on what is left.
+#[test]
+fn no_lookup_lane_survives_in_the_shipped_mechanism() {
     let Some(cogny) = shipped_cogny() else {
         return;
     };
-    let mock = MockOpenAI::start(vec![
-        canned_tool_calls(vec![(
-            "e1",
-            "escalate_to_deep",
-            r#"{"question":"why did the second migration fail"}"#,
-        )]),
-        canned_chat_completion("because the lock file was not refreshed.", "stop"),
-    ])
-    .await;
-    let td = tempfile::TempDir::new().unwrap();
-    build_tree(&td, &cogny, &mock.base_url);
-    let (h, mut sink_rx) = boot(&td).await;
-
-    h.send(consult(
-        r#"{"tool":"ask_memory","question":"why did the second migration fail"}"#,
-    ))
-    .await;
-
-    // 1. The answer that comes home is the DEEP lane's, on the ordinary port.
-    let advice = recv_bounded(&mut sink_rx).await.expect("the advice");
-    assert_eq!(
-        answer_text(&advice),
-        "because the lock file was not refreshed.",
-        "the escalated question was answered, not the escalation ticket"
-    );
-    assert_eq!(hop_of(&advice, "route"), "in_advice");
-    assert_eq!(
-        ctx_of(&advice, "consult_id"),
-        CONSULT_ID,
-        "the correlation survived the lane change: {:?}",
-        advice.headers.context
-    );
-    assert_eq!(
-        ctx_of(&advice, "consult_class"),
-        "consult",
-        "the escalation edge flipped the class, which is what sent the second \
-         assembly down the thinking lane: {:?}",
-        advice.headers.context
-    );
-
-    // 2. Two calls, one per lane, in that order. This is the whole cost of a
-    //    misclassification -- one extra assembly, never a wrong answer.
-    let reqs = mock.recorded_requests().await;
-    assert_eq!(reqs.len(), 2, "one fast attempt, one deep answer");
-    assert_eq!(
-        lane_of(&reqs[0]),
-        FAST_MODEL,
-        "the errand started on the lane its tool name named"
-    );
-    assert_eq!(
-        lane_of(&reqs[1]),
-        DEEP_MODEL,
-        "and the escalation reached the thinking lane"
-    );
-    let deep = wire_of(&reqs[1]);
     assert!(
-        deep.contains("why did the second migration fail"),
-        "the deep lane saw the question, not just the ticket: {deep}"
+        !cogny.join("brain_fast").exists(),
+        "the fast lane's cell is gone, with its `brevity` seed"
+    );
+
+    let mut files = Vec::new();
+    collect_configs(&cogny, &cogny, &mut files);
+    for rel in &files {
+        let mut v: Value =
+            meclaw_core::serde_json::from_str(&std::fs::read_to_string(cogny.join(rel)).unwrap())
+                .unwrap();
+        strip_prose(&mut v);
+        let raw = meclaw_core::serde_json::to_string(&v).unwrap();
+        for dead in ["ask_memory", "escalate_to_deep", "brain_fast", "model_fast"] {
+            assert!(
+                !raw.contains(dead),
+                "{} still WIRES `{dead}`: one class, one lane, one brain since \
+                 4.4.0. A mechanism that outlives its lane is the defect GH #528 \
+                 removed -- a word in a retraction is not",
+                rel.display()
+            );
+        }
+    }
+
+    // The ctx surface is the other half of the same removal, and it is read as
+    // a key rather than as a string: `model_fast` fed `./brain_fast` and there
+    // is nothing left to feed.
+    let manifest: Value = meclaw_core::serde_json::from_str(
+        &std::fs::read_to_string(cogny.join("template.json")).unwrap(),
+    )
+    .unwrap();
+    let ctx = &manifest["requires"]["ctx"];
+    assert!(
+        ctx["model"].is_object() && ctx.get("model_fast").is_none(),
+        "one brain takes one model key: {ctx:?}"
+    );
+
+    // And the two knobs the ruling moved, read off the ref marker rather than
+    // off prose: the memory TOOL is on, the ambient leg is not this core's.
+    let collector: Value = meclaw_core::serde_json::from_str(
+        &std::fs::read_to_string(cogny.join("collector/config.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        collector["override_params"]["assemble"]["memory_call_tier"].as_str(),
+        Some("1"),
+        "the memory tool is declared and answered: {collector:?}"
     );
     assert!(
-        !deep.contains("Length discipline of this lane"),
-        "and it was NOT given the fast lane's length cap instruction: {deep}"
+        collector["override_params"]["assemble"]
+            .get("memory_tier")
+            .is_none(),
+        "and the ambient leg is NOT switched on here -- a problem solver asks \
+         on purpose: {collector:?}"
     );
+}
 
-    h.shutdown().await;
+/// Drop every `because` and `description` subtree, recursively. What is left is
+/// the part of a template file a message actually travels through: cells,
+/// params, conditions, modifiers, lane names.
+fn strip_prose(v: &mut Value) {
+    match v {
+        Value::Object(map) => {
+            map.retain(|k, _| k != "because" && k != "description");
+            for (_, child) in map.iter_mut() {
+                strip_prose(child);
+            }
+        }
+        Value::Array(items) => {
+            for item in items.iter_mut() {
+                strip_prose(item);
+            }
+        }
+        _ => {}
+    }
 }

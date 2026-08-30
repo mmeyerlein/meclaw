@@ -25,6 +25,7 @@
 use meclaw_cells::web::WebCellFactory;
 use meclaw_colony::{CellFactory, ContractView, SpawnedCellKind};
 use meclaw_core::{CellEmission, Path, serde_json::json};
+use meclaw_testing::free_port;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
@@ -41,14 +42,6 @@ const CSS: &str = ":root{--r-window:18px}\n/* a \"quoted\" comment */\n";
 /// The content type the row declares. Not what a file-extension guess would
 /// produce, so the assertion cannot pass by a sniffer being right by accident.
 const CSS_TYPE: &str = "text/css; charset=utf-8";
-
-/// A port nothing is listening on, obtained by binding and letting go.
-fn free_port() -> u16 {
-    let l = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind an ephemeral port");
-    let port = l.local_addr().expect("read the bound address").port();
-    drop(l);
-    port
-}
 
 /// Write `seed/pages.jsonl`, `seed/objects.jsonl` and `seed/components.jsonl`
 /// so the cell has one declared page at `/`.

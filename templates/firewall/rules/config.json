@@ -16,6 +16,27 @@
       "arrivals": {
         "channel": "text",
         "recorded_at": "text"
+      },
+      "held": {
+        "hold_id": "text",
+        "status": "text",
+        "held_at": "text",
+        "expires_at": "text",
+        "channel": "text",
+        "user_id": "text",
+        "rule_id": "text",
+        "reason": "text",
+        "context": "json",
+        "body": "json",
+        "decided_at": "text",
+        "decided_by": "text",
+        "decision": "text"
+      },
+      "port_scratch": {
+        "key": "text",
+        "kind": "text",
+        "payload": "json",
+        "created_at": "text"
       }
     },
     "query_timeout_ms": 5000
@@ -70,16 +91,18 @@
     ]
   },
   "description": {
-    "purpose": "The rule set and the arrival ledger of the firewall, as rows: 'rules' says who may speak and what may not be said, 'arrivals' is the stamped trace the rate window counts. Both are ordinary tables -- the whole point of the hive is that the policy is editable with an insert and an update, never with a code change.",
-    "use_when": "One per firewall hive. The screen reads and writes here and nowhere else; a code cell owns no state, so all of it lives in this store. An operator (or a mutation) edits the rules table live -- the screen reloads it on every single turn.",
-    "not_in_scope": "No turn content and no verdict history: what was rejected and why is a hop on the reject lane, and where that gets logged is the parent tree's business. No regex, no scoring, no model: a rule is a literal plus a match mode. No pruning of the arrivals table -- it is append-only and grows; trimming it is an operator's delete, not a rule.",
+    "purpose": "The rule set, the arrival ledger and the parking pile of the firewall, as rows: 'rules' says who may speak, what may not be said and what waits for a person, 'arrivals' is the stamped trace the rate window counts, and -- since firewall@2.2.0 -- 'held' is the pile of turns a hold row parked, each stored WHOLE (body, hop and the context its ingress edge promoted) with the timeout it expires at (GH #450). Rules and arrivals are ordinary tables -- the whole point of the hive is that the policy is editable with an insert and an update, never with a code change. Since firewall@2.1.0 one more table stands beside them and is not domain at all: `port_scratch`, the notepad the transfer lane parks one import part and its probe result under, because a code cell holds no state between hops and a store cannot return two result sets at once. It is written and read by `./porter` alone, it never travels in an export, and nothing else in this hive looks at it (GH #471).",
+    "use_when": "One per firewall hive. The screen reads and writes here and nowhere else; since 2.1.0 the porter does too -- it reads `rules` for an export and writes it back for an import; and since 2.2.0 `./warden` owns `held` the same way, because a code cell owns no state, so all of it lives in this store. An operator (or a mutation) edits the rules table live -- the screen reloads it on every single turn.",
+    "not_in_scope": "No turn content on the decided lanes and no verdict history: what was rejected and why is a hop on the reject lane, and where that gets logged is the parent tree's business. A HELD turn is the one exception and it is not a log: it is the turn itself, kept because a person still has to answer about it, and it stops being kept the moment they do -- the row stays with status 'released' / 'refused' / 'expired', because disabling and marking is the retraction here as everywhere in this hive, and nothing is deleted. No regex, no scoring, no model: a rule is a literal plus a match mode. No pruning of the arrivals table -- it is append-only and grows; trimming it is an operator's delete, not a rule.",
     "emits_meaning": "messages[]: one tool_result per op. hop.operation drives the phase dispatch in the screen; the row array of a select IS the rule set (or the arrival window) of that turn. hop.duration_ms is what that reply cost in milliseconds. A bundle reply (two or more tool_call turns, GH #295) stamps hop.operation 'bundle', sums hop.rows_affected over its legs and adds hop.bundle_errors: how many legs carry an error_code. That key is present on every bundle reply, 0 included, and never on a single-operation reply -- it is what an edge reads to see that one leg failed without opening the body, while hop.error_code keeps its hard meaning (the WHOLE reply is a refusal). results[]: the per-operation metadata of that same bundle reply, one entry per leg in call order -- {tool_call_id, operation, rows_affected, duration_ms} plus error_code if that one leg failed. It is a top-level body slot and not a key on the turn because a tool_result turn stays schema-pure ({origin, type, text, id}; ubf-body.json $defs/TurnObject is additionalProperties:false, so a metadata key there would dead-letter the whole reply), and tool_call_id is what ties an entry back to its turn. Like bundle_errors the slot exists only on a bundle reply -- a single-operation reply carries messages[] alone.",
-    "consumes_meaning": "messages[]: tool_call turns with store-native args. Which pass a reply belongs to is carried by context.store_origin ('firewall'), the step by context.fw_phase, both promoted by the edge that sent the op.",
+    "consumes_meaning": "messages[]: tool_call turns with store-native args. Which pass a reply belongs to is carried by context.store_origin ('firewall' for the screen, 'fwporter' for the transfer lane, 'fwwarden' for custody), the step by context.fw_phase, context.port_phase or context.wd_phase, both promoted by the edge that sent the op.",
     "examples": [
       "{operation: select, table: rules, columns: [rule_id, kind, field, value, action], where: {enabled: 1}, order_by: [{col: 'rule_id', dir: 'asc'}]} -> the rule set of this turn, in a stable order",
       "{operation: select, table: arrivals, columns: [recorded_at], where: {channel: 'tg:42', recorded_at: {gte: '<cutoff>'}}, limit: 31} -> the bounded read that decides the rate limit",
       "{operation: insert, table: arrivals, row: {channel: 'tg:42', recorded_at: '<now>'}} -> the passed turn books its slot",
-      "{operation: update, table: rules, set: {enabled: 1}, where: {rule_id: 'example-block-injection'}} -> a hot policy change, no restart, no code"
+      "{operation: update, table: rules, set: {enabled: 1}, where: {rule_id: 'example-block-injection'}} -> a hot policy change, no restart, no code",
+      "{operation: select, table: held, columns: [hold_id, expires_at, channel, user_id, rule_id], where: {status: 'held'}, order_by: [{col: 'expires_at', dir: 'asc'}], limit: 1025} -> the bounded pile read that answers both custody questions at once: what is overdue, and is there room for one more",
+      "{operation: update, table: held, set: {status: 'released', decided_at: '<now>', decided_by: 'operator'}, where: {hold_id: '<id>', status: 'held'}} -> a person's answer, written BEFORE the turn is put back on the wire; the status in the where clause is what makes two releases of one hold produce one delivery"
     ]
   }
 }

@@ -2,12 +2,12 @@
 
 # meclaw
 
-**Agent swarms that recursively evolve themselves.**
+**The harness is a directory tree. Rewiring it is a runtime move.**
 
 **Loops? I don't care. The swarm builds its own. Or it doesn't. Its call.**
 
 [![ci](https://github.com/mmeyerlein/meclaw/actions/workflows/ci.yml/badge.svg)](https://github.com/mmeyerlein/meclaw/actions/workflows/ci.yml)
-[![tests](https://img.shields.io/badge/tests-5200%2B%20passing-brightgreen)](#)
+[![tests](https://img.shields.io/badge/tests-6200%2B%20passing-brightgreen)](#)
 [![rust](https://img.shields.io/badge/rust-edition%202024-orange)](#)
 [![license](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](#license)
 [![stars](https://img.shields.io/github/stars/mmeyerlein/meclaw?style=social)](#)
@@ -246,27 +246,37 @@ A tool-loop is `llm → dispatcher → tools → collector → llm`, with the lo
 ## The template library
 
 Both halves of that tool loop already exist as templates, and so does most of an agent.
-**25 of them ship in this repository**, every one pure DSL — directories, `config.json` files
+**38 of them ship in this repository**, every one pure DSL — directories, `config.json` files
 and edges, not a line of Rust and no plugin API. Instantiating one *copies* the subtree into
 your colony; from that moment the instance is yours and has no link back to the library.
 
 | | |
 |---|---|
-| the tool loop | `dispatcher` fans a brain's tool calls out, `collector` decides what comes back into the context window, `tools` is the whole tool surface as one node with one contract |
-| the conversation | `session-keeper` gives a conversation a beginning and an end, `summarizer` writes the handover |
-| the front door | `door`, `telegram-connector` (a chat as one address), `firewall` (rules that are data, not code), `receptionist` (one agent per channel, built on demand) |
+| the tool loop | `dispatcher` fans a brain's tool calls out, `collector` decides what comes back into the context window, `tools` is the whole tool surface as one node with one contract — and a `schemas` cell in it answers a second question about itself: a template declares the tools it uses (`tools: [...]`), asks at start-up, and the menu is derived rather than hand-kept (`gh464_the_hive_hands_out_its_own_declarations`, `gh464_a_cell_that_uses_tools_declares_them`) |
+| the conversation | `session-keeper` gives a conversation a beginning and an end; the handover into the next generation comes back through the memory hive's recall bundle |
+| the front door | `operator` is the one lane into the OS — one occupant per subject (`submit`, `export`, `lifecycle`), identity taken off the envelope and never authentication (`operator_one_front_door`); outside it sit `door`, `telegram-connector` (a chat as one address), `firewall` (rules that are data, not code), `receptionist` (one agent per channel, built on demand) |
 | memory and identity | `memory-hive` — thirteen cells, an LLM-free write path and a nightly consolidation — plus `memory-drain` and `archive-bridge`, and `affinity` for the curated record of who is who |
-| whole agents | `cogny` is the agent core as one node; `talky` is the full composite, four sub-units pre-wired |
-| the organism | `meclaw-os`, `org`, `member`, `assistant` — four composition levels under one rule, *a level owns what its siblings must share*: the shell owns the broker (`access`) and the control loop, the organisation owns a namespace, the member owns the memory and the screen, the assistant owns the reasoning core and the tools |
+| the screen | `display` is the member's channel: one screen on a port of its own, a `views` table, and any number of agents writing named views onto it — a view is owned by whoever sent it, so a body claiming another owner is refused rather than believed (`gh455_a_screen_holds_two_owners`). `colony-view` is an app (library tag `app`, instantiated under `<member>/apps/<name>`) that draws the colony into one. Together they replace `canvy`, now deprecated |
+| the watcher | `argus` reads a charter, measures its own colony out of the substrate's ledger, has a judge simulate against those numbers, sends the decision on as an ordinary params update, and keeps or reverts it after a window — every tick a receipt. Optimisation is one goal type among others, and every goal ships **disabled**. What is proven is the form, not a result: `gh462_argus_runs_a_full_cycle` drives both outcomes, kept and reverted, over the whole chain on a booted colony. (`steward` is its deprecated former name.) |
+| whole agents | `cogny` is the agent core as one node; `talky` is the full composite, three sub-units pre-wired |
+| the organism | `meclaw-os`, `org`, `member`, `assistant` — four composition levels under one rule, *a level owns what its siblings must share*: the shell owns the front door (`operator`), the broker (`access`), the watcher (`argus`) and the authoring path, and declares the environment it needs as `requires.env`; the organisation owns a namespace, the member owns the memory, the channels and the screen; the assistant owns the reasoning core and the tools |
 | the small ones | `retry`, `terminal` |
 
 The catalogue, with what each one is for and which ports to wire, is
 [`templates/README.md`](templates/README.md). `examples/meclaw-os` boots a seed with **zero
-cells in it** and grows a sixteen-cell agent out of that library with one declaration;
-`examples/organism` boots the same empty seed and grows the whole four-level stack —
-**55 cells** — out of five.
+cells in it** and grows a **fourteen-cell** agent out of that library with one declaration,
+**nineteen** after the second. Beside it, `examples/meclaw-os/seed-ref` is that first boot in
+*one line*: a `cell.type: "ref"` marker on `meclaw-os@1.6.0` and a single edge, and the whole
+shell arrives out of the library — while a key missing from the template's `requires.env`
+refuses the growth with `requirement_missing` before a byte is staged
+(`gh465_one_declaration_boots_the_os`). `examples/organism` boots the same empty seed and
+grows the whole four-level stack — **82 cells and 425 edges** — out of five declarations
+(`gh302_the_stack_grows_from_templates`), and `examples/display-colony-view` puts two owners
+on one screen. A memory can also come back: `examples/memory-import` turns an exported
+`seed/<table>.jsonl` into one manifest, so a rebuilt member is born with its history
+(`gh467_a_member_is_born_with_its_history`).
 
-## It rewrites itself. That's the point.
+## Rewiring is a runtime move
 
 Reshaping the graph is a first-class runtime move. A cell emits a mutation diff (`add_nodes`, `add_edges`, `swap_nodes`, and the rest), the colony validates it and applies it atomically while everything keeps running. This part is real and tested today.
 
@@ -275,7 +285,12 @@ The whole idea is agents that maintain their own harness. Read the current topol
 That part shipped, and so did the thing on top of it. The **builder** — an `llm` plus
 `code` topology that turns a plain-English request into a MANIFEST, itself pure DSL and
 not one line of new Rust — is in this repository, on the public template allow-list, at
-[`templates/builder`](templates/builder/). It never applies anything, and that is a
+[`templates/builder`](templates/builder/). A wish it recognises does not reach a model at
+all: a fast lane of parameterised recipes renders the manifest deterministically, and
+`grow_level` is the one that turns *grow an assistant named scribe under this member* into
+that level's nodes and its transit edges from a recipe rather than token by token
+(`gh466_grow_level_renders_the_level`, `gh466_a_recipe_grown_level_boots`). What the wish
+does not say, it is asked for instead of guessed. It never applies anything, and that is a
 property of the files rather than a promise in a README: no cell in it has an edge onto
 the control plane. The one reach onto the mutation door in the whole tree is
 [`templates/submit`](templates/submit/), which takes the requester's identity off the
@@ -288,9 +303,9 @@ touching the control plane escalates to a human.
 
 ## Where it's at
 
-meclaw is a **0.x** proof of concept for the DSL and the self-modifying substrate — the version that shipped last is the top entry in [`CHANGELOG.md`](CHANGELOG.md), which is where release truth lives. The on-disk schema only ever grows: the `colony.db` `schema_version` stands at **7**, every step to it was additive, and an older database migrates in place on the boot that finds it. The DSL keeps growing; the database you already have keeps opening.
+meclaw is a **0.x** proof of concept for the DSL and the self-modifying substrate — the version that shipped last is the top entry in [`CHANGELOG.md`](CHANGELOG.md), which is where release truth lives. The on-disk schema only ever grows: the `colony.db` `schema_version` stands at **8**, every step to it was additive, and an older database migrates in place on the boot that finds it. The DSL keeps growing; the database you already have keeps opening.
 
-Real and tested today: the full actor substrate, all 15 built-in cell types, hot and cold lifecycle, runtime mutations, the template system, long-running cells, the HTTP API and web UI, displays that own their own port, agent harnesses as supervised child processes, and child colonies composed as single cells. **5200+ tests. 0 fail. And climbing.** The hot routing paths are byte-pinned against fixtures, so they can't quietly drift.
+Real and tested today: the full actor substrate, all 15 built-in cell types, hot and cold lifecycle, runtime mutations, the template system, long-running cells, the HTTP API and web UI, displays that own their own port, agent harnesses as supervised child processes, and child colonies composed as single cells. **6200+ tests. 0 fail. And climbing.** The hot routing paths are byte-pinned against fixtures, so they can't quietly drift.
 
 Not here yet: **composition, not federation.** A child colony is addressable as one cell, and that boundary is pinned by negative tests — a parent path into the child tree does not route, and a mutation scoped into the child creates nothing. Cross-colony routing is a deliberate non-goal, not a missing feature. One builder per scope. A few hardening items are tracked in the open. This is honest infrastructure, not a toy. It's also not something to run unsupervised in production yet. The `bash` cell has full shell access on purpose, so run untrusted topologies somewhere you don't mind a shell.
 

@@ -96,7 +96,7 @@ fn a_manifest_whose_bytes_changed_is_refused_by_name() {
     let decls = one_declaration();
     let honest = digest_of(&decls);
     let mut tampered = decls.clone();
-    tampered[0]["diff"]["add_edges"][0]["to"] = json!("/os/steward");
+    tampered[0]["diff"]["add_edges"][0]["to"] = json!("/os/argus");
     let out = run_submit(tampered, &honest, REQUESTER);
     assert_eq!(out["header"]["route"], json!("receipt"));
     assert_eq!(
@@ -135,10 +135,10 @@ fn an_honest_manifest_asks_once_and_then_reaches_the_mutation_lane_once() {
 
 #[test]
 fn the_requester_is_taken_from_the_envelope_and_never_from_the_body() {
-    // The body claims to be the steward. The envelope says otherwise, and the
+    // The body claims to be the argus. The envelope says otherwise, and the
     // envelope is what the substrate wrote.
     let mut claiming = one_declaration();
-    claiming[0]["ctx"] = json!({"requester": "/os/steward"});
+    claiming[0]["ctx"] = json!({"requester": "/os/argus"});
     let claimed_digest = digest_of(&claiming);
 
     // It is already true of the QUESTION: the identity travels as `subject`,

@@ -49,6 +49,14 @@
         {
           "route": "in_thread_call",
           "because": "a thread_recall tool call the brain made: the way back to a payload the curator elided out of THIS turn, served here because the collector owns the slate the stub points at"
+        },
+        {
+          "route": "in_pack",
+          "because": "a durable `system.*` slot for the brain behind this cell -- the door in the wall (GH #458). The agent composites this collector stands in are sealed: an edge naming their `./brain` is refused with `hive_port_boundary`, so every way from outside to the brain runs through here, and until this lane existed there was none at all for an identity. `affinity`'s push lane is the worked example and the reason the lane has the shape it has: it emits the slots and no turn beside them, so the write costs the agent a write and not an inference (GH #263). Body: `system` carrying one or more slot subtrees, or `slot` + `content` for a single one written by hand; both may travel in one message and the single slot is merged over the tree. Only `identity`, `persona`, `handover` and `instructions` may be written -- a SUBSET of the collector's own `SYS_KEEP`, minus the two families this cell re-derives every round (`tools`, `budget`), and those two subtractions are all that is left. `instructions` was a THIRD one until GH #488: the charter was held out of the lane on the ground that a subscription must not overwrite what the agent is for, and that ground assumed the charter had some OTHER owner. It had none -- nothing exported it, no template seeded it, and a grown generation came up with an empty charter and answered as the vendor's default assistant. A family nobody may write is not a protected family, it is an empty one. What protects it now is the lane itself rather than a hole in the lane: the door is a route stamped by an EDGE, and that edge is drawn only through the access rule that lets a brain draw its OWN push edge and no other, from a source whose single writer is `affinity`'s audited gate. Any other slot refuses the WHOLE pack with `slot_unknown`, and an empty one with `pack_empty`: a half-written identity is worse than none. The owner is taken from `envelope.reply_to` and never from the body"
+        },
+        {
+          "route": "in_menu",
+          "because": "the declarations coming back (GH #464): `schemas[]`, one `{name, description, parameters}` per name the tools hive has, and `unknown[]`, the declared names it has nothing under. This cell wraps each declaration in the provider envelope -- the hive answers provider-neutral on purpose, because a hive that wrapped would have to be told which provider its caller talks to -- and writes the result out on `menu`. An unknown name is REPORTED, in `hop.menu_unknown` and as a warn line in `log.jsonl`, never dropped: a name nobody has is a declaration in the agent's own template pointing at nothing, and seeing that is the whole value of declaring. **Retracted in 3.4.0 ([#529](https://github.com/mmeyerlein/meclaw/issues/529))**: up to 3.3.1 this lane wrote the result straight out on `menu` and the one answer it carried WAS the menu. That is withdrawn. One reply is the whole menu only while exactly one thing answers, and the moment two do the second would not merge with the first, it would DELETE it -- the write is a `$replace` -- so the two answerers would take the menu away from each other on every tick forever. A second answerer is required, because a tool the composite reaches by an edge on its NAME is topology of the level that draws the edge and only the side that ANSWERS a call can declare it. So this lane now RECORDS the answer as one row of the hive's own `menu` table (columns `answerer`, `tools`, `unknown`, `recorded_at`), keyed by `context.tool_answerer` -- the mirror of the `tool_caller` a request already carries; absent, it is the one-answerer shape and counts as the default answerer, so a tree wired before this behaves exactly as it did -- reads every row back in the same bundle (delete + insert + select, the GH #419 form, phase `menu-merge`), and the answer to THAT bundle derives the menu as the union over all the rows and emits it on `menu`. The empty-menu guard stands in front of the write and now covers the row as well: an answer with no usable declaration records nothing and leaves this answerer's stored row untouched. And the unknown names travel INTO the row rather than being reported here, because a name this answerer has nothing under may be one another answerer delivers: the finding is computed against the MERGED menu and the warn line moved to the merge with it"
         }
       ],
       "emits": [
@@ -75,6 +83,22 @@
         {
           "route": "prune",
           "because": "one report per pruned session (hop.session_id, hop.pruned_turns, hop.pruned_rounds, hop.prune_boundary), or a single zero report -- either because nothing was eligible, or, since 2.1.1, because the store refused one of the chain's own reads or deletes. The two zeros are told apart by hop.degraded, with hop.store_error and hop.store_operation beside it (GH #343)"
+        },
+        {
+          "route": "pack",
+          "because": "an accepted pack on its way into the brain, as `system.*` and nothing else (GH #458). It is the ONE emission of this cell that carries durable state rather than a projection of one round: an `llm` cell upserts it per slot path into its own `cell.db`, where it stands until something overwrites that exact path, and answers nothing because no turn travels beside it. It is deliberately NOT the `brain` route: that one carries an assembled turn and is bounded by `hop.iter`, and a pack belongs to no turn and no round. A parent that wires `in_pack` MUST wire this one into the brain, or every accepted pack dead-letters after the collector already told its sender it was accepted"
+        },
+        {
+          "route": "pack_ack",
+          "because": "the receipt of one pack: `hop.pack_owner` (off the envelope), `hop.pack_slots` (what was named, sorted), `hop.error_code` (empty, `slot_unknown` or `pack_empty`) and `hop.pack_unknown` (the slots that were refused). It answers unconditionally -- accepted and refused alike -- because a push that reaches nothing and a push that landed are otherwise indistinguishable from the sending side, which is the failure class `docs/development-rules.md` § 2c names. Every key is always present and empty rather than absent, so an edge's CEL guard never fails on a missing hop key"
+        },
+        {
+          "route": "schemas",
+          "because": "the names this agent declares it uses, on their way to the tools hive's `in_schemas` door (GH #464). The whole body is `{\"tools\": [...]}` and `[\"*\"]` asks for everything: the hive keeps no table of who asked, so the request says what it wants every time. A parent that wires the tick MUST wire this and the answer back, or the tick fires into a dead letter every period"
+        },
+        {
+          "route": "menu",
+          "because": "the answered menu, as `system.tools` and nothing else (GH #464). Like `pack` it is durable state and not a projection of one round: an `llm` cell upserts the subtree into its own `cell.db`, where it stands until something overwrites that exact path, and it answers nothing because no turn travels beside it. The subtree carries `$replace`. **Retracted in 3.4.0 ([#529](https://github.com/mmeyerlein/meclaw/issues/529))**: up to 3.3.1 this said the menu becomes exactly what the hive answered, and that is withdrawn. One answer is the whole menu only while exactly one thing answers; with two, the second would delete the first instead of merging with it. What travels here is the UNION over every answerer's last submenu -- kept one row per `context.tool_answerer` in the hive's own `menu` table and walked in answerer order, so the same rows always derive the same menu and the first answerer wins a name collision -- plus the names this collector serves itself (GH #512). `hop.menu_answerers` names the answerers the menu was derived from, beside `menu_count`, `menu_self` and `menu_unknown`. Both empty-menu guards stand: an answer with no usable declaration writes nothing AND records nothing, and a merge that came out empty writes nothing either, rather than an empty menu that would revoke the model's whole tool set. A store that refuses the merge is a warn line and a STOP, never a `degraded` answer: a menu is durable state with no turn beside it, so there is nothing to report into, and the next tick asks again. Wire it into the brain, exactly as `pack` is wired"
         }
       ]
     },
@@ -84,6 +108,16 @@
           "from": ".",
           "to": "./assemble",
           "condition": "has(hop.route) && hop.route.startsWith('in_')"
+        },
+        {
+          "from": "./menu-clock",
+          "to": "./assemble",
+          "condition": "has(hop.schedule_name) && hop.schedule_name == 'menu-tick'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_menu_tick'"
+            }
+          }
         },
         {
           "from": "./assemble",
@@ -107,7 +141,13 @@
         {
           "from": "./assemble",
           "to": ".",
-          "condition": "has(hop.route) && !hop.route.startsWith('in_') && hop.route != 'cstore'"
+          "condition": "has(hop.route) && !hop.route.startsWith('in_') && hop.route != 'cstore'",
+          "modifier": {
+            "delete_context": [
+              "col_phase",
+              "store_origin"
+            ]
+          }
         }
       ]
     }
@@ -115,8 +155,8 @@
   "description": {
     "purpose": "Scope marker of the collector hive: bundles the assembly state machine and its state surface. THE HIVE IS THE ADDRESS — everything from outside is sent to the hive itself, never to a cell inside it, and the hive hands it on. What an agent's LLM sees is decided in here, in one place, instead of spread over a persona cell, a prep cell and a tool-loop collector.",
     "use_when": "One per agent brain. Instantiate per agent tree and wire the parent's edges TO THE HIVE PATH (`./collector`), not to anything below it — see meclaw-overview § Die Hive-Grenze. `params.ports` is empty and therefore sealed: a mutation that reaches inside is rejected with hive_port_boundary.",
-    "not_in_scope": "No inference, no persona, no tool fan-out, no durable memory. And no knowledge of its inside for anyone outside: which cell answers a lane is this hive's business and may change without touching a caller.",
-    "contract_in": "Every message whose `hop.route` starts with `in_`. The eleven lanes in use: in_turn (a fresh turn), in_calls (the expectation set of a tool round), in_tool (one tool result -- every turn of its `messages[]`, never just the first, and never its `system` slot: GH #252), in_answer (the brain's answer), in_bundle (a memory bundle), in_advice (an advisor's answer), in_close (a closed session), in_prune, in_round_sweep, in_memory_call (the memory tool), in_thread_call (the thread tool). They are the same eleven the state machine dispatches on; a lane declared here that nothing behind the door reads would be a door into silence, which is why in_batch left in 2.0.1.",
-    "contract_out": "Everything the assembler emits that is not an in_ lane and not the internal cstore write, leaving through the hive path: brain (the seam — the caller's edge carries the iteration bound and restore_ttl), recall, answer (THREE sorts: a real answer, a capped round told apart by hop.round_capped, and -- since collector@2.1.1 -- a turn the store would not let be assembled, told apart by hop.degraded, which carries no round_capped; a reply edge must guard on BOTH keys, GH #343), write, turn_write, prune. A caller wires the ones it needs and ignores the rest. `write` and `turn_write` are no longer two cadences of one document (GH #298, ruling Q11): `write` hands a CLOSED SESSION out as one batch with its `rounds` slot, for whoever archives a day, while `turn_write` hands out ONE TURN per message, addressed at a memory hive's episode lane -- and it does so per turn rather than at the close, which is why nothing said today waits for the night to become retrievable."
+    "not_in_scope": "No inference, no persona, no tool fan-out, no durable memory. And no knowledge of its inside for anyone outside: which cell answers a lane is this hive's business and may change without touching a caller. And no schedule that destroys or closes anything: `./menu-clock` (GH #464) fires ONE question whose answer overwrites one slot, and the two schedules this hive still refuses -- the prune and the stale-round exit -- are exactly the two that would decide when somebody's turns fall.",
+    "contract_in": "Every message whose `hop.route` starts with `in_`. The THIRTEEN lanes in use: in_turn (a fresh turn), in_calls (the expectation set of a tool round), in_tool (one tool result -- every turn of its `messages[]`, never just the first, and never its `system` slot: GH #252), in_answer (the brain's answer), in_bundle (a memory bundle), in_advice (an advisor's answer), in_close (a closed session), in_prune, in_round_sweep, in_memory_call (the memory tool), in_thread_call (the thread tool), in_pack (a durable `system.*` slot from outside, GH #458), and in_menu (the tool declarations coming back from a tools hive, GH #464). They are thirteen of the fourteen the state machine dispatches on -- the fourteenth, in_menu_tick, is INTERNAL: ./menu-clock names it on the edge into ./assemble, and a lane nothing outside can send is not a door; a lane declared here that nothing behind the door reads would be a door into silence, which is why in_batch left in 2.0.1.",
+    "contract_out": "Everything the assembler emits that is not an in_ lane and not the internal cstore write, leaving through the hive path: brain (the seam — the caller's edge carries the iteration bound and restore_ttl), recall, answer (THREE sorts: a real answer, a capped round told apart by hop.round_capped, and -- since collector@2.1.1 -- a turn the store would not let be assembled, told apart by hop.degraded, which carries no round_capped; a reply edge must guard on BOTH keys, GH #343), write, turn_write, prune. Since 3.3.0 two more (GH #464): schemas (the declared tool names, for the tools hive's in_schemas door) and menu (the tool menu as durable system.tools, for the brain -- the same place pack goes and for the same reason; since 3.4.0 it carries the UNION over every answerer's stored submenu rather than one answer, with hop.menu_answerers naming the answerers it was derived from, GH #529). A caller wires the ones it needs and ignores the rest. `write` and `turn_write` are no longer two cadences of one document (GH #298, ruling Q11): `write` hands a CLOSED SESSION out as one batch with its `rounds` slot, for whoever archives a day, while `turn_write` hands out ONE TURN per message, addressed at a memory hive's episode lane -- and it does so per turn rather than at the close, which is why nothing said today waits for the night to become retrievable."
   }
 }

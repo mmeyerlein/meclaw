@@ -1,0 +1,79 @@
+{
+  "cell": {
+    "type": "edit"
+  },
+  "params": {
+    "base_path": "${TOOLS_FILE_ROOT:-/tmp}",
+    "max_concurrency": 1
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {
+      "base_path": {
+        "type": "string",
+        "secret": false,
+        "default": "/tmp",
+        "description": "TOOLS_FILE_ROOT -- the same root the `file` occupant reads. One assistant, one file root: two roots would mean a tool could edit what the other cannot read."
+      }
+    },
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "operation": {
+          "type": "string",
+          "values": [
+            "find_replace",
+            "insert_at_line",
+            "unknown"
+          ],
+          "required": true
+        },
+        "matches_changed": {
+          "type": "number",
+          "required": false
+        },
+        "bytes": {
+          "type": "number",
+          "required": false
+        },
+        "duration_ms": {
+          "type": "number",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "fs:read",
+      "fs:write"
+    ]
+  },
+  "description": {
+    "purpose": "Editing an existing file in place, inside the same boundary the `file` occupant reads: replace every occurrence of a literal, or insert a line.",
+    "use_when": "The `edit` occupant of a tools hive, reached on hop.tool_name == 'edit'. It shares `TOOLS_FILE_ROOT` with `file`, deliberately: one assistant has one file root, and a tool that could edit what its neighbour cannot read would be a boundary nobody could state.",
+    "not_in_scope": "No patch format (deferred, it needs a diff design of its own), no creation of a file that is not there, and no atomicity -- a read-modify-write without tempfile+rename, exactly as `file`'s write. And no concurrency: `params.max_concurrency` is 1 because two edits of the same file race at the filesystem, which is a hazard the CALLER cannot see, so this cell serialises rather than declaring a reentrancy it does not have.",
+    "emits_meaning": "messages[]: one tool_result turn naming what changed. hop.matches_changed counts the replaced occurrences; hop.operation is `unknown` when the arguments did not parse far enough to say which op was meant.",
+    "consumes_meaning": "messages[]: a tool_call turn whose text is JSON args {op, path, ...}.",
+    "examples": [
+      "{\"op\":\"find_replace\",\"path\":\"a.rs\",\"find\":\"foo\",\"replace\":\"bar\",\"expected_matches\":1} -> tool_result, hop { operation: 'find_replace', matches_changed: 1 }",
+      "{\"op\":\"insert_at_line\",\"path\":\"a.rs\",\"line\":1,\"content\":\"// header\"} -> the text becomes the new first line",
+      "a find that is not in the file -> hop.error_code 'pattern_not_found', and the file is untouched"
+    ]
+  }
+}

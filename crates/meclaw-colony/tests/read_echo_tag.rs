@@ -1,5 +1,5 @@
 //! A `/colony` read answers into a FRESH trace: new `trace_id`,
-//! `parent_message_id` null, `correlation_id` null (`docs/roadmap.md`
+//! `parent_message_id` null, `correlation_id` null (`docs/defer-register.md`
 //! § Trace-Bruch am `/colony`-Reply). A cell that asks twice can therefore not
 //! tell the two answers apart — unless it puts something into the question that
 //! comes back verbatim. `/colony/ledger` has had exactly that since GH #267;

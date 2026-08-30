@@ -1,0 +1,69 @@
+{
+  "manifest": [
+    {
+      "scope": "/",
+      "diff": {
+        "add_nodes": [
+          {
+            "name": "access",
+            "template": "access",
+            "override_params": {
+              "vault": {
+                "unlock_env": "VAULT_PILOT_PASSPHRASE"
+              }
+            }
+          },
+          {
+            "name": "sink",
+            "template": "terminal"
+          }
+        ],
+        "add_edges": [
+          {
+            "from": "./brain",
+            "to": "./access",
+            "condition": "has(hop.route) && hop.route == 'credential_request'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_invoke'"
+              },
+              "set_context": {
+                "requester": "'agent:brain'"
+              }
+            }
+          },
+          {
+            "from": "./access",
+            "to": "./brain",
+            "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver'"
+          },
+          {
+            "from": "./access",
+            "to": "./sink",
+            "condition": "has(hop.route) && hop.route == 'ack' && (!has(hop.operation) || hop.operation != 'vault.deliver')"
+          },
+          {
+            "from": "./access",
+            "to": "./sink",
+            "condition": "has(hop.route) && hop.route == 'grant'"
+          },
+          {
+            "from": "./access",
+            "to": "./sink",
+            "condition": "has(hop.route) && hop.route == 'connect'"
+          },
+          {
+            "from": "./access",
+            "to": "./sink",
+            "condition": "has(hop.route) && hop.route == 'error'"
+          },
+          {
+            "from": "./brain",
+            "to": "./sink",
+            "condition": "!has(hop.route) || hop.route != 'credential_request'"
+          }
+        ]
+      }
+    }
+  ]
+}

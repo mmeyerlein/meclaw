@@ -1,0 +1,15 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "graph": {
+      "edges": []
+    }
+  },
+  "description": {
+    "purpose": "The seed hive of display-colony-view. It draws NO edge: the screen, the app and the sink arrive from the template library through grow.json, and every lane of this colony is written there. What is checked in beside it is the one thing a library cannot ship for you -- a producer with something to say.",
+    "use_when": "As the --root cell of a colony whose screen and app are grown rather than checked in.",
+    "not_in_scope": "No door, no session, no memory, no model: this example is about two owners sharing one screen, and nothing else."
+  }
+}

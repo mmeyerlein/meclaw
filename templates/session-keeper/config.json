@@ -17,6 +17,16 @@
         {
           "route": "in_sweep",
           "because": "an operator-forced sweep outside the night"
+        },
+        {
+          "route": "in_export",
+          "because": "a demand that this hive hand out everything it holds, as a versioned document. The walk reads `sessions`, one `dump` part per table -- schema declaration first, rows after it -- and the last part carries the completeness marker. The caller sends no keys with it: an export is about the whole hive rather than about a round, and what may leave is not a question this lane asks (GH #471)",
+          "context": []
+        },
+        {
+          "route": "in_import",
+          "because": "one part of such a document, for a hive that is already running. It is the other half of `in_export` and the return leg of the same document: the seed set under this hive was read once, when the `cell.db` was created, and is inert for ever after -- so everything the source decided AFTER the walk has no way in except a message. The body is ONE export part, and applying the same part twice leaves the same state, which is what makes a partial transfer repairable by repeating it (GH #471)",
+          "context": []
         }
       ],
       "emits": [
@@ -30,10 +40,36 @@
         },
         {
           "route": "reject",
-          "because": "a step of this keeper that the session store did not answer (GH #343). hop.reject_reason is 'store_refused', hop.store_error carries the store's own error_code -- a free string, because the store's code list is open -- and hop.store_operation the refused op. The body names the STEP that was refused, because they do not leave the same thing standing -- at 'touch' and 'open' the stamped turn has ALREADY left in the same emission, and at 'open' the missing row makes the next turn open yet another generation. It matters because every one of these failures reads as a correct run: an unanswered lookup looks like a channel with no open session (and used to OPEN a second generation for one that had one), and an unanswered nightly sweep looks like a night with no idle channel. Drain it: undrained, a keeper that stopped keeping is indistinguishable from a quiet one"
+          "because": "a step of this keeper that the session store did not answer (GH #343). hop.reject_reason is 'store_refused', hop.store_error carries the store's own error_code -- a free string, because the store's code list is open -- and hop.store_operation the refused op. The body names the STEP that was refused, because they do not leave the same thing standing -- at 'touch' and 'open' the stamped turn has ALREADY left in the same emission, and at 'open' the missing row makes the next turn open yet another generation. It matters because every one of these failures reads as a correct run: an unanswered lookup looks like a channel with no open session (and used to OPEN a second generation for one that had one), and an unanswered nightly sweep looks like a night with no idle channel. Drain it: undrained, a keeper that stopped keeping is indistinguishable from a quiet one Since 2.1.0 a SECOND producer takes the same lane: `./porter` refuses a transfer it would not carry out -- an export whose read failed mid-walk, or an import part whose format, schema or audience did not survive -- and names the case in the same `hop.reject_reason`. The two are told apart by the reason code, and a drain that takes the lane at all takes both (GH #471)."
+        },
+        {
+          "route": "dump",
+          "because": "the transfer lane's output: `hop.dump_kind == 'export_part'` is one part of the exported document (`hop.export_part` of `hop.export_of`, `hop.export_final` marking the last, `hop.port_hive` naming which hive it came out of), `hop.dump_kind == 'import_receipt'` says what one applied part wrote (`hop.rows_written`). Drain it with a PLAIN `hop.route == 'dump'` edge -- an edge that also tests `dump_kind` reads as no drain under the required_drains probe. Undrained, an export runs and reaches nobody"
         }
       ]
     },
+    "required_drains": [
+      {
+        "accepts": "in_export",
+        "emits": "dump",
+        "because": "the export IS the dump lane -- wired without it, the walk runs, reads the whole store and delivers the document to nobody"
+      },
+      {
+        "accepts": "in_export",
+        "emits": "reject",
+        "because": "an export that aborts mid-walk (the store refused a read) has already emitted parts; undrained, the caller keeps a partial document that looks complete"
+      },
+      {
+        "accepts": "in_import",
+        "emits": "dump",
+        "because": "the receipt of an applied part is the only positive signal an import has -- undrained, nobody ever learns whether a transfer landed"
+      },
+      {
+        "accepts": "in_import",
+        "emits": "reject",
+        "because": "a part this hive will not take leaves here; undrained, a refused transfer looks exactly like a successful one"
+      }
+    ],
     "graph": {
       "edges": [
         {
@@ -92,22 +128,147 @@
         {
           "from": "./stamp",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'turn'"
+          "condition": "has(hop.route) && hop.route == 'turn'",
+          "modifier": {
+            "delete_context": [
+              "keeper_audience",
+              "keeper_body",
+              "keeper_session",
+              "port_phase",
+              "port_run",
+              "port_table",
+              "ses_phase",
+              "store_origin"
+            ]
+          }
         },
         {
           "from": "./close",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'close'"
+          "condition": "has(hop.route) && hop.route == 'close'",
+          "modifier": {
+            "delete_context": [
+              "keeper_audience",
+              "keeper_body",
+              "keeper_session",
+              "port_phase",
+              "port_run",
+              "port_table",
+              "ses_phase",
+              "store_origin"
+            ]
+          }
         },
         {
           "from": "./stamp",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'reject'"
+          "condition": "has(hop.route) && hop.route == 'reject'",
+          "modifier": {
+            "delete_context": [
+              "keeper_audience",
+              "keeper_body",
+              "keeper_session",
+              "port_phase",
+              "port_run",
+              "port_table",
+              "ses_phase",
+              "store_origin"
+            ]
+          }
         },
         {
           "from": "./close",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'reject'"
+          "condition": "has(hop.route) && hop.route == 'reject'",
+          "modifier": {
+            "delete_context": [
+              "keeper_audience",
+              "keeper_body",
+              "keeper_session",
+              "port_phase",
+              "port_run",
+              "port_table",
+              "ses_phase",
+              "store_origin"
+            ]
+          }
+        },
+        {
+          "from": ".",
+          "to": "./porter",
+          "condition": "has(hop.route) && hop.route == 'in_export'",
+          "modifier": {
+            "set_context": {
+              "port_phase": "'export'"
+            }
+          }
+        },
+        {
+          "from": ".",
+          "to": "./porter",
+          "condition": "has(hop.route) && hop.route == 'in_import'",
+          "modifier": {
+            "set_context": {
+              "port_phase": "'import'"
+            }
+          }
+        },
+        {
+          "from": "./porter",
+          "to": "./sessions",
+          "condition": "has(hop.route) && hop.route == 'kstore'",
+          "modifier": {
+            "set_context": {
+              "store_origin": "'kporter'",
+              "port_phase": "hop.phase",
+              "port_run": "hop.port_run",
+              "port_table": "hop.port_table"
+            }
+          }
+        },
+        {
+          "from": "./sessions",
+          "to": "./porter",
+          "condition": "context.store_origin == 'kporter'",
+          "modifier": {
+            "set_context": {
+              "port_phase": "context.port_phase"
+            }
+          }
+        },
+        {
+          "from": "./porter",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'dump'",
+          "modifier": {
+            "delete_context": [
+              "keeper_audience",
+              "keeper_body",
+              "keeper_session",
+              "port_phase",
+              "port_run",
+              "port_table",
+              "ses_phase",
+              "store_origin"
+            ]
+          }
+        },
+        {
+          "from": "./porter",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'reject'",
+          "modifier": {
+            "delete_context": [
+              "keeper_audience",
+              "keeper_body",
+              "keeper_session",
+              "port_phase",
+              "port_run",
+              "port_table",
+              "ses_phase",
+              "store_origin"
+            ]
+          }
         }
       ]
     }

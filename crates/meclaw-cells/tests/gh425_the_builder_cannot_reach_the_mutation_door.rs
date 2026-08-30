@@ -44,11 +44,15 @@ fn configs() -> Vec<(PathBuf, Value)> {
     out
 }
 
-/// The endpoints a mutation may ever draw an edge to
-/// (`crates/meclaw-colony/src/mutation/mod.rs`,
-/// `MUTATION_DRAWABLE_VIRTUAL_ENDPOINTS`), plus the two reads that can only
-/// ever be birth topology. Anything outside this list is refused here, and
-/// `/colony/mutations` is outside it on purpose and for good.
+/// The endpoints THIS TEMPLATE may address. A strict subset of what a mutation
+/// may ever draw (`crates/meclaw-colony/src/mutation/mod.rs`,
+/// `MUTATION_DRAWABLE_VIRTUAL_ENDPOINTS`) and deliberately so: the list there is
+/// what the substrate permits, this one is what the builder was given, and the
+/// two are allowed to differ. `/colony/templates` is the case that made the
+/// difference visible (GH #496) — the substrate permits it, and the builder
+/// does not read it, because the template catalogue reaches the composer
+/// through `builder-librarian` and nowhere else. Anything outside this list is
+/// refused here, and `/colony/mutations` is outside it on purpose and for good.
 const BUILDER_MAY_ADDRESS: &[&str] = &["/colony/graph", "/colony/registry", "/colony/ledger"];
 
 #[test]

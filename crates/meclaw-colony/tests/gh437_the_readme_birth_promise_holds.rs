@@ -10,7 +10,10 @@
 //!
 //! The promise: "a cell born inactive is registered, addressable and persisted
 //! inactive, and no task is built for it, not even when the same mutation wires
-//! it. The next mutation that reaches it wakes it."
+//! it. The next mutation that NAMES it wakes it — and only one that names it: the
+//! declaration is durable, so a mutation elsewhere in the tree leaves it asleep
+//! however far its recompute reaches, and a restart brings it back the way it
+//! was (GH #491)."
 
 use meclaw_colony::api_dto::ReadRegistryReply;
 use meclaw_colony::{
@@ -38,7 +41,9 @@ fn the_readme_still_makes_the_promise() {
         r#"declare `"birth": "inactive"` on the `add_nodes` entry"#,
         "registered, addressable and persisted inactive",
         "no task is built for it, not even when",
-        "The next mutation that reaches it wakes it.",
+        "The next mutation that NAMES it wakes it",
+        // GH #491: the durability half of the same promise.
+        "a mutation elsewhere in the tree leaves it asleep",
     ] {
         assert!(
             text.contains(needle),
@@ -162,6 +167,31 @@ fn write(dir: &std::path::Path, rel: &str, body: &str) {
     std::fs::write(p, body).unwrap();
 }
 
+/// The registry row for `path`, as the colony reports it.
+async fn read_entry(
+    h: &ColonyHandle,
+    path: &str,
+) -> Option<meclaw_colony::api_dto::RegistryEntryDto> {
+    let (ack_tx, ack_rx) = oneshot::channel::<ReadRegistryReply>();
+    h.inbox_tx
+        .send(ColonyMsg::ReadRegistry {
+            path: None,
+            path_prefix: None,
+            cell_type: None,
+            active: None,
+            limit: 500,
+            ack: ack_tx,
+        })
+        .await
+        .unwrap();
+    ack_rx
+        .await
+        .unwrap()
+        .entries
+        .into_iter()
+        .find(|e| e.path == path)
+}
+
 async fn send_mutation(h: &ColonyHandle, payload: JsonValue) -> MutationOutcome {
     let (ack_tx, ack_rx) = oneshot::channel();
     h.inbox_tx
@@ -264,7 +294,24 @@ async fn the_substrate_keeps_the_readme_promise() {
         .expect("the node must be registered");
     assert!(!e.active);
 
-    // "The next mutation that reaches it wakes it."
+    // "…a mutation elsewhere in the tree leaves it asleep however far its
+    // recompute reaches" (GH #491). `/sleepy` sits in the recompute scope of any
+    // mutation at the root — every registered path is in the root's subtree —
+    // and it is fully wired, so before #491 this one mutation woke it.
+    let _ = send_mutation(
+        &h,
+        json!({"scope": "/", "ctx": {},
+               "diff": {"add_nodes": [{"name": "bystander", "template": "poller"}],
+                        "add_edges": [{"from": "./ingress", "to": "./bystander"}]}}),
+    )
+    .await;
+    let e = read_entry(&h, "/sleepy").await.expect("still registered");
+    assert!(
+        !e.active,
+        "a mutation that does not name it must leave it asleep: {e:?}"
+    );
+
+    // "The next mutation that NAMES it wakes it."
     let _ = send_mutation(
         &h,
         json!({"scope": "/", "ctx": {},

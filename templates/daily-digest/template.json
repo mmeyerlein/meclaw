@@ -1,6 +1,6 @@
 {
   "name": "daily-digest",
-  "version": "2.0.2",
+  "version": "2.0.3",
   "description": {
     "purpose": "Scheduled fetch-and-forward: a timer fires daily, a web_fetch pulls a URL, a code cell formats the result, a Telegram proxy delivers it to a fixed chat.",
     "use_when": "Periodic push of one URL's content to one Telegram chat. Override the URL, the cron expression and the chat id at instantiation. A parent may also demand a run at the hive path on lane in_digest, bringing context.chat_id itself, and take the formatted digest back on lane digest.",

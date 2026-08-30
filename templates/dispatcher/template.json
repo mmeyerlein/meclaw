@@ -1,6 +1,6 @@
 {
   "name": "dispatcher",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": {
     "purpose": "The fan-out half of a tool loop: one code cell that splits a brain's tool_call bundle into one routable message per call, announces the round to the fan-in first, and passes a final answer through. It carries no map of the topology -- a call leaves as a NAME plus its call id, and the edges of the tree decide which cell that name is.",
     "use_when": "Between an agent's llm cell and its tools, next to a collector that does the fan-in. Wire the four exit routes in the SAME mutation that instantiates it: 'calls' and 'result' into the collector, one edge per tool on hop.tool_name, 'answer' onto the reply path.",

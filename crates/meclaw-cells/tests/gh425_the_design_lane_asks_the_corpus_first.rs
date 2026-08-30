@@ -18,12 +18,21 @@
 //! about that a tool loop does not touch.
 
 use meclaw_core::serde_json::{Value, json};
-use meclaw_testing::{emit_one, shipped_script};
+use meclaw_testing::{emit_all, shipped_script};
 
 const BRIEF: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../templates/builder/brief/config.json"
 );
+
+/// The leg of the brief that reaches `./compose`. Since GH #477 the cell is a
+/// multi-send: the store leg that parks the question and the instructions in
+/// the round table travels first, the briefing itself second.
+fn compose_leg(all: Vec<Value>) -> Value {
+    all.into_iter()
+        .find(|m| m["header"]["route"] == "compose")
+        .expect("the brief's leg to the composer")
+}
 
 const LIBRARIAN_REF: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -31,7 +40,7 @@ const LIBRARIAN_REF: &str = concat!(
 );
 
 fn run_brief(hop: Value, messages: Value) -> Value {
-    emit_one(
+    compose_leg(emit_all(
         &shipped_script(BRIEF),
         &json!({
             "target": "/os/builder/brief",
@@ -39,7 +48,7 @@ fn run_brief(hop: Value, messages: Value) -> Value {
             "ttl": 64,
             "messages": messages,
         }),
-    )
+    ))
 }
 
 fn instructions_of(out: &Value) -> String {

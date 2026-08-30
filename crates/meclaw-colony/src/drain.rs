@@ -3,7 +3,7 @@
 //! A message that the colony has handed to a cell is work in flight until that
 //! cell's `handle()` has returned. The colony cannot see the second half — a
 //! mailbox that has gone empty means the cell TOOK the message, not that it is
-//! done with it (`docs/roadmap.md` § Async cell shutdown drain: an empty
+//! done with it (`docs/defer-register.md` § Async cell shutdown drain: an empty
 //! mailbox is not a finished handler). So the two halves are recorded at the
 //! two places that can see them:
 //!

@@ -455,7 +455,7 @@ pub fn import_document(
         Err(e) => return Ok(TransferOutcome::Sql(e)),
     };
 
-    // THE gate (#244, `plans/0.16.0-audience-gate/contract.md`). An audience that
+    // THE gate (#244, the 0.16.0 audience-gate contract). An audience that
     // is present but EMPTY travels as it stands — empty means invisible, which is
     // the honest fate of a row from before the gate, and inventing one would be
     // the laundering itself.

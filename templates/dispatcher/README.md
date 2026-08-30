@@ -1,4 +1,4 @@
-# `dispatcher@1.1.1`
+# `dispatcher@1.1.2`
 
 The fan-**out** half of a tool loop, as one `code` cell -- no new cell type, no Rust.
 Its counterpart is the fan-**in**: [`collector`](../collector/), which assembles the
@@ -41,6 +41,18 @@ messages a graph can route.
   which left every such turn with an interim answer and no final one, forever -- 10 of 12
   measured rounds under the shipped contract, because that mixed shape is exactly what an
   async tool description asks a model to produce.
+
+  **And whether it leaves at all depends on there being a channel**
+  ([#539](https://github.com/mmeyerlein/meclaw/issues/539)). `interim` promises a reader
+  that the real answer follows -- so it is only a promise where somebody reads it. An
+  **advisor core has no channel**: its answer lane is the *advice* lane of the voice that
+  asked, and an interim arriving there is filed as an advice, verbalised to the user, and
+  sometimes answered with a fresh consultation -- which the core answers with its next
+  interim. Measured on a live colony: 11 of 26 answers one core put on that lane were
+  interim, and all 11 came back at the surface as advice; one user turn produced thirteen
+  messages. So `interim` is a knob, default **on**, and a brain without a channel turns it
+  off. The final sentence is untouched by it: where nothing is waited for, that sentence
+  **is** the answer of the turn.
 - **An async tool class that opens no expectation.** Names listed in
   `DISPATCHER_ASYNC_TOOLS` are classified here -- this cell is the only one that ever sees
   the whole bundle -- and their `tool_call_id`s ride out on `hop.async_calls`. The fan-in
@@ -122,9 +134,18 @@ reference pattern.
 | `DISPATCHER_ASYNC_TOOLS` | (empty) | comma-separated tool names that answer on a lane of their own instead of inside the round. Empty = no call is ever async. |
 | `DISPATCHER_HANDOFF_TOOLS` | (empty) | comma-separated tool names whose call ends the **turn**, because the answer comes from a later one. Naming a tool here declares it async as well -- the two lists are unioned. Empty = every async call is fire-and-forget. |
 
+And one on the `params` block, which is where the others are going
+([#138](https://github.com/mmeyerlein/meclaw/issues/138)) -- so a new knob starts there
+rather than adding a fourth token to the experimental surface:
+
+| param | default | meaning |
+|---|---|---|
+| `interim` | `"1"` | whether a sentence standing next to a bundle leaves as an **interim** answer ([#539](https://github.com/mmeyerlein/meclaw/issues/539)). Off (`""`, `0`, `false`, `no`) the brain behind this cell has no channel, and the sentence does not leave the cell at all -- so it never reaches the window either, because the `calls` lane's text is dropped by the fan-in on the ground that the answer lane wrote it. A sentence nobody could hear was never said. A **final** sentence is unaffected. |
+
 One knob per concern: the first bounds **one brain answer**, the second says which calls
-the round is allowed to end without, the third which of those end the turn with them.
-None of them bounds the loop -- see below.
+the round is allowed to end without, the third which of those end the turn with them, and
+the fourth whether there is anybody to say a half-answer to. None of them bounds the loop
+-- see below.
 
 ## The async class (GH #28) and the handoff class (GH #372)
 
@@ -221,7 +242,7 @@ same `tool_call_id`, keyed on the names you did **not** wire.
 
 | input | emissions |
 |---|---|
-| `tool_call` turns present, count ≤ budget | `calls` (the assistant turn), then the interim `answer` if a text turn stood next to them, then one `tool` per call, in bundle order |
+| `tool_call` turns present, count ≤ budget | `calls` (the assistant turn), then the interim `answer` if a text turn stood next to them, then one `tool` per call, in bundle order (with `interim` off, the interim `answer` is not emitted; a *final* sentence still is) |
 | `tool_call` turns present, count > budget | `calls`, then the interim `answer` if a text turn stood next to them (the sentence is appended **before** the budget branch runs, so an over-budget bundle still says it), then one `result` per call: `call budget exceeded`, no tool message at all |
 | a call whose `text` is not `{name, arguments}` | `result` with `error_code: malformed_tool_call` in place of that one call; the sound calls still run |
 | no calls, `finish_reason == 'stop'` | one `answer` |

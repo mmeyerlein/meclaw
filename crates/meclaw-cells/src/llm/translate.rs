@@ -371,7 +371,10 @@ pub(crate) fn translate_error_to_code(_err: &TranslateError) -> &'static str {
 /// `assistant_turn` may contain 0, 1 or many turns: tool-calls produce one
 /// turn per OpenAI `tool_call`, optionally followed by a text-turn if the
 /// response carries both `content` and `tool_calls`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// `Eq` is deliberately absent: `cost` is a provider-reported float, and a
+/// figure that arrives as a decimal cannot be compared for total equality
+/// without lying about what it is.
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct TranslatedResponse {
     /// UBF-turns to emit (1+ for normal responses; multiple for tool-calls).
     pub(crate) assistant_turn: Vec<Value>,
@@ -383,10 +386,58 @@ pub(crate) struct TranslatedResponse {
     pub(crate) tokens_prompt: Option<u64>,
     /// Completion-side token-count from `usage.completion_tokens` (optional).
     pub(crate) tokens_completion: Option<u64>,
+    /// Cache-read token-count, from whichever spelling the provider uses
+    /// ([`usage_tokens_cached`]). Optional: a provider that reports no cache
+    /// hit and a provider that reports nothing at all are the same `None`
+    /// here, because neither of them is a zero we measured (GH #463).
+    pub(crate) tokens_cached: Option<u64>,
+    /// The provider's OWN cost figure for this call (`usage.cost`, OpenRouter).
+    /// Never computed here — a price table in the substrate would be a second
+    /// source of truth that goes stale silently (GH #463).
+    pub(crate) cost: Option<f64>,
     /// Actual model from `response.model` (may differ from request).
     pub(crate) model: String,
     /// Provider response-id from `response.id`.
     pub(crate) response_id: String,
+}
+
+/// Cache-read tokens out of a provider `usage` object, across the three
+/// spellings the shipped dialects use (GH #463):
+///
+/// | Spelling | Dialect |
+/// |---|---|
+/// | `prompt_tokens_details.cached_tokens` | OpenAI Chat-Completions, OpenRouter |
+/// | `input_tokens_details.cached_tokens` | OpenAI Responses |
+/// | `cache_read_input_tokens` | Anthropic and Anthropic-compatible proxies |
+///
+/// The order is a lookup order, not a preference: no response carries two of
+/// them, and reading the first one that is present keeps a future fourth
+/// spelling a one-line change instead of a per-lane one.
+pub(crate) fn usage_tokens_cached(usage: Option<&Value>) -> Option<u64> {
+    let u = usage?;
+    for path in [
+        ["prompt_tokens_details", "cached_tokens"],
+        ["input_tokens_details", "cached_tokens"],
+    ] {
+        if let Some(v) = u.get(path[0]).and_then(|d| d.get(path[1])) {
+            return v.as_u64();
+        }
+    }
+    u.get("cache_read_input_tokens").and_then(|v| v.as_u64())
+}
+
+/// The provider's own cost figure out of a `usage` object (`usage.cost`,
+/// OpenRouter; absent everywhere else).
+///
+/// Only a finite, non-negative number is taken. A `NaN`, an infinity or a
+/// negative price is not a cheaper call, it is a broken field — and a broken
+/// field that is summed into a ledger poisons every total it touches, which is
+/// exactly the shape of failure an aggregate reader cannot report.
+pub(crate) fn usage_cost(usage: Option<&Value>) -> Option<f64> {
+    usage?
+        .get("cost")
+        .and_then(|v| v.as_f64())
+        .filter(|c| c.is_finite() && *c >= 0.0)
 }
 
 /// Parse an OpenAI Chat-Completions response body into UBF assistant-turn(s)
@@ -403,7 +454,10 @@ pub(crate) struct TranslatedResponse {
 ///    `function`). If `message.content` is a non-null string, append a
 ///    `text`-turn. Order: tool_calls first, then text.
 /// 4. Extract meta: `model` and `id` are required (else `ResponseShape`);
-///    `usage.prompt_tokens` / `usage.completion_tokens` are optional.
+///    the whole `usage` block is optional — `prompt_tokens`,
+///    `completion_tokens`, the cache-read count in whichever spelling the
+///    provider uses ([`usage_tokens_cached`]) and the provider's own `cost`
+///    ([`usage_cost`]).
 pub(crate) fn parse_openai_response(json: &Value) -> Result<TranslatedResponse, TranslateError> {
     use meclaw_core::serde_json::json;
 
@@ -463,12 +517,11 @@ pub(crate) fn parse_openai_response(json: &Value) -> Result<TranslatedResponse, 
         .and_then(|v| v.as_str())
         .ok_or_else(|| TranslateError::ResponseShape("missing response.id".to_string()))?
         .to_string();
-    let tokens_prompt = json
-        .get("usage")
+    let usage = json.get("usage");
+    let tokens_prompt = usage
         .and_then(|u| u.get("prompt_tokens"))
         .and_then(|v| v.as_u64());
-    let tokens_completion = json
-        .get("usage")
+    let tokens_completion = usage
         .and_then(|u| u.get("completion_tokens"))
         .and_then(|v| v.as_u64());
 
@@ -477,6 +530,8 @@ pub(crate) fn parse_openai_response(json: &Value) -> Result<TranslatedResponse, 
         finish_reason,
         tokens_prompt,
         tokens_completion,
+        tokens_cached: usage_tokens_cached(usage),
+        cost: usage_cost(usage),
         model,
         response_id,
     })

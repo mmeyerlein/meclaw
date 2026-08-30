@@ -87,6 +87,8 @@ pub enum McpIo {
     Http(RunIoConfig),
     /// Child process speaking line-JSON.
     Stdio(StdioIoConfig),
+    /// GH #489: no provider was named, so there is no I/O to run.
+    Unset,
 }
 
 /// I/O sub-task. Dispatches on the transport; both branches share the
@@ -106,6 +108,7 @@ pub fn run_io(
         match io {
             McpIo::Http(cfg) => run_http_io(cfg, events_tx, reconfig_rx).await,
             McpIo::Stdio(cfg) => crate::mcp::stdio::run_stdio_io(cfg, events_tx, reconfig_rx).await,
+            McpIo::Unset => run_unset_io(events_tx, reconfig_rx).await,
         }
     }
 }
@@ -165,5 +168,30 @@ async fn run_http_io(
     {
         return;
     }
+    std::future::pending::<()>().await;
+}
+
+/// GH #489: the I/O task of a cell that names no provider.
+///
+/// There is no handshake to run, so there is nothing that could fail and
+/// nothing to panic about. The task binds both channels (phase-10-A lesson,
+/// same as the two transports above), says once in the log that this cell is
+/// idle by configuration, and parks — for the same reason `run_http_io` parks
+/// rather than returning: a graceful return classifies as `DeathKind::Normal`
+/// and removes the registry entry (core finding #9), and this cell is not
+/// dead, it is waiting for an operator to name a server.
+///
+/// It marks NO liveness. `IoLivenessMark::announce` means "this task exists and
+/// has not yet completed a round trip", which `/health` reports as an age that
+/// only ever grows — the right signal for a provider that was named and is not
+/// answering, and exactly the wrong one here, where a round trip was never owed.
+/// The signal for this state is the `endpoint_unset` receipt on every call.
+async fn run_unset_io(events_tx: mpsc::Sender<McpEvent>, reconfig_rx: mpsc::Receiver<McpReconfig>) {
+    let _events_tx = events_tx;
+    let _reconfig_rx = reconfig_rx;
+    tracing::info!(
+        "mcp: no endpoint configured -- this cell is idle and answers every call with \
+         error_code=endpoint_unset; set the provider URL to wake it"
+    );
     std::future::pending::<()>().await;
 }

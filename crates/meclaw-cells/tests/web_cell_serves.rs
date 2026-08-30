@@ -26,22 +26,11 @@
 use meclaw_cells::web::WebCellFactory;
 use meclaw_colony::{CellFactory, ContractView, SpawnedCellKind};
 use meclaw_core::{CellEmission, Path, serde_json::json};
+use meclaw_testing::free_port;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 use tokio::sync::mpsc;
-
-/// A port nothing is listening on, obtained by binding and letting go.
-///
-/// `params.port` is required and must be a real port number, so there is no
-/// "let the OS pick" path to read back out of the cell — the test picks first
-/// and tells the cell what to bind.
-fn free_port() -> u16 {
-    let l = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind an ephemeral port");
-    let port = l.local_addr().expect("read the bound address").port();
-    drop(l);
-    port
-}
 
 /// GET the URL until it answers or the deadline passes.
 ///

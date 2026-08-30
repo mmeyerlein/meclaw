@@ -346,7 +346,14 @@ fn a_tighter_budget_walks_on_to_the_next_stage() {
         joined.contains("[elided arguments"),
         "stage 3 ran:\n{joined}"
     );
-    assert_eq!(out[0]["header"]["curate_stage"], "3");
+    // Since GH #451 the ladder has five rungs. This slate carries no tool menu
+    // and no over-size system slot, so 4 and 5 find nothing -- and the counter
+    // still reaches 5, because it reports how far the curator HAD to walk, not
+    // how far it got something. Both halves are asserted, so a stage that
+    // silently stopped counting fails here.
+    assert_eq!(out[0]["header"]["curate_stage"], "5");
+    assert_eq!(out[0]["header"]["curate_tools"], "0", "no menu to stub");
+    assert_eq!(out[0]["header"]["curate_slots"], "0", "no over-size slot");
 }
 
 // ═══════════════════════════════════════════════════ 2. BUDGET, NOT THRESHOLD
@@ -414,16 +421,16 @@ fn the_curator_never_blocks_the_round() {
 fn a_conversation_without_tool_results_is_never_damaged() {
     // The talky shape, and the safety proof for a colony-global knob: a window
     // that is only conversation is over every mark at a small budget, the
-    // curator walks all three stages, finds nothing it may take, and hands the
-    // turns on byte for byte. A channel voice cannot be hurt by a budget that
-    // was meant for a tool-loop core.
+    // curator walks all FIVE stages (GH #451), finds nothing it may take, and
+    // hands the turns on byte for byte. A channel voice cannot be hurt by a
+    // budget that was meant for a tool-loop core.
     let rows = serde_json::json!([leg_window(serde_json::json!([
         {"role": "user", "text": "a".repeat(3000), "consult_id": ""},
         {"role": "assistant", "text": "b".repeat(3000), "consult_id": ""}
     ]))]);
     let out = emit_with(&over(&base("100", DECLARED)), fire_at(0, rows));
     assert_eq!(out[0]["header"]["curate_mark"], "hard");
-    assert_eq!(out[0]["header"]["curate_stage"], "3", "it tried everything");
+    assert_eq!(out[0]["header"]["curate_stage"], "5", "it tried everything");
     assert_eq!(out[0]["header"]["curate_elided"], "0", "and took nothing");
     assert_eq!(texts(&out[0]), vec!["a".repeat(3000), "b".repeat(3000)]);
 }
@@ -917,10 +924,433 @@ fn the_shipped_contract_declares_every_new_knob_and_key() {
             "contract.emits.hop.{key} is not declared"
         );
     }
+    assert!(
+        v["contract"]["emits"]["hop"]["menu_self"].is_object(),
+        "contract.emits.hop.menu_self is not declared"
+    );
+    assert!(
+        v["contract"]["emits"]["hop"]["menu_answerers"].is_object(),
+        "contract.emits.hop.menu_answerers is not declared (GH #529)"
+    );
+    assert!(
+        v["contract"]["consumes"]["context"]["tool_answerer"].is_object(),
+        "contract.consumes.context.tool_answerer is not declared (GH #529) — the cell READS \
+         the discriminator, and a key a cell reads and does not declare is a contract that \
+         does not describe the cell"
+    );
     assert_eq!(
-        v["contract"]["version"], "1.3.0",
+        v["contract"]["version"], "1.6.0",
         "wave 11 added a lane and seven hop keys; wave 13 moved every setting \
-         off the environment onto params; GH #372 added `consumes.hop.handoff_calls` \
-         -- all three are minor versions, because none of them takes anything away"
+         off the environment onto params; GH #372 added `consumes.hop.handoff_calls`; \
+         GH #458 made `messages` optional in BOTH directions and added the `pack` / \
+         `pack_ack` routes with their four hop keys; GH #464 added the `tools` \
+         setting, the `schemas` / `menu` routes and their three hop keys -- all \
+         five are minor versions, because none of them takes anything away. GH #512 \
+         is the sixth and it is a THIRD digit: `menu_self` names the declarations \
+         the cell put on the menu itself, and a repair that adds a declaration is \
+         still a repair (`docs/development-rules.md` § 4). GH #525 is the seventh \
+         and a third digit for the same reason one line up: `inline_extraction` \
+         is a SETTING rather than a declaration, but it exists only to return a \
+         promise the memory hive already made -- nothing shipped could annotate a \
+         turn, and a repair that has to add a switch to land is still a repair. GH #529 \
+         is the eighth and back to the SECOND digit: the cell reads a new context key \
+         (`tool_answerer`) and emits a new hop key (`menu_answerers`), because the menu \
+         became a union over answerers instead of one answer -- an addition on both \
+         faces of the contract, and nothing taken away"
+    );
+}
+
+// ══════════════════════════════════════ 5. THE WHOLE PROJECTION (GH #451)
+//
+// Until #451 the curator saw the rounds and, for everything else, one integer.
+// That is two thirds of the prompt missing from the arithmetic of the component
+// whose only job is that arithmetic -- and the missing third is the LARGEST
+// one: 5267 characters of tool declarations against 3998 for the whole rest of
+// a measured window. The contract is now rounds + window + `system.*` +
+// `tools[]`, with two further stages and the same recoverability discipline.
+
+/// A four-tool menu in the provider-native shape the reference templates seed
+/// into `system.tools.<name>.text`.
+fn menu() -> String {
+    let tool = |name: &str, desc: &str| {
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": name, "description": desc,
+                "parameters": {"type": "object", "properties": {
+                    "path": {"type": "string", "description": "x".repeat(600)}
+                }}
+            }
+        })
+    };
+    serde_json::Value::Array(vec![
+        tool("read_file", "read a file from disk"),
+        tool("write_file", "write a file to disk"),
+        tool("web_search", "search the web"),
+        tool("thread_recall", "bring an elided payload back"),
+    ])
+    .to_string()
+}
+
+/// The `system` tree of an emission, or `null` when none travelled.
+fn system_of(msg: &serde_json::Value) -> serde_json::Value {
+    msg.get("system")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null)
+}
+
+/// The declarations as they left, parsed back out of `system.tools`.
+fn tools_of(msg: &serde_json::Value) -> Vec<serde_json::Value> {
+    let node = system_of(msg);
+    let obj = node["tools"].as_object().cloned().unwrap_or_default();
+    let mut names: Vec<&String> = obj.keys().filter(|k| !k.starts_with('$')).collect();
+    names.sort();
+    names
+        .iter()
+        .map(|k| {
+            serde_json::from_str(obj[*k]["text"].as_str().expect("leaf text")).expect("schema")
+        })
+        .collect()
+}
+
+fn with_menu(window: &str) -> Vec<(&'static str, String)> {
+    let mut k = base(window, DECLARED);
+    k.push(("tool_menu", menu()));
+    k
+}
+
+/// The two consult ids the stage-5 case pushes over a tiny threshold.
+fn long_consult(tag: char) -> String {
+    format!("c-{}", std::iter::repeat_n(tag, 40).collect::<String>())
+}
+
+#[test]
+fn the_tool_block_counts_towards_the_budget() {
+    // The measurement the whole issue rests on. The same slate, once without a
+    // menu and once with one: the projection has to GROW, because the
+    // declarations are part of the prompt the provider is about to be sent.
+    // Before #451 `curate` was handed `len(json.dumps(sysm))` and the tool
+    // block was in no sum at all -- so a window that was 60 % declarations
+    // could read as comfortable and the curator would do nothing.
+    let plain = emit_with(&over(&base("10000000", DECLARED)), fire_at(5, long_turn(6)));
+    let menued = emit_with(&over(&with_menu("10000000")), fire_at(5, long_turn(6)));
+    let n = |v: &[serde_json::Value]| {
+        v[0]["header"]["tokens_projected"]
+            .as_str()
+            .expect("projected")
+            .parse::<i64>()
+            .expect("number")
+    };
+    assert!(
+        n(&menued) > n(&plain),
+        "the menu is in the prompt, so it is in the projection: {} vs {}",
+        n(&menued),
+        n(&plain)
+    );
+    // And it travels as the subtree the `llm` cell reads, with the replace
+    // marker: a menu upserted leaf by leaf would keep every declaration the
+    // curator decided to drop, durably.
+    assert_eq!(system_of(&menued[0])["tools"]["$replace"], true);
+    assert_eq!(tools_of(&menued[0]).len(), 4, "nothing was stubbed yet");
+}
+
+#[test]
+fn a_declaration_unused_for_keep_rounds_is_stubbed_to_its_name_and_one_line() {
+    // Stage 4, and the rule is USAGE -- deterministic, read off the call ids of
+    // the round, no model and no ranking. The slate calls `read_file` and
+    // `write_file` inside the kept rounds; `web_search` was never called at
+    // all, so it is the one whose schema leaves.
+    let out = emit_with(&over(&with_menu("400")), fire_at(5, long_turn(6)));
+    let tools = tools_of(&out[0]);
+    assert_eq!(out[0]["header"]["curate_tools"], "1", "exactly one stub");
+    let by = |name: &str| {
+        tools
+            .iter()
+            .find(|t| t["function"]["name"] == name)
+            .unwrap_or_else(|| panic!("{name} left the menu entirely"))
+            .clone()
+    };
+    let stubbed = by("web_search");
+    assert!(
+        stubbed["function"]["description"]
+            .as_str()
+            .expect("description")
+            .starts_with("search the web"),
+        "the one line survives: {}",
+        stubbed["function"]["description"]
+    );
+    assert!(
+        stubbed["function"]["description"]
+            .as_str()
+            .expect("description")
+            .contains("thread_recall(call_id=\"tool:web_search\")"),
+        "and it says how to get the schema back: {}",
+        stubbed["function"]["description"]
+    );
+    assert_eq!(
+        stubbed["function"]["parameters"],
+        serde_json::json!({"type": "object", "properties": {}}),
+        "the schema left, but a declaration without `parameters` is one no \
+         provider accepts -- the empty object schema is what stays"
+    );
+    // Used inside the kept rounds: untouched, schema and all. Taking the schema
+    // of a tool the model is working with right now away is how an agent
+    // forgets how to do the thing it is doing.
+    for name in ["read_file", "write_file"] {
+        assert!(
+            by(name)["function"]["parameters"]["properties"]["path"].is_object(),
+            "{name} is in use and keeps its schema"
+        );
+    }
+}
+
+#[test]
+fn the_way_back_is_never_the_thing_that_leaves() {
+    // `thread_recall` is what every stub points at, and it is called by nobody
+    // in this slate -- so the usage rule alone would stub it and every stub in
+    // the window would become a dead end. It is exempt, one level up from the
+    // exemption stage 1 already makes for a recall RESULT.
+    let out = emit_with(&over(&with_menu("50")), fire_at(5, long_turn(6)));
+    let tr = tools_of(&out[0])
+        .into_iter()
+        .find(|t| t["function"]["name"] == "thread_recall")
+        .expect("the recall tool is still declared");
+    assert!(
+        tr["function"]["parameters"]["properties"]["path"].is_object(),
+        "the way back keeps its schema at every budget: {tr}"
+    );
+}
+
+#[test]
+fn a_stubbed_declaration_comes_back_through_thread_recall() {
+    // The difference between "condensed" and "lost", for a declaration: the
+    // stub prints `tool:<name>`, and that key is answered out of the menu this
+    // cell already holds -- no store read, no round row, no budget wall.
+    let out = emit_with(
+        &over(&with_menu("4000")),
+        serde_json::json!({
+            "header": {"context": {"session_id": "s1", "turn_id": "t1", "iter": "3"},
+                       "hop": {"route": "in_thread_call"}},
+            "messages": [{"origin": "assistant", "type": "tool_call", "id": "tr1",
+                          "text": "{\"call_id\":\"tool:web_search\"}"}]
+        }),
+    );
+    assert_eq!(out.len(), 1);
+    let op: serde_json::Value =
+        serde_json::from_str(out[0]["messages"][0]["text"].as_str().expect("op")).expect("json");
+    assert_eq!(op["operation"], "insert", "an answer, not a question");
+    let turn: serde_json::Value =
+        serde_json::from_str(op["row"]["turn"].as_str().expect("turn")).expect("json");
+    assert_eq!(turn["id"], "tr1", "filed under the call that asked");
+    let back: serde_json::Value =
+        serde_json::from_str(turn["text"].as_str().expect("payload")).expect("the schema, whole");
+    assert_eq!(back["function"]["name"], "web_search");
+    assert!(
+        back["function"]["parameters"]["properties"]["path"].is_object(),
+        "uncapped and complete -- a recall that returns a stub is theatre"
+    );
+}
+
+#[test]
+fn an_over_size_system_slot_of_this_cells_own_is_cut_and_says_so() {
+    // Stage 5. The candidate here is `consult`, which this cell re-derives from
+    // the window on every assembly -- which is exactly why it MAY be cut: a
+    // leaf sent from here overwrites the durable one in the brain, so a stub
+    // with no text would revoke somebody's state instead of shortening one
+    // prompt.
+    let mut knobs = base("100", DECLARED);
+    knobs.push(("curate_slot_chars", "40".into()));
+    let rows = serde_json::json!([leg_window(serde_json::json!([
+        {"role": "user", "text": "hello", "consult_id": long_consult('a')},
+        {"role": "assistant", "text": "hi", "consult_id": long_consult('b')}
+    ]))]);
+    let out = emit_with(&over(&knobs), fire_at(0, rows));
+    let consult = system_of(&out[0])["consult"]["text"]
+        .as_str()
+        .expect("the consult leaf")
+        .to_string();
+    assert_eq!(out[0]["header"]["curate_slots"], "1");
+    assert!(
+        consult.contains("[system slot 'consult' cut:")
+            && consult.contains("re-derived in full next round"),
+        "the cut names itself and its own reversal: {consult}"
+    );
+    assert!(
+        consult.starts_with("open consults: c-aaaa"),
+        "the head survives: {consult}"
+    );
+}
+
+#[test]
+fn the_protected_families_are_named_in_the_shipped_script_and_are_never_cut() {
+    // Drift lock (development-rules § 2d): the sentence AND the mechanism. The
+    // promise "put the hard constraints in `system.*`, the curator cannot reach
+    // them" is only worth something if the list has no exception -- so the list
+    // is read out of the shipped script, and the one slot this same assembly
+    // writes over the threshold is asserted intact.
+    let src = assemble_script();
+    let at = src
+        .find("SYS_KEEP = ")
+        .expect("the constant is in the shipped script");
+    let decl = &src[at..at + 200];
+    for family in ["handover", "persona", "identity", "instructions"] {
+        assert!(
+            decl.contains(&format!("\"{family}\"")),
+            "{family} must stand in SYS_KEEP: {decl}"
+        );
+    }
+    let mut knobs = base("100", DECLARED);
+    knobs.push(("curate_slot_chars", "10".into()));
+    let out = emit_with(&over(&knobs), fire_at(5, long_turn(6)));
+    let budget = system_of(&out[0])["budget"]["text"]
+        .as_str()
+        .expect("the budget leaf")
+        .to_string();
+    assert!(
+        budget.starts_with("Context budget:") && !budget.contains("cut:"),
+        "a protected slot is over the threshold and is left alone: {budget}"
+    );
+}
+
+#[test]
+fn the_generator_is_told_what_is_left_of_its_budget() {
+    // "The Sleeping Agent" measured 3.05 % -> 62.39 % from a prompt fix alone:
+    // a generator told where it stands behaves differently from one that is
+    // silently cut. One deterministic sentence out of numbers the report
+    // already holds -- no model, nothing to drift.
+    let out = emit_with(&over(&base("30000", DECLARED)), fire_at(5, long_turn(6)));
+    let line = system_of(&out[0])["budget"]["text"]
+        .as_str()
+        .expect("the budget leaf")
+        .to_string();
+    let used: i64 = out[0]["header"]["tokens_projected"]
+        .as_str()
+        .expect("projected")
+        .parse()
+        .expect("number");
+    assert_eq!(
+        line,
+        format!(
+            "Context budget: {used} of 30000 tokens used, {} left.",
+            30000 - used
+        ),
+        "the sentence quotes the projection the cell just reported"
+    );
+}
+
+#[test]
+fn the_budget_sentence_is_revoked_rather_than_abandoned() {
+    // `system.*` is upserted per slot path, so a slot that simply stops being
+    // sent stands in the prompt forever -- quoting the number of whatever turn
+    // last happened to write it. Switched off, the leaf travels EMPTY (GH #259
+    // shape), and an empty leaf contributes nothing to the prompt.
+    let mut knobs = base("30000", DECLARED);
+    knobs.push(("curate_budget_line", String::new()));
+    let out = emit_with(&over(&knobs), fire_at(5, long_turn(6)));
+    assert_eq!(system_of(&out[0])["budget"]["text"], "");
+    // With curation itself off no leaf travels at all: that cell is the one
+    // that shipped before this issue, and a slot it never wrote needs no
+    // revoking.
+    let mut off = base("", DECLARED);
+    off.retain(|(k, _)| *k != "context_window");
+    let dark = emit_with(&over(&off), fire_at(5, long_turn(6)));
+    assert!(
+        system_of(&dark[0]).get("budget").is_none(),
+        "nothing to revoke: {}",
+        system_of(&dark[0])
+    );
+}
+
+#[test]
+fn no_stage_at_any_budget_leaves_a_tool_result_without_its_call() {
+    // THE HARD RULE, and it outranks every byte this component saves: a
+    // `tool_result` whose `tool_call` is missing is a body every provider
+    // rejects, so a projection one row smaller and structurally invalid is
+    // infinitely more expensive than the window it was shrinking. Message
+    // validity before message count -- asserted across every budget and both
+    // menu states, because a stage that starts DROPPING rows instead of
+    // replacing payloads would pass every other assertion in this file.
+    for window in ["50", "400", "4000", "30000", "10000000"] {
+        for knobs in [base(window, DECLARED), with_menu(window)] {
+            let out = emit_with(&over(&knobs), fire_at(5, long_turn(6)));
+            let items = out[0]["messages"].as_array().expect("messages");
+            let calls: Vec<String> = items
+                .iter()
+                .filter(|x| x["type"] == "tool_call")
+                .map(|x| x["id"].as_str().unwrap_or_default().to_string())
+                .collect();
+            for x in items.iter().filter(|x| x["type"] == "tool_result") {
+                let id = x["id"].as_str().unwrap_or_default();
+                assert!(
+                    calls.contains(&id.to_string()),
+                    "window {window}: tool_result {id} has no tool_call partner \
+                     in the projection"
+                );
+            }
+        }
+    }
+}
+
+// ══════════════════════════════════════════ 6. THE CURATOR IS LIVE IN A TREE
+//
+// Drift lock (development-rules § 2d): the sentence AND the mechanism. The
+// number `128000` stands in `templates/cogny/README.md` as prose and in
+// `templates/cogny/collector/config.json` as configuration, and a number in
+// template prose is either derived from the code inside the test or it appears
+// exactly once. It is derived here.
+
+fn cogny_ref() -> serde_json::Value {
+    let raw = std::fs::read_to_string("../../templates/cogny/collector/config.json")
+        .expect("cogny's collector reference");
+    serde_json::from_str(&raw).expect("config json")
+}
+
+#[test]
+fn cogny_ships_the_curator_on_and_the_readme_quotes_the_shipped_number() {
+    // Half one: the mechanism. `0` means curation OFF, and until GH #451 that
+    // was the shipped value everywhere -- the curator was built, tested,
+    // documented and dark in every composite in the library, including the one
+    // topology it was designed for.
+    let over = &cogny_ref()["override_params"]["assemble"];
+    let window = over["context_window"]
+        .as_i64()
+        .expect("cogny names a context window for its collector");
+    assert!(
+        window > 0,
+        "curation is off at the one composite that wants it"
+    );
+
+    // Half two: the prose. The README's knob table has to quote THIS number,
+    // whatever it becomes -- the test derives it rather than repeating it.
+    let readme = std::fs::read_to_string("../../templates/cogny/README.md").expect("cogny README");
+    assert!(
+        readme.contains(&format!("| `context_window` | param | `{window}` |")),
+        "the README's knob table quotes a different budget than the tree ships \
+         ({window})"
+    );
+
+    // Half three, and it is not decoration: without the recall lane every stub
+    // the curator leaves is a dead end, and a dead end is worse than no stub.
+    // The edge cannot come from a parent -- it crosses into a sealed sub-unit --
+    // so it has to be in this template's own graph.
+    let raw = std::fs::read_to_string("../../templates/cogny/config.json").expect("cogny config");
+    let cfg: serde_json::Value = serde_json::from_str(&raw).expect("config json");
+    let edges = cfg["params"]["graph"]["edges"]
+        .as_array()
+        .expect("cogny's graph");
+    let lane = edges
+        .iter()
+        .find(|e| {
+            e["condition"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("hop.tool_name == 'thread_recall'")
+        })
+        .expect("cogny wires the thread_recall lane it now needs");
+    assert_eq!(lane["from"], "./dispatcher");
+    assert_eq!(lane["to"], "./collector");
+    assert_eq!(
+        lane["modifier"]["set_hop"]["route"], "'in_thread_call'",
+        "the lane has to arrive as the collector's own thread-call lane"
     );
 }

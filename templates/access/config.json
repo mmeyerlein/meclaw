@@ -136,17 +136,41 @@
         {
           "from": "./policy",
           "to": ".",
-          "condition": "has(hop.route) && (hop.route == 'grant' || hop.route == 'error')"
+          "condition": "has(hop.route) && (hop.route == 'grant' || hop.route == 'error')",
+          "modifier": {
+            "delete_context": [
+              "access_origin",
+              "access_lane",
+              "ac_phase",
+              "ac_carry"
+            ]
+          }
         },
         {
           "from": "./invoke",
           "to": ".",
-          "condition": "has(hop.route) && (hop.route == 'ack' || hop.route == 'connect' || hop.route == 'error')"
+          "condition": "has(hop.route) && (hop.route == 'ack' || hop.route == 'connect' || hop.route == 'error')",
+          "modifier": {
+            "delete_context": [
+              "access_origin",
+              "access_lane",
+              "ac_phase",
+              "ac_carry"
+            ]
+          }
         },
         {
           "from": "./sweep",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'error'"
+          "condition": "has(hop.route) && hop.route == 'error'",
+          "modifier": {
+            "delete_context": [
+              "access_origin",
+              "access_lane",
+              "ac_phase",
+              "ac_carry"
+            ]
+          }
         }
       ]
     }

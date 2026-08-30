@@ -12,7 +12,7 @@ use meclaw_core::JsonValue;
 /// appears here and nowhere else would be accepted and never executed, and a
 /// key executed somewhere without appearing here would be refused. Adding an
 /// operation means adding its key here in the same change.
-pub const DIFF_OPERATIONS: [&str; 7] = [
+pub const DIFF_OPERATIONS: [&str; 8] = [
     "add_templates",
     "add_nodes",
     "remove_nodes",
@@ -20,6 +20,7 @@ pub const DIFF_OPERATIONS: [&str; 7] = [
     "move_nodes",
     "add_edges",
     "remove_edges",
+    "seed_rows",
 ];
 
 /// A `diff` key no operation reads is refused, not ignored.
@@ -216,6 +217,9 @@ pub fn validate_post_state_with_edges_and_subtree(
 /// Splitting this decision per check is how the two halves of the same defect
 /// arose: the endpoint check (#166) and the identity checks (#179) each read the
 /// name in one namespace and looked it up in another, in opposite directions.
+///
+/// GH #487 — and `.` is a THIRD reading of the same string, the one the boot
+/// path always had: it names the scope root itself. See [`scoped_name`].
 pub(crate) enum ScopedName<'a> {
     /// Tested in the scope's short-name namespace (`registry_names` & co).
     Short(&'a str),
@@ -224,8 +228,42 @@ pub(crate) enum ScopedName<'a> {
 }
 
 /// Classify `name` into the namespace it is to be tested in — see [`ScopedName`].
+///
+/// GH #487 — `.` (and the `./` that strips to nothing) is the SELF-reference:
+/// it names the declaration's own `scope`, which is an absolute path and
+/// therefore [`ScopedName::Deep`]. That is not a new rule, it is the one
+/// [`meclaw_core::Path::resolve`] has always applied — `trimmed.is_empty() ||
+/// trimmed == "."` ⇒ "stay at the sender" — and the one the boot path resolves
+/// a hive's `params.graph` with, which is why `{"from": "./firewall", "to": "."}`
+/// means a lane out of the level in 31 of the shipped templates. Only this
+/// classifier disagreed: it read `.` as a short NAME, no node is called `.`, and
+/// the endpoint check answered `edge_schema: to='.' unknown` for the single
+/// spelling the whole catalogue teaches.
+///
+/// Resolving it here is deliberately the whole fix. The apply arm never needed
+/// one — `resolve_scoped_path` IS `Path::resolve`, so `add_edges`,
+/// `remove_edges`, the header-view mirror, the port-boundary and the hive
+/// contract have all resolved `.` correctly the entire time; validate was the
+/// one reader in the other namespace. And it is resolved at the point of USE,
+/// never written back into the diff: a manifest is parked under the sha256 of
+/// its own bytes and submitted by that digest, so canonicalising the spelling
+/// before the digest would make the digest describe a document nobody was shown
+/// and would move every digest already parked. Two spellings of one node have
+/// two digests — which `./a` and `a` have had since Befund 6.
+///
+/// A scope whose root is no node is unaffected: `.` at scope `/` resolves to
+/// `/`, which is the colony's top-level scope and carries no registry row, so
+/// the membership test refuses it exactly as before. This widens the
+/// vocabulary; it invents no node.
 pub(crate) fn scoped_name<'a>(scope: &str, name: &'a str) -> ScopedName<'a> {
     let stripped = name.strip_prefix("./").unwrap_or(name);
+    if stripped.is_empty() || stripped == "." {
+        return ScopedName::Deep(
+            crate::mutation::resolve_scoped_path(scope, stripped)
+                .as_str()
+                .to_string(),
+        );
+    }
     if stripped.contains('/') {
         ScopedName::Deep(
             crate::mutation::resolve_scoped_path(scope, stripped)
@@ -2297,6 +2335,16 @@ pub fn validate_scope_containment(
                 check(f)?;
             }
             if let Some(t) = m.and_then(|v| v.get("to")).and_then(|v| v.as_str()) {
+                check(t)?;
+            }
+        }
+    }
+    // GH #456: a `seed_rows` addresses one cell and writes into it, which is
+    // exactly the reach this guard exists to bound — a mutation scoped to one
+    // hive must not drop a policy row into a store it has no authority over.
+    if let Some(es) = obj.get("seed_rows").and_then(|v| v.as_array()) {
+        for e in es {
+            if let Some(t) = e.get("target").and_then(|v| v.as_str()) {
                 check(t)?;
             }
         }
@@ -5863,6 +5911,141 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err.error_code(), "edge_schema");
+    }
+
+    // ── GH #487: `.` names the scope root ───────────────────────────────────
+    //
+    // The template loader has always resolved `.` to the level (`Path::resolve`
+    // → "stay at the sender"), which is why 277 of the 561 edges the shipped
+    // templates declare are spelled that way. `scoped_name` read it as a short
+    // NAME, no node is called `.`, and the endpoint check answered
+    // `edge_schema: to='.' unknown` for the catalogue's own idiom.
+
+    /// One endpoint, both self-spellings, both sides of the arrow: `.` and the
+    /// `./` that strips to nothing resolve to the scope root, which is a node
+    /// like any other once it is looked up in the namespace it lives in.
+    #[test]
+    fn a_dot_endpoint_resolves_to_the_scope_root() {
+        for dot in [".", "./"] {
+            for diff in [
+                json!({"add_edges": [{"from": "./q", "to": dot}]}),
+                json!({"add_edges": [{"from": dot, "to": "./q"}]}),
+            ] {
+                let templates = crate::templates::TemplatesRegistry::default();
+                let factories = CellFactoryRegistry::new();
+                // The scope root is a hive, so it is in the pre-state absolute
+                // view — exactly what the colony hands the validator.
+                let deep: Vec<String> = vec!["/unit".into(), "/unit/q".into()];
+                let result = validate_post_state_with_templates_scoped(
+                    &diff,
+                    &templates,
+                    &factories,
+                    &["q".to_string()],
+                    &[],
+                    &[],
+                    &[],
+                    &[],
+                    &[],
+                    &[],
+                    "/unit",
+                    &deep,
+                    &[],
+                    &[],
+                    &std::collections::HashSet::new(),
+                );
+                assert!(
+                    result.is_ok(),
+                    "`{dot}` at scope /unit must resolve to /unit: {result:?}"
+                );
+            }
+        }
+    }
+
+    /// The boundary that keeps this a widening of the vocabulary rather than an
+    /// invented node: a scope whose root NOTHING answers to still refuses. Not
+    /// a statement about the root scope — where a hive-scope marker sits at `/`,
+    /// `.` names it like any other node, and that is the lane a marked answer
+    /// leaves by (GH #163). This fixture simply hands the validator a view in
+    /// which the scope root is absent.
+    #[test]
+    fn a_dot_endpoint_at_a_scope_root_nothing_answers_to_still_rejects() {
+        let diff = json!({"add_edges": [{"from": "./q", "to": "."}]});
+        let templates = crate::templates::TemplatesRegistry::default();
+        let factories = CellFactoryRegistry::new();
+        let err = validate_post_state_with_templates_scoped(
+            &diff,
+            &templates,
+            &factories,
+            &["q".to_string()],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            "/",
+            &["/q".to_string()],
+            &[],
+            &[],
+            &std::collections::HashSet::new(),
+        )
+        .unwrap_err();
+        assert_eq!(err.error_code(), "edge_schema");
+    }
+
+    /// `.` is contained in its own scope by definition — the guard resolves it
+    /// to the scope root and a scope contains itself. Both spellings, both
+    /// sides, and `remove_edges` too, because the guard walks that entry as
+    /// well and a one-way grammar is the defect one level down.
+    #[test]
+    fn a_dot_endpoint_is_never_out_of_its_own_scope() {
+        for dot in [".", "./"] {
+            for diff in [
+                json!({"add_edges": [{"from": "./q", "to": dot}]}),
+                json!({"add_edges": [{"from": dot, "to": "./q"}]}),
+                json!({"remove_edges": [{"match": {"from": "./q", "to": dot}}]}),
+            ] {
+                assert!(
+                    validate_scope_containment(&diff, "/os/orgs/acme/members/alex").is_ok(),
+                    "`{dot}` addresses the scope root, which is in bounds: {diff}"
+                );
+            }
+        }
+    }
+
+    /// And the resolution is scope-relative, not root-relative: the same `.`
+    /// under two scopes names two different nodes. A validator that resolved it
+    /// against `/` would accept a lane onto a level the declaration has no
+    /// authority over.
+    #[test]
+    fn a_dot_endpoint_names_the_scope_it_was_declared_at() {
+        let diff = json!({"add_edges": [{"from": "./q", "to": "."}]});
+        let templates = crate::templates::TemplatesRegistry::default();
+        let factories = CellFactoryRegistry::new();
+        let foreign: Vec<String> = vec!["/other".into(), "/unit/q".into()];
+        let err = validate_post_state_with_templates_scoped(
+            &diff,
+            &templates,
+            &factories,
+            &["q".to_string()],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            "/unit",
+            &foreign,
+            &[],
+            &[],
+            &std::collections::HashSet::new(),
+        )
+        .unwrap_err();
+        assert_eq!(
+            err.error_code(),
+            "edge_schema",
+            "a node at /other must not satisfy a `.` declared at /unit"
+        );
     }
 
     /// GH #293 — the collecting core and the `Result` form must answer the same

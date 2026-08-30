@@ -145,18 +145,18 @@ curl -s -X POST http://127.0.0.1:7788/colony/mutations \
 ```
 
 ```
-16 cells:
-  /memory/episodes           store     /talky/errors            code
+15 cells:
+  /memory/episodes           store     /talky/errors                    code
   /memory/keep               code      /talky/session-keeper/close      code
   /replay                    code      /talky/session-keeper/night      timer
   /sink                      code      /talky/session-keeper/sessions   store
   /door                      code      /talky/session-keeper/stamp      code
-  /talky/brain               llm       /talky/dispatcher             code
-  /talky/collector/assemble  code      /talky/summarizer/prep   code
-  /talky/collector/window    store     /talky/summarizer/writer llm
+  /talky/brain               llm       /talky/dispatcher                code
+  /talky/collector/assemble  code      /talky/splitter                  code
+  /talky/collector/window    store
 ```
 
-Three checked in, thirteen instantiated from templates by one POST. Verify the
+Three checked in, twelve instantiated from templates by one POST. Verify the
 seed landed while you are here:
 
 ```bash

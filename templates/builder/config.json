@@ -15,6 +15,11 @@
           "route": "in_receipt",
           "context": [],
           "because": "a refusal the submitter took at the door, on its way back to the composer that wrote the draft. It carries no identity either, for the same reason `in_build` does not: this hive still emits no mutation. What it carries is an error_code, and NAMING it is the whole of the lane -- a refusal the model cannot name is one it cannot repair. The repair budget is separate from the round budget and lives on the edge that spends it."
+        },
+        {
+          "route": "in_ingest",
+          "context": [],
+          "because": "a nudge to reconcile the corpus behind this hive against the colony's own template registry, forwarded to the librarian and read by nothing here. The corpus is a SEED: it describes the library of the moment the librarian was born, so a class registered since -- an `add_templates`, a directory dropped in plus a rescan -- is resolvable at the mutation door and invisible to the composer. The lane is a TRANSIT lane and that is the whole of its design: the mechanism lives one storey down (GH #496) and was unreachable, because the only cell in a tree that knows a submission committed AND that its diff registered a class sits outside this hive, and an edge from there to a cell INSIDE it crosses two seals. A lane at the hive path is the one form both ends can draw"
         }
       ],
       "emits": [
@@ -25,6 +30,10 @@
         {
           "route": "error",
           "because": "a wish this hive did not turn into a manifest, named. Drafting is not an enhancement that may degrade quietly: a build that stops must say so on a lane, never as silence and never as an empty manifest"
+        },
+        {
+          "route": "catalogue",
+          "because": "the reconciliation's own report, on its way back out: how many templates the registry holds, how many the corpus already carried, how many rows were written and which names. It leaves because a report nobody can subscribe to is a dead letter -- measured as one, twice, in a built colony -- and because a caller that drives `in_ingest` and is told nothing cannot tell a corpus that was already current from a nudge that never ran"
         }
       ]
     },
@@ -33,6 +42,11 @@
         "accepts": "in_build",
         "emits": "manifest",
         "because": "a caller that sends a wish in and does not take the draft back has started a round that answers into nothing. The two edges are one decision"
+      },
+      {
+        "accepts": "in_ingest",
+        "emits": "catalogue",
+        "because": "a caller that nudges this hive and does not take the report back has asked the corpus to change and arranged to never learn whether it did. The counts are the only difference between 'nothing was missing' and 'nothing happened', and those two facts must never look alike. The two edges are one decision"
       }
     ],
     "graph": {
@@ -54,6 +68,16 @@
           "modifier": {
             "set_context": {
               "build_scope": "hop.build_scope"
+            }
+          }
+        },
+        {
+          "from": "./brief",
+          "to": "./transcript",
+          "condition": "has(hop.route) && hop.route == 'cstore'",
+          "modifier": {
+            "set_context": {
+              "store_origin": "'weave'"
             }
           }
         },
@@ -87,13 +111,27 @@
             "set_hop": {
               "route": "'error'",
               "error_code": "'composer_failed'"
-            }
+            },
+            "delete_context": [
+              "agent",
+              "build_id",
+              "build_op",
+              "build_scope",
+              "lib_call_id",
+              "repairs",
+              "store_origin"
+            ]
           }
         },
         {
           "from": "./dispatch",
           "to": "./weave",
           "condition": "has(hop.route) && hop.route == 'calls'"
+        },
+        {
+          "from": "./dispatch",
+          "to": "./weave",
+          "condition": "has(hop.route) && hop.route == 'answer'"
         },
         {
           "from": "./dispatch",
@@ -133,6 +171,27 @@
           "from": "./librarian",
           "to": "./lib",
           "condition": "has(hop.route) && hop.route == 'brief'"
+        },
+        {
+          "from": ".",
+          "to": "./librarian",
+          "condition": "has(hop.route) && hop.route == 'in_ingest'"
+        },
+        {
+          "from": "./librarian",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'catalogue'",
+          "modifier": {
+            "delete_context": [
+              "agent",
+              "build_id",
+              "build_op",
+              "build_scope",
+              "lib_call_id",
+              "repairs",
+              "store_origin"
+            ]
+          }
         },
         {
           "from": "./eyes",
@@ -187,7 +246,13 @@
           "condition": "has(hop.route) && hop.route == 'fire' && int(context.iter) < 6",
           "modifier": {
             "set_context": {
-              "iter": "int(context.iter) + 1"
+              "iter": "int(context.iter) + 1",
+              "build_call_id": "hop.build_call_id",
+              "agent": "hop.agent",
+              "build_op": "hop.build_op",
+              "build_scope": "hop.build_scope",
+              "build_caller": "hop.build_caller",
+              "build_auto_submit": "hop.build_auto_submit"
             },
             "restore_ttl": true
           }
@@ -195,7 +260,17 @@
         {
           "from": "./weave",
           "to": "./normalise",
-          "condition": "has(hop.route) && (hop.route == 'draft' || (hop.route == 'fire' && int(context.iter) >= 6))"
+          "condition": "has(hop.route) && (hop.route == 'draft' || (hop.route == 'fire' && int(context.iter) >= 6))",
+          "modifier": {
+            "set_context": {
+              "build_call_id": "hop.build_call_id",
+              "agent": "hop.agent",
+              "build_op": "hop.build_op",
+              "build_scope": "hop.build_scope",
+              "build_caller": "hop.build_caller",
+              "build_auto_submit": "hop.build_auto_submit"
+            }
+          }
         },
         {
           "from": ".",
@@ -210,7 +285,13 @@
             "set_context": {
               "build_id": "hop.build_id",
               "iter": "hop.iter",
-              "repairs": "hop.repairs"
+              "repairs": "hop.repairs",
+              "build_call_id": "hop.build_call_id",
+              "agent": "hop.agent",
+              "build_op": "hop.build_op",
+              "build_scope": "hop.build_scope",
+              "build_caller": "hop.build_caller",
+              "build_auto_submit": "hop.build_auto_submit"
             },
             "restore_ttl": true
           }
@@ -222,7 +303,21 @@
           "modifier": {
             "set_hop": {
               "route": "'error'"
-            }
+            },
+            "set_context": {
+              "build_call_id": "hop.build_call_id",
+              "build_caller": "hop.build_caller",
+              "build_auto_submit": "hop.build_auto_submit"
+            },
+            "delete_context": [
+              "agent",
+              "build_id",
+              "build_op",
+              "build_scope",
+              "lib_call_id",
+              "repairs",
+              "store_origin"
+            ]
           }
         },
         {
@@ -232,7 +327,16 @@
           "modifier": {
             "set_hop": {
               "route": "'manifest'"
-            }
+            },
+            "delete_context": [
+              "agent",
+              "build_id",
+              "build_op",
+              "build_scope",
+              "lib_call_id",
+              "repairs",
+              "store_origin"
+            ]
           }
         },
         {
@@ -242,7 +346,16 @@
           "modifier": {
             "set_hop": {
               "route": "'manifest'"
-            }
+            },
+            "delete_context": [
+              "agent",
+              "build_id",
+              "build_op",
+              "build_scope",
+              "lib_call_id",
+              "repairs",
+              "store_origin"
+            ]
           }
         },
         {
@@ -252,7 +365,16 @@
           "modifier": {
             "set_hop": {
               "route": "'error'"
-            }
+            },
+            "delete_context": [
+              "agent",
+              "build_id",
+              "build_op",
+              "build_scope",
+              "lib_call_id",
+              "repairs",
+              "store_origin"
+            ]
           }
         },
         {
@@ -262,7 +384,16 @@
           "modifier": {
             "set_hop": {
               "route": "'error'"
-            }
+            },
+            "delete_context": [
+              "agent",
+              "build_id",
+              "build_op",
+              "build_scope",
+              "lib_call_id",
+              "repairs",
+              "store_origin"
+            ]
           }
         },
         {
@@ -272,11 +403,30 @@
           "modifier": {
             "set_hop": {
               "route": "'error'"
-            }
+            },
+            "delete_context": [
+              "agent",
+              "build_id",
+              "build_op",
+              "build_scope",
+              "lib_call_id",
+              "repairs",
+              "store_origin"
+            ]
           }
         },
         {
           "from": "./normalise",
+          "to": "./transcript",
+          "condition": "has(hop.route) && hop.route == 'bind'",
+          "modifier": {
+            "set_context": {
+              "store_origin": "'weave'"
+            }
+          }
+        },
+        {
+          "from": "./recipes",
           "to": "./transcript",
           "condition": "has(hop.route) && hop.route == 'bind'",
           "modifier": {

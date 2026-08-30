@@ -8,15 +8,22 @@
 //! forward and stops at the first refusal, with NO ROLLBACK (R5).
 
 use meclaw_core::serde_json::{Value, json};
-use meclaw_testing::{emit_one, run_shipped_script, shipped_script};
+use meclaw_testing::{emit_all, run_shipped_script, shipped_script};
 
 const RECIPES: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../templates/builder/recipes/config.json"
 );
 
+/// The MANIFEST emission of a recipe.
+///
+/// A finished recipe emits a second message whenever the context names a caller:
+/// the pair of rows the fast lane parks so that a refusal coming back on the
+/// submitter's foreign chain can find the build's door again (GH #480). It is a
+/// store bundle on route `bind` and has no business in this file; the contexts
+/// here name nobody, so it does not arise.
 fn run_recipes(payload: Value) -> Value {
-    emit_one(
+    let all = emit_all(
         &shipped_script(RECIPES),
         &json!({
             "target": "/os/builder/recipes",
@@ -25,7 +32,10 @@ fn run_recipes(payload: Value) -> Value {
             "messages": [{"origin": "tool", "type": "tool_result", "id": "",
                           "text": payload.to_string()}],
         }),
-    )
+    );
+    all.into_iter()
+        .find(|m| m["header"]["operation"] == "recipe")
+        .expect("the recipe answers with a manifest emission")
 }
 
 /// The digest, computed INDEPENDENTLY of the script under test: the same

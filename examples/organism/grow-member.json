@@ -1,77 +1,102 @@
 {
-  "scope": "/os/orgs/acme",
+  "scope": "/os/orgs/acme/members",
   "diff": {
     "add_nodes": [
       {
-        "name": "members/alex",
-        "template": "member@1.1.0"
+        "name": "alex",
+        "template": "member@1.4.0"
       }
     ],
     "add_edges": [
       {
-        "from": "./members",
-        "to": "./members/alex",
-        "condition": "has(hop.route) && hop.route == 'in_turn'"
+        "from": ".",
+        "to": "./alex",
+        "condition": "has(hop.route) && hop.route == 'in_turn' && (!has(context.member) || context.member == 'alex')"
       },
       {
-        "from": "./members",
-        "to": "./members/alex",
-        "condition": "has(hop.route) && hop.route == 'in_recall'"
+        "from": ".",
+        "to": "./alex",
+        "condition": "has(hop.route) && hop.route == 'in_recall' && (!has(context.member) || context.member == 'alex')"
       },
       {
-        "from": "./members",
-        "to": "./members/alex",
-        "condition": "has(hop.route) && hop.route == 'in_brief'"
+        "from": ".",
+        "to": "./alex",
+        "condition": "has(hop.route) && hop.route == 'in_brief' && (!has(context.member) || context.member == 'alex')"
       },
       {
-        "from": "./members",
-        "to": "./members/alex",
-        "condition": "has(hop.route) && hop.route == 'in_propose'"
+        "from": ".",
+        "to": "./alex",
+        "condition": "has(hop.route) && hop.route == 'in_propose' && (!has(context.member) || context.member == 'alex')"
       },
       {
-        "from": "./members/alex",
-        "to": "./members",
+        "from": ".",
+        "to": "./alex",
+        "condition": "has(hop.route) && hop.route == 'in_build_result' && (!has(context.member) || context.member == 'alex')"
+      },
+      {
+        "from": ".",
+        "to": "./alex",
+        "condition": "has(hop.route) && hop.route == 'in_export' && (!has(context.member) || context.member == 'alex')"
+      },
+      {
+        "from": "./alex",
+        "to": ".",
         "condition": "has(hop.route) && hop.route == 'answer'"
       },
       {
-        "from": "./members/alex",
-        "to": "./members",
+        "from": "./alex",
+        "to": ".",
+        "condition": "has(hop.route) && hop.route == 'bundle'"
+      },
+      {
+        "from": "./alex",
+        "to": ".",
         "condition": "has(hop.route) && hop.route == 'ack'"
       },
       {
-        "from": "./members/alex",
-        "to": "./members",
+        "from": "./alex",
+        "to": ".",
         "condition": "has(hop.route) && hop.route == 'reject'"
       },
       {
-        "from": "./members/alex",
-        "to": "./members",
+        "from": "./alex",
+        "to": ".",
         "condition": "has(hop.route) && hop.route == 'error'"
       },
       {
-        "from": "./members/alex",
-        "to": "./members",
+        "from": "./alex",
+        "to": ".",
         "condition": "has(hop.route) && hop.route == 'write'"
       },
       {
-        "from": "./members/alex",
-        "to": "./members",
+        "from": "./alex",
+        "to": ".",
         "condition": "has(hop.route) && hop.route == 'turn_write'"
       },
       {
-        "from": "./members/alex",
-        "to": "./members",
+        "from": "./alex",
+        "to": ".",
         "condition": "has(hop.route) && hop.route == 'prune'"
       },
       {
-        "from": "./members/alex",
-        "to": "./members",
+        "from": "./alex",
+        "to": ".",
         "condition": "has(hop.route) && hop.route == 'build'"
       },
       {
-        "from": "./members",
-        "to": "./members/alex",
-        "condition": "has(hop.route) && hop.route == 'in_build_result'"
+        "from": "./alex",
+        "to": ".",
+        "condition": "has(hop.route) && hop.route == 'close_report'"
+      },
+      {
+        "from": "./alex",
+        "to": ".",
+        "condition": "has(hop.route) && hop.route == 'export_done'"
+      },
+      {
+        "from": "./alex",
+        "to": ".",
+        "condition": "has(hop.route) && hop.route == 'pack_ack'"
       }
     ]
   }

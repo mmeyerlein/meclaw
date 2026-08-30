@@ -17,6 +17,7 @@ fn all_proxy_source_files_pass_doc_comment_audit() {
         "db.rs",
         "io.rs",
         "telegram.rs",
+        "typing.rs",
         "cell.rs",
         "emit.rs",
         "factory.rs",

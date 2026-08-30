@@ -21,6 +21,16 @@
             "subscriber"
           ],
           "because": "write: one proposed change to the domain. The propose edge promotes the WRITER to `context.actor` -- the audit row is only worth writing if its actor came from an edge rather than from body text -- and, for a `subscribe`, the cell that shall receive the pushes to `context.subscriber` (GH #288). Both are identity, and identity is the one thing a body may not state about itself: the subscription row IS the routing decision `./push` reads every tick, so a body that names its own `cell_path` or `audience` is refused with `identity_from_body` rather than narrowed. An edge that promotes neither still reaches the gate on the BOOT path; it is refused there (`subscriber_not_on_edge`, `actor_not_on_edge`), which is the fail-closed half. On the RUNTIME path the gate never sees it: an `add_edges` mutation that promotes neither is refused by validation stage 6 (contract locality) and the edge is never laid, so the two refusals are the same rule read at two different moments, not a second chance."
+        },
+        {
+          "route": "in_export",
+          "because": "a demand that this hive hand out everything it holds, as a versioned document. The walk reads the two identity tables the store keys itself and then `entities`, `relations`, `trust`, `disclosure`, `subscribers`, `proposals` and `audit`, one `dump` part per table -- schema declaration first, rows after it -- and the last part carries the completeness marker. The caller sends no keys with it: an export is about the whole hive rather than about a round, and what may leave is not a question this lane asks (GH #471)",
+          "context": []
+        },
+        {
+          "route": "in_import",
+          "because": "one part of such a document, for a hive that is already running. It is the other half of `in_export` and the return leg of the same document: the seed set under this hive was read once, when the `cell.db` was created, and is inert for ever after -- so everything the source decided AFTER the walk has no way in except a message. The body is ONE export part, and applying the same part twice leaves the same state, which is what makes a partial transfer repairable by repeating it (GH #471)",
+          "context": []
         }
       ],
       "emits": [
@@ -35,9 +45,39 @@
         {
           "route": "error",
           "because": "any of the lanes failed; which cell inside produced it is not the caller's business"
+        },
+        {
+          "route": "reject",
+          "because": "a transfer this hive would not carry out: an export whose read failed mid-walk, or an import part whose format, schema or audience did not survive (`hop.reject_reason` names the case). It is the porter's only fail-closed exit and it leaves the hive, because the caller that asked for the transfer is outside it (GH #471)"
+        },
+        {
+          "route": "dump",
+          "because": "the transfer lane's output: `hop.dump_kind == 'export_part'` is one part of the exported document (`hop.export_part` of `hop.export_of`, `hop.export_final` marking the last, `hop.port_hive` naming which hive it came out of), `hop.dump_kind == 'import_receipt'` says what one applied part wrote (`hop.rows_written`). Drain it with a PLAIN `hop.route == 'dump'` edge -- an edge that also tests `dump_kind` reads as no drain under the required_drains probe. Undrained, an export runs and reaches nobody"
         }
       ]
     },
+    "required_drains": [
+      {
+        "accepts": "in_export",
+        "emits": "dump",
+        "because": "the export IS the dump lane -- wired without it, the walk runs, reads the whole store and delivers the document to nobody"
+      },
+      {
+        "accepts": "in_export",
+        "emits": "reject",
+        "because": "an export that aborts mid-walk (the store refused a read) has already emitted parts; undrained, the caller keeps a partial document that looks complete"
+      },
+      {
+        "accepts": "in_import",
+        "emits": "dump",
+        "because": "the receipt of an applied part is the only positive signal an import has -- undrained, nobody ever learns whether a transfer landed"
+      },
+      {
+        "accepts": "in_import",
+        "emits": "reject",
+        "because": "a part this hive will not take leaves here; undrained, a refused transfer looks exactly like a successful one"
+      }
+    ],
     "graph": {
       "edges": [
         {
@@ -144,17 +184,145 @@
         {
           "from": "./brief",
           "to": ".",
-          "condition": "has(hop.route) && (hop.route == 'answer' || hop.route == 'error')"
+          "condition": "has(hop.route) && (hop.route == 'answer' || hop.route == 'error')",
+          "modifier": {
+            "delete_context": [
+              "aff_audience",
+              "aff_carry",
+              "aff_channel",
+              "aff_phase",
+              "aff_slots",
+              "aff_subject",
+              "aff_subscriber",
+              "affinity_origin",
+              "port_phase",
+              "port_run",
+              "port_table"
+            ]
+          }
         },
         {
           "from": "./gate",
           "to": ".",
-          "condition": "has(hop.route) && (hop.route == 'ack' || hop.route == 'error')"
+          "condition": "has(hop.route) && (hop.route == 'ack' || hop.route == 'error')",
+          "modifier": {
+            "delete_context": [
+              "aff_audience",
+              "aff_carry",
+              "aff_channel",
+              "aff_phase",
+              "aff_slots",
+              "aff_subject",
+              "aff_subscriber",
+              "affinity_origin",
+              "port_phase",
+              "port_run",
+              "port_table"
+            ]
+          }
         },
         {
           "from": "./push",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'error'"
+          "condition": "has(hop.route) && hop.route == 'error'",
+          "modifier": {
+            "delete_context": [
+              "aff_audience",
+              "aff_carry",
+              "aff_channel",
+              "aff_phase",
+              "aff_slots",
+              "aff_subject",
+              "aff_subscriber",
+              "affinity_origin",
+              "port_phase",
+              "port_run",
+              "port_table"
+            ]
+          }
+        },
+        {
+          "from": ".",
+          "to": "./porter",
+          "condition": "has(hop.route) && hop.route == 'in_export'",
+          "modifier": {
+            "set_context": {
+              "port_phase": "'export'"
+            }
+          }
+        },
+        {
+          "from": ".",
+          "to": "./porter",
+          "condition": "has(hop.route) && hop.route == 'in_import'",
+          "modifier": {
+            "set_context": {
+              "port_phase": "'import'"
+            }
+          }
+        },
+        {
+          "from": "./porter",
+          "to": "./store",
+          "condition": "has(hop.route) && hop.route == 'astore'",
+          "modifier": {
+            "set_context": {
+              "affinity_origin": "'aporter'",
+              "port_phase": "hop.phase",
+              "port_run": "hop.port_run",
+              "port_table": "hop.port_table"
+            }
+          }
+        },
+        {
+          "from": "./store",
+          "to": "./porter",
+          "condition": "context.affinity_origin == 'aporter'",
+          "modifier": {
+            "set_context": {
+              "port_phase": "context.port_phase"
+            }
+          }
+        },
+        {
+          "from": "./porter",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'dump'",
+          "modifier": {
+            "delete_context": [
+              "aff_audience",
+              "aff_carry",
+              "aff_channel",
+              "aff_phase",
+              "aff_slots",
+              "aff_subject",
+              "aff_subscriber",
+              "affinity_origin",
+              "port_phase",
+              "port_run",
+              "port_table"
+            ]
+          }
+        },
+        {
+          "from": "./porter",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'reject'",
+          "modifier": {
+            "delete_context": [
+              "aff_audience",
+              "aff_carry",
+              "aff_channel",
+              "aff_phase",
+              "aff_slots",
+              "aff_subject",
+              "aff_subscriber",
+              "affinity_origin",
+              "port_phase",
+              "port_run",
+              "port_table"
+            ]
+          }
         }
       ]
     }

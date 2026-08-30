@@ -1,0 +1,2 @@
+{"schema": {"id": "text", "cell_path": "text", "subject": "text", "audience": "text", "channel": "text", "slots": "json", "pack_hash": "text", "status": "text", "sent_at": "text"}}
+{"audience": "agent:aiden", "cell_path": "./assistants/aiden/brain", "channel": "*", "id": "sub:aiden-self", "pack_hash": "", "sent_at": "", "slots": ["identity"], "status": "inactive", "subject": "entity:aiden"}

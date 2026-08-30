@@ -1,8 +1,7 @@
 {
   "scope": "/",
   "ctx": {
-    "model": "${MODEL_CORE}",
-    "model_fast": "${MODEL_CORE_FAST}"
+    "model": "${MODEL_CORE}"
   },
   "diff": {
     "add_nodes": [
@@ -22,23 +21,6 @@
           },
           "set_context": {
             "consult_id": "hop.consult_id",
-            "consult_class": "'consult'",
-            "col_phase": "''"
-          },
-          "restore_ttl": true
-        }
-      },
-      {
-        "from": "./talky",
-        "to": "./cogny",
-        "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'ask_memory'",
-        "modifier": {
-          "set_hop": {
-            "route": "'in_turn'"
-          },
-          "set_context": {
-            "consult_id": "hop.consult_id",
-            "consult_class": "'lookup'",
             "col_phase": "''"
           },
           "restore_ttl": true

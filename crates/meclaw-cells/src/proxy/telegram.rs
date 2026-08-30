@@ -10,13 +10,32 @@ use std::time::Duration;
 
 /// Error classification for the backoff decision (W8). `Transient` →
 /// exponential backoff (1s → 60s); `Permanent` → a constant 5 min (no busy spin
-/// against a dead token).
+/// against a dead token); `Conflict` → backs off like a `Transient`, but is a
+/// class of its own so the caller can say what happened.
 #[derive(Debug)]
 pub enum TelegramError {
     /// 5xx, Timeout, Network, ungueltiges JSON, fehlendes `ok=true`.
     Transient(String),
     /// 401/403 — Token tot oder Bot gesperrt. Cell loggt + sleeped lange.
     Permanent(String),
+    /// `409 Conflict` — GH #468. Telegram allows exactly ONE `getUpdates`
+    /// consumer per bot token, and answers every other one with 409. It used to
+    /// fall into `Transient`, which backs off on DEBUG: two pollers on one token
+    /// then stole each other's updates in silence, and the symptom an operator
+    /// saw was a bot answering every other message.
+    ///
+    /// The recovery is a `Transient`'s — the other consumer may go away, and a
+    /// switchover is exactly the case where it does, so the lane must keep
+    /// polling rather than fall into the 5-minute `Permanent` sleep. What the
+    /// separate variant buys is the SENTENCE: the caller logs it at `warn` with
+    /// `error_code = "conflict_other_poller"` instead of swallowing it.
+    ///
+    /// It is deliberately NOT an emission. The poll lane answers no message, so
+    /// a receipt would have to be a source emission carrying `hop.error_code` —
+    /// a fifth failure code every level holding a connector would owe a drain
+    /// for, repeated on every backoff tick, for a condition only an operator can
+    /// fix. The log line names the same thing and costs no contract.
+    Conflict(String),
 }
 
 /// Telegram-Bot-API-Client.
@@ -81,6 +100,14 @@ impl TelegramClient {
         if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
             return Err(TelegramError::Permanent(format!("auth: {status}")));
         }
+        // GH #468: 409 before the generic non-success branch — it is the one
+        // status that names a cause the operator owns (a second consumer on this
+        // token), and it must not disappear into the transient bucket.
+        if status == reqwest::StatusCode::CONFLICT {
+            return Err(TelegramError::Conflict(format!(
+                "status: {status} - another getUpdates consumer holds this bot token"
+            )));
+        }
         if !status.is_success() {
             return Err(TelegramError::Transient(format!("status: {status}")));
         }
@@ -118,6 +145,55 @@ impl TelegramClient {
         let status = resp.status();
         if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
             return Err(TelegramError::Permanent(format!("auth: {status}")));
+        }
+        // GH #468: same classification on the inbound side. `handle` maps every
+        // send failure onto `send_failed`, so the code the topology sees does not
+        // change — but the `detail` it carries now names the conflict.
+        if status == reqwest::StatusCode::CONFLICT {
+            return Err(TelegramError::Conflict(format!(
+                "status: {status} - another consumer holds this bot token"
+            )));
+        }
+        if !status.is_success() {
+            return Err(TelegramError::Transient(format!("status: {status}")));
+        }
+        Ok(())
+    }
+
+    /// POST `sendChatAction` (GH #515). Telegram renders "typing…" in the chat
+    /// for roughly five seconds without a message ever being posted, which is
+    /// the only way a connector can say "still working" without writing into the
+    /// conversation it is supposed to carry.
+    ///
+    /// `chat_id` is a NUMBER in the body — same as `send_message`, and the same
+    /// trap: a `chat_id` that turns into a string somewhere on the way here is
+    /// rejected by the Bot API with a `chat not found`.
+    ///
+    /// Failures are classified like `send_message`'s, but the caller (the typing
+    /// keeper) never turns them into an emission: a sign of life that fails to
+    /// arrive must not cost the turn its answer. It is logged and the keeper
+    /// keeps ticking — the next tick either works or the turn ends first.
+    pub async fn send_chat_action(
+        &self,
+        chat_id: i64,
+        action: &str,
+        client_timeout: Duration,
+    ) -> Result<(), TelegramError> {
+        let url = format!("{}/bot{}/sendChatAction", self.base_url, self.bot_token);
+        let body = json!({ "chat_id": chat_id, "action": action });
+        let fut = self.inner.post(&url).json(&body).send();
+        let resp = tokio::time::timeout(client_timeout, fut)
+            .await
+            .map_err(|_| TelegramError::Transient("client timeout".into()))?
+            .map_err(|e| TelegramError::Transient(format!("send: {e}")))?;
+        let status = resp.status();
+        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+            return Err(TelegramError::Permanent(format!("auth: {status}")));
+        }
+        if status == reqwest::StatusCode::CONFLICT {
+            return Err(TelegramError::Conflict(format!(
+                "status: {status} - another consumer holds this bot token"
+            )));
         }
         if !status.is_success() {
             return Err(TelegramError::Transient(format!("status: {status}")));

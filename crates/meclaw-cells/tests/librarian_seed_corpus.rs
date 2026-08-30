@@ -60,10 +60,11 @@ const CORPUS: &str = "templates/builder-librarian/store/seed/docs.jsonl";
 const MAX_CHARS: usize = 4000;
 
 /// The sentence GH #344 measured falling off the end of the `Flags` chunk. It
-/// is quoted from `docs/meclaw-overview.md`, the file the corpus is built from,
-/// so it is the German wording — the English twin lives in `.en.md`, which the
-/// generator does not read.
-const LOST_PARAGRAPH: &str = "Info-only Flags sind side-effect-frei";
+/// is quoted from `docs/meclaw-overview.en.md` — since GH #497 the generator
+/// reads the ENGLISH edition of the four spec documents, because the lane that
+/// searches this corpus briefs, asks and answers in English. The German
+/// original still carries the same paragraph; it is simply not what is indexed.
+const LOST_PARAGRAPH: &str = "Info-only flags are side-effect-free";
 
 /// The generator and its product, or `None` where this tree does not carry them.
 fn shipped() -> Option<PathBuf> {
@@ -183,7 +184,7 @@ fn no_chunk_is_a_silent_truncation() {
     assert!(
         carries_the_paragraph,
         "{CORPUS} does not contain {LOST_PARAGRAPH:?}. That paragraph is in \
-         docs/meclaw-overview.md § Flags, past the 4000-character mark; if it is missing here, \
-         the chunker is dropping section tails again (GH #344)."
+         docs/meclaw-overview.en.md § Flags, past the 4000-character mark; if it is missing \
+         here, the chunker is dropping section tails again (GH #344)."
     );
 }

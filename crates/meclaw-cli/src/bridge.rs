@@ -8,7 +8,7 @@ use serde_json::{Map, Value, json};
 use uuid::Uuid;
 
 /// Well-known fixed UUID for the stdio user — identical across all runs.
-/// Override via `--user-id` is post-v0.1.0 (docs/roadmap.md).
+/// Override via `--user-id` is post-v0.1.0 (docs/defer-register.md).
 pub const STDIO_USER_ID: Uuid = Uuid::from_bytes([
     0x73, 0x74, 0x64, 0x69, 0x6f, 0x5f, 0x75, 0x73, 0x65, 0x72, 0x5f, 0x69, 0x64, 0x00, 0x00, 0x01,
 ]);
@@ -290,7 +290,7 @@ pub fn message_to_egress_frame(msg: &Message) -> Value {
             "v": STDIO_PROTOCOL_VERSION,
             "type": "error",
             "error_code": "blob_body_unsupported",
-            "detail": "a whole-body blob cannot cross the stdio boundary (see docs/roadmap.md)",
+            "detail": "a whole-body blob cannot cross the stdio boundary (see docs/defer-register.md)",
             "trace_id": msg.trace_id.to_string(),
             "turn_id": turn_id,
         });

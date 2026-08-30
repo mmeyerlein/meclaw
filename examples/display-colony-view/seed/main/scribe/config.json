@@ -1,0 +1,71 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "external_timeout_ms": 10000,
+    "script_inline": "\"\"\"The smallest thing that can put something on a screen.\n\nTHIS FILE IS THE SOURCE. `config.json` carries a byte-identical copy in\n`params.script_inline`, and a test pins that the two agree.\n\nA prose view is the floor of the view model: no application, no components, no\nport, no markup. This cell holds one paragraph and a title, and every tick it\nsays them again on the `view` lane. The edge that leaves this colony's seed hive\nturns that lane into the screen's `in_view`, and the screen writes the row under\nTHIS cell's path -- because the owner of a view is the envelope's `reply_to` and\nnever anything the body claims.\n\nSaying it again on every tick is not a mistake and not a cost. `(owner, view_id)`\nis the identity of a view, so a second arrival of the same pair REPLACES the row\nrather than adding one; what changes is `updated_at`, which is the key the screen\nstacks by. A producer that has nothing new to say and says it anyway therefore\nwalks to the top of the stack, which is the honest reading of \"this is still\ncurrent\" -- and it is why this example ticks slowly.\n\nWhat it deliberately does NOT do: look at the message it was woken by. A tick\ncarries no content, and a cell that read one would be pretending the timer knew\nsomething. The only input this cell has is its own text.\n\"\"\"\nimport json\nimport sys\n\nTITLE = \"A screen is a channel\"\n\nBODY = (\n    \"This paragraph is a view. It was written by a code cell with no model, no \"\n    \"components and no port of its own -- the smallest thing an agent can put on \"\n    \"a screen. Below it, if the colony has been growing for a minute, stands a \"\n    \"second view written by an application. Two owners, one screen, and neither \"\n    \"of them can touch the other's row.\"\n)\n\n\ndef main():\n    return {\n        \"header\": {\"route\": \"view\"},\n        \"messages\": [],\n        \"view_id\": \"scribe\",\n        \"region\": \"main\",\n        \"kind\": \"prose\",\n        \"content\": {\"title\": TITLE, \"body\": BODY},\n    }\n\n\nif __name__ == \"__main__\":\n    sys.stdout.write(json.dumps(main()))\n",
+    "sandbox": {
+      "trust": "restricted",
+      "network": "deny",
+      "filesystem": {
+        "runtime": true
+      }
+    }
+  },
+  "contract": {
+    "version": "0.1.0",
+    "settings": {},
+    "multi_send_capable": false,
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "view_id": {
+          "type": "string",
+          "required": true
+        },
+        "region": {
+          "type": "string",
+          "required": false
+        },
+        "kind": {
+          "type": "string",
+          "required": true
+        },
+        "content": {
+          "type": "object",
+          "required": true
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "view"
+          ],
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": false
+        }
+      }
+    }
+  },
+  "description": {
+    "purpose": "Writes one prose view, every tick. The smallest producer there is: no model, no components, no port -- a title, a paragraph and the `view` lane.",
+    "use_when": "As the second owner of this example's screen, beside the application. It is what an ordinary agent's view looks like before anybody builds an app.",
+    "not_in_scope": "It does not read the message that woke it: a tick carries no content, and a cell that read one would pretend the timer knew something. It has no memory of what it said last time and needs none -- a view is replaced by its own `(owner, view_id)`, never appended.",
+    "examples": [
+      "a tick -> one prose view on its way to a screen"
+    ]
+  }
+}

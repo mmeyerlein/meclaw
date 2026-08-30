@@ -27,7 +27,7 @@
             "audience_now",
             "channel"
           ],
-          "because": "a question against this memory. The five recall keys (recall_query, memory_tier, recall_as_of, recall_window_from, recall_window_to) come as context, always all five, empty string = unset. The asking round comes with them and is required: `audience_now` (a JSON list of who is present right now) and `channel` (where the question is being asked); `channel_open_history` is optional and defaults to '0', '1' saying this room shows joiners its history. Without `audience_now` or `channel` the question is refused on `reject` rather than answered unfiltered -- a recall without an audience is not a recall with an empty one"
+          "because": "a question against this memory. The five recall keys (recall_query, memory_tier, recall_as_of, recall_window_from, recall_window_to) come as context, always all five, empty string = unset. The asking round comes with them and is required: `audience_now` (a JSON list of who is present right now) and `channel` (where the question is being asked); `channel_open_history` is optional and defaults to '0', '1' saying this room shows joiners its history. Without `audience_now` or `channel` the question is refused on `reject` rather than answered unfiltered -- a recall without an audience is not a recall with an empty one. TWO MORE KEYS are read and neither is in the list above, for the same reason `channel_open_history` is not: the list names what a caller MUST have promoted, and a key with a default is not one of them. `session_id` scopes the session read -- the tier-0 leg reads the episodes of THAT session, and a question that names none reads a session called 'default', which in a live colony is nobody's. `recall_caller` is a REPLY-TO TOKEN this hive never reads: whatever a caller puts there rides through untouched and comes back on `hop.recall_caller` of the `bundle` and of a `reject`, which is how ONE hive serves SEVERAL askers and each of them gets ITS answer (GH #532). The token has to change compartment on the way out, and this hive is the only place that can do it for every caller at once: left on the hop it would not survive, because the `recall` cell forms its own hop and only context travels (GH #411), and a door guarded on context ALONE is condemned by crates/meclaw-cells/tests/gh173_shipped_hive_contracts.rs AND ONE KEY IS READ TWICE (GH #536): `audience_now` is the audience gate's yardstick and, since the self leg, ALSO an IDENTITY -- its `member:`/`person:` tokens are the people this question is asked by, and a question in the first person (\"what are my sons called?\") anchors on them because it names nobody else. That is a second reading of a key the caller already promotes, not a new requirement: nothing has to be wired for it, and it widens no disclosure -- an anchor decides what is LOOKED UP, never what is seen, and every row it nominates is still measured against the same gate."
         },
         {
           "route": "in_remember",
@@ -61,11 +61,11 @@
       "emits": [
         {
           "route": "bundle",
-          "because": "the answer to a question: the recalled material, fused and ranked, for whoever asked"
+          "because": "the answer to a question: the recalled material, fused and ranked, for whoever asked. WHICH of them asked is `hop.recall_caller`, carried back off `context.recall_caller` exactly as the asking round put it there and empty when it put nothing (GH #532). This hive serves one member and more than one asker inside it -- a conversation surface and a reasoning core today -- and the token is the only thing in the answer that tells them apart. It is handed back, never read and never interpreted"
         },
         {
           "route": "reject",
-          "because": "something this hive was sent and would not take -- a block it cannot bind, a half window it will not guess at, a turn or a question whose audience or channel is missing (`hop.reject_reason` is then 'missing_audience' or 'missing_channel'). Since 2.3.1 it also carries what this hive's OWN STORE would not do: a lane whose read or write came back refused stops there and says so, with `hop.reject_reason` = 'store_refused', `hop.store_error` carrying the store's own `error_code` and `hop.store_operation` naming the op that was refused (GH #343) -- including the nightly consolidation, which has no caller of its own and reports on this lane rather than nowhere. The code rides in `store_error` rather than inside `reject_reason` on purpose: the store's code list is OPEN (`invalid_input`, `query_timeout`, `write_denied`, `unknown_table`, `unknown_column`, `constraint_violation`, `sql_error`, ...), and a reason enum that had to grow with it would turn the next new code into a failed emit. The body says which and why. Drain it: undrained, nobody ever learns the memory was not written and the caller waits for a bundle that never comes"
+          "because": "something this hive was sent and would not take -- a block it cannot bind, a half window it will not guess at, a turn or a question whose audience or channel is missing (`hop.reject_reason` is then 'missing_audience' or 'missing_channel'). Since 2.3.1 it also carries what this hive's OWN STORE would not do: a lane whose read or write came back refused stops there and says so, with `hop.reject_reason` = 'store_refused', `hop.store_error` carrying the store's own `error_code` and `hop.store_operation` naming the op that was refused (GH #343) -- including the nightly consolidation, which has no caller of its own and reports on this lane rather than nowhere. The code rides in `store_error` rather than inside `reject_reason` on purpose: the store's code list is OPEN (`invalid_input`, `query_timeout`, `write_denied`, `unknown_table`, `unknown_column`, `constraint_violation`, `sql_error`, ...), and a reason enum that had to grow with it would turn the next new code into a failed emit. The body says which and why. Drain it: undrained, nobody ever learns the memory was not written and the caller waits for a bundle that never comes. A refusal on the RECALL lane carries `hop.recall_caller` home exactly as a bundle does (GH #532): the asker that cannot be told its question failed is the one that waits longest"
         },
         {
           "route": "close_report",
@@ -377,6 +377,16 @@
           }
         },
         {
+          "from": "./writer",
+          "to": "./embed",
+          "condition": "has(hop.route) && hop.route == 'embed'",
+          "modifier": {
+            "set_context": {
+              "mem_phase": "'embed'"
+            }
+          }
+        },
+        {
           "from": "./extract-glue",
           "to": "./embed",
           "condition": "has(hop.route) && hop.route == 'embed'",
@@ -462,37 +472,134 @@
         {
           "from": "./recall",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'bundle'"
+          "condition": "has(hop.route) && hop.route == 'bundle'",
+          "modifier": {
+            "set_hop": {
+              "recall_caller": "has(context.recall_caller) ? context.recall_caller : ''"
+            },
+            "delete_context": [
+              "batch_id",
+              "close_pass",
+              "dream_run",
+              "dream_to",
+              "mem_phase",
+              "port_run",
+              "port_table",
+              "recall_id",
+              "store_origin"
+            ]
+          }
         },
         {
           "from": "./recall",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'reject'"
+          "condition": "has(hop.route) && hop.route == 'reject'",
+          "modifier": {
+            "set_hop": {
+              "recall_caller": "has(context.recall_caller) ? context.recall_caller : ''"
+            },
+            "delete_context": [
+              "batch_id",
+              "close_pass",
+              "dream_run",
+              "dream_to",
+              "mem_phase",
+              "port_run",
+              "port_table",
+              "recall_id",
+              "store_origin"
+            ]
+          }
         },
         {
           "from": "./extract-glue",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'reject'"
+          "condition": "has(hop.route) && hop.route == 'reject'",
+          "modifier": {
+            "delete_context": [
+              "batch_id",
+              "close_pass",
+              "dream_run",
+              "dream_to",
+              "mem_phase",
+              "port_run",
+              "port_table",
+              "recall_id",
+              "store_origin"
+            ]
+          }
         },
         {
           "from": "./writer",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'reject'"
+          "condition": "has(hop.route) && hop.route == 'reject'",
+          "modifier": {
+            "delete_context": [
+              "batch_id",
+              "close_pass",
+              "dream_run",
+              "dream_to",
+              "mem_phase",
+              "port_run",
+              "port_table",
+              "recall_id",
+              "store_origin"
+            ]
+          }
         },
         {
           "from": "./dream-glue",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'reject'"
+          "condition": "has(hop.route) && hop.route == 'reject'",
+          "modifier": {
+            "delete_context": [
+              "batch_id",
+              "close_pass",
+              "dream_run",
+              "dream_to",
+              "mem_phase",
+              "port_run",
+              "port_table",
+              "recall_id",
+              "store_origin"
+            ]
+          }
         },
         {
           "from": "./close-glue",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'close_report'"
+          "condition": "has(hop.route) && hop.route == 'close_report'",
+          "modifier": {
+            "delete_context": [
+              "batch_id",
+              "close_pass",
+              "dream_run",
+              "dream_to",
+              "mem_phase",
+              "port_run",
+              "port_table",
+              "recall_id",
+              "store_origin"
+            ]
+          }
         },
         {
           "from": "./close-glue",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'reject'"
+          "condition": "has(hop.route) && hop.route == 'reject'",
+          "modifier": {
+            "delete_context": [
+              "batch_id",
+              "close_pass",
+              "dream_run",
+              "dream_to",
+              "mem_phase",
+              "port_run",
+              "port_table",
+              "recall_id",
+              "store_origin"
+            ]
+          }
         },
         {
           "from": "./porter",
@@ -520,12 +627,38 @@
         {
           "from": "./porter",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'dump'"
+          "condition": "has(hop.route) && hop.route == 'dump'",
+          "modifier": {
+            "delete_context": [
+              "batch_id",
+              "close_pass",
+              "dream_run",
+              "dream_to",
+              "mem_phase",
+              "port_run",
+              "port_table",
+              "recall_id",
+              "store_origin"
+            ]
+          }
         },
         {
           "from": "./porter",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'reject'"
+          "condition": "has(hop.route) && hop.route == 'reject'",
+          "modifier": {
+            "delete_context": [
+              "batch_id",
+              "close_pass",
+              "dream_run",
+              "dream_to",
+              "mem_phase",
+              "port_run",
+              "port_table",
+              "recall_id",
+              "store_origin"
+            ]
+          }
         }
       ]
     }

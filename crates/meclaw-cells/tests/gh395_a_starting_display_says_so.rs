@@ -30,19 +30,10 @@
 use meclaw_cells::web::io::{WebIo, run_io};
 use meclaw_cells::web::render::PageMap;
 use meclaw_cells::web::{Asset, AssetMap};
+use meclaw_testing::free_port;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, watch};
-
-/// A port nobody is on. Bound and released, the same trick the other web tests
-/// use — the race it leaves is handled by retrying the connection, not by
-/// hoping.
-fn free_port() -> u16 {
-    let l = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind an ephemeral port");
-    let port = l.local_addr().expect("read the bound address").port();
-    drop(l);
-    port
-}
 
 /// GET until the listener answers at all, or the deadline passes.
 ///

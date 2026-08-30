@@ -1,33 +1,48 @@
-//! GH #302 / GH #303 — `assistant@1.0.0` wires the `channels` level ONCE.
+//! GH #302 / GH #303 / GH #454 — `assistant@2.0.0` ships its fan-in ONCE, and
+//! the channels are not part of it any more.
 //!
 //! The level rule of this wave is *a level owns what its siblings must share*.
-//! Two channels of one assistant share exactly two things: the reasoning core
-//! they consult and the tool surface they call. So this level owns those two
-//! and the container the channels stand in — and because that container is a
-//! node of the TEMPLATE, the fan-in edges between it and its siblings are
-//! internal edges of the template instead of per-instance wiring. That is
-//! #303's ruling, and it is the property this file holds: a second channel
-//! costs two instantiations inside `./channels` and their pairing edges, never
-//! a re-run of the sibling fan-in.
+//! GH #454 read it one step further and moved the CHANNELS out of this level
+//! entirely. A bot a generation owns is one agent's bot: a second agent of the
+//! same person is not reachable through it, a generation swap takes the chat
+//! account with it, and a screen that two of a person's agents both draw on has
+//! no owner at all. So a channel belongs to the PERSON. It stands in
+//! `<member>/channels`, and this level is what a channel ADDRESSES rather than
+//! what contains one — *a member with two assistants sharing one channel* is
+//! the shape the move exists for.
+//!
+//! In the file that is one substitution and one lane swap. The open `channels`
+//! container became `surface`, a single `ref` on the talky that keeps this
+//! generation's sessions; the emit `turn` was removed and the emit `answer`
+//! added. Both fall out of the derivation rule rather than out of a decision:
+//! the raw wire that produced `turn` sits outside this level now and reaches
+//! the member's screen without crossing it, and the `answer` a connector used
+//! to consume INSIDE this level has no consumer here any more, so it crosses.
+//! Taking a lane and an address away is the first digit.
+//!
+//! The name of this file still says what it holds, only more strongly than it
+//! did: the fan-in edges between the occupants are internal edges of the
+//! TEMPLATE, drawn once and shipped with it. A second channel used to cost two
+//! instantiations inside `./channels` plus their pairing edges; since 2.0.0 it
+//! costs this level nothing whatsoever, because there is nothing here to add it
+//! to.
 //!
 //! # What is asked of the FILES
 //!
-//! 1. **Three children, and `channels` ships empty.** A channel is
-//!    instantiated, never shipped.
-//! 2. **The container declares no contract and no ports** (driver ruling
-//!    W7-R2). The ports half is the container convention of this wave. The
-//!    contract half is sharper and is measured rather than assumed:
-//!    `check_lane_doors` skips a hive only while *nobody* addresses its path
-//!    (`hive_path_is_wired`), and this level addresses `./channels` on
-//!    eighteen edges — so from the first instantiation every lane the container
-//!    declared would owe a door to a cell INSIDE it, and an empty container has
-//!    no inside. A contract here would refuse every mutation of the colony
-//!    until the first channel stands there.
+//! 1. **Three children, all `ref`s, and no container at all.** `surface`,
+//!    `cogny` and `tools`, each pinning the exact version the tree ships — a
+//!    bare `<name>` resolves to the highest one present, which is the drift
+//!    `template_chain` exists to make visible.
+//! 2. **No open container is left on this level**, and `surface` is a ref on
+//!    the talky version standing in the tree. The container that used to be
+//!    here is the subject GH #454 removed: a channel is instantiated into the
+//!    MEMBER now, so there is nothing at this level for a mutation to put one
+//!    into, and the level is complete at birth.
 //! 3. **One edge to the tool surface, and it names no tool.** A single guarded
 //!    default (GH #283, ruling Q1); the two consult errands stay ordinary
 //!    conditioned edges. This is the #286 + #283 win, measured.
-//! 4. **No unconditional tee out of `./channels`.** Suppression is per SENDER:
-//!    if any regular out-edge of `./channels` fires, the default is silent. A
+//! 4. **No unconditional tee out of `./surface`.** Suppression is per SENDER:
+//!    if any regular out-edge of `./surface` fires, the default is silent. A
 //!    logger, a tap or a mirror without its own route condition would take the
 //!    tool surface dark for every call.
 //! 5. **Every edge that discriminates on `hop.tool_name` reads the lane
@@ -47,13 +62,12 @@
 //!
 //! # What is asked of the SUBSTRATE
 //!
-//! The shipped tree is booted with `cogny` and `tools` replaced by answering
-//! `code` doubles, and with one — then two — connector + talky pairs standing
-//! in `./channels`. Doubling by REPLACING a `config.json` rather than by
-//! deleting a directory is the lesson of GH #286's own runtime test: a hive
-//! door pointing at a directory that is not there leaves the inside unroutable,
-//! and three cells that never answer are a different topology from the shipped
-//! one on exactly the property under test.
+//! The shipped tree is booted with all three refs replaced by answering `code`
+//! doubles. Doubling by REPLACING a `config.json` rather than by deleting a
+//! directory is the lesson of GH #286's own runtime test: a hive door pointing
+//! at a directory that is not there leaves the inside unroutable, and three
+//! cells that never answer are a different topology from the shipped one on
+//! exactly the property under test.
 //!
 //! Guarded like every other template-reading test (GH #49): the public export
 //! ships a subset of the library, and a template that did not travel is skipped
@@ -61,7 +75,7 @@
 
 use meclaw_cells::code::CodeCellFactory;
 use meclaw_colony::config::{EdgeSpec, HiveParams};
-use meclaw_colony::{CellFactory, CellFactoryRegistry, ColonyMsg, bootstrap_from_filesystem};
+use meclaw_colony::{CellFactory, CellFactoryRegistry, bootstrap_from_filesystem};
 use meclaw_core::serde_json::{Value, json};
 use meclaw_core::{Body, Message, MessageBuilder, Path};
 use meclaw_testing::ColonyHandle;
@@ -69,7 +83,7 @@ use meclaw_testing::topologies::phase_3a::CaptureCell;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 
 fn repo(rel: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -121,10 +135,14 @@ fn stated_route(condition: Option<&str>) -> Option<String> {
     Some(rest[..end].to_string())
 }
 
-// ───────────────────────────── (1) three children, and the container is empty
+/// The three occupants of the level, as this template addresses them. There is
+/// no fourth endpoint: what used to be `./channels` is a node of the MEMBER now.
+const SIBLINGS: [&str; 3] = ["./surface", "./cogny", "./tools"];
+
+// ─────────────────────────────── (1) three children, all refs, no container
 
 #[test]
-fn the_level_ships_two_refs_and_one_empty_container() {
+fn the_level_ships_three_refs_and_no_container() {
     let Some(root) = shipped() else { return };
 
     let mut children: Vec<String> = std::fs::read_dir(&root)
@@ -139,16 +157,22 @@ fn the_level_ships_two_refs_and_one_empty_container() {
     assert_eq!(
         children,
         vec![
-            "channels".to_string(),
             "cogny".to_string(),
+            "surface".to_string(),
             "tools".to_string()
         ],
-        "an assistant owns the reasoning core, the tool surface and the container its \
-         channels stand in. A fourth child is a sibling this level did not have to own — \
-         a memory, a firewall and an identity all belong to the MEMBER (GH #122)."
+        "one generation is the conversation surface, the reasoning core and the tool \
+         surface — three refs and nothing else. A fourth child is a sibling this level did \
+         not have to own: a memory, a firewall and an identity belong to the MEMBER \
+         (GH #122), and since GH #454 so do the CHANNELS, which is why the container that \
+         used to stand here is gone rather than empty."
     );
 
-    for (name, want) in [("cogny", "cogny@"), ("tools", "tools@")] {
+    for (name, want) in [
+        ("surface", "talky@"),
+        ("cogny", "cogny@"),
+        ("tools", "tools@"),
+    ] {
         let cfg = config_at(&root.join(name));
         assert_eq!(
             cfg["cell"]["type"].as_str(),
@@ -176,62 +200,101 @@ fn the_level_ships_two_refs_and_one_empty_container() {
             );
         }
     }
-
-    let grandchildren: Vec<String> = std::fs::read_dir(root.join("channels"))
-        .unwrap()
-        .filter_map(|e| {
-            let p = e.unwrap().path();
-            p.is_dir()
-                .then(|| p.file_name().unwrap().to_string_lossy().into_owned())
-        })
-        .collect();
-    assert!(
-        grandchildren.is_empty(),
-        "the container ships EMPTY — a channel is instantiated, never shipped: \
-         {grandchildren:?}"
-    );
 }
 
-// ───────────── (2) the container declares nothing, and the level declares no ports
+// ────────── (2) nothing on this level is a container, and the surface is a talky
 
-/// Driver ruling **W7-R2**, and the measurement behind it.
+/// What GH #454 took away, measured on the file rather than assumed from prose.
 ///
-/// The plan's own text called an empty container with a contract *"green as it
-/// ships"*, on the strength of `check_lane_doors` skipping an unwired hive. That
-/// is true only while nobody addresses the path — and this level addresses
-/// `./channels` on eighteen of its own edges, so the container is wired from the
-/// moment the assistant is instantiated. From then on every declared `accepts`
-/// lane owes a door to a cell INSIDE the container, and an empty container has
-/// no inside: the declaration would refuse EVERY mutation of the colony with
-/// `hive_contract` until the first channel stood there. An assistant with no
-/// channel yet is a legitimate intermediate state — Task 16's own example grows
-/// the assistant and the channel in two separate declarations.
+/// The old shape was two refs plus one OPEN container the channels were
+/// instantiated into, and the sharpest fact about that container was that it
+/// could declare neither a contract nor ports: this level addressed `./channels`
+/// on eighteen of its own edges, so `check_lane_doors` saw a WIRED hive from
+/// birth (`hive_path_is_wired`), every declared lane owed a door to a cell
+/// INSIDE it, and an empty container has no inside.
 ///
-/// So the container declares neither, and the lanes are declared by the LEVEL,
-/// whose own edges satisfy the door and the exit check from birth.
+/// That whole argument lost its subject. A channel is the person's now, it is
+/// instantiated into `<member>/channels`, and this level has nowhere to put one
+/// — which is the point: the assistant is COMPLETE at birth, and no per-channel
+/// follow-up mutation exists any more. So what is measured here is the absence
+/// itself: no child of this level is a hive, and `surface` is a ref on the talky
+/// version standing in the tree, read off `templates/talky/template.json` rather
+/// than written down here, because a pin that ages inside a test goes red for a
+/// reason that has nothing to do with what the test is about.
+///
+/// The level itself stays OPEN — it is wired INTO, and sealing it would refuse
+/// exactly the endpoints the member's container needs.
 #[test]
-fn the_container_declares_neither_a_contract_nor_ports() {
+fn the_level_carries_no_open_container_and_the_surface_is_the_shipped_talky() {
     let Some(root) = shipped() else { return };
 
-    let container = config_at(&root.join("channels"));
+    for entry in std::fs::read_dir(&root).unwrap() {
+        let p = entry.unwrap().path();
+        if !p.is_dir() || !p.join("config.json").is_file() {
+            continue;
+        }
+        let cfg = config_at(&p);
+        assert_ne!(
+            cfg["cell"]["type"].as_str(),
+            Some("hive"),
+            "{}: a hive child of this level is a CONTAINER — something a mutation puts a \
+             node into. GH #454 took the only one this level had: a channel belongs to the \
+             person, so a generation has nothing left to be filled with and is complete at \
+             birth.",
+            p.display()
+        );
+    }
     assert!(
-        container.get("params").is_none(),
-        "templates/assistant/channels carries a params block: {:?}. A container its own \
-         level wires is a WIRED hive from birth (mutation::hive_contract::hive_path_is_wired), \
-         so a contract here would owe a door inside an empty container and refuse every \
-         later mutation of the colony. Ports would seal it and refuse the pairing edge \
-         between a connector and its talky, which is the wiring this container exists for.",
-        container.get("params")
+        !root.join("channels").exists(),
+        "templates/assistant/channels is back. A bot a generation owns is one agent's bot: \
+         the person's second agent cannot be reached through it and a shared screen has no \
+         owner — the container belongs to the member (GH #454)."
     );
 
-    let level = config_at(&root);
+    // `surface` is a ref on the talky the tree actually ships.
+    let surface = config_at(&root.join("surface"));
+    let talky = repo("templates/talky/template.json");
+    if let Ok(raw) = std::fs::read_to_string(&talky) {
+        let v: Value = meclaw_core::serde_json::from_str(&raw).unwrap();
+        let want = format!(
+            "{}@{}",
+            v["name"].as_str().unwrap_or("talky"),
+            v["version"].as_str().unwrap_or_default()
+        );
+        assert_eq!(
+            surface["cell"]["template"].as_str(),
+            Some(want.as_str()),
+            "templates/assistant/surface must pin the talky standing in this tree. It is \
+             the one surface of this generation: what used to be one talky per channel is \
+             one per assistant, with the channels talking to it from outside."
+        );
+    }
+
+    // Taking a documented address away is the FIRST digit — the same reading as
+    // `the_removal_moved_the_first_digit` in gh303_the_connector_is_one_cell.rs.
+    // The digit is read off the tree so that a later repair of this template
+    // does not go red for a reason that has nothing to do with GH #454.
+    let declared = config_at(&root); // parsed for the ports check below
+    let version = std::fs::read_to_string(repo("templates/assistant/template.json"))
+        .ok()
+        .and_then(|raw| meclaw_core::serde_json::from_str::<Value>(&raw).ok())
+        .and_then(|v| v["version"].as_str().map(str::to_string))
+        .unwrap_or_default();
+    assert_eq!(
+        version.split('.').next().unwrap_or_default(),
+        "2",
+        "templates/assistant/template.json says {version:?}. Removing the `channels` \
+         address and the `turn` lane is a removal, and neither rule of \
+         docs/development-rules.md § 4 covers one — it is the first digit, and it must \
+         never go back below 2."
+    );
+
     assert!(
-        level["params"].get("ports").is_none(),
-        "templates/assistant declares params.ports = {:?}. The level is wired INTO and \
-         sealing it would refuse exactly those endpoints (hive_port_boundary). No slot \
-         either: a slot governs an address that does not exist, and both this level's \
-         children do (unbound_slot_behaviour, colony.rs).",
-        level["params"].get("ports")
+        declared["params"].get("ports").is_none(),
+        "templates/assistant declares params.ports = {:?}. The level is wired INTO — by the \
+         member's firewall, its memory and its channels container — and sealing it would \
+         refuse exactly those endpoints (hive_port_boundary).",
+        declared["params"].get("ports")
     );
 }
 
@@ -249,21 +312,46 @@ fn the_only_edge_to_the_tool_surface_is_one_guarded_default_naming_no_tool() {
     let Some(root) = shipped() else { return };
     let hp = hive_params(&root);
 
+    // Two edges reach the tool surface from the conversation surface and they
+    // are two DECISIONS, not two tools: the guarded default that carries every
+    // tool call whatever it is called, and the `schemas` request of GH #464 --
+    // one lane, one edge, and it names no tool either. What #286 removed and
+    // what must never come back is an edge PER TOOL, so the measurement is on
+    // the lanes: every edge here is conditioned on `hop.route` and none of them
+    // reads `hop.tool_name`.
     let to_tools: Vec<&EdgeSpec> = hp
         .graph
         .edges
         .iter()
-        .filter(|e| e.from == "./channels" && e.to == "./tools")
+        .filter(|e| e.from == "./surface" && e.to == "./tools")
+        .collect();
+    let lanes: Vec<Option<String>> = to_tools
+        .iter()
+        .map(|e| stated_route(e.condition.as_deref()))
         .collect();
     assert_eq!(
-        to_tools.len(),
-        1,
-        "the N+1-edge shape of #286 reappeared at this level: {to_tools:#?}"
+        lanes,
+        vec![Some("tool".to_string()), Some("schemas".to_string())],
+        "the N+1-edge shape of #286 reappeared at this level: one edge per LANE is the          shape, one edge per tool is the defect: {to_tools:#?}"
+    );
+    let schemas_edge = to_tools[1];
+    assert!(
+        !schemas_edge.is_default,
+        "the schemas request is an ORDINARY edge: a second default out of ./surface would          make the two compete for every message nothing regular carried: {schemas_edge:#?}"
+    );
+    assert_eq!(
+        schemas_edge
+            .modifier
+            .as_ref()
+            .and_then(|m| m.set_hop.get("route"))
+            .map(String::as_str),
+        Some("'in_schemas'"),
+        "the request stamps the tool surface's own declaration lane: {schemas_edge:#?}"
     );
     let tools_edge = to_tools[0];
     assert!(
         tools_edge.is_default,
-        "the tool exit is the GUARDED DEFAULT of ./channels — without `default: true` it \
+        "the tool exit is the GUARDED DEFAULT of ./surface — without `default: true` it \
          is a regular edge and every consult is delivered twice, which is the defect #283 \
          measured: {tools_edge:#?}"
     );
@@ -289,18 +377,31 @@ fn the_only_edge_to_the_tool_surface_is_one_guarded_default_naming_no_tool() {
         "the default stamps the tool surface's one inbound lane: {tools_edge:#?}"
     );
 
-    // The two consult errands: ORDINARY conditioned edges, so that firing one
-    // suppresses the default for that message.
+    // The consult errand: an ORDINARY conditioned edge, so that firing it
+    // suppresses the default for that message. Since GH #530 there is exactly
+    // ONE — `ask_memory` is retired, because the lookup class it carried
+    // assumed the core could answer a memory question and the core has no
+    // memory leg, while the surface has one one hop away through the
+    // `memory_recall` its own collector serves. Since GH #529 this sender also
+    // has a SCHEMAS edge to the core, which is not an errand: it is filtered
+    // out by the thing that makes an errand an errand, a `hop.tool_name` term.
     let consults: Vec<&EdgeSpec> = hp
         .graph
         .edges
         .iter()
-        .filter(|e| e.from == "./channels" && e.to == "./cogny")
+        .filter(|e| e.from == "./surface" && e.to == "./cogny")
+        .filter(|e| {
+            e.condition
+                .as_deref()
+                .unwrap_or_default()
+                .contains("hop.tool_name == '")
+        })
         .collect();
     assert_eq!(
         consults.len(),
-        2,
-        "consult_cogny and ask_memory: {consults:#?}"
+        1,
+        "one errand from the surface to the core, and it is `consult_cogny` (GH #530): \
+         {consults:#?}"
     );
     let mut named: Vec<String> = consults
         .iter()
@@ -322,43 +423,45 @@ fn the_only_edge_to_the_tool_surface_is_one_guarded_default_naming_no_tool() {
     named.sort();
     assert_eq!(
         named,
-        vec!["ask_memory".to_string(), "consult_cogny".to_string()]
+        vec!["consult_cogny".to_string()],
+        "`ask_memory` is retired (GH #530): a fast memory question is asked by the surface \
+         itself, and what comes here is synthesis, a time series or anything multi-step"
     );
 }
 
 // ─────────────────── (4) the suppression precondition: no unconditional tee
 
 /// Suppression is per SENDER (`crates/meclaw-colony/src/edge_table.rs`, the
-/// two-phase evaluation): if ANY regular out-edge of `./channels` decided, the
-/// default phase never runs. Every other edge out of `./channels` is therefore
-/// conditioned on something a `tool` message does not carry — the seven outward
-/// lanes, and the two errands by name.
+/// two-phase evaluation): if ANY regular out-edge of `./surface` decided, the
+/// default phase never runs. Every other edge out of `./surface` is therefore
+/// conditioned on something a `tool` message does not carry — the seven lanes
+/// the surface sends out of the level, and the two errands by name.
 ///
 /// If the authored set ever grows a logger, a tap or a mirror without its own
 /// route condition, the tool surface goes dark for every call. That is the
 /// requirement, and it is written into the config's own `because` next to the
 /// default edge as well as here.
 #[test]
-fn no_regular_out_edge_of_the_channels_level_is_unconditional() {
+fn no_regular_out_edge_of_the_surface_is_unconditional() {
     let Some(root) = shipped() else { return };
     let hp = hive_params(&root);
 
-    for e in hp.graph.edges.iter().filter(|e| e.from == "./channels") {
+    for e in hp.graph.edges.iter().filter(|e| e.from == "./surface") {
         if e.is_default {
             continue;
         }
         let cond = e.condition.as_deref().unwrap_or_default();
         assert!(
             cond.contains("hop.route"),
-            "the edge ./channels -> {} carries no route condition. Suppression is per \
-             SENDER: an unconditional tee out of ./channels fires for every tool call and \
+            "the edge ./surface -> {} carries no route condition. Suppression is per \
+             SENDER: an unconditional tee out of ./surface fires for every tool call and \
              silences the guarded default, and the tool surface goes dark. {e:#?}",
             e.to
         );
         let route = stated_route(Some(cond)).unwrap_or_default();
         assert!(
             route != "tool" || cond.contains("hop.tool_name"),
-            "the edge ./channels -> {} takes the whole `tool` lane without naming an \
+            "the edge ./surface -> {} takes the whole `tool` lane without naming an \
              errand, so no tool call ever reaches the default: {e:#?}",
             e.to
         );
@@ -368,8 +471,8 @@ fn no_regular_out_edge_of_the_channels_level_is_unconditional() {
 // ───────────────────── (5) W7-R4: a discriminator is never read before the lane
 
 /// The loop class GH #286 found and driver ruling **W7-R4** closed, checked here
-/// because this level has the same shape: a message that leaves `./channels` on
-/// a discriminator comes back through `./channels`, and a door that reads only
+/// because this level has the same shape: a message that leaves `./surface` on
+/// a discriminator comes back through `./surface`, and a door that reads only
 /// the discriminator would dispatch an answer to its own sender, round after
 /// round, until the TTL runs out.
 #[test]
@@ -414,7 +517,11 @@ fn every_lane_names_the_version_it_was_derived_from() {
     let hp = hive_params(&root);
     let contract = hp.contract.as_ref().expect("params.contract");
 
-    let pins: Vec<String> = ["talky", "cogny", "tools", "telegram-connector"]
+    // The three occupants and nothing else. `telegram-connector` used to be on
+    // this list because a connector stood inside the level; since GH #454 it
+    // stands in the member's channels container, and a lane of this level that
+    // cited it would be citing a template that is not an occupant here.
+    let pins: Vec<String> = ["talky", "cogny", "tools"]
         .iter()
         .filter_map(|n| reference(n))
         .collect();
@@ -426,11 +533,6 @@ fn every_lane_names_the_version_it_was_derived_from() {
             "lane '{}' says nothing about why it crosses the level",
             l.route
         );
-        // `turn` is the one lane no occupant declares: the connector emits ONE
-        // wire since telegram-connector@2.0.0 and the level normalises it.
-        if l.route == "turn" {
-            continue;
-        }
         assert!(
             pins.iter().any(|p| l.because.contains(p)),
             "lane '{}': a container level's lanes are DERIVED, and the derivation rule says \
@@ -485,30 +587,62 @@ fn the_level_declares_the_lanes_its_occupants_ship() {
              that lies."
         );
     }
-    // Every outbound lane is one an occupant really produces — except `turn`,
-    // which the level itself normalises out of the connector's one wire.
-    for e in emits.iter().filter(|e| *e != "turn") {
+    // Every outbound lane is one an occupant really produces. There is no
+    // exception any more: `turn` used to be one, normalised by this level out of
+    // the connector's single wire, and the connector left with GH #454.
+    for e in &emits {
         assert!(
             talky_emits.contains(e) || cogny_emits.contains(e) || tools_emits.contains(e),
             "the level emits '{e}', which no occupant produces: talky {talky_emits:?}, \
              cogny {cogny_emits:?}, tools {tools_emits:?}"
         );
     }
+    assert!(
+        !emits.contains(&"turn".to_string()),
+        "the level still emits `turn`. Nothing inside it produces a raw inbound wire any \
+         more — the channel is the member's (GH #454) and reaches the member's screen \
+         without crossing this level at all: {emits:?}"
+    );
 
-    // The subtractions, each of them a lane an occupant DOES ship and this level
-    // deliberately does not — because a sibling inside consumes it.
-    for gone in ["answer", "tool"] {
-        assert!(
-            talky_emits.contains(&gone.to_string()),
-            "the subtraction of '{gone}' is stale: talky no longer emits it"
-        );
-        assert!(
-            !emits.contains(&gone.to_string()),
-            "'{gone}' is consumed INSIDE this level — `answer` by the connector on the \
-             per-channel pairing edge, `tool` by ./tools through the guarded default. A \
-             level that re-declared it would promise a lane whose messages never leave."
-        );
-    }
+    // The subtraction. Since GH #454 there is exactly ONE — `tool`, consumed
+    // inside the level by ./tools through the guarded default. `answer` used to
+    // be the second and is now the level's own emit, which is the whole of
+    // GH #454 read off the derivation rule.
+    let gone = "tool".to_string();
+    assert!(
+        talky_emits.contains(&gone),
+        "the subtraction of `{gone}` is stale: talky no longer emits it"
+    );
+    assert!(
+        !emits.contains(&gone),
+        "`{gone}` is consumed INSIDE this level by ./tools through the guarded default. A \
+         level that re-declared it would promise a lane whose messages never leave."
+    );
+
+    // And the lane that STOPPED being a subtraction, which is the whole of
+    // GH #454 read off the derivation rule. The connector that consumed the
+    // surface's `answer` inside this level is the member's now and stands
+    // outside, so the lane crosses and must be declared.
+    assert!(
+        talky_emits.contains(&"answer".to_string()),
+        "the surface no longer emits `answer`: {talky_emits:?}"
+    );
+    assert!(
+        emits.contains(&"answer".to_string()),
+        "the level does not carry `answer`. Since GH #454 nothing inside consumes it — the \
+         connector moved up to the member — so it crosses, and a lane that crosses without \
+         being declared dies as no_route at the boundary: {emits:?}"
+    );
+    let carries_answer_out = hive_params(&root).graph.edges.iter().any(|e| {
+        e.from == "./surface"
+            && e.to == "."
+            && stated_route(e.condition.as_deref()).as_deref() == Some("answer")
+    });
+    assert!(
+        carries_answer_out,
+        "`answer` is declared and no edge carries it out of ./surface — the declaration \
+         would be a promise with nothing behind it"
+    );
     assert!(
         talky_accepts.contains(&"in_tool".to_string()) && !accepts.contains(&"in_tool".to_string()),
         "`in_tool` is supplied INSIDE the level by ./tools and must not be an inbound lane \
@@ -578,13 +712,292 @@ fn the_boundary_matches_the_member_this_level_is_instantiated_into() {
              {emits:?}. That is the `turn` defect of `org`, in the other direction."
         );
     }
+    assert!(
+        !takes_up.contains("turn"),
+        "the member still reads `turn` off ./assistants. Since GH #454 the raw wire is the \
+         CHANNEL's and reaches the screen from ./channels; an assistant emits an `answer` \
+         and never a turn: {takes_up:?}"
+    );
+
+    // What the member CONSUMES of this level's output, as opposed to re-emitting
+    // it. Read off the edges, because the container carries no contract and the
+    // edges are the only statement about the boundary the substrate reads.
+    // `answer` is on this list since GH #454 — it goes back to a channel of the
+    // person — and `write` is on it twice over, as the close pass fan-out of
+    // GH #447 beside the archive copy that leaves the level. `dump` joined them
+    // with GH #475: the session ledger of a generation is filed by the member's
+    // own export sink, in a directory beside the three holders' own, because a
+    // document that only exists as messages is not a backup. `turn_write`
+    // joined them with GH #527, the second fan-out beside `write`: it is the
+    // only path in this substrate from a conversation into an `episodes` table,
+    // and the level that HOLDS the memory declined it until then — nine hops up
+    // and a `hive_no_route` at the OS root, once per stored turn.
+    let consumed_by_the_member: BTreeSet<String> = mhp
+        .graph
+        .edges
+        .iter()
+        .filter(|e| e.from == "./assistants" && e.to != ".")
+        .filter_map(|e| stated_route(e.condition.as_deref()))
+        .collect();
+    let want: BTreeSet<String> = [
+        "answer",
+        "recall",
+        "extraction",
+        "write",
+        "turn_write",
+        "dump",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
+    assert_eq!(
+        consumed_by_the_member, want,
+        "the member consumes exactly the six lanes of this level it has a holder for: the \
+         `answer` goes to a channel of the PERSON (GH #454), `recall` and `extraction` to \
+         the memory that belongs to the person (GH #122), `write` is fanned onto the \
+         memory's close pass as well as leaving the level (GH #447), `turn_write` is fanned \
+         onto that same memory's episode lane (GH #527) -- the only path a conversation has \
+         into an `episodes` table -- and `dump`, the transfer document of the generation's \
+         session keeper, lands in the member's own export sink (GH #475). Every other lane \
+         an assistant raises crosses the member and is the parent's to drain."
+    );
+    for lane in &consumed_by_the_member {
+        assert!(
+            emits.contains(lane),
+            "the member consumes '{lane}' inside itself and no assistant emits it: {emits:?}"
+        );
+    }
+}
+
+// ─────────────────── (7) the countable promises on the public surface (§ 2d)
+
+/// The English number word for a small count — the spelling this README uses.
+fn number_word(n: usize) -> String {
+    const ONES: [&str; 20] = [
+        "zero",
+        "one",
+        "two",
+        "three",
+        "four",
+        "five",
+        "six",
+        "seven",
+        "eight",
+        "nine",
+        "ten",
+        "eleven",
+        "twelve",
+        "thirteen",
+        "fourteen",
+        "fifteen",
+        "sixteen",
+        "seventeen",
+        "eighteen",
+        "nineteen",
+    ];
+    if n < 20 {
+        return ONES[n].to_string();
+    }
+    let tens = ["", "", "twenty", "thirty", "forty", "fifty"];
+    let t = tens
+        .get(n / 10)
+        .copied()
+        .unwrap_or_else(|| panic!("no word for {n} — extend the table with the prose"));
+    if n.is_multiple_of(10) {
+        t.to_string()
+    } else {
+        format!("{t}-{}", ONES[n % 10])
+    }
+}
+
+/// The one paragraph of the README that carries `needle`, joined into one line.
+///
+/// Paragraphs rather than lines, because the README is hard-wrapped and a
+/// sentence that names three numbers at once routinely straddles a break.
+fn paragraph_with(readme: &str, needle: &str) -> String {
+    readme
+        .split("\n\n")
+        .find(|p| p.contains(needle))
+        .map(|p| p.split_whitespace().collect::<Vec<_>>().join(" "))
+        .unwrap_or_else(|| {
+            panic!(
+                "templates/assistant/README.md carries no paragraph with {needle:?} — a \
+                 drift lock that stops finding its sentence pins nothing"
+            )
+        })
+}
+
+/// **The drift lock the counted prose owes** (`docs/development-rules.md` § 2d).
+///
+/// The public surface of this level states four countable promises — how many
+/// lanes it declares, how many drain pairings, how many edges it draws, and how
+/// many of those are drawn around `./surface`. W5 measured the failure mode this
+/// prevents: a template README kept describing a lane count the tree had already
+/// moved past, and no test was red because no test ever read the sentence.
+///
+/// Every number below is DERIVED from `templates/assistant/config.json` inside
+/// the test. Grepping the sentence alone would pin a string; asserting the
+/// mechanism alone would let the prose drift away from it.
+#[test]
+fn the_readme_counts_are_the_lanes_and_edges_this_level_declares() {
+    let Some(root) = shipped() else { return };
+    let readme = std::fs::read_to_string(root.join("README.md")).expect("the README ships");
+    let hp = hive_params(&root);
+    let (accepts, emits) = lanes(&hp);
+
+    let total = hp.graph.edges.len();
+    let drains = hp.required_drains.as_ref().map(Vec::len).unwrap_or(0);
+    let all_lanes = accepts.len() + emits.len();
+    let around_surface = hp
+        .graph
+        .edges
+        .iter()
+        .filter(|e| e.from == "./surface" || e.to == "./surface")
+        .count();
+    let into_surface = hp
+        .graph
+        .edges
+        .iter()
+        .filter(|e| e.from == "." && e.to == "./surface")
+        .count();
+    let out_of_surface = hp
+        .graph
+        .edges
+        .iter()
+        .filter(|e| e.from == "./surface" && e.to == ".")
+        .count();
+
+    for (n, needle, what) in [
+        (
+            total,
+            "no container at all",
+            "the total in the opening line",
+        ),
+        (
+            all_lanes,
+            "all at the assistant's own path",
+            "the lane count above the two tables",
+        ),
+        (
+            drains,
+            "pairings are declared in `params.required_drains`",
+            "the drain pairings",
+        ),
+    ] {
+        let para = paragraph_with(&readme, needle);
+        assert!(
+            para.to_lowercase().contains(&number_word(n)),
+            "{what}: templates/assistant/README.md must say `{}` ({n} derived from \
+             params):\n  {para}",
+            number_word(n)
+        );
+    }
+
+    // The `What it ships` block names three of them at once, and a block that
+    // drifts one number at a time is exactly what § 2d is about.
+    let ships = paragraph_with(&readme, "config.json            the level:");
+    for (n, what) in [
+        (all_lanes, "lanes"),
+        (drains, "drain pairings"),
+        (total, "edges"),
+    ] {
+        assert!(
+            ships.to_lowercase().contains(&number_word(n)),
+            "the `What it ships` block must say `{}` for the {what} ({n} derived):\n  \
+             {ships}",
+            number_word(n)
+        );
+    }
+
+    // The fan-in measurement, which is written in digits rather than in words —
+    // it is a measurement beside a historical one and reads as a comparison.
+    let fan_in = paragraph_with(&readme, "around `./surface` today");
+    assert!(
+        fan_in.contains(&format!("**{around_surface}** around `./surface` today")),
+        "the fan-in measurement must say {around_surface}, which is what the template \
+         draws around ./surface:\n  {fan_in}"
+    );
+    // `paragraph_with` collapses runs of whitespace, so the aligned table reads
+    // as `<count> <from> -> <to> <what>` here — the alignment is the file's, the
+    // count is what this asserts.
+    let table = paragraph_with(&readme, "the entry lanes that reach the surface");
+    for (n, line) in [
+        (into_surface, ". -> ./surface the entry lanes"),
+        (out_of_surface, "./surface -> . the exits it produces"),
+    ] {
+        assert!(
+            table.contains(&format!("{n} {line}")),
+            "the fan-in table must open its `{line}` row with {n}:\n  {table}"
+        );
+    }
+    let rest = paragraph_with(&readme, "for the level.");
+    assert!(
+        rest.to_lowercase()
+            .contains(&format!("**{}** for the level", number_word(total))),
+        "the edges that do NOT touch the surface are counted up to the level total, and \
+         that total is {} ({total} derived):\n  {rest}",
+        number_word(total)
+    );
+
+    // The library entry counts the same lanes a third time, in its own words. It
+    // is the file a builder reads before it draws a single edge, so a wrong count
+    // there is a mutation that leaves a lane unwired — and it is the surface that
+    // drifted twice already, once for `in_pack` and once for `pack_ack`.
+    let meta: Value = meclaw_core::serde_json::from_str(
+        &std::fs::read_to_string(root.join("template.json")).expect("the library entry ships"),
+    )
+    .expect("the library entry is json");
+    let ports = meta["description"]["examples"][0]
+        .as_str()
+        .expect("the first example is the PORTS block");
+    for (n, sentence) in [
+        (
+            accepts.len(),
+            format!(
+                "Entry lanes, all {} addressed at the assistant path itself",
+                number_word(accepts.len())
+            ),
+        ),
+        (
+            emits.len(),
+            format!(
+                "Exits, all {} leaving the assistant path",
+                number_word(emits.len())
+            ),
+        ),
+        (
+            drains,
+            format!("{} pairings are declared in params.required_drains", {
+                let w = number_word(drains);
+                let mut c = w.chars();
+                match c.next() {
+                    Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+                    None => w,
+                }
+            }),
+        ),
+    ] {
+        assert!(
+            ports.contains(&sentence),
+            "the PORTS block of templates/assistant/template.json must say {sentence:?} \
+             ({n} derived from params):\n{ports}"
+        );
+    }
+    let where_from = meta["description"]["examples"][3]
+        .as_str()
+        .expect("the fourth example is the derivation");
+    assert!(
+        where_from.starts_with(&format!(
+            "WHERE THE {} LANES COME FROM:",
+            number_word(all_lanes).to_uppercase()
+        )),
+        "the derivation example counts the lanes a fourth time and must say {} \
+         ({all_lanes} derived):\n{where_from}",
+        number_word(all_lanes).to_uppercase()
+    );
 }
 
 // ══════════════════════════════════════════════════════ the substrate half
-
-const ASSISTANT: &str = "/agent";
-const CHANNELS: &str = "/agent/channels";
-const SIBLINGS: [&str; 3] = ["/agent", "/agent/cogny", "/agent/tools"];
 
 fn write(root: &std::path::Path, rel: &str, v: &Value) {
     let p = root.join(rel);
@@ -711,77 +1124,28 @@ fn cogny_cell() -> Value {
     })
 }
 
-/// The per-channel wiring one `add_nodes` mutation draws, as edges of the colony
-/// root — deep endpoints, so the shipped `channels/config.json` stays untouched.
-///
-/// It is the recipe the README states, and every endpoint of it is BELOW
-/// `<assistant>/channels`: that is why the container has to stay open, and why
-/// none of these edges is an edge between `./channels` and a sibling.
-fn channel_edges(tag: &str) -> Vec<Value> {
-    let connector = format!("./agent/channels/{tag}-conn");
-    let talky = format!("./agent/channels/{tag}-talky");
-    let hive = "./agent/channels";
-    let mut out = vec![
-        // the connector's ONE wire, normalised by the level the connector sits in
-        json!({"from": connector, "to": hive,
-               "condition": "!has(hop.error_code)",
-               "modifier": {"set_hop": {"route": "'turn'"},
-                            "set_context": {"channel": "'test'"}}}),
-        json!({"from": connector, "to": hive,
-               "condition": "has(hop.error_code)",
-               "modifier": {"set_hop": {"route": "'error'"}}}),
-        // the pairing edge: the talky's answer is the connector's inbound
-        json!({"from": talky, "to": connector,
-               "condition": "has(hop.route) && hop.route == 'answer'"}),
-    ];
-    // the level's inbound lanes, carried down to the talky
-    for lane in [
-        "in_turn",
-        "in_bundle",
-        "in_advice",
-        "in_sweep",
-        "in_prune",
-        "in_round_sweep",
-        "in_tool",
-    ] {
-        out.push(json!({"from": hive, "to": talky,
-                        "condition": format!("has(hop.route) && hop.route == '{lane}'")}));
-    }
-    // the talky's outbound lanes, up to the level
-    for lane in [
-        "write",
-        "turn_write",
-        "extraction",
-        "recall",
-        "tool",
-        "prune",
-        "error",
-    ] {
-        out.push(json!({"from": talky, "to": hive,
-                        "condition": format!("has(hop.route) && hop.route == '{lane}'")}));
-    }
-    out
-}
-
 /// The colony around the assistant: one door in on `in_turn`, and a drain for
 /// every lane the level emits.
-fn main_config(tags: &[&str]) -> Value {
+///
+/// This is the whole of the per-instance wiring since GH #454. It used to carry
+/// a connector + talky pair per channel as well, with deep endpoints below
+/// `<assistant>/channels`; the channel is the member's now, so an assistant is
+/// instantiated and wired in ONE mutation and nothing follows it.
+fn main_config() -> Value {
     let mut edges = vec![json!({"from": "./driver", "to": "./agent",
                                 "condition": "has(hop.route) && hop.route == 'in_turn'"})];
     for lane in [
-        "turn",
+        "answer",
         "write",
         "turn_write",
         "extraction",
         "recall",
         "prune",
         "error",
+        "build",
     ] {
         edges.push(json!({"from": "./agent", "to": "/sink",
                           "condition": format!("has(hop.route) && hop.route == '{lane}'")}));
-    }
-    for tag in tags {
-        edges.extend(channel_edges(tag));
     }
     json!({"cell": {"type": "hive"}, "params": {"graph": {"edges": edges}}})
 }
@@ -823,8 +1187,13 @@ fn driver_cell() -> Value {
     })
 }
 
-/// A talky double: it takes the screened turn and emits whatever the hop asks
-/// for — a tool call, a consult errand, or a plain answer.
+/// The conversation surface, doubled: it takes the screened turn and emits
+/// whatever the hop asks for — a tool call, a consult errand, or a plain answer.
+///
+/// Since GH #454 this is the cell an inbound lane of the level reaches directly:
+/// there is no container between the level and it, and its `answer` leaves the
+/// level on the level's own edge instead of being eaten by a connector beside
+/// it.
 const TALKY: &str = r#"
 import sys, json
 doc = json.load(sys.stdin)
@@ -869,77 +1238,28 @@ fn talky_cell() -> Value {
             "capabilities": ["shell:exec"]
         },
         "description": {
-            "purpose": "Test double for the talky standing in an assistant's channels level.",
+            "purpose": "Test double for the conversation surface of the assistant level.",
             "use_when": "Test fixture only.",
             "not_in_scope": "Not a template."
         }
     })
 }
 
-/// The connector double: it takes the finished answer and reports it upward as
-/// an inbound turn, which is what the shipped connector's one wire looks like.
-const CONNECTOR: &str = r#"
-import sys, json
-doc = json.load(sys.stdin)
-hop = ((doc["envelope"].get("header") or {}).get("hop") or {})
-sys.stdout.write(json.dumps({
-    "header": {"served_by": "connector",
-               "in_served_by": str(hop.get("in_served_by") or ""),
-               "via_caller": str(hop.get("via_caller") or ""),
-               "in_route": str(hop.get("route") or "")},
-    "messages": [{"origin": "user", "type": "text", "text": "hi"}]}))
-"#;
-
-fn connector_cell() -> Value {
-    json!({
-        "cell": {"type": "code"},
-        "params": {"runner": "python3", "script_inline": CONNECTOR, "external_timeout_ms": 10000},
-        "contract": {
-            "version": "1.0.0",
-            "settings": {},
-            "emits": {
-                "body": {"messages": {"type": "array", "required": true}},
-                "hop": {
-                    "served_by": {"type": "string", "required": false},
-                    "in_served_by": {"type": "string", "required": false},
-                    "via_caller": {"type": "string", "required": false},
-                    "in_route": {"type": "string", "required": false},
-                    "error_code": {"type": "string", "required": false}
-                }
-            },
-            "consumes": {"body": {"messages": {"type": "array", "required": true}}},
-            "capabilities": ["shell:exec"]
-        },
-        "description": {
-            "purpose": "Test double for the connector standing in an assistant's channels level.",
-            "use_when": "Test fixture only.",
-            "not_in_scope": "Not a template."
-        }
-    })
-}
-
-/// Build the tree: the SHIPPED assistant, with the two `ref` markers replaced by
-/// answering `code` doubles and one connector + talky pair per tag standing in
-/// `./channels` — which is what the per-channel mutation stages there.
-fn build_tree(td: &tempfile::TempDir, source: &std::path::Path, tags: &[&str]) {
+/// Build the tree: the SHIPPED assistant, with all THREE `ref` markers replaced
+/// by answering `code` doubles.
+///
+/// Nothing is staged below the level any more. The tree under test is the
+/// template and the template alone, which is the point of 2.0.0: the level is
+/// complete at birth, and the mutation that instantiates it draws no
+/// per-channel follow-up.
+fn build_tree(td: &tempfile::TempDir, source: &std::path::Path) {
     let root = td.path();
-    write(root, "main/config.json", &main_config(tags));
+    write(root, "main/config.json", &main_config());
     write(root, "main/driver/config.json", &driver_cell());
     copy_cells(source, &root.join("main/agent"));
+    write(root, "main/agent/surface/config.json", &talky_cell());
     write(root, "main/agent/cogny/config.json", &cogny_cell());
     write(root, "main/agent/tools/config.json", &tools_cell());
-    for tag in tags {
-        write(
-            root,
-            &format!("main/agent/channels/{tag}-conn/config.json"),
-            &connector_cell(),
-        );
-        write(
-            root,
-            &format!("main/agent/channels/{tag}-talky/config.json"),
-            &talky_cell(),
-        );
-    }
     std::fs::write(root.join(".env"), "").unwrap();
 }
 
@@ -1000,24 +1320,50 @@ async fn recv_bounded(rx: &mut mpsc::Receiver<Message>) -> Option<Message> {
 /// consult errand takes the regular edge to `./cogny` and the default stays
 /// silent.
 ///
-/// The round is followed the whole way, which is also assertion (b) of the
-/// task: the screened turn goes in on `in_turn`, reaches the talky, the answer
-/// reaches the connector on the per-channel pairing edge, and what leaves the
-/// assistant is a `turn` on its way to the member's screen. `in_served_by` is a
-/// POSITIVE receipt carried through: every double answers, so a second occupant
-/// being served would be a second message rather than a silence to be waited
-/// out.
+/// The round is followed the whole way: the screened turn goes in on `in_turn`,
+/// reaches the SURFACE directly — there is no container between the level and it
+/// since GH #454 — and what leaves the assistant is the `answer` on its way to
+/// the channel that asked. The channel is the member's, so this level neither
+/// knows nor needs to know which one it was; `context.channel` rode in on the
+/// turn and rides back out on the answer, and the member's own edge into
+/// `./channels` is what turns that name into an address.
+///
+/// `in_served_by` is a POSITIVE receipt carried through: every double answers,
+/// so a second occupant being served would be a second message rather than a
+/// silence to be waited out.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_tool_call_takes_the_default_and_a_consult_takes_the_regular_edge() {
     let Some(source) = shipped() else { return };
 
+    // The discriminator the ONE tool surface tells its two callers apart by, read
+    // off the shipped edges rather than written down here: the guarded default
+    // stamps one value and the reasoning core's own tool edge stamps another,
+    // and all the round proves is that the answer came back to whoever asked.
+    let hp = hive_params(&source);
+    let stamped_caller = |from: &str| -> String {
+        hp.graph
+            .edges
+            .iter()
+            .find(|e| e.from == from && e.to == "./tools")
+            .and_then(|e| e.modifier.as_ref())
+            .and_then(|m| m.set_context.get("tool_caller"))
+            .map(|v| v.trim_matches('\'').to_string())
+            .unwrap_or_else(|| panic!("no edge {from} -> ./tools stamps context.tool_caller"))
+    };
+    let from_surface = stamped_caller("./surface");
+    let from_cogny = stamped_caller("./cogny");
+    assert_ne!(
+        from_surface, from_cogny,
+        "the two callers of the one tool surface stamp the same discriminator — the answer \
+         to a consult would come back to the surface that never asked"
+    );
+
     for (name, want_served, want_caller) in [
-        ("web_search", "tools", "channels"),
-        ("consult_cogny", "cogny", "cogny"),
-        ("ask_memory", "cogny", "cogny"),
+        ("web_search", "tools", from_surface.as_str()),
+        ("consult_cogny", "cogny", from_cogny.as_str()),
     ] {
         let td = tempfile::TempDir::new().unwrap();
-        build_tree(&td, &source, &["a"]);
+        build_tree(&td, &source);
         let (h, mut sink_rx) = boot(&td).await;
 
         h.send(turn(name)).await;
@@ -1033,16 +1379,18 @@ async fn a_tool_call_takes_the_default_and_a_consult_takes_the_regular_edge() {
         );
         assert_eq!(
             hop_of(&out, "route"),
-            "turn",
-            "{name}: what leaves an assistant after a channel produced it is a `turn` on \
-             its way to the member's screen — hop {:?}",
+            "answer",
+            "{name}: what leaves an assistant is the ANSWER, on its way to the channel that \
+             asked (GH #454). A `turn` here would mean a raw wire still lives inside the \
+             generation — hop {:?}",
             out.headers.hop
         );
         assert_eq!(
             hop_of(&out, "served_by"),
-            "connector",
-            "{name}: the answer did not reach the connector on the per-channel pairing \
-             edge — hop {:?}",
+            "talky",
+            "{name}: the answer left the level from somewhere other than the surface. There \
+             is no connector between the two any more — it is the member's — so the exit is \
+             `./surface -> .` and nothing else: hop {:?}",
             out.headers.hop
         );
         // The two callers of the ONE tool surface, told apart on the way back by
@@ -1057,8 +1405,8 @@ async fn a_tool_call_takes_the_default_and_a_consult_takes_the_regular_edge() {
             out.headers.hop
         );
 
-        // ONE round, ONE turn out. A second message here is a second delivery of
-        // the same call — the guarded default firing beside a consult, or the
+        // ONE round, ONE answer out. A second message here is a second delivery
+        // of the same call — the guarded default firing beside a consult, or the
         // tool surface answering both callers because the discriminator stopped
         // discriminating. Every double answers, so a second delivery is a second
         // message rather than a silence to be waited out; the wait exists only
@@ -1066,7 +1414,7 @@ async fn a_tool_call_takes_the_default_and_a_consult_takes_the_regular_edge() {
         tokio::time::sleep(Duration::from_millis(750)).await;
         if let Ok(extra) = sink_rx.try_recv() {
             panic!(
-                "{name}: the assistant produced a SECOND turn for one call — hop {:?}",
+                "{name}: the assistant produced a SECOND answer for one call — hop {:?}",
                 extra.headers.hop
             );
         }
@@ -1080,12 +1428,12 @@ async fn a_tool_call_takes_the_default_and_a_consult_takes_the_regular_edge() {
 }
 
 /// The tool surface is reached exactly once per call: the guarded default and
-/// the two consult edges never fire together.
+/// the consult edge never fire together.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_consult_never_reaches_the_tool_surface() {
     let Some(source) = shipped() else { return };
     let td = tempfile::TempDir::new().unwrap();
-    build_tree(&td, &source, &["a"]);
+    build_tree(&td, &source);
     let (h, mut sink_rx) = boot(&td).await;
 
     h.send(turn("consult_cogny")).await;
@@ -1099,7 +1447,7 @@ async fn a_consult_never_reaches_the_tool_surface() {
         first.headers.hop
     );
 
-    // Every edge out of `./channels` is decided in ONE `apply_edges` call on ONE
+    // Every edge out of `./surface` is decided in ONE `apply_edges` call on ONE
     // message, so a competing delivery is already in flight by the time the
     // winning one arrives. The wait exists only to let it land.
     tokio::time::sleep(Duration::from_millis(750)).await;
@@ -1115,84 +1463,87 @@ async fn a_consult_never_reaches_the_tool_surface() {
     h.shutdown().await;
 }
 
-/// #303's acceptance, measured: a second channel adds only its own pairing
-/// edges. The edges between `./channels` and its siblings are the template's,
-/// drawn once, and their number does not move.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_second_channel_adds_no_edge_between_the_channels_level_and_its_siblings() {
-    let Some(source) = shipped() else { return };
+/// #303's acceptance, read after GH #454 moved the subject: a second channel
+/// costs this level NOTHING AT ALL.
+///
+/// #303's ruling was that the fan-in edges between the container and its
+/// siblings are internal edges of the TEMPLATE, so a second channel cost two
+/// instantiations plus their pairing edges and never a re-run of the fan-in.
+/// That was already the cheap answer; 2.0.0 is the free one. The channel stands
+/// one level up, in `<member>/channels`, and this level has no endpoint for it:
+/// a turn from any channel arrives on the same `in_turn` door, the answer leaves
+/// on the same `answer` exit, and `context.channel` — which this level never
+/// reads — is what tells the MEMBER where to send it back.
+///
+/// So the measurement is over the template's own edges rather than over a booted
+/// tree: two channels and twenty produce the same file, because the file does
+/// not mention a channel anywhere. A count that grew per channel would have to
+/// grow HERE, and there is nothing here for it to grow.
+#[test]
+fn a_second_channel_costs_this_level_nothing_at_all() {
+    let Some(root) = shipped() else { return };
+    let hp = hive_params(&root);
 
-    async fn sibling_edges(source: &std::path::Path, tags: &[&str]) -> (usize, usize) {
-        let td = tempfile::TempDir::new().unwrap();
-        build_tree(&td, source, tags);
-        let (h, _rx) = boot(&td).await;
-        let (ack_tx, ack_rx) = oneshot::channel::<meclaw_colony::api_dto::ReadGraphReply>();
-        h.inbox_tx
-            .send(ColonyMsg::ReadGraph {
-                scope: Path::new("/"),
-                ack: ack_tx,
-            })
-            .await
-            .unwrap();
-        let graph = ack_rx.await.unwrap();
-        let between = graph
-            .edges
-            .iter()
-            .filter(|e| {
-                (e.from.as_str() == CHANNELS && SIBLINGS.contains(&e.to.as_str()))
-                    || (e.to.as_str() == CHANNELS && SIBLINGS.contains(&e.from.as_str()))
-            })
-            .count();
-        let inside = graph
-            .edges
-            .iter()
-            .filter(|e| {
-                e.from.as_str().starts_with(&format!("{CHANNELS}/"))
-                    || e.to.as_str().starts_with(&format!("{CHANNELS}/"))
-            })
-            .count();
-        h.shutdown().await;
-        (between, inside)
+    for e in &hp.graph.edges {
+        for endpoint in [&e.from, &e.to] {
+            assert!(
+                !endpoint.contains("channels"),
+                "the edge {} -> {} names a channel path. A channel is the person's since \
+                 GH #454: this level is ADDRESSED by one and contains none, so no edge of \
+                 the template can have an endpoint in one.",
+                e.from,
+                e.to
+            );
+            assert!(
+                endpoint == "." || SIBLINGS.contains(&endpoint.as_str()),
+                "the edge {} -> {} touches {endpoint:?}, which is neither this level's own \
+                 path nor one of its three occupants {SIBLINGS:?}. A fourth endpoint is a \
+                 node the level would have to be filled with — and the level is complete at \
+                 birth.",
+                e.from,
+                e.to
+            );
+        }
     }
 
-    let (one_between, one_inside) = sibling_edges(&source, &["a"]).await;
-    let (two_between, two_inside) = sibling_edges(&source, &["a", "b"]).await;
-
-    // The template's own count, read off the file, so the runtime number and the
-    // shipped number are the same statement.
-    let hp = hive_params(&source);
-    let declared = hp
+    // The door and the exit are ONE each, and neither is per-channel. Adding a
+    // channel to the member adds one node and two edges THERE; here it adds
+    // nothing, because both ends of the conversation already exist.
+    let doors = hp
         .graph
         .edges
         .iter()
-        .filter(|e| e.from == "./channels" || e.to == "./channels")
+        .filter(|e| {
+            e.from == "."
+                && e.to == "./surface"
+                && stated_route(e.condition.as_deref()).as_deref() == Some("in_turn")
+        })
         .count();
     assert_eq!(
-        one_between, declared,
-        "the live tree draws a different number of channels-to-sibling edges than the \
-         template declares"
+        doors, 1,
+        "a screened turn reaches the surface through exactly one door, whatever channel it \
+         came from — a door per channel is the shape GH #454 removed"
     );
+    let exits = hp
+        .graph
+        .edges
+        .iter()
+        .filter(|e| {
+            e.from == "./surface"
+                && e.to == "."
+                && stated_route(e.condition.as_deref()).as_deref() == Some("answer")
+        })
+        .count();
     assert_eq!(
-        one_between, two_between,
-        "a second channel moved the fan-in between ./channels and its siblings from \
-         {one_between} to {two_between}. #303's whole ruling is that this number is a \
-         property of the TEMPLATE and is drawn once."
+        exits, 1,
+        "the answer leaves on exactly one exit. Two would mean this level had started to \
+         tell channels apart, which is the member's job and needs `context.channel`, a key \
+         nothing at this level reads"
     );
-    assert_eq!(
-        two_inside,
-        one_inside * 2,
-        "a second channel costs exactly its own pairing edges: {one_inside} -> {two_inside}"
-    );
-    assert_eq!(
-        one_between, 18,
-        "the measured fan-in changed. #303 counted 14 on the live tree (the core, four \
-         tool cells, the drain, the sink and the assistant itself); this template draws \
-         {one_between} for reasons the README states. Move the README with the number."
-    );
-    // The level really is the assistant's whole address space.
+
     assert!(
-        SIBLINGS.contains(&ASSISTANT),
-        "the assistant path itself is one of the siblings the container is wired to"
+        !root.join("channels").exists(),
+        "a channels container is back on the assistant level"
     );
 }
 

@@ -1,7 +1,7 @@
 //! P7 block 1 — the stdio-child core's spawn/framing layer, driven against a
 //! real child process (the `line_json_test_server` fixture binary).
 //!
-//! Step 1.1 pins the D2 assumption from `plans/p7-stdio-child-core.md`: cargo
+//! Step 1.1 pins the D2 assumption of the stdio-child design: cargo
 //! auto-discovers `src/bin/*.rs` (autobins) and exports the resulting path to
 //! integration tests of the same package as `CARGO_BIN_EXE_<name>`. If that
 //! assumption were wrong, this file would not compile — which is exactly the

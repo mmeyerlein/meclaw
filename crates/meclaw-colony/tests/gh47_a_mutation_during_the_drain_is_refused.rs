@@ -149,6 +149,37 @@ async fn registry_paths(h: &ColonyHandle) -> Vec<String> {
     paths
 }
 
+/// Puts the colony into its drain and hands back its inbox plus the task that
+/// waits for the shutdown to finish.
+///
+/// The `Shutdown` goes into the inbox HERE, from the test's own task, and only
+/// the WAITING is spawned. `ColonyHandle::shutdown` sends it as its first step,
+/// so the older `tokio::spawn(async move { h.shutdown().await })` merely
+/// PROMISED to enqueue it: under load the spawned task can still be waiting for
+/// a worker while the barrier read below is already in the inbox. The colony
+/// then answers that read — and everything queued behind it — before it has
+/// ever seen the shutdown, and every "during the drain" assertion silently
+/// measures a live colony instead. Measured on 2026-08-28 with the CPUs
+/// saturated: 4 of 30 runs of the first test refused the build order with
+/// `template_missing` (the live door's verdict) instead of `shutdown_draining`.
+/// Sending it from here is what makes the FIFO argument of
+/// [`wait_until_draining`] true.
+async fn start_drain(h: ColonyHandle) -> (mpsc::Sender<ColonyMsg>, tokio::task::JoinHandle<()>) {
+    let inbox_tx = h.inbox_tx.clone();
+    let (ack_tx, ack_rx) = oneshot::channel();
+    inbox_tx
+        .send(ColonyMsg::Shutdown { ack: ack_tx })
+        .await
+        .expect("the colony inbox takes the shutdown");
+    let waiting = tokio::spawn(async move {
+        // Same order as `ColonyHandle::shutdown`: the ack lands when the drain
+        // is over, the join when the colony task is gone.
+        let _ = ack_rx.await;
+        let _ = h.join_result().await;
+    });
+    (inbox_tx, waiting)
+}
+
 /// Barrier: the colony inbox is FIFO and the loop is one task, so an ack for a
 /// LATER message proves the shutdown was handled first — the colony is draining
 /// from here on. `ReadLiveness` is a pure read and changes nothing the drain
@@ -282,8 +313,7 @@ async fn a_mutation_that_arrives_during_the_drain_creates_nothing() {
         .expect("the blocking handler must be entered within the failure marker")
         .expect("the entered-channel sender lives in the cell");
 
-    let inbox_tx = h.inbox_tx.clone();
-    let mut shutting_down = tokio::spawn(async move { h.shutdown().await });
+    let (inbox_tx, mut shutting_down) = start_drain(h).await;
     wait_until_draining(&inbox_tx).await;
 
     // The build order, at the door that a `--apply` run and the HTTP POST both
@@ -396,8 +426,7 @@ async fn a_colony_read_during_the_drain_is_still_answered() {
         .expect("the probe handler must be entered within the failure marker")
         .expect("the entered-channel sender lives in the cell");
 
-    let inbox_tx = h.inbox_tx.clone();
-    let shutting_down = tokio::spawn(async move { h.shutdown().await });
+    let (inbox_tx, shutting_down) = start_drain(h).await;
     wait_until_draining(&inbox_tx).await;
 
     // The cell is mid-turn INSIDE the drain and asks the colony where it is.
@@ -476,8 +505,7 @@ async fn a_cell_emitted_mutation_during_the_drain_is_dead_lettered() {
         .expect("the builder handler must be entered within the failure marker")
         .expect("the entered-channel sender lives in the cell");
 
-    let inbox_tx = h.inbox_tx.clone();
-    let shutting_down = tokio::spawn(async move { h.shutdown().await });
+    let (inbox_tx, shutting_down) = start_drain(h).await;
     wait_until_draining(&inbox_tx).await;
 
     release_tx

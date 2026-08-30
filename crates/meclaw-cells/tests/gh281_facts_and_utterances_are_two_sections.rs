@@ -208,6 +208,14 @@ fn rendered(msgs: &[serde_json::Value]) -> String {
 
 const FACTS_HEADER: &str = "FACTS (extracted, canonical, dated)";
 const SAID_HEADER: &str = "WHAT WAS SAID (verbatim, not interpreted)";
+/// The head of that section since #537, and the reason the header string above
+/// is unchanged: a caveat on its own line leaves every reader that matches the
+/// header matching it. It says what the section is WORTH, which the header
+/// never did -- an earlier answer of the agent's own claiming nothing is stored
+/// is evidence about that answer, and the `FACTS` block above may say otherwise.
+const SAID_CAVEAT: &str = "  (an earlier answer claiming something is NOT stored is evidence \
+                           about that answer and nothing else -- never a measurement of this \
+                           memory)";
 
 /// Two facts and two turns, one of the turns being a past QUESTION — the shape
 /// #281 is named after.
@@ -305,6 +313,21 @@ fn facts_and_what_was_said_are_two_sections() {
         "user on 2026-01-02: \"what is my favourite colour?\"",
         "the past question is attributed and dated:\n{text}"
     );
+
+    // #537: the head of the section says what the section is WORTH, and it is
+    // the line directly under the header — before any row, because a caveat a
+    // reader meets after the evidence is a caveat that arrived too late.
+    let mut after = text.lines().skip_while(|l| *l != SAID_HEADER);
+    assert_eq!(
+        after.next(),
+        Some(SAID_HEADER),
+        "the said header is a line of its own:\n{text}"
+    );
+    assert_eq!(
+        after.next(),
+        Some(SAID_CAVEAT),
+        "the caveat is the line under the said header:\n{text}"
+    );
 }
 
 #[test]
@@ -353,6 +376,13 @@ fn a_section_with_no_rows_does_not_appear() {
     )]);
     let text = rendered(&emit(doc_of(fused, serde_json::json!([]), facts)));
     assert!(text.contains(FACTS_HEADER), "facts only:\n{text}");
+    // And the caveat goes with its section: it is the head of a block, not a
+    // standing disclaimer the bundle carries whether or not anybody said
+    // anything (#537).
+    assert!(
+        !text.contains(SAID_CAVEAT.trim_start()),
+        "no said section, no caveat:\n{text}"
+    );
     assert!(
         !text.contains(SAID_HEADER),
         "nobody said anything this round:\n{text}"
@@ -419,6 +449,8 @@ print("\n".join(render_payload_lines([
          (superseded by: helix) (previously: vim until 2026-08-08)\n\
          \x20 user lives_in = Berlin   since 2023-05-23 [2023-05-23 -> 2023-05-30]\n\
          WHAT WAS SAID (verbatim, not interpreted)\n\
+         \x20 (an earlier answer claiming something is NOT stored is evidence about that \
+         answer and nothing else -- never a measurement of this memory)\n\
          \x20 user on 2026-01-02: \"hallo\" (seen: 3)"
     );
 }

@@ -265,6 +265,12 @@ pub struct PlannedCell {
     /// Z.1426 "persistierter Stand gewinnt") — a failed cell stays
     /// `active=false, failed=true` across reboot even when fully wired.
     pub failed: bool,
+    /// GH #491: `true` when this node's sleep was DECLARED rather than derived
+    /// — a `ref` marker's `birth: "inactive"` at first boot, or a persisted
+    /// `registry.dormant` row on a reboot. Threaded into `RegistryEntry.dormant`
+    /// at apply-phase, where it stops the next connectivity recompute from
+    /// undoing a decision it was never the subject of.
+    pub dormant: bool,
     /// Per-cell bounded-mailbox capacity from `cell.mailbox_size`. `None` means
     /// "fall back to colony-wide default". Validated at plan-phase (0 is rejected
     /// as `InvalidCellField`). Wired at apply-phase (Paket 1).
@@ -549,6 +555,16 @@ pub fn plan_bootstrap_with_env(
     // GH #163: the same question for hives, which have no registry row. Read
     // once, before the walk — consulted only on a Reboot / pending mutation.
     let registered_hives = registered_hive_paths(root);
+    // GH #491: the paths whose sleep was DECLARED, read once from the persisted
+    // registry before the walk. A read failure is answered with "nothing
+    // declared" rather than a boot refusal: the marker's only job is to STOP a
+    // recompute from waking a node, and losing it degrades to the pre-#491
+    // behaviour instead of blocking a boot on a diagnostic column.
+    let dormant_paths = crate::persist::colony_db::read_dormant_paths(&root.join("colony.db"))
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "could not read the dormancy markers from colony.db");
+            std::collections::HashSet::new()
+        });
 
     // Slice 6 (Phase-14-B as build-time error): collect per-node contract views
     // (keyed by absolute meclaw path), then run the pure
@@ -967,6 +983,12 @@ pub fn plan_bootstrap_with_env(
             // `active=false`, already derived above) and is never re-spawned;
             // the persisted state wins over edge-derived activity.
             let failed = matches!(overlay_entry, Some((_id, status)) if status == "failed");
+            // GH #491: the durable dormancy marker rides back in from
+            // `colony.db` beside the overlay. A first boot has no rows and
+            // declares nothing here; the `ref`-marker declaration travels
+            // separately, on `plan.born_inactive`, because the marker consumed
+            // itself before this walk ever saw it.
+            let dormant = dormant_paths.contains(&mc_path);
             // Hardening Slice 4 (Task 4.2): the builder-mandatory contract
             // presence keys (`version`/`settings`/`consumes`) are
             // substrate-enforced at config load (config.md § contract,
@@ -1016,6 +1038,7 @@ pub fn plan_bootstrap_with_env(
                 message_timeout: cfg.cell.message_timeout,
                 active,
                 failed,
+                dormant,
                 mailbox_size: cfg.cell.mailbox_size,
                 header_view,
                 provenance: cfg.cell.provenance,
@@ -1695,8 +1718,9 @@ pub enum BootstrapError {
     /// could not be fulfilled.
     ///
     /// `reason` is the mutation path's own wording, carried through word for
-    /// word (`template_missing`, `template_ref_cycle`, `schema`, or a rename
-    /// that failed) — one cause, one formulation, whichever door asked.
+    /// word (`template_missing`, `template_ref_cycle`, `requirement_missing`,
+    /// `schema`, or a rename that failed) — one cause, one formulation,
+    /// whichever door asked.
     GrowthFailed {
         /// Filesystem directory of the marker.
         path: PathBuf,

@@ -1,4 +1,4 @@
-# `access@2.3.0`
+# `access@2.4.2`
 
 The capability broker: an agent may **ask in natural language**, what travels on the wire
 is a **handle**, and no secret ever travels with a request. Built out of existing cell
@@ -175,6 +175,38 @@ context, and the return edge conditions on
 and this time there is a real emitter behind it -- `2.0.0` wired a pair that waited for a
 route no cell ever produced, `2.1.0` wires a lane a cell actually drives.
 
+### Two questions in a row, and the marker that used to answer both
+
+A caller may ask more than once on **one message chain** -- `submit` asks up to three times
+per manifest, sequentially. Until `2.4.1` the second question was always refused, with
+`capability_unknown`, stamped with the capability and the `call_id` of the **first** one, and
+the `policy` table was never read for it at all (GH #481).
+
+The cause was the mechanism above, used one step too far. `context` is persistent for the
+life of a chain, and the three keys the interior edge promotes had nothing that removed them
+again: they survived the store round trip, the `grant` emission, the trip out of the hive and
+the caller's next move. The second request therefore arrived already carrying
+`access_origin: 'policy'` and a stale `ac_phase` / `ac_carry`, and the cell read it as its
+own echo -- so it answered out of the previous round's carry instead of asking the table.
+
+Two rules keep it fixed, and each of them is enough on its own:
+
+- **A delivery on an inbound lane is a REQUEST**, whatever the context carries. `./policy`
+  and `./invoke` recognise `hop.route == 'in_request'` / `'in_invoke'` first, and a store or
+  vault answer never carries a `hop.route` at all. This is the same discipline the marker was
+  introduced for -- recognise **positively**, and by something the colony wrote -- applied in
+  both directions rather than one.
+- **The markers never leave the hive.** All three exit edges (`./policy -> .`,
+  `./invoke -> .`, `./sweep -> .`) clear `access_origin`, `access_lane`, `ac_phase` and
+  `ac_carry` with `delete_context`. An interior state key that crosses a sealed boundary is
+  leakage even when nobody reads it -- and here somebody did: this hive, one question later.
+
+This grants nothing that was refused before. It only makes the second question get asked;
+what the answer is, is still whatever the rows say. Pinned in
+`crates/meclaw-cells/tests/gh481_the_broker_answers_the_question_it_was_asked.rs`, over the
+hive's real edges -- driving the script directly cannot see an edge, which is why nothing was
+red for as long as the path existed.
+
 ### Lanes
 
 `params.ports` is empty: **the hive path is the only address**, and what a caller
@@ -209,6 +241,33 @@ So a caller's wiring names the hive twice and an interior never:
 The connector is **not** part of this template. It is whatever cell holds the credential --
 a `proxy` with a late-bound token, for instance -- and it stays dumb on purpose: it knows no
 grant, only an address and a value.
+
+### A wired example: `examples/vault-pilot` (GH #452)
+
+This template ships six cells and no deployment. `examples/vault-pilot/` is the first
+one: one `llm` cell whose `params.credential_grant_id` names a grant, an
+`unlock_env` set through the manifest, one `cred_ref`, one enabled rule, and one
+long-term grant with its `granted` event. It grows in a single `meclaw --apply`.
+
+Two facts about it are facts about **this** template, and they are the reason it
+looks the way it does.
+
+**A grant cannot be born in a manifest.** `credential_grant_id` is immutable, so the
+`grants` row has to exist before the consumer boots — and the mutation diff
+vocabulary is seven topology operations, none of which writes a store row. The only
+manifest-reachable way rows enter a store is a `seed/<table>.jsonl`, and that lands
+exactly once, on a fresh `cell.db`. The example therefore checks THIS hive's
+`./store` in with its own seed and lets the instantiation merge around it: a subtree
+cell that already lies on disk is left untouched, and the other five come from here.
+So the ergonomic gesture that would write policy row, `cred_ref`, grant and event in
+one go does not exist yet, and the honest substitute is a seed file plus a
+derivation rule for the handle.
+
+**`params.unlock_env` had to become a declared key.** It ships `null` — the default
+truth stays *a woken vault is locked* — but a key that is not declared names no
+param, and `override_params` refuses a name it cannot find. Before that, the one
+setting every deployment has to make was the one setting no instantiation could
+make; the value still comes from the environment and never from a config.
 
 ### Migrating from `access@1.x`
 
@@ -251,15 +310,206 @@ restart and without a deploy:
 | `cred_ref` | which credential the grant is bound to -- a REFERENCE, never a value |
 | `enabled`, `priority` | off/on, and the order rules are examined in |
 
-Every seeded row ships `enabled: 0`. A fresh instance therefore **grants nothing** and
-answers `capability_unknown` until an operator turns on exactly what they meant to. The
-seed exists to be read, not to authorise. Four rows ship: three examples, and the
-submission rule `colony.mutate.default` — `requester: "/os/submit"`, `subject: "*"`,
+Seven rows ship: three examples and four the submitter asks over. **Five of the seven
+ship `enabled: 0`** -- the three examples, `code.author.default` and (since `2.4.2`)
+`colony.mutate.shell` -- and a fresh instance answers `capability_unknown` or a
+`scope_mismatch` for every one of them until an operator turns on exactly what they meant
+to.
+
+**Two ship `enabled: 1`, and they are the two a colony cannot start without** (ruling
+R-Policy-Default, 2026-08-28): `colony.mutate.default` and `affinity.subscribe.default`.
+A freshly instantiated OS has to be able to build, and its brains have to be able to
+register for their own identity; a default that refused both would make the first mutation
+of every colony an operator step and a shipped agent silent until somebody remembered a
+`UPDATE policy`. The two are narrow rather than open -- requester `/os/submit`, action
+`apply`, scoped to `/os/orgs` -- and what they do NOT grant is the sharp part:
+`code.author` stays off, so a manifest that carries a script nobody reviewed is still
+refused on a fresh tree. Narrow these two (a `subject`, a tighter `scope_prefix`) rather
+than switching them off, and set `enabled: 0` if this colony wants no default at all.
+
+The first is `colony.mutate.default` — `requester: "/os/submit"`, `subject: "*"`,
 `scope_match: {"scope_prefix": "/os/orgs", "actions": ["apply"]}`. It is the row that
 lets a manifest reach the mutation door, and R-AC-1 is what shapes it: the requester is
 the **submit hive**, promoted by the edge, and the identity on whose behalf it asks
 travels as `subject`. The delegation stands visibly in a row instead of implicitly in a
 script.
+
+The second is `code.author.default`, and it answers a different question about the same
+manifest (GH #446). `colony.mutate` is *who may submit*; `code.author` is *whether this
+submission may bring executable behaviour with it*. The submitter derives the need from
+the DIFF rather than from a prompt — an `override_params` (or a `swap_nodes` `with`)
+carrying `script_inline` / `script_path`, or an `add_templates` at all — and asks a
+second check-only question over the same scope root, with the same shape:
+`requester: "/os/submit"`, `subject: "*"`,
+`scope_match: {"scope_prefix": "/os/orgs", "actions": ["apply"]}`.
+
+The two are apart because they are apart in fact: an operator can grant one and refuse the
+other, and a single verdict could only ever have said yes to both. Until this row exists
+and is enabled, a manifest that authors code is refused with `code_author_denied` — the
+broker answers `capability_unknown`, and a missing rule is a denial rather than a silence.
+That was the promise; until `2.4.1` the second question never reached the table at all, so
+an enabled row changed nothing (see *Two questions in a row*, above).
+Disabled on arrival, like everything else here: a fresh colony applies manifests and
+authors no code. What made this necessary is that the prohibition used to live in one line
+of a drafting prompt, and nothing in the tree enforced it.
+
+The third is `affinity.subscribe.default`, and it is where the boundary of this whole
+table becomes visible (GH #458). The `in_pack` lane is the only door through which
+anything outside a sealed agent composite writes a durable `system.*` slot into its
+brain, and a brain opens its own by submitting a mutation that draws that edge. The row
+has the familiar shape — `requester: "/os/submit"`, `subject: "*"`,
+`scope_match: {"scope_prefix": "/os/orgs", "actions": ["apply"]}` — and it ships
+**`enabled: 1`** (R-Policy-Default): an agent that cannot subscribe has no identity, and a
+default that refused would make every shipped brain silent until an operator remembered a
+row. `code.author.default` beside it stays `enabled: 0`, which is the line this default
+does not cross: a brain may open its own identity door on a fresh tree, and it still may
+not author code.
+
+**What this row can say, and what it cannot.** It answers **whether** an identity may
+subscribe. It cannot express **where** the edge points. Every comparison `policy` makes
+is one-sided: a rule field against the matching request field, as an equality, a
+wildcard or a path prefix. Nothing here compares two fields of the same request against
+each other, so "the edge's target is the subject itself" is not writable as a rule at
+any shape, and `*` only asserts presence. That half is checked by
+[`submit`](../submit/)'s gate, which is the only place the manifest is readable at all —
+`access` never sees it, because a broker answer replaces the body it travelled in. The
+gate refuses `subscribe_target_not_self` when the edge ends neither at the requester's
+own hive nor at a node the same declaration creates (GH #479), and
+`subscribe_source_not_affinity` when it does not start at an affinity hive,
+**before** this broker is asked; this row's `denied` is `subscribe_not_permitted`. That
+sentence — *the gate secures the form, the broker answers the capability* — is the
+contract between the two templates, and neither half is safe alone: a capability granted
+for "any `in_pack` edge" with no form check would let one agent open a door into another
+agent's prompt.
+
+#### Narrowing it to one brain
+
+The shipped row grants the capability to every subject under `/os/orgs`. An operator who
+means one brain narrows `subject` and, if they want, the prefix, then flips the switch:
+
+```sql
+-- from the shipped default …
+-- {"rule_id": "affinity.subscribe.default", "subject": "*",
+--  "scope_match": {"actions": ["apply"], "scope_prefix": "/os/orgs"}, "enabled": 0}
+
+-- … to one brain, switched on
+UPDATE policy
+   SET subject     = '/os/orgs/acme/members/alex/talky',
+       scope_match = '{"actions": ["apply"], "scope_prefix": "/os/orgs/acme"}',
+       enabled     = 1
+ WHERE rule_id = 'affinity.subscribe.default';
+```
+
+The row is already on, so this `UPDATE` is a **narrowing** rather than a switch: it
+replaces `subject: "*"` with one brain and tightens the scope to one organisation.
+`enabled: 0` → `enabled: 1` is still the whole switch for the four rows that ship off, and
+`examples/vault-pilot` is the shape of a live row for a capability nothing enables by
+default. Narrowing `subject` is the operator's lever over *who*; it is still not a lever
+over *where*, and it does not need to be — the gate holds the edge to the requester's own
+hive whether this row names one subject or all of them.
+
+### `colony.mutate.shell` — the shell is a scope, and no shipped row reached it
+
+Every row above is scoped `/os/orgs`, and for a declaration that grows an organisation, a
+member or an assistant that is the right prefix. It is not the right prefix for a
+declaration about the **colony itself**. Registering a template class writes to
+`/colony/templates`, which belongs to no organisation, so `/os` is the scope root a
+composer writes for it — and a submission carrying that scope came back
+`requester_not_permitted` from a front door that had no rule to answer it with, while the
+identical declaration one level down committed (GH #514).
+
+The fourth row the submitter can ask over is that scope:
+
+| rule_id | capability | requester | subject | enabled | priority | scope_match |
+|---|---|---|---|---|---|---|
+| `colony.mutate.shell` | `colony.mutate` | `/os/submit` | `*` | **0** | 90 | `{"actions": ["apply"], "scope_prefix": "/os"}` |
+
+**`/os` is the superset, and precedence is what keeps the pair apart.** `scope_prefix` is
+a PATH prefix, so `/os` permits `/os`, `/os/orgs` and every address in the colony —
+`/os/access` and `/os/submit` included — and still not `/oscar`. The enabled rules for one
+capability are read in `priority` **DESC** and the **first match wins**, so at 90 this row
+is examined *after* `colony.mutate.default` at 100: a declaration under `/os/orgs` is
+answered by the narrow row exactly as before, and this one only ever answers for a scope
+the narrow row does not reach. Measured over the shipped script and the shipped seed:
+
+| `resource.scope` | as shipped | with this row switched on |
+|---|---|---|
+| `/os` | `denied` / `scope_mismatch` | `allowed`, by `colony.mutate.shell` |
+| `/os/orgs/acme` | `allowed`, by `colony.mutate.default` | `allowed`, by `colony.mutate.default` |
+| `/os/access` | `denied` / `scope_mismatch` | **`allowed`** |
+| `/oscar` | `denied` / `scope_mismatch` | `denied` / `scope_mismatch` |
+
+The third line is why this row ships **off** while the two defaults beside it ship on. A
+colony that switches it on has granted every shell-level topology change with it — the
+broker itself and the submitter that asks it included — and that is a decision an operator
+makes rather than one a seed makes for them. It is also why the row is not narrowable by
+**where the submission came from**: the requester the broker sees is the literal
+`/os/submit` the shell's own edge promotes, and everything that passes the front door
+carries `/os/operator/submit` as its `subject`, so *which door* is not an axis a rule can
+compare on today.
+
+#### Enabling the shell for the front
+
+The switch is a `seed_rows` declaration (GH #456) — rows enter a running store through the
+**mutation door**, under the manifest's digest and into the `mutation_log`, rather than
+past it:
+
+```json
+[{"scope": "/os",
+  "ctx": {},
+  "diff": {
+    "seed_rows": [
+      {"target": "./access/store",
+       "table": "policy",
+       "rows": [
+         {"rule_id": "colony.mutate.shell",
+          "capability": "colony.mutate",
+          "requester": "/os/submit",
+          "subject": "*",
+          "scope_match": {"actions": ["apply"], "scope_prefix": "/os"},
+          "verdict": "allow",
+          "max_ttl_ms": 0,
+          "constraints": {},
+          "cred_ref": "",
+          "priority": 90,
+          "enabled": 1,
+          "note": "Switched on for this colony: the front registers its own template classes, and a class is registered colony-wide."}
+       ]}
+    ]
+  }}]
+```
+
+Three things about that manifest are not obvious, and all three are load-bearing.
+
+**It cannot go through the front door it opens.** Its own scope root is `/os`, so the
+submitter would ask exactly the question this row answers, and until the row is on the
+answer is still no. It is applied by the **operator** — `meclaw --apply`, or
+`POST /colony/mutations`, the road that asks nobody — which is also where it belongs in a
+build script: directly after the seed, before the first wish goes through the front.
+
+**`seed_rows` inserts and never updates.** A store's declared tables carry no primary key,
+so the operation states *these rows are present*: a row that matches on every column it
+names is counted and not written again, and one that differs on any of them is a new row.
+Switching a shipped `enabled: 0` on is therefore not an `UPDATE` but this row's **enabled
+twin** — the disabled original stays behind as the record of what shipped, and the broker
+reads `enabled = 1` and finds exactly one. The operator's other lever is unchanged and is
+one line, live and without a restart:
+
+```sql
+UPDATE policy SET enabled = 1 WHERE rule_id = 'colony.mutate.shell';
+```
+
+What it buys over the manifest is nothing; what it costs is the `mutation_log` entry, so
+prefer the manifest wherever a build script is doing the switching.
+
+**A template registration asks a SECOND question.** `add_templates` is the case GH #514
+was measured on, and it is executable behaviour arriving with a manifest, so the gate also
+asks `code.author` over the same scope root (GH #446). `code.author.default` is scoped
+`/os/orgs` and ships off, so a shell-scoped registration with only the row above switched
+on moves from `requester_not_permitted` to `code_author_denied` — a different refusal, not
+a green light. A front that is meant to extend its own library needs a `code.author` row
+at `/os` beside this one, seeded by the same manifest; that is the sharper of the two
+grants and it is deliberately not shipped, in any state.
 
 Every comparison in `scope_match` is an equality or a wildcard — except `scope_prefix`,
 which is a **path prefix** against `resource.scope`: `/os` permits `/os` and `/os/orgs`
@@ -437,8 +687,9 @@ would itself be an inventory.
 `grant_id` is a bearer instrument; a migrated grant is a *copied* bearer instrument, live at both
 ends and revocable only where its `grant_events` rows are -- there is no honest way to move one.
 `policy` and `cred_refs` need no export either: they are catalogue and ship as a **seed**
-(`store/seed/*.jsonl`), so a fresh instance starts from the seed -- inert, every rule `enabled: 0`
--- and an operator enables exactly what they mean at the new address. `usage` and `audit` are the
+(`store/seed/*.jsonl`), so a fresh instance starts from the seed -- the five discretionary rules
+`enabled: 0`, the two defaults a colony cannot start without on and narrow -- and an operator
+enables or narrows exactly what they mean at the new address. `usage` and `audit` are the
 record of a broker that ran at the old one; they stay there.
 
 `clock/config.json` declares it too, since `access@2.0.3`

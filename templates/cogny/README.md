@@ -1,9 +1,18 @@
-# `cogny@4.0.3`
+# `cogny@4.4.0`
 
 The agent core as one template. Four units under one hive:
 [`collector`](../collector/) and [`dispatcher`](../dispatcher/) -- each carrying its
-template's own name -- plus **two** `llm` brains, `brain` on a thinking model and
-`brain_fast` on a fast one. No new cell type, no Rust.
+template's own name -- plus ONE `llm` `brain` and one `code` cell, `declare`, which
+hands out the schema of the errand this core takes. No new cell type, no Rust.
+
+**One brain, since 4.4.0** ([#528](https://github.com/mmeyerlein/meclaw/issues/528)).
+Until then the seam had two lanes and the core carried a fast one for memory lookups. The
+right owner of a fast memory question is the **conversation surface** -- it already holds
+the window, and asking it there costs one tool call instead of an advisor round trip, which
+is the very thing [#124](https://github.com/mmeyerlein/meclaw/issues/124) measured. What is
+left here is one class of question -- synthesis, a development over time, multi-step work,
+research -- and one class needs one lane. `brain_fast`, `escalate_to_deep`,
+`context.consult_class` and `ctx.model_fast` went with it.
 
 **Structurally a talky without a channel.** The advisor split (GH #28, R-CG-1) gives an
 agent two brains: a fast [`talky`](../talky/) that owns the channel, and this one, which
@@ -35,25 +44,37 @@ runs is a lens on the same hive, and a second one inherits what the member alrea
 - **An answer that is an event.** The advice leaves on the ordinary `answer` route and
   becomes the asking talky's `in_advice` event -- which is why the same lane carries a
   *question back* without a second mechanism.
-- **Nobody waits.** The consult is classified at the talky's dispatcher
-  (`DISPATCHER_HANDOFF_TOOLS=consult_cogny,ask_memory` -- a handoff is async and says in
-  the same breath that the answer comes from a later turn, GH #372), so the talky's fan-in
+- **Nobody waits.** The consult is classified at the asking dispatcher
+  (`DISPATCHER_HANDOFF_TOOLS=consult_cogny` -- a handoff is async and says in
+  the same breath that the answer comes from a later turn, GH #372), so the asker's fan-in
   opens no expectation for it and the round it leaves behind is over. Thinking time never
-  races an idle window. That property lives on the *talky* side; this template is the half
+  races an idle window. That property lives on the *asking* side; this template is the half
   that is allowed to be slow.
-- **And a lookup does not wait either (1.1.0).** The seam has two lanes. A memory question
-  and a research question are two classes with two answer times, and one `llm` cell is one
-  serial mailbox -- so the class picks a *cell*, not a parameter. See
-  [The two lanes](#the-two-lanes-gh-124) below.
+- **A memory it asks on purpose (4.4.0).** `memory_call_tier` is `"1"` and `memory_tier`
+  is empty: the core has no ambient bundle handed to it and a `memory_recall` tool instead,
+  with a time range and a session it chose itself. A problem solver asks; it is not read to.
+- **One answer per consultation (4.4.0, #539).** *No channel* is enforced here rather than only
+  stated: the `./dispatcher` ref marker carries `override_params {"": {"interim": ""}}`, so
+  the sentence a thinking model puts next to its tool bundle -- "I am checking the official
+  fares now" -- does not leave the cell. It used to leave on the `answer` lane, which for
+  this composite is the asking voice's `in_advice`: the voice was handed an advisor's answer
+  that was not one, said it in the channel, and sometimes consulted again, which the core
+  answered with its next interim sentence. Measured on a live colony: 11 of 26 answers on
+  that lane were interim, and one user turn produced thirteen messages
+  ([#539](https://github.com/mmeyerlein/meclaw/issues/539)). See
+  [Knobs](#knobs).
+- **And an errand nobody has to type (4.4.0).** The core answers `in_schemas` with the
+  schema of `consult_cogny`, in the tools hive's own shape, on `tool_schemas`. Whoever is
+  reached declares themselves -- see [The core declares its own errand](#the-core-declares-its-own-errand-528).
 
 ## Cells
 
 | path | type | from |
 |---|---|---|
-| `collector/{assemble,window}` | `code`, `store` | `collector` **(sealed)** |
+| `collector/{assemble,window,menu-clock}` | `code`, `store`, `timer` | `collector` **(sealed)** |
 | `dispatcher` | `code` | `dispatcher` (a single-cell template) |
-| `brain` | `llm` | this template -- the thinking lane |
-| `brain_fast` | `llm` | this template -- the lookup lane (1.1.0) |
+| `brain` | `llm` | this template -- the one inference |
+| `declare` | `code` | this template -- the errand schema (4.4.0) |
 
 **The braces are an inventory, not an address list.** `collector` declares
 `params.ports: []`, so `./collector` is the only address an edge from outside may name and
@@ -66,13 +87,42 @@ The two sub-units are **references**, not copies. Each of the two directories ho
 `config.json` and nothing else:
 
 ```json
-{"cell": {"type": "ref", "template": "collector@3.0.2"}}
+{"cell": {"type": "ref", "template": "collector@3.4.0"},
+ "override_params": {"assemble": {"context_window": 128000,
+                                  "memory_call_tier": "1",
+                                  "curate_soft": 0.5,
+                                  "curate_hard": 0.75,
+                                  "tools": ["*"]}}}
 ```
+
+Since `4.1.0` the collector reference carries an `override_params` block, and that is where
+the curator is switched **on** -- see [The curator, live](#the-curator-live) below.
+
+**And where the memory TOOL is switched ON** (`4.4.0`,
+[#528](https://github.com/mmeyerlein/meclaw/issues/528)). `memory_call_tier` decides whether
+a `memory_recall` tool call is answered out of the collector's own recall port or refused
+with a typed error, and since `collector@3.3.1` the same knob decides whether the tool is
+**declared** to the brain at all. `4.3.1` set it to `""` for a reason that was true then: the
+core drew no `memory_recall` edge, so a call would have left through the guarded default exit
+and died at a tools hive that never heard of the name -- a core offering a tool it cannot
+serve. `4.4.0` draws the edge instead. One ordinary `./dispatcher -> ./collector` edge on the
+name is all a reserved name costs here, the collector answers it out of the same `recall` port
+the ambient leg used to use, and what goes out carries `hop.memory_call_id` so the returning
+bundle is filed as that call's `tool_result`.
+
+**The ambient leg goes the other way.** `memory_tier` stays empty, and that is the whole
+shape of the ruling: the core is the problem solver, so it asks about a time range or a
+session **on purpose** and is not handed a bundle before it has read the question. The
+conversation surface is the one that wants the free floor, because it is the one with a
+person waiting. `thread_recall` is unchanged and stays on (GH #451), and
+since `collector@3.3.1` (GH #512) both names ride out on every menu the collector
+writes -- they are the two tools this hive serves itself, and no tools hive has a
+declaration for either.
 
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`cogny@4.0.3` above it in its provenance chain.
+`cogny@4.4.0` above it in its provenance chain.
 
 **The library has to carry both.** A reference resolves against the colony's template
 registry, so `collector` and `dispatcher` have to sit in the same `templates/` directory
@@ -93,43 +143,38 @@ the origin is recorded.
 
 ## Ports
 
-**Two external ports, and the parent wires both in the SAME mutation that instantiates
-the composite** -- an island without a crossing edge derives inactive. Both meet at the
-hive path; five further lanes (`in_tool`, `in_bundle`, `tool`, `recall`, `error`) meet
-there too and are wired per instance, see [Lanes](#lanes).
+**Four external ports in two pairs, and the parent wires each pair in the SAME mutation
+that instantiates the composite** -- an island without a crossing edge derives inactive.
+All four meet at the hive path; five further lanes (`in_tool`, `in_bundle`, `tool`,
+`recall`, `error`) meet there too and are wired per instance, see [Lanes](#lanes).
 
 | port | endpoint | direction | what travels |
 |---|---|---|---|
-| consult ingress | `./cogny` | in | the errand on lane `in_turn`, carrying `context.consult_id` **and `context.consult_class`** |
+| consult ingress | `./cogny` | in | the errand on lane `in_turn`, carrying `context.consult_id` **and `context.session_id`** |
 | advice exit | `./cogny` | out | `hop.route == 'answer'` -- the advice, a question back, **or** a store refusal marked `hop.degraded` (see Lanes) |
+| declaration ingress | `./cogny` | in | `in_schemas` with `{"tools": [...]}` -- what does your errand look like? |
+| declaration exit | `./cogny` | out | `hop.route == 'tool_schemas'` -- the `consult_cogny` schema, provider-neutral |
 
 ```json
-{"from": "<front>/talky", "to": "./cogny",
+{"from": "<front>/surface", "to": "./cogny",
  "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'consult_cogny'",
  "modifier": {"set_hop": {"route": "'in_turn'"},
               "set_context": {"consult_id": "hop.consult_id",
-                              "consult_class": "'consult'", "col_phase": "''"},
+                              "session_id": "context.session_id", "col_phase": "''"},
               "restore_ttl": true}},
-{"from": "<front>/talky", "to": "./cogny",
- "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'ask_memory'",
- "modifier": {"set_hop": {"route": "'in_turn'"},
-              "set_context": {"consult_id": "hop.consult_id",
-                              "consult_class": "'lookup'", "col_phase": "''"},
-              "restore_ttl": true}},
-{"from": "./cogny", "to": "<front>/talky",
+{"from": "./cogny", "to": "<front>/surface",
  "condition": "has(hop.route) && hop.route == 'answer'",
  "modifier": {"set_hop": {"route": "'in_advice'"},
               "set_context": {"col_phase": "''"},
               "restore_ttl": true}}
 ```
 
-The ingress is TWO edges since 1.1.0 and they differ in exactly one literal. Everything
-else about them is identical, on purpose: the class picks the lane, never the evidence.
-Wiring only the first one is legal and gives you 1.0.0 behaviour -- without
-`context.consult_class` every errand takes the thinking lane and `brain_fast` never sees a
-message.
+**The ingress is ONE edge since 4.4.0.** The second one carried `ask_memory` and set
+`context.consult_class` to `'lookup'`; the class, the lane and the tool name are all gone
+([#528](https://github.com/mmeyerlein/meclaw/issues/528)). A caller that still promotes
+`consult_class` is not refused -- nothing in here reads it any more.
 
-Five things in those edges are load-bearing, and four of them are not decoration:
+Four things in that pair are load-bearing, and none of them is decoration:
 
 - **`col_phase` must be cleared, on BOTH edges.** Each message leaves *another*
   collector's chain and carries whatever step that chain was in. A collector's `in_turn` /
@@ -140,13 +185,75 @@ Five things in those edges are load-bearing, and four of them are not decoration
   *fresh* consult is named by the call that opened it; a reply to a question the core
   asked back passes the id it was shown -- the dispatcher decides which, and both arrive
   here as the same key.
-- **`consult_class` becomes context too**, for the same reason and read at the same place:
-  the seam edge inside the composite is the only consumer, and by then the hop the class
-  arrived on is three cells old.
-- **`restore_ttl` on all three**, with the condition they already carry: an errand is a
+- **`session_id` becomes context, and the lane DEMANDS it.** `accepts[].context` names it
+  (GH #291 makes that requirement checkable by a backwards walk, so a mutation that draws
+  an ingress without it is refused rather than discovered at runtime). The reason is the
+  memory tool of 4.4.0: a core that may ask its member's memory about *this conversation*
+  has to be able to say which one, and a consultation belongs inside the session that
+  raised it. The shipped form reads it out of the CALLER's own context
+  (`"session_id": "context.session_id"`) and not off the hop: a talky's session keeper puts
+  it there on the first edge of every turn, and no cell between there and here emits it as a
+  hop key -- `dispatcher`'s contract has no `session_id` in `emits.hop`, so an edge promoting
+  `hop.session_id` would fail its modifier and be skipped, which loses the errand in
+  silence. Re-setting a key that already rides along is not redundancy: it is what makes the
+  requirement local to the edge that owes it, and what the checker reads.
+- **`restore_ttl` on both**, with the condition they already carry: an errand is a
   fresh journey, not the tail of the turn that started it, and the advice home is another.
 - **The errand arrives as a `tool_call` turn.** Its text is the raw arguments the model
-  wrote. The core's collector files that as the turn.
+  wrote -- `question` and `context`, both required. The core's collector files that as the
+  turn.
+
+### The core declares its own errand (#528)
+
+The second pair, and it is the same lane pair a tools hive answers on
+(`templates/tools/README.md` § *Asking for the declarations*). That is the whole point: an
+asking collector can put the question to two answerers and cut the two menus together
+without knowing which of them was a hive of tools.
+
+```json
+{"from": "<front>/surface", "to": "./cogny",
+ "condition": "has(hop.route) && hop.route == 'schemas'",
+ "modifier": {"set_hop": {"route": "'in_schemas'"}}},
+{"from": "./cogny", "to": "<front>/surface",
+ "condition": "has(hop.route) && hop.route == 'tool_schemas'",
+ "modifier": {"set_hop": {"route": "'in_menu'"}}}
+```
+
+`params.required_drains` refuses a mutation that draws only half of it, for the reason that
+pair always carries: a caller that asks and does not subscribe offers its model a menu
+without `consult_cogny` in it, and the round then looks like a model that chose not to
+consult -- the one failure nobody can see from outside.
+
+**What a caller sends** is `{"tools": ["consult_cogny"]}`, or `["*"]` for everything this
+core declares, which is one schema. **What comes back** on `tool_schemas` is
+`schemas[]` / `unknown[]` / `messages[]` in the body and `operation` / `schema_count` /
+`unknown_count` / `error_code` (`tool_unknown`, `tools_missing`) on the hop -- byte for
+byte the tools hive's answer shape, and provider-neutral for the same reason: wrapping the
+envelope is the caller's job, because the caller is the one that knows its provider.
+
+The single schema:
+
+| field | type | |
+|---|---|---|
+| `question` | string | **required** -- the one thing the core has to answer |
+| `context` | string | **required** -- everything the core needs: what the person wants, what was already said, what is excluded |
+| `eta` | string | optional -- the asker's own coarse guess, said to the person in the same reply |
+| `consult_id` | string | optional -- names a consultation that is already open |
+
+**`context` is required, and it is required to be redundant.** The asking model must not
+filter it against what it thinks the core already knows: the core's curator discards what
+it does not need at assembly time, and it cannot recover a sentence that was never sent.
+That instruction is in the schema's own `description`, which is also where the **class
+boundary** lives -- synthesis, time series, multi-step work and research come here; a quick
+fact the asker looks up in its own memory. One sentence in one file beats a paragraph copied
+into every persona, and the copies are what drift.
+
+**Why the core and not a tools hive.** A tools hive declares the cells it contains, and this
+core is not one of them. Before 4.4.0 the `consult_cogny` schema was typed by hand into every
+calling brain's `system.tools`; when GH #464 replaced typed menus with asked-for ones, every
+caller stopped typing and the schema had no owner left at all -- so a grown assistant offered
+its model a menu without the one tool the core exists for. Whoever is reached declares
+themselves.
 
 **The hive path is the address, and the lanes are the contract.** Since the seal
 (GH #228) `params.ports` is empty: no edge from outside may name `./cogny/collector` or
@@ -174,15 +281,16 @@ tool cells and no map of them. Wiring a tool is one edge pair:
 the `calls`, `result` and `answer` emissions carry no `tool_name` at all and an unguarded
 comparison **errors** in CEL, which skips the edge with a log line per lane per message.
 
-`escalate_to_deep` never leaves, and since `4.0.2` the exit edge no longer says so
-([#283](https://github.com/mmeyerlein/meclaw/issues/283), ruling Q1). It is a **guarded
-default edge** now -- `{"from": "./dispatcher", "to": ".", "default": true, "condition":
-"has(hop.route) && hop.route == 'tool'"}` -- consulted only when no ordinary edge out of
-`./dispatcher` fired for the message. The reserved name's own ordinary edge into
-`./collector` is what silences it, so the exclusion term
-`(!has(hop.tool_name) || hop.tool_name != 'escalate_to_deep')` is **gone**, not shortened.
-Behaviour is unchanged for every message this composite can produce; what changed is the
-cost of the next reserved name, which is now one ordinary edge and no edit here at all.
+**Two tool names are reserved inside this composite and never leave**: `thread_recall`
+(GH #451) and, since 4.4.0, `memory_recall` ([#528](https://github.com/mmeyerlein/meclaw/issues/528)).
+Both are served by this hive's own collector, and each costs exactly one ordinary
+`./dispatcher -> ./collector` edge -- which is what the **guarded default edge** of `4.0.2`
+was designed for ([#283](https://github.com/mmeyerlein/meclaw/issues/283), ruling Q1). The
+exit is `{"from": "./dispatcher", "to": ".", "default": true, "condition": "has(hop.route)
+&& hop.route == 'tool'"}`, consulted only when no ordinary edge out of `./dispatcher` fired
+for the message, so a reserved name silences it by claiming the message and no exclusion
+term is written anywhere. `escalate_to_deep` was the third reserved name until 4.4.0 and
+went with the lane it escalated to.
 
 The guard on that default is not decoration: `./dispatcher` emits four sorts (`calls`,
 `result`, `answer`, `tool`) and default suppression is **sender-wide**, so an unguarded
@@ -192,22 +300,41 @@ here -- five out-edges, each conditioned on its own lane. A tee added later, at
 `./cogny/dispatcher`, would silence this default for every tool call and the parent's tool
 cells would go dark.
 
-**The memory leg is the second pair**, and it is the one R-CG-1 moved onto this collector:
+**The memory leg is the second pair**, and since 4.4.0 it carries a TOOL call rather than
+an ambient one:
 
 ```json
 {"from": "./cogny", "to": "<member>/memory",
  "condition": "has(hop.route) && hop.route == 'recall'",
- "modifier": {"set_hop": {"route": "'in_query'"}}},
+ "modifier": {"set_hop": {"route": "'in_query'"},
+              "set_context": {"recall_query": "hop.recall_query",
+                              "memory_tier": "hop.memory_tier",
+                              "memory_call_id": "hop.memory_call_id",
+                              "recall_window_from": "hop.recall_window_from",
+                              "recall_window_to": "hop.recall_window_to"}}},
 {"from": "<member>/memory", "to": "./cogny",
  "condition": "has(hop.route) && hop.route == 'bundle'",
  "modifier": {"set_hop": {"route": "'in_bundle'"}}}
 ```
 
-`params.memory_tier` on `./collector/assemble` is what decides how deep this core asks --
-it lives here rather than on the talkies, and until 3.0.1 it had nowhere to ask.
+**`memory_call_id` is the whole correlation and the parent MUST carry it in both
+directions.** A request that leaves with the key set is a `memory_recall` tool call and its
+answer is filed as that call's `tool_result`, under the original `tool_call_id`; a request
+that leaves with the key empty is an ambient leg and its answer is filed as the memory of the
+turn. One port, two meanings, told apart by what the request carried out
+(`templates/collector/README.md` § *The memory tool*). Drop the key on the way back and the
+bundle is filed as a turn's memory leg while the round waits for a tool result that never
+comes -- until the idle exit closes it. Every key is always present and empty rather than
+absent, because a missing hop key makes the promoting CEL modifier fail and a failed modifier
+skips the edge.
 
-**The error drain is one edge**, because the two brains are normalised onto the lane by
-the exit edges themselves rather than by a cell:
+`params.memory_tier` on `./collector/assemble` stays **empty** here and
+`params.memory_call_tier` is `"1"`: the core asks on purpose. The tier of a tool call is read
+off `memory_call_tier` and never off the model's arguments -- a tier is a cost decision of the
+tree, not something a prompt gets to raise.
+
+**The error drain is one edge**, because the brain is normalised onto the lane by
+the exit edge itself rather than by a cell:
 
 ```json
 {"from": "./cogny", "to": "<parent>/drain",
@@ -222,129 +349,112 @@ the consultation died.
 
 | wanted | state |
 |---|---|
-| memory tool (`in_memory_call` back into the collector) | not declared; inside the composite it would be a loop at the hive path, as `talky` does it |
 | housekeeping (`in_prune`, `in_round_sweep`) | not declared |
-| a normalising `errors` cell | R-CG-2 names "collector + dispatcher + llm, and nothing else" (the lookup lane made the llm slot two in 1.1.0); an `errors` cell is not among them, so the two brains are joined by the exit edges' `set_hop.route` instead. That is enough to make the failure reachable; it is not enough to give it a body a reader can grep, which is what `talky/errors` adds |
-| the thread tool (`in_thread_call` back into the collector) | not declared. The sub-unit's collector **does** accept the lane (since `collector@2.0.1`, [#245](https://github.com/mmeyerlein/meclaw/issues/245)), but this composite draws no edge to it, so a `thread_recall` call leaves on the `tool` lane and finds no cell. Wiring it is still a change to `params.graph` -- a parent cannot draw it, because the seal refuses an outside edge naming `./cogny/dispatcher` -- but since `4.0.2` it costs exactly **one ordinary edge** and no change to the tool exit: the default edge stays silent for any name an ordinary edge claims. That is the shape `talky@4.2.2` ships for both of its own served tools ([#55](https://github.com/mmeyerlein/meclaw/issues/55)) |
+| a normalising `errors` cell | R-CG-2 names "collector + dispatcher + llm, and nothing else"; an `errors` cell is not among them, so the brain is put on the lane by the exit edge's `set_hop.route` instead. That is enough to make the failure reachable; it is not enough to give it a body a reader can grep, which is what `talky/errors` adds |
 
-The tool SCHEMAS are a different thing again: they live in the brains' `system.tools`,
-seeded (`brain/seed/system.jsonl`) or written by a system update. **This composite carries
-none of them**, and that claim still holds unchanged for `cogny` -- identity, core
-instructions and tools are the agent here, not the topology.
+**The two tools this composite serves ITSELF are wired since 4.4.0**, and that is the
+retraction of a row that stood here through three versions. `thread_recall` landed with the
+curator in `4.1.0`; `memory_recall` follows in `4.4.0`, on the same shape and for a sharper
+reason -- a problem solver that cannot ask about a time range or a session is not one. Both
+are `./dispatcher -> ./collector` edges on the tool name, in **this template's**
+`params.graph`, because a parent cannot draw them: the seal refuses an outside edge naming
+`./cogny/dispatcher`. Neither touched the tool exit, which is exactly what the guarded
+default of `4.0.2` promised a reserved name would cost. That is the shape `talky` ships for
+both of its own served tools ([#55](https://github.com/mmeyerlein/meclaw/issues/55)).
 
-**It reads differently next door, and the difference is deliberate.** The `talky`
-retracted the same sentence for itself ([#55](https://github.com/mmeyerlein/meclaw/issues/55)):
-a tool the composite *implements* is topology and ships with it, schema and edge together;
-a tool the parent wires is the agent. By that line `cogny` has exactly one candidate --
-`escalate_to_deep`, which it does implement -- and it deliberately ships **no** schema for
-it: the escalation is a per-instance judgement (when is the fast lane not enough?), so its
-description belongs in the instance's own `system.tools`, next to the persona that has to
-exercise it. A talky's memory tool is the opposite case: the same question in every
-instance, answered by the same cell.
+The tool SCHEMAS of the tools a PARENT wires are a different thing again: they live in the
+brain's `system.tools`, asked for on the `schemas` lane since 4.3.0 and written there by the
+collector. **This composite declares none of them.** What it does declare, since 4.4.0, is
+its OWN errand -- see [The core declares its own errand](#the-core-declares-its-own-errand-528).
+That is the same rule read from the other side, and it is the rule `talky` stated for itself
+([#55](https://github.com/mmeyerlein/meclaw/issues/55)): a tool the composite *implements* is
+topology and ships with it, schema and edge together; a tool the parent wires is the agent.
+`consult_cogny` is not a tool this core implements -- it is the door this core IS -- and the
+answer is the same, for the sharper reason that nobody else can hold it.
 
-## The two lanes (GH #124)
+## One brain (#528)
 
-The measurement that produced this version: over eighteen provider calls, the substrate's
-share of a consult's latency was **zero** -- one wire attempt, persist under 16 ms,
-translate under 5 ms. The seconds were two things and neither was overhead.
+`1.1.0` split the seam in two, because a memory lookup arriving six seconds into a
+twenty-two-second research answer waited **15.5 s** in an `llm` cell's serial mailbox for a
+call it finished in 2.5 s. The measurement was right and the topology answered the wrong
+question: the lookup should never have been an errand at all. It is the **conversation
+surface** that holds the window and the person, and a `memory_recall` tool there answers in
+one call what an advisor round trip answered in two hops and a queue.
 
-1. **Generation.** A long answer takes as long as it takes to write.
-2. **The serial mailbox.** An `llm` cell is a stateful cell: one long-lived task, one
-   mpsc mailbox, strictly one message at a time (`docs/meclaw-overview.md`, the
-   concurrency section). A trivial lookup arriving six seconds into a twenty-two-second
-   research answer waited **15.5 s** for a call it finished in 2.5 s.
-
-Both are answered by topology rather than by a knob. A second lane is a second mailbox, so
-a lookup stops queueing; and the lane that only verbalises what the collector already
-found can run a fast model under a short cap.
+So `4.4.0` takes the split out and moves the class boundary into the one place a caller
+reads before it decides -- the `consult_cogny` description this core now hands out itself:
 
 ```
-                                 context.consult_class == 'lookup'
-collector ══════════════════════════════════════════> brain_fast
-        ║                        (everything else)                  │
-        ╚════════════════════════════════════════════> brain        │
-                                                          │         │
-                     dispatcher <─────(stop | tool_calls)──┴─────────┘
+        collector ══(brain, iter < 12, restore_ttl)══> brain
+                                                         │
+                     dispatcher <──(stop | tool_calls)───┘
                             │
-        escalate_to_deep ───┴──> collector  in_turn, consult_class := 'consult'
+     thread_recall ─────────┤
+     memory_recall ─────────┴──> collector
 ```
 
-**The class is a tool name, not an estimate.** The asking model chooses between
-`consult_cogny` and `ask_memory`; the ingress edge lifts that choice into
-`context.consult_class`. `hop.consult_eta` -- the model's own coarse duration guess, GH
-#123 -- stays **observe-only** and routes nothing: it is free text without a unit and
-nobody has measured how well the model guesses. A tool name is a closed value set the
-model declares, it is the documented place to sharpen the class boundary, and a later
-Affinity holder inherits the lane by having one edge change its target.
+**One class, one lane, one mailbox.** Synthesis, a development over time, multi-step work
+and research come here; everything a question's own asker can look up stays there. A
+misfiled errand no longer costs a lane change and an extra assembly -- it costs a consult
+that should not have been made, which is visible in the transcript and fixable in one
+sentence.
 
-**The class picks the lane, never the evidence.** Both lanes are fed by the same
-collector, the same window, the same memory bundle -- the assembly happens *before* the
-seam edge chooses. A misclassification can therefore cost a worse *formulation*, never a
-wrong fact. That is the north star, and it is the reason this is a lane split rather than
-a cheaper memory path.
+`hop.consult_eta` -- the asker's own coarse duration guess, GH #123 -- stays
+**observe-only** and routes nothing. It is now a field of the declared schema (`eta`), which
+is the first time anything says out loud who fills it in and what for: it is said to the
+person in the same reply, so nobody waits without knowing why.
 
-**And when even the formulation will not do, the fast lane escalates.** It calls
-`escalate_to_deep` with the question restated; the dispatcher routes that call by name like any
-other, and one edge in this hive hands it back into the seam as a fresh turn with the
-class flipped to `'consult'`. The deep lane then answers, one extra assembly later. A
-misclassification costs about two seconds -- still cheaper than the fifteen this version
-abolishes, and infinitely cheaper than a wrong answer.
-
-> **Wire `escalate_to_deep` into `DISPATCHER_HANDOFF_TOOLS`.** The escalation is answered
-> on a lane of its own (a new turn), not inside the round it left. A handoff tool is async
-> by definition -- the two lists are unioned -- so the one declaration does both jobs: the
-> dispatcher names its id in `hop.async_calls` *and* in `hop.handoff_calls`, the fan-in
-> opens no expectation, and the abandoned round is filed as already fired **even though the
-> escalation carries no sentence of its own** (the seed prompt says "say nothing else").
->
-> Declaring it in `DISPATCHER_ASYNC_TOOLS` alone is no longer enough since
-> [#372](https://github.com/mmeyerlein/meclaw/issues/372): an async call with no text and
-> no handoff mark leaves its round OPEN on purpose, so the brain gets the iteration it has
-> not spent instead of the channel getting nothing. For a bare `remember` that is the fix;
-> for the escalation it would be one wasted fast-lane inference, and the deep lane's turn
-> would defer behind the round it is supposed to replace. Left out of **both** lists, the
-> round stays open until the idle exit and re-enters the seam for nothing.
+What went with the lane: `brain_fast` and its `brevity` seed, `ctx.model_fast`,
+`context.consult_class` on the seam edge, the `ask_memory` ingress edge, and
+`escalate_to_deep` -- the reserved tool name, its edge, and the paragraph that told every
+instance to put it in `DISPATCHER_HANDOFF_TOOLS`. **Drop it from that list**: a name in the
+handoff list that no cell serves is a call the dispatcher marks as answered-elsewhere and
+nothing ever answers.
 
 ## The internal wiring, edge by edge
 
-Seventeen edges in this hive's `params.graph`, plus the four the sealed collector brings
+Twenty edges in this hive's `params.graph`, plus the four the sealed collector brings
 with it -- those four are its own door and store edges and are neither drawn nor wireable
 from here. Every edge below names `collector` by its HIVE path; the lane in the third
 column is what the door behind it reads:
 
 ```
-collector ==(brain, iter < 12, NOT lookup, restore_ttl)==> brain       <- THE SEAM,
-collector ==(brain, iter < 12, lookup,     restore_ttl)==> brain_fast     two lanes
+collector ==(brain, iter < 12, restore_ttl)==========> brain       <- THE SEAM
+collector --(pack)-----------------------------------> brain       <- THE DOOR IN
+                                                                      THE WALL, #458
+collector --(menu)-----------------------------------> brain       <- the answered
+                                                                      menu, #464
 brain      --(stop | tool_calls)--> dispatcher
-brain_fast --(stop | tool_calls)--> dispatcher
 brain      --(length)-------------> collector  in_answer
-brain_fast --(length)-------------> collector  in_answer
 
 dispatcher --(calls)---> collector  in_calls
 dispatcher --(result)--> collector  in_tool
 dispatcher --(answer)--> collector  in_answer     -> and out of the advice port
-dispatcher --(tool_name == escalate_to_deep)--> collector  in_turn, class := consult
+dispatcher --(tool_name == thread_recall)--> collector  in_thread_call
+dispatcher --(tool_name == memory_recall)--> collector  in_memory_call   <- #528
 
 .          --(in_turn)-----------> collector         THE DOORS
-.          --(in_tool|in_bundle)-> collector
+.          --(in_tool|in_bundle|in_pack|in_menu)-> collector
+.          --(in_schemas)--------> declare           <- #528
 collector  --(answer)-----------> .                  THE EXITS
 collector  --(recall)-----------> .
+collector  --(pack_ack)---------> .
+collector  --(schemas)----------> .
+declare    --(operation == schemas)--> .  route := 'tool_schemas'
 dispatcher ==(tool, DEFAULT)==============> .
 brain      --(error|content_filter)--> .  route := 'error'
-brain_fast --(error|content_filter)--> .  route := 'error'
 ```
 
-**The two seam conditions are complementary, and that is a correctness property, not
-tidiness.** Fan-out copies a message to *every* matching edge -- two overlapping conditions
-would run both brains on one errand and answer twice. The deep edge therefore carries
-`(!has(context.consult_class) || context.consult_class != 'lookup')`: the `has()` is what
-makes an unwired class fall to the thinking lane instead of erroring the edge away.
+**The seam is one edge again since 4.4.0.** Until then it was two complementary
+conditions, and complementary was a correctness property rather than tidiness: fan-out
+copies a message to *every* matching edge, so two overlapping seam conditions would have run
+both brains on one errand and answered twice. With one brain there is nothing to overlap.
 
-**`escalate_to_deep` is a reserved tool name inside this composite.** The edge above claims
-it; a per-instance tool of that name would be swallowed by the escalation lane. The `==` on
-the exit marks the **default** edge (`4.0.2`, [#283](https://github.com/mmeyerlein/meclaw/issues/283)):
-it is consulted only after every ordinary edge out of `dispatcher` has declined, which is
-precisely how the reserved name silences it without being named there.
+**Two reserved tool names, and the exit is untouched by either.** The `==` on the exit marks
+the **default** edge (`4.0.2`, [#283](https://github.com/mmeyerlein/meclaw/issues/283)): it is
+consulted only after every ordinary edge out of `dispatcher` has declined, which is precisely
+how `thread_recall` and `memory_recall` silence it without being named there. A per-instance
+tool of either name would be swallowed by the lane that claims it.
 
 **The loopback bound is an edge literal, on purpose.** `int(hop.iter) < 12` is a safety
 belt, not the policy: the round is bounded by `max_iter`, which ends a runaway
@@ -353,6 +463,19 @@ to be larger. Env substitution does not reach edge conditions -- a `${VAR}` ther
 registered verbatim and fail to parse as CEL -- so raising it is a mutation:
 `remove_edges` first, `add_edges` second, in **two** mutations.
 
+**`max_iter` is a knob, and a thorough errand can reach it.** The shipped default is
+`8` -- the collector's own, and generous for a question that takes two or three lookups.
+A core told to research something in depth spends an iteration per search, and one that
+reaches the bound does not fail: the seam leaves on `answer` with
+`hop.round_capped == "1"`, carrying the raw end of the round -- the turn as it was
+assembled, with whatever the tools had just returned -- instead of an answer written to
+the question. On the advice lane that is what the asking voice receives, so the reply
+changes shape on exactly the errands that were going best. Nothing is lost and nothing is
+silent, but an operator who runs this core on research-sized work raises the knob per
+instance (`override_params` on the `./collector` copy) rather than living with the cap.
+The default stays `8`: a colony that has not measured its own rounds is better served by
+a bound that ends a runaway early than by one that pays for it.
+
 **`restore_ttl` sits on the seam, once per round.** `iter` counts brain answers, and a
 bundle of fifteen calls is one answer, one iteration, one restore.
 
@@ -360,9 +483,10 @@ bundle of fifteen calls is one answer, one iteration, one restore.
 
 The collector's knobs are **params of `./collector`** (since `collector@1.2.0`):
 they ship with their defaults inside the sub-unit copy and are retuned in the instantiated
-tree, per core. The dispatcher's are still `${VAR:-default}` env literals that travel into the
+tree, per core. Three of the dispatcher's are still `${VAR:-default}` env literals that travel into the
 instance and bind **late**, at every read -- and therefore move every unit in the colony at
-once.
+once. Its fourth, `interim`, is a param like the collector's, and this template sets it
+([#539](https://github.com/mmeyerlein/meclaw/issues/539)).
 
 | knob | where | default | unit |
 |---|---|---|---|
@@ -372,22 +496,29 @@ once.
 | `tool_chars` | param | `4000` | collector -- per-item cap on tool results |
 | `round_bytes` | param | `16000` | collector -- byte cap over the whole tool round |
 | `memory_chars` | param | `8000` | collector -- cap on the memory bundle |
-| `max_iter` | param | `8` | collector -- **the loop bound**; at the cap the seam leaves on `answer` |
+| `max_iter` | param | `8` | collector -- **the loop bound**; at the cap the seam leaves on `answer` with `hop.round_capped == "1"` and the raw round end as its text. Raise it per instance for research-sized errands -- see above |
 | `round_idle_ms` | param | `120000` | collector -- idle window of one tool round |
-| `memory_tier` | param | `""` | collector -- **the core's memory leg**; empty = no leg at all. Set it HERE, at the core, and nowhere else -- see below |
-| `memory_call_tier` | param | `"1"` | collector -- tier of the `memory_recall` tool; empty = tool off |
+| `memory_tier` | param | `""` | collector -- the AMBIENT memory leg, and it stays **empty** at this template since 4.4.0: a problem solver asks on purpose. Setting it gives the core a bundle before it has read the question, and pays for it every consult |
+| `memory_call_tier` | param | `"1"` | collector -- tier of the `memory_recall` TOOL, and the knob that also decides whether the tool is DECLARED (`collector@3.3.1`). **Set at this template since 4.4.0** ([#528](https://github.com/mmeyerlein/meclaw/issues/528)), together with the `./dispatcher -> ./collector` edge that keeps the call inside. Empty = tool off, which is what `4.3.1` shipped and why |
 | `memory_form` | param | `"readable"` | collector -- `readable` / `json` / `both` |
+| `interim` | param | `""` | dispatcher -- **off at this template since 4.4.0** ([#539](https://github.com/mmeyerlein/meclaw/issues/539)). On (the shipped default, and what a channel voice keeps) a sentence standing next to a tool bundle leaves on the `answer` lane at once. This core has no channel, and its `answer` lane is the asking voice's advice lane, so such a sentence arrives as an advice nobody gave. Off it does not leave the dispatcher at all, and therefore does not enter this core's own window either -- a sentence nobody could hear was never said. The FINAL answer is untouched |
 | `prune_after_ms` | param | `604800000` | collector -- age gate on the prune lane (7 d) |
 | `turn_write` | param | `"1"` | collector -- per-turn episodes, **on by default** since GH #298. The write belongs at the **talky**, not here: set it to `"0"` at the core unless the core's own `turn_write` route is wired -- see below |
-| `context_window` | param | `0` | collector -- **the curator's budget in tokens**; `0`/empty = curation off. This is the knob the core wants and the channel voice does not: a cogny is exactly the shape the curator was built for (few turns, huge tool results), a talky is the other one |
+| `context_window` | param | `128000` | collector -- **the curator's budget in tokens**; `0`/empty = curation off. **Set at this template since `4.1.0`** (GH #451) -- see [The curator, live](#the-curator-live). This is the knob the core wants and the channel voice does not: a cogny is exactly the shape the curator was built for (few turns, huge tool results), a talky is the other one. The number is the window of the model this template DEFAULTS to (`openai/gpt-4o-mini`, 128k), not the largest window in the catalogue: an estimate here may only err low, because a budget set too high curates too late while one set too low merely curates a little early. Instantiating with a 200k model means raising it in the same mutation |
+| `tools` | param | `["*"]` | collector -- the tool names this core **declares** it uses (GH #464). Set at this template since `4.3.0`, and set to EVERYTHING on purpose: a reasoning core should reach whatever its surface can, and a list typed here would be a second copy of a catalogue that drifts on the first tool added to the hive. The declarations are asked for on the `schemas` lane and written into the brain as durable `system.tools`, together with the two names the collector serves itself (`memory_recall`, `thread_recall`) |
+| `cron` | env | `0 */5 * * * *` | collector/menu-clock -- `MENU_CRON`, the cadence of the menu tick (UTC) |
 | `curate_soft` / `curate_hard` | param | `0.5` / `0.75` | collector -- the working mark and the emergency mark, as fractions of the budget |
 | `keep_rounds` | param | `2` | collector -- newest tool iterations kept verbatim whatever the budget says |
 | `recoverability` | param | `""` | collector -- what may be elided, declared per tool NAME (`lookup:repeatable,write:env`). Undeclared = `unique` = never elided. **Declare the core's own tools here**, because the core is where the large results are |
-| `thread_recall` | param | `"1"` | collector -- the `thread_recall` tool. **This composite does not wire it** and a parent cannot: the edge is `./dispatcher -> ./collector` on `hop.route == 'tool' && hop.tool_name == 'thread_recall'` with `set_hop {"route": "'in_thread_call'"}`, and it lives in this template's own `params.graph`. Since `4.0.2` that is the whole of it -- the tool exit is a guarded default edge and needs no exclusion added for a new reserved name. Until the edge is drawn, the stubs the curator leaves have no way back -- so switching `context_window` on here means switching curation on without a recall path |
+| `tool_menu` | param | `""` | collector -- the tool menu as the provider-native JSON array, if this core wants its DECLARATIONS curated too (GH #451). Empty (the shipped default) leaves the menu in `./brain`'s own `system.tools`, exactly where it has always been. Set it, and the collector owns the slot: the declarations count towards the budget and the ones nobody called for `keep_rounds` iterations are stubbed to name + one line. It is per instance for the same reason the tool cells are -- this composite ships no tool set |
+| `tool_desc_chars` | param | `200` | collector -- how much of a stubbed declaration's description survives |
+| `curate_slot_chars` | param | `2000` | collector -- size above which a `system.*` slot of the collector's OWN making is cut; the protected families are never candidates |
+| `curate_budget_line` | param | `"1"` | collector -- the deterministic remaining-budget sentence in `system.budget`; `""`/`"0"` sends the leaf empty |
+| `thread_recall` | param | `"1"` | collector -- the `thread_recall` tool. **The edge is drawn since `4.1.0`**: `./dispatcher -> ./collector` on `hop.route == 'tool' && hop.tool_name == 'thread_recall'` with `set_hop {"route": "'in_thread_call'"}`, in this template's own `params.graph`, because a parent cannot draw an edge into a sealed sub-unit. It is exactly the one ordinary edge the guarded default exit of `4.0.2` was designed to cost for a second reserved name, and nothing else changed. It landed together with `context_window` and not before it: until the edge exists every stub the curator leaves is a dead end, and a dead end is worse than no stub |
 | `thread_recall_budget` | param | `0.2` | collector -- share of the budget one turn's recalls may spend; over it the call is refused, never truncated |
 | `DISPATCHER_MAX_CALLS` | env | `16` | dispatcher -- per-answer call budget |
-| `DISPATCHER_ASYNC_TOOLS` | env | (empty) | dispatcher -- the core's OWN async tools. The `consult_cogny` / `ask_memory` declarations belong on the **talky** side. The key is colony-global, so in practice one list carries them all |
-| `DISPATCHER_HANDOFF_TOOLS` | env | (empty) | dispatcher -- async tools whose call ends the TURN because the answer comes from a later one. **`escalate_to_deep` belongs here** (GH #372, before that in `DISPATCHER_ASYNC_TOOLS`); naming it here declares it async as well. So do `consult_cogny` / `ask_memory` on the talky side -- an advisor's answer arrives as its own turn |
+| `DISPATCHER_ASYNC_TOOLS` | env | (empty) | dispatcher -- the core's OWN async tools. The `consult_cogny` declaration belongs on the **asking** side. The key is colony-global, so in practice one list carries them all |
+| `DISPATCHER_HANDOFF_TOOLS` | env | (empty) | dispatcher -- async tools whose call ends the TURN because the answer comes from a later one. This core needs **none** since 4.4.0: `escalate_to_deep` is gone, and `consult_cogny` belongs on the asking side, where an advisor's answer arrives as its own turn. A name in this list that no cell serves is a call the dispatcher marks as answered-elsewhere and nothing ever answers |
 
 **Every `env` knob above and everywhere else in a cogny tree is an EXPERIMENTAL config
 surface.** They are colony-global by construction and will follow the collector's knobs onto
@@ -407,9 +538,8 @@ Now the knob is set where it belongs, and the sub-unit stays a reference to the 
 `collector`:
 
 ```json
-{"op": "instantiate", "template": "cogny@4.0.3", "at": "/cores/deep",
- "override_params": {"collector/assemble": {"memory_tier": "1",
-                                            "context_window": 200000,
+{"op": "instantiate", "template": "cogny@4.4.0", "at": "/cores/deep",
+ "override_params": {"collector/assemble": {"context_window": 200000,
                                             "recoverability": "lookup:repeatable,write:env"}}}
 ```
 
@@ -424,8 +554,34 @@ the door.
 **The curator knobs sat on the same edge and are now on the same footing.** A cogny core
 wants `context_window` set -- it is the topology the curator exists for -- while a talky in
 the same colony wants nothing of the kind. Set it at the core's `collector` and the
-talky is untouched. `context_window` still defaults to off, so a core instantiated without
-the override behaves exactly as before.
+talky is untouched.
+
+### The curator, live
+
+Until `4.1.0` `context_window` was `0` everywhere, and `0` means curation **off**. The
+curator was shipped, tested, documented -- and dark in every composite in the library,
+including the one it was designed for. It ships **on** here now (GH
+[#451](https://github.com/mmeyerlein/meclaw/issues/451)), and two things landed with it,
+neither of them optional:
+
+* **The budget is the shipped model's window, not the biggest one on the market.**
+  `128000` is `openai/gpt-4o-mini`, which is what `ctx.model` defaults to in
+  `./brain`'s contract. The estimate inside the cell is already a deliberate lower bound,
+  and a budget set too **high** would compound that in the one direction that hurts:
+  curation that starts too late has to take more at once. Instantiating with a 200k model
+  raises the number in the same mutation -- the override block above shows exactly where.
+* **The way back is wired.** `./dispatcher -> ./collector` on `hop.tool_name ==
+  'thread_recall'` keeps the recall inside the composite, so every stub the curator leaves
+  can be redeemed. That edge could not come from a parent -- it crosses into a sealed
+  sub-unit -- so it lives in this template's `params.graph`, and it is exactly the single
+  ordinary edge the guarded default exit of `4.0.2` predicted a second reserved name would
+  cost.
+
+What the composite still does **not** decide is the tool set, and therefore not
+`recoverability` and not `tool_menu` either. Both are per instance, for the same reason the
+tool cells are: declare the core's own tools where the core is built. Without
+`recoverability` every result is `unique` and the curator can only take `tool_call`
+arguments -- correct, and much less than it could do.
 
 **`turn_write` was the sharper of the two, and it is the clearest win.** The core sees only
 the turns of a consultation, the talky sees the conversation -- so the per-turn write belongs
@@ -439,34 +595,25 @@ conversation into an episodes table and an agent that ships with it off remember
 `override_params`**, and that is the one knob this composite expects a parent to switch off
 rather than on.
 
-**`ctx.model` and `ctx.model_fast` are the instantiation-class knobs** and both are
-strict: `add_nodes` without either is rejected with `ctx_key_missing`. Two equally valid
-forms (session ruling 2026-08-15): a **resolved literal** (the K-H2 builder convention --
-the builder resolves `MODEL_<ROLE>` from `.env` itself), or the `MODEL_<ROLE>` token
-verbatim so the cell re-resolves it at every read.
+**`ctx.model` is the one instantiation-class knob** and it is strict: `add_nodes` without
+it is rejected with `ctx_key_missing`. Two equally valid forms (session ruling 2026-08-15):
+a **resolved literal** (the K-H2 builder convention -- the builder resolves `MODEL_<ROLE>`
+from `.env` itself), or the `MODEL_<ROLE>` token verbatim so the cell re-resolves it at every
+read.
 
 - `ctx.model` -> `brain`. A **thinking** model: the shipped `external_timeout_ms` is 300 s
   and `message_timeout` 400 s, sized for a model that reasons. A fast channel model here
-  wastes the split.
-- `ctx.model_fast` -> `brain_fast`. A **fast** model, the channel-voice class. Its shipped
-  budget is the other end of the scale: `max_tokens` 512, `external_timeout_ms` 60 s,
-  `message_timeout` 90 s. A lane that is allowed to think for five minutes is not a
-  lookup lane, and the length cap is half of what makes it quick -- the other half is the
-  `brevity` slot below.
+  wastes the split between the surface and the core.
+- `ctx.model_fast` is **gone since 4.4.0** ([#528](https://github.com/mmeyerlein/meclaw/issues/528)),
+  with the lane it fed. An instantiation that still passes it is not refused -- an unused ctx
+  key is ignored -- but nothing reads it, and a level that still declares it is describing a
+  cell that is not there.
 
-**The one piece of system state this template ships** is `brain_fast/seed/system.jsonl`:
-a single `brevity` leaf carrying the lane's length discipline and its escalation
-instruction. It is a slot of its own, *not* `instructions`, precisely so the instance's
-own `instructions` write never collides with it -- one writer per system path. Everything
-else about the two brains should be seeded identically; a lookup lane that knows less than
-the deep lane would answer differently, which is exactly what the class split must not
-cause. A seed takes only on a FRESH birth: a `cell.db` that already exists means `Resumed`
-and an inert seed.
-
-> The seed row carries an `updated_at` column next to `slot_path` and `value`. It has to:
-> instantiation stages the `seed/*.jsonl` files straight into the freshly created
-> `cell.db`, whose `system` table declares `updated_at` `NOT NULL`. The `llm` cell's own
-> boot-time loader ignores the column and stamps its own.
+**This template ships no system state at all since 4.4.0.** The one piece it used to ship was
+`brain_fast/seed/system.jsonl`, a `brevity` leaf carrying the lookup lane's length discipline
+and its escalation instruction; the lane is gone and so is the slot. Identity, instructions
+and the tool menu are instance business, exactly as they always were -- and the tool menu is
+asked for rather than seeded since 4.3.0.
 
 **The TTL budget.** With `restore_ttl` on the seam and on both port edges the colony
 default of 64 carries the loop: only ONE round has to fit the budget.
@@ -476,10 +623,10 @@ default of 64 carries the loop: only ONE round has to fit the budget.
 ```bash
 curl -s -X POST http://127.0.0.1:PORT/colony/mutations -H 'Content-Type: application/json' \
   -d '{"scope":"/main/agent",
-       "ctx":{"model":"anthropic/claude-opus-5","model_fast":"openai/gpt-4o-mini"},
+       "ctx":{"model":"anthropic/claude-opus-5"},
        "diff":{
         "add_nodes":[{"name":"cogny","template":"cogny"}],
-        "add_edges":[ ... the advisor ports plus the tool lanes, in the SAME mutation ... ]}}'
+        "add_edges":[ ... the two port PAIRS plus the tool lanes, in the SAME mutation ... ]}}'
 ```
 
 The composite comes up with five cells (plus two hive markers); the `store` and `llm`
@@ -493,16 +640,16 @@ stateful cell. Two things to have ready before the mutation:
    FRESH birth -- a `cell.db` that already exists means `Resumed` and an inert seed) or as
    a system update message. Neither is this template's business.
 
-**The `identity` slot is a projection target.** Both brains put `identity` first in
-`system_order` (`brain/config.json:14-18`, `brain_fast/config.json:14-19`), and that first
+**The `identity` slot is a projection target.** The brain puts `identity` first in
+`system_order` (`brain/config.json`), and that first
 slot is where a person -- the caller, the agent itself -- is rendered into the prompt. An
 `affinity` hive may push into it: one edge per subscribing cell on
 `hop.route == 'answer' && hop.subscriber == '<that brain>'`, and every change to the record
 reaches the brain as a `system.*` write and not as an inference (the recipe is in the
 `affinity` template's own README, § Wiring `out_push` for a subscribing
 brain). Nothing here configures it, and nothing here needs to: the lane is the parent's
-business, exactly like the seed above -- and two brains are two edges, because the
-subscriber key names an address and not a hive. A brain with nobody pushing into `identity`
+business, exactly like the seed above -- and the subscriber key names an address and not a
+hive, so a composite with two brains would have needed two edges. A brain with nobody pushing into `identity`
 is not a broken brain -- `system_order` names the key it would render first, and a `system`
 tree that does not carry the key is simply concatenated without it
 (`crates/meclaw-cells/src/llm/translate.rs:56-60`); nothing declares it unbound. Since
@@ -530,14 +677,13 @@ knowledge ends.
   consultation inside the conversation that asked for it.
 - **Not a memory.** The recall leg is optional and the hive it asks belongs to the member
   the agent works for, not to this template and not to the agent.
-- **Not a persona.** Identity, core instructions and tool schemas live in the brains'
-  `cell.db`, one writer per `system` path -- and there are two of them now, so a system
-  update that reaches only one lane is the drift to watch for. The shipped `brevity` slot
-  is the single exception and it is deliberately not `instructions`. Unlike the `talky`,
-  this composite ships no tool schema of its own; the reason is above, under *What this
-  composite still does NOT declare*.
-- **Not a classifier.** Which lane an errand takes is decided outside this hive, on the
-  ingress edge, from a tool name. Nothing in here inspects a question.
+- **Not a persona.** Identity and core instructions live in the brain's `cell.db`, one
+  writer per `system` path, and the tool menu is asked for rather than typed. The ONE
+  schema this composite owns is its own errand (#528), which is the opposite of a persona:
+  a caller cannot reach what nobody declared.
+- **Not a classifier, and no longer classified either.** Until 4.4.0 an ingress edge lifted
+  a tool name into `context.consult_class` and the seam chose a lane from it. There is one
+  class and one lane now; nothing in here or above it picks between two.
 - **Not an initiator.** In v1 the talky triggers and the core answers; cogny never opens a
   conversation of its own (R-CG-3).
 - **Not in the turn hot path.** A consultation is not a second seam inside a chat turn
@@ -549,10 +695,11 @@ knowledge ends.
 - `crates/meclaw-cells/tests/cogny_template.rs` -- the shipped template in a running
   colony against the mock OpenAI wire: a consult errand enters on the documented ingress,
   the core runs its OWN tool round, and the advice leaves on the return lane under the
-  `consult_id` it was given. Since 1.1.0 also both lookup pins: an `ask_memory` errand
-  reaches `brain_fast` under its own `max_tokens` with the `brevity` slot on the wire, and
-  a fast lane that calls `escalate_to_deep` gets its answer from `brain` instead. The two
-  lanes are told apart by the model id on the wire, which no edge can fake.
+  `consult_id` it was given. Since 4.4.0 also the three pins of #528: an `in_schemas`
+  request comes back on `tool_schemas` carrying the `consult_cogny` schema with `question`
+  and `context` both required; `ask_memory` and `escalate_to_deep` appear in no config or
+  manifest of the template any more; and the core is one brain, `collector` + `dispatcher` + `brain` +
+  `declare` and nothing else.
 - `crates/meclaw-colony/tests/gh277_composite_instantiation_is_byte_identical.rs` -- the
   two golden manifests over the instantiated tree (the sub-unit refs produce the same
   bytes the copies did) plus the stamp pin: a cell inside a referenced sub-unit carries
@@ -560,6 +707,11 @@ knowledge ends.
 - `crates/meclaw-cells/tests/talky_cogny_advisor.rs` -- the other half: the bilateral
   advisor connection end to end, from a talky's interim answer to the correlated
   follow-up in the channel.
+- `crates/meclaw-cells/tests/gh539_a_core_without_a_channel_says_nothing_in_between.rs`
+  -- the interim knob: off, a sentence beside a bundle that is waited for emits nothing on
+  the answer lane while the calls travel unchanged; the final answer still leaves, exactly
+  once; a sentence beside an async-non-handoff bundle still leaves unmarked (GH #378 is not
+  rebuilt); the knob is on by default; and this template is the one that turns it off.
 - The sub-units keep their own pins: `collector_window.rs`, `collector_colony.rs`,
   `dispatcher_template.rs`.
 
@@ -570,16 +722,68 @@ rides on `hop.route`.
 
 | lane | direction | what travels |
 |---|---|---|
-| `in_turn` | in | a question for this core -- a consult or a lookup. `context.consult_class` picks the model tier when the caller promotes it; without it the default tier answers, which is why the lane's `accepts[].context` is empty |
+| `in_turn` | in | an errand for this core -- ONE class since 4.4.0: synthesis, a development over time, multi-step work, research. The body is the `consult_cogny` tool_call turn, `question` and `context` both required. The lane's `accepts[].context` names **`session_id`**, and the ingress edge has to promote it: the core's memory tool asks about sessions ([#528](https://github.com/mmeyerlein/meclaw/issues/528)) |
 | `in_tool` | in | one tool result, coming back from a tool cell the parent wired |
 | `in_bundle` | in | a memory bundle, coming back from whatever keeps this agent's memory |
 | `answer` | out | the core's answer, for whoever asked. Since `collector@2.1.1` a **third** sort travels here -- beside a real answer and a round that hit `max_iter` (`hop.round_capped`) -- and it is marked `hop.degraded == "1"`: a turn that could not be assembled at all because the store refused a read or a write, with `hop.store_error` (the store's `error_code`) and `hop.store_operation` beside it ([#343](https://github.com/mmeyerlein/meclaw/issues/343)). It carries no `round_capped`, so an asker that renders an advice must branch on `degraded` -- without it a failure reads as a real answer |
 | `tool` | out | a tool call for a cell the parent wired; `hop.tool_name` says which one |
-| `recall` | out | a memory read this turn needs |
-| `error` | out | a failed inference on either brain. **Wire it** -- unwired it dead-letters, loudly |
+| `recall` | out | a memory read the brain ASKED for, since 4.4.0: `hop.memory_call_id` names the tool call it belongs to and must come back on `in_bundle`, or the answer is filed as a turn's memory leg and the round waits for a result that never comes |
+| `error` | out | a failed inference on the brain. **Wire it** -- unwired it dead-letters, loudly |
+| `in_pack` | in | a durable `system.*` slot for the brain: `identity`, `persona`, `handover` or `instructions`, and nothing else. **Paired**: see `pack_ack`. Since 4.2.0 |
+| `pack_ack` | out | the receipt `in_pack` answers with -- ONE per pack, not one per brain: `hop.pack_owner`, `hop.pack_slots`, `hop.error_code` (empty, `slot_unknown` or `pack_empty`), `hop.pack_unknown`. Since 4.2.0 |
+| `schemas` | out | the tool names this core declares it uses (`{"tools": ["*"]}` as shipped), for a tools hive's `in_schemas` door. It leaves on a TICK, not per turn. **Paired**: see `in_menu`. Since 4.3.0 |
+| `in_menu` | in | their declarations coming back, plus the names that hive had nothing under. They are written into the brain as durable `system.tools`. Since 4.3.0 |
+| `in_schemas` | in | somebody asking what THIS core's errand looks like: `{"tools": ["consult_cogny"]}` or `["*"]`. **Paired**: see `tool_schemas`. Since 4.4.0 |
+| `tool_schemas` | out | the `consult_cogny` schema, provider-neutral, in the tools hive's own answer shape. Since 4.4.0 |
+
+**The door in the wall (`in_pack`, GH #458).** This composite is sealed, and until 4.2.0
+that seal was complete in a way nobody had meant it to be: an edge naming `./brain` is
+refused with `hive_port_boundary`, the only path from outside runs
+through `./collector`, and the collector drops `system.*` on every lane that could have
+carried one. So a shipped core had no entrance for its own identity, and `affinity` could
+push into nowhere. `in_pack` is that entrance. It reached BOTH brains until 4.4.0, because
+they were two lanes of one agent and a core whose thinking lane knew who it was while its
+lookup lane did not would have answered as two different people; there is one brain now and
+the lane is one edge. It still answers **once**, before whatever fan-out there is, so a
+caller counts packs and not cores. What may be written is the
+closed list `identity` / `persona` / `handover` / `instructions`, a subset of the
+collector's `SYS_KEEP`; an unknown slot refuses the whole pack rather than writing the half
+it understood. The charter is on that list since GH #488, which measured what holding it
+out cost: nothing else exported it and no template seeded it, so a rebuilt core came up
+with an empty charter and answered as the vendor's default assistant. It is guarded by the
+edge that stamps the lane -- drawn only where a brain may draw its own push edge, from a
+source whose single writer is `affinity`'s audited gate -- and not by being unwritable. The
+owner comes off `envelope.reply_to`, never out of the body. The full account of the lane,
+its two body shapes and the mutation that opens it lives in
+[`templates/talky/README.md`](../talky/README.md) § "The door in the wall"; everything
+there holds here without exception.
+
+**The menu is asked for, not typed (`schemas` / `in_menu`, GH #464).** Since 4.3.0 this core
+does not carry a tool menu either. `./collector`'s `params.tools` names what it uses and the
+schemas behind those names are asked for, on a tick, and written into the brain as durable
+`system.tools` -- the same door the pack takes, and durable for the same reason. This core
+declares `["*"]`, and that is a decision rather than a default: a reasoning core should reach
+whatever its surface can, and a list typed here would be a second copy of a catalogue that
+drifts on the first tool added to the hive. The lane pair is `schemas` out and `in_menu`
+back, two edges and never one; a name that hive has nothing under comes back in
+`hop.menu_unknown` and as a warn line rather than as a silence. The full account lives in
+[`templates/talky/README.md`](../talky/README.md) § "The menu is asked for" and
+[`templates/collector/README.md`](../collector/README.md) § "The menu is asked for";
+everything there holds here without exception. Since 4.4.0 the menu the collector writes
+also carries the two tools it answers ITSELF -- `memory_recall` and `thread_recall`, both
+routed by name inside this composite and neither of them a tool any hive has a declaration
+for. That is the `collector`'s own doing since GH #512, and the switches that decide it are
+the two this template sets: `memory_call_tier` and `thread_recall`.
+
+**And this core answers a menu question of its own (`in_schemas` / `tool_schemas`,
+[#528](https://github.com/mmeyerlein/meclaw/issues/528)).** The two lane pairs point in
+opposite directions and must not be confused: `schemas` / `in_menu` is this core ASKING a
+tools hive what it may call, and `in_schemas` / `tool_schemas` is this core ANSWERING what
+IT may be asked. The full account is above, under
+[The core declares its own errand](#the-core-declares-its-own-errand-528).
 
 Which cell takes the question, which one calls the tools and which one produces the
-answer is this template's business and may change without a caller noticing. The two
-brains are joined onto the single `error` lane by the exit edges' own `set_hop.route`,
+answer is this template's business and may change without a caller noticing. The brain
+is put on the `error` lane by the exit edge's own `set_hop.route`,
 because this composite carries no `errors` cell of its own -- see
 [Per-instance lanes](#per-instance-lanes-not-ports-of-this-template).

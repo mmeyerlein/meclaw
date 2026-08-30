@@ -2,7 +2,7 @@
 //! straight back into `compose`, an `llm` cell, and from there onto an
 //! OpenAI-compatible wire. So every turn in it has to be one the wire accepts.
 //!
-//! Measured on 2026-08-27 (`plans/welle-2026-08-27/receipts/builder-agentic-loop-messlauf.md`
+//! Measured on 2026-08-27 (the builder agentic-loop run series,
 //! § 2, 3 of 3 runs): the refine lane worked end to end -- receipt in, parked,
 //! `weave` fired at `compose` with `repairs: "1"` -- and then died with
 //! `wire: HttpStatus(400)`. The last turn of the rebuilt thread was

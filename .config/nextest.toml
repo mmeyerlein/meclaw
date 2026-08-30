@@ -1,0 +1,86 @@
+# cargo-nextest profiles for the meclaw workspace.
+#
+# Two profiles, one difference in posture:
+#
+#   default  -- the local runner. Optimised for a human waiting at a terminal:
+#               failures print immediately, nothing is retried, and a test that
+#               hangs is killed rather than holding the run hostage.
+#   ci       -- the machine runner. Same test set, but it reports slow tests
+#               and flakes explicitly and writes a JUnit file for the summary.
+#
+# Neither profile decides WHICH tests run -- that is the tier filterset, see
+# scripts/test-tier.sh and the [test-groups]/filterset notes further down.
+#
+# Timeout budget: the repo convention is that a test's own failure-marker
+# timeouts are generous (30s, so that cargo-parallel load does not fake a
+# failure). The harness timeout therefore has to sit well above that, or it
+# would turn a slow machine into a red suite. `slow-timeout.period` only marks
+# a test SLOW and prints it; `terminate-after` is the count of periods after
+# which the test is actually killed.
+
+[profile.default]
+# No retries by default. A red test is red -- see docs/development-rules.md.
+retries = 0
+# Keep going after the first failure: one run should name every broken test,
+# not just the first one to trip.
+fail-fast = false
+failure-output = "immediate-final"
+status-level = "fail"
+final-status-level = "slow"
+# 30s -> marked slow; 8 periods (4 min) -> killed. A meclaw test that needs
+# four minutes is wedged, not busy.
+slow-timeout = { period = "30s", terminate-after = 8 }
+
+[profile.ci]
+retries = 0
+fail-fast = false
+failure-output = "immediate-final"
+# "retry" surfaces every retried attempt in the log, so a quarantined flake
+# cannot pass quietly.
+status-level = "retry"
+final-status-level = "flaky"
+slow-timeout = { period = "60s", terminate-after = 5 }
+
+[profile.ci.junit]
+path = "junit.xml"
+
+# ---------------------------------------------------------------------------
+# QUARANTINE -- the ONLY place where retries are allowed.
+# ---------------------------------------------------------------------------
+#
+# House rule, non-negotiable:
+#
+#   1. Retries exist for tests whose flakiness is UNDERSTOOD AND TRACKED.
+#      They are not a way to make a red test go away.
+#   2. EVERY entry below needs an open GitHub issue, named in the comment on
+#      the entry. No issue, no entry -- delete it instead.
+#   3. An entry is a debt, not a state. When the issue closes, the entry goes.
+#   4. Adding an entry does not lift the "red test = BLOCKED" rule: a test that
+#      fails all its attempts is still a hard stop.
+#
+# Format per entry:
+#
+#   [[profile.default.overrides]]
+#   # GH #NNN -- one line on WHY it is flaky, not on what the test does.
+#   filter = 'test(=<binary>::<test path>)'
+#   retries = 2
+#
+# The exact spelling nextest wants is `<crate>::<binary> <test path>` as printed
+# by `cargo nextest list`; in a filter it is written without the space:
+#
+#   filter = 'test(=meclaw-cells::w10b_remember_colony a_broken_annotation_costs_the_answer_nothing)'
+#
+# Verified spellings for the first candidate that was raised
+# (`w10b_remember_colony`, meclaw-cells) -- both of its real tests:
+#
+#   meclaw-cells::w10b_remember_colony a_broken_annotation_costs_the_answer_nothing
+#   meclaw-cells::w10b_remember_colony an_annotated_turn_is_a_fact_candidate_on_the_turn_it_answered
+#
+# (The binary also lists `mock_openai::tests::*` -- those are the unit tests of
+# a shared helper module, compiled into many binaries. Never quarantine those:
+# one entry would silently retry the same helper everywhere.)
+#
+# --- current quarantine ----------------------------------------------------
+# EMPTY. Nothing is quarantined: no measured flake has an issue yet.
+# Do not add the candidate above without first filing the issue that says what
+# makes it flaky -- an entry without that is just a retry.

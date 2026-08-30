@@ -36,7 +36,7 @@
 //! is guarded per file by [`shipped_registry`]; in the public clone the guard
 //! exits cleanly and these tests skip instead of failing on a dead
 //! `templates/` reference. Same form as `affinity_template.rs`, and the
-//! matching `ALLOWED_HITS` entry lives in `plans/export-fixtures/make_export.py`.
+//! matching `ALLOWED_HITS` entry lives in the maintainers' export script.
 
 #[path = "mock_openai.rs"]
 mod mock_openai;

@@ -1,0 +1,90 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json\n\n# The operator's lifecycle occupant: birth, sleep and wake, in the vocabulary\n# the SUBSTRATE actually has.\n#\n# There is no activate and no deactivate operation. Activity is fully DERIVED\n# from the edge table (`crates/meclaw-colony/src/connectivity.rs`): a node is\n# active iff it is connected and its parent hive is active. So the three words\n# map onto three diff operations and nothing is invented here:\n#\n#   birth -> add_nodes (+ add_edges), and `birth: \"inactive\"` is the one\n#            lifecycle state the door reads off a declaration -- a cell born\n#            asleep is registered, addressable and persisted, and no task is\n#            built for it. It is the DEFAULT here, because the reason an\n#            operator grows a cell in two steps is to look at it before it runs.\n#   wake  -> add_edges. The edge IS the wake: the next mutation that connects a\n#            node recomputes it active.\n#   sleep -> remove_edges. Cutting the last edge external to the unit derives\n#            the whole subtree inactive.\n#\n# This cell composes a MANIFEST and hands it to `./submit` next door. It has no\n# edge onto the mutation door and cannot acquire one: everything it assembles\n# still runs through the submitter, the gate and the broker, exactly like a\n# manifest a model drafted.\n\nOPS = (\"birth\", \"sleep\", \"wake\")\n\ndoc = json.load(sys.stdin)\nenv = doc[\"envelope\"]\nhop = (env.get(\"header\") or {}).get(\"hop\") or {}\nbody = doc[\"body\"]\n\nCALL_ID = str(hop.get(\"tool_call_id\") or \"\")\n\n\ndef receipt(text, code=\"\", extra=None):\n    header = {\"route\": \"receipt\", \"operation\": \"operator_lifecycle\"}\n    if code:\n        header[\"error_code\"] = code\n    if CALL_ID:\n        header[\"tool_call_id\"] = CALL_ID\n    header.update(extra or {})\n    sys.stdout.write(json.dumps({\n        \"header\": header,\n        \"messages\": [{\"origin\": \"tool\", \"type\": \"tool_result\", \"id\": CALL_ID,\n                      \"text\": text}]}))\n    sys.exit(0)\n\n\ndef args_of(d):\n    raw = \"\"\n    for m in (d.get(\"messages\") or []):\n        if m.get(\"type\") == \"tool_call\" and m.get(\"text\"):\n            raw = m[\"text\"]\n    try:\n        v = json.loads(raw)\n    except Exception:\n        v = None\n    return v if isinstance(v, dict) else {}\n\n\nargs = args_of(body)\nop = str(args.get(\"op\") or hop.get(\"lifecycle_op\") or \"\")\nif op not in OPS:\n    receipt(\"in_lifecycle takes one of: %s -- and %s is none of them\"\n            % (\", \".join(OPS), op or \"(none)\"), \"unknown_lifecycle_op\")\n\nscope = str(args.get(\"scope\") or \"\")\nif not scope.startswith(\"/\"):\n    # An absolute scope or nothing. A relative one cannot narrow the broker's\n    # question, and the submitter would widen it to the colony root.\n    receipt(\"in_lifecycle needs an absolute `scope`\", \"scope_missing\")\n\nctx = args.get(\"ctx\")\nif not isinstance(ctx, dict):\n    ctx = {}\nedges = args.get(\"edges\")\nif not isinstance(edges, list):\n    edges = []\n\nif op == \"birth\":\n    node = args.get(\"node\")\n    if not isinstance(node, dict) or not node.get(\"name\") \\\n            or not node.get(\"template\"):\n        receipt(\"birth needs a `node` with a name and a template\",\n                \"node_missing\")\n    entry = dict(node)\n    # Born asleep unless the caller says otherwise, and the vocabulary is the\n    # door's own: `active` or `inactive`, nothing else.\n    birth = str(entry.get(\"birth\") or \"inactive\")\n    if birth not in (\"active\", \"inactive\"):\n        receipt(\"a birth state is `active` or `inactive`, never %r\" % birth,\n                \"unknown_birth_state\")\n    entry[\"birth\"] = birth\n    diff = {\"add_nodes\": [entry]}\n    if edges:\n        diff[\"add_edges\"] = edges\nelif op == \"wake\":\n    if not edges:\n        # Said, rather than guessed. There is no wake operation to fall back\n        # on: the substrate derives activity from the edge table, so a wake\n        # with no edge is a wish with no mechanism.\n        receipt(\"wake is an `add_edges`: the substrate has no activate \"\n                \"operation, activity is derived from the edge table, so a \"\n                \"wake names the edges that connect the node\",\n                \"wake_edges_missing\")\n    diff = {\"add_edges\": edges}\nelse:\n    if not edges:\n        receipt(\"sleep is a `remove_edges`: the substrate has no deactivate \"\n                \"operation, activity is derived from the edge table, so a \"\n                \"sleep names the edges that connected the node\",\n                \"sleep_edges_missing\")\n    diff = {\"remove_edges\": edges}\n\n# One declaration, on the lane the submission occupant reads. The digest is\n# drawn THERE, over the bytes that are actually forwarded -- one definition of\n# the manifest's identity, in one cell.\nsys.stdout.write(json.dumps({\n    \"header\": {\"route\": \"submit\", \"operation\": \"operator_lifecycle\",\n               \"lifecycle_op\": op, \"tool_call_id\": CALL_ID},\n    \"manifest\": [{\"scope\": scope, \"ctx\": ctx, \"diff\": diff}],\n    \"messages\": []}))\n",
+    "external_timeout_ms": 10000,
+    "sandbox": {
+      "trust": "restricted",
+      "network": "deny",
+      "filesystem": {
+        "runtime": true
+      }
+    }
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "manifest": {
+          "type": "array",
+          "required": false
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "submit",
+            "receipt"
+          ],
+          "required": true
+        },
+        "operation": {
+          "type": "string",
+          "values": [
+            "operator_lifecycle"
+          ],
+          "required": true
+        },
+        "lifecycle_op": {
+          "type": "string",
+          "values": [
+            "birth",
+            "sleep",
+            "wake"
+          ],
+          "required": false
+        },
+        "tool_call_id": {
+          "type": "string",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "birth, sleep and wake as a MANIFEST, written in the vocabulary the substrate has: add_nodes with a birth state, add_edges, remove_edges. It composes the declaration and hands it to the submission occupant next door.",
+    "use_when": "Reached only through this hive's `in_lifecycle` door, with `{op, scope, ...}`. `birth` defaults to `inactive`, because the reason an operator grows a cell in two steps is to look at it before it runs.",
+    "not_in_scope": "No activate and no deactivate: the substrate has neither, and activity is derived from the edge table. So sleep and wake NAME the edges they cut and draw, and a request that names none is refused rather than guessed at. No edge onto the mutation door either -- what is composed here travels the same submitter, gate and broker a model's manifest travels.",
+    "emits_meaning": "route submit: one declaration on the internal lane the submission occupant reads, so the digest has ONE definition in this hive. route receipt: a refusal that never became a manifest.",
+    "consumes_meaning": "A tool_call turn: `{op: 'birth'|'sleep'|'wake', scope, node?, edges?, ctx?}`. `scope` is absolute or the request is refused -- a relative scope cannot narrow the question the broker is asked.",
+    "examples": [
+      "{op:'birth', scope:'/os/orgs/acme', node:{name:'probe', template:'terminal'}} -> a manifest whose add_nodes entry carries birth 'inactive'",
+      "{op:'wake', scope:'/os/orgs/acme', edges:[{from:'./hub', to:'./probe'}]} -> a manifest with add_edges: the edge IS the wake",
+      "{op:'sleep', scope:'/os/orgs/acme'} with no edges -> receipt, hop.error_code 'sleep_edges_missing', saying why there is nothing else it could mean"
+    ]
+  }
+}

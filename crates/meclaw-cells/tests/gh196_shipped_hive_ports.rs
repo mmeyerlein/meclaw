@@ -1,7 +1,7 @@
 //! GH #196 — a shipped template's `params.ports` opens the doors it names.
 //!
 //! The port boundary compares the SHORT name of a resolved endpoint against each
-//! declared entry, so `./policy` matched nothing: `access` and `steward` were
+//! declared entry, so `./policy` matched nothing: `access` and `argus` were
 //! sealed as strictly as `ports: []` while their own READMEs presented those
 //! ports as the way in. Nothing noticed, because neither template was ever
 //! instantiated — a declaration that can never match is invisible until somebody

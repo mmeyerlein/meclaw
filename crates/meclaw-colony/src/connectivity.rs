@@ -696,7 +696,7 @@ mod tests {
     /// one edge from inside to the world, nothing pointing in — stays awake.
     /// This is the shape a unit that runs on its own clock needs, and the rule
     /// stands on its own: the citation that used to sit here named
-    /// `examples/meclaw-os/grow-steward.json` as an instance of it, and that
+    /// `examples/meclaw-os/grow-argus.json` as an instance of it, and that
     /// declaration draws no edge at all any more (GH #391). The shape is built
     /// below rather than pointed at, so nothing outside this file can retire it
     /// silently again.

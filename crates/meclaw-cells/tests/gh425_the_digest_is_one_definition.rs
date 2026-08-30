@@ -1,5 +1,5 @@
-//! GH #425 — `canonical()` and `digest()` exist in three shipped scripts (the
-//! two that draw the digest, and the one that checks it). They are copies
+//! GH #425 — `canonical()` and `digest()` exist in four shipped scripts (the
+//! three that draw the digest, and the one that checks it). They are copies
 //! because a `code` cell has no shared helper, and a copy that drifts turns the
 //! integrity check into a coin flip that always says no.
 //!
@@ -11,6 +11,10 @@ const SOURCES: &[(&str, &str)] = &[
     ("recipes", "templates/builder/recipes/config.json"),
     ("normalise", "templates/builder/normalise/config.json"),
     ("submit", "templates/submit/gate/config.json"),
+    // GH #446 — a fourth copy, in the front door's submission occupant. It
+    // draws the digest over the bytes it forwards, so it has to draw it the way
+    // the submitter checks it; registering it here is what keeps that true.
+    ("operator", "templates/operator/submit/config.json"),
 ];
 
 const OPEN: &str = "# --8<-- digest-helper";

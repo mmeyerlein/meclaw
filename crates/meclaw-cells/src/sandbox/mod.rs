@@ -28,8 +28,8 @@
 //! enforce a property instead of going red, and a red test on such a host
 //! would only invite somebody to weaken the assertion.
 //!
-//! Design, the measured environment survey and the phase-2 record:
-//! `plans/s4-sandbox/design.md`.
+//! Design and the measured host survey were ratified in GH #35 / GH #85; the
+//! shipped schema is documented in `docs/config.md` § `sandbox`.
 
 mod profile;
 pub use profile::{

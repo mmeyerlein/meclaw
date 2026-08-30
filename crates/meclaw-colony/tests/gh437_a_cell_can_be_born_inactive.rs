@@ -436,8 +436,13 @@ async fn wiring_a_born_inactive_cell_in_the_same_diff_does_not_start_it() {
 /// `docs/meclaw-overview.md` § Reconnect: a node receives an edge again
 /// (typically via `add_edges` or a renewed `add_nodes` at the existing path)
 /// → the long-running cells of the reactivated subtree start immediately.
+///
+/// GH #491 sharpened WHICH mutation that is: one that ADDRESSES the node, i.e.
+/// names its path. The `add_edges` below does, which is why this stayed green;
+/// the other half — a mutation that merely reaches it and must NOT wake it —
+/// lives in `gh491_a_node_born_asleep_stays_asleep.rs`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_next_mutation_that_reaches_it_wakes_it() {
+async fn the_next_mutation_that_names_it_wakes_it() {
     let td = tempfile::TempDir::new().unwrap();
     setup(td.path());
     let spawn_count = Arc::new(AtomicU32::new(0));

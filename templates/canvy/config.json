@@ -76,7 +76,13 @@
         {
           "from": "./web",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'event'"
+          "condition": "has(hop.route) && hop.route == 'event'",
+          "modifier": {
+            "delete_context": [
+              "canvy_graph",
+              "canvy_origin"
+            ]
+          }
         }
       ]
     }

@@ -405,12 +405,31 @@ fn a_verdict_for_the_submitter_does_not_also_leave_the_shell() {
 
 #[test]
 fn the_shell_pins_both_halves_of_the_pair() {
-    for (dir, want) in [("access", "access@2.3.0"), ("submit", "submit@2.0.0")] {
+    // The two numbers are DERIVED, not typed (`docs/development-rules.md`
+    // § 2d): a version written here as a literal goes stale on the next bump
+    // of either template and turns a correct tree red — which it did, on
+    // `submit@2.3.0`.
+    for dir in ["access", "submit"] {
+        let want = format!(
+            "{}@{}",
+            dir,
+            read(&format!(
+                "{}/../../templates/{}/template.json",
+                env!("CARGO_MANIFEST_DIR"),
+                dir
+            ))["version"]
+                .as_str()
+                .expect("the referenced template declares a version")
+        );
         let p = format!(
             "{}/../../templates/meclaw-os/{}/config.json",
             env!("CARGO_MANIFEST_DIR"),
             dir
         );
-        assert_eq!(read(&p)["cell"]["template"], want);
+        assert_eq!(
+            read(&p)["cell"]["template"],
+            want,
+            "the shell's `ref` to {dir} lags the template it names"
+        );
     }
 }

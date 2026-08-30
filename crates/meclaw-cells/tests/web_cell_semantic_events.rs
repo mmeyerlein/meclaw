@@ -27,18 +27,12 @@ use meclaw_cells::web::WebCellFactory;
 use meclaw_colony::{CellFactory, ContractView, SpawnedCellKind};
 use meclaw_core::serde_json::{Value, json};
 use meclaw_core::{CellEmission, Path};
+use meclaw_testing::free_port;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
-
-fn free_port() -> u16 {
-    let l = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind");
-    let p = l.local_addr().expect("addr").port();
-    drop(l);
-    p
-}
 
 /// A button (nothing editable) next to a node (`x` editable), so the two lanes
 /// can be told apart in one cell.

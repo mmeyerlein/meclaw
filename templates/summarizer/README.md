@@ -3,6 +3,11 @@
 The session handover step as a hive of existing cell types -- no new cell type, no Rust.
 Two cells: `prep` (a `code` cell, the glue) and `writer` (an `llm` cell, the prose).
 
+**No longer part of `talky`.** Since `talky@4.3.0` the composite carries no summarizer:
+the handover for the next generation comes from the member's memory recall bundle
+instead ([GH #447](https://github.com/mmeyerlein/meclaw/issues/447)). This template stays
+in the library as a standalone unit for a tree that wants the step on its own.
+
 **When a generation closes, its successor should wake up with yesterday, not with
 nothing.** The session keeper ends a generation, the collector hands the whole day out as
 one batch on route `write` (R-OS-6) -- and this hive is the step behind that batch: it

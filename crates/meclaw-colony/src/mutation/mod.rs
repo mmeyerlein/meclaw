@@ -1,7 +1,8 @@
 //! Mutation-Apply-Pipeline (Phase 6).
 //!
 //! Substitute → Validate → durable in_flight → stage + rename → spawn → edges → durable committed.
-//! Detail: see `plans/archive/phase-6-mutations.md` Entscheidung 8.
+//! The order is phase-6 ruling 8; the ruling record stays in the maintainers'
+//! private tree.
 
 pub mod apply;
 pub mod header_views;
@@ -15,6 +16,7 @@ pub mod rejection;
 pub(crate) mod relocate;
 pub mod rename;
 pub mod required_drains;
+pub mod seed_rows;
 pub mod stage;
 pub mod substitute;
 pub mod subtree;
@@ -204,14 +206,14 @@ pub fn resolve_scoped_path(scope: &str, name: &str) -> meclaw_core::Path {
 ///
 /// **2026-08-27 — `/colony/registry` is the third entry, and it was forced by a
 /// measurement rather than argued into the list.** The agentic builder
-/// (`plans/welle-2026-08-27/receipts/e4-toolcall-builder-vorlage.md`, variant A)
+/// (measured in the 2026-08-27 tool-call builder series, variant A)
 /// gives the baumeister four read tools, two of which are `/colony` reads:
 /// `./eyes -> /colony/graph` and `./eyes -> /colony/registry`. ADR-0015's
 /// amendment assumed the second could only ever be **birth** topology and
 /// therefore needed no entry here. That assumption does not survive contact with
 /// the tree: `meclaw-os` carries the builder, and `meclaw-os` is grown — by
 /// `examples/organism/grow-os.json`, by the `gh422` manifest, and by the
-/// `meclaw-os@1.2.3` seed `ref` at boot, all three of which resolve the subtree
+/// `meclaw-os@1.3.1` seed `ref` at boot, all three of which resolve the subtree
 /// through `resolve_internal_edges`. Without this entry every one of those paths
 /// dies with `subtree edge endpoint /colony/registry escapes subtree root /os`,
 /// i.e. the OS stops being growable at all.
@@ -225,8 +227,40 @@ pub fn resolve_scoped_path(scope: &str, name: &str) -> meclaw_core::Path {
 /// this list draws is unmoved: `/colony/mutations` is authority transfer,
 /// `/colony/trace` and `/colony/dead_letters` are other cells' content, and
 /// none of the three is in here.
-pub const MUTATION_DRAWABLE_VIRTUAL_ENDPOINTS: &[&str] =
-    &["/colony/graph", "/colony/registry", "/colony/ledger"];
+///
+/// **2026-08-29 — `/colony/templates` is the fourth entry, and it was forced the
+/// same way the third was** (GH #496). The `builder-librarian` corpus is a SEED:
+/// the store loads `seed/docs.jsonl` once, at `OpenStatus::Created`, and never
+/// again, so a running librarian answers "what templates exist" about the
+/// library of the moment it was born. A class registered since — by an
+/// `add_templates` (GH #440), by a directory dropped in plus a rescan — is
+/// resolvable at the mutation door and does not exist for the composer.
+/// Measured: seven rounds and no manifest, spent looking for a template that
+/// had been in the library for an hour. The librarian closes it by ASKING the
+/// registry over `/colony/templates` and writing the missing names into its own
+/// corpus — and without this entry that template dies at growth with `subtree
+/// edge endpoint /colony/templates escapes subtree root /librarian`, so the
+/// lane could only ever be hand-drawn into a root `config.json` and never
+/// travel with the template that needs it.
+///
+/// It passes the same test the other three passed. A templates read answers
+/// `template_id`, `name`, `version`, `filesystem_path`, `author`
+/// (`api_dto::TemplateEntryDto`) — the colony's own bookkeeping about its own
+/// LIBRARY, never a row of anybody's message and never a header, and about
+/// classes rather than instances, which is strictly less than `/colony/graph`
+/// already hands out about the live tree. Two things it is deliberately NOT:
+/// `/colony/templates/rescan` is a separate endpoint and stays out (it is an
+/// effect, not a read), and the one host-shaped field in the projection —
+/// `filesystem_path` — is named here rather than glossed over: it is the
+/// directory the reading cell's own code was copied from, not a credential, and
+/// it travels because the DTO is a published HTTP shape that this decision does
+/// not get to narrow on the side.
+pub const MUTATION_DRAWABLE_VIRTUAL_ENDPOINTS: &[&str] = &[
+    "/colony/graph",
+    "/colony/registry",
+    "/colony/ledger",
+    "/colony/templates",
+];
 
 /// Whether `endpoint` is an absolute virtual endpoint a mutation may draw an
 /// edge **to** (never `from` — a virtual endpoint emits nothing on its own).
@@ -356,6 +390,16 @@ pub enum MutationError {
     /// the time of writing saying so (GH #277 ruling Q7 is what makes the scan
     /// abort; this code is what makes it never happen).
     TemplateNameTaken(String),
+    /// GH #456: a `seed_rows[]` entry names a target that is not a `store` —
+    /// nothing is registered there, it is a cell of another type, or its
+    /// declaration could not be read. Only a `store` owns declared tables, so
+    /// only a `store` can take rows through the mutation door.
+    SeedTargetNotAStore(String),
+    /// GH #456: a `seed_rows[]` entry names a table the target store does not
+    /// declare in `params.schema`. A row into an undeclared table would create a
+    /// shape the store never agreed to, so the declaration is refused rather
+    /// than the table invented.
+    SeedTableUndeclared(String),
 }
 
 impl MutationError {
@@ -389,6 +433,8 @@ impl MutationError {
             Self::LiveTreeMutated(_) => "schema",
             Self::InvalidTemplateName(_) => "invalid_template_name",
             Self::TemplateNameTaken(_) => "template_name_taken",
+            Self::SeedTargetNotAStore(_) => "seed_target_not_a_store",
+            Self::SeedTableUndeclared(_) => "seed_table_undeclared",
         }
     }
 
@@ -425,7 +471,9 @@ impl MutationError {
             | Self::HiveContract(s)
             | Self::LiveTreeMutated(s)
             | Self::InvalidTemplateName(s)
-            | Self::TemplateNameTaken(s) => s.clone(),
+            | Self::TemplateNameTaken(s)
+            | Self::SeedTargetNotAStore(s)
+            | Self::SeedTableUndeclared(s) => s.clone(),
             Self::ScopeOutOfBounds { path } => path.as_str().to_string(),
         }
     }
@@ -524,6 +572,8 @@ mod tests {
             MutationError::LiveTreeMutated("x".into()).error_code(),
             MutationError::InvalidTemplateName("x".into()).error_code(),
             MutationError::TemplateNameTaken("x".into()).error_code(),
+            MutationError::SeedTargetNotAStore("x".into()).error_code(),
+            MutationError::SeedTableUndeclared("x".into()).error_code(),
         ];
 
         // The ones the lifecycle path emits, pinned individually in `colony.rs`.
@@ -568,6 +618,9 @@ mod tests {
             "requirement_missing",
             "invalid_template_name",
             "template_name_taken",
+            // GH #456: the two refusals `seed_rows` contributes.
+            "seed_target_not_a_store",
+            "seed_table_undeclared",
         ]
         .into_iter()
         .collect();
@@ -587,7 +640,7 @@ mod tests {
              `error_code` is documented as an ENUM, so a caller matching on it \
              would meet a token the contract never named"
         );
-        assert_eq!(spec.len(), 26, "the documented enum is 26 tokens wide");
+        assert_eq!(spec.len(), 28, "the documented enum is 28 tokens wide");
     }
 
     #[test]

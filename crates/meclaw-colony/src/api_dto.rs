@@ -120,8 +120,10 @@ pub struct LedgerQuery {
     /// Never truncated — it filters, so shortening it would change the
     /// question. An over-long one is refused at parse time instead.
     pub cycle_id: Option<String>,
-    /// Requested grouping. Only `"model"` exists; anything else is refused at
-    /// parse time (`invalid_query`).
+    /// Requested grouping: `"model"`, `"path"` or `"error_code"` (GH #463).
+    /// Anything else is refused at parse time (`invalid_query`). `None` is not
+    /// "no grouping" — `by_model` is answered either way; the field decides
+    /// whether a SECOND group map is computed beside it.
     pub group_by: Option<String>,
     /// Opaque caller correlation token, echoed verbatim. Truncated to 64
     /// characters, never refused: it never touches the data, so shortening it
@@ -181,21 +183,74 @@ pub struct LedgerMessages {
     /// update reaching the cell, not the cell answering. Zero when either
     /// filter is absent.
     pub path_prefix_cycle_total: u64,
-    /// Per-model call counts and token sums, keyed by `$.hop.model`. Rows
-    /// without a model create no group.
-    pub by_model: std::collections::BTreeMap<String, LedgerModel>,
+    /// Per-model call counts and sums, keyed by `$.hop.model`. Rows without a
+    /// model create no group. Always present — it predates `group_by` being
+    /// read at all, and a caller that never sends one still gets it.
+    pub by_model: std::collections::BTreeMap<String, LedgerAggregate>,
+    /// The same sums grouped by the **receiving** path (`to_path`), present
+    /// only for `group_by=path` (GH #463). `to_path` and not `from_path`, for
+    /// the reason the cycle counter uses it too: "the message reached that
+    /// cell" is the fact a watcher asks about.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub by_path: std::collections::BTreeMap<String, LedgerAggregate>,
+    /// The same sums grouped by `$.hop.error_code`, present only for
+    /// `group_by=error_code` (GH #463). Hops that did not fail carry no error
+    /// code and create no group.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub by_error_code: std::collections::BTreeMap<String, LedgerAggregate>,
 }
 
-/// Per-model slice of a [`LedgerMessages`] aggregate.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LedgerModel {
-    /// Hops naming this model.
+/// One group of a [`LedgerMessages`] aggregate — the sums over every hop that
+/// shares one grouping key (a model, a receiving path, an error code).
+///
+/// **Sum and sample count travel together** for the two duration figures
+/// (GH #463). A mean is `latency_ms / latency_samples`, and the divisor cannot
+/// be `calls`: most hops in a window carry no `latency_ms` at all, so dividing
+/// by the call count would silently answer a different, smaller number. A sum
+/// without its sample count is a figure nobody can turn back into a rate.
+///
+/// Every field is `#[serde(default)]`, so a reply written by an older substrate
+/// still deserialises — the fields below `tokens_completion` did not exist
+/// before GH #463.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LedgerAggregate {
+    /// Hops in this group.
     pub calls: u64,
     /// Sum of `$.hop.tokens_prompt` over those hops.
     pub tokens_prompt: i64,
     /// Sum of `$.hop.tokens_completion` over those hops.
     pub tokens_completion: i64,
+    /// Sum of `$.hop.tokens_cached` — cache-read tokens, whichever spelling the
+    /// provider used before the `llm` cell normalised it (GH #463).
+    #[serde(default)]
+    pub tokens_cached: i64,
+    /// Sum of `$.hop.cost` — the PROVIDER's own cost figures, added up. The
+    /// substrate never prices a call itself, so a group whose provider reports
+    /// no cost sums to `0.0`, and `calls` is what says whether that zero means
+    /// "free" or "not reported".
+    #[serde(default)]
+    pub cost: f64,
+    /// Sum of `$.hop.latency_ms` — provider-call wall time, written by the
+    /// `llm` cell on both the success and the error path.
+    #[serde(default)]
+    pub latency_ms: i64,
+    /// How many hops of this group actually carried a `latency_ms`. The
+    /// divisor for the mean; never assume `calls`.
+    #[serde(default)]
+    pub latency_samples: u64,
+    /// Sum of `$.hop.duration_ms` — the tool-side twin of `latency_ms`, written
+    /// by `file`, `bash`, `web_search`, `mcp` and `vault`.
+    #[serde(default)]
+    pub duration_ms: i64,
+    /// How many hops of this group actually carried a `duration_ms`.
+    #[serde(default)]
+    pub duration_samples: u64,
 }
+
+/// The name this aggregate carried while `by_model` was the only grouping
+/// (GH #267). Kept as an alias rather than renamed away: it is a published
+/// type name, and the shape it describes did not change, only widened.
+pub type LedgerModel = LedgerAggregate;
 
 /// A single windowed count (the dead-letter slot of a ledger reply).
 #[derive(Debug, Clone, Serialize, Deserialize)]

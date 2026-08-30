@@ -19,7 +19,16 @@ pub enum McpLink {
     Http(McpClient),
     /// A command to the I/O sub-task, answered through a `oneshot`.
     Stdio,
+    /// GH #489: nothing to speak to — no provider was named.
+    Unset,
 }
+
+/// GH #489: the `endpoint_unset` receipt's wording. One constant because a
+/// reader who only has the log must not have to work out whether two different
+/// sentences describe the same state (same argument as `llm`'s
+/// `credential_pending`).
+const ENDPOINT_UNSET_DETAIL: &str = "no MCP provider is configured for this cell (endpoint unset); \
+     name a server and reconnect it -- nothing was called";
 
 /// The `mcp` cell. State is single-threaded in the handler sub-task of
 /// `cell_task_long_running`. `initial_io_cfg` is pulled out once by `split_io`
@@ -89,6 +98,30 @@ impl McpCell {
             })),
         }
     }
+
+    /// GH #489: constructor for a cell whose provider was never named
+    /// (`endpoint` absent or empty on the `http` transport).
+    ///
+    /// It is a full cell — mailbox, `cell.db`, params updates, the lot — with
+    /// one thing missing: a far side. So it runs no handshake, holds no client,
+    /// and answers every call with the `endpoint_unset` receipt instead of
+    /// panicking against an address nobody chose. The two timeouts still apply:
+    /// `query_timeout_ms` governs its `cell.db`, and `external_timeout_ms` is
+    /// kept so that a params update on a cell in this state round-trips exactly
+    /// as it does on a configured one.
+    pub fn new_unset(
+        external_timeout_ms: u64,
+        query_timeout_ms: u64,
+        provider_key: String,
+    ) -> Self {
+        Self {
+            link: McpLink::Unset,
+            external_timeout_ms,
+            query_timeout_ms,
+            provider_key,
+            initial_io_cfg: Some(McpIo::Unset),
+        }
+    }
 }
 
 impl LongRunningCell for McpCell {
@@ -105,6 +138,10 @@ impl LongRunningCell for McpCell {
         match io {
             McpIo::Http(cfg) => cfg.liveness = mark,
             McpIo::Stdio(cfg) => cfg.liveness = mark,
+            // GH #489: a task that owes no round trip reports no liveness —
+            // see `run_unset_io` for why announcing here would be the wrong
+            // signal rather than a harmless extra one.
+            McpIo::Unset => {}
         }
     }
 
@@ -241,6 +278,26 @@ impl LongRunningCell for McpCell {
                     return;
                 }
             };
+            // GH #489: no provider was named, so there is nothing to call and
+            // nothing cached to list. Every round takes the same receipt,
+            // including the discovery round: handing a brain an empty tool
+            // listing would be a menu that is silently empty and a model that
+            // never learns why (`docs/development-rules.md` § 2c — an empty
+            // result and a forgotten call must never look alike).
+            if matches!(self.link, McpLink::Unset) {
+                crate::mcp::emit::emit_tool_result_error(
+                    sink,
+                    &msg,
+                    &parsed.name,
+                    0,
+                    &parsed.call_id,
+                    "endpoint_unset",
+                    ENDPOINT_UNSET_DETAIL,
+                )
+                .await;
+                return;
+            }
+
             // T19: __list_tools__ reads cache, emits system.tools listing — no call_tool.
             if parsed.name == "__list_tools__" {
                 let started = std::time::Instant::now();
@@ -281,6 +338,24 @@ impl LongRunningCell for McpCell {
                     });
                     crate::mcp::stdio::rpc_over_task(reconfig_tx, "tools/call", params, timeout)
                         .await
+                }
+                // GH #489: not reachable — an unset link took its receipt
+                // above, before a call was ever built. The arm exists because
+                // exhaustiveness is checked, and it repeats the SAME receipt so
+                // that even an impossible path cannot produce a second code for
+                // one state.
+                McpLink::Unset => {
+                    crate::mcp::emit::emit_tool_result_error(
+                        sink,
+                        &msg,
+                        &parsed.name,
+                        0,
+                        &parsed.call_id,
+                        "endpoint_unset",
+                        ENDPOINT_UNSET_DETAIL,
+                    )
+                    .await;
+                    return;
                 }
             };
             let duration_ms = started.elapsed().as_millis() as u64;

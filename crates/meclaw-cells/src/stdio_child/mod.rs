@@ -7,7 +7,8 @@
 //! protocol-agnostic: JSON-RPC knowledge (request ids, `initialize`) lives in
 //! the consumer, correlation is injected as a closure.
 //!
-//! See `plans/p7-stdio-child-core.md` for the ratified design.
+//! The design is ratified; its consumers are documented in
+//! `docs/cell-types.md` (`mcp`, `harness`, `subcolony`).
 
 /// Error and exit classification for the child-process layer.
 pub mod error;

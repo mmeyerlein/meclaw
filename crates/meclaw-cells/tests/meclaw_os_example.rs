@@ -10,8 +10,8 @@
 //!   HTTP turn -> door -> firewall screen -> talky keeper -> seam ->
 //!   brain(mock) -> split -> seam -> answer
 //!
-//! Sixteen cells, and NOBODY wrote a single one of them here: one comes from
-//! `door@1`, two from `firewall@1`, twelve from `talky`, one from
+//! Fourteen cells, and NOBODY wrote a single one of them here: one comes from
+//! `door@1`, two from `firewall@1`, ten from `talky`, one from
 //! `terminal@1`. What is checked in is two config files -- a colony default and
 //! a hive with an empty graph.
 //!
@@ -81,25 +81,33 @@ const GROWN_FROM: [(&str, &str); 4] = [
 /// The second declaration names exactly one template, and it ships too.
 const GROWN_FROM_COGNY: [(&str, &str); 1] = [("cogny", "templates/cogny")];
 
-/// GH #277: `talky` REFERENCES its four sub-units instead of carrying copies of
-/// them, so the library the colony scans has to hold them next to it. They are
-/// NOT `grow.json` entries -- the mutation still names `talky` alone, and the
-/// registry resolves the rest.
-const REFERENCED_SUB_UNITS: [(&str, &str); 4] = [
+/// GH #277: `talky` REFERENCES its three sub-units instead of carrying copies
+/// of them, so the library the colony scans has to hold them next to it. They
+/// are NOT `grow.json` entries -- the mutation still names `talky` alone, and
+/// the registry resolves the rest. The `summarizer` left the set with
+/// `talky@4.3.0` (GH #447).
+const REFERENCED_SUB_UNITS: [(&str, &str); 3] = [
     ("collector", "templates/collector"),
-    ("summarizer", "templates/summarizer"),
     ("session-keeper", "templates/session-keeper"),
     ("dispatcher", "templates/dispatcher"),
 ];
 
-/// One cell from `door@1`, two from `firewall@1`, twelve from `talky` (the
-/// twelfth is the sidecar `splitter`, `talky@4.1.0`, GH #379), one from
-/// `terminal@1`.
-const CELLS_AFTER_GROW: usize = 16;
+/// One cell from `door@1`, FOUR from `firewall@2` (the third is the transfer
+/// lane's `porter`, GH #471, the fourth the hold pile's `warden`,
+/// `firewall@2.2.0`, GH #450), twelve from `talky` (the tenth
+/// is the sidecar `splitter`, `talky@4.1.0`, GH #379; the summarizer's two left
+/// with `talky@4.3.0`, GH #447; the eleventh is the collector's `menu-clock`,
+/// `collector@3.3.0`, GH #464; the twelfth is the keeper's own `porter`,
+/// `session-keeper@2.1.0`, GH #471), one from `terminal@1`.
+const CELLS_AFTER_GROW: usize = 18;
 
-/// Plus five from `cogny`: the two brains -- the thinking lane and the
-/// lookup lane of 1.1.0 -- the two collector cells and the split.
-const CELLS_AFTER_COGNY: usize = 21;
+/// Plus six from `cogny`: the brain, the cell that declares the core's own
+/// errand (`cogny@4.4.0`, GH #528), the three collector cells (the menu clock
+/// came with `collector@3.3.0`, GH #464) and the split. The lookup lane's brain
+/// was the sixth until 4.4.0 and `./declare` took its place in the count, which
+/// is a coincidence of arithmetic and not a swap: one is an `llm`, the other a
+/// `code` cell answering a menu question.
+const CELLS_AFTER_COGNY: usize = 24;
 
 fn read_json(p: &std::path::Path) -> Value {
     let raw = std::fs::read_to_string(p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
@@ -375,9 +383,7 @@ fn build_root(td: &tempfile::TempDir, base_url: &str) {
     }
     for rel in [
         "templates/talky/brain/config.json",
-        "templates/summarizer/writer/config.json",
         "templates/cogny/brain/config.json",
-        "templates/cogny/brain_fast/config.json",
     ] {
         patch(&root.join(rel), |v| {
             v["params"]["base_url"] = json!(base_url)
@@ -387,7 +393,7 @@ fn build_root(td: &tempfile::TempDir, base_url: &str) {
         root.join(".env"),
         format!(
             "OPENROUTER_API_KEY=test-key\nMODEL_BRAIN=gpt-4o-mock\nMODEL_CORE=gpt-4o-mock\n\
-             MODEL_CORE_FAST=gpt-4o-mock-fast\nKEEPER_NIGHT_CRON={NEVER}\n"
+             KEEPER_NIGHT_CRON={NEVER}\nMENU_CRON={NEVER}\n"
         ),
     )
     .unwrap();
@@ -531,8 +537,6 @@ async fn the_seed_plus_grow_json_is_a_living_agent() {
         "/talky/collector/window",
         "/talky/dispatcher",
         "/talky/brain",
-        "/talky/summarizer/prep",
-        "/talky/summarizer/writer",
         "/talky/errors",
         "/sink",
     ] {
@@ -615,7 +619,7 @@ async fn the_seed_plus_grow_json_is_a_living_agent() {
     let with_core = registry_paths(&h).await;
     for expected in [
         "/cogny/brain",
-        "/cogny/brain_fast",
+        "/cogny/declare",
         "/cogny/collector/assemble",
         "/cogny/collector/window",
         "/cogny/dispatcher",

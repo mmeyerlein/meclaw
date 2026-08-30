@@ -1,4 +1,4 @@
-//! Phase-7 BashCell. Detail in plans/archive/phase-7-slice-2-bash-edit.md Task 1.
+//! Phase-7 BashCell. The shipped surface is documented in `docs/cell-types.md` § `bash`.
 
 use std::time::Duration;
 

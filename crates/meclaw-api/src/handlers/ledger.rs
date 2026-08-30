@@ -55,7 +55,9 @@ pub struct LedgerQuery {
     pub path_prefix: Option<String>,
     /// Correlation value of `$.hop.cycle_id`; scopes the arrival counter.
     pub cycle_id: Option<String>,
-    /// Requested grouping. Only `"model"` exists; anything else is refused.
+    /// Requested grouping: `model`, `path` or `error_code` (GH #463); anything
+    /// else is refused. `by_model` is answered either way — the parameter says
+    /// whether a second group map is computed beside it.
     pub group_by: Option<String>,
     /// Opaque caller correlation token, echoed verbatim.
     pub tag: Option<String>,

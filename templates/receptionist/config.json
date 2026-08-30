@@ -59,17 +59,44 @@
         {
           "from": "./greet",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'turn'"
+          "condition": "has(hop.route) && hop.route == 'turn'",
+          "modifier": {
+            "delete_context": [
+              "rec_aud",
+              "rec_body",
+              "rec_channel",
+              "rec_origin",
+              "rec_phase"
+            ]
+          }
         },
         {
           "from": "./greet",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'mutate'"
+          "condition": "has(hop.route) && hop.route == 'mutate'",
+          "modifier": {
+            "delete_context": [
+              "rec_aud",
+              "rec_body",
+              "rec_channel",
+              "rec_origin",
+              "rec_phase"
+            ]
+          }
         },
         {
           "from": "./greet",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'reject'"
+          "condition": "has(hop.route) && hop.route == 'reject'",
+          "modifier": {
+            "delete_context": [
+              "rec_aud",
+              "rec_body",
+              "rec_channel",
+              "rec_origin",
+              "rec_phase"
+            ]
+          }
         }
       ]
     }

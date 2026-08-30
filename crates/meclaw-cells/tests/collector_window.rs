@@ -2923,6 +2923,50 @@ fn without_the_marker_a_bundle_behaves_exactly_as_before() {
     assert_eq!(op_of(&out[0])["row"]["fired"], 0);
 }
 
+/// GH #541 -- a turn OPENS a round, so it starts with the whole budget. The
+/// `in_advice` lane is the answer lane of ANOTHER hive's round, and its `iter`
+/// rides along on the arrival: a core that spent nine iterations handed the
+/// surface a turn that was over before it began, the seam left on `answer`
+/// instead of `brain`, and the reader got the raw assembled round where an
+/// answer belonged. Every emission of this invocation carries the round's
+/// number, so the store bundle is where it is measured -- it is what stamps the
+/// reply the seam is later assembled out of.
+#[test]
+fn an_advice_turn_opens_its_round_with_the_whole_budget() {
+    let out = emit(lane_with(
+        "in_advice",
+        serde_json::json!({"iter": "9", "round_capped": "1"}),
+        serde_json::json!({"consult_id": "k-7", "iter": "9"}),
+        serde_json::json!([{"origin": "assistant", "type": "text",
+                            "text": "cheap: flight 180, hostel 3x40"}]),
+    ));
+    assert_eq!(
+        out[0]["header"]["iter"], "0",
+        "the advisor's spent budget is not this round's: {out:?}"
+    );
+    assert_eq!(
+        out[0]["header"]["phase"], "turn-open",
+        "and it is still assembled as a turn"
+    );
+}
+
+/// The counter-pin: a lane that is NOT turn-opening still reads the iteration
+/// it was handed, or a tool round would restart its budget on every fan-in.
+#[test]
+fn a_tool_result_still_carries_the_round_it_belongs_to() {
+    let out = emit(lane_with(
+        "in_tool",
+        serde_json::json!({}),
+        serde_json::json!({"iter": "3"}),
+        serde_json::json!([{"origin": "tool", "type": "tool_result", "id": "c1",
+                            "text": "21C"}]),
+    ));
+    assert_eq!(
+        out[0]["header"]["iter"], "3",
+        "a fan-in is inside a round, not the start of one: {out:?}"
+    );
+}
+
 #[test]
 fn an_advice_event_is_assembled_like_a_turn_and_keeps_its_correlation() {
     // Delta 3 of R-CG-3: the advisor's result comes back as an EVENT on its own
@@ -2992,15 +3036,111 @@ fn the_open_consults_of_the_window_reach_the_brain_as_data() {
         out[0]
     );
     // The system tree only travels through `text` leaves (walk_collect), so
-    // the ids need one -- three words of label, and the ids themselves.
-    assert_eq!(out[0]["system"]["consult"]["text"], "open consults: k-7");
+    // the ids need one -- three words of label, the ids themselves, and since
+    // GH #540 the one rule that says what an advice IS.
+    let text = out[0]["system"]["consult"]["text"]
+        .as_str()
+        .expect("consult text");
+    assert!(
+        text.starts_with("open consults: k-7\n"),
+        "the ids stay the first line, verbatim: {text}"
+    );
     let msgs = out[0]["messages"].as_array().expect("messages");
     assert_eq!(msgs.len(), 3);
     assert_eq!(
         msgs[2]["origin"], "user",
         "an event is inbound on the wire -- the two roles a provider knows"
     );
-    assert_eq!(msgs[2]["text"], "which city?");
+    assert_eq!(
+        msgs[2]["text"], "[advice from your reasoning core, consult k-7]\nwhich city?",
+        "and it says which of the two it is (GH #540)"
+    );
+}
+
+/// GH #540 -- the role confusion the frame closes. An advisor's answer used to
+/// leave this seam as a bare `origin: user` text: byte for byte the shape of a
+/// new sentence by the person, and a model read it as one -- it consulted a
+/// second time quoting the core back as the person's own figures, then answered
+/// the person a question she had never asked.
+#[test]
+fn an_advice_turn_says_on_the_wire_that_it_is_one() {
+    let turns = serde_json::json!([
+        {"role": "user", "text": "plan me three days in athens"},
+        {"role": "assistant", "text": "one moment, I am putting two options together"},
+        {"role": "advice", "text": "cheap: flight 180, hostel 3x40", "consult_id": "k-7"}
+    ]);
+    let rows = serde_json::json!([leg_window_row(turns, 0, 0)]);
+    let out = emit(reply_doc("collect", "bundle", 1, rows));
+    let msgs = out[0]["messages"].as_array().expect("messages");
+    assert_eq!(msgs.len(), 3);
+    // The person's word and the agent's own are untouched: this repair adds a
+    // frame to ONE role and reads every other row exactly as before.
+    assert_eq!(msgs[0]["origin"], "user");
+    assert_eq!(msgs[0]["text"], "plan me three days in athens");
+    assert_eq!(msgs[1]["origin"], "assistant");
+    assert_eq!(
+        msgs[1]["text"], "one moment, I am putting two options together",
+        "no frame on the agent's own voice"
+    );
+    assert_eq!(
+        msgs[2]["origin"], "user",
+        "still the only inbound role a provider accepts mid-conversation"
+    );
+    assert_eq!(
+        msgs[2]["text"],
+        "[advice from your reasoning core, consult k-7]\ncheap: flight 180, hostel 3x40",
+        "the frame names what it is and which consultation it answers"
+    );
+}
+
+/// The same row with no correlation on it. An advice can only be replied to
+/// through an id it was shown, so a frame that PRINTED an empty one would
+/// invite a consult call carrying `consult_id: ""`. It names the sender and
+/// stops there.
+#[test]
+fn an_advice_without_a_correlation_is_still_framed_but_names_no_id() {
+    let turns = serde_json::json!([
+        {"role": "advice", "text": "the fare is 180 EUR", "consult_id": ""}
+    ]);
+    let rows = serde_json::json!([leg_window_row(turns, 0, 0)]);
+    let out = emit(reply_doc("collect", "bundle", 1, rows));
+    let msgs = out[0]["messages"].as_array().expect("messages");
+    assert_eq!(
+        msgs[0]["text"], "[advice from your reasoning core]\nthe fare is 180 EUR",
+        "no id in the frame when there is none to pass back"
+    );
+    assert_eq!(
+        out[0]["system"]["consult"]["text"], "",
+        "and nothing is open, so the slot is the empty rendering"
+    );
+}
+
+/// The other half of GH #540: knowing an advice is an advice does not yet say
+/// what to do with one. The rule travels with the open ids -- in the slot this
+/// cell RE-DERIVES every round, because a seed charter is read once at birth and
+/// a grown, imported or rebuilt brain never receives it (GH #512, GH #525).
+#[test]
+fn the_open_consult_slot_says_what_an_advice_is_for() {
+    let turns = serde_json::json!([
+        {"role": "advice", "text": "which city?", "consult_id": "k-7"}
+    ]);
+    let rows = serde_json::json!([leg_window_row(turns, 0, 0)]);
+    let out = emit(reply_doc("collect", "bundle", 1, rows));
+    let text = out[0]["system"]["consult"]["text"]
+        .as_str()
+        .expect("consult text");
+    for phrase in [
+        "the answer to YOUR consultation",
+        "in your own words",
+        "Do not consult again",
+        "consult_id",
+        "never the person",
+    ] {
+        assert!(
+            text.contains(phrase),
+            "the rule is missing {phrase:?}: {text}"
+        );
+    }
 }
 
 /// GH #259 -- the second half of the same lane: a correlation that was handed

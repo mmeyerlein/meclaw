@@ -1,0 +1,89 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json\n\n# The DECLARATION of this core's own errand, in the core, beside the cells that\n# serve it.\n#\n# WHY IT LIVES HERE. Whoever is reached declares themselves. Until this cell the\n# `consult_cogny` schema was typed by hand into every calling brain's\n# `system.tools`; #464 replaced typed menus with asked-for ones, every caller\n# stopped typing, and the schema then had no owner at all -- no tools hive has\n# it, because this core is not a tool cell. A caller came up with a menu that\n# did not contain the one tool the core exists for.\n#\n# The lane pair and the answer shape are the tools hive's, byte for byte\n# (`templates/tools/README.md` § Asking for the declarations): a caller that can\n# ask one answerer can ask the other, and the collector cuts two answers\n# together without knowing which of them was a hive of tools.\n#\n# THE DESCRIPTION IS THE CLASS BOUNDARY. It is the one place that says what\n# belongs here and what the asker looks up itself, so it is one sentence in one\n# file instead of a paragraph copied into every persona that drifts on the first\n# rewrite.\n#\n# AND IT IS STATED AS A DECISION, not as a class (GH #538). Measured end to end\n# on a live generation: the SAME question -- plan three days in a city on a\n# budget and compare two variants with numbers -- was consulted in one run and\n# done by the surface itself in the next, with its own `web_search`, because the\n# window already showed the work done once. A description that names a KIND\n# (\"synthesis over several sources\") leaves the reader to classify, and a reader\n# that has just seen the work done classifies it as done-able. So the boundary\n# is a question with a countable answer -- more than one lookup, any arithmetic,\n# a plan, a comparison -- and it says what the caller's own web tool is FOR\n# rather than only what the core is for. The window is named too, because it is\n# the thing that moved the boundary: an earlier attempt of one's own is not a\n# precedent.\n#\n# The counterpart in a deployment's charter says the same in the agent's own\n# language; that text drifts per deployment, so the sentence that must not drift\n# lives here, and #531 gates that the charter names nothing this menu lacks.\nSCHEMAS = {\n    \"consult_cogny\": {\n        \"description\": \"Consult the agent's reasoning core. It is the PROBLEM SOLVER: send it synthesis over several sources, a development over time, a multi-step piece of work, or anything that has to be researched or worked out with tools. It thinks for as long as that takes and answers as its own later turn, so say what you are doing in the same reply -- that sentence reaches the person immediately. Do NOT send it a quick fact: a question your own memory can answer is one you ask your own memory. THE BOUNDARY IS A QUESTION YOU ASK BEFORE EVERY TOOL CALL YOU MAKE YOURSELF: does the answer need MORE THAN ONE lookup, any arithmetic, a plan, or a comparison? If it needs any of those, consulting is not a choice -- your own `web_search` is for exactly ONE quick lookup whose answer you relay verbatim, and for nothing beyond it. An earlier attempt of your OWN standing in the window -- a search you ran, a plan you wrote, a comparison you made -- is not a precedent and not a reason to do it again. Pass `context` in full -- what the person wants, what was already said, what is ruled out. Do not deduplicate it against what you think the core already knows: the core's curator discards what it does not need, and it cannot recover a sentence you left out.\",\n        \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {\n                \"question\": {\n                    \"type\": \"string\",\n                    \"description\": \"the one thing the core has to answer, as a question\"\n                },\n                \"context\": {\n                    \"type\": \"string\",\n                    \"description\": \"everything the core needs -- what the person wants, what was already said, what is excluded; do not deduplicate, the core's curator discards\"\n                },\n                \"eta\": {\n                    \"type\": \"string\",\n                    \"description\": \"a coarse guess at how long the answer will take, in your own words -- say it to the person in the same reply (optional)\"\n                },\n                \"consult_id\": {\n                    \"type\": \"string\",\n                    \"description\": \"the id of a consultation that is already open, when this call answers a question the core asked back (optional)\"\n                }\n            },\n            \"required\": [\n                \"question\",\n                \"context\"\n            ]\n        }\n    }\n}\n\ndoc = json.load(sys.stdin)\nbody = doc[\"body\"]\nasked = body.get(\"tools\")\n\n# ABSENT and EMPTY are two different requests and must not look alike -- the\n# same rule the tools hive follows. A caller that declared no tools gets no\n# schemas, and that is an answer; a request that carries no `tools` slot at all\n# lost it on the way.\nif not isinstance(asked, list):\n    sys.stdout.write(json.dumps({\n        \"header\": {\"operation\": \"schemas\", \"error_code\": \"tools_missing\",\n                   \"schema_count\": 0, \"unknown_count\": 0},\n        \"schemas\": [], \"unknown\": [],\n        \"messages\": [{\"origin\": \"tool\", \"type\": \"tool_result\", \"id\": \"\",\n                      \"text\": \"the request carried no `tools` list\"}]}))\n    sys.exit(0)\n\nnames = [str(n) for n in asked if isinstance(n, str)]\nif \"*\" in names:\n    wanted, unknown = sorted(SCHEMAS), []\nelse:\n    seen, wanted, unknown = set(), [], []\n    for n in names:\n        if n in seen:\n            continue\n        seen.add(n)\n        (wanted if n in SCHEMAS else unknown).append(n)\n\nschemas = [dict(name=n, **SCHEMAS[n]) for n in wanted]\nheader = {\"operation\": \"schemas\", \"schema_count\": len(schemas),\n          \"unknown_count\": len(unknown)}\nif unknown:\n    # Named, never dropped: a caller asking this core for a name it does not\n    # serve has to learn that from the answer and not from a silence.\n    header[\"error_code\"] = \"tool_unknown\"\nsys.stdout.write(json.dumps({\n    \"header\": header, \"schemas\": schemas, \"unknown\": unknown, \"messages\": []}))\n",
+    "external_timeout_ms": 10000,
+    "sandbox": {
+      "trust": "restricted",
+      "network": "deny",
+      "filesystem": {
+        "runtime": true
+      }
+    }
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "emits": {
+      "body": {
+        "schemas": {
+          "type": "array",
+          "required": true
+        },
+        "unknown": {
+          "type": "array",
+          "required": true
+        },
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "operation": {
+          "type": "string",
+          "values": [
+            "schemas"
+          ],
+          "required": true
+        },
+        "schema_count": {
+          "type": "number",
+          "required": true
+        },
+        "unknown_count": {
+          "type": "number",
+          "required": true
+        },
+        "error_code": {
+          "type": "string",
+          "values": [
+            "tool_unknown",
+            "tools_missing"
+          ],
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "tools": {
+          "type": "array",
+          "required": false
+        },
+        "messages": {
+          "type": "array",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "The declaration of this core's OWN errand, handed out by name: a request naming `consult_cogny` comes back as its JSON schema, and any other name comes back in `unknown` rather than as a silence. Whoever is reached declares themselves -- the core is not a tool cell, so no tools hive has this schema, and until it lived here every caller typed it into its own prompt (GH #528).",
+    "use_when": "Reached on the composite's `in_schemas` lane, on the asking cell's menu tick, with the names that cell declares it uses. Never addressed by name, never part of a tool round: it answers no `tool_call` and carries no `tool_name`.",
+    "not_in_scope": "No judgement about whether a caller SHOULD consult this core -- that decision is the caller's, and the class boundary it needs in order to make it is the schema's own description. Since GH #538 that description states the boundary as a DECISION the caller can answer by counting -- more than one lookup, any arithmetic, a plan, a comparison -- rather than as a class it has to recognise, and it says what the caller's own web tool is for; a boundary a reader has to classify moves when the window shows the work already done once. No provider envelope: the answer is {name, description, parameters}, and wrapping it in whatever a model provider wants is the caller's business, because the caller is the one that knows its provider. And no second schema: this core serves exactly one errand, and `memory_recall` / `thread_recall` are declared by the collector that answers them, not here.",
+    "emits_meaning": "schemas[]: `{name, description, parameters}` for every asked name this core serves, sorted for `*`. unknown[]: the names it does not serve, verbatim. hop.error_code `tool_unknown` when that list is non-empty, `tools_missing` when the request carried no `tools` slot at all -- an absent list and an empty one are two different requests.",
+    "consumes_meaning": "body.tools: the names the asking cell declares it uses, e.g. [\"consult_cogny\"]. The single entry [\"*\"] asks for everything this core declares, which is one schema.",
+    "examples": [
+      "{\"tools\":[\"*\"]} -> one schema, `consult_cogny`, unknown empty",
+      "{\"tools\":[\"consult_cogny\",\"web_search\"]} -> one schema, unknown [\"web_search\"], hop.error_code `tool_unknown` -- the tools hive answers that one",
+      "{} -> no schemas, hop.error_code `tools_missing`"
+    ]
+  }
+}

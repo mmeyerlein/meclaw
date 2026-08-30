@@ -32,8 +32,8 @@
 //! is guarded per file by [`shipped_affinity`]; in the public clone the guard
 //! exits cleanly and these tests skip instead of failing on a dead
 //! `templates/` reference. Same form as `cogny_template.rs` carried BEFORE its
-//! public switch, and the matching `ALLOWED_HITS` entry lives in
-//! `plans/export-fixtures/make_export.py`.
+//! public switch, and the matching `ALLOWED_HITS` entry lives in the
+//! maintainers' export script.
 
 use meclaw_cells::code::CodeCellFactory;
 use meclaw_cells::store::StoreCellFactory;
@@ -62,17 +62,27 @@ const AFFINITY_FILES: &[&str] = &[
     "gate/config.json",
     "push/config.json",
     "clock/config.json",
+    "porter/config.json",
 ];
 
-/// The non-`config.json` files the template ships: four seed tables and the
+/// The non-`config.json` files the template ships: five seed tables and the
 /// vendored schema. The seed is data, the schema is a pinned copy of a foreign
 /// spec -- neither is read at runtime by a cell, and the schema is never
 /// fetched from the network.
+///
+/// `subscribers.jsonl` is the fifth and the only one that is a WIRING birth
+/// state rather than a data one (GH #453): one active row, so the push lane
+/// carries traffic on the first tick of a fresh hive and silence over unchanged
+/// data is silence rather than emptiness. Every test in this file that ticks
+/// therefore has that row in it as well -- it is addressed at a token no graph
+/// here names, which is the documented undeliverable case (GH #289) and is why
+/// the assertions below count subscriptions instead of assuming one.
 const AFFINITY_SEEDS: &[&str] = &[
     "store/seed/entities.jsonl",
     "store/seed/relations.jsonl",
     "store/seed/trust.jsonl",
     "store/seed/disclosure.jsonl",
+    "store/seed/subscribers.jsonl",
 ];
 const VENDORED_SCHEMA: &str = "aieos.schema.json";
 
@@ -507,11 +517,13 @@ fn valid_aieos(instance: &str, first: &str) -> Value {
 
 // ═══════════════════════════════════════════════════════════════════════ pins
 
-/// Five cells, no more and no less. Pinned as a SET, not as a floor: a hive
+/// Six cells, no more and no less. Pinned as a SET, not as a floor: a hive
 /// that grew an `llm` would still pass every round below -- it would just stop
-/// being the thing whose whole cost argument is that it holds no model.
+/// being the thing whose whole cost argument is that it holds no model. The
+/// sixth arrived with 3.2.0 (GH #471): `porter`, which walks the record out as
+/// a document and takes one back, and it is a `code` cell like the other four.
 #[test]
-fn the_hive_carries_five_cells_and_no_model() {
+fn the_hive_carries_six_cells_and_no_model() {
     let Some(root) = shipped_affinity() else {
         return;
     };
@@ -526,7 +538,8 @@ fn the_hive_carries_five_cells_and_no_model() {
     want.sort();
     assert_eq!(
         found, want,
-        "affinity is store + brief + gate + push + clock: no curator, no brain"
+        "affinity is store + brief + gate + push + clock + porter: no curator, \
+         no brain"
     );
     for rel in AFFINITY_FILES {
         let cfg = read_json(&root.join(rel));
@@ -1381,11 +1394,20 @@ async fn a_body_asserted_subscriber_is_refused() {
                "columns": ["id", "cell_path", "audience"], "limit": 5}),
     )
     .await;
+    // The table is not empty at birth (GH #453 seeds one row), so "nothing was
+    // written" is asserted as "the birth state, unchanged" rather than as a
+    // zero -- a zero here would have stopped being a measurement the day the
+    // seed landed.
     assert_eq!(
         subs.as_array().map(|a| a.len()),
-        Some(0),
+        Some(1),
         "a refused subscription reaches the store nowhere -- `./push` must not \
          find a row it would then serve: {subs}"
+    );
+    assert_eq!(
+        subs[0]["id"].as_str(),
+        Some("sub:aiden-self"),
+        "and the one row that IS there is the seeded one: {subs}"
     );
 
     h.shutdown().await;
@@ -1433,19 +1455,29 @@ async fn the_subscription_row_carries_the_edge_identity() {
                "limit": 5}),
     )
     .await;
-    assert_eq!(subs.as_array().map(|a| a.len()), Some(1), "subs: {subs}");
+    // Two rows: the one this subscribe wrote, and the seeded birth state the
+    // template ships (GH #453). The written one is picked by the address the
+    // EDGE named -- which is the fact under test.
+    assert_eq!(subs.as_array().map(|a| a.len()), Some(2), "subs: {subs}");
+    let written = subs
+        .as_array()
+        .and_then(|rows| {
+            rows.iter()
+                .find(|r| r["cell_path"].as_str() == Some("/main/consumer"))
+        })
+        .unwrap_or_else(|| panic!("no row for the address the edge named: {subs}"));
     assert_eq!(
-        subs[0]["cell_path"].as_str(),
+        written["cell_path"].as_str(),
         Some("/main/consumer"),
         "the address came from the edge, which only the colony writes: {subs}"
     );
     assert_eq!(
-        subs[0]["audience"].as_str(),
+        written["audience"].as_str(),
         Some("member:alex"),
         "and the audience is the actor the edge named, not anything the body \
          said: {subs}"
     );
-    assert_eq!(subs[0]["subject"].as_str(), Some("entity:alex"));
+    assert_eq!(written["subject"].as_str(), Some("entity:alex"));
 
     h.shutdown().await;
 }
@@ -1495,9 +1527,11 @@ async fn a_subscribe_without_an_edge_subscriber_is_refused() {
     .await;
     assert_eq!(
         subs.as_array().map(|a| a.len()),
-        Some(0),
-        "and nothing was written on the way to that refusal: {subs}"
+        Some(1),
+        "and nothing was written on the way to that refusal -- the one row in \
+         the table is the seeded birth state (GH #453): {subs}"
     );
+    assert_eq!(subs[0]["id"].as_str(), Some("sub:aiden-self"), "{subs}");
 
     h.shutdown().await;
 }
@@ -1582,7 +1616,7 @@ async fn push_fires_on_a_changed_pack_and_stays_silent_without_one() {
         &mut rx,
         json!({"operation": "select", "table": "subscribers",
                "columns": ["cell_path", "pack_hash", "status"],
-               "where": {"status": "active"}, "limit": 5}),
+               "where": {"cell_path": "/main/consumer", "status": "active"}, "limit": 5}),
     )
     .await;
     assert_eq!(subs.as_array().map(|a| a.len()), Some(1), "subs: {subs}");

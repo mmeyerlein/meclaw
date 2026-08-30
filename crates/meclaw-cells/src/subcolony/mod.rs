@@ -14,7 +14,8 @@
 //! so it lives as long as the cell is awake and its death is a restart (the
 //! `mcp` shape).
 //!
-//! See `plans/p9-sub-colonies.md` for the ratified design.
+//! The design is ratified; its shipped surface is documented in
+//! `docs/cell-types.md` § `subcolony`.
 
 /// The composition boundary: what crosses and what does not.
 pub mod wire;

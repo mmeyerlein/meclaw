@@ -254,7 +254,7 @@ async fn smoke_the_real_cli_runs_a_task_and_reports_its_cost() {
 ///
 /// So this test is a **standing probe, expected red** until the adapter learns
 /// `--input-format stream-json` — an open decision carried in the defer register
-/// (`docs/roadmap.md` § Cell-Factory-Robustness), not made here.
+/// (`docs/defer-register.md` § Cell-Factory-Robustness), not made here.
 /// Its value is that the day the CLI or the adapter changes, it turns green and
 /// says so. Do not "fix" it by weakening the assertion.
 #[ignore = "costs money: runs the real claude CLI — expected RED today, see doc comment"]

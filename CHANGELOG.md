@@ -11,6 +11,4715 @@ Rust crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.28.0] — 2026-08-30
+
+The release in which the organism grows its own surfaces. Four composition levels — a
+cell, a hive, a level, a whole colony — are drawable from one catalogue; the builder
+writes a manifest and submits it through **one** front door instead of a hand edit; the
+reasoning core drops to a single brain and declares its own errand instead of being told
+which class of question it was handed; one memory hive serves several askers and every
+bundle finds the one that asked; and the path is proven end to end on a booted colony
+rather than in pieces. Four new cell-type templates ship with it — `clock`, `fetcher`,
+`scriptlet`, `shelf` — beside a tool menu merged over every answerer, a reply-to token on
+the wire, and `seed_rows`: store rows entering a running colony through the same door
+topology already goes through.
+
+### Added
+
+#### `memory-hive@3.1.0`: a first-person question anchors on whoever is asking it (GH #536)
+
+*"What are my sons called?"* names nobody, and every tier-1 leg was built out of
+what the question named. The hive **held** the answer — two `has_child` facts,
+both visible to that round, both reachable over an edge — and the bundle that
+left carried no `FACTS` section at all. Measured on a live hive:
+
+```text
+r-join-anchor  select entities where canonical_name in
+               ["Heissen","Meine","Soehne","heissen","meine","soehne"]  ->  []
+fused          leg_sizes    {keyword: 20, semantic: 20, graph: 0, temporal: 20}
+               candidates   fact: 0   episode: 20
+```
+
+The graph anchors resolved the interrogative words of the question, so no walk
+started and GH #520's entity→fact join never ran; the keyword leg has no lexical
+overlap between *sons* and `has_child`; the semantic leg competed with a corpus
+of episodes and returned twenty of them; the temporal leg has no vote in point
+mode (O-4). Zero fact candidates, and the twenty episodes that filled the bundle
+included the assistant's own earlier *"nothing about this is stored"* — which the
+answering model then read as evidence.
+
+The asker was never missing from the request. `context.audience_now` carries the
+participant set, and its `member:`/`person:` tokens are people; the read path
+only ever read it as the audience gate's yardstick, never as an identity.
+
+**A fifth leg, `self`.** It asks `facts where canonical_subject in <the asker's
+subjects>` under the same as-of predicate the temporal leg uses, and it rides the
+**fan's own bundle** — the identity is known at request entry, so the leg waits
+on nothing and costs no round trip. The subjects are `memory_holder`, `user_id`
+and the member tokens of the asking round, plus `MEMORY_SELF_LEGACY_SUBJECT`
+(default `user`): the spelling the extraction lane wrote into `facts.subject`
+before it wrote person names there — 23 of 29 self facts on the measured hive —
+named as the migration artefact it is, and switched off with the empty string.
+`agent:` tokens are deliberately not people: the hive belongs to a MEMBER
+(ADR-0002 E1) and an agent is a lens on it.
+
+It is a leg of its own rather than an extension of the graph leg, because a
+member's dossier would otherwise spend the graph leg's whole `LEG_LIMIT` and
+starve the walk of every slot it has — and a wide walk would do the same to the
+dossier. Two questions, two rank lists. `MEMORY_TIER1_SELF_LIMIT` (`20`) bounds
+its page and `MEMORY_RRF_W_SELF` (`1.0`) is its weight; its rank list is recency,
+because it is the one leg the question does not shape. `self` is appended LAST to
+`LEG_ORDER`, which leaves every existing tie-break bit-identical.
+
+**And it has a budget**, which is the half of this that was found by measuring
+rather than by reasoning. Seated as an ordinary fact list, the leg produced
+DOSSIER FLOOD on the first live build: two different questions came back with a
+**byte-identical `FACTS` section**, because twenty dossier rows had taken every
+slot the query-driven legs were competing for, and a weather fact about a city
+outranked the fact that answered the question. A leg that answers *who is asking*
+is the same answer whatever is asked, so it is not competing on relevance and
+must not be seated as though it were. `fuse_rank` now composes THREE classes
+instead of two, exactly as `EPISODE_BUDGET` already composed two: a fact only the
+self leg nominated gets at most `MEMORY_TIER1_SELF_BUDGET` (`6`) slots while
+query hits are waiting; a fact a query leg *also* found is not a dossier row at
+all and is seated with the rest, agreement bonus and everything; and leftover
+slots fall back to the dossier, so a question nothing else answered — the case
+this leg exists for — is still answered by it.
+
+**Tried and rejected: the asker as a graph anchor.** It is recorded because it
+looked obviously right and measured wrong. Anchoring the walk on the asker *does*
+reach a subject spelling the audience token does not carry (`member:alex` → the
+edge `alex → Alex Example` → the facts written under the fuller name). But an
+asker is a HUB, and a hub anchor is true of every question: the walk came back
+full on every one, and the graph leg then voted at full weight for twenty rows
+nobody had asked about (`leg_sizes.graph = 20` on a question about eye colour,
+with a weather fact about a city in the bundle). A leg whose rank list is the
+same for every question is a constant, not a retrieval. The graph leg keeps the
+one property it has — that the question named where it starts. The price is
+named rather than hidden: a hive holding one person under two subject spellings
+reaches only the ones `self_subjects()` knows, and joining those two is the
+identity axis's job (`subject_aliases`, the nightly identity round), not the
+retrieval's.
+
+**No new disclosure.** An anchor decides what is LOOKED UP, never what is seen:
+every row the leg nominates is measured against `audience_now` by the same gate
+as every other row, before the RRF sum, and a row without a participant set is
+invisible as it always was.
+
+Pinned in
+`crates/meclaw-cells/tests/gh536_a_first_person_question_anchors_on_the_asker.rs`
+(red before, green after) and in the `[request] tier 1 fan` section of
+`workshop/evals/p5-longmemeval/tools/recall_cases.py`.
+
+#### `memory-hive@3.1.0`: the graph leg walks to an entity and reaches the facts it is about (GH #520)
+
+The tier-1 graph leg walked `entity_edges` and then threw the nodes away,
+keeping only the edge's provenance — `kind: "episode"` was the only kind it
+could produce, so **from an entity there was no path to a fact**. The comment
+above it gave the reason: *`entity_edges` carries `episode_id` as its
+provenance, and the node names live in a different namespace than
+`facts.subject`.* The first half is true. The second half is not, and that was
+the finding.
+
+Measured on a two-week-old hive (28 edges, 55 entities, 182 episodes, 34
+facts): `src_entity` and `dst_entity` resolve as a row **id** in 0 of 28 cases —
+they are NAMES — and **15 of the 28 edges have a `dst_entity` that IS a
+`facts.canonical_subject`**, case-insensitively. Not two namespaces at all: the
+same names under two normalisations, `entity_edges` keeping the written spelling
+and `facts` the lower-cased canonical one. The leg was never blocked by the
+schema. It stopped one join short.
+
+`traverse` is not the problem and is unchanged: it is a generic recursive edge
+walk over ONE table, and joining a second one is not its job. The extractor is
+not the problem either. No schema change, no store change, no Rust change.
+
+The nodes a walk passed through are only known AFTER the walk, and the walk's
+reply is the hop that runs the fusion — so reaching a fact at depth ≥ 1 (*user →
+acme.example → the facts about acme.example*) needs one more bundle. `./recall` has a
+new phase, `t1-graph`: it parks the walk, asks `facts where canonical_subject in
+<the walked nodes>`, gates the rows through the same `visible_row` every other
+leg uses, and mixes them into the graph leg as `{"kind": "fact", …}`. The fold
+to lower case happens on the lane's side, because the store's `in` filter is
+exact.
+
+The leg now interleaves in walk order — for every path the walk ranked, the
+episode its edge points at and then the facts its node is about — so a fact
+reached at depth 1 outranks an episode reached at depth 2, which is what *ranked
+by depth, then accumulated weight* has always meant. With no facts to join, the
+rank list is the episode list it was before, id for id and order for order.
+
+**What it costs.** The seventh store message of a tier-1 recall, and the only
+conditional one: a request with no anchors, or one whose walk came back empty,
+still costs the six GH #418 counts. Three caps can now shape the leg —
+`MEMORY_TIER1_GRAPH_NODES` (the traverse page), the new
+`MEMORY_TIER1_GRAPH_FACT_NODES` (`64`, how many walked nodes enter the `in`
+filter) and `MEMORY_TIER1_GRAPH_FACT_LIMIT` (`100`, the fact page) — and the one
+that actually fired is the one the leg reports as `capped_at`.
+
+`expired_at` and `superseded_by` are deliberately absent from the join's where
+clause (R1: the version chain is the truth, the cache columns are not
+consulted). A superseded graph hit is not dropped; `t1-emit` projects it onto
+its successor, exactly as it does for a keyword-leg fact.
+
+Pinned in `crates/meclaw-cells/tests/gh520_from_an_entity_to_a_fact.rs` and in
+the `[graph join]` section of `workshop/evals/p5-longmemeval/tools/recall_cases.py`.
+
+#### `memory-hive@3.1.0`: an episode gets a vector, so the semantic leg stops being a fact-only leg (GH #519)
+
+Measured on a hive that had been running for two weeks: **182 episodes, 34
+facts, 34 embeddings — and every one of the 34 belonged to a fact.** Not one
+episode carried a vector. Not an import defect either: the store the memory was
+transferred out of held the same distribution row for row, with no `queued`
+remainder anywhere. It was the design, and it was consistent in four places —
+`./writer` wrote an episode and an extraction queue item and nothing else,
+`./extract-glue` was the only cell that minted an `embeddings` row and wrote
+`"owner_table": "facts"` as a literal, the nightly backfill filtered for
+`facts`, and the tier-1 semantic leg asked `similar` for `facts`.
+
+The consequence was never that episodes were unreachable — the keyword leg
+searches `episodes_fts` and the graph leg returns episodes through the edge
+provenance. It was **which** episodes: only those sharing a word with the
+question. An episode is raw conversational text, exactly the material a lexical
+index is worst at and a vector is best at; a fact is short, canonicalised
+subject-predicate-object, exactly what bm25 is good at. The hive embedded the
+half that needed it least and left the half that needed it most to keyword
+search, and the semantic leg of a four-leg fan drew its candidates from 34 rows
+out of 216. RRF is built to reward a candidate two legs agree on — and an
+episode could never earn that agreement, because one of the two legs could not
+see it.
+
+Three cells change; `./embed` needs no change at all, because it was already
+owner-agnostic (`{embedding_id, text}` in, one row updated by id).
+
+**`./writer` mints the row and sends the text.** The queued `embeddings` row
+rides in the SAME store bundle as the episode — `owner_table: "episodes"`,
+`blob` null, `status: "queued"` — and the turn's text goes to `./embed` beside
+it on a new `embed` route (a new `./writer -> ./embed` edge inside the hive).
+The split is the one `./extract-glue` already uses for a fact: the row is the
+durable half, the call is the optional one, so a down embedder costs a call and
+never a row. No lookup — the cell wrote the content, so it carries it. An empty
+turn mints the row and sends nothing.
+
+**`./dream-glue` fills both owner kinds.** The nightly backfill selected
+`status: "queued"` and then dropped everything that was not a fact. It now
+looks the text up per kind — `facts.claim`, `episodes.content` — one lookup
+after the other rather than as one bundle: every reply of that chain drives the
+next phase, so two replies arriving in one phase would fan it out into two
+embed calls over one queue and pay a paid embedder twice. Serial costs three
+round trips a night; parallel would cost duplicates.
+
+**`./recall` reads the kind off the row.** `similar` now asks for
+`owner_table in ["facts", "episodes"]` — named rather than left open, because
+the audience of a semantic hit is fetched from the OWNING row and a hit in a
+table nobody selects reads as the empty set and vanishes without a word. The
+candidate kind comes off the embedding row, and an episode hit is gated against
+`episodes` (its own `channel` and `audience_set`) while a fact hit is still
+gated against `facts`. An owner kind the lane cannot hydrate is dropped where it
+is still visible.
+
+**Backfilling a hive older than this** is a store op, not a script: mint one
+queued row per episode that has none, and the next nightly run fills it. A
+queued row with a null blob is precisely what that chain exists for, and it is
+invisible to the semantic leg until it is `ready`, so the mint is safe against a
+live memory. `templates/memory-hive/README.md` § *Backfilling the episodes of a
+hive older than GH #519* carries the op and the idempotence rule.
+
+Pinned by `crates/meclaw-cells/tests/gh519_an_episode_gets_a_vector.rs` (eleven
+cases across the writer, the hive wiring, the recall legs and the nightly
+chain).
+
+#### `scriptlet@1.0.1` / `shelf@1.0.1`: the catalogue rows publish the wire the code they carry has to meet (GH #513)
+
+A design-lane wish for a five-cell feed (`clock -> scriptlet -> fetcher ->
+scriptlet -> shelf`) was **declared** correctly — right templates, flat
+`override_params`, the `http_status` range on the fetcher's exit edge — passed
+gate, broker and door, and then did not run. What did not run were the two
+scripts the composer wrote:
+
+```python
+# stdout, written:  {"content": "{\"url\": …}"}   -> contract_violation
+# stdin,  written:  data["messages"] … m["turns"] -> nothing to read
+```
+
+Both shapes stood in `templates/scriptlet/README.md`. A composer does not read
+the README; it reads the catalogue row, and the row published `PARAMS` plus one
+`PORTS` sentence whose whole word about the output was *"one message per content
+JSON the script writes"* — without saying what a content JSON **is**, and with
+nothing at all about the three-object stdin. The one template in the library
+whose purpose is to carry authored code published the least about the contract
+that code has to meet. Same shape as [#505](https://github.com/mmeyerlein/meclaw/issues/505)
+and [#511](https://github.com/mmeyerlein/meclaw/issues/511), one level down: not
+the template's params, but the runtime contract of the code the params carry.
+
+**`scriptlet@1.0.1` carries a `SCRIPT` line** beside `PORTS`: the three stdin
+objects and where the payload sits (`doc["body"]["messages"]`, and a turn carries
+`text`, never `turns`), where the two header compartments live
+(`doc["envelope"]["header"]`), that stdout is body slots and that a
+`{"content": …}` comes back `contract_violation` — plus **two worked scripts**, a
+pass-through and a transform.
+
+**`shelf@1.0.1` carries an `ARGS` line** for the same reason one cell downstream.
+The verification run of #513 wrote both scripts to the published contract and
+then lost forty legs to `insert: unknown argument "values" (known: operation,
+table, row)` — the store printing the list the corpus did not carry. The row now
+names the keys each operation reads, that an unknown one is refused rather than
+ignored, two worked calls, and what a read's turn text **is**: a bare JSON array
+of row objects, never `{"rows": […]}`.
+
+Both are drift-locked per `docs/development-rules.md` § 2d, both halves:
+`crates/meclaw-cells/tests/gh513_the_scriptlet_publishes_its_script_contract.rs`
+greps the sentences **and** lifts the published scripts and calls out of the
+descriptors to run them through a real `code` cell and a real `store` cell grown
+from these very templates — including the two shapes the rows warn against, so
+the warnings are measurements rather than claims.
+
+**The shelf row moved once more inside this wave.** `ARGS` is carried on by
+`shelf@1.0.2`, which [#521](https://github.com/mmeyerlein/meclaw/issues/521) set
+when it added the `RETURN` line beside it — same rule, condensed to keep the row
+inside one catalogue chunk. The two lines are one row, and a reader of this
+release sees one shelf. `scriptlet@1.0.1` is the version that ships.
+
+#### `builder@1.5.0` / `submit@2.3.0` / `meclaw-os@1.6.0`: the librarian's ingest nudge is drawable, and the shell draws it (GH #504)
+
+[#496](https://github.com/mmeyerlein/meclaw/issues/496) built the reconciliation
+that keeps a running colony's corpus from describing the library it was born
+into, and `templates/builder-librarian/README.md` § *Who drives it* named the
+wiring that should fire it: *an edge from `submit` after a committed submission
+whose diff carried `add_templates` — the one cell that knows both facts*. The
+form it named, `./submit/gate -> ./builder/librarian`, **cannot be drawn by
+anybody** — not a manifest, not an operator, not a hand-written `config.json`.
+Both endpoints are interior nodes of sealed hives, and the mutation door refuses
+each of them on its own account:
+
+```
+contract_locality/hive_port_boundary /os/builder/librarian:
+  add_edges[].to='./builder/librarian' resolves to '/os/builder/librarian', an
+  interior node of the sealed hive '/os/builder'
+contract_locality/hive_port_boundary /os/submit/gate:
+  add_edges[].from='./submit/gate' … interior node of the sealed hive '/os/submit'
+```
+
+The refusal is right on both counts. The reachable form is between the two
+**hive paths**, and it needed a lane at each end. Three additive changes, one per
+template, and each is separable from the other two.
+
+**`builder@1.5.0` takes the nudge at its hive path.** `in_ingest` is a TRANSIT
+lane: the hive path forwards it to `./librarian` under the very name the
+librarian accepts, and `./librarian -> .` carries the reconciliation's report
+back out on `catalogue`. The two are paired in the builder's own
+`required_drains`, because the counts (`catalogue_known`, `catalogue_ingested`)
+are the only difference between *nothing was missing* and *the nudge never ran*.
+No existing lane changes; the retrieval lane keeps its door. The report edge
+clears the builder's seven interior context keys on its way out, like every
+other exit edge of the hive — a rim that seals for seven edges and not for the
+eighth seals for nothing (GH #494, `workshop/tools/hive_context_sweep.py`).
+
+**`submit@2.3.0` publishes what its gate already derives.** The receipt carries
+`hop.registers_class` — `true` when the submitted diff carried an
+`add_templates`, `false` when it did not, on **every** receipt the renderer
+produces. Stamped rather than omitted: an absent key and a manifest that
+registered nothing must not look alike. It has to be **remembered**, and that is
+the whole of the implementation — measured, a committed receipt used to carry
+
+```
+{"applied": 1, "manifest_sha256": "7bc9…", "mutation_id": "01a04bff-90d6-…",
+ "operation": "submit", "route": "receipt", "tool_call_id": "op:f7155ddd86bc"}
+```
+
+and the colony's own answer behind it carries `outcome`, `applied` and `ids` and
+nothing at all about what the declarations were. So the flight row keeps one
+column of the diff it no longer holds (`registers`, `int`), derived by the same
+`add_templates` read `authors_code` makes for the `code.author` question, and the
+pop reads it back beside the correlation.
+
+**`meclaw-os@1.6.0` draws the edge, and only this level can.** `./submit ->
+./builder`, guarded on a receipt with **no** `error_code` AND on
+`hop.registers_class`, re-stamped `in_ingest`. Both guards are load-bearing:
+the key alone would nudge after a manifest that registered a class and was
+refused at the door, and `committed` alone after every submission a colony ever
+makes. `./builder -> .` carries the report out on `catalogue`, the fourteenth
+lane to cross this rim — nothing at this level consumes a report, so it leaves
+the way `alert` and `pack_ack` do, and adding an emitted lane is the second
+digit (`docs/development-rules.md` § 4/4a), the same reading `pack_ack` got in
+1.4.0. Forty-six edges become forty-eight; thirteen lanes in, fourteen out.
+
+Measured end to end on a throwaway colony grown from
+`examples/meclaw-os/seed-ref`, **no model anywhere in it**, and driven through
+the FRONT rather than at the door — `POST /messages {"target": "/os", "hop":
+{"route": "in_submit"}, "body": {"manifest": [… add_templates foo …]}}`:
+
+```
+before   catalogue_lookup "foo" -> "no template by that name. The catalogue
+                                    holds 43 names: access, affinity, …"
+         corpus rows with section='foo': 0
+
+/os/submit/gate -> /os/submit          route=receipt  applied=1  registers_class=true
+/os/submit      -> /os/builder         route=in_ingest
+/os/builder     -> /os/builder/librarian    route=in_ingest
+…/catalogue     -> …/store             cat_added="edit-min foo mcp-min web_search-min"
+…/catalogue     -> /os/builder/librarian    route=catalogue
+                                            catalogue_known=43 catalogue_ingested=4
+/os/builder     -> /os                 route=catalogue
+
+after    catalogue_lookup "foo" -> "the request names templates that exist: foo.
+                                    The rows below are the catalogue's answer for them."
+         corpus rows with section='foo': 1
+```
+
+No hand nudge in between. The dead letter the reconciliation's report used to
+end as (`/os/builder/librarian/catalogue → /os/builder/librarian`, measured twice
+in a built colony) now leaves the shell as a lane; in `seed-ref` it ends at `/os`
+like every other report, because that root deliberately draws no drain (ruling
+Q2, GH #284).
+
+#### `builder@1.5.0`: a grown channel is TOLD the round it speaks in, and a wrong guess no longer blanks the whole memory (GH #517)
+
+The ingress edge of a grown channel declares `context.audience_set` — the round
+every turn on that channel is spoken in. `grow_level` **invented** the second
+half of it. `_channel_level` read the member's identity off the last segment of
+the scope the wish had named:
+
+```python
+member = p["scope"].rstrip("/").rsplit("/", 1)[-1]   # the DIRECTORY name
+"audience_set": "'[\"member:%s\",\"agent:%s\"]'" % (member, agent)
+```
+
+which is the right answer only while the folder happens to be spelled like the
+person. The wish that grows a channel says nothing about who is in the room; the
+recipe filled the gap by guessing.
+
+**Why it is worse than a wrong string.** `memory-hive/recall`'s gate (`visible()`,
+`audience_now ⊆ row_audience`) admits a row only when the declared round is a
+subset of the row's own, so ONE wrong name refuses EVERY row, in every leg,
+before the fusion. Measured on a colony whose store holds 34 facts and 182
+episodes, all tagged with the same correct round — same query, same store, same
+recall version, only the declared round differs:
+
+| `audience_now` | keyword | semantic | graph | temporal | candidates |
+|---|---|---|---|---|---|
+| the round the rows carry | 22 | 20 | 9 | 20 | **19** |
+| the round the recipe guessed | 0 | 0 | 0 | 0 | **0** |
+
+The bundle then says *"Nothing in this memory answers this question"* — word for
+word what a genuinely empty store produces. Nothing on the hop, in the diagnostic
+or in the log distinguished the two: `leg_sizes_raw` is post-gate by design
+(GH #297), so even the raw counts read zero. The gate behaved exactly as
+specified; the declaration handed to it was the lie.
+
+- **The person is a thing the WISH says.** `ctx.member_person` is required for
+  the `channel` level and read nowhere else. It rides in the declaration's own
+  `ctx` block so the claim stands in the rendered manifest, in front of the
+  reviewer, before it is committed — and the mutation door ignores a ctx key no
+  template of the declaration requires. `templates/receptionist/greet` already
+  wrote the rule this recipe broke: *"a channel identity is a room, not a
+  participant, and turning one into the other would invent a member nobody
+  named."*
+- **A wish that does not say it is ASKED.** Both halves of the fast lane refuse
+  it under `wish_incomplete` — the code `normalise` already uses when a composer
+  declines to invent a model id, because the two are the same event on two lanes
+  — with the question verbatim in the payload. `classify` refuses it before an
+  inference is bought; the renderer refuses it again, because a cell knows no
+  topology and must not build on who stands in front of it. A grow SENTENCE that
+  names no person is not an error at all: nobody named a recipe, so it falls
+  through to the design lane, whose briefing now carries the same rule and the
+  `{"question": …}` form to answer with.
+- **The agent half is not the same defect.** `agent:<assistant>` is built from
+  the `assistant` parameter, a word the wish is already required to say. It is a
+  quotation, not a guess.
+- **Nothing on that edge is read unguarded any more.** `chat_id` and `user_id`
+  are promoted `has(...) ? ... : ''`, the rule `templates/member/README.md`
+  publishes one storey up. The connector emits its own failures on the same wire
+  and they carry neither key, so the bare reads logged
+  `cel eval set_context.chat_id: No such key: chat_id` on every one of them — and
+  a modifier that fails to evaluate skips the whole edge.
+- **`context.channel` deliberately did NOT move.**
+  `templates/session-keeper/README.md` describes that key as the chat identity,
+  and the hand-drawn e9-era edge promoted `hop.chat_id` into it — but that hive
+  held exactly one connector and its answer edge carried no guard. The set this
+  recipe renders has three edges, and the third is the answer's way back,
+  `. -> ./<name>` guarded on `context.channel == '<name>'`, because `Edge.to` is
+  a static path and a container may hold several channels (GH #454). A `channel`
+  carrying a chat id routes no answer anywhere and the agent goes mute. One
+  session generation per chat needs the RETURN path to be addressed by a second
+  key — a change to the addressing rule `templates/member/README.md` publishes,
+  with its own blast radius, and not something a repair decides on its way past.
+  Split out as [#522](https://github.com/mmeyerlein/meclaw/issues/522); the two
+  halves are pinned together so the next reader finds the reason rather than the
+  defect.
+
+**Migration.** A `grow_level` call for a `channel` now needs
+`params.ctx.member_person`; without it the fast lane refuses instead of
+rendering. `examples/organism/grow-channel.json` and the manifest beside it carry
+the repaired form, and the corpus row generated from them moved with it — the
+row the design lane is told to copy from was itself the template the guess was
+generalised out of. Colonies already grown are unaffected on disk and keep the
+edge they have; a live one whose round is wrong is repaired by one mutation that
+removes and re-adds the ingress edge in a single `diff` (contract locality checks
+after every entry, not at the end of the manifest).
+
+**Version digits.** None of its own. `builder@1.5.0` was set earlier in this
+unreleased wave by GH #504 and this repair rides in it; the blocks describe one
+shipped version (`docs/development-rules.md` § 4/4a, ruling O-5).
+
+#### `builder-librarian@2.1.0`: the corpus is in the language it is searched in, and it stops describing a library that moved (GH #496, GH #497)
+
+Two ways one index could be wrong about the tree it indexes, and neither of them
+was visible from inside a query.
+
+**The composer searched in English and the corpus was German (GH #497).** The
+design lane's briefing is English, the composer answers in English, and every
+query it has produced in a measured run is English. The four spec documents were
+**294 of 590 chunks** — over half the corpus, and the half that carries the
+specification — because the generator globbed `docs/*.md` and the plain name is
+the German original.
+
+That is a miss and not a ranking nuisance. FTS5 tokenizes lexically, so an
+English query against German prose matches on the tokens the two languages
+happen to share — `params.schema`, `script_inline`, `config.json` — and on
+nothing that carries the meaning. Measured on one run: four `librarian_search`
+calls that each needed `docs/cell-types.md` and none of which got it, while the
+chunk that would have answered sat in the corpus with its identifiers matching
+and its sentences invisible. Measured again after: *"a park slot holds a message
+until something binds at the address"* answered five `template.json` rows and no
+spec at all; it now answers five spec rows, `cell-types` § `hive` among them —
+the section that states the rule.
+
+Both corpora now chunk the **English** edition, which the export gate already
+holds structurally equal to the German one. **Instead of, not beside**: carrying
+both would double those chunks and dilute the ranking of every query matching
+either. A private row cites `docs/cell-types.en.md` because in this tree that is
+the file whose bytes it holds; a public row keeps citing `docs/cell-types.md`,
+because the exported tree carries the English edition under the plain name and
+ships no German original (GH #441). Corpus: 590 → 578 chunks, spec 295 → 283 —
+the English edition is simply more compact.
+
+Every other source was measured English already (`workshop/cookbook`,
+`workshop/corpus`, `workshop/references`, the template catalogue, the pinned
+error codes, the level sets, the store schemas), so this is the whole of the
+language question rather than the first step of a sweep.
+
+**A running colony's catalogue described the library it was born into (GH
+#496).** `store/seed/docs.jsonl` is loaded once, at `OpenStatus::Created`, and
+never again. So a class registered afterwards — by an `add_templates` (GH #440),
+by a directory dropped into `templates/` plus a rescan — is resolvable at the
+mutation door and does not exist for the composer. Measured: seven rounds and
+the whole round budget spent looking for a `clock` that had been in the library
+for an hour, ending with no manifest.
+
+That is a different drift from the one the `--check` gate covers, and no gate can
+reach it: the corpus was correct when the colony booted and the library moved
+afterwards. The librarian therefore gained a third cell, `catalogue`, one
+inbound lane `in_ingest` and one outbound lane `catalogue`. On a nudge it asks
+`/colony/templates` what the library holds, asks its own store which names the
+corpus already carries, and inserts one row per missing name.
+
+- **The colony is asked first, and that ordering is forced.** A colony reply
+  arrives on a fresh trace with an empty context compartment, and
+  `/colony/templates` echoes no tag of its own — unlike `/colony/graph` and
+  `/colony/registry`. Nothing of the round survives that hop, so the registry
+  answer has to be the first thing the cell holds. It then rides
+  `context.cat_seen` across the store round trips as `name@version`; the
+  registry's `filesystem_path` is deliberately not carried, because one absolute
+  path per template would grow the compartment with the deployment.
+- **It only ever adds.** `docs` has no key, so a re-insert would double every row
+  and the name appeal would answer the same name twice. The diff against the
+  corpus is the whole of the idempotence, and it is also what keeps a shipped
+  template's rich generated row: a seeded row is never replaced, deleted or
+  touched.
+- **The row says what it cannot know.** `/colony/templates` answers
+  `template_id`, `name`, `version`, `filesystem_path`, `author` — an identity,
+  not a declaration. So the row opens with `CONTRACT --` (every catalogue row
+  does, because `retrieve` hands the model `text[:1200]`) and what it says there
+  is that the declaration was not read and must be. A row that had written
+  *"requires no ctx and no env key"* out of that silence would be the
+  confidently-wrong answer this corpus exists against, and BM25 ranks it as high
+  as a true one.
+- **The nudge is topology, and deliberately not wired inside the template.** Two
+  wirings are documented: an edge from `submit` after a committed submission
+  whose diff carried `add_templates` — the one cell that knows both facts — and
+  a message to the librarian's hive path once after a deployment or a rescan. A
+  timer inside a retrieval hive would buy the same answer at a cost that never
+  stops.
+
+Measured end to end on a throwaway colony, no model anywhere in it:
+`catalogue_lookup "foo"` answered *"no template by that name, the catalogue holds
+43 names"*; a manifest registered `local/foo`; one nudge reported *"the colony's
+registry holds 2 template(s), the corpus already carried 1 of them, 1 row(s)
+added: foo"*; the same lookup then answered *"the request names templates that
+exist: foo"* with the new row at rank one. A second nudge added nothing. Pinned
+as scenario case **L2** (13 of the suite's 15 cases now run without a model, up
+from 12).
+
+#### `builder@1.4.1` / `builder-librarian@2.0.9`: the design lane writes a manifest without being forbidden to look, and nothing a hive remembers about itself leaves it (GH #480, GH #482, GH #483, GH #485, GH #486, GH #498, GH #499, GH #501)
+
+Two passes over the authoring hives in one wave, and the second one shipped the
+version the first one had already reached: `builder@1.4.1` with
+`builder-librarian@2.0.9`. They are one entry because a reader of this release
+sees one version of each. The design lane comes first, because nothing below it
+could be measured until it finished a build at all.
+
+The builder's design lane could not finish. Eleven builds of one colony rebuild
+went the same way — seven rounds, thirteen tool calls, **not one text turn**, and
+an ending that named the last answer instead of the budget — and the only thing
+that ever produced a manifest was a sentence in the *wish* telling the model not
+to call a tool. That sentence works for exactly one turn (a repair round calls
+seven tools again and dies on the request timeout), so it is a workaround, not a
+fix. Four defects held the lane shut and each one is repaired as a mechanism.
+
+**The composer was never told what it may spend, and could not be stopped from
+spending it (GH #485).** `BUILDER_MAX_ITER` lived on an edge and in `weave`'s
+params; `weave` computed the numbers and stamped `hop.rounds_done` and
+`hop.round_capped` on every emission — and the re-briefing carried neither, so
+from the model's side the loop was unbounded.
+
+- The re-briefing now carries a `system.budget` slot, rendered fresh every round:
+  which round this is, how many may still call tools, what happens at the end of
+  them. A slot of its own, because the instructions are parked once per build
+  (GH #477) and a number written into them would be round 0's number forever;
+  unnamed in `system_order`, which is what puts it last in the prompt.
+- **The last `BUILDER_WRITE_ROUNDS` (default 1) rounds are WRITING rounds: the
+  tool menu is not published in them.** With no `system.tools` the request
+  carries no `tools` array, so a tool call is not a move the wire admits. The
+  research budget and the writing budget are two budgets for the same reason the
+  repair budget is a third.
+- The system tree now carries `"$replace": true` at its root (GH #264). An `llm`
+  cell upserts the tree it is sent per slot path, and this composer is ONE cell
+  for every build in the colony — the first walk of the writing round measured
+  exactly that: the body carried no tools and the model still answered
+  `finish_reason: tool_calls`, because the menu of the round before was in the
+  store. It is also GH #477's *one spelling of the prompt* made true against
+  residue.
+- A capped build now says so. `normalise` reads `hop.round_capped` and reports
+  **`design_budget_exhausted`** with the rounds spent, instead of
+  `no_manifest_in_answer` / `declarations_not_a_list` — both true about the last
+  turn, neither the reason the build ended. Narrow on purpose: a capped round
+  that wrote a manifest still ships it, and a composer that ASKED is still
+  `wish_incomplete`.
+- And the model's own sentence stopped going to the dead-letter queue. The
+  dispatcher splits one answer into a bundle on `calls` and the sentence beside
+  it on `answer` (GH #378); this hive drew no edge for the second, so every
+  narrating round left a silent `no_route`. `./dispatch → ./weave` carries it and
+  `weave` files it under the role `interim` — recorded, never replayed, because
+  an interim sentence and its bundle are ONE provider message and re-entering it
+  as a second `assistant` turn is a message order no endpoint accepts.
+
+**The corpus did not carry what the briefing demands exactness about (GH #486,
+GH #483).** Two instances of the shape the `CONTRACT —` line was the first of.
+
+- `examples/organism/grow-*.json` — the six rendered level edge sets, byte-pinned
+  against the fast lane's renderer — were in no chunk, while the `LEVELS` block
+  forbade inventing a subset and named that renderer as the source. They are
+  indexed now, **condensed**: `grow-member.json` is 2934 characters and the
+  retriever hands the model 1200, so a set published half is worse than one not
+  published — it looks complete.
+- No shipped store's tables or columns were in the corpus either, while
+  `seed_rows` must name a declared table and use only declared columns. One row
+  per **table** now (the unit a `seed_rows` entry addresses, and small enough to
+  arrive whole), and every catalogue row opens with a second contract line,
+  `STORES —`, naming the stores a template carries and where they stand.
+- `catalogue_lookup` became the catalogue. `./lib` had always stamped
+  `hop.lib_kind = "template"` and its contract published that as a filtered
+  corpus; nothing read the key, so both tools ran one unfiltered query and a
+  lookup for `member` answered `org` first. `builder-librarian`'s retriever
+  passes the kind into the search op's `where`.
+
+**The briefing said `.` is not an endpoint and never said what is (GH #487).**
+The shape a design wish asks for most often is a lane *leaving* a unit, and every
+shipped template spells that lane `"to": "."` in its own `params.graph` — legal
+there, refused in a mutation. The `ENDPOINTS` block now carries the rule beside
+the refusal: declare it one scope up and name the unit by its relative path.
+
+**The composer asked a reasoning model for deliberation and got no answer (GH
+#498).** `compose` sent no `reasoning` block, so a hosted reasoning model ran at
+its provider's default. Measured on the same thread: as shipped, `stop`, 967
+completion tokens of which 965 reasoning, `content: ""`; with the shipped
+`max_tokens`, the entire 32768-token budget spent on reasoning at 0.39 USD; with
+`reasoning: {"enabled": false}`, the manifest in 744 tokens. This is the one
+`llm` cell whose whole product is a JSON document and nothing here reads
+`message.reasoning`, so the block is declared — and a build that wants the
+deliberation turns it back on through `override_params`, where every other tuning
+decision in this hive is made.
+
+**Measured end to end**, `workshop/evals/builder-scenarios/cases/S13-…json`
+(`model-dependent`, skipped by default): the wish that produced eleven capped
+builds, sent *without* the tool-prohibition sentence, against
+`anthropic/claude-sonnet-5` — **a two-edge manifest in five rounds for 0.20 USD**,
+correctly declared at the organisation because an edge out of a member has to be.
+The suite gained two steps for it: `expect_messages` bounds how many messages a
+cell emitted (one composer emission is one model call, so the round count is
+measured rather than claimed) and `expect_dlq` gained `absent_sender_prefix`, the
+negative claim scoped to one subtree.
+
+Pinned by `crates/meclaw-cells/tests/gh485_the_composer_is_told_what_it_may_spend.rs`,
+`gh485_a_capped_build_says_it_ran_out_of_rounds.rs`,
+`gh485_the_prose_beside_a_call_is_not_a_dead_letter.rs`,
+`gh486_the_level_edge_sets_are_retrievable.rs`,
+`gh483_a_store_publishes_what_seed_rows_must_satisfy.rs` and
+`gh498_the_composer_is_asked_for_an_answer.rs`. The two corpus gates are drift
+locks over the tree rather than over the generator: every store cell's every
+table and column, and every lane of every rendered level set, must be in a chunk
+that fits the retriever's 1200-character window.
+
+Four further repairs on the authoring hives followed, and three of them are the
+same shape: a value that survives a broken message chain has to be **recomputed
+from rows**, never carried on one.
+
+**A refusal to a model-free build went to the wrong door (GH #480, second
+half).** The design lane learned to park its caller in the round table in
+`builder@1.3.3`; the fast lane parks nothing, because it opens no round — there
+is no model call behind a recipe. So a refused fast-lane build reached `weave`
+with a digest nobody in the hive claimed and left again as `build_unknown`, into
+`./orgs`, which in a fresh colony is empty by construction. The named refusal
+(`template_missing`, measured) was a silent dead letter.
+
+`recipes` now writes the same two rows the design lane writes — the caller, and
+the digest binding that says which build owns those bytes — whenever the context
+names a caller at all, which is the guard `weave` already parks its own row
+under. Two decisions carry it:
+
+- **The build id is the digest.** A fast-lane build has no other identity, and
+  the digest is the one handle that survives the submitter's chain, because the
+  submitter parks and pops a submission under it.
+- **A model-free build gets no repair round.** That was the open design question
+  the issue was left on. A recipe is a pure function of the wish: no composer
+  opened a round, there is no thread to hand back and no question to re-ask, so a
+  repair would call a model that never ran to re-derive bytes that were already
+  determined. The caller row carries `build_lane: "recipe"`, and the refusal
+  takes the short road — named on the `error` lane, at the door the build came
+  from.
+
+The binding travels on its own `bind` route rather than on `recipe`, because
+both `./recipes -> .` edges match on `hop.operation == 'recipe'` and a binding
+wearing that operation would leave the hive as a second answer to the same wish.
+
+**A repair re-entered the round loop at zero (GH #501, new).** `context.iter` is
+what the loop's cap reads and a receipt arrives without it, so a repair was
+stamped `iter: 0` and re-entered a loop guarded only by `int(context.iter) < 6`
+— on a wish whose briefing had named six rounds. Two repairs later that is up to
+eighteen model calls against a thread that grows all build long, and it is
+silent: the capped lane names itself, a quietly restarted counter names nothing.
+The slate carries an `iter` on every row, so the read-back now takes the highest
+of them as the round the build reached. Only there — on the loop's own chain the
+context *is* the counter, and it is the one that is right.
+
+**The two hives GH #494 could not reach clear their own markers now (GH
+#499).** `builder` set eleven context keys on its interior edges and cleared none
+of them on its seven exit edges; `builder-librarian` set two and cleared neither.
+Context is persistent for the life of a chain, so an uncleared marker rides on
+the caller's next message. Seven keys of the builder (`agent`, `build_id`,
+`build_op`, `build_scope`, `lib_call_id`, `repairs`, `store_origin`) and both of
+the librarian's (`librarian_origin`, `orig_request`) are cleared on every exit
+edge. Three are deliberately not, and each because somebody outside reads it:
+`build_caller` and `build_auto_submit` decide the door at the shell's four
+`./builder -> X` edges, and `build_call_id` is set by `templates/tools` on its
+own exit edge and read back by `tools/build` and `tools/apply` when the answer
+returns — clearing that one would leave an assistant's build tool call open
+forever. It moves into the sweep's `SHARED` vocabulary with that reason, and the
+`DEFERRED` list both the tool and the drift lock carried is gone.
+
+**The catalogue can say no, by name (GH #482, the last half).**
+`catalogue_lookup` is FTS5 and always answers with its best rows, so a caller
+could not tell *not found* from *found something adjacent* — and had no reason to
+stop asking. Measured: seven rounds rephrasing the same four questions, a prompt
+growing 5 557 → 50 220 tokens, no manifest. `builder-librarian/retrieve` now asks
+the corpus for its template names in the **same bundle** as the search, and a
+catalogue lookup whose request names no template that exists answers *no template
+by that name*, the whole roll of names, and the hits below it marked as nearest
+neighbours rather than as answers. A request that does name one says so instead.
+Names are matched on word boundaries and longest-first, so `member` does not
+match inside `remember` and `builder-librarian` is never also reported as
+`builder`. `librarian_search` is untouched: without `hop.lib_kind` the bundle is
+one op, exactly as before.
+
+The briefing's own sentence about the absence is brought to the tree it now
+describes: `clock`, `fetcher`, `scriptlet` and `shelf` are named as the blank
+single-cell templates for a timer, a `web_fetch`, a `code` cell and a store, and
+`add_templates` is the answer for everything else. A head a model can disprove is
+a head it stops believing, so it is held to the shipped templates by a drift
+lock rather than to its author's memory.
+
+Also corrected: the composer's description argued for a completion budget of
+16 384 while the cell shipped twice that. The ceiling stays 32 768 — a completion
+is billed by what it produces, and with `reasoning` declared off (GH #498) there
+is no longer anything that spends a ceiling without delivering — and the number
+is derived from `params.max_tokens` inside
+`builder_bounds_agree_with_their_settings` instead of typed a second time.
+
+#### `affinity@3.2.0` / `collector@3.3.0`: an agent's identity and its reply instructions get a home that travels (GH #488)
+
+A conversational agent kept two durable `system.*` slots in its brain's own
+`cell.db` — **who it is** and **how it answers**. Measured on a long-lived
+deployment: `identity.soul` (586 bytes) and `instructions.reply` (3372 bytes).
+Neither could leave the colony and neither could be given to a new one. A brain
+has no `porter` and its `system` table is in no schema mirror, so a full
+member-level export carried 525 rows of what people had said and **zero** slots
+of what the agent was; `templates/talky/brain/seed/system.jsonl` seeds two
+slots and both are tool schemas. A generation grown from the shipped stack came
+up with `tools.web_fetch`, `tools.web_search` and nothing else, and answered a
+turn as the vendor's default assistant — in a colony whose memory hive answered
+correctly one hop away.
+
+The fix does not give the brain a porter. It moves the **home**:
+
+- **The durable original is the agent's own record in `affinity`.** An agent is
+  an entity of that hive like a person is, and its `entities` row gets a
+  reserved `mx.brain` subtree — one object per `system.*` family, the raw text
+  per leaf (`mx.brain.identity.soul`, `mx.brain.instructions.reply`). The
+  brain's `system.*` is a **delivered copy** of it from now on.
+- **It travels on the lane that already exists.** `entities.mx` is a `json`
+  column in `affinity`'s porter schema mirror, so the record is inside the
+  export document by construction — no fifth holder, no new document format,
+  not one line of the porter changed. `subscribers` travels beside it, and the
+  porter's existing `RESET` blanks `pack_hash`/`sent_at` on import, which is
+  precisely what makes the FIRST identity pack of a rebuilt colony fire instead
+  of being suppressed as already delivered.
+- **`brief` gains a fifth request slot, `brain`.** It renders the subtree
+  VERBATIM: a leaf's dotted path is the slot path the receiving brain ends up
+  with, and its text is wrapped as `{"text": …}` — the exact value shape an
+  `llm` cell writes into its own `system` table, so a slot that made the round
+  trip is byte-identical to the one it was read from. The rendering pass every
+  person slot goes through is deliberately skipped here: it puts a `text` at the
+  top of a slot, which is what makes a person slot exactly one leaf and would
+  collapse `identity.soul` into `identity`.
+- **The audience rule is unchanged and still in one place.** No `disclosure`
+  row releasing `mx.brain`, no delivery — `brief` builds by addition and is
+  fail-closed. A request that asks for `identity` and `brain` together is
+  refused whole (`slots_conflict`): both land on the same top-level key, and
+  serving half of that would be an agent that silently stopped knowing its own
+  soul.
+- **A request that names no slots still gets exactly the four person slots.**
+  `brain` is asked for by a self-subscription and by nothing else.
+
+##### Reopened: `instructions` may be written over `in_pack`
+
+GH #458 closed the pack lane to the `instructions` family, on the ground that an
+identity able to overwrite the charter could rewrite what the agent is for. That
+argument assumed the charter had another owner. It had none — nothing exported
+it, no template seeded it — so the subtraction did not protect a family, it kept
+one empty. `PACK_SLOTS` is now `identity`, `persona`, `handover`,
+`instructions`, still a proper subset of `SYS_KEEP` (the two families the
+collector re-derives every round stay out), so a written pack is still out of
+the curator's reach at any budget. What protects the charter now is the door
+itself: a route stamped by an EDGE that only the `access` rule for a brain's own
+push edge draws, from a source whose sole writer is `affinity`'s audited `gate`.
+
+Pinned by `crates/meclaw-cells/tests/gh488_a_reborn_agent_answers_as_itself.rs`
+— colony A holds the record and its brain ends up with both slots; the affinity
+hive is told `in_export` once and nine parts come out; colony B boots with empty
+affinity seeds, is measured anonymous, is fed the nine parts on `in_import`, and
+its brain ends up with the same two slot paths and byte-identical values. The
+last assertion is the one the issue was about: a turn taken in B carries both of
+them into the system prompt handed to the provider. The form half —
+`PACK_SLOTS`, the schema mirror, the seeded example and its release, and the
+four sentences of prose that state the closed list — is
+`gh488_the_agent_record_is_where_the_identity_lives.rs`.
+
+#### `fetcher@1.0.0` / `scriptlet@1.0.0` / `shelf@1.0.0`: the three cell types a composer had to name and could not (GH #482)
+
+Measured on a throwaway colony with a hosted model as the composer, on the first
+wish no recipe covered: *"a feed cell that fetches three feeds every ten minutes
+and emits one headline document per new item"*. It spent all seven rounds, and
+every one of them well, looking for four templates that did not exist — a
+`timer`, a `web_fetch`, a `code` cell and a `store`. A feed is exactly those
+four cells, and the library shipped a single-cell template for none of them.
+`clock@1.0.0` closed the first quarter of that gap; these three close the rest.
+
+`templates/_cell-types/README.md` had said so deliberately: a type whose shape a
+living, shipped template already carries needs no skeleton. That sentence
+answers **where an author copies a form from**. It does not answer **what a
+mutation can name**, and the two are different questions — `add_nodes` resolves
+a template by `name@version` out of the registry, so the shape inside
+`collector` is not addressable, and a unit made of four ordinary cells had no
+parts to build from. The sentence is corrected there.
+
+- **`fetcher@1.0.0` — one `web_fetch` cell, and no target.** The URL rides in
+  the `tool_call` args on the wire, because that is where the cell reads it: a
+  fetcher with an address baked into its config would be a fetcher for one
+  caller. GET only — method, request headers and a request body are a core defer
+  of the cell type, and a template cannot ship what the cell does not have. The
+  egress policy is the cell's own and default-deny, because `web_fetch` runs in
+  the daemon process where `sandbox.network` can never reach it.
+- **`scriptlet@1.0.0` — one `code` cell, shipped blank.** Five templates hold a
+  single `code` cell — `door`, `terminal`, `retry`, `dispatcher`,
+  `archive-bridge` — and every one of them carries a script and a job of its
+  own, so a composer that needed a plain one had nothing to name. The shipped
+  script hands `body.messages` straight back, so an instance without an override
+  boots and passes turns through rather than failing until repaired.
+  `contract.multi_send_capable` is declared, because a blank `code` cell that
+  could emit only one message would be half a cell — and a `contract` is the
+  half an `override_params` cannot reach. It carries no `params.sandbox` key
+  either, so the default-deny profile cannot be widened through it.
+- **`shelf@1.0.0` — one `store` cell, and no opinion about what goes on it.**
+  The shape is the parameter that makes one template two shelves:
+  `params.schema` is a bootstrap declaration, so an override at instantiation is
+  baked into the `cell.db` by DDL before the cell ever wakes. Constraints are
+  not shippable — no PRIMARY KEY, no UNIQUE, no NOT NULL — so two identical rows
+  are two rows and **dedupe belongs to whoever writes**, as a stable id computed
+  before the insert. `params.fts`, `params.canonical` and
+  `params.write_surface` are deliberately absent, which also puts them out of an
+  override's reach.
+- **Top level, not `_cell-types/`.** The three are published catalogue rows, and
+  a composer names what the catalogue carries. The private staging container has
+  no `template.json` of its own and is three units rather than one.
+- **None of them is named after its cell type.** A template name taken from the
+  substrate glossary is a review defect (`docs/development-rules.md` § 3, Q19).
+
+Pinned by `crates/meclaw-cells/tests/gh482_the_composer_can_name_the_cells_it_needs.rs`,
+which reads the shipped form of all three and then boots a colony that has none
+of them, instantiates the whole feed out of `clock`, `fetcher`, two `scriptlet`s
+and a `shelf` in ONE mutation, and waits for the headline documents to reach the
+store — one row per distinct item, the repeated entry of the fetched feed folded
+away by the stable id the scriptlet computes.
+
+The other half of #482 stays open: `catalogue_lookup` is FTS5 and always returns
+its best neighbours, so a caller that cannot tell *not found* from *found
+something adjacent* has no reason to stop asking.
+
+#### `clock@1.0.0`: the library has a clock, so a manifest can give a colony a periodic tick (GH #484)
+
+The substrate has had a `timer` cell type since phase 9, and nine shipped
+templates carry one **inside** them — `access/clock`, `argus/clock`,
+`affinity/clock`, `memory-hive/cron`, `session-keeper/night`,
+`collector/menu-clock`, `colony-view/refresh`, `canvy/refresh`,
+`daily-digest/cron`. Not one of them was instantiable on its own, and
+`add_nodes` has no form for a bare cell — `name` and `template` are both
+required. So a running colony could not be given a periodic tick by any
+manifest, by any caller, through any door, and `templates/firewall`'s own prose
+named the gap while it lasted: `in_sweep` "needs a producer with a clock: a
+`timer` cell in the parent, or an operator".
+
+- **One cell, one schedule, and no decision.** The whole template is a `timer`
+  cell with a cron expression and a schedule key. No condition, no filter, no
+  store, no body: a clock that knew what it was ticking for would be a second
+  scheduler.
+- **The lane is the parent's word.** `emit_to` is `"."`, so the edge drawn off
+  the clock is what gives a tick a destination — and the same template drives a
+  firewall sweep in one place and a store trim in another. A tick nobody wired
+  dead-letters as `no_route` naming the clock itself, rather than vanishing.
+- **The cadence is a parameter three ways**: `override_params` on the node at
+  instantiation, the `CLOCK_CRON` knob colony-wide, and an ordinary `op` message
+  at run time (`{"op": "modify", "schedule_id": …, "cron": …}`) — no restart.
+- **The schedule key is a literal and not a `${uuid7}` token.** That token is an
+  instantiation substitution with no filesystem-side producer, so a tree written
+  straight to disk refuses to boot on it (`unsupported_substitution`) — which is
+  how a hand-built colony is written and how the template is read in the test
+  corpus. A timer's key space is its own `cell.db`, and one shipped schedule buys
+  nothing from a token that a constant does not.
+- **Not called `timer`.** A template name taken from the substrate glossary is a
+  review defect (`docs/development-rules.md` § 3, Q19).
+
+Pinned by `crates/meclaw-cells/tests/gh484_a_manifest_can_give_a_colony_a_clock.rs`,
+which boots a colony without a clock, instantiates the template by mutation with
+one edge, and waits for the tick to arrive on the lane that edge stamped.
+
+#### `firewall@2.2.0`: a layer no rule row can lift, and a turn that waits for a person (GH #449, GH #450)
+
+Everything this hive enforced was a row in the `rules` store, and every row is
+editable at run time by design — "an `update ... set enabled = 1` is a live
+policy change" is one of the template's delivered promises. The inverse was
+delivered just as reliably: an `update ... set enabled = 0`, or a `delete`,
+turned any protection off and nothing in the substrate could say no. And a
+screened turn had exactly two possible answers, both of them immediate, which
+left no way to express the one several real policies want: *probably fine, from
+a sender nobody has vouched for yet — ask someone*.
+
+- **The hardline is a layer, not an early row (#449).** Three refusals live in
+  this template's code, are consulted before the row-driven catalogue, and can
+  only ever say `reject`: an absolute body ceiling of 262144 characters that
+  `FIREWALL_MAX_CHARS` cannot be set above, the invisible and
+  direction-**overriding** codepoints that defeat every pattern row at once, and
+  the ceiling on the hold pile below. They fire with an **empty** rule table, and
+  the reject lane names which one did (`hardline_blocked`, `hop.rule_id`
+  `hardline:<name>`), so an operator can tell "policy said no" from "the
+  substrate said no". Changing one is this bump and this entry, not an insert.
+- **A hardline never grants.** A layer that could allow would be an authority
+  mechanism, and this is not one. A test reads both shipped scripts and fails on
+  any hardline branch that could produce a `pass` or an `allow`.
+- **The scope is the hive.** Colony scope would make this template depend on
+  colony configuration it cannot carry; member scope cannot form the sentence a
+  screen needs ("this ingress channel never accepts Y"). Hive scope is what makes
+  "changing a hardline is a version bump" literally true rather than a convention
+  someone has to keep. It is not a defence against an operator who can mutate the
+  tree — that operator can remove the firewall outright — it is a defence against
+  the **rows** path, which is editable by design.
+- **Two codepoint classes are excluded on purpose.** ZWNJ and ZWJ carry emoji
+  sequences and Indic/Arabic joining, and the directional *marks* appear in
+  ordinary right-to-left text. A hardline that refuses a family emoji is a
+  hardline an operator disables, and a hardline an operator disables is a row
+  with extra steps.
+- **`hold` is a third verdict and not a third answer (#450).** A row with
+  `action: hold` parks the turn whole — body, hop and the context its ingress
+  edge promoted — in a new `held` table, and nothing downstream sees it. **The
+  two-lane promise survives**: every turn still ends on exactly one of `pass` and
+  `reject`, a held one just ends later. What the new `hold` lane carries is a
+  *notice*, and that distinction is what keeps "the `pass` edge is the only route
+  into the agent" provable.
+- **It is asked last of all**, after the rate limit, because it is the only
+  verdict that does not end the turn: a deny beats it, an allowlist refusal beats
+  it, and a full window refuses it. A held turn **books its arrival**, so a hold
+  row is not a free flood channel.
+- **The order of the writes is the design.** The row is written before anyone is
+  told (a notice naming a hold that does not exist is a lie an operator would act
+  on), and the answer is written before the turn moves (the release `update`
+  carries `status: 'held'` in its own where clause, so two answers about one hold
+  produce one delivery).
+- **There is a way back out and a way to run out.** `in_release` carries one
+  person's answer (`hop.hold_id`, `hop.decision`, `hop.decided_by`) and the
+  released turn re-enters on `pass` **byte-identical**; `in_sweep` expires what is
+  due. An unanswered hold is never a silent parking bay: it expires with a receipt
+  on the `reject` lane every parent already drains, and **an expired hold can
+  never become a `pass`** — the release checks the stamp itself.
+- **The pile is bounded twice**, `FIREWALL_HOLD_MAX` (default 100, refusing with
+  `hold_pile_full` rather than dropping) and the hardline ceiling of 1024 that
+  knob may only lower.
+- **A released turn hands its dimensions back as hop keys.** A cell cannot write
+  a context map and a `set_context` key is static, so every context key the
+  original ingress edge promoted returns on the `pass` hop as `ctx_<name>`. The
+  hive restores the two dimensions it owns; a parent that promoted more reads its
+  own back with `has(hop.ctx_x) ? hop.ctx_x : context.x`. Named as a limit rather
+  than hidden.
+- **A fourth cell, `./warden`**, holds the pile. The screen decides; custody is a
+  different job, and the screen stays stateless. `held` does **not** travel in an
+  export (a parked turn is a live conversation waiting on a person, addressed to
+  a colony that no longer exists) and is refused with `import_unknown_table` like
+  `arrivals` and `port_scratch`.
+- **New `error_code`-class strings on the reject lane** (README § Stability):
+  `hardline_blocked`, `hold_expired`, `hold_refused`, `hold_pile_full`,
+  `hold_unknown`, `hold_not_pending`, `release_unaddressed`,
+  `release_unknown_decision`. New knobs: `FIREWALL_HOLD_TTL_MS`,
+  `FIREWALL_HOLD_MAX`.
+
+**Migration.** Nothing that shipped changes shape, and this is a minor rather
+than a major for a measurable reason: `params.required_drains` asks about a lane
+only when an edge actually names it, so `in_release` and `in_sweep` cost a parent
+that ignores them nothing, and the `hold` notice lane deliberately has **no**
+required drain — requiring it would refuse the mutation of every parent that
+wired an `in_turn` and never asked for a hold. The shipped seed gains one more
+disabled example row (`example-hold-unvouched-sender`); a colony that enables a
+hold row without drawing the notice edge still learns, because the notice becomes
+a recorded `no_route` in the DLQ and the expiry receipt arrives on `reject`. The
+hardline layer is live from the first turn and needs no wiring at all.
+
+**One rule row the screen cannot read no longer closes the lane (GH #506).**
+Measured on a live colony: one `seed_rows` that was permitted, digested, ledgered
+and applied — every **column** the store declares spelled correctly, and three
+**values** outside the closed vocabulary the screen enforces (`kind: "pattern"`,
+`field: "body"`, `action: "deny"`) — turned every turn into that member into
+`route=reject reject_reason=rules_unreadable`. A wish that said *"refuse turns
+that mention a phone number"* had built *"refuse everything"*, and nothing
+between the composer and the store said no: `seed_rows` checks columns, never
+values, and a store's `params.schema` has a vocabulary for types and none for
+closed value sets. An unreadable row is now **skipped** — it leaves the rule set
+before rule 3 reads it, so it allows nothing, denies nothing and holds nothing —
+and the `reject` lane carries a **receipt** naming it: `reject_reason`
+`rule_unreadable` (singular, about a row), `hop.rule_id` the row and a new
+`hop.rule_fault` saying why (`unnamed_row`, `unknown_kind`, `unknown_field`,
+`unknown_action`, `empty_value`, `unreadable_match`). A receipt has an **empty
+body**, which is how a drain tells it from a verdict — a verdict always carries
+the turn it is about. Fail-closed did not move, it narrowed to the two cases a
+row cannot reach: the hardline (code, not rows) and a rules table that does not
+answer at all (`store_refused`). The retired verdict string `rules_unreadable` is
+gone from the reject vocabulary. The closed value sets are now published where a
+composer reads them — `template.json`'s catalogue row, which travels into the
+librarian corpus — and in the README, held together by a drift lock. No version
+bump: the vocabulary and the lane shape are unchanged, and 2.2.0 has not shipped.
+
+#### `seed_rows`: store rows enter a running colony through the door topology goes through (GH #456)
+
+The mutation door understood seven operations and all seven changed topology.
+What is *inside* a cell — the rows of its store — it did not know, and rows
+reached a colony on exactly two paths: as a `seed/<table>.jsonl` read into a
+**fresh** `cell.db`, or at run time as a message to the store cell. For data
+that is fine. For the class of rows that are not data but **permissions and
+keys** — an `access` policy row, a grant, a firewall rule, an affinity
+subscriber — the run-time path has three holes: no digest (nobody can check that
+what landed is what was ordered), no access verdict *before* the write, and no
+`mutation_log` entry (the change is invisible to the steward and to the
+operator). The door hardened in 0.27.0 held for topology and not for the rows
+that need it most.
+
+`seed_rows` is the eighth diff operation:
+
+```json
+{ "seed_rows": [ { "target": "./access/store", "table": "policy",
+                   "rows": [ { "rule_id": "…", "verdict": "allow" } ] } ] }
+```
+
+- **It goes through everything topology goes through.** The digest is over the
+  whole declaration list and needed no change to see it; the submitter asks the
+  one `colony.mutate` question it asks for a topology manifest and no capability
+  of its own — the reach of the write is already bounded by the scope that
+  question is asked over, the same bound that lets the same requester
+  `swap_nodes` the store outright; and the mutation is recorded in
+  `mutation_log` with its requester, so `/colony/ledger` shows it.
+- **It is checked against the declaration, not against the database.** The
+  target must be a registered `store` (`seed_target_not_a_store` otherwise — a
+  new `error_code`), the table must be one its `params.schema` names
+  (`seed_table_undeclared`, likewise new, and the refusal lists the tables that
+  do exist), and every key of every row must be a declared column (`schema`).
+  The target may be a store the **same diff** grew.
+- **It is the same seed mechanic, not a second one.** The same JSON→SQL binding
+  the staging seeder uses, the table built from the same declared column list,
+  and a store-owned table left standing without its key is repaired by
+  `ensure_keyed_table` at the next wake (GH #255).
+- **Idempotent by declaration.** A store's declared tables carry no primary key,
+  so `seed_rows` says *these rows are present* rather than *append these rows*: a
+  row already there, column for column, is counted and not written again.
+  `meclaw --apply` of the same manifest twice is a no-op, and a changed row
+  changes the digest.
+- **It writes into a store that is awake.** The colony is the write authority and
+  already builds and seeds a `cell.db` at instantiation. What made a write into a
+  live cell wrong in GH #160 was not the second connection — WAL and
+  `busy_timeout` serialise that — but the `vault` cell's in-memory view going
+  stale with nothing announcing it. A `store` keeps no such view, so the row is
+  visible to its very next query. A `params.write_surface: "internal"` does not
+  bound this door: that key binds messages to a cell, not the authority.
+
+`templates/builder` learns the key on both of its lanes — the normaliser admits
+it as an eighth operation (and its control-plane guard now covers `target` as
+well as `from`/`to`/`name`), and the drafting brief gains a `ROWS` grammar
+paragraph. The brief's operation list, which had said six and asserted "no
+others exist", now says eight. No fast-lane recipe: a recipe exists where an
+edge set cannot be derived from a contract, and a `seed_rows` entry is three
+keys that travel through unchanged.
+
+Docs: `docs/meclaw-overview` § Mutation operations (eighth row), § Seed concept
+(the third writer), the `error_code` enum; `docs/config` § Snapshot vs. live
+read; `docs/cell-types` § store; `docs/rewiring`.
+
+#### `builder@1.4.0`: the composer may write the cell the catalogue does not have, and it knows how many rounds it has (GH #482)
+
+Measured on 2026-08-29 on a throwaway colony with a real hosted model as
+`MODEL_BUILDER`, on the first wish no recipe covers: *"a feed cell under the
+researcher that fetches three RSS feeds every ten minutes and emits one headline
+document per new item"*. The composer spent **all seven rounds** and every one of
+them well — it never lost the thread and it never wrote nonsense. It spent the
+whole budget searching the catalogue for four templates that do not exist, then
+the iteration bound fired and the build ended on `no_manifest_in_answer`: the
+honest refusal, paid for, delivering nothing, with the prompt grown 5 557 →
+50 220 tokens.
+
+- **`TEMPLATES`, the fifth grammar block.** The briefing has always been correct
+  and complete about instantiation — *"there is no way to ask for a bare cell
+  type; every node is an instance of a template that exists, so name one"* — and
+  a feed is a `timer` plus a `web_fetch` plus a `code` cell plus a `store`, four
+  types `templates/_cell-types/README.md` deliberately ships no single-cell
+  template for. So the composer went to name them, round after round. What it
+  never tried is `add_templates`: the key was in the head's list of eight diff
+  keys and its **form** was published nowhere, which made the one key that
+  answers *the class I need does not exist* the one key the composer could not
+  use — while `seed_rows` had `ROWS`, `override_params` had `OVERRIDES` and
+  `birth` had `BIRTH`. The block now carries the entry shape (`name` plus
+  `files`, `template.json` required, `^[a-z][a-z0-9-]{1,63}$`, everything written
+  to `{templates_root}/local/<name>/` on a path the colony builds), both
+  pre-destructive refusals (`invalid_template_name`, `template_name_taken`), and
+  the ordering that matters: `add_templates` runs as the **first** operation of
+  its diff, so an `add_nodes` of the same diff resolves the class just
+  registered. That is why a build out of an own design is **one** manifest and
+  not two, and why the registration is a declaration rather than a side channel.
+- **The sentence that ends the loop** is the one that names the absence: there is
+  no single-cell template for `code`, `store`, `timer` or `web_fetch` anywhere in
+  the catalogue. `catalogue_lookup` is FTS5 and always returns its best hits, so
+  *not found* and *found something adjacent* are indistinguishable from the
+  caller's side — asked for a `code` cell template on the last round it answered
+  with a cookbook page on scheduled workflows, a rewiring section and
+  `archive-bridge`. A caller that cannot tell those apart has no reason to stop.
+- **The price is named and is not the composer's to pay.** A manifest that brings
+  executable behaviour — an `add_templates` at all, or an `override_params`
+  carrying a `script_inline` — makes `submit/gate` ask a **second** capability
+  question, `code.author`, which ships disabled. The head says so, and says that
+  a `code_author_denied` means *this colony does not allow imported execution*
+  rather than *your manifest was malformed*, so the refusal is not repaired into
+  a different shape by a composer reading it as a form error. Nothing here grants
+  anything: the composer learns that `add_templates` exists and may do exactly
+  what it could do before — the capability is the broker's decision, not the
+  prompt's.
+- **`BUILDER_MAX_ITER` is written a third time, in prose.** The composer did not
+  know how many rounds it had, and spending the last one asking is the most
+  expensive possible ending. The head now names the number — as **re-entries**,
+  which is what the edge counts: the composer is asked once out of the brief and
+  `max_iter` times after that, so "six rounds" would have understated its own
+  budget by one — says the assistant turns in the thread are the count, and says
+  what to do at the cap: write the best manifest that follows from what is
+  already known. A draft the door refuses
+  by name comes back on `in_receipt` and is repairable; an empty answer comes
+  back as nothing. A number in a prompt is a third spelling of an edge literal,
+  so `crates/meclaw-cells/tests/builder_bounds_agree_with_their_settings.rs`
+  holds all three to one value.
+- **No new lane, no new edge, no new capability** — two blocks of prompt text in
+  `templates/builder/brief`. The head grows from 13 481 to 16 571 characters,
+  roughly 770 tokens per round (+23 %), and it rides in every prompt of every
+  round including the ones that never need it; that is the price, and the run it
+  replaces spent seven rounds and a prompt of 50 220 tokens to deliver nothing.
+  The other half of the finding stays open: four minimal single-cell templates,
+  and a catalogue that can say *no template by that name, here are the names
+  there are*, would each end the same loop a round earlier.
+
+#### `builder@1.3.0`: a level can be grown asleep, and an assistant can be grown with the door its identity comes through (GH #472, GH #473)
+
+Two things a colony grown entirely from wishes could not express, both measured
+while building one end to end. Each of them cost a second act outside the one
+door, which is the shape this template exists to remove.
+
+- **`birth` is a recipe parameter (#472).** `add_nodes[].birth` (GH #437) lets a
+  whole subtree come to the world registered, addressable and **taskless** — the
+  mechanism a connector needs, because a channel has to exist in the topology
+  before its upstream is real. The builder could not say it: `classify` forwarded
+  four optional keys, `grow_level` wrote three node keys, and the briefing called
+  `override_params` "the only optional one". So a channel grown from a wish was
+  always born awake, and getting it asleep meant routing the draft through the
+  operator's lifecycle door instead of submitting it as a manifest. It is now a
+  parameter on both halves of the fast lane, rendered **top-level** on the entry
+  beside `template` — a property of the placement, not a setting of a cell.
+- **A channel is the one level born asleep by default.** Not a preference about
+  connectors: a `proxy` cell opens its upstream the moment it has a task, and the
+  ruling behind GH #468 is that a connector comes asleep and is armed
+  deliberately. Every other level is a composition of cells that wait to be
+  addressed, and says nothing — a diff that says nothing behaves exactly as it
+  did. `examples/organism/grow-channel.json` carries the key now, and so does the
+  one-body copy beside it.
+- **The vocabulary is the door's, and a third word is refused by name.** `active`
+  or `inactive`, checked at the switch **before** an inference is bought and
+  again at the renderer, under the new `error_code` `birth_unknown`. The door
+  refuses an unknown state pre-destructively, so nothing is lost by passing one
+  through — what is lost is the name of the refusal, one hop from the wish that
+  made it. A test reads the two spellings out of both shipped scripts and holds
+  them against `Birth`'s own wire constants.
+- **The sentence is read too.** A wish that says *asleep* or *born asleep*
+  renders `inactive`, one that says *awake* renders `active`, and an explicit
+  `birth` argument beats both: a key a caller filled in is a decision, a sentence
+  is a reading of one.
+- **The identity door, on request (#473).** A grown assistant reached its brain
+  with an **empty** `system` tree — no persona, and above all no `in_pack` edge,
+  so the affinity hive's push cron fired into a lane with no consumer. The
+  measured effect was an agent that answers a question about its own owner with
+  "I have no stored information about you" while its memory hive, asked directly
+  on `in_recall`, answers the same question correctly from the same colony.
+  `subscribe` now renders the two edges that lane needs: `./affinity` into the
+  new assistant, guarded on `hop.subscriber` and re-stamped onto `in_pack`, and
+  the `pack_ack` drain back into `./assistants` — drawn together, because the
+  door refuses the first without the second.
+- **It is opt-in, and that is a property of who may draw it.** The submitter
+  refuses an `in_pack` edge that does not end at the **requester's** own sealed
+  hive (`subscribe_target_not_self`, GH #458) — the form check that keeps one
+  agent from opening a durable write channel into another agent's prompt. A level
+  that always drew one could therefore be grown by nobody except the brain being
+  grown, so the level's own eleven edges stay eleven.
+- **Only the graph half is renderable, and the template says so.** A
+  `subscribers` row is a store write, not a mutation declaration; writing it
+  stays a `subscribe` op through affinity's own gate (ruling R-Subscribe). What
+  the recipe renders is the graph that row will need — stating anything more
+  would promise a delivery a manifest cannot make.
+- **New `error_code` string** (README § Stability): `birth_unknown`.
+
+**Migration.** Nothing that shipped changes shape: every level renders exactly
+the edges it rendered before, and the only rendered output that moved is the
+channel's `birth` key. A wish that wants a channel awake says so.
+
+#### `member@1.4.0` / `affinity@3.2.0` / `firewall@2.1.0` / `session-keeper@2.1.0`: a member's export carries everything a member IS (GH #471)
+
+A member exported its memory and nothing else. Measured on a running colony:
+growing a fresh member from an older one's export reproduced the memory hive
+completely — 182 episodes, 34 facts, 55 entities, 9 beliefs, 34 embeddings, 28
+entity edges — and reproduced `affinity` (6 entities, 10 relations, 17 trust
+rows, 43 disclosure decisions, 76 audit rows), `firewall/rules` (6 rows) and
+`session-keeper/sessions` as empty tables.
+
+`memory` produces and `affinity` decides. A member reborn like that remembers
+everything it was told and knows nothing about who may be told what; it screens
+its first inbound turn against no rules at all; and it greets a person it has
+been talking to for a year as a stranger. That is not a smaller backup, it is a
+different security posture wearing the same name — which is why this is written
+here as a retraction of what the word *export* meant at this level, rather than
+as a feature.
+
+- **Three more porters, and each hive still decides its own walk.** `affinity`,
+  `firewall` and `session-keeper` each grow one `code` cell on the lanes
+  `memory-hive` has had since 2.2.0: `in_export` walks the tables out as one
+  `dump` part per table, `in_import` takes one part back into a hive that is
+  already running, and each carries its own document format
+  (`meclaw-affinity-export/1`, `meclaw-firewall-export/1`,
+  `meclaw-session-export/1`). The alternative — one member-level porter that
+  asks each occupant over its existing read lanes — was rejected for the reason
+  `memory-hive`'s own porter exists: it would make the member level know its
+  occupants' tables.
+- **What stays behind is named, per hive.** `firewall/arrivals` is the rate
+  window THIS installation spent, and a colony that inherited a full one would
+  refuse turns for traffic it never saw. `affinity`'s `subscribers.pack_hash`
+  and `sent_at` travel in the document but are blanked on the way in: they say
+  what the source already DELIVERED, to a cell path in a colony that no longer
+  exists, and carried over they would make the receiving push lane compare a
+  fresh pack against a hash it never sent and stay silent for ever — a reborn
+  member would never make its first identity delivery. Every hive's `port_scratch`
+  is the transfer lane's own notepad and is not memory.
+- **Provenance is never reconstructed.** An `affinity` part for `disclosure`,
+  `trust` or `subscribers` whose declared schema lost its audience column is
+  refused whole (`missing_audience`), and so is a `sessions` part without
+  `audience_set` — a row whose audience did not survive the transfer is a row
+  that may be told to anyone, and nobody can rebuild one afterwards. The same
+  gate `memory-hive` has carried since GH #244.
+- **`entities.canonical_name` is re-derived, not asserted.** The two tables the
+  `affinity` store keys itself out of `params.canonical` travel first in the
+  walk and are applied as upserts; the final part triggers a `canonicalize`, so
+  the identity an entity had in the source hive is reproduced from transferred
+  data rather than copied as an opinion.
+- **One directory per hive in the sink, and that is a requirement.**
+  `memory-hive` and `affinity` both declare a table called `entities`, so the
+  flat sink would have written one over the other without a word. Each part
+  names its hive and the sink files it under that name:
+  `<MEMBER_EXPORT_DIR>/<hive>/seed/<table>.jsonl`, plus a marker per hive and
+  one for the member naming every holder that finished. `export_done` now
+  carries `hop.export_hive` and travels three times per export.
+- **`hop.import_hive` picks the holder on the way back**, and `./memory-hive` is
+  the guarded default (GH #283) — so every part written before this change still
+  arrives where it always arrived.
+- **`examples/memory-import/build_import.py` splices every holder the export
+  carries**, drops that hive's shipped placeholder seed (a fictional person and
+  eight example rules beside an imported record are a second person nobody
+  imported), and keeps reading the pre-#471 flat directory shape as a
+  memory-only export so the documents already on disk are not stranded. A
+  `session-keeper` part is named on stderr and left out: that hive stands under
+  an assistant, four levels down, where a member-level template has no path to
+  put a seed.
+- **Version digits.** `affinity` and `firewall` take the second digit (a caller
+  can do something never promised before), `session-keeper` likewise. `member`
+  stays at the unreleased `1.4.0`: a version is a shipped fact, and cutting a
+  `1.5.0` for the second half of one unreleased wave would invent a version
+  nobody could ever have wired against.
+
+Pinned in `crates/meclaw-cells/tests/gh471_a_member_carries_all_of_itself.rs`
+(two real colonies sharing nothing but a directory; one distinctive row per
+holder; the receiving colony's firewall refuses a turn on a rule that only ever
+existed in the sending one),
+`crates/meclaw-cells/tests/gh471_a_keeper_carries_its_sessions.rs` (a
+transferred session is CONTINUED, not reopened, and applying the same document
+twice writes nothing the second time) and
+`crates/meclaw-cells/tests/gh471_the_porters_mirror_their_stores.rs` (each
+mirror against its store, column for column — the way a transfer silently starts
+dropping a column is a mirror nobody compared).
+
+**Retracted in the same wave by GH #475** (below): `assistant` and `talky` now
+forward the transfer lanes, so a member's own `in_export` reaches the keeper of a
+generation it names.
+
+#### `builder@1.3.0`: a generation grown from a wish receives the transfer lane (GH #476)
+
+The other half of GH #475, and it lived in a different template. A LEVEL is a
+recipe — the transit edges a new child gets are a property of the PARENT, so
+`grow_level` renders them from a table rather than letting a model rewrite them
+per build. That table still said an assistant costs **eleven** edges. Since
+GH #475 it costs **fourteen**, and the three it did not know are exactly the ones
+that reach the one store a member cannot recompute: an `in_export` naming a grown
+generation stopped as `no_route` at `<member>/assistants`, and so would an
+`in_import` part carrying its session ledger.
+
+Nothing reported it, and that is the point: an export that walked three holders
+looks exactly like a complete one — three directories, three `export_done`, a
+member-level marker naming three hives. A generation instantiated the documented
+way (`templates/member/README.md` § *Addressing an assistant through a channel*)
+drew all fourteen the whole time; only the fast lane was short.
+
+- **Three rows in `_assistant_level`, in the order the member's own graph writes
+  them**: `in_export` and `in_import` down, both under the same
+  `context.assistant` guard a turn carries, and `dump` back up. The guard is not
+  optional and not symmetry: a member with two generations holds two session
+  ledgers, they are not one document, and the sink files a part under the hive it
+  came out of — two keepers would claim one directory.
+- **The drain is PLAIN.** Every level between the container and the keeper pairs
+  `in_export` with `dump` in `params.required_drains`, and the probe that checks
+  the pairing runs the described hop through the real edge evaluator. An edge
+  that additionally tested `hop.dump_kind` evaluates false under it, reads as no
+  drain at all, and the mutation is refused.
+- **The counts moved where they are published**, once each and derived rather
+  than repeated: the `README` table of the template, the briefing the composer
+  reads, `templates/builder/template.json`'s worked example, and
+  `examples/organism/grow-assistant.json` — which is regenerated from the
+  renderer and pinned against it byte for byte, together with
+  `grow.manifest.json`, which carries the same declaration verbatim.
+- **Version digits.** None. `builder@1.3.0` is unreleased in this wave, and a
+  recipe that renders the edges its own library already ships is the completion
+  of one change rather than a second one (§ 4a).
+
+Pinned in
+`crates/meclaw-cells/tests/gh476_a_grown_generation_receives_the_transfer_lane.rs`:
+the rendered edge set is held against the lanes `assistant@2.1.0`'s own contract
+declares, and one colony grows a member, grows two generations **from what the
+recipe renders**, opens a real session in the first with a real turn and exports
+it — the keeper's ledger lands as `session-keeper/seed/sessions.jsonl` carrying
+that very row, the member-level marker names four hives, and the generation
+nobody named stays empty. The counts stay derived in
+`crates/meclaw-cells/tests/gh466_grow_level_renders_the_level.rs`, which reads
+them back out of the README prose and the briefing and compares them with what
+the renderer produced.
+
+#### `talky@4.5.0` / `assistant@2.1.0` / `member@1.4.0`: the member's export reaches the session keeper (GH #475)
+
+The half GH #471 measured and left open. `session-keeper` answered `in_export`
+and `in_import` from the day it grew a porter, and nothing above it ever
+forwarded one: the hive stands inside a GENERATION, four levels below the member,
+and neither `assistant` nor `talky` carried a transfer lane. So `sessions` — the
+one table that remembers which conversation belongs to which channel — stayed
+behind on every rebuild, and a member reborn from its own export greeted a person
+it had been talking to for a year as a stranger. Nothing anywhere reported it:
+opening a generation is a perfectly ordinary event.
+
+- **Two pass-through lanes on each of the two levels in between.** `talky` and
+  `assistant` accept `in_export` and `in_import` and emit `dump`, three edges
+  each, all of them plain. No modifier, and that is a requirement rather than a
+  style: the lane is named the same on both sides of every one of these
+  boundaries, so a `set_hop` would rename a lane onto itself — and it would hide
+  the pairing from the drain probe, which runs the described hop through the real
+  edge evaluator. Neither level reads a part or decides what may leave; that is
+  the keeper's own walk, exactly as the three holders' walks are their own.
+- **The pairing travels with the lane.** Both levels declare
+  `in_export → dump` and `in_import → dump` in `params.required_drains`, so a
+  caller that wires the ingress without the drain is refused at the mutation
+  instead of running an export that reaches nobody. The refusal half is
+  discharged inside the composite: a porter's `reject` is normalised by `talky`'s
+  `./errors` and leaves as one `error` beside every other failure of the unit,
+  which is why `dump` carries only parts and receipts.
+- **The member NAMES the generation; it does not fan out to it.** The fourth
+  export target is `./assistants`, guarded on `context.assistant` — the same key
+  a turn is addressed with. Two measurable reasons: a member with two generations
+  holds **two** session ledgers and they are not one document, and the export
+  sink files a part under the hive it came out of, so two keepers would both
+  claim `<MEMBER_EXPORT_DIR>/session-keeper/` and the directory would hold
+  whichever walk finished last, silently. An export that names no generation is
+  exactly the export this level always did — three holders, and no dead letter
+  into an empty container.
+- **A fourth directory in the sink, and a fourth `export_done`.**
+  `<MEMBER_EXPORT_DIR>/session-keeper/seed/sessions.jsonl` lands beside the three
+  holders' documents, the member-level `export_final.json` names all four, and
+  `hop.export_hive` says which walk finished.
+- **`hop.import_hive` gains a third name.** `'session-keeper'` routes a part into
+  `./assistants`, and which generation's keeper it lands in is the container's
+  own question, answered on `context.assistant`. A part that names the keeper and
+  no generation has no address at all and stops as `no_route` at
+  `<member>/assistants` — rather than being handed to a holder that would refuse
+  it under a misleading name.
+- **`examples/memory-import/build_import.py --after-boot FILE`.** A birth still
+  cannot seed this hive: the container that holds generations ships EMPTY, so a
+  derived member template has no path for a `sessions` seed. The document is
+  therefore **late, not lost** — the tool rebuilds each part from the seed files
+  the sink wrote plus that hive's marker and writes the ready-to-post `in_import`
+  messages, addressed at the member's own path. `--assistant NAME` says which
+  generation; without it the tool refuses rather than guessing, because a session
+  ledger delivered to the wrong generation is a conversation grafted onto
+  somebody else's.
+- **Version digits.** None. `talky@4.5.0`, `assistant@2.1.0` and `member@1.4.0`
+  are all unreleased in this wave, and cutting a new number for the second half
+  of one unreleased wave would invent a version nobody could ever have wired
+  against — the same reading `member` was held to under GH #471.
+
+**Closed in the same wave by GH #476** (above): `grow_level` renders all
+fourteen edges, so a generation grown from a wish receives the lane too.
+
+Pinned in `crates/meclaw-cells/tests/gh475_the_transfer_lane_crosses_the_levels.rs`
+(the shape of the four shipped files: every level declares both lanes and `dump`,
+every door is plain, every drain is a plain `hop.route == 'dump'` test, and the
+member's fourth target is guarded on `context.assistant`) and
+`crates/meclaw-cells/tests/gh475_a_member_reaches_the_keeper_it_holds.rs` (a
+colony: one member, two generations, a real session opened in the first, one
+`in_export` that files the fourth directory, and `build_import.py --after-boot`
+carrying that document into the second generation's keeper).
+
+#### `operator@1.0.0` / `meclaw-os@1.5.0`: an operator sees the draft before it runs (GH #474)
+
+`meclaw-os@1.5.0` gave an operator a way to reach the baumeister and routed the
+resulting draft to the one submission front door. It also removed a step the
+baumeister's own contract promises about everything it emits:
+
+> the draft — an ordered list of mutation declarations plus the sha256 digest
+> over it and a sentence a human can read before saying yes. It is a
+> **PROPOSAL**: nothing here has applied it and nothing here can
+
+With that edge the sentence a human can read before saying yes travelled
+straight past the human. Measured: a wish for a connector channel produced a
+correct three-edge declaration **and a running `proxy` cell** in one round, and
+putting that connector back to sleep took a second act — where growing it asleep
+would have been one. There was no round in which an operator saw the draft,
+checked the digest and then decided.
+
+- **The default is now the halt, and it is a LANE.** An operator-asked draft
+  reaches the front door on the new `in_draft` lane instead of `in_submit`. The
+  front door parks it in a store of its own under its digest and answers on the
+  lane it always answers on: `receipt`, marked `hop.draft_state = 'draft_ready'`
+  and carrying `hop.manifest_sha256`, `hop.declaration_count`, `hop.draft_path`
+  and the declarations themselves in the body. **Nothing is applied.** A new
+  subject at this hive costs an occupant and an edge, never a new lane every
+  caller has to learn — which is why the answer travels on `receipt`.
+- **The second act quotes the digest and carries no manifest.** `in_submit` with
+  `hop.manifest_sha256` and an empty body reads the parked bytes back out of the
+  store under that digest and forwards them on `apply`; the digest, the gate and
+  the broker are the road they always were. That is what makes `submit <digest>`
+  a decision about the bytes somebody was **shown** rather than about the bytes
+  a caller happens to be holding. `{"op": "submit", "digest": …}` in a
+  `tool_call` turn is read as the same request.
+- **A digest nothing is parked under submits nothing.** `digest_mismatch`, with
+  the digest that was asked for on the receipt — a submission that was never
+  made is a different fact from one that was made and refused, and the two do
+  not share a code.
+- **One act is still available, and it is a word in the wish.**
+  `hop.auto_submit: true` on `in_build` makes the rim door promote
+  `context.build_auto_submit`, and the shell sends the draft straight to
+  `in_submit` the way 1.5.0 did — for a rebuild script replaying wishes somebody
+  has already read. It turns the halt OFF rather than on, because a proposal
+  that applies itself by default is the surprising one.
+- **`drafts`, and one retraction.** The front door gained a fifth occupant: a
+  `store` with one table, keyed by digest, `write_surface: internal`, reachable
+  only from `./submit`. The template said *"nothing is remembered between two
+  requests"* and that sentence is retracted in its README, its `template.json`
+  and its config description: what is remembered is a **proposal**, so a colony
+  that lost the store would lose offers nobody accepted and never a change it
+  made. A parked draft is not swept when it is submitted — a manifest the broker
+  refuses is one its requester may submit again once the policy allows it.
+- Two guarded edge pairs rather than a branch inside a cell (46 edges at the
+  shell, up from 44): which road a round takes is a fact of the level, told by
+  the same discriminator pattern the two `./orgs -> ./builder` / `./orgs ->
+  ./operator` edges have used since R6.
+- Pinned by `crates/meclaw-cells/tests/gh474_a_draft_waits_for_a_yes.rs`: the
+  front door on its own wire (park, ask, un-park, refuse) and the shell on a
+  booted colony (which word the rim door reads, and which lane the draft then
+  arrives on). `gh469_an_operator_drives_the_builder` keeps its address claim
+  and records the lane change as a retraction.
+
+#### `argus@1.0.0`: the steward becomes a watcher, and one full cycle is proven on a booted colony (GH #462)
+
+`steward` is renamed `argus` and gets the role its name says: it sees everything
+that happens in its colony and leaves a receipt for every tick. It also runs, end
+to end, for the first time. Every hop of this loop had been tested by feeding the
+scripts on stdin; the chain clock → meter → `/colony/ledger` → judge → mutator →
+target cell → probe → receipts had never once been driven on a running colony,
+and six defects were sitting in the joins between the hops nobody had joined.
+
+- **A receipt per tick.** `idle` (the charter had no enabled goal) and
+  `store_error` (a store refused an operation of this cycle, with the operation
+  and the code in its reason) join every status the loop already wrote. A tick
+  used to write nothing in both cases, so a watcher whose clock had stopped and a
+  watcher with an empty charter produced the same empty table. The `store_error`
+  write is bounded by its own phase — a refusal *of the receipt* leaves on the
+  error lane and writes no second row.
+- **`dlq-watch` reacts deterministically, and no model is asked.** An `observe`
+  goal now carries its count in the reason code (`observed_dlq_rate_3` against
+  `observed_dlq_rate_clean`, where every observation used to close as
+  `observe_only`) and raises the new `alert` lane out of the hive when the count
+  is non-zero. The judge is asked about optimisation goals and about nothing
+  else: a colony losing letters must not also start paying for opinions about it.
+- **The judge's answer is read in the shape it actually has.** A `tool_call` turn
+  off the wire carries the provider's whole function object,
+  `{"name": …, "arguments": "<json>"}`, so the decision sits one level in. The
+  mutator read the flat form — which is what a tool call authored *inside* the
+  hive looks like, and what every stdin test had fed it — so a real judge answer
+  unwrapped to nothing, `action` defaulted to `none`, and the cycle closed as
+  `no_action` over a colony where a model had in fact decided something. Both
+  forms are read now, and the wire form is pinned twice: on stdin and on a booted
+  colony.
+- **`context.ar_measured` / `ar_require_plan` are set by an edge.** The mutator
+  had always read both and no edge had ever written either, so every `applied`
+  receipt recorded `measured: {}` and the charter's own revert-plan rule was
+  enforced off a compiled-in default instead of off the charter row. They travel
+  on the hop and the `./meter -> ./judge` edge promotes them, because a hop lives
+  for exactly one hop and the mutator is two away.
+- **The receipts store can answer the mutator.** `./mutator -> ./receipts`
+  promotes `argus_origin: 'mutator'` and the return edges only ever matched
+  `'meter'` and `'probe'`, so the store's answer to every write the mutator made
+  dead-lettered — on the happy path, on every applied cycle. And a dead letter is
+  what the probe two hops later reads as an unhealthy colony, so the loop's own
+  bookkeeping reverted the loop's own changes.
+- **Both ledger asks name `until` explicitly.** The endpoint bounds a window as
+  `since <= created_at < until` in whole seconds and defaults `until` to its own
+  `now`, so an ask with no upper bound is blind to the second it is made in. For
+  the probe — which asks milliseconds after the update it is looking for — that
+  is the worst possible blind spot. `now + 1` is how *up to and including this
+  second* is spelled against an exclusive bound.
+- **`./probe -> .` on `error` has an emitter**, and it is the one state the loop
+  cannot leave on its own: an unhealthy colony whose applied change carries no
+  revert plan. `./mutator -> .` on `error` had no emitter either and no case that
+  could raise one — everything that can go wrong in the mutator is a recorded
+  outcome — so that edge and its declaration are gone rather than filled.
+- **A target that refuses the params update no longer mints a receipt.** Such a
+  refusal answers the mutator directly, as a fresh message with no context, so
+  the mutator can tell that something was refused but not which cycle it belonged
+  to. It writes nothing; the probe catches the cycle one hop later as an
+  unhealthy colony and takes the revert plan. Safe, and coarser than it should
+  be — the limit is written down in the template README.
+- **The proof.** One integration test drives the `llm-cost` goal through the
+  whole chain on a booted colony, twice — once to `kept`, once to `reverted` —
+  with a real `llm` cell as the target whose `params` table is read off disk at
+  every turning point, a mock provider whose call count is asserted, an
+  unbroken receipt chain, and an empty dead-letter queue.
+
+Optimisation stays a goal type that needs the judge; it is shipped disabled and
+promised nowhere as "self-improving". `steward@2.0.12` is **deprecated** and
+ships unchanged for one release.
+
+#### `colony.db`: `mutation_log` gets its `created_at` index (GH #462)
+
+`/colony/ledger` reads every count out of a window, and it stalls the colony
+inbox loop while it does. `message_log` and `dead_letters` each answered that
+window from an index; `mutation_log` answered it with a full table scan bounded
+only by `scan_budget` — and the two shipped callers ask with the maximum.
+Additive DDL, so the schema version does not move and an existing database picks
+the index up on its next open. Pinned by an `EXPLAIN QUERY PLAN` over the
+endpoint's own sub-query, because an index the planner never picks is not a
+repair.
+
+#### `builder@1.2.0`: a level is a recipe, and the grammar admits what the catalogue already does (GH #466)
+
+The fast lane knew three recipes — `rewire_edge`, `add_node`, `attach_drain` —
+and nothing at composition scale. Growing a member meant the composer generated
+the parent's transit edges by hand on every build, although they are deterministic
+per level and `examples/organism` writes all six sets out. Its grammar forbade
+`override_params`, taught one level of path depth and never mentioned `ref`,
+while the address rule — one edge per assistant, guarded on `context.assistant`,
+`Edge.to` static — lived only in two template READMEs.
+
+- **A fourth recipe, `grow_level`.** Told a scope, a level, a name and a
+  template, it renders ONE declaration: the node at its real depth
+  (`assistants/scribe`) plus the whole transit edge set of the parent, from a
+  table. Six levels ship — `org`, `member`, `assistant`, `channel`, `screen`,
+  `app` — and a level the table does not carry is refused as `level_unknown`,
+  never rendered as something close.
+- **The template choice stays with the model.** The recipe renders edges and is
+  TOLD what to instantiate, because which class a level is filled with is a
+  catalogue question and the catalogue is the librarian's. Same for `ctx`: it is
+  passed through verbatim, because the authority on what a template demands is
+  the mutation door, which answers `requirement_missing` by name and hands it
+  back on `in_receipt`.
+- **The table is pinned against the worked example, not described beside it.**
+  All six levels are rendered through the shipped script and compared **byte for
+  byte** against `examples/organism/grow-*.json`, and a second test applies the
+  rendered declarations to a real colony and requires the same registry rows,
+  the same provenance chains, the same hive scopes and the same edge set as the
+  written ones.
+- **Why a table and not a derivation**, because the question comes up every
+  time: a connector has no contract at all (`accepts` and `emits` both empty,
+  and its upward edges condition on `has(hop.error_code)`); lane count is not
+  edge count in either direction (`assistant` declares seventeen lanes and gets
+  eleven edges, `display` folds two lanes into one edge); and guards, modifiers
+  and literals appear in no contract, because addressing is a property of the
+  PARENT.
+- **One sentence is recognised rather than named.** `grow a <level> named <name>
+  from <template> under <path>` takes the fast lane without a `recipe` argument.
+  It is not the forbidden downgrade in reverse — nothing was named — and it
+  fires only when every parameter it needs is in the sentence; a half-read wish
+  falls through to the design lane, which is where an incomplete sentence
+  belongs.
+- **Four new grammar blocks, each answering a draft that LOOKED right.**
+  `override_params` is admitted as the one optional key of an `add_nodes` entry
+  and taught in its ADDRESSED form (`{"cogny/brain": {…}}`, `""` for the node
+  itself); `ref` is taught as a declaration form and as the reason a composite's
+  required `ctx` keys are a union over its ref chain; the address rule v1 is
+  quoted verbatim, with the consequence spelled out (a **sum, never the cross
+  product**, because `Edge.to` is static); and the first example at path depth
+  **two** stands beside them, because every example the grammar had was one
+  segment deep and a level never is.
+- **The composer may ASK instead of guessing.** A measured run wrote its
+  `ctx.model` as an invented literal — a manifest that validates, applies and
+  boots against an endpoint that does not exist, which is the most expensive
+  kind of wrong because every gate before the first inference says yes. So
+  `requires.ctx.model` is a mandatory question: the composer answers
+  `{"question": "…"}` and no declarations, and `normalise` turns that into the
+  `error` lane under a code of its own, **`wish_incomplete`**, carrying the
+  question verbatim. Deliberately not `declarations_not_a_list` — the two call
+  for opposite repairs.
+- **The composer's completion budget is 32 768**, up from 16 384. An
+  organisation, a person, a generation and a channel is four declarations and
+  40 edges, and an edge with a guard and a modifier costs 60–120 tokens of JSON
+  — 4 000–5 000 tokens of answer on top of a reasoning spend measured at 8 192.
+  Rendering the edges instead of generating them is the structural half of the
+  same fix; the cap is for the wish that is not exactly one recipe. The
+  operation timeout is unchanged and was already the binding constraint for a
+  maximum-length answer.
+- **The librarian's corpus drift gate runs before a push.** `--check` has existed
+  since GH #205 and ran in two places, both of them too late: R11 of the release
+  gate, and a suite test in tier `t1`, which the pre-push rule does not run. It
+  is now block 1 of `plans/meclaw-os/a2-pre-push-gates.sh`. It is deliberately
+  **not** in the public CI workflow — the generator lives under `workshop/`,
+  which never travels, so the step failed there on a missing file and said
+  nothing about drift (GH #234). A test asserts both halves: that a byte of
+  drift is red and an identical corpus green, and that the workflow still does
+  not run it.
+
+#### `meclaw-os@1.4.0`: one declaration boots the OS, and it says what it needs before it runs (GH #465)
+
+Stage one of a built colony instantiates the shell from a root tree with no cell
+in it — an empty hive, one edge, and one `cell.type: "ref"` marker. That was
+proven, but one directory over (`examples/organism/seed-ref`, GH #424), while the
+folder named after the shell shipped `grow-*.json` mutation declarations with
+hand-written edges, which is a different claim: a mutation names nodes AND edges,
+and the whole point of stage one is that it names one node and nothing else. And
+the shell said nothing about its environment: `argus` substitutes
+`${OPENROUTER_API_KEY}` with no default, `builder` wants `MODEL_BUILDER`, and
+`meclaw-os/template.json` carried no `requires` block at all — so a colony grown
+without the key booted, looked healthy, and failed at the first cycle the loop
+ran.
+
+- **`examples/meclaw-os/seed-ref/` is stage one, and the only proof it may
+  cite.** Three checked-in files: `colony.json`, an empty root hive, and the
+  marker. The one edge of that hive is `./os -> /colony/mutations` on the
+  `mutate` lane — the whole birth topology, written by hand because an edge *is*
+  a mutation and a `ref` marker declares a node and never an edge. The root seed
+  is a checked-in tree rather than a generator's output for the same reason: a
+  root somebody's script writes before the first boot is a tree nobody can diff,
+  and the marker and that edge are exactly the two things it gets wrong in
+  silence.
+- **`requires.env` on the shell, rolled up from its occupants and DERIVED by
+  test.** Twenty-six names, each with the sentence a refusal quotes; exactly one
+  is required, because exactly one value under the shell is written without a
+  POSIX default. This is the deliberate exception to the rule that a template
+  declares what it itself uses (`gh292_every_ctx_key_is_declared`): a `ctx` key
+  is supplied by the mutation and can be collected at the door, an `env` key is
+  supplied by a person editing a file hours earlier. The gate reads both
+  directions and derives `required` from the tree, so an occupant bump that adds
+  a key and forgets this file is red, and a declared key nothing substitutes is
+  red too. An `.env.example` beside the seed carries every name and not one
+  value.
+- **The boot reads the block — before it writes.** `bootstrap_grow` ran
+  `stage_subtree` straight away, so the first boot was the one instantiating path
+  that never read a `requires` declaration. It now runs `validate_requires`, the
+  mutation door's own stage 3, against the marker read as the one-entry diff it
+  is: same function, same walk over the ref chain, same wording, and the refusal
+  is `requirement_missing` carried into the boot's error family verbatim.
+  Pre-destructive is asserted on the filesystem — the marker is still a marker,
+  it has no children, `.staging/` is empty and `colony.db` holds no row for
+  anything under it.
+- **`mutation::substitute::collect_env_keys`** is the env twin of
+  `collect_ctx_keys`: every `${VAR}` in a string value, and whether that
+  occurrence carried a default. It is what makes the roll-up derivable instead
+  of transcribed, and it is asked of the substrate's own scanner and token
+  grammar rather than of a regex that would be free to disagree with both.
+
+`error_code` is unchanged: `requirement_missing` is the same code the door has
+answered since GH #292, now reachable from the second instantiating path. A tree
+whose templates declare no `requires` block boots exactly as it did.
+
+#### `examples/memory-import/`: a member is born with its history, through the one door (GH #467)
+
+A member's memory could LEAVE -- `in_export` writes `seed/<table>.jsonl`, one
+file per content table -- and had no declared way back. There is no `seed` field
+on a mutation diff and none on a `ref` marker; the only manifest key that carries
+files is `add_templates[].files`, and `member/memory-hive` is a `ref`, so nothing
+could put a seed into it. The way in was a file copy by hand, or harvesting the
+parts back out of the dead-letter queue.
+
+- **The recipe is one manifest.** `build_import.py` reads an export directory,
+  splices the referenced hive into the member's own tree where the reference
+  stood, drops the export under `memory-hive/store/seed/`, and prints a manifest
+  that registers that tree with `add_templates` and instantiates it with
+  `add_nodes` in the SAME diff -- which works because `add_templates` runs first
+  inside a diff and its registrations are visible to that diff's `add_nodes`
+  (GH #443).
+- **The order is the mechanism, and it is not negotiable.** A seed is read once,
+  when the `cell.db` is created, and is inert for ever after. Everything the
+  export carried goes in at birth; everything that happened afterwards goes in
+  through `in_import` against the running hive. A member that is already running
+  cannot be given a past.
+- **A retraction on two template surfaces.** `memory-hive/README.md` said in
+  three places that the birth seeder cannot carry the store-keyed identity
+  families, because a seed header cannot express a `PRIMARY KEY` and an upsert
+  against a keyless table fails. The header still cannot, but GH #255 made the
+  store ASSERT the key at its first wake and rebuild the table if it is missing,
+  rows carried over and duplicates collapsed -- so the whole document travels as
+  a seed set, alias families included. The retraction is explicit and names the
+  three sentences it retires.
+- **The level's own door, and it ships.** `member@1.4.0` accepts `in_import` and
+  carries one plain edge onto `./memory-hive`, so a later document reaches a
+  member grown the ordinary way -- not only one derived by the import tool,
+  which is what landed first. `build_import.py` no longer patches the lane in;
+  it copies the level like every other line. The lane crosses the two levels
+  above it for the same reason `in_export` does: nothing at `org` or
+  `meclaw-os` produces memory parts and nothing there consumes them, so a lane
+  the members below can answer would die as `no_route` at the outermost
+  boundary if the containers did not declare it. `org@1.3.0` and
+  `meclaw-os@1.4.0` each gained the accepted lane and its one transit edge, and
+  nothing else about either level moved. Pinned by
+  `crates/meclaw-cells/tests/gh467_the_shipped_member_carries_the_import_lane.rs`,
+  the drift lock for the countable promise on both of the level's public
+  surfaces (development-rules § 2d): it greps the sentence and derives the lane
+  counts from the contract the substrate reads.
+- **The porter's prose is corrected where it was wrong about seeds.** It said a
+  seeded alias table is a table *without its key*, which reads as "not seedable
+  at all". It arrives keyless, the store rebuilds it keyed at first wake, and
+  what a seed genuinely cannot reach is a `cell.db` that already exists -- which
+  is what the transfer lane is for. `memory-hive@3.0.5`, with its own drift lock
+  (`gh467_the_porter_says_where_a_seed_reaches.rs`): the sentence is grepped and
+  the mechanism is derived from the store's own `params.canonical`, so the day
+  the alias tables move into `params.schema` the sentence stops being true out
+  loud.
+- **Refused rather than half-grown.** An export directory without
+  `seed/export_final.json` is a PREFIX of a document and is refused: a prefix
+  looks exactly like a whole one from the outside, and a member born from one
+  cannot discover what it is missing. A directory carrying `emb_models.jsonl` is
+  refused too -- the embedding generation is the receiving hive's own
+  configuration and never travels.
+- **Measured against two colonies.**
+  `crates/meclaw-cells/tests/gh467_a_member_is_born_with_its_history.rs` walks a
+  real memory out through the shipped `export-sink`, runs the example's own tool
+  on the result, applies the manifest to a colony that never heard any of it, and
+  asks that colony's store the question only a memory it never saw written can
+  answer -- the lexical leg of a recall, which also proves the FTS index was
+  backfilled over rows the staging seeder had already written. The alias table's
+  key and its rows are read out of the new `cell.db`; the second step is driven
+  twice, because idempotency is the whole repair procedure for a partial
+  transfer.
+
+#### `tools@1.2.0` / `builder@1.1.2`: the hive hands out its own declarations, and the catalogue's tool cells stand in it (GH #464)
+
+The tools hive routed a `tool_call` by name and answered `tool_result`, and said
+nowhere what there was to call. The schemas sat in the callers' prompts -- one
+copy per caller, typed by hand -- so adding a tool by mutation meant editing every
+one of those prompts, and a caller could only ever offer a model a list somebody
+had written out. The hive was also thin: three of the catalogue's tool cells
+lived in it.
+
+- **A `schemas` occupant, on a lane pair of its own.** `in_schemas` in,
+  `tool_schemas` out, paired in `params.required_drains` like every other
+  direction this hive is wired in. A caller sends the names its own template
+  declares -- `{"tools": ["web_search", "web_fetch"]}`, or `["*"]` for everything
+  -- and gets back one `{name, description, parameters}` per name the hive has.
+- **A name the hive does not have comes back in `unknown`, never dropped**, with
+  `hop.error_code` `tool_unknown`. A partial answer is still an answer: the
+  schemas that were found travel beside the names that were not. A request
+  carrying no `tools` slot at all is a third state with its own code,
+  `tools_missing` -- an absent list and an empty one are two different requests,
+  and a caller that declares no tools is entitled to an empty menu.
+- **It is a declaration lane and not a second result lane.** A result belongs to
+  a call somebody made; a declaration belongs to a start-up question. Folding
+  them would make every collector guess which of the two it was handed.
+- **The answer is provider-neutral.** Wrapping `{name, description, parameters}`
+  into a provider's own envelope is the caller's job, because the caller is the
+  one that knows its provider. A hive that wrapped would have to be told which.
+- **Where the schemas come from.** No tool cell in the library publishes an
+  argument schema anywhere a machine can read: a `contract` says what the
+  substrate carries, not what a model may fill in, and the only description of
+  the arguments that existed was prose in each occupant's
+  `description.consumes_meaning`. So the table is the FIRST machine-readable
+  copy rather than a second one, and it is compiled into the `schemas` cell's own
+  script rather than kept in a store -- a store would be a second cell to reach, a
+  round trip inside the hive, and a `cell.db` nobody reviews in a diff.
+- **`file` and `edit` join the hive as tools**, sharing ONE root
+  (`TOOLS_FILE_ROOT`, declared in `requires.env`): one assistant has one file
+  root, and a tool that could edit what its neighbour cannot read would be a
+  boundary nobody could state. Unset, that root is the machine's scratch
+  directory -- `base_path` must name a directory that exists or the cell refuses
+  to spawn -- and that is a real reach, written down here rather than discovered.
+- **`edit` is the first `false` in the `reentrancy` block.** An edit is a
+  read-modify-write with no lock and no tempfile+rename, so two edits of one path
+  race at the filesystem -- a hazard the caller cannot see. The occupant
+  serialises (`max_concurrency: 1`) instead of asking it to.
+- **`mcp` and `vault` stand in the hive UNWIRED**, and that is the decision
+  rather than an omission. Activity is derived from the edges alone, so an
+  occupant directory with no door is an island the boot registers and never
+  spawns; waking one is one `add_edges` pair plus its schema row, inside this one
+  directory. Each is unwired for a question no template can answer: `mcp` needs a
+  server somebody named (a bridge pointed at a loopback placeholder would
+  reconnect to nothing in every colony that grew this template), and `vault`
+  answers exactly one sender -- a capability broker, which stands in the broker's
+  own hive and not in this one. `mcp` is a CELL here, never an "MCP server as an
+  occupant".
+- **The table and the doors cannot drift apart in silence.** One test walks the
+  dispatch graph and the shipped script and requires that every tool a door names
+  has a row and every row names a tool a door dispatches to -- in both directions,
+  with the unwired pair in neither.
+- **`builder@1.1.2`: the brief learns the principle**, in the HEAD rather than in
+  the retrieved patterns, because a corpus outage is when a model needs it most:
+  a tool is a cell in the tools hive plus one edge naming it, and a cell that uses
+  tools declares them -- so a request for a new tool is two declarations, and
+  neither half works alone.
+
+**Retracted in the same wave:** this paragraph said the caller side was not in
+this change. It is now -- see the entry below.
+
+#### `talky@4.5.0` / `cogny@4.3.0` / `collector@3.3.0`: a cell that uses tools declares them (GH #464)
+
+The other half of the same ruling. The hive hands out declarations by name; this
+is the side that names them. **The template is the contract:** a cell that uses
+tools declares them, asks for exactly those, and gets exactly those back.
+
+- **The declaration is a param, and it lives where the rest of the contract
+  lives.** `collector@3.3.0` takes `params.tools` -- a list of NAMES, `["*"]` for
+  everything the hive has -- and the composites set it: `talky@4.5.0` declares
+  `["web_search", "web_fetch"]`, the small named surface a channel voice wants;
+  `cogny@4.3.0` declares `["*"]`, because a reasoning core should reach whatever
+  its surface can and a list typed there would be a second copy of a catalogue
+  that drifts on the first tool added. The hive keeps no table of who asked, and
+  that asymmetry is the point: whoever designed the agent decided what it uses.
+- **Two lanes, and the answer is DURABLE state.** `schemas` carries
+  `{"tools": [...]}` out to the tools hive's `in_schemas` door; `in_menu` brings
+  `schemas[]` and the names it had nothing under back; `menu` writes the result
+  into the brain as `system.tools`, with no turn beside it -- the same door
+  `in_pack` opened in this wave, and durable for the same reason. So the menu
+  costs **one write per change and nothing per turn**. The subtree carries
+  `$replace`, so an answer with nothing usable in it writes NOTHING rather than
+  an empty menu that would revoke the model's whole tool set.
+- **The provider envelope is the caller's job.** The hive answers
+  `{name, description, parameters}` and stops there, because a hive that wrapped
+  would have to be told which provider its caller talks to. The collector wraps,
+  producing exactly the shape a typed `tool_menu` carries -- so an asked-for menu
+  and a typed one meet the same curator.
+- **`tool_menu` stays, as the manual override.** A collector carrying one asks
+  nothing: two writers on one `system.tools` path would overwrite each other
+  every round, and a knob somebody set by hand is an override rather than a
+  second source.
+- **The ask is a TICK, and that is the honest form.** The substrate hands a cell
+  no message at spawn, so nothing can ask "at boot". `collector@3.3.0` grows one
+  cell for it, `menu-clock`, a `timer` whose cadence is `MENU_CRON` (default:
+  every five minutes, UTC) -- and the tick is also how a tool ADDED to the hive
+  by mutation reaches an agent at all, since that hive raises nothing of its own.
+  An operator who does not want to wait triggers the schedule by id. It is the
+  one schedule this hive has, and it is not a reversal of the two it refuses: the
+  prune and the stale-round exit would DESTROY or CLOSE somebody's turns, and a
+  menu tick creates nothing and destroys nothing.
+- **An unknown name is a receipt, not a silence.** It comes back in
+  `hop.menu_unknown` and on stderr, which a `code` cell writes into `log.jsonl`
+  at warn level. A declared name nobody has is a defect in that agent's own
+  template, and the whole value of declaring is that somebody can see it.
+- **The level wires it and grows no lane.** `assistant@2.1.0` draws the pair
+  once for its surface and once for its core, told apart on the way back by
+  `context.tool_caller` exactly as a tool result is. Both halves are consumed
+  INSIDE the level, so no lane crosses that boundary and the version stands: the
+  number is a shipped fact and `2.1.0` has not shipped.
+- **The proof.** The shipped `talky` beside the shipped `tools` hive on a booted
+  colony, wired with the pair the assistant draws: the tick fires by itself and
+  exactly the two declared schemas are read back out of the brain's own
+  `cell.db`. The `cogny` case asks for everything and both of its brains hold the
+  same menu. Beside them, the shipped assembler run the way the substrate runs
+  it, driven with what the shipped hive actually answers rather than with a
+  fixture.
+
+#### The usage block travels whole, and ledger counts group by path and error code (GH #463)
+
+`/colony/ledger` sums what the hop header carries, and the `llm` cell put only
+four things there. The cache-read token count and the provider's own cost figure
+arrived on the wire and were dropped; `latency_ms` went into the body, which the
+ledger never reads; and `group_by` was parsed, echoed and then never looked at.
+A watcher that wanted "latency per cell" or "cost per model" had the numbers in
+the log and no way to sum them.
+
+- **The `llm` cell writes the whole usage block into the hop header.**
+  `tokens_prompt`, `tokens_completion`, `tokens_cached` and `cost` beside the
+  `model` and `finish_reason` that were already there, plus `latency_ms` — which
+  **stays** in the body's `meta` as well, because one number in two places is
+  cheaper than a migration for every reader that has had it since Phase 8. The
+  error path carries `latency_ms` too: a timeout is the hop whose duration an
+  operator most wants summed.
+- **One header key per figure, whatever the provider called it.**
+  `tokens_cached` is read from `prompt_tokens_details.cached_tokens` (OpenAI
+  Chat-Completions, OpenRouter), `input_tokens_details.cached_tokens` (OpenAI
+  Responses) or `cache_read_input_tokens` (Anthropic-compatible), so a ledger
+  never has to know which dialect wrote a row.
+- **`cost` is the provider's own figure and never a computed one.** Only
+  OpenRouter reports one today (`usage.cost`). A price table inside the
+  substrate would be a second source of truth that goes stale in silence, so
+  there is none — and a non-finite or negative value is dropped rather than
+  summed, because one `NaN` poisons every total it reaches.
+- **A figure the provider did not report is an absent key, not a zero.** A
+  summed zero and an unreported number are the same digit and two different
+  facts, and the header is the only place that can still tell them apart.
+- **The ledger sums all of it, plus the `duration_ms` the tool cells already
+  wrote** (`file`, `bash`, `web_search`, `mcp`, `vault`). `latency_ms` and
+  `duration_ms` each travel with a sample counter — `latency_samples`,
+  `duration_samples` — because most hops in a window carry no duration at all,
+  so a mean taken over `calls` would silently answer a smaller question.
+- **`group_by` is read at last, and accepts three words:** `model`
+  (`$.hop.model`), `path` (`to_path`, the **receiving** cell — the same
+  direction the cycle counter means) and `error_code` (`$.hop.error_code`).
+  Anything else is refused as `invalid_query`, like every other unreadable
+  filter; the caller's word selects one of three fixed SQL expressions and never
+  reaches a statement itself.
+- **The old reply shape is untouched.** `by_model` is answered with or without a
+  `group_by`, and `by_path` / `by_error_code` are **absent** rather than empty
+  when nobody asked — so a caller that sends no grouping gets byte-for-byte the
+  reply GH #267 shipped.
+- **Aggregates-only stands.** A group key is the axis the caller itself asked to
+  group along; no row, no envelope and no header value leaves the endpoint, and
+  the #267 test that pins it did not have to change.
+
+#### `talky@4.4.0` / `cogny@4.2.0` / `collector@3.2.0`: brains get a door for their own identity (GH #458)
+
+`affinity` could push and there was nowhere to push to. The push lane was
+complete on the sending side — `./push` hashed what a subscriber would get,
+`./brief` rendered the pack, `./clock` ticked it — and neither shipped agent
+composite had an entrance at the other end. `talky` and `cogny` are sealed
+hives: an edge naming `./brain` is refused with `hive_port_boundary`, the only
+path from outside runs through the collector, and the collector drops `system.*`
+on every lane that could have carried one, deliberately and for a good reason. So
+the `subscribers` seed shipped by GH #453 named a brain no graph could reach.
+
+- **`collector@3.2.0` carries the lane: `in_pack`.** The body is `system` with
+  one or more slot subtrees — what an `llm` cell upserts and what `affinity`'s
+  push lane already emits: the slots and **no** turn beside them, so the update
+  costs the agent a write and not an inference (GH #263) — or `slot` + `content`
+  for a single slot written by hand. Both may travel in one message — though the
+  single-slot form is a convenience and not a body of its own: a UBF body must
+  carry `messages` or `system` (the substrate's `anyOf`), so it rides beside an
+  empty `system` and is dead-lettered as `invalid_ubf_body` without it. It is a
+  LANE and not a flag on an existing one because what leaves this seam in
+  `system.*` is UPSERTed into the brain's own `cell.db` and stands until
+  something overwrites that exact path: durable state of the agent, told apart
+  from the evidence of one round by an edge the colony wrote rather than by a key
+  in a body a model could have written.
+- **What may be written is a closed list, and it is a subset of `SYS_KEEP` by
+  construction**: `identity`, `persona`, `handover`. Minus the two families the
+  collector re-derives every round (`tools`, `budget`), because a sender writing
+  those would fight it for the same path forever; minus `instructions`, because
+  an identity that could overwrite the charter could rewrite what the agent is
+  for. What remains is exactly the durable, curator-proof, unowned three — so a
+  pack is out of the curator's reach at any budget, which is the whole reason the
+  list looks the way it does. A drift lock asserts the subset relation.
+- **All or nothing.** An unknown slot refuses the **whole** pack with
+  `slot_unknown`, an empty one with `pack_empty`. Writing the half that was
+  understood would hand the sender an `ok` it cannot tell apart from a complete
+  write, and a half-written identity is worse than none.
+- **The owner comes off `envelope.reply_to`**, never out of the body — the rule
+  `affinity`'s gate states for `context.actor` and the `display` hive for a
+  view's owner.
+- **`in_pack` and `pack_ack` are one decision**, paired in `required_drains` like
+  the prune: the receipt answers unconditionally, accepted and refused alike,
+  because from the sending side a push that landed and a push that reached
+  nothing are otherwise the same silence. Hop keys: `pack_owner`, `pack_slots`,
+  `error_code`, `pack_unknown`, always present and empty rather than absent.
+- **`talky@4.4.0`** folds the lane into its existing door edge and adds two:
+  `./collector -> ./brain` on `pack` and `./collector -> .` on `pack_ack`.
+  Twenty-six edges now, fourteen of round.
+- **`cogny@4.2.0`** does the same and fans the pack out to **both** brains —
+  they are two lanes of one agent, and a core whose thinking lane knew who it was
+  while its lookup lane did not would answer as two different people — while
+  answering exactly **once**, before the fan-out, so a caller counts packs and
+  not cores.
+- **New `error_code` strings** (README § Stability): `slot_unknown`,
+  `pack_empty`.
+- **`collector/assemble`'s cell contract moved with the lane**
+  (`contract.version` 1.4.0): `messages` is **optional** now in `consumes.body`
+  and in `emits.body` alike. A pack carries slots and no turn in both
+  directions, and a required key refused it at the delivery boundary before the
+  cell ever saw it — measured, not reasoned about. `system`, `slot` and
+  `content` are declared on the way in; `pack` and `pack_ack` joined the `route`
+  enum on the way out, with `pack_owner`, `pack_slots`, `pack_unknown` and
+  `error_code` beside them.
+
+**Migration.** Nothing that shipped changed behaviour; both composites gain a
+lane and neither loses one, which is the second digit under
+`docs/development-rules.md` § 4/4a. An instance lifted to `talky@4.4.0` or
+`cogny@4.2.0` needs no rewiring — but a mutation that wires `in_pack` **must**
+wire a plain `hop.route == 'pack_ack'` drain beside it, or it is refused with
+`required_drain_missing`.
+
+#### `assistant@2.1.0`: an identity reaches the whole generation, not one of its brains (GH #458)
+
+Both occupants accept `in_pack` now and neither produces it, so by this level's
+own derivation rule the lane crosses — and its door edge is the one deliberate
+**fan-out** in the tree: `. -> ./surface` **and** `. -> ./cogny`. One generation
+is one person's agent, and a generation whose channel voice knew who it was while
+its reasoning core did not would answer as two different people. Three `llm`
+cells stand behind that path and each upserts into its own `cell.db`, because
+that is the only place durable system state can live. `pack_ack` therefore
+crosses **twice** per pack, once per occupant, and the lane's own `because` says
+so rather than leaving a caller to discover it: joining the two would need a cell
+at this level to hold them, and this level holds no state of any kind. Eight
+lanes in, nine out, twenty-seven edges, three drain pairings.
+
+#### `member@1.4.0`: the receipt of an identity leaves the level (GH #458)
+
+The push itself needs no lane here: producer and consumer are both **inside**
+this level — `<member>/affinity` is the record two assistants of one person read,
+and the edge goes from one sibling to another, addressing
+`<member>/assistants/<agent>` at its own path. A lane at the member's own door
+would be an interface promising something nothing outside ever sends, which is
+why `in_pack` joins the four operator lanes the member deliberately does not
+carry. The **receipt** is the other half and has no consumer in here at all:
+affinity's own record of a delivery is the `sent_at` it writes itself, and the
+hive has no lane that takes a receipt. So `pack_ack` crosses outward the way
+`prune` and `error` do — two per pack, one per occupant of the generation — and
+a level that had not declared it would let a recurring message die as `no_route`
+at its own boundary.
+
+`org@1.3.0` and `meclaw-os@1.4.0` move with it for the same reason and by the
+same rule: a container level declares the union of its occupant's lanes minus
+what a sibling inside it consumes, and nothing at either level consumes a
+receipt. Each gained the lane and its one transit edge, and neither gained a
+cell or a decision.
+
+#### `submit@2.2.0` / `access@2.3.3`: a brain may open its own identity door and no other (GH #458, GH #479)
+
+Drawing that push edge is a mutation, and it travels the one door every other
+mutation travels — `tools/apply`, the operator, `submit`, the gate, the broker.
+What was missing is that the act needed a bound: an `in_pack` edge opens a
+durable write channel into somebody's **prompt**, and an unbounded
+`colony.mutate` would let one agent open that channel into another agent's.
+
+- **The gate secures the FORM, the broker answers the PERMISSION**, and that
+  split is not a preference. `access`'s policy evaluator makes four one-sided
+  comparisons (`requester`, `capability`, `subject`, and per-key `scope_match`
+  against the resource); there is no cross-field comparison anywhere in it, so
+  *"the edge's target is the subject itself"* is not expressible in a policy row
+  at any shape. The gate already owned the precedent for the way out —
+  `code.author`, where the gate reads the diff's form and asks the broker a
+  narrower yes/no over the same parked row. `affinity.subscribe` is the second
+  question of that kind.
+- **`submit@2.2.0`** recognises a subscribe by its shape: an `add_edges` entry
+  whose `modifier.set_hop.route` is `'in_pack'`. It then checks, itself, that the
+  door belongs to whoever is asking — the target is the requester's own hive by
+  **path-segment** comparison **or a node the same declaration creates**, the
+  source's last segment is `affinity` — and refuses on the spot with
+  `subscribe_target_not_self` or `subscribe_source_not_affinity` without asking
+  anybody: a malformed subscribe is not a permission question. Only a well-formed
+  one becomes the third question over one parked row and one digest, and a denial
+  is `subscribe_not_permitted`. The source is the affinity **hive** path and not
+  `<...>/affinity/push`, because affinity's `params.ports` is empty too and an
+  edge reaching inside is refused with `hive_port_boundary`.
+- **Both endpoints are read RESOLVED against the `scope` of the declaration they
+  stand in, and the target rule has a second branch (GH #479).** Neither half is
+  a widening of the permission; together they are what gave the feature a caller
+  at all. The form check used to compare `to` as written and fail closed on
+  anything that was not absolute — while the mutation door refuses an *absolute*
+  `add_edges` endpoint with `scope_out_of_bounds`, so the one spelling a
+  drawable subscribe edge can have was the one spelling this gate could not
+  read. And the identity the single-branch rule asked for is never in the world
+  at the moment the door is drawn: when a level is grown the requester is the
+  parent or the operator, and the brain is what the mutation is about to create.
+  The second branch is exactly that case and no wider — the addressee is a node
+  **this same declaration** brings into the world, a creation in a different
+  declaration does not count, an address that merely exists does not count, and
+  the source rule is untouched. `affinity.subscribe` is still asked. Measured
+  before the repair: `grow_level` with `subscribe: true` produced a well-formed
+  manifest, an `allowed` verdict from the broker and then
+  `subscribe_target_not_self`, so a grown assistant reached its brain with an
+  empty `system` tree and no path existed that would fill it.
+- **`access@2.3.3`** ships one more policy row, `affinity.subscribe.default`,
+  `enabled: 0` like every other shipped row — capability `affinity.subscribe`,
+  requester `/os/submit`, subject `*`, scoped to `/os/orgs` on action `apply`.
+  Turning it on grants the *permission*; it says nothing about *where* the edge
+  points, and the README now names which side does.
+- **New `error_code` strings** (README § Stability): `subscribe_target_not_self`,
+  `subscribe_source_not_affinity`, `subscribe_not_permitted`.
+
+#### `access@2.4.0`: the two rules a colony cannot start without ship enabled (ruling R-Policy-Default)
+
+Every seeded policy row used to ship `enabled: 0`, behind the promise *a fresh
+instance grants nothing*. Two of the six retire that promise, and the reason is
+that the promise was buying nothing: a freshly instantiated OS has to be able to
+**build**, and its brains have to be able to **register for their own identity**
+— so `colony.mutate.default` and `affinity.subscribe.default` now ship on. A
+default that refused both made the first mutation of every colony an operator
+step and left every shipped agent silent until somebody remembered an
+`UPDATE policy`.
+
+- **Narrow rather than open.** Both keep the shape they had: requester
+  `/os/submit` (edge-borne, R-AC-1), action `apply`, scoped to `/os/orgs`,
+  verdict `allow`, no `cred_ref`. And for the subscribe rule the bound was never
+  the switch anyway — `templates/submit`'s gate is what holds the edge to the
+  requester's own hive, which is exactly why the row can ship on at all.
+- **`code.author.default` stays off, and that is the line.** A fresh colony may
+  carry a manifest to the door; it still may not bring executable behaviour
+  through it. Asserted on both sides rather than implied.
+- **The pin changed shape with the rule.** What ships enabled is now a **named
+  list** in the drift lock instead of a count, so a third rule slipping into the
+  on-set — a colony authorising something nobody asked it to — goes red.
+
+#### `member@1.3.0` / `assistant@2.0.0`: a channel belongs to the member, and an assistant is addressed through it (GH #454)
+
+A channel used to be a pair of nodes inside
+`<member>/assistants/<agent>/channels`. The container belonged to the assistant,
+so the channel did too — and three things followed that nobody wanted: a bot was
+**one agent's** bot, so a member with two assistants sharing one chat account
+could not be reached on both; a screen had **no owner**, although a display is a
+channel of the person and two of their agents may hold views on it at once; and a
+**generation swap took the chat account with it**, because everything at that
+level is replaced when the agent is. The level that already owns what siblings
+must share is the member (GH #122, ADR 0012), and a channel is exactly such a
+thing.
+
+- **`member@1.3.0` grows a second container, `channels`.** It ships empty and
+  open, beside `assistants`. One channel is ONE node in it, named for what
+  `context.channel` will carry — `telegram`, `slack`, `display-<screen>`,
+  `voice` — so the name is a fact of the wiring rather than a label. Four edges
+  are the level's own: `./channels -> ./firewall` re-stamps a raw `turn` to
+  `in_turn` with the same channel promotion the outside door uses;
+  `./assistants -> ./channels` carries an answer back when it names a channel;
+  `./assistants -> .` carries it OUT as a **guarded default** (GH #283) when it
+  does not; and `./channels -> .` lets a connector's own failure leave on the
+  level's `error` lane. The lane lists are unchanged at six in and ten out — but
+  `answer` has two producers now and `error` three sources.
+- **Addressing, rule v1, and no model decides it.** The channel's own outbound
+  edge stamps `context.assistant` with the name of the agent the message was
+  meant for: from an address rule of the channel (a prefix or a mention the
+  connector parsed onto a hop key) or, when the message names nobody, from the
+  channel's default, written as a literal in that edge. The `./assistants`
+  container then fans out, **one edge per assistant**, guarded on
+  `context.assistant == '<name>'`. One edge per assistant is a rule rather than
+  an accident: `Edge.to` is a static `Path` in this substrate, so there is no way
+  to write "send it wherever the context says". A second assistant costs one edge
+  per direction; a second channel costs one node and three edges, and no
+  assistant learns about it. A sum, never the cross product.
+- **`assistant@2.0.0` loses the container and gains a surface.** What used to be
+  an open `channels` container — filled by one follow-up mutation per channel,
+  each carrying a connector and a talky of its own — is now one shipped
+  `surface`: the single `talky` of that generation, wired to `cogny` and `tools`
+  by edges of the template. The level is **complete at birth**: no per-channel
+  follow-up mutation, and no intermediate state in which a generation stands but
+  is silent. Model and prompt come from `override_params` on
+  `<assistant>/surface/brain` and `<assistant>/surface/collector`.
+- **Two lanes moved, and both fall out of the derivation rule.** `turn` was
+  **removed** — the raw wire that produced it is a connector, the connector is the
+  member's now, and a raw inbound message reaches the member's screen without
+  crossing the generation at all. `answer` was **added** — it used to be
+  subtracted because the connector that consumed it stood inside the level on the
+  per-channel pairing edge. Taking a lane and a documented address (`./channels`)
+  away is the first digit; neither additive rule of
+  `docs/development-rules.md` § 4 covers a removal.
+- **`answer` can finally travel the OS lanes it was always declared on.** `org`
+  and `meclaw-os` both describe that lane as "a turn answered, a brief read", and
+  until now only the brief half could ever fire. The guarded default is what
+  makes the other half reachable, and exactly one of the two edges fires per
+  message.
+- **`display` has a slot and no cell.** `<member>/channels/display-<screen>` is
+  where a screen goes, wired exactly like a chat channel — `turn` up for a
+  browser event, `answer` down for what an agent wants shown. The cell that
+  composes the views is built separately and is deliberately not referenced from
+  this template: a `ref` on a template that does not exist yet refuses the
+  mutation that carries it.
+- `org@1.2.1` and `meclaw-os@1.3.1` are prose repairs only. Their lane lists are
+  untouched, and that is the finding rather than a non-event: a rearrangement two
+  levels down does not reach a namespace.
+- Measured by `crates/meclaw-cells/tests/gh454_two_assistants_one_channel.rs` on
+  a booted colony carrying the shipped `member` and two copies of the shipped
+  `assistant`: a turn that names an assistant reaches it, a turn that names
+  nobody reaches the channel's default, the answer comes back at the channel it
+  arrived on, and the ingress stamps (`context.channel`, `context.user_id`,
+  `context.audience_set`) reach the surface unchanged across the screen.
+
+#### `member@1.3.0` + `display@1.0.0`: a screen is a channel, an app is a place, and a browser event finds its way home (GH #459)
+
+`display@1.0.0` and `colony-view@1.0.0` shipped (GH #455) and `member@1.3.0`
+grew a `channels/` container (GH #454), and nothing joined them. The display's
+own README named the address — `<member>/channels/display-<screen>` — while the
+member's graph carried no lane that reached it; `colony-view` was tagged `app`
+with nowhere to be one; and the return path the display promised could not be
+written at all, because an edge condition in this substrate is evaluated against
+`context.*` and `hop.*` and never against the body, and the owner of a view lived
+only in the body.
+
+- **`display@1.0.0` stamps the owner on the hop.** `event` and `receipt` now
+  carry `owner` and `view_id` on `hop` as well as in the body — always present,
+  empty where the object id would not parse, so an unattributable message fails
+  every owner guard by construction. Additive: no lane, no body slot and no
+  refusal code changed, and the template stays at `1.0.0` because `1.0.0` has not
+  shipped.
+- **`member@1.3.0` grows a third container, `apps`.** Empty and open, beside
+  `assistants` and `channels`. An app is a specific composition and specific code
+  out of a build order, a derived template tagged `app`, instantiated as
+  `apps/<name>`. **An app has no port and no surface of its own — it writes
+  views**, and whatever authentication stands in front of the screen stands in
+  front of it. It belongs to the person rather than to one generation for the
+  same reason the screen does: it outlives a generation swap, and its views would
+  otherwise belong to whichever agent happened to hold it.
+- **Seven new edges on the member's own graph, no new lane on its contract.**
+  `./apps -> ./channels` on `view` (guarded on a non-empty `context.channel`,
+  because an app is display-*blind* and the screen it draws on is one literal in
+  the edge that leaves the app); `./apps -> .` on `error`; and the return path,
+  which splits on the **container** and never on the agent — an owner path
+  containing `/assistants/` becomes an ordinary `in_turn` with `hop.kind` set to
+  `event` or `receipt`, one containing `/apps/` keeps its lane name, and one that
+  is neither leaves the member on the `error` lane it already emitted, carrying
+  the original lane on `hop.kind`.
+- **It matches with `contains`, not with a prefix**: the owner is an *absolute*
+  cell path and a template does not know its own absolute prefix. Which agent and
+  which app remains the instantiating mutation's edge — `Edge.to` is static, so a
+  recipient costs one edge per direction, a sum and never a cross product, which
+  is the same cost GH #454 documented.
+- **An agent gets a browser event as `in_turn`.** `assistant@2.0.0` accepts no
+  event lane and did not grow one for this: `in_turn` is the lane it has, and
+  `hop.kind` is what tells a brain that this turn came from a button rather than
+  from a keyboard. `context.channel` travels with it, so the answer finds its way
+  back to the same screen.
+- **A prose view needs no app.** An agent's ordinary `answer` becomes a view
+  through the display channel's own down-edge — the same `./assistants ->
+  ./channels` lane GH #454 drew for a chat answer carries it. That was the half
+  of GH #455 that had nowhere to live: *the smallest view there is* was true of
+  the display and unreachable from a member.
+- `examples/organism/grow-screen.json` grows one screen and one app into the
+  member that example already builds. `member` and `display` both stay at the
+  versions GH #454 and GH #455 gave them: a version is a shipped fact, neither
+  has shipped, and across the release boundary the two halves are one addition.
+- Pinned by `crates/meclaw-cells/tests/gh459_a_screen_is_a_member_channel.rs`,
+  which measures the hop stamps against the shipped `compose.py` bytes and then
+  drives six rounds on a booted colony carrying the shipped `member` and the
+  shipped `assistant`: an agent's prose answer and an app's view land on the same
+  screen under two owners, a browser event reaches the agent whose view it was
+  and the app whose view it was, a refusal reaches the writer it refused, and an
+  event nobody can place leaves the level instead of dead-lettering.
+
+#### `collector@3.1.0` / `cogny@4.1.0`: the curator sees the whole projection, and it is finally live (GH #451)
+
+The curator shipped in wave 11 as a budget projection over the assembled
+window. It could see one third of what the provider was actually sent, and it
+was switched off in every composite in the library — including the one it was
+designed for.
+
+- **`tools[]` is in the sum now.** `curate()` used to be handed the rounds and,
+  for everything else, a single integer (`len(json.dumps(system))`); the tool
+  declarations were in **no sum at all**, although they are the largest block in
+  a real prompt — measured on one turn, 5267 characters of declarations against
+  3998 characters for everything else. A curator could therefore sit at
+  `curate_mark=hard`, out of stages, having elided every payload it was allowed
+  to touch, while the single biggest consumer of the window stood outside its
+  arithmetic. The contract is now the whole projection: rounds, window,
+  `system.*` as a tree, `tools[]` as an array.
+- **Stage 4 — declarations.** A tool nobody called inside the newest
+  `keep_rounds` iterations keeps its name and one line of description; the
+  schema leaves, and `thread_recall(call_id="tool:<name>")` hands it straight
+  back out of the menu the cell holds — no store read. The rule is usage read
+  off the round's own call ids: deterministic, no ranking, no model.
+  `thread_recall` is exempt at every budget, because eliding the way back is the
+  thrashing loop one level up. `parameters` becomes the empty object schema
+  rather than disappearing: a declaration without it is one no provider accepts.
+  New knobs `tool_menu` (empty = the menu stays in the brain and nothing about
+  this cell changes) and `tool_desc_chars`.
+- **Stage 5 — `system.*`.** Slots over `curate_slot_chars` are cut to their
+  head, and only slots the collector re-derives from live state every round are
+  candidates: `system.*` is upserted per slot path, so a leaf sent from here
+  overwrites the durable one, and a curator may not revoke somebody else's state
+  to shorten one prompt. `handover`, `persona`, `identity` and `instructions`
+  are never candidates at any size or budget — the promise "put the hard
+  constraints in `system.*`" is now a named list with a test on it instead of a
+  blanket sentence.
+- **Message validity beats message count.** No stage removes a row: payloads are
+  replaced, argument strings emptied, and stages 4 and 5 do not touch
+  `messages[]` at all — so every `tool_result` keeps the `tool_call` that asked
+  for it. Pinned across every budget and both menu states.
+- **The budget is told, not only enforced.** One deterministic sentence in
+  `system.budget` naming tokens used, the window and what is left. Switched off
+  (`curate_budget_line`), the leaf travels **empty** rather than not travelling:
+  a durable slot that simply stops being written stands in the prompt forever,
+  quoting the last turn that happened to be busy.
+- **`cogny@4.1.0` ships it on.** `context_window` was `0` everywhere, and `0`
+  means off. The core now sets `128000` — the window of the model its brain
+  defaults to, not the largest on the market, because a budget set too high
+  curates too late while one set too low merely curates a little early. The
+  `thread_recall` lane lands with it (`./dispatcher -> ./collector` on the
+  reserved tool name, inside the composite because a parent cannot draw an edge
+  into a sealed sub-unit): until that edge exists every stub is a dead end, so
+  the two are one change and not two.
+
+#### `operator@1.0.0`: one front door into the OS, and `code.author` as a capability (GH #446)
+
+Two holes, and they are the same hole from two sides: an operator had no
+identity, and model-authored code had no name.
+
+- **`operator@1.0.0`** — a sealed hive (`params.ports: []`), the standard
+  occupant of `meclaw-os` at `./operator`, with one `code` cell per subject:
+  `submit` carries a manifest to the submitter, `export` triggers a dump of a
+  member's memory, `lifecycle` composes a birth, a sleep or a wake, and a
+  fourth turns a lane nobody wired into an ordinary receipt (`unknown_route`)
+  rather than a dead letter. A new subject is an occupant directory and a door
+  inside the hive; no caller's edge moves.
+- **What it adds is IDENTITY.** The substrate stamps `envelope.reply_to` on a
+  **cell's** emission, and the submitter's gate reads the requester off exactly
+  that. An agent inside a colony is a cell and is attributable; a person with a
+  shell is not, so a `POST /messages` reached the gate with no sender and was
+  refused as `requester_unknown` — while `POST /colony/mutations` walked past
+  the gate and the broker entirely and left no requester in `mutation_log` at
+  all. A request served by this hive leaves as `/os/operator/submit`.
+- **It is never AUTHENTICATION.** No token, no header check, no caller list, no
+  secret. Who may reach the front door is a reverse proxy's question and what
+  the holder of an identity may do is the broker's; both are stated in the
+  template and asserted by a test.
+- **Sleep and wake are edges.** The substrate has no activate or deactivate
+  operation — activity is derived from the edge table — so `wake` is an
+  `add_edges`, `sleep` a `remove_edges`, and a request that names no edge is
+  refused rather than guessed at. `birth` is the one lifecycle state a
+  declaration carries directly (`add_nodes[].birth`), and `inactive` is this
+  hive's default.
+- **It decides nothing.** Every manifest still travels the submitter, its gate
+  and the broker; no cell in the hive has an edge onto the mutation door.
+  `--apply` stays the identity-less emergency exit.
+
+#### `submit@2.1.0`: a second question, derived from the diff
+
+- The gate now asks the broker **twice** when the manifest asks for it: any
+  `add_nodes[].override_params` (or `swap_nodes[].with.params`) carrying a
+  `script_inline` / `script_path` key at any depth, or an `add_templates` at
+  all, is a request to put executable behaviour into the colony — so
+  `code.author` is asked check-only over the same scope root, with the same
+  `subject`, while the manifest stays parked under the same digest.
+- A denial is a **verdict class of its own**: `code_author_denied`, so a caller
+  cannot read "this manifest may not author code" as "you may not submit".
+  `requester_not_permitted` keeps its meaning and its spelling, and a verdict
+  carrying no capability at all is still read as the question this cell has
+  always asked. A manifest with no script asks nothing extra.
+- Until now the prohibition lived in one line of the drafting prompt and
+  nothing in the tree enforced it: the normaliser does not inspect the inner
+  `add_nodes` keys, the fast lane passes `override_params` through verbatim,
+  the gate checked only the digest and the scope root, and the mutation door
+  checks that a param key exists, never what it contains.
+
+#### `access@2.3.2`: the row the second question is asked over, and the key a deployment has to set
+
+- A fifth seeded policy row, `code.author.default` — `requester: "/os/submit"`,
+  `subject: "*"`, `scope_match: {"scope_prefix": "/os/orgs", "actions":
+  ["apply"]}` — **disabled**, like every other row in that seed. A fresh colony
+  applies manifests and authors no code, and a missing rule is a denial
+  (`capability_unknown`) rather than a silence. Seed data only: no lane, no
+  cell and no verdict path changed.
+
+- **`params.unlock_env` is a declared key.** It ships `null`, so the default
+  truth — *a woken vault is locked* — is unchanged, and the passphrase still
+  comes from the environment and never from a config. What changes is that a
+  manifest can now set it: `override_params` refuses a key the template does not
+  declare, so the one setting every deployment has to make (a vault inside a sealed
+  hive is unreachable over the user channel and opens itself from the environment or
+  not at all, GH #427) was the one setting no instantiation could make. Found by
+  building `examples/vault-pilot` (GH #452).
+
+#### `meclaw-os@1.3.0`: the shell carries the front door
+
+- A fifth `ref`, pinned to `operator@1.0.0`, and three lanes in
+  (`in_submit`, `in_dump`, `in_lifecycle`) plus `receipt` out. Four internal
+  edges wire it: `./operator -> ./submit` on `apply` (re-stamped `in_apply`),
+  `./submit -> ./operator` on `receipt` (re-stamped `in_receipt`), and the
+  export trigger down into `./orgs` and its answer back. Eleven lanes in,
+  eleven out, thirty-eight edges.
+
+- **One submission front door, and not two (ruling R-Zielfluss (a)).** An
+  assistant's `apply` used to travel `member -> org -> submit` directly, so a
+  colony had two ways onto the authoring path: an agent's and an operator's.
+  It has one now. `./orgs -> ./submit` on `build`/`build_op == 'apply'` is
+  replaced by `./orgs -> ./operator`, re-stamped `in_submit` and marked
+  `context.operator_caller = 'agent'`; the answer comes back
+  `./operator -> ./orgs` as `in_build_result` when
+  `hop.submitter_kind == 'agent'`, and `./submit -> ./orgs` is gone. Nothing about the
+  submitter changed — the digest, the gate, the broker's verdict and the
+  mutation door are the same road — and `member@1.2.0` / `org@1.2.0` did not
+  move: an assistant emits the same `build` it always did.
+
+  **Two carriers say which door a receipt belongs to, because neither survives
+  every road.** The front door writes the same fact into the correlation id
+  (`op:agent:<id>` rather than `op:<id>`) and reads BOTH back. Context survives
+  a refusal the gate raises inside the level — and that is exactly the road
+  where the id comes back EMPTY, because a refused manifest is never parked and
+  no flight row carried it. The marked id survives the mutation door — whose
+  answer begins a fresh trace carrying no promoted context. The two failures are
+  disjoint; one carrier alone is a lane that works until the outcome changes.
+  The front door then puts `hop.submitter_kind` on the receipt and the shell
+  routes on that. The marker itself never leaves the front door: the receipt
+  carries the id the caller used, because an assistant's fan-in waits for the id
+  its own tool call carried and a `tool_result` under a different one is a round
+  that never ends.
+
+  **`./submit -> ./operator` lost its `op:` guard, and that is a consequence
+  rather than a looseness.** The front door is now the ONLY sender of
+  `in_apply`, so every receipt the submitter raises belongs to a round that
+  started there. `operator_one_front_door` asserts the premise rather than the
+  condition string: if a second `in_apply` sender ever appears, that test is
+  the one that says so.
+
+  **The identity is the front door's for both callers.** What reaches the gate
+  is `reply_to = /os/operator/submit` whether a person or an assistant asked,
+  so an agent's mutation is attributed to `/os/operator` and the broker rules
+  one subject rather than one per agent. A per-caller subject is the
+  operator-as-member shape R4 parked for `> 1 operator`.
+
+- **`examples/vault-pilot`: the first shipped wiring of the capability broker to a
+  consumer (GH #452).** `access@2.3.2` has had sealed credential delivery since GH
+  #421 and an `llm` cell that spends a grant for its bearer — and no artefact that
+  put the two together. The example is one `llm` cell with no key of its own
+  (`api_key` is `${EXAMPLE_PROVIDER_KEY:-}`, and an empty string is not a bearer),
+  an access hive whose vault opens itself from a named environment variable, one
+  `cred_ref`, one enabled policy row, and a long-term grant with its `granted`
+  event. It grows in a single `meclaw --apply`, and
+  `crates/meclaw-cells/tests/gh452_the_vault_pilot_grows_a_granted_credential.rs`
+  measures the whole round: the mock provider sees the vault's value as its bearer,
+  nothing of it is in the message log, the same tree without the grant row calls no
+  provider at all, and the grant survives a restart.
+
+  **Why the broker's `store` is checked in rather than grown.**
+  `params.credential_grant_id` is immutable, so the `grants` row it names has to
+  exist before the consumer boots — and no manifest can write it: the diff
+  vocabulary is seven topology operations and none of them writes to a store. What
+  does put rows in is a `seed/<table>.jsonl`, and it lands exactly once, on a fresh
+  `cell.db`. So the example checks that one cell in with its seed and lets the
+  subtree instantiation **merge** around it; the other five broker cells come from
+  the library. The ergonomic one-shot that would write policy row, `cred_ref`,
+  grant and event in one gesture does not exist, and this is the largest part of it
+  that needs no Rust.
+
+#### `member@1.2.0` + `talky@4.3.0`: the close pass gets a caller, and the export gets a drain (GH #447)
+
+Three lanes were built and then left with nobody on either end, which is the
+dead-lane class of `docs/development-rules.md` § 2c.
+
+- **The member fires the memory's close pass.** `memory-hive` has read an ended
+  session whole on a strong model since 3.0.0 (#300); no level ever sent
+  `in_close_pass`, and `member@1.1.0` said so in its own `not_in_scope`. It is
+  one edge now: `./assistants` on `write`, re-stamped, promoting `session_id`,
+  `audience_set` and `channel`. It is a **fan-out**, not a redirection — the same
+  close batch still leaves the level, because the archive above and the memory
+  below want different things from one event. The receipt leaves on a new
+  `close_report` lane, which is not a courtesy: `memory-hive` pairs the ingress
+  with it in `required_drains`, so a member whose parent does not take the
+  receipt is refused at the mutation rather than at the message.
+- **`talky@4.3.0` drops the `summarizer`.** It was the second, weaker reader of
+  exactly that event: it folded the day's batch into one recency-weighted
+  summary and wrote it into the brain's `system.handover` slot — durable state
+  of ONE generation's own prompt, invisible to every other agent of the same
+  person (#122) and lost when the generation was replaced. Handover comes back
+  through the recall bundle instead, which is shared, audience-filtered and
+  survives. The composite goes from 27 edges to 24 and from twelve cells to ten;
+  `session-keeper` is untouched, and `summarizer@2.0.2` stays in the library as a
+  standalone template with a deprecation note.
+- **An export lands as files.** `memory-hive` has been able to hand its content
+  out as a versioned document since 2.2.0 (#243), one `dump` part per table. The
+  lane had no drain, so in a grown colony every part became a `no_route` dead
+  letter: the walk ran and nobody could point at a file afterwards. `member`
+  declares `in_export` and owns one cell of its own, `export-sink`, which writes
+  each part as `seed/<table>.jsonl` under `MEMBER_EXPORT_DIR` — the schema
+  declaration as line 1, one row per line after it, the birth format the hive's
+  own README specifies — with `seed/export_final.json` beside them and
+  `export_done` behind that. An `absent` table writes no file and an empty one
+  writes a file with only its schema line, because those are two different
+  statements about a hive.
+- **Two decisions worth naming.** The `dump` drain tests `hop.route` and nothing
+  else: the `required_drains` probe runs the described hop through the real edge
+  evaluator, so an edge additionally guarded on `hop.dump_kind` evaluates false
+  under the probe and reads as no drain at all. And the sink is a `code` cell
+  rather than a `file` cell, because a `file` cell canonicalises its `base_path`
+  in `validate_params` — a member whose export directory did not exist would fail
+  `--validate` and boot, for a lane nobody had used yet. The sandbox write root
+  is the same boundary one message later, where a missing directory is a routed
+  `io_error` instead of a dead colony.
+- **`org@1.2.0`** carries the three new lanes through an empty container and adds
+  no cell; `meclaw-os@1.3.0` takes the close-pass receipt out and reaches the
+  org's `in_export` from its own front door.
+
+#### `affinity@3.1.1`: the push lane has somewhere to land, and the subscription has an owner (GH #453, GH #458)
+
+The push lane was built, pinned and unused. `push` hashed what a subscriber
+would get, `brief` rendered it, `clock` ticked it — and every test that
+exercised it drew the two delivery edges by hand, because nothing shipped drew
+them. Two halves were missing, and neither was a defect in the mechanism.
+
+- **A `subscribers` seed, with exactly one row — and it ships `inactive`.** The
+  store shipped four seed tables and no subscriptions, so a fresh hive ticked
+  over an empty table: silent for a *structural* reason, and from outside
+  indistinguishable from a tick that found nothing changed. An empty result and
+  a forgotten call must never look alike (`docs/development-rules.md` § 2c). The
+  row is the birth state in the same spirit as `entity:alex` — the seeded
+  agent's own AIeOS document into the seeded agent's own brain, channel `*`,
+  slot `identity`, cut by the three `disc:aiden-self-*` releases that were
+  already there. It ships **inactive** (`3.1.1`, GH #458), and that is the
+  correction rather than a hedge: an active row claims a delivery the graph
+  cannot make, because the edge behind it can only be drawn by a mutation. The
+  silence of an untouched hive is now readable as silence — `push` selects on
+  `status = 'active'`, so the column says which of the two states it is in, and
+  § 2c is satisfied by a fact anybody can read instead of by a fiction.
+- **The subscription belongs to the `member`.** That was the half GH #302 left
+  open, and `member` was carrying a flat cancellation — *"No push edge into a
+  subscribing brain"* — that read as a decision and was an open question. A
+  subscription is a row in the record, the record is the member's, and an
+  assistant is replaced per generation: a subscription owned one level down
+  would have to be re-written on every swap, and the brain that came up after it
+  would be silent until somebody remembered. `member`, `affinity` and the
+  library rows say so now, and a drift lock reads all four surfaces.
+- **Subscribing is one act with two halves, and the order is chosen.** The edge
+  is drawn first and the row is stamped second (GH #458), because that makes the
+  half-finished state the harmless one: an edge with no active row behind it
+  carries nothing, while a row with no edge behind it is accepted, written and
+  silently undeliverable — the failure GH #289 named and could not refuse.
+  Nobody mints a token for either half: `hop.subscriber` carries the row's own
+  `cell_path`, so the subscriber's address **is** the token.
+- **The row ships; the edge cannot, and the templates say which is which.**
+  Writing an edge is a mutation and mutation authority is the colony's, so the
+  seeded `cell_path` is a *token*: the mutation that instantiates the member
+  either conditions the push edge on it or rewrites the row through `./gate`.
+  Stating only the first half would promise delivery the template cannot make;
+  stating only the second is the cancellation this removes.
+
+#### `display@1.0.0` + `colony-view@1.0.0`: a screen is a channel, and the colony tree becomes an app (GH #455)
+
+`canvy` fused two different things into one hive: a **surface** — a screen on a
+port — and a **view** of the colony drawn onto it. That fusion had three costs, all
+of them visible in the tree rather than in an opinion. A screen had no owner, so it
+could not be a channel of a person the way a chat is. Two agents could not share
+one, because the layout cell computed the whole object tree and deleted everything
+not in it. And "app" was a word in a README with nothing behind it — no template
+class, no catalogue marker, no place one is instantiated into.
+
+- **`display` is the channel.** A sealed hive holding a `web` cell, a `views` store
+  and a `compose` cell. `compose` is `code`, and there is no model anywhere in the
+  template: one region, views stacked newest first, and a view whose `ttl_ms` has
+  elapsed is not laid out. What it lays out is data in a table, so a second producer
+  is a second row rather than a conflict.
+- **The owner is the envelope, never the body.** A view is written under the
+  `reply_to` the substrate stamped on the emission. A body that names a different
+  `owner` is refused `not_owner` and nothing is written, so "an agent may only
+  change its own views" is a property of where the value comes from rather than a
+  check somebody has to remember. `(owner, view_id)` is the identity of a view.
+- **The smallest view is prose, and it needs no app.** `kind: "prose"` carries a
+  title and a paragraph. An agent that only wants to say something on a screen no
+  longer has to become an application first.
+- **`colony-view` is the app**, derived from `canvy`: `refresh`, `probe` and
+  `layout`, and no port of its own. `layout` emits ONE view instead of patching a
+  display's object tree, and it declares its own components in the same body — every
+  name prefixed with the view's id, so two apps on one screen cannot collide. The
+  screen defines them the first time it sees them and not again, so an app that
+  ticks does not re-render the page.
+- **A drag still survives.** A node of a component view may declare `keep`, and the
+  screen leaves those props out of an update on an object it already holds. `editable`
+  on the component remains the whole authorisation model.
+- **`app` is a tag, not an invention.** `template.json` already carried a `tags`
+  field the scanner reads; `colony-view` is the first template to declare one.
+- **`canvy@2.1.9` is deprecated and untouched.** No instance breaks — instantiation
+  copies — and nothing is removed. New screens are a `display`.
+- New: [`examples/display-colony-view`](examples/display-colony-view/) — one screen,
+  one app and one prose-writing cell, which is two owners on one surface.
+
+### Changed
+
+#### `collector@3.4.0`: an advice turn opens its round with the whole budget (GH #541)
+
+Found while measuring #540 on a live colony, and the reason that measurement had **zero**
+brain calls for the whole event. The assembly reads its round budget once, at the top —
+`it = int(ctx.get("iter", 0) or 0)` — and the two lanes that OPEN a turn, `in_turn` and
+`in_advice`, then ask the seam for iteration zero.
+
+`in_turn` never carried a foreign counter, because a turn off a channel arrives with no
+`iter` at all, so the read looked safe for as long as the only turn came from a channel.
+`in_advice` is the second turn-opening lane, and it is the **answer lane of another hive's
+round**. A reasoning core ran ten `web_search` iterations and ended exactly as designed, on
+`answer` with `iter = 9`; the surface wrote the advice turn, fired its memory leg, read its
+window — and then found `9 >= 8` and left on `answer` instead of `brain`. What went out in
+place of an answer was the assembled round itself: the reader got the raw memory bundle.
+The header on it said `iter = 0`, the fresh round's own number, which is what made this
+invisible from the outside — round one on the wire, round ten in the decision. **The better
+the core worked, the more certainly the surface said nothing.**
+
+A turn opens a round, so it starts with the whole budget, whichever lane carried it in.
+`in_turn` is named beside `in_advice` in the same statement not because it was broken but
+because it read zero by accident of what a channel sends, and an accident is not where a
+budget rule should live. Everything not turn-opening keeps reading the iteration it was
+handed — a fan-in is inside a round, not the start of one, and a pin says so.
+
+**No version digit.** `collector@3.4.0` is unreleased; the repair rides in the version that
+has not shipped yet.
+
+#### `collector@3.4.0`: an advice turn says on the wire that it is one (GH #540)
+
+An advisor's answer comes back on `in_advice`, is written into the window under role
+`advice` and reaches the brain through the one seam like every other turn. On the **wire**
+it was mapped `origin: "user"` and nothing else — the role was the whole frame, and the
+README called it settled ("the only inbound role a provider knows"). The store half was
+right. The wire half was a role confusion: byte for byte, an advice arrived in the shape of
+a new sentence by the person, and the model read it as one.
+
+Measured on a live colony, one user turn ("plan me a thorough three-day city trip with
+a 800 EUR budget, compare two options with numbers"), fresh session:
+
+| t | what happened |
+|---|---|
+| +5 s | surface → person: "I will put two solid options side by side", plus `consult_cogny` with question and context — correct |
+| +26 s | the core's plan returns, and the surface consults a **second** time, its context quoting the plan back as *"he supplied the following figures, not checked live"* |
+| +34 s | surface → person: **"Yes. We take the cheap option …"** — an answer to a question nobody asked |
+
+The person asked for a plan and got a "Yes." The plan itself never left the seam, because
+the model believed the person had already handed it over. This is not the runaway of
+[#539](https://github.com/mmeyerlein/meclaw/issues/539) — that was a core with no channel
+emitting interim sentences, and it is fixed. One advice, one confusion, no loop needed.
+
+**The frame, not the role.** Every `advice` row now leaves the seam as
+`[advice from your reasoning core, consult <id>]` above its text, with no id printed when
+the row carries none — a printed empty id would invite a consult call carrying one.
+`origin` stays `user`: it is the only inbound role every provider accepts
+mid-conversation, and the truer shape, a `tool_result` under the original `consult_cogny`
+call id, does not exist here — that call belongs to a round that ended, so it is not in
+`messages[]`, and a tool result with no preceding call is a provider error rather than a
+better frame. The store role is untouched: `advice` stays `advice`, `SAID` still refuses it
+([#282](https://github.com/mmeyerlein/meclaw/issues/282)), and dedup and prune read exactly
+what they read before.
+
+**And the rule travels with the ids.** Knowing a row is an advice does not yet say what to
+do with one, so `system.consult.text` carries it under the open ids: *an advice is the
+answer to YOUR consultation; pass it on to the person in your own words; do not consult
+again about it — unless the core asks YOU something back, and then you answer the core,
+with its `consult_id`, never the person.* It lives in the collector and not in a seed
+charter for the reason [#512](https://github.com/mmeyerlein/meclaw/issues/512) and
+[#525](https://github.com/mmeyerlein/meclaw/issues/525) each measured once: a seed is read
+at birth, and a brain that grew never receives it. A slot re-derived every round reaches
+every `talky` that stands in front of a core, and is revoked with the ids by the same empty
+rendering.
+
+**No version digit.** `collector@3.4.0` is unreleased in this wave, so the repair rides in
+the version that has not shipped yet.
+
+#### `dispatcher@1.1.2` / `cogny@4.4.0`: a core without a channel says nothing in between (GH #539)
+
+A thinking core runs its own tool round, and a tool-using model does what such a model
+does: it puts a sentence next to the bundle — "I am checking the official fares now" — and
+the dispatcher, correctly, marks that sentence `hop.interim = "1"` and sends it on the
+answer lane, *on its way to the channel while the calls keep running*
+([#378](https://github.com/mmeyerlein/meclaw/issues/378)).
+
+**A `cogny` has no channel.** It is *structurally a talky without a channel*, and its
+answer lane IS the advice lane of the voice that asked it: the assistant graph wires
+`./cogny -> ./surface` on `hop.route == 'answer'` into that surface's `in_advice`. So every
+interim sentence of the core arrived as an advisor's ANSWER. The surface recorded it as an
+advice turn, re-entered its brain, said it in the channel — and, reading a charter that
+tells it to consult when a question needs more than one lookup, sometimes consulted again.
+The core answered with its next interim sentence, and the exchange ran away.
+
+Measured on a live colony, one user turn ("plan me a thorough three-day city trip"),
+three fresh sessions: 26 s / 2 consults / 3 messages; 281 s / 6 consults / 13 messages;
+245 s / 3 consults / 7 messages. The colony's own message log says the same thing from the
+other side: of the 26 answers the core's dispatcher put on the lane, **11 carried
+`interim = 1`**, and all 11 arrived at the surface as `in_advice`.
+
+**The knob is where the classification already lives.** `dispatcher` is the only cell that
+ever sees the whole bundle, which is the ground on which the async class
+([#28](https://github.com/mmeyerlein/meclaw/issues/28)) and the handoff class
+([#372](https://github.com/mmeyerlein/meclaw/issues/372)) are declared there. Whether a
+sentence standing beside that bundle has anywhere to go is the same kind of declaration:
+`params.interim`, default `"1"`, so every wiring that exists behaves exactly as it did.
+It is a **param**, not a fourth environment token — the direction the knobs are moving
+([#138](https://github.com/mmeyerlein/meclaw/issues/138)).
+
+Off, a sentence beside a bundle that is still being waited for does not leave the cell at
+all — and therefore does not enter the brain's own window either, because the `calls` lane
+hands the fan-in the assistant turn and the fan-in drops its text on the ground that the
+answer lane wrote it. Both halves say the same thing: *a sentence nobody could hear was
+never said*. A **final** sentence is untouched: where nothing is waited for, that sentence
+IS the answer of the turn, and withholding it would rebuild #378.
+
+Not an edge, on purpose: a hive out-edge that simply does not match dead-letters the
+message (`hive_no_route`) and logs a warning per round. The sentence must not be *emitted*.
+
+`cogny` sets it off on its `./dispatcher` ref marker
+(`override_params {"": {"interim": ""}}`), and the core now emits exactly one answer per
+consultation — the advice, or a question back on the same lane under the same
+`consult_id`. `talky` and `builder` move their dispatcher pin and nothing else; `cogny`,
+`talky` and `builder` are unreleased at their current versions and are amended in place.
+
+#### `cogny@4.4.0`: one brain, and the core declares its own errand (GH #528)
+
+The agent core is the **problem solver**, and three things follow from saying that out
+loud. It costs one cell slot, one lane pair and one knob.
+
+**One brain.** `brain_fast`, `escalate_to_deep` and the `consult_class` lookup lane are
+gone, and so are `ctx.model_fast`, the second ingress edge (`ask_memory`) and the `brevity`
+seed. The split was built on a real measurement — a lookup arriving six seconds into a
+twenty-two-second research answer waited 15.5 s in an `llm` cell's serial mailbox for a call
+it finished in 2.5 s ([#124](https://github.com/mmeyerlein/meclaw/issues/124)) — and it
+answered the wrong half of it. The right owner of a fast memory question is the
+**conversation surface**: it already holds the window, it already has a person waiting, and
+a `memory_recall` tool there answers in one call what an advisor round trip answered in two
+hops and a queue. What is left at the core is one class — synthesis, a development over
+time, multi-step work, research — and one class needs one lane. The seam is one edge again,
+which is also why the complementary-condition rule it used to carry (fan-out copies a
+message to *every* matching edge, so two overlapping seam conditions answer twice) has
+nothing left to guard.
+
+**Whoever is reached declares themselves.** The core answers `in_schemas` with
+`tool_schemas`, on the tools hive's own lane pair and in its own provider-neutral answer
+shape (`schemas[]` / `unknown[]`, `hop.operation` / `schema_count` / `unknown_count` /
+`error_code`), out of a new `code` cell `./declare`. It carries exactly one schema,
+`consult_cogny`:
+
+| field | | |
+|---|---|---|
+| `question` | string | **required** |
+| `context` | string | **required** — everything the core needs: what the person wants, what was already said, what is excluded |
+| `eta` | string | optional |
+| `consult_id` | string | optional |
+
+`context` is required *to be redundant*: the asking model must not filter it against what it
+believes the core already knows, because the core's curator discards what it does not need
+at assembly time and cannot recover a sentence that was never sent. The schema's
+**description is the class boundary** — synthesis and research here, a quick fact in the
+asker's own memory — so that boundary is one sentence in one file instead of a paragraph
+copied into every persona, where the copies drift.
+
+That cell exists because the declaration had lost its owner. `consult_cogny` used to be
+typed by hand into every calling brain's `system.tools`;
+[#464](https://github.com/mmeyerlein/meclaw/issues/464) replaced typed menus with asked-for
+ones, every caller stopped typing, and no tools hive has — or could have — a schema for a
+core that is not a tool cell. A grown assistant therefore offered its model a menu without
+the one tool the core exists for. `params.required_drains` pairs the two lanes, for the
+reason that pair always carries: a caller that asks and does not subscribe starts with an
+empty menu and no way to learn it is empty.
+
+**The memory is a tool, and the ambient leg is not.** `memory_call_tier` goes from `""` to
+`"1"` and one ordinary `./dispatcher -> ./collector` edge holds the reserved name — exactly
+what the guarded default exit of `4.0.2` was built to cost. What leaves on `recall` carries
+`hop.memory_call_id`, and **whoever answers it must carry that key back on `in_bundle`**, or
+the bundle is filed as a turn's memory leg while the round waits for a tool result that
+never comes. `memory_tier` stays empty: a problem solver asks about a time range or a
+session on purpose and is not handed a bundle before it has read the question.
+[#512](https://github.com/mmeyerlein/meclaw/issues/512) switched the tool OFF here for a
+reason that was true then — the core drew no `memory_recall` edge, so a call would have left
+through the default exit and died at a tools hive that never heard of the name — and the
+edge is what changes the answer.
+
+**The errand carries its session.** `in_turn` now declares `context: ["session_id"]`, so the
+ingress edge has to promote it and a mutation that omits it is refused instead of discovered
+at runtime (GH #291's backwards walk is what makes the requirement checkable). The shipped
+form reads it out of the caller's own context — `"session_id": "context.session_id"` — and
+not off the hop: a talky's session keeper puts it there on the first edge of every turn, and
+`dispatcher`'s contract has no `session_id` in `emits.hop`, so an edge promoting
+`hop.session_id` would fail its modifier and be skipped, losing the errand in silence.
+
+A removed cell slot is a contract change and a new accepted lane is additive; both are the
+second digit (`docs/development-rules.md` § 4). Callers: drop the `ask_memory` ingress edge
+and `escalate_to_deep` from `DISPATCHER_HANDOFF_TOOLS` — a handoff name no cell serves is a
+call marked answered-elsewhere that nothing ever answers — and add `session_id` to the
+consult ingress. `ctx.model_fast` is not refused, it is simply ignored.
+
+#### `/colony/templates` is the fourth absolute edge a mutation may draw (GH #496)
+
+`MUTATION_DRAWABLE_VIRTUAL_ENDPOINTS` gains one entry, and it was forced the same
+way the third was: without it the librarian above dies at **growth** with
+`subtree edge endpoint /colony/templates escapes subtree root /librarian`, so the
+lane could only ever be hand-drawn into a root `config.json` and could never
+travel with the template that needs it.
+
+It passes the same test the other three passed. A templates read answers the
+colony's own bookkeeping about its own **library**, about classes rather than
+instances, and no message row and no header — strictly less than `/colony/graph`
+already hands out about the live tree. `/colony/templates/rescan` is a separate
+endpoint and stays out: it is an effect, not a read. The one host-shaped field in
+the projection, `filesystem_path`, is named rather than glossed over — it is the
+directory the reading cell's own code was copied from, not a credential, and it
+travels because the DTO is a published HTTP shape this decision does not get to
+narrow on the side. `/colony/mutations`, `/colony/trace` and
+`/colony/dead_letters` stay out of bounds, unmoved.
+
+#### One word was doing three jobs: the roadmap, the register and the tracker are three places now
+
+`docs/roadmap.md` was, at the same time, an internal record of what had been
+deliberately *not* built and — by its name — the place a reader would look for
+what comes next. The public `ROADMAP.md` was the second half of the same idea,
+and nothing connected either of them to the tracker. So the three could drift,
+and did: a topic could stand as an open issue *and* as a register row, with two
+versions of its wording, and neither copy said which was current.
+
+- **`docs/roadmap.md` is now `docs/defer-register.md`.** Same content, same
+  per-row form (Item / spec reference / reason / horizon / category / priority),
+  new header stating the split. It stays internal and still does not travel.
+- **Three places, three questions** (`docs/development-rules.md` § 5b): a GitHub
+  issue is decided work; a register row is something deliberately not built,
+  carrying the trigger that would make it due; `ROADMAP.md` is the public
+  ordering by horizon (Now / Next / Later / Alongside / Shipped) and copies
+  neither. A topic lives as an issue **or** as a register row, never as both.
+- **Every `ROADMAP.md` stream entry carries an anchor**: an open issue link, or
+  `(register: <id>)` resolving against a `` `reg:<id>` `` tag in the register's
+  Item cell. The rule that a stream names *open* issues only stops being a
+  convention.
+- **`scripts/check_roadmap_anchors.py`** resolves both kinds and exits 1 on a
+  bullet without an anchor, an anchor naming a closed issue, or a register id
+  that resolves to nothing. It runs in the CI `gates` job, in the private
+  pre-push gate, and as rules R15 and R17 of the export gate — so a release
+  cannot be built past a roadmap that points at work already shipped. It reads
+  the tracker in one listing rather than one request per line, and an
+  unreachable API is a counted notice and a green run, never a red build for an
+  outage somebody else is having.
+- **Filing or closing an issue updates `ROADMAP.md` in the same commit**, and
+  the release routine names the roadmap step verbatim
+  (`docs/development-rules.md` § 1).
+- Two firewall rows that had been carried in both places at once (GH #449, GH
+  #450) are gone from the register; the issues are the live record.
+
+#### The test suite is tiered locally and sharded in CI
+
+- **CI: the suite is sharded and no longer waits behind the linters.** The single `linux` job took 11m56s, of which 10m43s was one `cargo test` step that ran ~650 test binaries one after another. It is replaced by a `lint` job (fmt + clippy, running in parallel, so a formatting slip is reported a minute in rather than eleven) and a three-way `test` matrix running `cargo nextest run --profile ci --no-fail-fast --partition count:N/3`. nextest runs tests from different binaries concurrently; the partition divides what is left across three runners. `--no-fail-fast` plus `fail-fast: false` on the matrix keep the property that one red run names every defect, not just the first (GH #356). Doctests, which nextest does not run, stay in the suite as an explicit `cargo test --workspace --doc` step. The `gates` job no longer restores a Rust cache it never read, and `CARGO_INCREMENTAL=0` stops the runner from writing incremental state nobody reads.
+
+- **The local suite is tiered, and the full run is CI's job.** `cargo-nextest` replaces `cargo test` locally. `.config/nextest.toml` carries the two profiles — `default` (local: no retries, no fail-fast, a test marked slow at 30s and killed after four minutes, so a wedged cell cannot hold the run) and `ci` (the same set, reporting flakes and slow tests, with a JUnit file) — plus a quarantine block that is the **only** place a retry may be declared: every entry needs an open issue naming what makes the test flaky, and the block ships empty because no measured flake has one. `scripts/test-tier.sh` cuts the 5,681 tests in 660 binaries into tiers expressed as nextest filtersets: `t0` = the 2,090 unit tests (14s), `t1` = everything but the 56 scenario-class binaries (5,529 tests, 97s), `t2` = the whole suite (112s), and `changed` = the packages a diff touches plus everything that depends on them, resolved through the real cargo graph with `rdeps()` rather than a hand-kept list. The same workspace under `cargo test` takes 648s for the identical 5,681 tests. Before a push the ritual is now `t0` plus the gates; the full suite runs in CI, and the CI verdict remains the one that counts.
+
+#### `firewall@2.0.6`: the matchers get teeth, and the seed stops being an open gate (GH #448)
+
+The screen decided every verdict with three comparisons — a lowercased
+`substring`, a lowercased `prefix`, and an exact `sender` equality — and shipped
+a rule table in which every row was disabled. Four measurable consequences, all
+four closed here without touching a lane, a port or a hop key.
+
+- **Two more match modes.** `suffix` anchors at the end of the turn; `glob`
+  carries `*`, `?` and `[...]` over the whole text (`fnmatch`, so a glob without
+  stars is an equality test rather than a search). There is still no regex an
+  operator can write — that closed door was the point, and a glob is a bounded
+  pattern language rather than an engine with a backtracking budget.
+- **One normalised form before every comparison.** NFKC, every run of whitespace
+  collapsed to a single space, trimmed, casefolded — both sides, `sender` rules
+  included. Two evasions that cost an attacker nothing are gone with it: a turn
+  written in fullwidth or ligature codepoints did not contain the ASCII literal a
+  rule named, and neither did one with a newline or a NO-BREAK SPACE where the
+  rule had a blank. Both are pinned with a guard that keeps them evasions, so the
+  day plain case folding would catch them the tests stop claiming otherwise. The
+  size cap is deliberately **not** normalised: it counts what arrived, because it
+  is a resource bound rather than a comparison, and measuring the collapsed form
+  would let a padded body buy budget it never paid for.
+- **One row can require two dimensions.** A `sender` row with `field: "match"`
+  carries a JSON object in `value` (`{"channel": "tg:42", "user_id": "7"}`) and
+  matches only when every dimension it names matches. Two rows are an OR; this is
+  the AND, and "this account, in this room" is the shape most real policies have.
+  It rides in the columns `rules` has always had — **no schema change**, so an
+  instantiated firewall takes one with an `insert` and needs no migration.
+- **The seed ships one live rule.** `block-prompt-injection` is a normalised
+  `substring` on the canonical injection opener: it refuses, it never grants, it
+  names no sender, and no ordinary turn contains it. The other seven rows stay
+  inert. A template whose every row shipped disabled was an open gate with a rule
+  table attached; one that bricks the tree it is dropped into would be worse, and
+  this is the row that is neither.
+- **The precedence is stated once, in one paragraph.** `README.md` now says it
+  plainly — deny beats allow, first match per rule class decides, specificity does
+  not matter, and **there is no way to carve an allow exception out of a broad
+  deny**. It is the same shape Claude Code's own permission rules use, and it is
+  chosen for the same reason. Both halves are locked: the sentence is grepped and
+  the mechanism is asserted (development-rules § 2d), as is the seed's row count,
+  which the test derives from the file rather than reading out of the prose.
+
+Two deliberate non-goals are recorded rather than built: a hardline layer no rule
+row can lift ([#449](https://github.com/mmeyerlein/meclaw/issues/449)) and `hold`
+as a third verdict ([#450](https://github.com/mmeyerlein/meclaw/issues/450)) — the
+second one breaks the two-lanes promise and waits on a ruling about whether human
+approval belongs in the substrate at all.
+
+#### The README catches up with the catalogue
+
+`operator`, `argus`, `display` and `colony-view`, the `tools` hive's `schemas`
+cell, the builder's `grow_level` recipe, `meclaw-os`'s `requires.env` with the
+one-line `seed-ref` boot and the `memory-import` example are in it, `canvy` and
+`steward` are named as deprecated, and every countable claim (34 public
+templates, 14/19 cells for `examples/meclaw-os`, 82 cells and 417 edges for
+`examples/organism`, the test badge) is derived from the tree with the test or
+example that carries it named beside it.
+
+### Fixed
+
+#### `talky` / `cogny`: two descriptor lines the code does not support
+
+Found in the release pass, both in a README and neither a version event -- correcting a
+wiring example and describing a knob that already exists are not changes a caller can
+observe (the reading GH #391 took; no lane, port, hop key or param moves with either).
+
+`talky`'s reply-edge example guarded on `!has(hop.round_capped)`, and that condition can
+never fire on a real answer: the assembler stamps the key on **every** turn it hands out
+-- `"1"` at the bound, `"0"` below it -- so the example, copied as written, produced a
+surface that never replied. Only the degraded sort omits the key, which is the one case
+`!has()` would have caught. The shipped guard is
+`has(hop.round_capped) && hop.round_capped == '0' && !has(hop.degraded)`, and the README
+now says why.
+
+`cogny`'s `max_iter` is documented as an operator knob rather than only as a number in a
+table. The default is `8`, which is generous for a question that takes two or three
+lookups and reachable by a thorough one that spends an iteration per search. A round that
+reaches it does not fail: the seam leaves on `answer` with `hop.round_capped == "1"`,
+carrying the raw end of the round -- and on the advice lane that is what the asking voice
+delivers, so the reply changes shape on exactly the errands that were going best.
+Operators who run a core on research-sized work raise the knob per instance; the default
+does not move.
+
+#### `cogny@4.4.0`: the class boundary is a decision, not a category (GH #538)
+
+The `consult_cogny` description is the one place that says which questions belong to the
+reasoning core and which the caller answers itself — the cell that hands it out calls it
+*the class boundary* in its own prose. It named a **kind** of work: synthesis over several
+sources, a development over time, a multi-step piece of work.
+
+Measured end to end on a live generation, twice, with the same question — *plan three days
+in a city on a 800 euro budget and compare two variants with numbers*:
+
+| | what the surface did |
+|---|---|
+| run 1 | called `consult_cogny` with `question` + `context`; the core answered; the surface relayed it |
+| run 2, same chat | the window now held run 1's finished plan — the surface ran its own `web_search` and built the comparison itself, no consult at all |
+
+Same agent, same menu, opposite behaviour. A boundary stated as a category leaves the
+reader to classify, and a reader that has just seen the work done classifies it as
+done-able: in-context learning beats a definition. So the description now states the
+boundary as a **question with a countable answer** — does the answer need more than one
+lookup, any arithmetic, a plan, or a comparison? — says what the caller's **own**
+`web_search` is for (exactly one quick lookup whose answer it relays verbatim), and names
+the thing that moved the boundary: an earlier attempt of one's own, standing in the window,
+is not a precedent. `gh538_the_boundary_is_a_decision_not_a_class.rs` judges the shape off
+the shipped cell and runs the same judgement over the pre-#538 text, which must fail it.
+
+**A pack is one text for two menus.** The same rule went into the deployment charter that
+`affinity` pushes into both brains on `in_pack`, and the first wording — *`consult_cogny` is
+mandatory* — made the **core** answer three consultations in a row with *the reasoning core
+is not available in this session*: it does not carry that name, because it is the core. An
+obligation in a fanned-out pack needs a role test in the sentence itself (*if `consult_cogny`
+is on your menu*) and the other half said out loud (*if it is not, you are the core*). The
+lane's own `because` in `assistant` now records what the fan-out costs the author.
+
+**A structural brake was considered and is not shipped.** `collector`'s `params.max_iter`
+bounds how often a turn may re-enter the brain with a tool round, and a low value on the
+surface reads like a fence. It is not one: run 2 did the whole job in **one** round with
+parallel `web_search` calls, which every value ≥ 1 permits; and the cap's exit is not a
+refusal but the assembled context on the `answer` lane under `hop.round_capped`, which
+nothing between the collector and the person branches on today. A low cap would turn a rare
+misjudgement into a visibly broken reply without fencing the class. What kind of question
+this is, an iteration counter cannot see.
+
+#### `memory-hive@3.1.0`: the said section says what it is worth, not only how it was made (GH #537)
+
+`WHAT WAS SAID (verbatim, not interpreted)` describes how its lines were produced and
+nothing about what they are for. The lines are raw turns, and some of them are the agent's
+**own** earlier answers — including an answer about this memory:
+
+```text
+WHAT WAS SAID (verbatim, not interpreted)
+  user      on 2026-08-16: "what do you know about my sons?"
+  assistant on 2026-08-16: "Nothing reliable about your sons is stored."
+  assistant on 2026-08-17: "Number of conversations about your sons: zero."
+```
+
+Measured on a live hive during [#536](https://github.com/mmeyerlein/meclaw/issues/536):
+those lines were retrieved as evidence, the model repeated them, and the answer was written
+back — a loop in which every failed round makes the next one more certain the memory is
+empty. #536 removed the trigger; the material stayed.
+
+One line is added as the **head** of that section: *(an earlier answer claiming something is
+NOT stored is evidence about that answer and nothing else — never a measurement of this
+memory)*. The header string itself is unchanged, because it is a pinned public surface
+(GH #281) quoted by three tests and the template README, and a reader that matched it keeps
+matching it. The caveat holds with or without a `FACTS` section above it, and it goes with
+its section: no said rows, no caveat.
+
+#### `assistant@2.2.0` / `member@1.4.0`: the conversation surface goes into a turn with its memory already read (GH #535)
+
+`collector@`'s `memory_tier` ships EMPTY and `talky` leaves it that way. Standalone that
+is right: a `talky` on its own has no memory hive beside it, so a per-turn `recall` would
+leave for an address nobody wired. What it does ship on is the TOOL — `memory_call_tier`
+defaults to `"1"` and the composite has routed `memory_recall` to its own collector since
+`talky@4.2.1`.
+
+The `assistant` level is the other case, and it is the **only** place that can know it: it
+is instantiated into a member that HAS a hive, and the member's own edges already carry
+`recall` up and `in_bundle` back down. Nobody set the knob there, so a grown generation
+remembered only when its model **decided to ask** — the half whose whole job is to answer
+fast went into every turn with the window and nothing else, and paid a second round trip
+for what a cheap leg puts in front of the first call.
+
+One key closes it, on the ref marker in `templates/assistant/surface/config.json`:
+
+```json
+"override_params": {"collector/assemble": {"memory_tier": "1"}}
+```
+
+It is the **third** override on that marker and it is the same kind of statement as the
+two already there — the surface's model
+([#516](https://github.com/mmeyerlein/meclaw/issues/516)) and its declared tool list
+([#529](https://github.com/mmeyerlein/meclaw/issues/529)). All three say a fact about the
+COMPOSITION that the referenced template cannot know, which is why none of them moved into
+`talky`: standalone it is right as it stands, and moving the value down would make every
+standalone `talky` emit a `recall` nobody answers.
+
+The tool does not move. `memory_recall` is the deliberate lookup a model asks for by name,
+the ambient leg is what the fast half reads before it answers at all, and the two answer
+different questions. The reasoning core keeps its own `memory_tier` empty for the reason
+`cogny@4.4.0` gave it ([#528](https://github.com/mmeyerlein/meclaw/issues/528)): a problem
+solver asks about a time range or a session on purpose and is not handed a bundle before
+it has read the question.
+
+**One half of the lane was never carried, and only the ambient leg could show it.**
+The collector parks a turn whose bundle comes home unable to name the round it belongs to
+(`if lane == "in_bundle": if not turn_id: park()`), and `turn_id` rides on the HOP. A hive
+forms its own hop (GH #411), so context is the only compartment that survives one — and
+`member@1.4.0`'s `./assistants -> ./memory-hive` edge promoted seven keys of that exit and
+not `turn_id`, which `talky`'s contract has named all along. It never showed on the TOOL
+path: a `memory_recall` call happens *after* the brain call, and the brain edge has
+promoted `hop.turn_id` into context long before. The ambient leg leaves *before* the model
+has seen the turn. So the same commit adds one key to that modifier — measured on a
+running colony as the first ambient turn going silent.
+
+**The audience gate needed nothing.** `memory-hive`'s `in_query` refuses a request without
+`context.audience_now` and `context.channel` rather than answering an empty bundle, and
+nothing on the ambient path sets `audience_now` — because nothing has to: the member's
+`./assistants -> ./memory-hive` edge derives it from the `audience_set` the ingress
+screened onto the turn, on the very edge the tool call already travels. Asserted rather
+than assumed, because since [#533](https://github.com/mmeyerlein/meclaw/issues/533) a
+refusal returns to the collector as `in_bundle`, where a missing key would read as a short
+bundle instead of an error.
+
+No lane, no address and no edge count changes, so `2.2.0` is extended in place rather than
+superseded (`docs/development-rules.md` § 4) — the same reading #464, #475 and #516 got
+inside this wave. Callers wiring an assistant need no change: the member edges this leg
+uses are the ones a grow recipe already draws.
+
+#### `talky@4.5.1`: an unreadable `memory` block leaves the answer instead of reaching the reader (GH #534)
+
+The splitter cut a well-formed extraction sidecar out of an answer and left an unreadable
+one **inside** it. That was the deliberate half of
+[#379](https://github.com/mmeyerlein/meclaw/issues/379): half-cutting a block nobody can
+read, the reasoning went, corrupts the answer for the sake of a write that cannot happen
+anyway, so the answer travelled untouched and `hop.sidecar == "malformed"` recorded the
+miss. Measured in a running colony, the decision is wrong in the only direction that
+matters. A model that had annotated the turn before it correctly emitted
+
+~~~
+<the answer>
+
+```memory
+{"facts":[],"topic":{"movement":"continue","name":"Andor"}
+```
+~~~
+
+— one closing brace short. `json.loads` raised, the block was `found` and not `valid`, and
+the fenced JSON travelled through the dispatcher and out of the composite to the channel
+verbatim.
+
+**The trade the old decision assumed does not exist.** The parser has already located the
+span it would cut; the prose either side of the fence is the same prose whether or not the
+JSON in the middle parses. So **`found` decides the cut and `valid` decides the lane**: an
+unreadable block comes out of the answer like any other, the flag stays (a close pass can
+still tell a model that missed the form from one that never annotated), and **nothing goes
+out on `extraction`**, because a block the hive cannot read is not an annotation. The one
+thing that has not changed is the refusal to repair — a splitter that fixed a block would
+hand the store its own invention instead of the model's, and this fix needs no tolerance in
+the JSON parser to work.
+
+**An opener with no closer is a block too.** A `` ```memory `` fence the completion stopped
+inside used to fall through to the naked-object probe, which cuts from the `{` and leaves
+the bare fence line standing in the answer — the same leak one character smaller. It is now
+cut from the opener to the end of the text.
+
+**No version digit.** `talky@4.5.1` is unreleased in this wave, so the repair rides in the
+version it broke in rather than moving it. `crates/meclaw-cells/tests/gh534_an_unreadable_block_still_leaves_the_answer.rs`
+pins the shape that escaped as a regression and, beside it, the contract surface that was
+never pinned and is what let the shape through: every `topic.movement`, an empty `facts`
+list beside a topic, a block with and without a trailing newline, a block that is not last
+in the answer, and CRLF. `gh379`'s own third case is retracted in place rather than
+rewritten, per the documentation rule.
+
+#### The per-turn write lane is measured where it actually runs, and the retracted batch edge has a lock (GH #523, GH #526)
+
+**No shipped template changed here.** Two intermittent test failures on the same pair
+turned out to be two defects in the harnesses that measure the memory write path, and both
+had been reading as substrate flakes for as long as they existed.
+
+**GH #523 — a turn reached the memory as two `assistant` episodes and no `user` episode.**
+Ruling Q11 ([#298](https://github.com/mmeyerlein/meclaw/issues/298)) retracted the edge
+that carries a collector's `turn_write` route into `memory-drain`'s `in_batch` lane: the
+route hands out one finished turn per message at the memory hive's `in_episode` door, and
+the batch adapter in front of it is a second minter over turns that lane already wrote.
+Two private colonies still drew the retracted edge. What that costs is now measured rather
+than asserted: the adapter's ledger is a per-session high-water mark over *one* closed
+batch, read in two steps (`park`, then `probe`) with the mark landing a hop after its own
+probe — so two per-turn deliveries of one session straddle each other, both probes take the
+last parked batch for "the day", the assistant turn leaves twice under `<session_id>#0` and
+the user turn never leaves. `templates/memory-drain/README.md` carries the measurement in
+§ *Retracted* and the operating envelope ("one session, one batch, one delivery at a time")
+under § *Known limits*; the lock that keeps the edge from being drawn a third time is
+`crates/meclaw-cells/tests/gh523_the_per_turn_lane_is_not_a_batch.rs`, which drives the
+shipped `drain` script over both ledger shapes and then reads every topology in the tree
+for the CEL pair that spells the edge.
+
+**GH #526 — the inline fact did not arrive inside its window under CPU contention.** The
+barrier that orders the two chains of that test — a `gate` cell holding the extraction
+sidecar until the test has seen the episode it must bind to — never engaged. It read its
+marker path out of the process environment while the key was only ever written into the
+root env file, and that file feeds `${VAR}` substitution in `config.json` *values*, not the
+environment a `code` cell's subprocess inherits (`env_clear: false`, so the child gets the
+test process's own). The lookup returned the empty string and the wait was skipped
+entirely, so the sidecar raced the per-turn episode: under load it won, the inline ingress
+found no `user` episode, refused the block ("no episode for this session"), and the test
+died 30 s later on a fact that was never going to arrive. The path is substituted into the
+script now, an unsubstituted barrier exits non-zero instead of quietly not existing, and
+both harnesses pin that. Measured after the two repairs: 24 runs of the pair under six
+background spinners on an eight-core host, 0 failures — against 1–2 in 8–12 before.
+
+#### `collector@3.4.0` / `talky@4.5.1` / `assistant@2.2.0`: the menu merges every answerer, and the surface asks its own memory (GH #529, #530, #531)
+
+Three changes, one cause. Since [#464](https://github.com/mmeyerlein/meclaw/issues/464)
+a collector's tool menu is **asked for** rather than typed. That was right, and it
+deleted two declarations nobody had listed — because they lived in the old source, as
+seed rows in a brain's `cell.db`, and the first tick replaced the whole subtree. What
+reached a person was not a missing row: it was an agent whose charter kept naming a
+tool it no longer had.
+
+**The menu is a union over answerers (#529).** One reply *was* the menu: parse it, add
+the names the collector serves itself, write the lot with `$replace`. That is right
+while exactly one thing answers, and it is the whole defect the moment two do — the
+second reply would not merge with the first, it would delete it, and the two answerers
+would take the menu away from each other on every tick forever. A second answerer is
+now required, and not as a preference: **a tool the composite reaches by an edge on its
+NAME is not the tool hive's**. It is topology of the level that draws the edge, and only
+the side that answers it can declare it.
+
+So `collector@3.4.0` keeps, per answerer, the submenu that answerer last delivered — one
+row of its own `window` store (`menu`: `answerer`, `tools`, `unknown`, `recorded_at`),
+keyed by `context.tool_answerer`, the mirror of the `context.tool_caller` a request
+already carried. `in_menu` records the reply in one bundle (delete, insert, select — the
+[#419](https://github.com/mmeyerlein/meclaw/issues/419) form, phase `menu-merge`), and
+the answer to that bundle derives the menu as the union over every row, ordered by
+answerer so the same rows always produce the same menu, plus the names the collector
+serves itself, written with `$replace` exactly as before. Three consequences:
+
+- **An answer with no answerer named is the one-answerer shape**, and counts as the
+  default answerer — a tree wired before this behaves exactly as it did.
+- **`hop.menu_unknown` is computed against the merged menu.** A name one answerer has
+  nothing under but another delivers is not a finding; the warn line moved to the merge
+  with it, and `hop.menu_answerers` names whose rows the write stands on.
+- **A store that refuses a menu phase is a warn line and a stop**, never the `degraded`
+  answer every other phase sends: a menu is durable state with no turn beside it, and a
+  refusal must not put *context assembly stopped* in front of somebody who asked nothing.
+  The next tick asks again.
+
+`assistant@2.2.0` draws the second `schemas` / `in_menu` pair — surface to core and
+back — beside the pair it already had to the tool hive, and every `tool_schemas` edge
+now stamps its answerer. The declared list is the **level's**, on the same ref marker
+that names the surface's model and for the same reason ([#516](https://github.com/mmeyerlein/meclaw/issues/516)):
+standalone, a `talky` has no core beside it to consult, so `consult_cogny` is declared
+one level up, where the errand exists. `talky@4.5.1` re-points its collector ref.
+
+**`ask_memory` is retired (#530).** The advisor lane carried two errand names since
+[#124](https://github.com/mmeyerlein/meclaw/issues/124), and the class was the tool name
+the asking model chose. The lookup half has no ground left: the core has no memory leg
+of its own, so an `ask_memory` errand reached a brain that answered a memory question
+with no memory in front of it — while the surface has one, in its own collector, against
+the memory that belongs to the person. The boundary is no longer a name the model picks
+between two errands but a boundary between two mechanisms: a fast memory question is
+asked by the surface itself with `memory_recall`, in the round that is already running;
+synthesis, a development over time, anything multi-step or research-shaped goes to the
+core on `consult_cogny`, whose answer arrives as its own turn. `consult_cogny` takes
+`question` **and** `context`, both required, and the asking side does not filter out
+context it believes it has already sent — the answering side curates, and a filter on
+the asking side is a second curator with less information. `context.session_id` travels
+with the errand and is deliberately **not** promoted by the ingress edge: context is
+persistent and `hop` is single-hop
+([#521](https://github.com/mmeyerlein/meclaw/issues/521)), while `hop.session_id` is
+absent from a dispatcher's tool emission — a modifier reading it would fail, and a failed
+modifier skips the edge, which would silently kill every consult. The core's own half of
+this is [#528](https://github.com/mmeyerlein/meclaw/issues/528).
+
+**And a rule, so the class cannot come back (#531).** `docs/development-rules.md` § 8:
+*a declaration never changes its source silently* — whoever replaces the source of a
+declaration proves in the same commit that every name declared before is still
+delivered, and no text a model is given may name a tool the menu cannot carry. The
+standing gate derives each shipped composite's menu from the tree — declared names,
+self-served names, and the names its own edges route — and fails on a charter naming
+something outside it, on a declared name no answerer delivers, and on a routed name
+nothing declares. It carries its own negative control, so a green sweep is a
+measurement rather than a silence.
+
+**Migration.** A collector instance upgraded in place needs the `menu` table in its
+window store; a colony grown from these templates gets it at birth. Nothing a caller
+sends or receives changed shape. An instance whose brain still declares `ask_memory`
+loses the edge, and the call falls to the guarded default and is refused by name at the
+tool surface — visible, not silent.
+
+#### `assistant@2.2.0` / `memory-hive@3.1.0`: one memory hive, several askers, and every bundle finds the one that asked (GH #532)
+
+A generation holds two askers — the conversation surface (`./surface`) and the reasoning
+core (`./cogny`) — and one memory, the member's, because two generations of one person must
+know the same person (GH #122). Only the surface could use it. The core's `recall` ended at
+`./cogny` and was dropped on the floor, which the level declared in its own
+`contract_derivation`:
+
+> The reasoning core's `recall` is the one occupant emit with no home […] the bundle coming
+> back carries nothing that tells them apart.
+
+So the half of the agent whose job is thinking answered questions about the past without a
+past to read.
+
+**Why the obvious fix does not work.** A second door needs a discriminator, and two
+substrate facts push it in opposite directions: only `context` survives a hive, because the
+`recall` cell forms its own hop (GH #411) — and a door guarded on `context` **alone** is
+condemned, because the template gate probes a door with a bare `hop.route` and an empty
+context compartment (`gh173_shipped_hive_contracts.rs`). The inward carve-out of GH #286
+exempts a door reading a **hop** key the probe cannot carry; GH #469's context carve-out is
+on the exit side only.
+
+**A reply-to token that changes compartment on the way home.** Each asker stamps
+`context.recall_caller` with its own name on its own `recall` exit — stamped, never
+defaulted, because the core's answer re-enters the surface on `in_advice` carrying the
+core's whole context. The member, the `assistants` container and the hive carry the key
+untouched. The **hive's own exit** hands it back on `hop.recall_caller`, off the context the
+question came in with, on `bundle` and on `reject` alike. The assistant then has two doors on
+one lane: `. -> ./cogny` guarded on that hop key, and `. -> ./surface` as the **`default`**,
+so an absent, empty or unknown token lands exactly where every bundle landed before.
+
+It is the arrangement the level already uses one door over: `context.tool_caller` tells the
+surface's and the core's tool results apart on their way back from `./tools`.
+
+**Nothing an instance wires changes.** The container's `in_bundle` edge, the assistant's
+`recall` exit and every shipped grow recipe keep working byte for byte, and the surface's leg
+is bit-identical in behaviour — it stamps a token nothing reads on the way in and takes the
+default door on the way back.
+
+Also written down rather than changed: `memory-hive`'s `in_query` already read
+`context.session_id` and scoped the tier-0 episode leg to that session, and nothing declared
+it. It is now in the lane's `because` beside `channel_open_history`, as what it is — optional,
+defaulted, and the reason the core's `memory_recall` can ask about the session it is in.
+
+The decision is ADR-0019 (`plans/adr/0019-one-hive-several-askers-the-reply-to-token.md`); the
+round trip is proven in both directions and twice at once, over the real templates and the
+real router, in `crates/meclaw-cells/tests/gh532_two_askers_one_hive.rs`.
+
+**Not fixed here, filed as [#533](https://github.com/mmeyerlein/meclaw/issues/533):** the
+member's own `in_recall` lane — an asker *outside* the member — has no return edge at all,
+and `bundle` is not among the member's `emits`. The same token is the fix, and it costs a
+lane on three levels.
+
+#### `member@1.4.0` / `org@1.3.0` / `meclaw-os@1.6.0`: the question a member takes from outside gets an answer lane, on all three levels (GH #533)
+
+`member@1.4.0` accepts `in_recall` — *a question against this person's memory from outside the
+member* — and its own `because` said the answer "comes back on `bundle` through whatever edge the
+caller drew". **There was no such edge and nowhere to draw one.** `bundle` was not in the member's
+`emits`, so the level had no exit for it, and an outside recall's answer took the one return edge
+the level had:
+
+```
+. --in_recall--> ./memory-hive --bundle--> ./assistants        DEAD LETTER no_route
+```
+
+— or, when the caller happened to carry a `context.assistant`, was handed to a generation that
+never asked. The lane was a promise the level could not keep from the day it shipped, and nothing
+in the tree wired it, which is why it never showed up.
+
+**The mechanism was already there.** [#532](https://github.com/mmeyerlein/meclaw/issues/532) built
+the reply-to token of ADR-0019 (`plans/adr/0019-one-hive-several-askers-the-reply-to-token.md`):
+the asker stamps `context.recall_caller`, every level in between carries it untouched, and the
+hive's own exit hands it back on `hop.recall_caller` — on `bundle` and on `reject` alike. **The
+outside asker is a third value**, and the member's own door stamps it:
+
+| edge | lane | what changed |
+|---|---|---|
+| `. -> ./memory-hive` | `in_recall` | stamps `context.recall_caller = 'outside'` |
+| `./memory-hive -> .` | `bundle`, guarded on the token | **new** — the exit the lane never had |
+| `./memory-hive -> ./assistants` | `bundle` | becomes the **`default`** |
+| `./memory-hive -> ./assistants` | `reject`, `recall_caller != 'outside'` | **new** — re-stamped to `in_bundle` |
+| `./memory-hive -> .` | `reject` | narrowed to *no token, or `'outside'`* |
+
+**The door stamps the token rather than carrying what the caller sent.** The value space of
+`recall_caller` at this boundary is the member's own: a caller that kept its own vocabulary would
+have its bundle routed by a word the level cannot guard on, which is the same failure with more
+steps. An outside caller with several askers of its own correlates on `hop.memory_call_id`, which
+the same door has promoted into context since
+[#411](https://github.com/mmeyerlein/meclaw/issues/411) and which crosses the hive untouched.
+
+**Nothing an asker inside the member notices.** The way down is a `default`, so an assistant's
+token, an unknown one and none at all land exactly where every bundle landed before — the pin
+walks all four cases through the real router. And the exit **restates its own route**
+(`set_hop {"route": "'bundle'"}`, a no-op for the message): an exit guarded on a hop key the
+contract probe cannot carry is invisible to `hive_contract::exit_exists`, and GH #176's carve-out
+is exactly this — an edge that NAMES the lane it carries is an exit. `./affinity -> .` on `answer`
+has been written that way since the level shipped.
+
+**A refused recall now reaches the round that asked.** Before this, every `reject` of the memory
+left the level, so an assistant whose question the hive would not take — no audience, no channel,
+a half-open window, a store that did not answer — waited out its idle window for a bundle that
+would never come. It comes back on `in_bundle` with `hop.reject_reason` on the hop and the hive's
+own `recall rejected: <reason>` as the body: the lane the assistant already sorts by token (#532)
+and the collector already ends its memory leg on, so the refusal is a typed result of the round
+rather than a second mechanism. A lane of its own would have had to be wired by every parent,
+every recipe and every example for a message that carries no new shape. Every other refusal this
+hive raises — the writer's, the porter's, the close pass's — carries no token and leaves the level
+as it always did.
+
+**Three templates, three contracts, one drain obligation.** `bundle` is now an `emits` lane of
+`member`, `org` and `meclaw-os`, or an outside recall answered at the member would die one level
+UP instead of one level down; `org` and the shell carry it out untranslated and read neither the
+bundle nor the token. The member pairs it in `params.required_drains` — *ask, and you owe the
+answer a drain*. That gate triggers on the caller's own `set_hop` (GH #237), and a level is
+addressed by condition rather than by stamp, so the three shipped recipes
+(`examples/organism/grow-member.json`, `grow-org.json`, `grow.manifest.json`), the builder's
+`grow_level` fast lane and `examples/memory-import/build_import.py` draw the drain edge and are
+pinned doing it. A grown organisation and a grown person cost **eighteen** edges each now, where
+they cost seventeen.
+
+**Version digits.** None. `member@1.4.0`, `org@1.3.0`, `meclaw-os@1.6.0` and `builder@1.5.1` were
+all set earlier in this same unreleased wave and are extended in place; across the release
+boundary a parent sees one more emit lane at each of the three levels, which is the second digit
+of a version none of them has published yet.
+
+**Migration.** A hand-drawn topology that sends `in_recall` at a member, an org or a shell should
+draw the matching `bundle` edge back out; before this change that answer was a dead letter, so
+nothing that works today stops working. A topology that drains the memory's `reject` above the
+member keeps receiving every refusal that is not a recall's — a refused *recall* raised inside the
+member now goes to the asker instead, which is where it was always addressed.
+
+Pins: `crates/meclaw-cells/tests/gh533_the_outside_asker_gets_an_answer.rs` — the file facts
+(the lane, the pairing, the stamp, the guarded exit, the `default`, the two reject halves, the
+recipes) and the real router over the whole of `examples/organism`, six levels deep, in both
+directions: a question entering at the shell reaches the person's recall cell carrying `'outside'`,
+its bundle and its refusal come back out of the shell, an assistant's four token cases land
+unchanged in the generation, a refused recall reaches the asker that made it, and a writer's
+refusal still leaves the level.
+
+#### `member@1.4.0`: the level that holds the memory now fills it, so a conversation reaches an `episodes` table at all (GH #527)
+
+`turn_write` is the only path in this substrate from a conversation into an `episodes`
+table. [#298](https://github.com/mmeyerlein/meclaw/issues/298) made that true by removing
+everything else, `templates/collector/README.md` says so in the knob row, and
+`collector/assemble` says so beside `TURN_WRITE`. **No shipped org or member topology
+routed it anywhere.** It left the collector, climbed the whole tree unchanged and
+dead-lettered at the OS root as `hive_no_route`, once per stored turn, for ever:
+
+```
+…/surface/collector/assemble -> …/surface/collector -> …/surface -> …/assistants/<name>
+  -> …/assistants -> /os/orgs/<org>/members/<m> -> …/members -> /os/orgs/<org>
+  -> /os/orgs -> /os        DEAD LETTER hive_no_route
+```
+
+Nine hops, no branch. Measured on two grown colonies of the shipped shape: the dead-letter
+count matched the emitted count exactly, and it matched the number of `turns` rows the
+collector had already stamped `episode_written = 1` — so the collector believed every turn
+was delivered and none was, and `episodes` had not grown in nine days while the colony
+answered questions daily. The header was complete when it died (`hop.session_id`,
+`hop.turn_id`, `hop.happened_at`, `context.audience_set`, `context.channel`), so the
+audience gate would have passed. There was simply no consumer.
+
+**The member declined the lane in one sentence, and that sentence was the bug.** It read
+*"the member's own episode path is `extraction` → the memory hive's `in_remember`, so this
+lane crosses the boundary untouched"* — and it is wrong in both halves, which is why it is
+**retracted in the text** rather than quietly rewritten (`docs/development-rules.md` § 3):
+
+- `in_remember` is the FACTS lane and it **presupposes** episodes. A block names no turn,
+  so the ingress binds it to the newest `user` episode of the session
+  (`select episodes where {session_id, sender:'user'} order by recorded_at desc limit 1`);
+  with no episode there is nothing to bind to and the hive refuses every block by design —
+  the failure `templates/talky/README.md` states in one line.
+- `write` → `in_close_pass` is no second writer either: nothing travels in its body, it
+  names a session, and the pass reads the hive's **own** `episodes` — the table that was
+  never filled.
+
+So the member's declared "own episode path" wrote no episodes, and the two lanes it pointed
+at both read the table it had declined to fill. Nor did any example wire it:
+`examples/organism/grow*.json` passes `turn_write` upward at three levels and consumes it
+nowhere, and `examples/meclaw-os/` routes it to `./sink` and says so.
+
+**The repair is one edge, at the level that holds the memory** ([#122](https://github.com/mmeyerlein/meclaw/issues/122)) — the same container that already hands `recall`,
+`extraction` and `write` to the same hive:
+
+```json
+{"from": "./assistants", "to": "./memory-hive",
+ "condition": "has(hop.route) && hop.route == 'turn_write'",
+ "modifier": {"set_hop": {"route": "'in_episode'"},
+              "set_context": {"session_id": "has(hop.session_id) ? hop.session_id : ''",
+                              "turn_id": "has(hop.turn_id) ? hop.turn_id : ''",
+                              "happened_at": "has(hop.happened_at) ? hop.happened_at : ''",
+                              "audience_set": "…", "channel": "…"}}}
+```
+
+- **`turn_id` comes off the HOP.** `context.turn_id` is a round uuid; `hop.turn_id` is the
+  deterministic `<session_id>#<index>` the collector mints, and it is what the inline bind
+  and the extraction queue row are keyed on. An edge that promoted the context key would
+  produce episodes nothing can later bind to — a defect that looks exactly like this one
+  from the outside.
+- **`happened_at` is load-bearing, not decoration.** The writer reads it off the context and
+  falls back to its own clock; without the promotion every turn is stamped with the writer's
+  time and the bi-temporal split collapses.
+- **It is a FAN-OUT, like `write`.** The pass-through exit `./assistants -> .` stays, both
+  edges are regular edges, and both fire — so `turn_write` remains in `contract.emits` at
+  the member, the org and the shell, and a parent that wires an archive of its own still
+  gets one. **No lane list moved**, at any of the three levels.
+
+**Version digits.** None of its own. `member@1.4.0` was set earlier in this same unreleased
+wave and is extended rather than superseded, and the digit would not have moved anyway: the
+lane lists are unchanged, a parent sees the same seven accepts and eleven emits across the
+release boundary. What it stops seeing is one dead letter per stored turn at the root of its
+colony.
+
+**Two things the new consumer surfaced, both fixed here.** `happened_at` joins the `SHARED`
+context vocabulary of `crates/meclaw-cells/tests/gh494_no_interior_marker_leaves_a_hive.rs`
+and `workshop/tools/hive_context_sweep.py` — it is now promoted between two hives on purpose,
+exactly like `session_id` and `turn_id` beside it, and clearing it at a rim would hand the
+writer its own clock. And two export tests declared their round as a comma-separated string
+(`"member:alex,agent:scribe"`) where the hive parses a JSON list; nothing was red, because no
+shipped topology consumed `turn_write`, so the malformed value never reached a writer. It
+does now, and both fixtures say what the contract says.
+
+**Migration.** A hand-drawn topology that carries `turn_write` past a member of its own and
+never promoted the round will now see one `reject` (`hop.reject_reason == "missing_audience"`
+or `"missing_channel"`) per turn where it previously saw silence. That is the fail-closed
+write path of [#244](https://github.com/mmeyerlein/meclaw/issues/244) doing its job: the
+refusal is the first honest signal such a colony has ever had that its turns were not being
+remembered. Promote `context.audience_set` (a JSON list) and `context.channel` on the edge
+that carries the turn in, the way `templates/member/README.md` § *The memory* prescribes.
+
+Pins: `crates/meclaw-cells/tests/gh527_the_member_writes_the_episode.rs` — the drift lock
+(the collector's knob row still calls the lane the only path into an `episodes` table, and
+the member's graph carries the edge that receives it, `turn_id` off the hop), a booted
+colony carrying the shipped `member@1.4.0` in which one turn on `turn_write` becomes one
+`episodes` row with the collector's `turn_id`, the caller's `happened_at` and today's
+`recorded_at` while the copy still leaves the level, and the red probe: the same colony with
+that one edge removed writes no episode and passes the turn out exactly as before — which is
+why the defect was invisible from above.
+`crates/meclaw-cells/tests/gh302_member_holds_the_memory.rs` names `turn_write` as the
+second deliberate fan-out, and `gh302_the_stack_grows_from_templates.rs` reads the member's
+container edge count off the template (19 → 20).
+
+#### `collector@3.3.1` / `talky@4.5.0`: the inline extraction contract is delivered, so a grown colony writes memory again (GH #525)
+
+Since `talky@4.1.0` the inline sidecar is the **only** path from a conversation into new
+facts: [#298](https://github.com/mmeyerlein/meclaw/issues/298) removed the batched
+extractor and [#379](https://github.com/mmeyerlein/meclaw/issues/379) retracted the tool
+form, so what the front model does not annotate inside its own answer, nothing extracts
+until the close pass. `templates/talky/README.md` names the failure mode in one line —
+*"without the extraction prompt the splitter is a pure pass-through"* — and
+`templates/memory-hive/inline-contract.md` said where the prompt was to come from: *"Paste
+this block into the **instructions** of any model that emits inline extraction."*
+
+**Nothing pasted it.** The block existed in exactly three places: the document, the
+measurement fixtures under `workshop/evals/conversation-guide/contracts/`, and the drift
+lock that reads the document. No template seeded it, no cell derived it, no assembly wrote
+it — `templates/talky/brain/seed/system.jsonl` carries two rows and both are tool schemas.
+So the promise "the annotation is an obligation on every turn" was delivered to nobody, and
+a colony could run the whole sidecar — splitter, `extraction` lane, `in_remember` door,
+`extract-glue`, both required drains — without a single block ever travelling it.
+
+Measured on a colony grown from the shipped library: every edge of the write path present
+and correct; the brain's own `cell.db` holding `identity.soul`, `instructions.reply`, four
+`tools.*` rows and the collector's `consult`, and **no** slot containing the words
+`ANNOTATE EVERY TURN`; not one message in the log ever carrying `hop.route == 'extraction'`;
+an empty dead-letter queue for the class, because nothing was ever emitted; and recall
+answering questions correctly out of a memory whose newest fact was nine days old.
+
+**Three homes were possible and each failed on its own.** The *persona*, which
+`memory-hive`'s own README named: a persona is a person's charter, so a mechanism kept in
+there is a mechanism every hand-written charter silently drops. A *brain seed*, which is
+the shape [#512](https://github.com/mmeyerlein/meclaw/issues/512) measured and rejected two
+weeks ago one slot family over — a seed is written once, at birth, so a brain that grew
+never receives it. And *nothing*, which is what shipped.
+
+The repair is #512's shape, one family over: **the collector holds the declaration and
+re-derives it every round.** `collector/assemble` carries the block byte for byte and
+writes it to `system.instructions.sidecar` in the turn assembly it already emits, beside
+`system.consult`, which travels unconditionally for exactly this reason
+([#259](https://github.com/mmeyerlein/meclaw/issues/259): a path that is not sent is a path
+that is not touched). Three details are the whole of why this may share a family with a
+person's charter:
+
+- **No `$replace` marker.** `system.*` is upserted per slot path, so `instructions.reply` —
+  the charter, owned by the `in_pack` lane since
+  [#488](https://github.com/mmeyerlein/meclaw/issues/488) — is not touched, and neither
+  family can revoke the other. `instructions` stands in `SYS_KEEP`, so the curator cannot
+  cut it at any budget either.
+- **The leaf name is load-bearing.** An `llm` cell walks a family's leaves alphabetically,
+  so `sidecar` sorts after `reply` and the block arrives after the instructions it is
+  written to follow. `extraction` — the lane's own name — would have sorted before it, and
+  a model that produces its structured field before its reasoning answers from nothing.
+- **The switch belongs to the composite.** `inline_extraction` ships OFF, which is the one
+  place this differs from `turn_write`: what cuts the block back out is a `splitter`
+  between the brain and the dispatcher, and the collector cannot see whether one stands
+  behind it. Asking with nothing cutting leaves a json block in the reader's face on every
+  turn — immediate, visible damage, where the other direction is a memory that stops
+  growing in silence. `talky` cuts the block and switches it on; `cogny` has no splitter
+  and leaves it off.
+
+**Version digits.** None of their own. `collector@3.3.1` and `talky@4.5.0` were both set
+earlier in this same unreleased wave and are extended rather than superseded; the cell
+contract of `./assemble` moves `1.5.1 → 1.5.2`, a third digit for the reason #512's own
+bump gives one line above it in the pin — a repair that has to add a setting to land is
+still a repair (`docs/development-rules.md` § 4).
+
+Pins: `crates/meclaw-cells/tests/gh525_a_grown_brain_carries_the_extraction_contract.rs`
+(6 claims, red before the change) — the collector's copy is byte-identical to the fence in
+`inline-contract.md`, a turn assembly asks for it with no marker anywhere on the way, the
+shipped default asks for nothing, a **grown** brain carries charter and contract side by
+side in its own `cell.db` and both reach the composed system prompt in the right order, the
+menu tick's `$replace` cannot reach the family, and the shipped composites ask exactly where
+the block is cut.
+
+#### `builder@1.5.1`: a json literal in the prose no longer wins against the manifest below it (GH #524)
+
+`builder/normalise` read the composer's answer with `extract_json`, and that
+helper took the **first balanced `{...}` run that parses**. The heuristic holds
+for prose plus one object. It fails for the answer a `scriptlet` wish naturally
+produces, because the wire form a scriptlet writes IS a json object, so a model
+that explains its design writes one above its manifest:
+
+```text
+- `feed/ask` — scriptlet, builds `{"url": "https://…/rss2"}` tool_call, …
+
+```json
+{"declarations": [ … ]}
+```
+```
+
+The first run was `{"url": …}`. It parses, it carries no `declarations`, and the
+build came back `declarations_not_a_list` — the code an answer gets that wrote
+nothing at all, pointing a reader at the answer when the answer was right there
+and complete, correct `hop.operation` return edges (#521) and both scripts
+against the contract published in #513 included. Measured on a live design-lane
+run, 4 compose rounds, `finish_reason: stop`.
+
+The search now says what it is looking for: among the balanced runs, the FIRST
+that carries `declarations` or `question` is the answer. Not the last — a model
+revises itself downward about as often as it quotes the briefing's example
+downward, and first-carrying-the-key is the smallest change to the rule that
+shipped. The first parseable object stays the fallback, so an answer with
+neither key refuses under exactly the code it did before, and a composer that
+ASKS (#466) is no longer buried under its own example.
+
+**Version digits.** None of its own. `builder@1.5.1` was set two strands earlier
+in this same unreleased wave and is extended rather than superseded: nothing
+shipped instantiates it, and the repair returns a promise the briefing already
+made rather than adding one.
+
+Pin: `crates/meclaw-cells/tests/gh524_the_manifest_wins_against_the_prose_above_it.rs`
+(6 cases, red before the change).
+
+#### `access@2.4.2`: the shell is a scope, and the seed now has a row that can reach it (GH #514)
+
+Every policy row `access` shipped carried `scope_match.scope_prefix: "/os/orgs"`.
+Measured on a colony grown from `examples/meclaw-os/seed-ref`, the same
+declaration submitted twice through the front door and differing only in its
+scope root:
+
+```text
+scope "/os"       -> submit/gate: requester_not_permitted, corpus unchanged
+scope "/os/orgs"  -> allowed -> door committed -> corpus 613 -> 614
+```
+
+Registering a template class writes to `/colony/templates`, which belongs to no
+organisation, so `/os` is the scope root a composer writes for it — and
+`/os/orgs` only ever worked because the prefix happened to match. Since GH #504
+the shell itself has a lane that fires on a committed `add_templates`, so the
+shipped policy and the shipped topology disagreed about where authoring happens,
+and the disagreement was invisible until somebody submitted at `/os` and read a
+refusal naming the **requester** rather than the scope.
+
+**A second row, and it ships switched off.** `colony.mutate.shell` —
+`requester: "/os/submit"`, `subject: "*"`,
+`scope_match: {"actions": ["apply"], "scope_prefix": "/os"}`, `priority: 90`,
+`enabled: 0`. Not a widened prefix on the existing row: `/os` is a **path
+prefix** and therefore the superset of `/os/orgs`, so a colony that grants the
+shell has granted every shell-level topology change with it — the broker's own
+address and the submitter's included. That is an operator's decision, not a
+seed's.
+
+**Precedence is what keeps the pair apart**, and it is the number rather than
+the file order: the enabled rules for one capability are read in `priority`
+DESC and the **first match wins**, so at 90 the shell row is examined after
+`colony.mutate.default` at 100. A declaration under `/os/orgs` is still answered
+by the narrow row, and the new one only ever answers for a scope the narrow row
+cannot reach. Measured over the shipped script and the shipped seed:
+
+| `resource.scope` | as shipped | with the row switched on |
+|---|---|---|
+| `/os` | `denied` / `scope_mismatch` | `allowed`, by `colony.mutate.shell` |
+| `/os/orgs/acme` | `allowed`, by `colony.mutate.default` | `allowed`, by `colony.mutate.default` |
+| `/os/access` | `denied` / `scope_mismatch` | `allowed` |
+| `/oscar` | `denied` / `scope_mismatch` | `denied` / `scope_mismatch` |
+
+**The switch is a `seed_rows` manifest** (README § *Enabling the shell for the
+front*), and three things about it are named there because none of them is
+obvious. It cannot go through the front door it opens — its own scope root is
+`/os` — so it is the operator's `meclaw --apply`, which is also where it belongs
+in a build script: directly after the seed, before the first wish. `seed_rows`
+**inserts and never updates**, so flipping a shipped `enabled: 0` seeds the
+row's enabled **twin** and the disabled original stays as the record of what
+shipped; the broker reads `enabled = 1` and finds exactly one. And a
+declaration that REGISTERS A CLASS asks `code.author` over the same root
+(GH #446): `code.author.default` is scoped `/os/orgs` and ships off, so a
+shell-scoped `add_templates` with only the new row on moves from
+`requester_not_permitted` to `code_author_denied` — a different refusal, not a
+green light.
+
+What the row cannot say is in the register rather than papered over
+(`policy-by-requester-origin`): the requester the broker sees is the literal
+`/os/submit` the shell's edge promotes, and everything that passes the front
+carries `/os/operator/submit` as its `subject`, whoever initiated it. *Which
+door* is not an axis a rule can compare on today, so the row is `subject: "*"`
+and is either wholly on or wholly off.
+
+Shipping a **disabled** row grants nothing, so this is the third digit
+(`docs/development-rules.md` § 4). Pinned by
+`crates/meclaw-cells/tests/gh514_the_shell_is_a_scope_the_policy_can_reach.rs`,
+which reads the manifest out of the README, runs it through the real
+`seed_rows` door onto a real `cell.db`, and asks the shipped `policy` script for
+the verdict before and after.
+
+#### `shelf@1.0.2` / `builder@1.5.1`: a store answer says which leg it is answering, and the return lane is told to read it (GH #521)
+
+Measured on the verification run of GH #513, on a throwaway colony booted from
+the fixed library. With both wire contracts published, the composer drew the
+**two-phase dedupe** a store that ships no constraints forces — ask the shelf
+what it already holds, then insert what is new — and guarded the way back like
+this:
+
+```json
+{"from": "./dedupe", "to": "./shelf", "condition": "hop.route == 'select'",
+ "modifier": {"set_context": {"pending_items": "hop.pending_items", "phase": "'select'"}}}
+{"from": "./shelf",  "to": "./dedupe", "condition": "has(context.phase) && context.phase == 'select'"}
+```
+
+Every declaration legal, every emission valid, the shelf right every time — and
+**1 200 rows for 40 distinct links**, 30 rounds a tick, one `ttl_expired` to
+close it. `context` is PERSISTENT: `phase` was still `'select'` on the answer to
+the *insert*, so the answer to phase two came back in on phase one's lane, the
+script re-entered its own write branch, and the pair wrote until the TTL.
+
+**Nothing in the substrate was missing.** `hop` is single-hop and is REPLACED on
+every emission (`Headers::carry_context_with_hop`), so nothing the caller stamped
+on the way out survives the answer; `context` is carried and is therefore
+identical on both legs. The one field on a store answer that names its leg is
+`hop.operation`, and the store has written it unconditionally — the error surface
+included — since GH #331. What was missing was the sentence, in the two places a
+composer reads.
+
+**`shelf@1.0.2` publishes a `RETURN` line** beside `PORTS` and `ARGS`: which
+compartment can name a leg and which cannot, and the pair of edges that follows
+from it — the read leg guarded positively on `hop.operation`, and a
+`"default": true` edge beside it for every other answer, so the write receipt
+rides an edge instead of the dead-letter queue. A write answers `'insert'` when
+the message carried one call and `'bundle'` as soon as it carried more, which is
+why the rule names the READ leg. The row stays one catalogue chunk (3 936 of
+4 000 characters), so the line travels where it is read.
+
+**`builder@1.5.1` carries the same rule as `ROUND TRIP`** in the briefing, one
+level more general: a cell that asks and gets the answer back on the same lane
+tells the legs apart on a field of the ANSWER and POSITIVELY — never on a phase
+the outbound edge set, and never as *anything that is not a fresh request*. That
+second shape is the one `workshop/cookbook/reply-to-fallback-loops.md` is named
+after, and the shipped `builder-librarian/retrieve` already recognises its own
+second phase the right way (`hop.operation in ("search", "bundle")`) after
+looping there first.
+
+Measured side by side on two throwaway colonies, one tick each, the same feed:
+
+| return lane | messages | rows | distinct links | dead letters |
+|---|---|---|---|---|
+| `context.phase == 'select'` | 65 | 1 200 | 40 | 1 × `ttl_expired` |
+| `hop.operation == 'select'` + `default` | 8 | **40** | 40 | **0** |
+
+Pinned by `crates/meclaw-cells/tests/gh521_a_store_answer_names_its_leg.rs`,
+which lifts the published condition out of the row and evaluates it, through the
+colony's own CEL, against the headers a real shelf answers a real `select` and a
+real `insert` bundle with — and runs the `context` form through the same
+evaluator against the same two answers, so the sentence about the loop is a
+measurement.
+
+#### `builder@1.5.1` / `member@1.4.0`: a chat gets its own session generation, and the answer is still routed by the node it came from (GH #522)
+
+One word was doing two jobs, and it could only be one of them at a time.
+`templates/builder/recipes`, `_channel_level`, promoted the **node name** into
+`context.channel`:
+
+```python
+"channel": "'%s'" % name,          # 'telegram'
+```
+
+`templates/session-keeper/README.md` describes that key as something else
+entirely — *"the channel identity (a Telegram/Slack `hop.chat_id`, a room, a
+phone number — whatever a surface calls the same conversation partner)"* — and a
+session is **keyed** on it. So on a grown topology every chat of one connector
+shared ONE generation: the idle clock, the nightly close and the session id were
+computed over the union of all of them, the firewall rate-limited them as one
+bucket, and the channel-local clause of the audience gate could never match a row
+recorded under a chat id.
+
+**Why the obvious repair was a regression**, and why [#517](https://github.com/mmeyerlein/meclaw/issues/517)
+split this out instead of making it in passing: the rendered set is three edges
+and the third is the answer's way back — `. -> ./<name>` — and `Edge.to` is a
+static path in this substrate, so it has to say **which** child of the container
+it is for (the address rule, [#454](https://github.com/mmeyerlein/meclaw/issues/454)).
+A `channel` carrying a chat id routes no answer anywhere and the agent goes mute
+on the surface it was reached on.
+
+**So the two meanings are two keys, and the return path is the half that moved.**
+
+| key | value on a chat channel | who reads it |
+|---|---|---|
+| `context.channel_node` | `'telegram'` — the node name | the **edges**: the channel's own way back, and `./assistants -> ./channels` one storey up |
+| `context.channel` | `has(hop.chat_id) ? hop.chat_id : ''` — the chat | the **holders**: `session-keeper` opens one generation per value, `firewall` keeps one rate bucket per value, `memory-hive` writes it down as the room and its audience gate has a channel-local clause over it |
+
+**The data decided which way round.** Every `channel` column any colony has ever
+written carries a chat id — `sessions`, `episodes`, `facts`, `entity_edges`, the
+firewall's `arrivals` — because the hand-drawn e9-era edge promoted
+`has(hop.chat_id) ? hop.chat_id : ''` and its answer edge carried no guard at all
+(its hive held exactly one connector). A colony that imports that history and
+then writes the node name into the same column has two referents in one column
+and nothing anywhere that says so.
+
+A **screen** renders the same word in both, and that is not an exception: a
+screen is one room, so its address and its conversation partner coincide. An app
+does the same for the screen it draws on.
+
+`member@1.4.0` follows at the two edges that ask whether a channel of this member
+owns a turn at all — `./assistants -> ./channels` on `answer` and
+`./apps -> ./channels` on `view` — which now read `context.channel_node != ''`.
+Asking whether the *chat* is non-empty happened to hold and stopped being the
+honest question. **Migration:** a hand-drawn topology that promotes only
+`context.channel` gets its answers out of the member instead of into its channel;
+add `context.channel_node` to the channel's ingress edge and move the way-back
+guard onto it (`templates/member/README.md` § *The two channel keys*).
+
+`templates/affinity/brief` reads `context.channel_node` first when it picks a
+channel persona: a persona is a property of the surface, and the old key would
+now hand it a chat id and drop the slot silently.
+
+**Version digits.** None of its own. `builder@1.5.1` was set one strand earlier
+in this unreleased wave by [#521](https://github.com/mmeyerlein/meclaw/issues/521)
+and `member@1.4.0` earlier still, when channels rose to the member level; this
+repair rides in both, and the blocks describe one shipped version of each
+(`docs/development-rules.md` § 4/4a, ruling O-5).
+
+Pinned by `crates/meclaw-cells/tests/gh522_a_chat_is_a_generation_and_a_node_is_an_address.rs`
+— the renderer for all three channel-shaped levels, two chats of one connector
+put through the **shipped** session keeper and opening two generations, and the
+answer of one of them reaching its connector while the sibling channel's way back
+stays shut. `gh517_*.rs` keeps the two halves pinned together from the other side.
+
+#### `memory-hive@3.1.0`: a German question reaches the index it is asking (GH #518)
+
+`tokens_of` in `templates/memory-hive/recall/config.json` cuts a question into
+the words the keyword leg searches with and the graph anchors start from. It
+split on
+
+```python
+re.split(r"[^0-9A-Za-zaeoeueAEOEUEss_-]+", text)
+```
+
+The tail of that class is the ASCII **spelling** of the German umlauts — `ae`,
+`oe`, `ue`, `ss` — every letter of which `A-Za-z` already covers. The class
+therefore added nothing at all, and the real characters `ä ö ü ß` fell into the
+**separator** half. Measured on the shipped script:
+
+| input | tokens |
+|---|---|
+| `Söhne` | `['hne']` |
+| `Straße` | `['Stra']` |
+| `Müller-Lüdenscheid` | `['ller-L', 'denscheid']` |
+| `Größe` | `[]` |
+
+A German word arrived at the matcher as a fragment or — once both halves fell
+under the three-character floor — not at all. `fts_match("Größe Höhe Fläche")`
+built the expression `"che"*`: one noise token out of three real words. On the
+index side the store's own tokenizer had been folding correctly all along
+(`unicode61` + `meclaw_stem_v1` case-fold and strip the diacritic on index text
+and query text alike), so the two sides simply stopped meeting. The graph leg
+went with it: anchors are matched against entity names **exactly**, and `hne`
+names nobody.
+
+The repair is the division of labour the store already documents — *fold once,
+in one place*. The recall lane cuts words and does not fold them, so the
+splitter is now the Unicode-aware word class (`[^\w-]+`), which is the exact set
+the broken class was reaching for minus the ASCII restriction. `unicode61` then
+folds the query text as it always folded the indexed text. No store change, no
+schema change, no index rebuild — the index side was never wrong.
+
+An all-ASCII query is byte-identical to before, token for token: the stop-word
+filter, the three-character floor, the hyphen and the underscore are untouched.
+The rule generalises past German — any script whose letters are not ASCII is
+searchable for the same reason. Pinned by
+`crates/meclaw-cells/tests/gh518_a_german_query_keeps_its_umlauts.rs`, whose
+drift lock holds the README sentence and the splitter together.
+
+#### A composite hive gives its conversation surface and its reasoning core two models (GH #516)
+
+`talky` and `cogny` both carry `"model": "${ctx.model}"` in their brain cell, and
+both are right to: standalone, each is THE agent of its instantiation. The
+`assistant` level references BOTH — one as its conversation surface, one as its
+reasoning core — and a level is instantiated with ONE flat `ctx`, so both brains
+resolved the same key and got the same model. Whichever model the core was given,
+the surface ran it too: every turn paid core latency for the half of the topology
+whose whole job is to answer fast, and the split the two-brain design exists for
+was gone with nothing in the tree saying so. Measured on a running colony: one
+turn, three model calls, 8.2 s + 4.9 s + 3.4 s.
+
+**Substrate.** The addressing existed and the substitution did not. A
+`cell.type: "ref"` marker has accepted `override_params` keyed by the referenced
+template's cell paths since GH #140 / #277, but `SubtreeTemplate::ref_overrides`
+is read off a template TREE and nothing gave it the instance-class pass every
+other value read off a template tree gets in `patch_and_substitute_config` — the
+mutation-diff side arrives pre-substituted, and the ref side had no equivalent.
+So a ref marker could hand a LITERAL down into the template it names but not the
+outer instantiation's own `${ctx.X}`: that token survived into the env pass and
+was refused there as an environment variable called `ctx.X`. It now takes the
+same pass, in the one place both staging paths merge the ref layer
+(`SubtreeOverrides::with_ref_defaults`), before the mutation's own
+`override_params` are layered on top. Environment tokens keep surviving literally
+(GH #20): a secret a ref marker passes down is still never materialised on disk.
+
+**Template.** `assistant/surface/config.json` names `${ctx.model_surface}` for
+the brain of the `talky` it references, and `assistant/template.json` grows its
+first `requires` block of its own to declare that key STRICT — a defaulted
+surface model would re-open the same silence one layer down. `model` and
+`model_fast` are NOT restated there: they are inherited through the ref chain,
+and restating them is the drift that declaration exists to remove (GH #292).
+Neither `talky` nor `cogny` moved — both stand standalone elsewhere and keep
+reading `ctx.model`. **`ctx` therefore carries three model keys, not two**, and a
+mutation naming only two is refused with `requirement_missing` before a node
+lands.
+
+The number did not move: `2.1.0` has not shipped, so it is extended rather than
+superseded — the same reading this level took for #464 and #475 inside this same
+unreleased wave, and the reason there is no pin round in this entry.
+
+#### The telegram connector types while a long turn runs (GH #515)
+
+A message arrived, the topology behind the connector spent seconds to tens of
+seconds producing an answer, and the chat stayed completely silent for that whole
+time. The first answer of a session tends to be fast and the next one slow, so
+the silence is not a constant a user calibrates to — it reads as a lost message.
+
+The `proxy` cell now calls Telegram's `sendChatAction` with `action=typing` the
+moment an inbound update is accepted, and repeats it every 4 s (the status decays
+after roughly 5 s) until the answer for that chat has gone out, or a 60 s ceiling
+is reached. Nothing is written into the chat — which is the reason it is
+`sendChatAction` and not a placeholder message: a connector that posts "still
+working" has changed the transcript the agent behind it reads back on the next
+turn.
+
+One keeper per chat at most, in the handler sub-task that sees both ends of a
+turn: a second message in the same chat replaces its predecessor's keeper rather
+than stacking a second one, `handle` cancels it after the `sendMessage` attempt,
+the ceiling ends a turn that never answers, and `Drop` aborts what is left. A
+failed chat action is logged and never costs the turn its answer; the four
+`error_code`s the connector emits are still the whole set.
+
+`chat_id` travels as a JSON **number** all the way to the Bot API, as it already
+did for `sendMessage`. No new params key, no new lane, no new contract — the
+behaviour ships with the substrate, so `telegram-connector` stays at `2.0.1`
+(`docs/development-rules.md` § 4: a caller can do nothing it could not do
+before, and there was no promise to repair; precedent GH #468, which changed the
+same cell's behaviour and its README without a version event).
+
+- **`builder-librarian@2.1.1`: a catalogue row travels whole, and any row that
+  does not says so (GH #511, and with it GH #508).** `retrieve` rendered every
+  hit as `text[:1200]`: silent, mid-word, and the same number for every kind.
+  Counted over the shipped corpus that cut **330 of 603 rows — and 80 of the 87
+  catalogue rows**, which is the class where it did the damage. A catalogue row
+  is `CONTRACT —`, `STORES —`, `PARAMS —` and then the whole `template.json`,
+  and `description.examples` is the LAST key of every one of them, so the cut
+  landed every time on the only place a template's worked instantiation is
+  published.
+
+  Measured end to end: a wish naming `clock` looked it up three times, got the
+  identical cut row back each time — `schedules` 0, `emit_to` 0 — correctly read
+  the corpus as exhausted (the briefing says *looking is done when a call
+  answers the way an earlier one did*), and then guessed:
+  `override_params['interval_ms']` refused, `override_params['cron']` refused,
+  a `schedules` entry without the `emit_to` the door requires. Eight and nine
+  rounds across two runs, one and two repairs, 0.40 and 0.56 USD, and the last
+  draft worse than the second.
+
+  The window is now **per kind**, and both halves are named knobs beside
+  `BUILDER_LIBRARIAN_TOPK`: `BUILDER_LIBRARIAN_CATALOGUE_CHARS` (`4000`, the
+  corpus chunker's own cap) for a `kind: "template"` row, so a catalogue row is
+  bounded by the discipline that WROTE it rather than cut a second time on the
+  way out; `BUILDER_LIBRARIAN_ROW_CHARS` (`1200`) for everything else, because
+  `librarian_search` is a recall question and the round budget is what limits
+  it (GH #485). A row that still does not fit is cut on a **word boundary** and
+  carries a marker that counts what it dropped — the `-cont` discipline of GH
+  #344 on the retrieval side: *a fragment a reader knows is a fragment is a
+  different object from one it does not*.
+
+  **GH #508 falls with it**, measured on the same wish against
+  `anthropic/claude-sonnet-5`: **two rounds, 0.05 USD, no repair**, and an
+  `override_params` that is the worked `schedules` entry the row publishes,
+  with the guarded edge that re-stamps the tick onto `in_sweep`. The design lane
+  was never failing to look; the answer was arriving cut in half. Pinned by
+  `crates/meclaw-cells/tests/gh511_a_cut_row_says_it_was_cut.rs` and by the new
+  scenario case `S14` in `workshop/evals/builder-scenarios`.
+
+  **Version digits.** None of its own. `builder-librarian@2.1.1` was already
+  set by GH #505 earlier in this unreleased wave, and this repair rides in it;
+  the two blocks describe one shipped version (`docs/development-rules.md`
+  § 4/4a, ruling O-5).
+
+- **`builder@1.5.0`: the briefing shapes the two REMOVING keys instead of only
+  naming them (GH #510).** GRAMMAR published the entry shape of `add_nodes` and
+  `add_edges` and said which keys do not exist. `remove_nodes` and
+  `remove_edges` stood in the head's list of eight diff keys and were shaped
+  nowhere — the same state `add_templates` was in before GH #482. Measured: one
+  wish (*"the editor's assistant may only use web_search"*), eight rounds, one
+  draft, no repair budget left. Everything about it was right — the scope, the
+  `.` root of GH #487, the removals drawn first, `web_search` kept — except that
+  a `remove_nodes` entry is `{"match": {"name": "<name>"}}` and not the path
+  string every other diff key in the same manifest takes:
+  `remove_nodes[].match.name missing`, once per entry, eight of them.
+
+  GRAMMAR gains the two shapes in the voice of the two adding ones, the sentence
+  that keeps them apart (*a node is matched by its NAME, an edge by its two
+  ENDS*), the three facts the door enforces — a removal does not cascade in the
+  edge table, a hive cannot be addressed by `remove_nodes` at all, and every
+  pattern must hit something or the whole manifest falls with `match_no_hit` —
+  and the half a tool restriction loses when only the cells go: the name stays
+  in the caller's `params.tools` and comes back `unknown`. The drift lock reads
+  the head's vocabulary against `DIFF_OPERATIONS`, the door's own list, and
+  drives the removing claims through `validate_remove_edges`.
+
+  **Version digits.** None of its own. The change landed while `builder` stood
+  at 1.4.3 and rides in the `builder@1.5.0` GH #504 raised later in the same
+  unreleased wave; the two blocks describe one shipped version
+  (`docs/development-rules.md` § 4/4a, ruling O-5).
+
+- **A refusal's details no longer carry the host path of the staging directory
+  (GH #507).** Since GH #502 the submitter's receipt carries the mutation door's
+  `details` verbatim, which is what makes a repair round able to act — and one
+  refusal class rendered `<colony root>/.staging/<mutation id>/<node>/config.json`
+  into that string. The staging directory is gone by the time the sentence is
+  read and is addressable by neither audience; what carries meaning is the node
+  name and the `params` pointer, both of which were already there. The path is
+  now rendered from the staged root down (`<node>/config.json:
+  params.<pointer>`), for `invalid_params`, `contract_incomplete` and the nine
+  seed-loader messages of the same shape. Both language versions of
+  `docs/meclaw-overview.md` said the message names the staged path and were
+  corrected in the same change.
+
+- **`builder@1.4.3`: a level declares itself AT the container it grows into, so
+  the first organisation of a colony is buildable through the front door (GH
+  #503).** `recipes/grow_level` rendered every level one storey too high: the
+  declaration's scope was the container's PARENT and the container travelled
+  inside the node name (`{"scope": "/os", "add_nodes": [{"name": "orgs/acme"}]}`,
+  `./orgs -> ./orgs/acme`). For every level but one that is invisible — a member
+  is grown at `/os/orgs/<org>`, an assistant one storey below that, and both lie
+  under the prefix the shipped broker rule allows. The FIRST organisation of a
+  colony does not: its scope root is `/os`, and
+  `templates/access/store/seed/policy.jsonl`'s `colony.mutate.default` carries
+  `scope_match.scope_prefix: "/os/orgs"`.
+
+  Measured on a colony grown from `examples/meclaw-os/seed-ref`, one wish at
+  `/os` on `in_build` with `auto_submit`: the front answered
+  `requester_not_permitted`, `mutation_log` stayed empty, and the very same
+  manifest applied by an operator committed. So every colony's first
+  organisation was an operator act — the one step of a two-stage build that
+  cannot be drawn.
+
+  Since [#487](https://github.com/mmeyerlein/meclaw/issues/487) `.` resolves to
+  the declaration's own scope inside `add_edges`, so the narrow spelling is
+  drawable at all: scope `<parent>/<container>`, a bare node name, edges `.` ↔
+  `./<name>`. **Every level renders it**, and the absolute edges are identical
+  to the byte — nothing in a grown topology changes, only the scope root the
+  broker judges. Re-measured on the same colony and the same wish, through the
+  front and with no operator act: `mutation_log` scope `/os/orgs`,
+  `add_nodes[0].name "acme"` (`org@1.3.0`), 17 `add_edges` from `.` to `./acme`,
+  status `committed`, and the broker's own audit row `colony.mutate` /
+  `colony.mutate.default` / outcome **`checked`** for subject
+  `/os/operator/submit`.
+
+  **One exception, and it is measured rather than chosen.** A `subscribe` wish
+  keeps the wide declaration at the member: `./affinity` is a SIBLING of
+  `./assistants`, `..` and absolute paths are refused in an edge endpoint, and
+  splitting the door into a second declaration does not survive
+  `templates/submit/gate` either — it accepts an `in_pack` edge only when the
+  target is under the requester or is created by that same declaration
+  ([#479](https://github.com/mmeyerlein/meclaw/issues/479)), and a declaration
+  that only draws edges creates nothing (measured: `subscribe_target_not_self`).
+  It costs nothing reachable: an assistant is grown under `/os/orgs/…` in either
+  form.
+
+  Both generators of the container set moved together, or the comparison
+  between them would have stopped being one:
+  `examples/memory-import/build_import.py` writes the narrow form and declares
+  at `<scope>/members`, and
+  `gh470_a_grown_container_level_carries_its_export_lanes.rs` still holds the
+  two element for element. The six `examples/organism/grow-*.json` were
+  regenerated from the shipped renderer rather than edited;
+  `grow-screen.json` became a three-declaration manifest, because a screen
+  (`<member>/channels`) and an app (`<member>/apps`) no longer share a scope
+  root. Pinned by
+  `crates/meclaw-cells/tests/gh503_a_level_declares_itself_at_its_container.rs`,
+  which reads the prefix out of the shipped policy row and asserts that the old
+  scope root is NOT under it.
+
+- **`collector@3.3.1` / `cogny@4.3.1`: the derived tool menu stops deleting the
+  two tools the collector serves itself (GH #512).** Since GH #464 a collector's
+  menu is asked for rather than typed, and it is written into the brain's own
+  `system.tools` with `$replace` — a menu upserted leaf by leaf would keep every
+  declaration the collector has since dropped, durably. Two names on that menu
+  are not the parent's: `memory_recall` is answered by the collector out of its
+  own recall port and `thread_recall` out of its own slate (GH #55, GH #451), no
+  tools hive has — or could have — a declaration for either, and they shipped as
+  SEED rows in the brain's `cell.db`. A seed is written once, at birth. The
+  first tick replaced the subtree.
+
+  Measured on three grown colonies of the same shape: the brain held
+  `web_search` and `web_fetch` and nothing else, the `menu` receipt in the trace
+  said `menu_count: "2"`, and the whole recall chain below the agent — the
+  dispatcher edge on the tool name, the collector's `recall` exit, the assistant
+  level, the member, the memory hive and the `in_bundle` way back — was wired,
+  complete and idle. A question posted straight at the member's `in_recall` door
+  answered correctly out of the hive; a turn that asked the agent the same thing
+  produced no recall hop at all and an answer saying its memory was not
+  reachable, which was true and never tested.
+
+  The declarations belong to the cell that answers the calls. `collector@3.3.1`
+  holds them and adds them to every menu it writes — **after** the empty-menu
+  guard and never instead of it, and never over a name the hive itself answered
+  (a parent that wired a real cell behind `memory_recall` has overridden this
+  one). What came from the collector rather than from the hive rides on
+  `hop.menu_self`. Which of the two a given collector declares is not a new
+  knob: it is the two switches that already decide whether the lane is answered
+  at all instead of refused with a typed error — `memory_call_tier` and
+  `thread_recall`. `cogny@4.3.1` sets `memory_call_tier` to `""`, because it
+  routes no `memory_recall` edge: its memory leg is the ambient bundle of
+  `params.memory_tier`, and a call would have left through the guarded default
+  and died at a tools hive that never heard of the name. Its `thread_recall`,
+  which it does route, is declared to both of its brains for the first time —
+  neither of them ever carried a seed row for it.
+
+  A repair is the third digit (`docs/development-rules.md` § 4), including the
+  one it adds. Pinned by
+  `crates/meclaw-cells/tests/gh512_the_collector_declares_the_tools_it_answers_itself.rs`
+  over the shipped assembler and one booted colony with no seed anywhere in the
+  tree.
+
+- **`add_templates` refuses a class with no root `config.json`, at the entry
+  that declares it (GH #509).** Every instantiable template in the tree carries
+  a `config.json` at its root — the cell for a single-cell class, the hive with
+  its `params.graph` for a composite. The registration did not require one. A
+  class without it was staged without complaint, and the manifest was refused
+  one phase later with `template_missing`, naming the NODE and the class the
+  same manifest had just registered.
+
+  Reproduced model-free, two controls, one manifest each, same scope, same
+  `add_nodes` and `add_edges`: `{template.json, config.json}` committed;
+  `{template.json, fetch/config.json, parse/config.json}` came back
+  `post_state_addresses/template_missing probe-ctrl-sub2: ctrl-sub2`. Measured
+  first from a prose wish -- *register a template that brings its own code cell
+  for parsing ICS calendar feeds and grow one under the editor* -- which spent
+  six rounds writing a correct one-manifest `add_templates` + `add_nodes` +
+  `add_edges` and was told that the class in its own diff does not exist.
+  Nothing is repairable from that sentence.
+
+  **`builder@1.4.2`** carries the other half: the TEMPLATES block said "a
+  template.json ... plus one config.json per cell", which a two-cell class
+  answers with two `config.json` and no root. It now names the root file as an
+  obligation and says what it is.
+
+- **`builder-librarian@2.1.1`: the catalogue publishes the params a template's
+  cells accept (GH #505).** A catalogue row leads with the demands an operation
+  owes: `CONTRACT —` is what an instantiation owes (GH #292/#347), `STORES —`
+  is what a `seed_rows` owes (GH #483). `override_params` is the third demand of
+  exactly that shape — the same door, the same pre-destructive refusal — and it
+  was unpublished. For the four blank single-cell templates of GH #482
+  (`clock`, `fetcher`, `scriptlet`, `shelf`) the param surface is the *whole*
+  interface: they exist in order to be overridden, `scriptlet`'s logic is
+  `script_inline` and `shelf`'s table is `schema`, and a catalogue naming
+  neither does not describe them at all.
+
+  Measured on a design run that wanted a periodic feed. The lane named
+  `clock@1.0.0` correctly, read a row saying the cadence is an `override_params`
+  entry, and found no param name in it. Round one wrote `interval_ms` and was
+  told *"names no param of timer in template `clock`. Its params are:
+  `query_timeout_ms`, `schedules`"*; round two wrote `cron` and got the same
+  refusal; round three set `schedules` and lost the entry on
+  `params.schedules[0]: emit_to: required`. Three rounds guessing at a set of
+  two names the door prints every time it says no.
+
+  Every catalogue row now carries a third line. On a single-cell template it is
+  the FLAT form — *"`clock@1.0.0` is ONE cell (`timer`), so `override_params` is
+  FLAT — the params object itself, not keyed by cell path: query_timeout_ms,
+  schedules[]{schedule_id, schedule_name, cron, emit_to, emit_body,
+  emit_headers}"* — and on a subtree it is the ADDRESSED form, one
+  `<cell path>: <keys>` entry per cell with `""` for the template root, which is
+  the address `override_params` uses. Param names are rendered in the order the
+  refusal renders them, so the corpus and the door read as one list. A `{…}`
+  suffix is the key shape of the value the template SHIPS and the line says so:
+  what is required *inside* a param value is enforced by the cell (round three's
+  `emit_to`), lives in no declaration a generator can read, and is not guessed
+  at here.
+
+  The line is budgeted, not truncated. `retrieve` hands the model `text[:1200]`,
+  so the cell list is cut at a whole CELL until the whole line ends inside that
+  window, with 250 characters reserved for the descriptor beneath it — a list
+  whose tail falls past the cut reads as the complete set of cells and is not
+  one, which is the silent-delete shape of GH #344. What a cut leaves out moves
+  into `kind: "params"` rows of its own, paginated at a whole number of cells:
+  18 templates need one, 23 rows in all. Corpus 578 → 603 chunks.
+
+  Pinned by
+  `crates/meclaw-cells/tests/gh505_the_catalogue_publishes_the_params_a_cell_accepts.rs`,
+  which derives every cell and every param from the template tree, requires the
+  line to end inside the retrieval window, and requires the `params` rows to
+  carry everything the line cut.
+
+- **`submit@2.2.1`: a refused manifest keeps the one sentence that says why (GH
+  #502).** The mutation door computes a precise reason for every refusal and
+  answers with it in `details`; the submit hive promotes the whole reply into
+  `context.sub_carry`, and the gate's receipt renderer read `outcome`,
+  `applied`, `error_code`, `failed_at` and `remaining` out of that carry and
+  stopped there. What the requester got back named the class and the position
+  and never the key.
+
+  Measured against a live colony, one wish, three repair rounds. The door, asked
+  the same manifest directly: *"`override_params['interval_ms']` names no param
+  of timer in template `clock`. Its params are: `query_timeout_ms`,
+  `schedules`"*. The receipt for the same manifest: *"manifest refused at
+  position 1: schema (0 applied, 0 untouched)"*. The composer repaired blind
+  three times, produced three different digests, and each one came back with
+  that identical sentence — a repair round can only act on the part that was
+  dropped. This is the shape of GH #483 one operation later: there the catalogue
+  did not publish what it enforced, here the door published it and the receipt
+  threw it away.
+
+  The reason now rides behind the existing sentence, verbatim and additive: no
+  new `error_code`, no changed header key, a refusal that carries no `details`
+  reads byte for byte as it did, and a committed manifest says nothing new.
+
+- **`builder-librarian`'s generator produces the tree that ships again.** The
+  template is a build product of `workshop/tools/build_librarian.py`, and two
+  waves of hand-edits never reached it: the retrieve cell's name appeal and its
+  `results[]` leg (GH #482), and the whole `catalogue` cell with the five edges
+  of its reconciliation round trip (GH #496). The export gate reported it as
+  R11 drift -- by path, which is exactly what that check is for -- and a bare
+  rerun of the generator would have written the older tree back over both. The
+  generator now carries all three cells, the hive contract and the published
+  prose; `--check` is byte-clean over five products.
+- **A `web`-cell test no longer races the kernel for the port it was given.**
+  Seventeen test files carried the same four-liner — bind an ephemeral port,
+  read the number, drop the listener, hand the number to a cell that binds it
+  again — and between the drop and the second bind the port belongs to nobody.
+  Measured red once as
+  `web_cell_assets::a_path_that_is_neither_page_nor_asset_stays_the_same_404`:
+  the cell loses the bind, keeps running listener-less by design (GH #410), and
+  the test waits out its whole deadline for an answer that cannot come. The
+  thief is usually not another listener at all — `bind(…, 0)` draws from
+  `ip_local_port_range`, the same pool every OUTGOING connection draws from, and
+  these tests make a lot of requests. The four-liner is now one helper,
+  `meclaw_testing::free_port`, which hands out ports from a band **below** the
+  ephemeral range (so no `bind(…, 0)` anywhere on the machine can land on one),
+  probes each candidate, remembers what it already gave out, and starts its scan
+  at an offset derived from the pid so two test processes do not walk the same
+  ports in the same order. No test was quarantined and no retry was added.
+- **Two boot-path `expect()`s from GH #491 are gone.** The durable dormancy
+  marker wrote its row through `send_registry_dormant`, which sits **inside the
+  colony task** and read the clock with an `expect` — a panic there takes every
+  cell down, and the hot path is panic-free by invariant. It falls back to `0`
+  now. Its caller in `bootstrap_apply` panicked on a closed colony inbox and on
+  a missing acknowledgement; both are `tracing::error!` lines instead, which is
+  what the boot path can act on. The unwrap/expect ratchet is back at its pin.
+- **A numeric hop key binds as an `int`, so `hop.http_status == 200` can be true
+  (GH #500).** It could not be. The substrate bound the two header compartments
+  into CEL through serde, and `serde_json::Number` serialises every non-negative
+  integer as a `u64` — so a `200` in a header arrived as a CEL `uint`, and CEL
+  equality across `uint`/`int` is `false` in both directions. The comparison
+  produced no error and no advisory: the edge simply never fired, and the
+  emission dead-lettered as `no_route` while the dead letter's own header showed
+  the very `200` it had just been compared against. What made the class
+  expensive to find is that ordering was cross-type all along — `> 100` was
+  true, `== 200` was not, and nothing said why. A number now binds as the CEL
+  type the CEL spec gives a JSON number: `int` while it fits `i64`, `uint` only
+  above `i64::MAX`, `double` otherwise, and the same mapping applies inside
+  lists and objects and to a modifier's expressions as much as to a condition's.
+  Two consequences for topologies written before this: the range form
+  (`>= 200 && < 300`) and the `int()` cast on a loop counter stay valid
+  unchanged — the cast is an identity now, not a requirement — while a
+  `u`-suffixed literal (`== 200u`), which used to be the only spelling that
+  worked, no longer matches an int-bound number. Whoever wants unsigned
+  semantics on purpose casts the compartment instead of suffixing the literal
+  (`uint(hop.k) == 200u`); no shipped template or example spells one, and a
+  sweep keeps it that way.
+
+- **The interior round-trip marker stops at the rim, in twenty hives (GH
+  #494).** GH #481 (`access`) and GH #490 (`submit`) were two instances of one
+  construction, and a structural sweep of the shipped tree found it everywhere:
+  a hive has no `cell.db`, so a cell that must remember which round trip an
+  answer belongs to promotes a marker to **context** on one of the hive's own
+  edges — `<name>_origin` plus a phase and a carry is the shape the library
+  converged on. Context is persistent for the life of a chain and nothing
+  removed those keys again, so a marker left a sealed hive on the answer and
+  rode on the caller's next message; the cell that reads the marker *before* it
+  reads the inbound lane then dispatched a stranger as its own echo. Measured
+  rather than assumed: `workshop/tools/hive_context_sweep.py` reads every
+  shipped `config.json`, lists the keys each hive sets on its own edges and the
+  exit edges (`X -> .`) that do not clear them, and found **95 leaking exit
+  edges in twenty templates** — `affinity`, `argus`, `assistant`, `canvy`,
+  `cogny`, `collector`, `daily-digest`, `display`, `egon`, `firewall`,
+  `llm-registry`, `meclaw-os`, `memory-drain`, `memory-hive`, `operator`,
+  `receptionist`, `research-assistant`, `session-keeper`, `slack-agent`,
+  `steward`. Every one of them now clears its own interior keys with
+  `delete_context` on **every** exit edge, which is the second half of the pair
+  `access` and `submit` already carry; nothing else about any of them moves, no
+  lane is added or removed, and no condition changes. Two exemptions, both
+  **named** rather than inferred, and both asserted so they cannot rot into
+  prose: the context vocabulary the templates pass *between* hives on purpose
+  (`session_id`, `turn_id`, `channel`, `audience_set`, `iter`, …), and three
+  keys a round trip *out* of a hive has to bring back because the answer
+  re-enters through a door that does not re-establish it
+  (`assistant`/`tool_caller`, `cogny`/`consult_class`, `meclaw-os`/`sub_ask`).
+  The class is closed by
+  `crates/meclaw-cells/tests/gh494_no_interior_marker_leaves_a_hive.rs`, which
+  reads the shipped configs and fails on any exit edge that lets an interior key
+  out, and the rule is written down where a template author meets it
+  (`templates/README.md` § The hive boundary, authoring rule 5). `builder` and
+  `builder-librarian` carried the same construction and were named in the test's
+  deferred list; GH #499 closed them in the same wave, and the deferred list is
+  gone with it.
+  Third-digit bumps where the template was not already in this wave:
+  `canvy@2.1.10`, `daily-digest@2.0.3`, `egon@2.0.3`, `llm-registry@2.0.4`,
+  `memory-drain@2.0.6`, `receptionist@2.0.5`, `research-assistant@2.0.5`,
+  `slack-agent@2.0.3`, `steward@2.0.13`.
+
+- **Connectivity-derived inactivity is written down, so an island is still an
+  island on the second boot (GH #495).** Activity in this substrate is derived —
+  a node is active iff it is connected and its parent hive is active — and the
+  derivation was right and then thrown away. `registry.status` in `colony.db`
+  had two writers, and both wrote only about things somebody had *said*: the
+  declaration path (`add_nodes[].birth: "inactive"`) and the recompute, which
+  persists a **flip**. An **island** — a node derived inactive without anyone
+  declaring it — is in neither set: its registration wrote `active: false` into
+  memory and left the row at the `'active'` the INSERT seeds, and the recompute
+  that agrees with the registration produces no flip to persist. Since a boot
+  re-derives connectivity only for nodes that have **no** registry row yet, the
+  next boot read the stale row and believed it. Measured on a colony with a
+  mainland and a hive whose only edge is internal: boot 1 spawns two cells and
+  the island sleeps, boot 2 spawns four and the island runs. For an eager
+  long-running kind (`proxy`, `mcp`, `timer`) that is a real subprocess, a real
+  connection, a real poller that nothing in the topology is wired to.
+  - **The rule (ADR-0018):** a registration writes down the activity it
+    registers, and a recompute writes down every flip. Both halves, always. The
+    boot's inactive registration now writes `'inactive'` for every boot-inactive
+    cell rather than only a declared one; the mutation's activity gate writes it
+    for the whole arm it guards — the gate keys on `would_be_inactive`, so a
+    cell a mutation merely *derives* inactive lands there too — and every
+    subtree cell, all of which are registered inactive, gets the row, with step
+    10b appending its `'active'` for the ones it flips to the same write buffer.
+  - **Untouched, deliberately:** the connectivity model (islands inactive,
+    `add_edges` the wake, `remove_edges` the sleep, no `activate` operation and
+    no new diff op); the Instanziierungs-Grace of GH #89, since an edge-less
+    cell is registered *active* and reaches none of these sites; `failed`, a
+    third value of the same column that `'inactive'` never overwrites; and the
+    durable dormancy marker of ADR-0017, which only a **declared** sleep
+    receives — a derived one is asleep for the ordinary reason, its edges, and
+    any recompute that finds it connected may still wake it.
+  - **Proof:** `gh495_a_derived_island_stays_asleep.rs` — three boots. The
+    island sleeps on boot 1 and on boot 2; an `add_edges` crossing into it wakes
+    it and boot 3 finds it awake; a cell grown into the sleeping island by
+    mutation is persisted asleep and stays asleep on the next boot; and the
+    edge-less Grace cell boots active both times. With the fix reverted, exactly
+    the three island tests go red and the Grace one stays green.
+
+- **An `mcp` cell no longer panics against an address nobody chose (GH #489).**
+  Growing an assistant from the shipped catalogue produced a colony with a
+  permanently `failed` cell in it — not on the boot that grew it, but on the
+  next one. The `tools` hive ships an `mcp` occupant whose endpoint was written
+  `${MCP_ENDPOINT:-http://127.0.0.1:8765/mcp}`, a guessed loopback address no
+  machine serves; the cell's http I/O task panicked on `initialize`, the
+  supervisor restarted it five times and then retained the entry as `failed`.
+  An operator reading `/colony/registry` after a routine restart met a failure
+  and had to learn that it was the expected state, which is the shape
+  `docs/development-rules.md` § 2c exists against.
+  - **The substrate half:** an `mcp` cell whose `endpoint` is absent or empty
+    now names the state instead of dying in it. It spawns, holds its `cell.db`,
+    runs **no** handshake, holds no client, and answers every round — the
+    discovery round `__list_tools__` included — with the new `error_code`
+    `"endpoint_unset"`. An empty value and an absent one still land in exactly
+    one state, which was GH #270's rule and is kept; what changed is that the
+    state is a named idleness rather than a spawn refusal. The `stdio`
+    transport keeps its loud reject for an empty `command`.
+  - **The panic stays where it belongs.** An endpoint that WAS named and does
+    not answer still panics, still restarts five times and is still retained as
+    `failed`: that is a real fault and the panic is its supervision signal
+    (`mcp_init_failure_restart_to_failed.rs` is untouched). What was wrong was
+    shipping a cell awake and pointed at a guess.
+  - **The template half:** `tools`' `mcp` occupant carries no default endpoint
+    any more (`${MCP_ENDPOINT:-}`), and its own prose no longer claims that
+    being an unwired island is what keeps it quiet — derived island inactivity
+    is a first-boot state that is not persisted, so a restart brings such an
+    occupant up anyway. The empty endpoint is what makes that harmless.
+
+  Pinned by
+  `crates/meclaw-cells/tests/gh489_an_unnamed_mcp_provider_is_idle_not_failed.rs`.
+- **`submit@2.2.0`: the second and third capability question can be answered,
+  and the identity door goes through the front.** A manifest that needed more
+  than one question was refused with `submission_check_failed` — *"the permitted
+  manifest is no longer parked -- nothing was submitted"* — after the broker had
+  answered `allowed`, with the row still parked and nothing having deleted it.
+  The submitter keeps two round trips it does not control, one to its store and
+  one to the broker, and both were recognised out of the same key space. The
+  store answer is marked by `sub_origin`/`sub_phase`, promoted to **context** by
+  the hive's own interior edge — and context is persistent for the life of a
+  chain while a cell emission inherits the context it was handling, so a
+  question asked from *inside* the un-parking branch left the hive wearing the
+  store's marker and its verdict came back wearing it too. The gate read a
+  broker verdict as a store row, found no row in it, and reported a parked
+  manifest as lost. It was **structural, not a missed case**: the first question
+  is asked while the phase is `written`, which is not in the read set, so its
+  verdict falls through correctly — every later question is asked from a phase
+  that *is* in the read set, and no phase value exists that is not. Any question
+  after the first was therefore unanswerable, which is why a `subscribe: true`
+  level (GH #458, GH #473, GH #479) could only ever be grown through
+  `/colony/mutations`, which asks nobody, and never through the submission
+  front. Two rules hold it now, each sufficient alone, and they are the pair
+  `access` needed one level down in GH #481: all three edges from `./gate` to
+  the rim clear `sub_origin`/`sub_phase`/`sub_carry` with `delete_context`, so
+  an interior marker never leaves the hive; and a delivery on
+  `hop.route == 'in_verdict'` is a verdict whatever the context carries, a store
+  answer having no `hop.route` at all. The **correlation itself stops being a
+  phase**: an ask mints its own id, `ask.<capability>.<nonce>`, and `access`
+  answers with a `tool_result` whose id is the id of the `tool_call` that asked
+  — so the question a verdict belongs to is read off the broker's echoed
+  `capability` first and off that id second, and the phase is left to say the
+  one thing it can say, which is how far the parked row has got. The questions
+  are a table in the script — capability, predicate, phase — so a fourth one is
+  one row and nothing else. **Nothing is granted that was refused before**: the
+  fix only makes the answers arrive, and `code.author.default` still ships
+  `enabled: 0`. **Why nothing was red:** every case handed the gate a finished
+  verdict in a context no store round trip had ever touched, so the one thing
+  that breaks it — a question asked *after* another one — was never driven
+  (GH #490).
+- **`.` names the scope root in a mutation, as it always has in a template
+  graph (GH #487).** `{"from": "./firewall", "to": "."}` is the ordinary
+  spelling of *a lane that leaves this level*, and the boot path has always
+  resolved it — `Path::resolve`, "stay at the sender". `add_edges` refused the
+  same string: `edge_schema`, `to='.' unknown`. It is not a corner of the
+  catalogue but its idiom — **277 of the 561 edges the shipped templates
+  declare, across 31 templates** — so it is the spelling a model reading the
+  library for examples copies, and the one a human transcribing an existing
+  graph types. Both then got a refusal naming a token that is legal three files
+  away. The topology was never unreachable: the same lane is drawable from the
+  parent scope, naming the level by its relative path. The cost was the spelling
+  *and* a scope — an edge out of a level had to be declared at the level's
+  parent, which widens the declaration's `scope_root` and therefore what the
+  broker is asked to permit. Wiring one member's exit lane asked for the
+  organisation. **The fix is one namespace decision**
+  (`mutation::validate::scoped_name`): `.` — and the `./` that means the same —
+  classifies as the declaration's own `scope`, an absolute path, and is looked
+  up in the namespace absolute paths live in. Nothing else moved. The apply arm
+  never had the defect, because it resolves endpoints with the very
+  `Path::resolve` the boot path uses, and so do the header-view mirror, the port
+  boundary and the hive contract; validate was the one reader asking the wrong
+  namespace. `remove_edges` reads the same vocabulary, pre-destructively, and
+  containment was never in the way — a scope contains itself. **The declaration
+  is not rewritten, and that is deliberate.** A manifest is parked under the
+  sha256 of its own canonical bytes and submitted by that digest, so a person
+  says yes to bytes and the submitter refuses anything whose bytes changed on the
+  way; canonicalising the spelling before the digest would make the digest
+  describe a document nobody was shown, and would move the digest of every
+  manifest already parked. `.` is therefore resolved at the point of use and
+  never in the document — `mutation_log.payload_json` keeps the caller's own
+  spelling — which also means no migration and no change to any existing log
+  row. Two spellings of one node have two digests; `./a` and `a` have had that
+  property since Befund 6. **What it does not do:** a scope whose root is no
+  registered node — neither a cell nor a hive scope — still refuses with
+  `edge_schema`. This widens the vocabulary; it invents no node.
+
+- **`access@2.4.1`: the broker answers the question it was asked.** The SECOND
+  capability question of a submission was always refused — `capability_unknown`,
+  stamped with the capability and the `call_id` of the FIRST question, and the
+  `policy` table was never read for it at all. `submit/gate` asks up to three
+  check-only questions per manifest, sequentially on one message chain, and
+  `code.author` is the only one ever asked second: the whole path *a manifest
+  brings executable behaviour with it* was therefore unreachable in a running
+  colony no matter what the rows said, and had been since it was built. The
+  cause is the hive's own memory used one step too far. A `code` cell has no
+  `cell.db`, so `./policy` recognises its store round trip by `access_origin`,
+  `ac_phase` and `ac_carry`, promoted to **context** by its own interior edge —
+  and context is persistent for the life of a chain, so nothing removed them
+  again. They survived the round trip, the `grant` emission, the trip out of the
+  hive and the caller's next move; the second request arrived already looking
+  like the first one's echo, and was answered out of the first one's carry
+  without a `select` ever going out. Two rules now hold it, each sufficient
+  alone: a delivery on `hop.route == 'in_request'` / `'in_invoke'` is a REQUEST
+  whatever the context carries (a store or vault answer carries no `hop.route`),
+  and all three exit edges clear the four interior keys with `delete_context`, so
+  the markers no longer leave a sealed hive at all. `./invoke` carried the same
+  defect in two shapes — a caller's own `hop.operation`, and an `access_lane`
+  left over from an earlier vault round trip — and both are closed by the same
+  line. **Nothing is granted that was refused before**: the fix only makes the
+  question get asked, and `code.author.default` still ships `enabled: 0`. **Why
+  nothing was red:** every `access` test drives the shipped script directly or
+  hands the gate a finished verdict, and the cause is an EDGE — no case sent two
+  questions in a row over the hive's real edges, and none submitted a manifest
+  with `add_templates` through the living broker (GH #481).
+- **`builder@1.4.1`: a second member in one organisation is a second ADDRESS.**
+  `grow_level` renders a container level — an organisation, a member — with six
+  doors down into the child, and every one of them was guarded on the lane
+  alone: `has(hop.route) && hop.route == 'in_turn'`, and nothing else. Edges fan
+  out, so the moment a container holds two children each message on such a lane
+  is delivered **twice** — two inferences, two costs, a turn in the memory of a
+  member it has nothing to do with, an `in_export` addressed at one member that
+  exports all of them, and an `in_build_result` that reaches every member of the
+  organisation. Measured on a throwaway colony with two members under one
+  organisation: one turn in, both members answered. The six doors now carry the
+  child's own name beside the lane — `context.member` for a member, `context.org`
+  for an organisation — in the **permissive** form `(!has(context.member) ||
+  context.member == '<name>')`. Permissive, because nothing in a grown topology
+  promotes either key today and a strict guard would have stranded every running
+  colony's turns at its container: without the key the delivery is exactly what
+  it was, with it, the message reaches one child. It is the form the same
+  renderer already writes for `in_build_result` one level down, and the address
+  rule this template's own README publishes for `context.assistant`, read one
+  storey up. **Why nothing was red:** every colony ever grown out of this table
+  held exactly one member per organisation, and there an unguarded lane and an
+  address are indistinguishable — while the byte pin compares the renderer
+  against examples generated out of the same table, the blind spot of GH #470
+  one guard over. The second generator of that set,
+  `examples/memory-import/build_import.py`, carries the guard too, and the two
+  are still compared element for element (GH #478).
+- **`builder@1.3.3`: an operator-initiated build keeps its door across a broken
+  chain.** `meclaw-os` stamps `context.build_caller` (and `build_auto_submit`
+  beside it) once, at its rim, and the four edges out of `./builder` read them
+  back to decide between the operator's front door and `./orgs`. Neither key
+  survived the two things that break a build's message chain: a `/colony` eye's
+  reply, which starts a fresh trace and restores off the echoed tag only
+  `build_id`, `iter` and `repairs`; and a refusal on `in_receipt`, which arrives
+  on the submitter's chain by construction. Measured: an operator build whose
+  composer called `graph_read` had its answer delivered into an organisation and
+  ended as `hive_no_route`, while the same build calling `catalogue_lookup`
+  instead kept the key — which door the answer found depended on which tool the
+  model reached for. GH #460 had built the machine for exactly this, and two
+  things kept it from helping: the door was not one of `CALLER_KEYS`, and the
+  caller row was parked only when a `build_call_id` was named — an
+  operator-driven build has none, so the one build whose door could not be
+  recovered any other way was the one build that wrote nothing down. Both keys
+  now travel with the other four, and the row is parked whenever the context
+  names **any** of the six. The severity is the draft lane rather than the error
+  lane: an operator build that consults the graph and then *succeeds* delivered
+  its manifest into an organisation, and in a fresh colony `./orgs` is empty by
+  construction — a silent dead letter, the failure GH #469 was opened to remove.
+  **What this does not reach** is the fast lane: `recipes` writes no row, so a
+  refusal to a model-free build has neither a caller row nor a digest binding to
+  recover from, and giving it one would mean adopting it into the repair machine,
+  which hands the thread to a composer such a build never had. That is a design
+  question and it stays open (GH #480).
+- **`builder@1.3.1`: the design lane still knows the question in round two.**
+  `brief` runs once per build and everything after round 0 is assembled by the
+  fan-in out of the round table, so a turn that was never written into that
+  table existed nowhere one hop later. Two were not: the `user` turn carrying
+  the request, and the `system` tree carrying the grammar, the endpoint rule,
+  the scope line and the four tool schemas. Measured against a real model: the
+  composer opened with two `catalogue_lookup` calls — the first move the
+  briefing asks for — the fan-in closed the round, and the body that re-entered
+  `./compose` held two `tool_call` turns and two `tool_result` turns and
+  nothing else. The model answered by asking what it was supposed to build,
+  `normalise` named that `wish_incomplete`, and the build was over with nothing
+  having gone wrong anywhere. `brief` now parks both in one bundle over a new
+  `./brief -> ./transcript` edge, and emits that leg first — a multi-send is
+  dispatched in plain order, and the composer's answer still has to cross a
+  model, the dispatcher and a tool before the slate is read back. `weave` hands
+  them back on **both** routes that re-enter the composer, `fire` and `repair`:
+  the `user` row as a turn (`rebuild` already sorted `user` ahead of the
+  `assistant` of its round — the role was provided for in the sort key and had
+  never been written), the `system` row as the body's `system` slot rather than
+  as a turn. `draft` carries neither, because it leaves for `normalise`. **Why
+  no case was red:** every scenario case of the design lane drives a stub model
+  that answers by position and never reads its prompt, and a stub cannot notice
+  a missing question — § 2c one file over, where the lane has traffic and what
+  is empty is the prompt travelling on it (GH #477).
+- **`meclaw-os@1.5.0`: an operator can drive the baumeister.** The shell shipped
+  an authoring path no operator could reach: `./orgs -> ./builder` was the only
+  door into it, and the container beneath is empty by construction, so the FIRST
+  build of a fresh colony had no assistant to raise `build` and stage two was
+  reachable only by a manifest somebody wrote by hand. A draft asked for from
+  outside died as `hive_no_route` on its way back into the empty container. The
+  rim now carries `in_build`, the level's own door stamps `context.build_caller`,
+  and a draft asked for by an operator goes back to the front door as `in_submit`
+  — one submission door for a person and an agent alike, digest and gate and
+  broker included. The two `./builder -> ./orgs` edges carry the counter-guard,
+  so an assistant's round still goes home and an operator's is never delivered
+  twice. What the wiring buys is that a refusal is now an ANSWER: growing a first
+  organisation, whose manifest scope is necessarily `/os`, comes back as a named
+  `requester_not_permitted` from the shipped `colony.mutate.default` row instead
+  of as a silent dead letter — and growing the shell itself stays an operator act
+  at `/colony/mutations` (GH #469).
+- **`builder@1.2.1`: `grow_level` renders the edge set the container levels
+  actually have.** The table it rendered `org` and `member` from was written
+  before the member had a memory export and never followed it: thirteen edges
+  where both levels declare seventeen, so a member grown by the fast lane could
+  not be asked for its memory (`in_export`) and could emit neither the close
+  pass's receipt (`close_report`), nor the completion word of an export
+  (`export_done`), nor the receipt of an identity push (`pack_ack`). Nothing was
+  red because the byte pin compared the table against `examples/organism/grow-*.json`,
+  which are generated out of it; the second generator of that same set,
+  `examples/memory-import/build_import.py`, had it right all along, and the two
+  are now rendered and compared element for element in one test. `in_import`
+  stays without an edge at both levels — an import addresses the level's own
+  path, so a container edge could never deliver one (GH #470).
+- **`builder-librarian@2.0.8`: the corpus is rebuilt over the wave that moved
+  its sources.** The seed is a build product, not a statement — every chunk is a
+  COPY of a section of `docs/`, the cookbook or the template catalogue, and this
+  wave rewrote all three (`docs/rewiring` and the eighth mutation operation, the
+  new `argus`, `display`, `colony-view`, `operator` and `llm-registry` entries,
+  the moved `talky`, `builder`, `firewall` and `member` template descriptions).
+  `workshop/tools/build_librarian_seed.py --check` is green again over 507
+  chunks; a stale corpus is the failure mode GH #205 measured, and it is worse
+  than an absent one because the librarian answers it with the same confidence.
+- **The `builder-librarian` version follows the tree.**
+  `workshop/tools/build_librarian.py` reads it from the shipped
+  `templates/builder-librarian/template.json` at run time instead of repeating
+  it as a literal, and `--check` compares against that same source. A hand-bump
+  on the template can no longer turn the export gate R11 red, and a rerun of
+  the generator can no longer write the old version back (GH #329 — the class
+  was red in the release cut before 0.26.0 and again before 0.27.0).
+- **The published tree no longer points at `plans/`.** 58 references in
+  exported files — four template READMEs, four template `config.json` doc
+  fields, `docs/meclaw-overview.md` and 25 crate doc comments — named plans,
+  receipts and fixtures under `plans/`, the one directory that never travels
+  with an export (rule R2), so every one of them was a dead link in the public
+  clone. Each now names a public anchor instead — a `CHANGELOG.md` section, a
+  `docs/` page, `.github/fixtures/`, `.github/gates/claims.tsv` or a GitHub
+  issue — or states the same fact without the unreachable path.
+- **An `llm` cell no longer drops the turn that asks for its credential.** A cell
+  with a `credential_grant_id` holds its bearer only in RAM, so the first
+  inference after every spawn and every wake found an empty pocket — and was
+  refused with `credential_pending` and never redelivered. It is now **parked**
+  instead: the triggering turn and everything that arrives while the sealed box
+  is in flight wait in a bounded in-memory buffer, the vault is asked exactly
+  once per round, and the batch is answered in arrival order when the box lands.
+  `credential_pending` survives as the receipt for the three ways the round
+  genuinely fails — the round runs out of the new `credential_wait_ms` (default
+  10000; the only signal a cell gets, because a broker refusal travels the
+  topology's error lane and never comes back), the delivered box does not open,
+  or the new `credential_wait_max` (default 16) is full — and then every parked
+  turn gets its own, in order. An overflow is receipted immediately, so the
+  buffer never grows past the bound. Both knobs have defaults, so no template
+  changes and no config has to name them
+  ([#457](https://github.com/mmeyerlein/meclaw/issues/457)).
+- **`builder@1.1.1`: the caller no longer loses the race between the eyes.** The
+  fan-in of a build round is decided by whichever leg arrives **last**, and it is
+  that leg's context which travels on. A `/colony` eye answers on a fresh trace,
+  so the re-entry edge restored the three coordinates the *loop* needs
+  (`build_id`, `iter`, `repairs`) and nothing the *caller* needs — a round an eye
+  won handed the requester a draft under an empty `tool_call_id`, and the tool
+  round that had asked for it never closed. `weave` now writes the caller down in
+  its own round table on the one leg that is always on the build's own chain (a
+  `caller` row, parked in the same bundle as the assistant turn) and reads it
+  back off the slate when a round is decided; `build_call_id`, `agent`,
+  `build_op` and `build_scope` ride the hop of every emission, present and empty
+  rather than absent, and all four lanes out of the fan-in lift them into the
+  context again. `orig_request` stays in the row and never on the hop: it is
+  prose, and the one cell that reads it re-sets it from its own hop on every
+  lookup. `weave`'s cell contract moves to 1.1.0 (four emitted hop keys, five
+  consumed context keys); no lane, no edge and no `error_code` changed
+  ([#460](https://github.com/mmeyerlein/meclaw/issues/460)).
+- **A builder acceptance case no longer orders a build into a path no template
+  provides.** The experiment case `F1` asked for a pipeline under
+  `/os/orgs/acme/apps`; `org` knows `members` and nothing else, and the catalogue
+  holds no empty container to place there — so the acceptance quota it feeds
+  measured the case rather than the builder. It now names the `apps/` container
+  a member ships, which the case's own `grow-member` step instantiates and the
+  member level already draws edges across. The earlier experiment cases keep the
+  old wording: they are a walked series, and re-pointing them after the fact
+  would compare two orders and call the difference a knob
+  ([#461](https://github.com/mmeyerlein/meclaw/issues/461)).
+- **`add_templates` no longer leaves a library entry behind when a later stage of
+  the same diff is refused.** The declaration used to `rename(2)` its staged
+  files into `{templates_root}/local/<name>/` immediately, so any refusal further
+  down the same mutation discarded the registry row and left the directory on
+  disk — and the retry was then refused by name until an operator removed it by
+  hand. The move now happens immediately before the commit flush, under a drop
+  guard that removes the mutation's own staging area on every path out,
+  committed or refused. Nothing compensating is deleted: the bad state is
+  unrepresentable rather than cleaned up, which is what the ruling on the issue
+  asked for. Within one diff a later entry still resolves what an earlier one
+  declared — it resolves against the staged copy — and two entries naming the
+  same template in one `add_templates` array are now refused pre-destructively
+  with `template_name_taken` instead of colliding at the move
+  ([#443](https://github.com/mmeyerlein/meclaw/issues/443)).
+- **A Telegram connector can be grown into a live colony without taking the bot
+  token away from the poller that is still answering.** A `getUpdates` token
+  permits exactly one consumer, so growing a channel used to start a second one
+  at birth; the workaround of the last rebuild was to edit `config.json` in the
+  target tree after the fact, which is the one build form this project does not
+  allow — that file is a bootstrap imprint written once, at instantiation. The
+  canonical form is now written out in `templates/telegram-connector/README.md`
+  and is two mutations through the door: `add_nodes` with `birth: "inactive"`
+  (GH #437) plus a placeholder credential and a `base_url` on a closed port lays
+  the node and its three edges down dark, and a `swap_nodes` carrying the real
+  `${TELEGRAM_BOT_TOKEN}` swings those edges onto an armed implementation. The
+  README's two manifests are not a paraphrase of the test: the test READS them
+  out of the README and applies them, so a recipe that stops working is red.
+  Nothing about the substrate changed — what changed is that the form is stated,
+  pinned, and no longer needs an editor. The update cursor needs no migration
+  either: `getUpdates` is offset-based and the armed cell's own `cell.db` starts
+  at zero
+  ([#468](https://github.com/mmeyerlein/meclaw/issues/468)).
+- **Two pollers on one bot token no longer steal each other's updates in
+  silence.** `409 Conflict` was classified as an ordinary transient and logged at
+  DEBUG, so the only symptom was a bot answering every other message. It is now
+  `TelegramError::Conflict`, its own class, and the poll loop logs it at `warn`
+  with `error_code = "conflict_other_poller"`. The recovery is deliberately
+  unchanged — a conflict backs off like a transient, because the other consumer
+  may stop and a switchover is exactly that case, while the five-minute
+  `Permanent` sleep would turn a handover window into an outage. It is a log
+  line and not an emission: the poll lane answers no message, so a receipt would
+  have to be a fifth failure code every level holding a connector owes a drain
+  for, repeated on every backoff tick, for a condition only an operator can fix.
+  No template contract changed
+  ([#468](https://github.com/mmeyerlein/meclaw/issues/468)).
+- **The export gate is green over the wave's new files.** Eight test files that
+  read the shipped template tree (GH #458, #464, #465, #466, #467) carry their
+  own R2b reasoning, resolved against the public allow-list including the `ref`
+  closure, so none of them is a dead reference in the public clone;
+  `gh466_the_seed_gate_is_wired.rs` does not travel at all, because both halves
+  of it stand behind a private-tree guard and would assert nothing there. And
+  `templates/assistant/README.md` no longer links to a document that does not
+  travel -- the reference is prose, as it is in the neighbouring templates.
+- **A prose cross-reference names the template, not a version of it** (GH #408,
+  Ruling S2). The `tools` and `assistant` READMEs had picked three pinned
+  versions back up in sentences that only ever meant *that template over
+  there*; they name `collector`, `talky` and `cogny` again. The `member`
+  level's lane reasoning was pulled forward to the versions it actually
+  describes -- `memory-hive@3.0.5` where it said 3.0.4 and 2.2.0, `org@1.3.0`
+  and `meclaw-os@1.4.0` where it said 1.2.1 and 1.3.2 -- and the one quotation
+  that no longer matched the level it quoted was replaced by the claim it was
+  making.
+- **Three measured test flakes were races, and all three were in the test's own
+  arrangement rather than in the substrate.** `lr_helper_spawns_task_and_returns_pair`
+  built its long-running mock's I/O future as a non-capturing `async` block, so
+  the event sender and the reconfigure receiver were dropped the moment
+  `run_io` returned; the handler loop then saw its channel close, the cell task
+  ended, and the peace channel reported `Closed` where the test asserted
+  `Empty` -- visible only when the worker won the race against the test thread,
+  which is why GH #156's earlier fix looked complete. The block captures both
+  ends now. `gh47_a_mutation_during_the_drain_is_refused` spawned
+  `handle.shutdown()` into a task and then used a liveness read as a barrier,
+  but the shutdown message is only enqueued *inside* that task -- under load the
+  barrier could be ahead of it in the same FIFO inbox, so the mutation met a
+  live colony and was refused as `template_missing` instead of
+  `shutdown_draining`. The message is sent from the test's own task now and
+  only the waiting is spawned, which is what makes the FIFO argument true. All
+  three tests in that file shared the pattern. Measured before and after: 1/30
+  and 4/30 red under eight CPU burners, 30/30 and 90/90 green after. The third,
+  `gh439_a_mutation_stays_one_work_item`, drew its before/after line across two
+  tasks: the main task flipped an `AtomicBool` after the mutation acknowledged
+  and the observer read that flag, so under load the colony routed all
+  thirty-two probes before the main task was scheduled again and every one of
+  them counted as "before" -- a reading about the scheduler, not about the
+  substrate, whose invariant was never violated. The observer owns the capture
+  channel and the acknowledgement receiver now and polls the verdict in a
+  `biased` arm ahead of every delivery; the atomics and the 50 ms poll are gone.
+  11/30 red under the same load, 30/30 green after. The quarantine list in
+  `.config/nextest.toml` stays empty.
+- **`examples/vault-pilot`'s walkthrough said the first turn after every wake is
+  spent, which GH #457 had already made false.** The `llm` cell parks the turn
+  that triggers the vault round and answers it once the sealed box arrives;
+  `credential_pending` is now the receipt for a vault that refused or never
+  answered, bounded by `credential_wait_max` and `credential_wait_ms`. The
+  example's message trace and the paragraph under it say that instead
+  ([#457](https://github.com/mmeyerlein/meclaw/issues/457)).
+
+- **A node born asleep now stays asleep until something names it (GH #491).**
+  `birth: "inactive"` was a starting value and not a promise. The declaration
+  marks the registry row; it does not withhold the edges, so the node is fully
+  wired — and activity is derived from the edge table, so the next connectivity
+  recompute that *reached* it derived it active again. Reaching is not
+  addressing: the recompute scope of a mutation expands every involved path to
+  its whole subtree, so a single `add_edges` one level up, naming neither the
+  node nor anything under it, woke a connector that had been grown asleep on
+  purpose. Measured in a colony grown from the shipped catalogue; with a real
+  credential it would have been a live long-poller nobody armed.
+  - **A declaration now beats a recompute side effect.** A node born inactive
+    carries a durable marker in `colony.db`'s `registry` (`dormant`, schema
+    **v8**, additive `ALTER TABLE` — an older database migrates in place on the
+    boot that finds it, and every row it already had reads `0`). Every
+    connectivity recompute honours the marker, and it survives a restart.
+  - **The wake is still the ordinary reconnect, and there is still no
+    `activate` operation.** The rule is only sharper about which mutation
+    counts: one that **addresses** the node — its path is in the mutation's
+    `involved` set, as an endpoint of an `add_edges`, say, or as the target of a
+    `swap_nodes`. That mutation clears the marker, and from then on the node is
+    an ordinary node and the edge table alone decides. A mutation elsewhere in
+    the tree never wakes it, however far its recompute reaches.
+  - **Sleep by `remove_edges` deliberately carries no marker and needs none.**
+    An edge-less node cannot be derived active by any recompute, and the only
+    thing that can reconnect it is an edge that names it — the same address
+    test, arrived at from the other side. Two mechanisms, one rule.
+  - **The two documents that promised durability now have it.**
+    `templates/builder/README.md` § *Born asleep is a parameter, not a second
+    door* and the `#468` ruling in `templates/telegram-connector/README.md` both
+    read as though `birth` replaced the two-act route through the operator's
+    `in_lifecycle`; it did not, and the difference was exactly durability.
+  Pinned by `crates/meclaw-colony/tests/gh491_a_node_born_asleep_stays_asleep.rs`
+  (three foreign mutations leave it asleep, a restart carries the state, the one
+  that names it wakes it) and by the v7→v8 migration test in
+  `crates/meclaw-colony/src/persist/migrations.rs`.
+
 ## [0.27.0] — 2026-08-27
 
 ### Added

@@ -28,10 +28,10 @@
 //! |---|---|---|
 //! | `examples/meclaw-os/grow.json` (`:56-68`) | `./firewall -> ./sink` | `hop.route == 'reject'` |
 //! | `examples/meclaw-os/grow.json` (`:79-83`) | `./talky -> ./sink` | `hop.route == 'error'` |
-//! | `examples/meclaw-os/grow-steward.json` (`:14-18`) | `./steward -> ./sink` | `hop.route == 'error'` |
+//! | `examples/meclaw-os/grow-argus.json` (`:14-18`) | `./argus -> ./sink` | `hop.route == 'error'` |
 //! | `examples/never-forgets/grow.json` (`:122-126`) | `./talky -> ./sink` | `hop.route == 'error'` |
 //!
-//! None of the four was load-bearing: `firewall@2.0.4` and `steward@2.0.10`
+//! None of the four was load-bearing: `firewall@2.0.4` and the argus
 //! declare no `required_drains` at all, and `talky@4.2.0` declares exactly one
 //! pairing, `in_prune -> prune`, which no sink edge served. So all four became
 //! `no_route`, which is state (2).

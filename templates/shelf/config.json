@@ -1,0 +1,77 @@
+{
+  "cell": {
+    "type": "store"
+  },
+  "params": {
+    "schema": {
+      "rows": {
+        "id": "text",
+        "at": "text",
+        "text": "text",
+        "meta": "json"
+      }
+    },
+    "query_timeout_ms": 5000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "results": {
+          "type": "array",
+          "required": false
+        }
+      },
+      "hop": {
+        "operation": {
+          "type": "string",
+          "required": true
+        },
+        "rows_affected": {
+          "type": "number",
+          "required": false
+        },
+        "duration_ms": {
+          "type": "number",
+          "required": false
+        },
+        "bundle_errors": {
+          "type": "number",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "A table a manifest can name: one store cell as a whole template, so a running colony can be given a place to keep rows by a declaration instead of by a hand-built subtree. The shipped table is a generic four-column one (id, at, text, meta) and it is meant to be REPLACED at instantiation -- the schema is the parameter that makes this template useful twice.",
+    "use_when": "Wherever something a colony produces has to outlive its message. Instantiate it under a name that says what it keeps, hand it a schema in the same declaration, and wire the writer in.",
+    "not_in_scope": "No policy, no schedule, no trim, no constraints. A column is text, int or json; PRIMARY KEY, UNIQUE and NOT NULL are a core defer of the cell type, so two identical rows are two rows and dedupe belongs to whoever writes.",
+    "emits_meaning": "ONE answer per inbound message. With a single tool_call: one tool_result turn, hop.operation naming the operation (or the literal 'error' when nothing parsable arrived) plus rows_affected and duration_ms. With two or more: one turn per call in call order, hop.operation 'bundle', hop.bundle_errors counting the failed ones, and the per-operation metadata in the results[] slot. A return edge out of this cell tells the legs of a two-phase exchange apart on hop.operation and on nothing else: hop is REPLACED on every emission, so nothing the caller stamped outbound survives the answer, while context is PERSISTENT and is therefore identical on both legs -- a return edge guarded on context matches the write answer too, re-enters the write branch and loops until the TTL (GH #521).",
+    "consumes_meaning": "messages[]: tool_call turns whose text is the JSON args of a store operation -- {operation, table, ...}. An insert carries `row`, a select carries `columns` (there is no projectionless SELECT *).",
+    "examples": [
+      "{\"operation\": \"insert\", \"table\": \"rows\", \"row\": {\"id\": \"a\", \"at\": \"2026-08-29T00:00:00Z\", \"text\": \"hello\"}} -> tool_result, hop { operation: 'insert', rows_affected: 1 }",
+      "{\"operation\": \"select\", \"table\": \"rows\", \"columns\": [\"id\", \"text\"], \"limit\": 10} -> tool_result whose text is the row array",
+      "override_params {\"schema\": {\"headlines\": {\"id\": \"text\", \"title\": \"text\"}}} -> the same template, a different shelf"
+    ]
+  }
+}

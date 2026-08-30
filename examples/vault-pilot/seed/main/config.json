@@ -1,0 +1,15 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "graph": {
+      "edges": []
+    }
+  },
+  "description": {
+    "purpose": "The seed hive of vault-pilot. It draws NO edge: the broker's five remaining cells and the sink arrive from the template library through grow.json, and every lane of this colony is written there. What is checked in beside it is the part a library cannot ship for you -- WHICH credential this colony holds and WHICH grant hangs on it.",
+    "use_when": "As the --root of a colony whose access hive is grown rather than checked in.",
+    "not_in_scope": "No door, no session, no tools: this example is about one credential reaching one model, and nothing else."
+  }
+}

@@ -6,14 +6,20 @@
 //! delivery did, which is the whole point of the flip.
 //!
 //! The script pins live in `w10b_inline_gate.rs`. This file asks the question
-//! the track is about, of a colony that carries the shipped `talky`, the
-//! shipped `memory-drain` and the memory hive's REAL write and extraction
-//! path (`writer`, `store`, `extract-glue` -- the private templates, which is
-//! why this file stays private):
+//! the track is about, of a colony that carries the shipped `talky` and the
+//! memory hive's REAL write and extraction path (`writer`, `store`,
+//! `extract-glue` -- the private templates, which is why this file stays
+//! private):
 //!
 //!   surface -> talky -> brain -> splitter --route 'extraction'--> memory/extract-glue
 //!                                        \--> dispatcher --route 'answer'--> the channel
-//!                    -> route turn_write -> drain -> memory/writer -> episodes
+//!                    -> route turn_write -> memory/writer -> episodes
+//!
+//! `memory-drain` used to sit in the middle of that last line and does not any
+//! more (GH #523): its ledger is a per-session high-water mark over ONE closed
+//! batch, and a per-turn cadence hands it two batches of one session at a time.
+//! `memory_drain.rs` and `memory_drain_colony.rs` measure the adapter on the
+//! bulk-import shape it is actually for.
 //!
 //! Two claims, and they are the whole track:
 //!
@@ -151,12 +157,38 @@ sys.stdout.write(json.dumps([]))
 /// seen the episode it must bind to, then forwards it byte for byte -- header
 /// and body, so the port edge downstream sees exactly what the splitter
 /// emitted. A test fixture, never a template.
+///
+/// ITS DEADLINE OUTLIVES THE OBSERVER'S, and that ordering is not cosmetic: the
+/// marker is written after the observer below returns, and the observer is
+/// allowed 30 s under cargo-parallel load. A barrier that gave up first would
+/// release the sidecar while the observer was still waiting entirely
+/// legitimately -- so the barrier waits longer than the wait it is synchronised
+/// with, the cell's own operation timeout (`external_timeout_ms`) outlasts the
+/// barrier, and `message_timeout` outlasts that (CLAUDE.md rule 12, B generous
+/// and A precise). Whoever moves one of the three moves all three.
+///
+/// **THE MARKER PATH IS SUBSTITUTED INTO THE SCRIPT, never read from the
+/// environment (GH #526).** Until this issue the script asked
+/// `os.environ.get("W10B_MARKER")` while the test only wrote the key into
+/// `{root}/.env` -- and `.env` is what the substrate substitutes into
+/// `config.json` values, not what a `code` cell's subprocess inherits (the
+/// child inherits the TEST process's environment, `code::child` `env_clear:
+/// false`). So the lookup returned `""`, the `while marker and ...` loop never
+/// ran once, and the barrier this module describes at length has never held
+/// anything back. What that cost is measured in the issue: the sidecar raced the
+/// per-turn episode, and under CPU contention it won -- the inline ingress found
+/// no `user` episode to bind to, refused the block ("no episode for this
+/// session"), and the test died 30 s later on a fact that was never going to
+/// arrive. A barrier that cannot fail loudly is not a barrier, so the
+/// substituted path is asserted before the wait.
 const GATE: &str = r#"
 import sys, json, os, time
 d = json.load(sys.stdin)["body"]
-marker = os.environ.get("W10B_MARKER", "")
-deadline = time.time() + 25
-while marker and not os.path.exists(marker) and time.time() < deadline:
+marker = "W10B_MARKER_PATH"
+if not marker or marker.endswith("_MARKER_PATH"):
+    raise SystemExit("gate: no marker path was substituted into this script")
+deadline = time.time() + 45
+while not os.path.exists(marker) and time.time() < deadline:
     time.sleep(0.02)
 sys.stdout.write(json.dumps([{"header": {"route": "remember"},
                               "messages": d.get("messages", [])}]))
@@ -240,45 +272,49 @@ fn main_config() -> Value {
          "condition": "has(hop.route) && hop.route == 'turn'",
          "modifier": {"set_hop": {"route": "'in_turn'"},
                       "set_context": {"channel": "hop.chat_id"}}},
-        // Wave 9: the day after every stored turn, into the drain.
-        // Every end names a HIVE, never a cell inside one (overview § Die
-        // Hive-Grenze): both `talky` and `drain` declare their lanes and their
-        // doors, and reaching past those doors delivers twice — once to the
-        // cell and once to a hive path this graph has no exit for.
-        // The edges that carry a batch INTO the drain owe it its provenance
-        // (#244/#269): `audience_set` is the round, `speaker`/`agent_id` who
-        // spoke. `channel` is not set here -- it travels from the connector
-        // seam above (`hop.chat_id` -> `context.channel`), as it does in a real
+        // THE PER-TURN LANE, and since ruling Q11 (GH #298) the whole write
+        // path: ONE edge from the talky's `turn_write` route into the hive's
+        // writer port, with nothing between them -- the shape `w9a` measures
+        // and the shape `member@1.4.0` ships (GH #527).
+        //
+        // **It used to run through `memory-drain` and that is retracted (GH
+        // #523).** The adapter turns ONE CLOSED SESSION into N episodes and its
+        // ledger is a per-session high-water mark: one parked `batch` row, one
+        // `drained_upto`. Two per-turn batches of the same session in flight at
+        // once break both halves of that -- the probe reads the LAST parked
+        // batch, and under load the assistant's batch is parked before the
+        // user's probe runs. Measured: two `assistant` episodes under
+        // `<session>#0`, no `user` episode at all, and an empty dead-letter
+        // queue, because nothing was refused -- the wrong thing was written.
+        // `templates/memory-drain/README.md` says not to draw this edge; this
+        // file was the last place still drawing it.
+        //
+        // The three keys the collector mints per turn (`turn_id`,
+        // `happened_at`, `session_id`) are promoted here, together with the
+        // provenance the writer refuses to guess (#244/#269): `audience_set`
+        // says who was in the round and `speaker`/`agent_id` who said it;
+        // `channel` is not set here -- it travels from the connector seam above
+        // (`hop.chat_id` -> `context.channel`), exactly as it does in a real
         // colony. One person, one agent, one room: that is this colony's whole
         // cast, and a `["*"]` here would blind the suite to the leak the gate
-        // stops. They are declared at THIS door, not on the port edge one hop
-        // later, because the drain refuses a batch whose round it does not know
-        // rather than consuming turns it could not deliver (#269).
-        {"from": "./talky", "to": "./drain",
+        // stops.
+        {"from": "./talky", "to": "./memory/writer",
          "condition": "has(hop.route) && hop.route == 'turn_write'",
-         "modifier": {"set_hop": {"route": "'in_batch'"},
-                      "set_context": {"session_id": "hop.session_id",
-                                      "audience_set": "'[\"member:user\",\"agent:assistant\"]'",
-                                      "speaker": "'member:user'",
-                                      "agent_id": "'agent:assistant'"}}},
-        {"from": "./talky", "to": "./drain",
-         "condition": "has(hop.route) && hop.route == 'write'",
-         "modifier": {"set_hop": {"route": "'in_batch'"},
-                      "set_context": {"session_id": "hop.session_id",
-                                      "audience_set": "'[\"member:user\",\"agent:assistant\"]'",
-                                      "speaker": "'member:user'",
-                                      "agent_id": "'agent:assistant'"}}},
-        // The port edge carries the keys the drain documents; the provenance
-        // rides along in `context` from the door above.
-        {"from": "./drain", "to": "./memory/writer",
-         "condition": "has(hop.route) && hop.route == 'episode'",
          "modifier": {"set_context": {"session_id": "hop.session_id",
                                       "turn_id": "hop.turn_id",
-                                      "happened_at": "hop.happened_at"}}},
-        // The drain's own refusal lane, drained so a mis-wired batch is read
-        // rather than dead-lettered.
-        {"from": "./drain", "to": "/reject",
-         "condition": "has(hop.route) && hop.route == 'reject'"},
+                                      "happened_at": "hop.happened_at",
+                                      "audience_set": "'[\"member:user\",\"agent:assistant\"]'",
+                                      "speaker": "'member:user'",
+                                      "agent_id": "'agent:assistant'"}}},
+        // The close route reaches no memory any more (Q11). `KEEPER_IDLE_MS=0`
+        // means it fires during the run, so it is terminated rather than left
+        // unrouted -- an unrouted emission is a dead letter, and the DLQ
+        // assertions are what makes this file's "nothing was lost" claim mean
+        // anything. It is NOT wired into the memory: the per-turn lane has
+        // already written these very turns, and a second writer over them would
+        // mint a second episode per turn under the same `turn_id`.
+        {"from": "./talky", "to": "./void",
+         "condition": "has(hop.route) && hop.route == 'write'"},
         // WAVE 10b, edge 1 of 2: the extraction sidecar into the inline ingress.
         // Since talky@4.1.0 this is a ROUTE, not a tool name (GH #379). In
         // production the edge goes straight to the memory; here it takes the
@@ -299,11 +335,18 @@ fn main_config() -> Value {
          "condition": "has(hop.route) && hop.route == 'reject'"},
         {"from": "./talky", "to": "/sink",
          "condition": "has(hop.route) && hop.route == 'answer'"},
-        {"from": "./drain/ledger", "to": "./void"},
         {"from": "./talky", "to": "./void",
          "condition": "has(hop.route) && hop.route == 'error'"},
         // The two lanes this track does not measure: the batched extractor and
         // the embedding queue. Terminal, so the DLQ assertion keeps meaning.
+        // GH #519: since the writer mints an embedding row beside the episode,
+        // the SAME lane leaves the writer too. The hive drains both to
+        // `./embed` (`templates/memory-hive/config.json`); this island does not
+        // instantiate the embedder, so the leg is terminated here rather than
+        // left unrouted -- an unrouted leg is a dead letter, and the DLQ
+        // assertions are what makes the "nothing was lost" claim mean anything.
+        {"from": "./memory/writer", "to": "./void",
+         "condition": "has(hop.route) && hop.route == 'embed'"},
         {"from": "./memory/extract-glue", "to": "./void",
          "condition": "has(hop.route) && (hop.route == 'extract' || hop.route == 'embed')"}
     ]}}})
@@ -313,12 +356,15 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str, marker: &std::path::Path) 
     let root = td.path();
     std::fs::write(
         root.join(".env"),
-        format!(
-            // No DISPATCHER_ASYNC_TOOLS: the annotation is not a tool call any
-            // more, so there is nothing for the dispatcher to classify (#379).
-            "OPENROUTER_API_KEY=test-key\nKEEPER_IDLE_MS=0\nW10B_MARKER={}\n",
-            marker.display()
-        ),
+        // No DISPATCHER_ASYNC_TOOLS: the annotation is not a tool call any
+        // more, so there is nothing for the dispatcher to classify (#379).
+        //
+        // No W10B_MARKER either, and that is the repair of GH #526: the
+        // barrier's path is substituted into its SCRIPT below. The root env
+        // file feeds `${VAR}` substitution in `config.json` values; it is not
+        // the environment a `code` cell's subprocess sees, so a key parked here
+        // was invisible to the gate that read it.
+        "OPENROUTER_API_KEY=test-key\nKEEPER_IDLE_MS=0\n",
     )
     .unwrap();
     write(root, "main/config.json", &main_config());
@@ -331,18 +377,26 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str, marker: &std::path::Path) 
             json!({"chat_id": {"type": "string", "required": false}}),
         ),
     );
-    write(
-        root,
-        "main/gate/config.json",
-        &code_cell(GATE, &["remember"], json!({})),
-    );
+    write(root, "main/gate/config.json", &{
+        // The barrier waits up to 45 s (see GATE). Under the helper's own
+        // 30 s operation timeout the substrate would cut it off mid-wait, and
+        // an ordering guarantee would become a cell error. Both deadlines
+        // therefore grow with it.
+        let mut c = code_cell(
+            &GATE.replace("W10B_MARKER_PATH", &marker.display().to_string()),
+            &["remember"],
+            json!({}),
+        );
+        c["cell"]["message_timeout"] = json!(70000);
+        c["params"]["external_timeout_ms"] = json!(60000);
+        c
+    });
     write(
         root,
         "main/void/config.json",
         &code_cell(VOID, &[], json!({})),
     );
     copy_cells(&repo("templates/talky"), &root.join("main/talky"));
-    copy_cells(&repo("templates/memory-drain"), &root.join("main/drain"));
     memory_hive(root);
 
     // The per-turn lane is off by default; a parent that wires it says so HERE,
@@ -355,15 +409,19 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str, marker: &std::path::Path) 
         v["params"]["schedules"][0]["schedule_id"] = json!(SCHEDULE_ID);
         v["params"]["schedules"][0]["cron"] = json!(NEVER);
     });
-    for rel in [
-        "main/talky/brain/config.json",
-        "main/talky/summarizer/writer/config.json",
-    ] {
-        patch(root, rel, |v| {
-            v["params"]["base_url"] = json!(base_url);
-            v["params"]["model"] = json!("gpt-4o-mock");
-        });
-    }
+    // GH #464 -- the second timer of a shipped composite, and the same two
+    // patches for the same two reasons: `${uuid7:*}` is an INSTANTIATION
+    // substitution and a tree written straight to disk carries a literal, and a
+    // menu tick during a test run would ask a tools hive this colony does not
+    // have.
+    patch(root, "main/talky/collector/menu-clock/config.json", |v| {
+        v["params"]["schedules"][0]["schedule_id"] = json!(SCHEDULE_ID);
+        v["params"]["schedules"][0]["cron"] = json!(NEVER);
+    });
+    patch(root, "main/talky/brain/config.json", |v| {
+        v["params"]["base_url"] = json!(base_url);
+        v["params"]["model"] = json!("gpt-4o-mock");
+    });
 }
 
 async fn boot(
@@ -473,13 +531,106 @@ fn await_rows(db: &std::path::Path, sql: &str, n: usize) -> Vec<Vec<String>> {
     }
 }
 
+/// The same wait, with the state a failure needs to be READABLE (GH #526).
+///
+/// A poll that gives up says only that the row is not there, and on this pair
+/// the question is always *why*: which episodes the per-turn lane wrote and
+/// under which `sender`, whether the turn left the queue, whether the ingress
+/// parked a block it never came back for, whether it REFUSED one, and where in
+/// the memory hive the chain stopped. All of that is already an observable of
+/// this colony -- the store's own tables, the dead-letter table and the central
+/// message log -- and none of it was printed, so every failing run cost a rerun
+/// with a hand-added dump. The failure text carries it now, and it is what took
+/// GH #526 from "flaky" to a named mechanism in one run.
+fn await_rows_or_dump(
+    db: &std::path::Path,
+    sql: &str,
+    n: usize,
+    root: &std::path::Path,
+) -> Vec<Vec<String>> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let r = rows(db, sql);
+        if r.len() >= n {
+            return r;
+        }
+        if std::time::Instant::now() > deadline {
+            panic!(
+                "{} of {n} rows after 30s for {sql:?}: {r:?}\n\
+                 EPISODES = {:?}\n\
+                 QUEUE    = {:?}\n\
+                 SCRATCH  = {:?}\n\
+                 DLQ      = {:?}\n\
+                 REFUSED  = {:#?}\n\
+                 MEMORY   = {:#?}",
+                r.len(),
+                rows(db, "SELECT id, turn_id, sender, session_id FROM episodes"),
+                rows(db, "SELECT episode_id, status FROM pending_extraction"),
+                rows(db, "SELECT key, kind FROM scratch"),
+                rows(
+                    &root.join("colony.db"),
+                    "SELECT reason, target FROM dead_letters"
+                ),
+                refusals(root),
+                memory_lane(root),
+            );
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// What travelled the reject lane, with the reason on it. A refused block and a
+/// slow one look identical from the `facts` table, and this is the column that
+/// tells them apart.
+fn refusals(root: &std::path::Path) -> Vec<String> {
+    rows(
+        &root.join("colony.db"),
+        "SELECT json_extract(headers, '$.hop.reject_reason'), body_payload \
+         FROM message_log WHERE to_path = '/reject' ORDER BY created_at ASC, id ASC",
+    )
+    .into_iter()
+    .map(|r| r.join(" | ").chars().take(400).collect())
+    .collect()
+}
+
+/// The memory hive's own leg of the central message log, in order: which cell
+/// handed what to which, on which phase. A chain that stopped shows up as a
+/// phase with no answer under it.
+fn memory_lane(root: &std::path::Path) -> Vec<String> {
+    rows(
+        &root.join("colony.db"),
+        "SELECT from_path, to_path, \
+         json_extract(headers, '$.hop.route'), \
+         json_extract(headers, '$.hop.operation'), \
+         json_extract(headers, '$.hop.error_code'), \
+         json_extract(headers, '$.context.mem_phase') \
+         FROM message_log \
+         WHERE from_path LIKE '/memory%' OR to_path LIKE '/memory%' \
+         ORDER BY created_at ASC, id ASC",
+    )
+    .into_iter()
+    .map(|r| r.join(" | "))
+    .collect()
+}
+
 fn dlq_count(root: &std::path::Path) -> i64 {
     let conn = rusqlite::Connection::open(root.join("colony.db")).expect("colony.db");
     conn.query_row("SELECT COUNT(*) FROM dead_letters", [], |r| r.get(0))
         .expect("dead_letters count")
 }
 
-const EPISODES: &str = "SELECT id, turn_id, sender FROM episodes";
+/// The episode the annotation BINDS TO -- not "some episode". The lane writes
+/// two rows per turn, and under cargo-parallel load the assistant's can be
+/// committed first: a wait for one row then returns the wrong one, and the two
+/// ways that goes wrong are exactly the two intermittent failures measured on
+/// this pair. Either the row is the assistant's and `find(sender == "user")`
+/// finds nothing, or -- worse, because it reads like a lane defect -- the
+/// barrier is released while the user's row is still unwritten, the ingress
+/// finds no turn to bind to and rejects, and the test dies 30 s later on a fact
+/// that was never going to arrive. The condition being waited for is therefore
+/// the condition being relied on, spelled out in SQL.
+const USER_EPISODE: &str = "SELECT id, turn_id, sender FROM episodes \
+                            WHERE sender = 'user'";
 const FACTS: &str = "SELECT episode_id, subject, predicate, claim, fact_kind, \
                      IFNULL(valid_until,'') FROM facts";
 
@@ -521,20 +672,17 @@ async fn an_annotated_turn_is_a_fact_candidate_on_the_turn_it_answered() {
 
     // The per-turn lane of wave 9 has minted the episode. Releasing the barrier
     // here is what makes the ordering explicit (module note).
-    let episodes = await_rows(&db, EPISODES, 1);
-    let user_turn = episodes
-        .iter()
-        .find(|r| r[2] == "user")
-        .expect("the user turn is an episode");
+    let user_rows = await_rows(&db, USER_EPISODE, 1);
+    let user_turn = &user_rows[0];
     assert_eq!(
         user_turn[1],
         format!("{session}#0"),
-        "under the drain's own deterministic id"
+        "under the collector's own deterministic id"
     );
     std::fs::write(&marker, b"go").unwrap();
 
     // CLAIM 1: the block named no turn and still landed on the right one.
-    let facts = await_rows(&db, FACTS, 1);
+    let facts = await_rows_or_dump(&db, FACTS, 1, td.path());
     assert_eq!(facts.len(), 1, "one fact, not two: {facts:?}");
     let f = &facts[0];
     assert_eq!(
@@ -573,17 +721,24 @@ async fn an_annotated_turn_is_a_fact_candidate_on_the_turn_it_answered() {
     h.shutdown().await;
 }
 
-/// Claim 2: extraction never costs the answer. A block nobody can read is not
-/// cut, writes nothing, covers no turn -- and the channel got its sentence.
+/// Claim 2: extraction never costs the answer. A block nobody can read writes
+/// nothing, covers no turn -- and the channel got its sentence, and only its
+/// sentence.
 ///
 /// The shape of the guarantee moved with the delivery and the assertions say so.
 /// Under the tool form the broken payload travelled its own lane and left
 /// through `inline-reject`. Under the sidecar it is INSIDE the answer, so
-/// "leave the answer alone" and "get the block out" are the same decision made
-/// two ways, and the splitter chooses the first: a parser that could not read
-/// the block does not get to edit the sentence around it. The person sees the
-/// fence; the memory writes nothing; the turn stays in the queue and the close
-/// pass reads it. Every measured V2 run left this bucket at zero.
+/// "leave the answer alone" and "get the block out" looked like two ways of
+/// making one decision, and the splitter chose the first: a parser that could
+/// not read the block does not get to edit the sentence around it.
+///
+/// **RETRACTED (GH #534).** They were never one decision. The cut is the span
+/// the parser already located, so the sentence around it is the same sentence
+/// either way -- "leave the answer alone" bought nothing and cost a reader raw
+/// JSON in a chat window when a model dropped one closing brace. The block comes
+/// out; nothing unreadable travels; the memory writes nothing; the turn stays in
+/// the queue and the close pass reads it. Every measured V2 run left this bucket
+/// at zero.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_broken_annotation_costs_the_answer_nothing() {
     let broken = "Got it.\n\n```memory\n{\"facts\": [ this is not json\n```";
@@ -600,26 +755,17 @@ async fn a_broken_annotation_costs_the_answer_nothing() {
 
     h.send(turn("my favourite editor is Helix")).await;
 
-    // THE ANSWER ARRIVES -- that is the guarantee, and it holds. It carries the
-    // unreadable block, because the alternative was a parser that failed to read
-    // the block editing the sentence around it on a guess.
+    // THE ANSWER ARRIVES -- that is the guarantee, and it holds. And it arrives
+    // WITHOUT the block: this assertion used to require the opposite (GH #534).
     let answer = recv_bounded(&mut sink_rx).await.expect("the answer");
-    assert!(
-        text_of(&answer).starts_with("Got it."),
-        "the sentence reached the channel: {:?}",
-        text_of(&answer)
-    );
-    assert!(
-        text_of(&answer).contains("this is not json"),
-        "carrying the block it could not read, whole -- never half-cut: {:?}",
-        text_of(&answer)
+    assert_eq!(
+        text_of(&answer),
+        "Got it.",
+        "the sentence reached the channel, and nothing else did"
     );
 
-    let episodes = await_rows(&db, EPISODES, 1);
-    let user_turn = episodes
-        .iter()
-        .find(|r| r[2] == "user")
-        .expect("the user turn is an episode");
+    let user_rows = await_rows(&db, USER_EPISODE, 1);
+    let user_turn = &user_rows[0];
     std::fs::write(&marker, b"go").unwrap();
 
     // NOTHING in the store: no fact, and the turn is still the close pass's.
@@ -650,4 +796,74 @@ async fn a_broken_annotation_costs_the_answer_nothing() {
         "and nothing dead-letters on the way"
     );
     h.shutdown().await;
+}
+
+/// GH #526 -- THE BARRIER IS A BARRIER, and this is the assertion that says so.
+///
+/// The failure it locks out is not a wrong value, it is a silent nothing: the
+/// script asked the process environment for a key the test only ever wrote into
+/// the root env file, the lookup returned `""`, and `while marker and ...`
+/// skipped the wait entirely. Both halves of the module note above -- "a `gate`
+/// cell holds the sidecar until the test has SEEN the episode" and the three
+/// nested deadlines -- described a mechanism that was not there, and the only
+/// symptom was an intermittent 30 s failure four function calls further down.
+///
+/// So the path is checked where it has to be for the barrier to exist at all:
+/// in the script of the cell the colony actually deploys.
+#[test]
+fn the_barrier_carries_its_marker_in_its_own_script() {
+    assert!(
+        !GATE.contains("os.environ"),
+        "the barrier reads its marker out of the environment again. A `code` \
+         cell's subprocess inherits the TEST process's environment \
+         (`code::child`, `env_clear: false`); the root env file is what the \
+         substrate substitutes into `config.json` VALUES. A key written there \
+         is invisible here, the wait is skipped, and the ordering this file \
+         relies on becomes a race that only fails under load (GH #526)"
+    );
+
+    let td = tempfile::TempDir::new().unwrap();
+    let marker = td.path().join("episode-seen");
+    build_tree(&td, "http://127.0.0.1:1/v1", &marker);
+    let cfg = std::fs::read_to_string(td.path().join("main/gate/config.json")).unwrap();
+    let v: Value = meclaw_core::serde_json::from_str(&cfg).unwrap();
+    let script = v["params"]["script_inline"]
+        .as_str()
+        .expect("script_inline");
+    assert!(
+        script.contains(&marker.display().to_string()),
+        "the deployed barrier does not carry the marker path it is supposed to \
+         wait for: {script}"
+    );
+
+    // And it fails LOUDLY rather than quietly not existing: the unsubstituted
+    // script exits non-zero, which a `code` cell reports as a cell error instead
+    // of letting the sidecar past.
+    let doc = json!({"envelope": {"header": {"hop": {}, "context": {}}},
+                     "body": {"messages": []}});
+    let mut child = std::process::Command::new("python3")
+        .arg("-")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("python3");
+    {
+        use std::io::Write;
+        let mut sink = child.stdin.take().expect("stdin");
+        let src = format!(
+            "import sys, io\n_s = {}\nsys.stdin = io.StringIO({})\n\
+             exec(compile(_s, 'gate', 'exec'), globals())\n",
+            meclaw_core::serde_json::to_string(GATE).unwrap(),
+            meclaw_core::serde_json::to_string(&doc.to_string()).unwrap(),
+        );
+        sink.write_all(src.as_bytes()).expect("write");
+    }
+    let out = child.wait_with_output().expect("wait");
+    assert!(
+        !out.status.success(),
+        "an unsubstituted barrier let the sidecar straight through instead of \
+         refusing: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
 }

@@ -12,6 +12,12 @@
         "closed": "int",
         "closed_at": "text",
         "audience_set": "text"
+      },
+      "port_scratch": {
+        "key": "text",
+        "kind": "text",
+        "payload": "json",
+        "created_at": "text"
       }
     },
     "query_timeout_ms": 5000
@@ -66,11 +72,11 @@
     ]
   },
   "description": {
-    "purpose": "The generation ledger of the keeper: one row per session, that is, per channel generation. It answers exactly three questions -- which generation is a channel currently in, when did that channel last speak, and which round was it opened in -- and holds nothing else.",
-    "use_when": "One per session-keeper hive. Both code cells of the hive write here and nowhere else; code cells own no state, so all of it lives in this store.",
+    "purpose": "The generation ledger of the keeper: one row per session, that is, per channel generation. It answers exactly three questions -- which generation is a channel currently in, when did that channel last speak, and which round was it opened in -- and holds nothing else about a conversation. Since session-keeper@2.1.0 one more table stands beside them and is not domain at all: `port_scratch`, the notepad the transfer lane parks one import part and its probe result under, because a code cell holds no state between hops and a store cannot return two result sets at once. It is written and read by `./porter` alone, it never travels in an export, and nothing else in this hive looks at it (GH #471).",
+    "use_when": "One per session-keeper hive. The two code cells of the keeper write here and nowhere else, and since 2.1.0 the porter does too -- it reads `sessions` for an export and writes it back for an import; code cells own no state, so all of it lives in this store.",
     "not_in_scope": "No conversation turns, no tool rounds, no memory: what was said belongs to the collector's window and to the memory hive. No deletes -- a closed generation keeps its row, which is what makes the close idempotent and the history readable. And no roster: `audience_set` is written ONCE, when the generation is opened, and never rewritten (ADR-0002 E12) -- a generation whose round changed would have ended.",
     "emits_meaning": "messages[]: one tool_result per op. hop.operation drives the two passes, hop.rows_affected carries the guard signal of the close: a guarded update that affected 0 rows means this generation was already sealed and the emission is terminal. hop.duration_ms is what that reply cost in milliseconds. A bundle reply (two or more tool_call turns, GH #295) stamps hop.operation 'bundle', sums hop.rows_affected over its legs and adds hop.bundle_errors: how many legs carry an error_code. That key is present on every bundle reply, 0 included, and never on a single-operation reply -- it is what an edge reads to see that one leg failed without opening the body, while hop.error_code keeps its hard meaning (the WHOLE reply is a refusal). results[]: the per-operation metadata of that same bundle reply, one entry per leg in call order -- {tool_call_id, operation, rows_affected, duration_ms} plus error_code if that one leg failed. It is a top-level body slot and not a key on the turn because a tool_result turn stays schema-pure ({origin, type, text, id}; ubf-body.json $defs/TurnObject is additionalProperties:false, so a metadata key there would dead-letter the whole reply), and tool_call_id is what ties an entry back to its turn. Like bundle_errors the slot exists only on a bundle reply -- a single-operation reply carries messages[] alone.",
-    "consumes_meaning": "messages[]: tool_call turns with store-native args. Which pass a reply belongs to is carried by context.store_origin ('keeper-stamp' / 'keeper-close'), the step by context.ses_phase, both promoted by the edge that sent the op.",
+    "consumes_meaning": "messages[]: tool_call turns with store-native args. Which pass a reply belongs to is carried by context.store_origin ('keeper-stamp' / 'keeper-close' / 'kporter'), the step by context.ses_phase or context.port_phase, both promoted by the edge that sent the op.",
     "examples": [
       "{operation: select, table: sessions, columns: [...], where: {channel, closed: 0}, order_by: [{col: 'opened_at', dir: 'desc'}], limit: 1} -> the generation a turn belongs to",
       "{operation: update, table: sessions, set: {last_seen}, where: {session_id, closed: 0}} -> the channel is alive, the idle clock restarts",

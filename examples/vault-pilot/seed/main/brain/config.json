@@ -1,0 +1,72 @@
+{
+  "cell": {
+    "type": "llm"
+  },
+  "params": {
+    "provider": "openai",
+    "model": "gpt-4o-mini",
+    "api_key": "${EXAMPLE_PROVIDER_KEY:-}",
+    "base_url": "${EXAMPLE_PROVIDER_BASE_URL:-https://api.openai.com/v1}",
+    "credential_grant_id": "grant:example-provider-primary@member-example",
+    "max_tokens": 128,
+    "external_timeout_ms": 20000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": false
+        },
+        "meta": {
+          "type": "object",
+          "required": false
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "credential_request"
+          ],
+          "required": false
+        },
+        "grant_id": {
+          "type": "string",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        },
+        "finish_reason": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": false
+        },
+        "sealed": {
+          "type": "object",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "network:llm",
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "The consumer. It holds NO credential of its own: `credential_grant_id` names a grant, the grant names a cred_ref, and the value arrives SEALED from the vault and is opened in this task's RAM. `api_key` is the migration fallback and resolves to the empty string unless EXAMPLE_PROVIDER_KEY is set -- an empty string is not a bearer (GH #271), so with the variable unset the sealed lane is the only way this cell can authenticate at all.",
+    "use_when": "As the one wired consumer of the pilot's access hive.",
+    "not_in_scope": "No tools, no memory, no session. It answers one turn and asks for one credential."
+  }
+}

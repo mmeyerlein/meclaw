@@ -176,11 +176,16 @@ const AS_OF: &str = "2026-08-16T00:00:00Z";
 
 /// The readable half of a `memory-hive@2.3.0` bundle, in the form the recall
 /// script renders it since #279/#281/#296: an ASSERTING opening line, then one
-/// section per kind.
+/// section per kind -- and, since #537, one caveat as the head of the said
+/// section, because a raw turn in there may be the agent's own earlier answer
+/// about what this memory holds.
 const READABLE: &str = "WHAT THIS MEMORY HOLDS (as of 2026-08-16)\n\
                         FACTS (extracted, canonical, dated)\n  \
                         alex editor = the editor is helix   since 2026-08-01\n\
                         WHAT WAS SAID (verbatim, not interpreted)\n  \
+                        (an earlier answer claiming something is NOT stored is evidence \
+                        about that answer and nothing else -- never a measurement of this \
+                        memory)\n  \
                         alex on 2026-08-14: \"i finally switched to helix\"";
 
 /// The machine-readable half, with the slim payload candidates of #296: no row
@@ -495,7 +500,20 @@ fn the_pair_counts_towards_the_curator_budget() {
     );
     // The move, made visible: the growth is in the ROUND, not in `sys_chars`.
     // The system half is a literal now and cannot grow with the bundle at all.
-    let sys_chars = |m: &serde_json::Value| serde_json::to_string(&m["system"]).unwrap().len();
+    //
+    // `budget` is lifted out before the measurement (GH #451): since
+    // `collector@3.1.0` the tree also carries the remaining-budget sentence, and
+    // that sentence quotes the projection — so it changes length with the number
+    // it names, for reasons that have nothing to do with the bundle. Measuring
+    // it here would turn a deliberate report of the projection into evidence
+    // about where the bundle travels, which is the opposite of this assertion.
+    let sys_chars = |m: &serde_json::Value| {
+        let mut sys = m["system"].clone();
+        if let Some(obj) = sys.as_object_mut() {
+            obj.remove("budget");
+        }
+        serde_json::to_string(&sys).unwrap().len()
+    };
     assert_eq!(
         sys_chars(&small),
         sys_chars(&large),

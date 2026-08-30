@@ -75,9 +75,17 @@ fn the_reach_is_declared_once_and_the_result_lane_stays_alone() {
     );
     assert_eq!(
         emits.len(),
-        2,
-        "the surface emits a result and reaches once — a third outward lane needs \
-         its own argument, in this contract, before it exists in an edge: {emits:?}"
+        3,
+        "the surface emits a result, reaches once, and — since GH #464 — hands out its own \
+         declarations. A FOURTH outward lane needs its own argument, in this contract, \
+         before it exists in an edge: {emits:?}"
+    );
+    assert_eq!(
+        emits.iter().filter(|r| *r == "tool_schemas").count(),
+        1,
+        "the declaration lane is the third, and it is not a result: a result belongs to a \
+         call somebody made, a declaration to a start-up question, and folding the two \
+         would make every collector guess which of them it was handed: {emits:?}"
     );
 }
 

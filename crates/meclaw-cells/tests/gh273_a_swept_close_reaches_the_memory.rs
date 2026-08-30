@@ -270,15 +270,19 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str) {
         v["params"]["schedules"][0]["schedule_id"] = json!(SCHEDULE_ID);
         v["params"]["schedules"][0]["cron"] = json!(NEVER);
     });
-    for rel in [
-        "main/talky/brain/config.json",
-        "main/talky/summarizer/writer/config.json",
-    ] {
-        patch(root, rel, |v| {
-            v["params"]["base_url"] = json!(base_url);
-            v["params"]["model"] = json!("gpt-4o-mock");
-        });
-    }
+    // GH #464 -- the second timer of a shipped composite, and the same two
+    // patches for the same two reasons: `${uuid7:*}` is an INSTANTIATION
+    // substitution and a tree written straight to disk carries a literal, and a
+    // menu tick during a test run would ask a tools hive this colony does not
+    // have.
+    patch(root, "main/talky/collector/menu-clock/config.json", |v| {
+        v["params"]["schedules"][0]["schedule_id"] = json!(SCHEDULE_ID);
+        v["params"]["schedules"][0]["cron"] = json!(NEVER);
+    });
+    patch(root, "main/talky/brain/config.json", |v| {
+        v["params"]["base_url"] = json!(base_url);
+        v["params"]["model"] = json!("gpt-4o-mock");
+    });
 }
 
 async fn boot(

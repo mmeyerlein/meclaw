@@ -42,6 +42,8 @@ PIN-write-surface	docs/config.md	begrenzt die Writes, die das Substrat vor `hand
 PIN-neighbourhood-view	docs/config.md	Die deklarierende Cell bekommt beim Spawn einen read-only Handle	pinned	a_cell_sees_every_inbound_edge_and_only_those
 PIN-hive-port-boundary	docs/meclaw-overview.md	deklarierten Port vorbei ins Innere greift, wird mit `hive_port_boundary`	pinned	a_deep_endpoint_past_a_declared_port_rejects_and_changes_nothing
 PIN-remove-before-add	docs/meclaw-overview.md	**Wird vor `add_edges` angewandt**	pinned	one_mutation_replaces_an_edge_instead_of_deleting_it
+PIN-dot-is-the-scope-root-de	docs/meclaw-overview.md	die Regel erweitert das Vokabular, sie erfindet keinen Knoten	pinned	a_dot_endpoint_resolves_to_the_scope_root
+PIN-dot-is-the-scope-root-en	docs/meclaw-overview.en.md	the rule widens the vocabulary, it invents no node	pinned	a_dot_endpoint_resolves_to_the_scope_root
 PIN-remove-nodes-cells-only-de	docs/meclaw-overview.md	Ein Hive-Pfad ist kein `remove_nodes`-Ziel	pinned	remove_nodes_refuses_a_hive_path_and_the_whole_mutation_with_it
 PIN-remove-nodes-cells-only-en	docs/meclaw-overview.en.md	A hive path is not a `remove_nodes` target	pinned	remove_nodes_refuses_a_hive_path_and_the_whole_mutation_with_it
 PIN-remove-nodes-exact-incidence-de	docs/meclaw-overview.md	eine Kante zwischen zwei **Nachfahren** des getroffenen Knotens überlebt	pinned	remove_nodes_leaves_an_edge_between_two_descendants_standing
@@ -106,6 +108,12 @@ PIN-ledger-aggregates-de	docs/meclaw-overview.md	keine Rohzeilen und keine Heade
 PIN-ledger-aggregates-en	docs/meclaw-overview.en.md	no raw rows and no header contents	pinned	no_raw_row_and_no_header_content_leaves_the_endpoint
 PIN-ledger-drawable-de	docs/meclaw-overview.md	Zählungen beantwortet und nie Inhalt	pinned	a_template_may_declare_its_own_lane_to_the_colony_ledger
 PIN-ledger-drawable-en	docs/meclaw-overview.en.md	answers counts and never content	pinned	a_template_may_declare_its_own_lane_to_the_colony_ledger
+PIN-ledger-usage-block-de	docs/meclaw-overview.md	Eine Zahl, die der Provider nicht gemeldet hat, ist ein **fehlender** Header-Schlüssel und keine Null	pinned	a_provider_that_reports_no_cache_and_no_cost_leaves_no_zeroes
+PIN-ledger-usage-block-en	docs/meclaw-overview.en.md	A figure the provider did not report is an **absent** header key, not a zero	pinned	a_provider_that_reports_no_cache_and_no_cost_leaves_no_zeroes
+PIN-ledger-sample-counter-de	docs/meclaw-overview.md	der Mittelwert ist Summe geteilt durch Samples, nie durch `calls`	pinned	every_figure_of_the_usage_block_is_summed_per_model
+PIN-ledger-sample-counter-en	docs/meclaw-overview.en.md	a mean is the sum divided by the samples, never by `calls`	pinned	every_figure_of_the_usage_block_is_summed_per_model
+PIN-ledger-group-by-de	docs/meclaw-overview.md	wählt eine **zweite** Gruppierung neben `by_model`	pinned	an_ungrouped_read_answers_the_shape_it_always_answered
+PIN-ledger-group-by-en	docs/meclaw-overview.en.md	picks a **second** grouping beside `by_model`	pinned	an_ungrouped_read_answers_the_shape_it_always_answered
 PIN-read-tag-echo-de	docs/meclaw-overview.md	gekürzt und kommt unverändert zurück	pinned	a_graph_tag_is_truncated_and_never_refused
 PIN-read-tag-echo-en	docs/meclaw-overview.en.md	truncated to 64 characters and comes back verbatim	pinned	a_graph_tag_is_truncated_and_never_refused
 PIN-graph-edge-default-de	docs/meclaw-overview.md	steht dagegen **immer da, auf beiden Werten**	pinned	every_edge_object_names_its_phase
@@ -178,11 +186,15 @@ PIN-tools-one-door	templates/tools/README.md	`params.ports` is `[]`. The hive pa
 PIN-tools-one-call-one-tool	templates/tools/README.md	A known tool name fires one positive edge, and the default therefore **never runs**.	pinned	a_named_call_reaches_that_tool_and_the_default_stays_silent
 PIN-tools-sandbox-union	templates/tools/README.md	**`sandbox_union` -- the widest value of every axis, over every occupant.**	pinned	the_declared_union_is_the_one_the_occupants_compute
 PIN-tools-reentrancy	templates/tools/README.md	**`reentrancy` -- one entry per occupant	pinned	every_occupant_has_a_reentrancy_entry_and_every_entry_has_an_occupant
-PIN-channel-level-dissolved	templates/assistant/README.md	GH #303 dissolved a whole path level. What used to be	pinned	nothing_shipped_still_addresses_the_connector_inside_the_level
-PIN-assistant-wires-channels-once	templates/assistant/README.md	the eighteen edges that address it ship **once** (GH #303)	pinned	a_second_channel_adds_no_edge_between_the_channels_level_and_its_siblings
-PIN-container-declares-nothing	templates/assistant/README.md	`channels` ships with **no `params` block at all**	pinned	the_container_declares_neither_a_contract_nor_ports
+PIN-tools-schemas-lane	templates/tools/README.md	A name the hive does not have comes back in `unknown`, never dropped	pinned	a_name_the_hive_does_not_have_comes_back_named
+PIN-tools-schemas-drift	templates/tools/README.md	The two halves cannot drift apart in silence: a test walks the dispatch graph	pinned	every_dispatched_tool_has_a_schema_and_every_schema_has_a_door
+PIN-tools-unwired-occupants	templates/tools/README.md	**`mcp/` and `vault/` stand here and are not wired**	pinned	the_two_unwired_occupants_are_islands_by_construction
+PIN-tools-edit-serialises	templates/tools/README.md	exception, and its cap of one is the verdict, not a tuning.**	pinned	the_editor_declares_the_serialisation_it_actually_ships
+PIN-channel-level-dissolved	templates/assistant/README.md	dissolved the four-segment channel path	pinned	nothing_shipped_still_addresses_the_connector_inside_the_level
+PIN-assistant-wires-channels-once	templates/assistant/README.md	The measured fan-in, and what actually moves it	pinned	a_second_channel_costs_this_level_nothing_at_all
+PIN-container-declares-nothing	templates/member/README.md	a container hive that its own level	pinned	neither_container_declares_a_contract_because_the_level_wires_them
 PIN-member-holds-the-memory	templates/member/README.md	**The memory belongs to the member, not to the agent.**	pinned	the_level_wires_the_screen_the_memory_and_the_record
-PIN-level-lane-union-derived	templates/member/README.md	nothing here describes a lane a holder lost	pinned	the_member_declares_the_lanes_that_cross_its_boundary
+PIN-level-lane-union-derived	templates/member/README.md	A level's transit contract carries the lanes that	pinned	the_member_declares_the_lanes_that_cross_its_boundary
 PIN-talky-serves-its-own-tools	templates/talky/README.md	the collector inside this hive **serves** both of them	pinned	memory_recall_is_served_inside_and_never_leaves_on_the_tool_lane
 PIN-talky-tool-exit-default	templates/talky/README.md	**The tool exit stopped naming names.**	pinned	an_ordinary_tool_call_still_leaves_on_the_tool_lane
 PIN-talky-ships-its-tool-schemas	templates/talky/README.md	So the composite carries the schemas of `memory_recall` and `thread_recall`	pinned	the_shipped_talky_declares_memory_recall_to_the_provider
@@ -262,8 +274,8 @@ PIN-rescan-door-422-de	docs/meclaw-overview.md	wenn er abbrach (GH #440)	pinned	
 PIN-rescan-door-422-en	docs/meclaw-overview.en.md	when it aborted (GH #440)	pinned	a_duplicate_name_reaches_the_caller_of_the_rescan_message
 PIN-birth-state-de	docs/meclaw-overview.md	sofern der Eintrag nichts anderes deklariert	pinned	a_long_running_cell_born_inactive_is_registered_and_never_spawns
 PIN-birth-state-en	docs/meclaw-overview.en.md	unless the entry declares otherwise	pinned	a_long_running_cell_born_inactive_is_registered_and_never_spawns
-PIN-birth-wake-de	docs/meclaw-overview.md	Wecksemantik eines	pinned	the_next_mutation_that_reaches_it_wakes_it
-PIN-birth-wake-en	docs/meclaw-overview.en.md	the wake semantics of a node born	pinned	the_next_mutation_that_reaches_it_wakes_it
+PIN-birth-wake-de	docs/meclaw-overview.md	Wecksemantik eines	pinned	the_next_mutation_that_names_it_wakes_it
+PIN-birth-wake-en	docs/meclaw-overview.en.md	the wake semantics of a node born	pinned	the_next_mutation_that_names_it_wakes_it
 #
 # Added 2026-08-27 (GH #47). Der Satz ueber den Drain stand seit v0.1.0 in der
 # Spec und war unwahr; jetzt traegt ihn ein Test. Die zweite Zeile pinnt die
@@ -273,3 +285,36 @@ PIN-direct-mode-drain-de	docs/meclaw-overview.md	drainet die in-flight-Arbeit un
 PIN-direct-mode-drain-en	docs/meclaw-overview.en.md	drains the in-flight work and exits with exit code 0	pinned	a_batch_pipe_delivers_every_answer_after_eof
 PIN-drain-deadline-de	docs/meclaw-overview.md	schneidet ab und die Warnung auf stderr **benennt**	pinned	a_hung_handler_ends_the_drain_at_the_deadline_and_is_named
 PIN-drain-deadline-en	docs/meclaw-overview.en.md	warning on stderr **names** what was left behind	pinned	a_hung_handler_ends_the_drain_at_the_deadline_and_is_named
+#
+# Added 2026-08-28 (GH #465, GH #467). Zwei Zusagen aus derselben Welle, die
+# ein Leser anwenden kann: der Boot fragt die `requires`-Deklaration eines
+# `ref`-Markers, bevor er etwas schreibt -- die pre-destruktive Haelfte ist der
+# Teil, der ohne Pin eine Absichtserklaerung waere; und eine Tabelle, die
+# `params.schema` nicht nennt, ist ueber den Staging-Seeder trotzdem seedbar,
+# was `memory-hive`s Alias-Tabellen zu einer Import-Flaeche macht.
+PIN-boot-requires-predestructive-de	docs/config.md	wird als `requirement_missing` abgewiesen, **bevor ein einziges Byte geschrieben ist**	pinned	the_refusal_leaves_the_marker_and_writes_nothing
+PIN-boot-requires-predestructive-en	docs/config.en.md	is refused as `requirement_missing` **before a single byte is written**	pinned	the_refusal_leaves_the_marker_and_writes_nothing
+PIN-staging-seeder-undeclared-table-de	docs/config.md	Deshalb ist auch eine Tabelle seedbar, die `params.schema` nicht nennt	pinned	a_fresh_colony_answers_out_of_a_memory_it_never_saw_written
+PIN-staging-seeder-undeclared-table-en	docs/config.en.md	So a table `params.schema` does not name is seedable	pinned	a_fresh_colony_answers_out_of_a_memory_it_never_saw_written
+# Added 2026-08-28 (GH #456). `seed_rows` is the eighth diff key and the first
+# operation that changes what is INSIDE a cell rather than where cells are.
+# Four promises a reader could act on: the two refusals, the idempotence that
+# makes a re-applied manifest a no-op, and the write reaching a store that is
+# already awake -- the property that separates this door from both seeders.
+PIN-seed-rows-not-a-store-de	docs/meclaw-overview.md	jeder andere Typ ist `seed_target_not_a_store`	pinned	a_target_that_is_not_a_store_is_refused_by_name
+PIN-seed-rows-not-a-store-en	docs/meclaw-overview.en.md	any other type is `seed_target_not_a_store`	pinned	a_target_that_is_not_a_store_is_refused_by_name
+PIN-seed-rows-table-undeclared-de	docs/meclaw-overview.md	sonst `seed_table_undeclared`, und die Absage nennt die Tabellen, die es gibt	pinned	a_table_the_store_does_not_declare_is_refused_by_name
+PIN-seed-rows-table-undeclared-en	docs/meclaw-overview.en.md	otherwise `seed_table_undeclared`, and the refusal names the tables that do exist	pinned	a_table_the_store_does_not_declare_is_refused_by_name
+PIN-seed-rows-idempotent-de	docs/meclaw-overview.md	eine Zeile, die Spalte für Spalte schon da ist, wird gezählt und nicht ein zweites Mal geschrieben	pinned	the_same_declaration_applied_twice_leaves_one_row
+PIN-seed-rows-idempotent-en	docs/meclaw-overview.en.md	a row already present, column for column, is counted and not written a second time	pinned	the_same_declaration_applied_twice_leaves_one_row
+PIN-seed-rows-awake-de	docs/meclaw-overview.md	auch wenn die Zelle wach ist	pinned	a_row_enters_a_running_store_and_the_ledger_says_so
+PIN-seed-rows-awake-en	docs/meclaw-overview.en.md	even while the cell is awake	pinned	a_row_enters_a_running_store_and_the_ledger_says_so
+#
+# Added 2026-08-29 (GH #491). `birth: "inactive"` war ein Startwert und keine
+# Zusage: der Knoten ist voll verdrahtet, also weckte ihn der naechste Recompute,
+# der ihn erreichte. Die Zeilen pinnen die geschaerfte Regel -- erreichen ist
+# nicht adressieren, und eine Deklaration ist durabel.
+PIN-birth-durable-de	docs/meclaw-overview.md	Erreichen ist nicht Adressieren	pinned	a_mutation_that_does_not_name_it_never_wakes_it
+PIN-birth-durable-en	docs/meclaw-overview.en.md	Reaching is not addressing	pinned	a_mutation_that_does_not_name_it_never_wakes_it
+PIN-derived-activity-persisted-de	docs/meclaw-overview.md	Die abgeleitete Aktivität wird geschrieben	pinned	an_island_derived_asleep_is_still_asleep_on_the_second_boot
+PIN-derived-activity-persisted-en	docs/meclaw-overview.en.md	Derived activity is written down	pinned	an_island_derived_asleep_is_still_asleep_on_the_second_boot

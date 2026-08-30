@@ -258,6 +258,24 @@ pub struct RegistryEntry {
     /// only a direct reconnect clears it. Orthogonal to `CellStatus` (lifecycle) and
     /// `active` (edge-derived connectivity).
     pub failed: bool,
+    /// GH #491: `true` while this node's inactivity is a DECLARATION rather than
+    /// a derivation — `add_nodes[].birth: "inactive"` and the `ref` marker's
+    /// equivalent. Persisted in `colony.db.registry.dormant` and rehydrated at
+    /// boot, so it outlives the mutation that made it.
+    ///
+    /// Activity stays fully edge-derived; this is not a third activity state.
+    /// It answers one question the edge table cannot: whether a `false→true`
+    /// recompute result is allowed to take effect. A node is FULLY WIRED at
+    /// birth (the declaration marks the row, it does not withhold the edges), so
+    /// without the marker every later recompute that merely REACHED the node —
+    /// and `affected_scope` expands an involved path to its whole subtree —
+    /// derived it active again. Cleared by the first mutation that ADDRESSES the
+    /// node (its path ∈ `involved`), which is the deliberate wake; never by a
+    /// mutation elsewhere in the tree.
+    ///
+    /// Same shape as `failed` above, and for the same reason: a recompute must
+    /// not undo a decision that was made about this node somewhere else.
+    pub dormant: bool,
     /// Phase-13.5 Lifecycle-3b Task 4 (F2): colony-initiated peace-stop trigger
     /// for an Awake/Active cell's running task. Firing `stop_tx.send(())` makes
     /// the task finish its in-flight `handle()`, return its mailbox via
@@ -386,6 +404,12 @@ pub enum ColonyMsg {
         /// Wins over edge-derived activity: a failed cell stays inactive and is
         /// never re-spawned across reboot, even when fully wired.
         failed: bool,
+        /// GH #491: durable dormancy flag for `RegistryEntry`. `true` iff this
+        /// node's sleep was DECLARED — the boot path passes it for a `ref`
+        /// marker's `birth: "inactive"` and for a rehydrated `registry.dormant`
+        /// row; `false` for everything else. A node asleep merely because of its
+        /// edges carries no marker and needs none.
+        dormant: bool,
         /// Phase-13.5 Slice 4 T7: `eager_on_reconnect` for the `RegistryEntry`.
         /// `false` for lazy stateful cells (wake-on-message). `true` ONLY for a
         /// **boot-inactive eager** cell parked `NotYetSpawned` with a REAL
@@ -434,6 +458,17 @@ pub enum ColonyMsg {
     SetRegistryStatus {
         path: Path,
         status: String,
+        ack: oneshot::Sender<()>,
+    },
+    /// GH #491: the boot path's half of [`crate::persist::writer::ColonyWriteOp::SetRegistryDormant`].
+    ///
+    /// Sent AFTER the `RegisterDormant` ack, for the same reason as
+    /// [`Self::SetRegistryStatus`]: the row it updates has to exist. It also
+    /// sets the in-RAM `RegistryEntry.dormant`, so the declaration is honoured
+    /// by the very first recompute of this run and not only after the next boot.
+    SetRegistryDormant {
+        path: Path,
+        dormant: bool,
         ack: oneshot::Sender<()>,
     },
     /// Route a message to the registered cell at `msg.target`.
@@ -591,7 +626,7 @@ pub enum ColonyMsg {
     /// Bounded by `query.scan_budget` (rows read per windowed sub-query), not
     /// by a row limit — the reply carries no rows to limit. `mutation_log` has
     /// no `created_at` index, so its window query is a scan and that budget is
-    /// the only bound on it. Off-loop reads are post-v0.1.0 (`docs/roadmap.md`).
+    /// the only bound on it. Off-loop reads are post-v0.1.0 (`docs/defer-register.md`).
     ReadLedger {
         /// The window and the counters to compute; every bound is clamped in
         /// the dispatch helper, so the echoed query shows what was used.
@@ -606,7 +641,7 @@ pub enum ColonyMsg {
     ///
     /// **Honest warning**: stalls the colony inbox loop for the query duration.
     /// Bounded by `filter.scan_budget` (≤ 50_000 rows read), not by `limit`
-    /// alone. Off-loop reads are post-v0.1.0 (`docs/roadmap.md`).
+    /// alone. Off-loop reads are post-v0.1.0 (`docs/defer-register.md`).
     ReadMessages {
         /// Filter + paging cursor; all caps are clamped in the dispatch helper.
         filter: crate::api_dto::MessageLogFilter,
@@ -886,6 +921,36 @@ async fn send_registry_status(
         .await;
 }
 
+/// GH #491 — the writer half of [`ColonyMsg::SetRegistryDormant`], plus the
+/// in-RAM flip. Both halves in one place so the row and the entry cannot drift.
+async fn send_registry_dormant(
+    registry: &mut HashMap<Path, RegistryEntry>,
+    writer_tx: &tokio::sync::mpsc::Sender<crate::persist::writer::ColonyWriteOp>,
+    queue_depth: &std::sync::Arc<std::sync::atomic::AtomicI64>,
+    path: Path,
+    dormant: bool,
+) {
+    if let Some(entry) = registry.get_mut(&path) {
+        entry.dormant = dormant;
+    }
+    // No `expect` on the clock here: this runs inside the colony task, and the
+    // hot path is panic-free by invariant (AGENTS.md § Aktive Invarianten). A
+    // clock before the epoch is a machine problem, not a reason to take every
+    // cell down with it -- the row gets `0` and says so by being absurd.
+    let updated_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    queue_depth.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let _ = writer_tx
+        .send(crate::persist::writer::ColonyWriteOp::SetRegistryDormant {
+            path,
+            dormant,
+            updated_at,
+        })
+        .await;
+}
+
 /// Handle a `ColonyMsg::Register` message: insert the cell into the registry,
 /// enqueue the UpsertRegistry write-op (op-before-ack invariante, T22),
 /// and spawn a watcher that reports its death back into the colony inbox.
@@ -925,6 +990,9 @@ async fn handle_register(
         eager_on_reconnect: true,
         active,
         failed: false,
+        // GH #491: a spawned cell is awake by definition — nothing declared it
+        // asleep, so there is no declaration to keep.
+        dormant: false,
         stop_tx,
         death_ack_rx,
     };
@@ -981,6 +1049,7 @@ async fn handle_register_dormant(
     cell_type: String,
     active: bool,
     failed: bool,
+    dormant: bool,
     eager_on_reconnect: bool,
     ack: oneshot::Sender<()>,
 ) {
@@ -1001,6 +1070,9 @@ async fn handle_register_dormant(
         eager_on_reconnect,
         active,
         failed,
+        // GH #491: a DECLARED sleep, carried across the boot so the first
+        // recompute after it cannot undo the declaration.
+        dormant,
         // Dormant cells have no running task → no live stop wiring. A wake
         // (Phase-13-I) spawns a fresh task with its own stop pair; before wake a
         // disconnect just flips `active=false` (no death_ack-wait, Task-4.2).
@@ -1346,7 +1418,7 @@ pub enum CellDiedOutcome {
 /// sender-swap (an exhausted cell has no respawn).
 ///
 /// `#[rustfmt::skip]`: this corridor is frozen against a character-exact fixture
-/// gate (`plans/paket-6-fixtures/expected_handle_cell_died_body.txt`) — rustfmt
+/// gate (`.github/fixtures/expected_handle_cell_died_body.txt`) — rustfmt
 /// must not reformat it.
 #[rustfmt::skip]
 async fn handle_cell_died(
@@ -1672,6 +1744,7 @@ async fn run_shutdown_teardown(
                 cell_type,
                 active,
                 failed,
+                dormant,
                 eager_on_reconnect,
                 ack: reg_ack,
             } => {
@@ -1689,6 +1762,7 @@ async fn run_shutdown_teardown(
                     cell_type,
                     active,
                     failed,
+                    dormant,
                     eager_on_reconnect,
                     reg_ack,
                 )
@@ -1726,6 +1800,21 @@ async fn run_shutdown_teardown(
                 send_registry_status(&colony_db.writer_tx, &colony_db.queue_depth, path, status)
                     .await;
                 let _ = st_ack.send(());
+            }
+            ColonyMsg::SetRegistryDormant {
+                path,
+                dormant,
+                ack: dm_ack,
+            } => {
+                send_registry_dormant(
+                    registry,
+                    &colony_db.writer_tx,
+                    &colony_db.queue_depth,
+                    path,
+                    dormant,
+                )
+                .await;
+                let _ = dm_ack.send(());
             }
             ColonyMsg::SetRegistryProvenance {
                 path,
@@ -2629,8 +2718,8 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                     ColonyMsg::Register { path, sender, join, peace_rx, backstop_rx, stop_tx, death_ack_rx, respawn, wake, restart_limit, cell_id, cell_type, active, ack } => {
                         handle_register(&mut registry, &inbox_self_tx, &colony_db.writer_tx, &colony_db.queue_depth, path, sender, join, peace_rx, backstop_rx, stop_tx, death_ack_rx, respawn, wake, restart_limit, cell_id, cell_type, active, ack).await;
                     }
-                    ColonyMsg::RegisterDormant { path, sender, receiver, respawn, wake, restart_limit, cell_id, cell_type, active, failed, eager_on_reconnect, ack } => {
-                        handle_register_dormant(&mut registry, &colony_db.writer_tx, &colony_db.queue_depth, path, sender, receiver, respawn, wake, restart_limit, cell_id, cell_type, active, failed, eager_on_reconnect, ack).await;
+                    ColonyMsg::RegisterDormant { path, sender, receiver, respawn, wake, restart_limit, cell_id, cell_type, active, failed, dormant, eager_on_reconnect, ack } => {
+                        handle_register_dormant(&mut registry, &colony_db.writer_tx, &colony_db.queue_depth, path, sender, receiver, respawn, wake, restart_limit, cell_id, cell_type, active, failed, dormant, eager_on_reconnect, ack).await;
                     }
                     ColonyMsg::AddEdge { id, from, to, ack } => {
                         edges.insert(Edge { id, from, to, condition: None, modifier: None, is_default: false });
@@ -2642,6 +2731,10 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                     }
                     ColonyMsg::SetRegistryStatus { path, status, ack } => {
                         send_registry_status(&colony_db.writer_tx, &colony_db.queue_depth, path, status).await;
+                        let _ = ack.send(());
+                    }
+                    ColonyMsg::SetRegistryDormant { path, dormant, ack } => {
+                        send_registry_dormant(&mut registry, &colony_db.writer_tx, &colony_db.queue_depth, path, dormant).await;
                         let _ = ack.send(());
                     }
                     ColonyMsg::SetRegistryProvenance { path, provenance, ack } => {
@@ -4344,6 +4437,40 @@ pub(crate) async fn handle_mutation(
             }
         };
 
+    // GH #456 — `seed_rows`: the shape check, pre-destructive by position. It
+    // runs on the substituted diff (a grant row may name `${SECRET}` the same
+    // way an edge condition may) and before a byte is staged, so a malformed
+    // declaration costs nothing. Whether the target is a store and declares the
+    // table is answered later, against the registry as it stands AFTER this
+    // diff's topology — a store this very mutation grows is a legal target.
+    let seed_row_decls = match crate::mutation::seed_rows::parse_entries(&diff_subst) {
+        Ok(d) => d,
+        Err(err) => {
+            send_eda_reject(
+                &id,
+                &err,
+                reply_to.as_ref(),
+                trace_id,
+                parent_message_id,
+                registry,
+                hive_scopes,
+                dead_letters,
+                in_flight,
+                log_tx,
+                &blob_store,
+                blob_inline_max_bytes,
+                &payload,
+            )
+            .await;
+            return MutationOutcome::Rejected {
+                id: Some(id),
+                error_code: err.error_code().into(),
+                details: err.message(),
+                violations: Vec::new(),
+            };
+        }
+    };
+
     // GH #440 — `add_templates`: the only operation that puts a CLASS in the
     // library instead of a cell in the tree. It runs first because a later
     // entry of the same diff must be able to RESOLVE what it registered, and
@@ -4352,6 +4479,11 @@ pub(crate) async fn handle_mutation(
     // is why `diff_path_claims`, `vacated_addresses` and the header views are
     // untouched by it.
     let mut registered: Vec<(String, crate::templates::ScannedTemplate)> = Vec::new();
+    // GH #443: the staged declarations of THIS mutation, held for the whole
+    // function so that every `return` between here and the commit flush runs
+    // their drop guard. Nothing of them is visible in the library until
+    // `commit()` runs, immediately before the flush.
+    let mut staged_registrations: Option<crate::mutation::register::StagedRegistrations> = None;
     if let Some(entries) = diff_subst.get("add_templates").and_then(|v| v.as_array()) {
         let mut regs = Vec::with_capacity(entries.len());
         for entry in entries {
@@ -4386,12 +4518,18 @@ pub(crate) async fn handle_mutation(
                 }
             }
         }
-        match crate::mutation::register::apply_registrations(&regs, templates_root, root, &id) {
-            Ok(scanned) => {
-                registered = scanned
+        match crate::mutation::register::stage_registrations(&regs, templates_root, root, &id) {
+            Ok(staged) => {
+                // The staged paths are what a LATER entry of the same diff
+                // resolves against: the bytes are identical to the ones the
+                // library will hold, because the move is a `rename(2)`. The
+                // final paths are written in over the same order at commit time.
+                registered = staged
+                    .snapshot()
                     .into_iter()
                     .map(|t| (Uuid::now_v7().to_string(), t))
                     .collect();
+                staged_registrations = Some(staged);
             }
             Err(err) => {
                 send_eda_reject(
@@ -6722,6 +6860,11 @@ pub(crate) async fn handle_mutation(
                     // NO task. Step 10b confirms (no flip) until a reconnect.
                     active: false,
                     failed: false,
+                    // GH #491: only a DECLARED sleep is durable. A cell the
+                    // post-state merely derives inactive is asleep for the
+                    // ordinary reason — its edges — and stays wakeable by any
+                    // recompute that finds it connected.
+                    dormant: born_inactive,
                     stop_tx: None,
                     death_ack_rx: None,
                 },
@@ -6741,18 +6884,35 @@ pub(crate) async fn handle_mutation(
                 created_at: now_spawn,
                 updated_at: now_spawn,
             });
-            // GH #437: `UpsertRegistry` seeds `status='active'` on INSERT and
-            // leaves it alone on conflict (`persist/writer.rs`); the only write
-            // authority for `'inactive'` is `SetRegistryStatus`, and that runs
-            // on a true->false FLIP — which a cell born inactive never performs.
-            // Without this line the row would say `active` and the next reboot
-            // would start exactly the cell that must not start: the defect from
-            // the issue, one corner further on.
+            // GH #437 / GH #495: the row says what this arm REGISTERED, and this
+            // arm registers `active: false` in every case. `UpsertRegistry` seeds
+            // `status='active'` on INSERT and leaves it alone on conflict
+            // (`persist/writer.rs`); the only write authority for `'inactive'` is
+            // `SetRegistryStatus`, and step 10b writes it on a true->false FLIP —
+            // which a cell registered `false` never performs. So without this
+            // line the row says `active` for a node the colony is running as
+            // inactive, and the next reboot starts exactly the cell that must not
+            // start.
+            //
+            // GH #495 widened the condition from `born_inactive` to the whole
+            // arm. The gate one screen up keys on `would_be_inactive`
+            // (`born_inactive || (connected && !compute_active(...))`), so a cell
+            // this mutation merely DERIVES inactive lands here too — and it was
+            // the one that kept the seeded `'active'`. Declared and derived sleep
+            // differ in the DORMANCY MARKER below, not in the status column.
+            write_buffer.push(crate::persist::writer::ColonyWriteOp::SetRegistryStatus {
+                path: sd.absolute_path.clone(),
+                status: "inactive".into(),
+                updated_at: now_spawn,
+            });
             if born_inactive {
                 born_inactive_paths.push(sd.absolute_path.clone());
-                write_buffer.push(crate::persist::writer::ColonyWriteOp::SetRegistryStatus {
+                // GH #491: and the marker that makes it hold. Without it the row
+                // says `inactive` and the next recompute that reaches the node
+                // writes `active` over it.
+                write_buffer.push(crate::persist::writer::ColonyWriteOp::SetRegistryDormant {
                     path: sd.absolute_path.clone(),
-                    status: "inactive".into(),
+                    dormant: true,
                     updated_at: now_spawn,
                 });
             }
@@ -6879,6 +7039,8 @@ pub(crate) async fn handle_mutation(
                         // the defect this key exists to close.
                         active: !born_inactive,
                         failed: false,
+                        // GH #491: the declaration is durable, not a starting value.
+                        dormant: born_inactive,
                         stop_tx: Some(stop_tx),
                         death_ack_rx: Some(death_ack_rx),
                     },
@@ -6926,6 +7088,8 @@ pub(crate) async fn handle_mutation(
                         // inactive would wake on its first message.
                         active: !born_inactive,
                         failed: false,
+                        // GH #491: the declaration is durable, not a starting value.
+                        dormant: born_inactive,
                         stop_tx: None,
                         death_ack_rx: None,
                     },
@@ -6960,6 +7124,12 @@ pub(crate) async fn handle_mutation(
             write_buffer.push(crate::persist::writer::ColonyWriteOp::SetRegistryStatus {
                 path: sd.absolute_path.clone(),
                 status: "inactive".into(),
+                updated_at: now_spawn,
+            });
+            // GH #491: see the boot-inactive arm — the row alone does not hold.
+            write_buffer.push(crate::persist::writer::ColonyWriteOp::SetRegistryDormant {
+                path: sd.absolute_path.clone(),
+                dormant: true,
                 updated_at: now_spawn,
             });
         }
@@ -7195,6 +7365,8 @@ pub(crate) async fn handle_mutation(
                     // Parentless subtree → inactive until a later add_edges connects it.
                     active: false,
                     failed: false,
+                    // GH #491: durable only when the entry DECLARED the sleep.
+                    dormant: cell.birth == crate::mutation::Birth::Inactive,
                     stop_tx: None,
                     death_ack_rx: None,
                 },
@@ -7218,20 +7390,32 @@ pub(crate) async fn handle_mutation(
                 created_at: now_spawn,
                 updated_at: now_spawn,
             });
-            // GH #437: a subtree is registered inactive here in EVERY case (the
-            // `active: false` above), and step 10b then flips whatever the
-            // recompute reaches. A subtree declared inactive is exactly the one
-            // that must NOT be flipped, so it is recorded for step 10b — and it
-            // gets the durable `'inactive'` row for the same reason as on the
-            // single-cell path: `UpsertRegistry` seeds `'active'`, and only
-            // `SetRegistryStatus` can say otherwise. The subtree's HIVE nodes
-            // need no handle of their own: a hive has no registry row, and its
-            // inactivity follows from the activity rule over its children.
+            // GH #437 / GH #495: a subtree is registered inactive here in EVERY
+            // case (the `active: false` above), so the row says `'inactive'` in
+            // every case too — `UpsertRegistry` seeds `'active'`, and only
+            // `SetRegistryStatus` can say otherwise. Step 10b then flips whatever
+            // the recompute reaches and appends its `'active'` to the SAME write
+            // buffer, so the last op of the transaction wins and the row ends up
+            // agreeing with the registry entry. Before GH #495 only a DECLARED
+            // subtree got the row, so a subtree the recompute did not reach — an
+            // island — kept the seeded `'active'` and woke on the next boot.
+            //
+            // The subtree's HIVE nodes need no handle of their own: a hive has no
+            // registry row, and its inactivity follows from the activity rule
+            // over its children.
+            write_buffer.push(crate::persist::writer::ColonyWriteOp::SetRegistryStatus {
+                path: cell.absolute_path.clone(),
+                status: "inactive".into(),
+                updated_at: now_spawn,
+            });
+            // A subtree declared inactive is the one step 10b must NOT flip, so
+            // it is recorded for step 10b and carries the durable marker.
             if cell.birth == crate::mutation::Birth::Inactive {
                 born_inactive_paths.push(cell.absolute_path.clone());
-                write_buffer.push(crate::persist::writer::ColonyWriteOp::SetRegistryStatus {
+                // GH #491: same reason as on the single-cell path.
+                write_buffer.push(crate::persist::writer::ColonyWriteOp::SetRegistryDormant {
                     path: cell.absolute_path.clone(),
-                    status: "inactive".into(),
+                    dormant: true,
                     updated_at: now_spawn,
                 });
             }
@@ -7422,6 +7606,41 @@ pub(crate) async fn handle_mutation(
             if born_inactive_paths.contains(node) {
                 continue;
             }
+            // GH #491: and it stays asleep afterwards. `birth` used to be a
+            // starting value only: the node is FULLY WIRED (the declaration
+            // marks the row, it does not withhold the edges), so the next
+            // recompute that REACHED it derived it active again — and reaching
+            // is not addressing, because `affected_scope` expands every
+            // involved path to its whole subtree. Measured: a connector grown
+            // asleep, one later `add_edges` a level up naming neither it nor
+            // anything under it, and a live long-poller nobody armed.
+            //
+            // A DECLARATION beats a recompute side effect. The connectivity
+            // model is untouched — islands are still inactive, `add_edges` is
+            // still the wake, `remove_edges` still the sleep — but a node whose
+            // sleep was declared is woken only by a mutation that ADDRESSES it
+            // (its path ∈ `involved`: an `add_edges` naming it as an endpoint,
+            // a `swap_nodes` at its path). That mutation is the deliberate act
+            // the marker exists to wait for, so it also CLEARS the marker: from
+            // then on the node is an ordinary node and the edge table alone
+            // decides. A mutation elsewhere in the tree never wakes it, however
+            // far its recompute scope reaches.
+            //
+            // Sleep by `remove_edges` deliberately carries no marker and needs
+            // none: an edge-less node cannot be derived active by any recompute,
+            // and the only thing that CAN reconnect it is an edge naming it —
+            // which is the same address test, arrived at from the other side.
+            if entry.dormant {
+                if !involved.contains(node) {
+                    continue;
+                }
+                entry.dormant = false;
+                write_buffer.push(crate::persist::writer::ColonyWriteOp::SetRegistryDormant {
+                    path: node.clone(),
+                    dormant: false,
+                    updated_at: now_status,
+                });
+            }
             // Phase-13.5 Lifecycle-3b Task 7 (F6): false→true Reconnect.
             // `add_edges`/`add_nodes` reconnected a previously-disconnected
             // subtree. Flip `active=true` + persist `SetRegistryStatus('active')`
@@ -7550,6 +7769,137 @@ pub(crate) async fn handle_mutation(
                 return MutationOutcome::Rejected {
                     id: Some(id),
                     error_code: TERM_TIMEOUT_ERROR_CODE.into(),
+                    details: reason,
+                    violations: Vec::new(),
+                };
+            }
+        }
+    }
+
+    // GH #456 — `seed_rows`, phase two: resolve every declaration against the
+    // registry as it now stands (a store this mutation grew is registered by
+    // here, and its directory carries its final name) and against the target's
+    // declared `params.schema`. Pure lookup — nothing is written yet, so this
+    // refusal still costs no row and no library entry.
+    let resolved_seed_rows = if seed_row_decls.is_empty() {
+        Vec::new()
+    } else {
+        match crate::mutation::seed_rows::resolve_entries(&seed_row_decls, &scope, registry, root) {
+            Ok(r) => r,
+            Err(err) => {
+                rollback_registered_nodes(
+                    registry,
+                    node_contracts,
+                    hive_scopes,
+                    &registered_by_this_mutation,
+                    &hive_scopes_registered_by_this_mutation,
+                )
+                .await;
+                sweep_reject_residue(
+                    &staged,
+                    &staged_subtrees,
+                    registry,
+                    &registered_by_this_mutation,
+                    root,
+                    &id,
+                );
+                let reason = err.message();
+                terminalize_apply_reject(log_tx, &id, reason.clone()).await;
+                return MutationOutcome::Rejected {
+                    id: Some(id),
+                    error_code: err.error_code().into(),
+                    details: reason,
+                    violations: Vec::new(),
+                };
+            }
+        }
+    };
+
+    // GH #443: the declarations of this mutation enter the library HERE — one
+    // `rename(2)` per entry, immediately before the commit flush and after the
+    // last refusal. Until this line nothing about them is visible, which is why
+    // no reject path below `add_templates` needs a compensating delete.
+    if let Some(staged_regs) = staged_registrations.as_mut() {
+        match staged_regs.commit() {
+            Ok(finals) => {
+                // Same order, same ids — only `filesystem_path` moves from the
+                // staging area to the library directory.
+                for ((_, slot), fin) in registered.iter_mut().zip(finals) {
+                    *slot = fin;
+                }
+            }
+            Err(err) => {
+                // The same late reject path the death-ack term-timeout above
+                // takes: in-RAM rollback, residue sweep, terminalized log row.
+                rollback_registered_nodes(
+                    registry,
+                    node_contracts,
+                    hive_scopes,
+                    &registered_by_this_mutation,
+                    &hive_scopes_registered_by_this_mutation,
+                )
+                .await;
+                sweep_reject_residue(
+                    &staged,
+                    &staged_subtrees,
+                    registry,
+                    &registered_by_this_mutation,
+                    root,
+                    &id,
+                );
+                let reason = err.message();
+                terminalize_apply_reject(log_tx, &id, reason.clone()).await;
+                return MutationOutcome::Rejected {
+                    id: Some(id),
+                    error_code: err.error_code().into(),
+                    details: reason,
+                    violations: Vec::new(),
+                };
+            }
+        }
+    }
+
+    // GH #456 — `seed_rows`, phase three: the rows go in. Last effect before the
+    // flush, next to the library commit above and for the same reason — every
+    // refusal that could still happen has happened. Idempotent by declaration: a
+    // row already present, column for column, is counted and not written twice,
+    // so re-applying the same manifest is a no-op.
+    if !resolved_seed_rows.is_empty() {
+        match crate::mutation::seed_rows::apply_entries(&resolved_seed_rows) {
+            Ok(applied) => {
+                for a in &applied {
+                    tracing::debug!(
+                        mutation_id = %id,
+                        target_path = %a.target,
+                        table = %a.table,
+                        inserted = a.inserted,
+                        already_present = a.already_present,
+                        "seed_rows applied"
+                    );
+                }
+            }
+            Err(err) => {
+                rollback_registered_nodes(
+                    registry,
+                    node_contracts,
+                    hive_scopes,
+                    &registered_by_this_mutation,
+                    &hive_scopes_registered_by_this_mutation,
+                )
+                .await;
+                sweep_reject_residue(
+                    &staged,
+                    &staged_subtrees,
+                    registry,
+                    &registered_by_this_mutation,
+                    root,
+                    &id,
+                );
+                let reason = err.message();
+                terminalize_apply_reject(log_tx, &id, reason.clone()).await;
+                return MutationOutcome::Rejected {
+                    id: Some(id),
+                    error_code: err.error_code().into(),
                     details: reason,
                     violations: Vec::new(),
                 };
@@ -9177,6 +9527,7 @@ mod tests {
                 eager_on_reconnect: true,
                 active: true,
                 failed: false,
+                dormant: false,
                 stop_tx: None,
                 death_ack_rx: None,
             },
@@ -9268,6 +9619,7 @@ mod tests {
                 eager_on_reconnect: true,
                 active: true,
                 failed: false,
+                dormant: false,
                 stop_tx: None,
                 death_ack_rx: None,
             },
@@ -9350,6 +9702,7 @@ mod tests {
                     eager_on_reconnect: true,
                     active: true,
                     failed: false,
+                    dormant: false,
                     stop_tx: None,
                     death_ack_rx: None,
                 },
@@ -9444,6 +9797,7 @@ mod tests {
                 eager_on_reconnect: false,
                 active: true,
                 failed: false,
+                dormant: false,
                 stop_tx: None,
                 death_ack_rx: None,
             },
@@ -9637,6 +9991,7 @@ mod tests {
             eager_on_reconnect: true,
             active: true,
             failed: false,
+            dormant: false,
             stop_tx: None,
             death_ack_rx: None,
         };
@@ -9689,6 +10044,7 @@ mod tests {
             eager_on_reconnect: true,
             active: true,
             failed: false,
+            dormant: false,
             stop_tx: None,
             death_ack_rx: None,
         };
@@ -10551,7 +10907,7 @@ mod tests {
         )));
 
         // /colony bare → ColonyEndpointInvalid (handled in route() itself,
-        // see Vollbody-Fixture plans/phase-13.5-hive-transit-fixtures/expected_route_body.txt).
+        // see Vollbody-Fixture .github/fixtures/expected_route_body.txt).
         inbox_tx
             .send(ColonyMsg::Route {
                 sender_path: Path::new("/"),
@@ -12070,6 +12426,7 @@ mod tests {
             true,
             false,
             false,
+            false,
             ack_tx,
         )
         .await;
@@ -12115,6 +12472,7 @@ mod tests {
             eager_on_reconnect: true,
             active: true,
             failed: false,
+            dormant: false,
             stop_tx: None,
             death_ack_rx: None,
         }

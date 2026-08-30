@@ -82,6 +82,12 @@
         "outcome": "text",
         "reason_code": "text",
         "detail": "json"
+      },
+      "port_scratch": {
+        "key": "text",
+        "kind": "text",
+        "payload": "json",
+        "created_at": "text"
       }
     },
     "canonical": {
@@ -153,8 +159,8 @@
     ]
   },
   "description": {
-    "purpose": "The domain itself: curated person and agent records as whole AIeOS documents (the `aieos` column), everything meclaw adds next to them in the `mx` namespace, and the four decision tables AIeOS has no vocabulary for -- relations, trust, disclosure and an append-only audit. `relations` is cut exactly on the traverse signature (src/dst/kind/weight), so 'who is X to Y over two hops' is ONE store op and not a script.",
-    "use_when": "Inside the affinity hive only. It is written by ./gate and read by ./brief and ./push; a fifth writer is a bug even where the substrate allows it (see the hive README, `Data sovereignty`).",
+    "purpose": "The domain itself: curated person and agent records as whole AIeOS documents (the `aieos` column), everything meclaw adds next to them in the `mx` namespace, and the four decision tables AIeOS has no vocabulary for -- relations, trust, disclosure and an append-only audit. `relations` is cut exactly on the traverse signature (src/dst/kind/weight), so 'who is X to Y over two hops' is ONE store op and not a script. Since affinity@3.2.0 one more table stands beside them and is not domain at all: `port_scratch`, the notepad the transfer lane parks one import part and its probe result under, because a code cell holds no state between hops and a store cannot return two result sets at once. It is written and read by `./porter` alone, it never travels in an export, and nothing else in this hive looks at it (GH #471).",
+    "use_when": "Inside the affinity hive only. It is written by ./gate and read by ./brief and ./push; ./porter reads every domain table and writes only the two the store keys itself plus its own `port_scratch`. A further writer is a bug even where the substrate allows it (see the hive README, `Data sovereignty`).",
     "not_in_scope": "No schema enforcement -- a store column is text/int/json and nothing else, so AIeOS conformance is ./gate's job and only ./gate's. No row-level visibility either: whoever holds an edge to this cell reads unfiltered, which is why the audience filter lives in ./brief and why the port discipline is the whole guarantee. No deletes are ever emitted against it by this template (correction = a new row plus `supersedes`), but the op exists -- No-Delete here is a promise of the template, not of the substrate."
   }
 }

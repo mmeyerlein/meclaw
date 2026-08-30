@@ -20,7 +20,6 @@ use meclaw_core::{Message, Path, Uuid, serde_json::json};
 use meclaw_testing::topologies::phase_3b::CaptureCell;
 use meclaw_testing::{ColonyHandle, MessageBuilder};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 
@@ -87,36 +86,6 @@ async fn nothing_is_delivered_while_a_subtree_is_being_instantiated() {
         .unwrap()
         .expect("GH #440: the rescan must not have aborted");
 
-    // The observer: it drains the capture channel continuously and counts what
-    // arrived BEFORE the mutation answered. `committed` is flipped by the main
-    // task the instant the verdict is in.
-    let committed = Arc::new(AtomicBool::new(false));
-    let before = Arc::new(AtomicU32::new(0));
-    let after = Arc::new(AtomicU32::new(0));
-    let observer = {
-        let committed = committed.clone();
-        let before = before.clone();
-        let after = after.clone();
-        tokio::spawn(async move {
-            let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-            while tokio::time::Instant::now() < deadline
-                && before.load(Ordering::SeqCst) + after.load(Ordering::SeqCst) < PROBES
-            {
-                match tokio::time::timeout(Duration::from_millis(50), cap_rx.recv()).await {
-                    Ok(Some(_)) => {
-                        if committed.load(Ordering::SeqCst) {
-                            after.fetch_add(1, Ordering::SeqCst);
-                        } else {
-                            before.fetch_add(1, Ordering::SeqCst);
-                        }
-                    }
-                    Ok(None) => return,
-                    Err(_) => {}
-                }
-            }
-        })
-    };
-
     // Fire the mutation WITHOUT awaiting it, then immediately queue a stream of
     // messages for the capture cell. The mutation is taken from the inbox first
     // (it was sent first); the probes sit behind it while it runs.
@@ -139,35 +108,66 @@ async fn nothing_is_delivered_while_a_subtree_is_being_instantiated() {
         h.send(MessageBuilder::new("/cap").build()).await;
     }
 
-    let outcome = tokio::time::timeout(Duration::from_secs(30), mut_ack_rx)
-        .await
+    // The observer: ONE task owns both the capture channel and the mutation's
+    // verdict, and it reads the verdict in a `biased` arm ahead of the channel —
+    // so no delivery can be classified without polling the verdict first.
+    //
+    // The line used to be drawn across two tasks: an `AtomicBool` flipped by the
+    // main task the instant `mut_ack_rx` resolved, read by the observer on every
+    // delivery. That hop is unbounded. The colony sends the verdict and returns
+    // straight to its loop, where all 32 probes are already queued behind the
+    // mutation; under load it routes every one of them before the main task is
+    // scheduled to flip the flag. Each delivery then counts as "before", and the
+    // test reports an interleaving the substrate never performed. Measured
+    // 2026-08-28 with the CPUs saturated: 11 of 30 runs red, every one of them
+    // with the same signature (before=32, after=0) — a real interleaving would
+    // show a PARTIAL split, since routing resumes mid-staging, not all at once.
+    let (before, after, verdict) = {
+        let observer = tokio::spawn(async move {
+            let mut ack = mut_ack_rx;
+            let mut verdict = None;
+            let (mut before, mut after) = (0u32, 0u32);
+            while verdict.is_none() || before + after < PROBES {
+                tokio::select! {
+                    biased;
+                    r = &mut ack, if verdict.is_none() => verdict = Some(r),
+                    m = cap_rx.recv() => match m {
+                        Some(_) if verdict.is_some() => after += 1,
+                        Some(_) => before += 1,
+                        None => break,
+                    },
+                }
+            }
+            (before, after, verdict)
+        });
+        // Failure marker, generous per the 30s convention.
+        tokio::time::timeout(Duration::from_secs(30), observer)
+            .await
+            .expect("the probes and the verdict must all land within the marker")
+            .expect("the observer task must not panic")
+    };
+
+    let outcome = verdict
         .expect("the mutation must answer")
         .expect("an outcome");
-    committed.store(true, Ordering::SeqCst);
     assert!(
         matches!(outcome, MutationOutcome::Committed { .. }),
         "the instantiation must commit: {outcome:?}"
     );
 
-    let _ = tokio::time::timeout(Duration::from_secs(35), observer).await;
-
     // Positive half: the probes WERE routable and all of them arrived — so the
     // window under test was real traffic, not an empty channel.
     assert_eq!(
-        after.load(Ordering::SeqCst),
-        PROBES,
+        after, PROBES,
         "every probe must reach the capture cell once the mutation is done \
-         (before={}, after={})",
-        before.load(Ordering::SeqCst),
-        after.load(Ordering::SeqCst)
+         (before={before}, after={after})"
     );
     // The invariant: none of them was delivered while the subtree was half
-    // built. The discriminator is tight on purpose — a loop that routed between
-    // two cells would deliver during a staging pass that takes milliseconds,
-    // while the flag above is set microseconds after the verdict.
+    // built. The discriminator stays tight — a loop that routed between two
+    // cells would deliver during a staging pass that takes milliseconds, and the
+    // verdict arm above is polled before every single delivery is counted.
     assert_eq!(
-        before.load(Ordering::SeqCst),
-        0,
+        before, 0,
         "no delivery may be interleaved with an instantiation"
     );
 

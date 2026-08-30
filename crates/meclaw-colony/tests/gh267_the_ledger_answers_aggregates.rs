@@ -1,7 +1,7 @@
 //! GH #267 (ruling Q14, 2026-08-21 — `/colony/ledger`, aggregates-only): the
 //! acceptance definition of the colony's aggregate reader.
 //!
-//! The steward scripts must stop opening `colony.db` behind the substrate's
+//! The argus scripts must stop opening `colony.db` behind the substrate's
 //! back (AGENTS § Datenbank-Isolation, GH #160: foreign `colony.db` is taboo,
 //! **also for reads**). Q14 sanctioned exactly one replacement: a read that
 //! answers **counts and sums**, never rows. This file is that ruling written
@@ -87,15 +87,15 @@ fn query(since: i64, until: i64) -> LedgerQuery {
 ///
 /// | # | from | to | hop |
 /// |---|---|---|---|
-/// | 1–3 | `/other/*` | `/other/*` | `model: m/a`, 100 prompt / 20 completion |
-/// | 4 | `/other/x` | `/other/y` | `finish_reason: "error"`, **no model** |
-/// | 5 | `/main/talky/ears` | **`/main/talky/brain`** | `cycle_id: "cycle:1"` |
-/// | 6 | **`/main/talky/brain`** | `/main/talky/out` | `cycle_id: "cycle:1"` |
+/// | 1–3 | `/other/*` | `/other/*` | `model: m/a`, 100 prompt / 20 completion / 40 cached, `cost: 0.002`, `latency_ms: 120` |
+/// | 4 | `/other/x` | `/other/y` | `finish_reason: "error"`, `error_code: "rate_limit"`, `latency_ms: 90`, **no model** |
+/// | 5 | `/main/talky/ears` | **`/main/talky/brain`** | `cycle_id: "cycle:1"`, `duration_ms: 25` |
+/// | 6 | **`/main/talky/brain`** | `/main/talky/out` | `cycle_id: "cycle:1"`, `duration_ms: 5` |
 ///
 /// Rows 5 and 6 are the whole point of the cycle counter: both touch the target
 /// and both belong to `cycle:1`, but only row 5 is the update **reaching** the
 /// cell. Row 6 is the cell *answering* — a different fact, and not what the
-/// steward's `params_update_seen` question asks.
+/// argus's `params_update_seen` question asks.
 ///
 /// **Out-of-window messages — two rows** (`created_at` 500 and 5000), each
 /// deliberately built so that it would contaminate *every* counter at once if
@@ -114,7 +114,11 @@ async fn seed() -> (tempfile::TempDir, std::path::PathBuf) {
     let m_a = serde_json::json!({
         "model": "m/a",
         "tokens_prompt": 100,
-        "tokens_completion": 20
+        "tokens_completion": 20,
+        // GH #463: the rest of the usage block the `llm` cell writes.
+        "tokens_cached": 40,
+        "cost": 0.002,
+        "latency_ms": 120
     });
     let contaminant = serde_json::json!({
         "model": "m/a",
@@ -129,21 +133,29 @@ async fn seed() -> (tempfile::TempDir, std::path::PathBuf) {
         msg(1, "/other/a", "/other/b", 1_100, m_a.clone()),
         msg(2, "/other/a", "/other/c", 1_200, m_a.clone()),
         msg(3, "/other/a", "/other/d", 1_300, m_a.clone()),
-        // 4: the one error, and it has no model at all.
+        // 4: the one error, and it has no model at all. It carries a typed
+        //    error_code and a latency, because a failed call took time too —
+        //    that is what `group_by=error_code` groups (GH #463).
         msg(
             4,
             "/other/x",
             "/other/y",
             1_400,
-            serde_json::json!({ "finish_reason": "error" }),
+            serde_json::json!({
+                "finish_reason": "error",
+                "error_code": "rate_limit",
+                "latency_ms": 90
+            }),
         ),
-        // 5: cycle:1 ARRIVING at the target (to_path).
+        // 5: cycle:1 ARRIVING at the target (to_path). `duration_ms` is the
+        //    tool-side twin of `latency_ms` — a hop with no model and no cost
+        //    that a per-path grouping still has to sum (GH #463).
         msg(
             5,
             "/main/talky/ears",
             TARGET,
             1_500,
-            serde_json::json!({ "cycle_id": "cycle:1" }),
+            serde_json::json!({ "cycle_id": "cycle:1", "duration_ms": 25 }),
         ),
         // 6: cycle:1 LEAVING the target (from_path) — prefix traffic, but not
         //    an arrival, and therefore not part of the cycle counter.
@@ -152,7 +164,7 @@ async fn seed() -> (tempfile::TempDir, std::path::PathBuf) {
             TARGET,
             "/main/talky/out",
             1_600,
-            serde_json::json!({ "cycle_id": "cycle:1" }),
+            serde_json::json!({ "cycle_id": "cycle:1", "duration_ms": 5 }),
         ),
         // Out of window on both sides.
         msg(7, "/main/talky/ears", TARGET, 500, contaminant.clone()),
@@ -280,7 +292,7 @@ async fn the_ledger_answers_dead_letter_and_mutation_counts() {
 
 /// Step 4a: `path_prefix` is a **second counter**, not a filter over the
 /// answer. Asking about one cell must not silently shrink every other number
-/// in the reply — a steward that reads `total` after setting a prefix would
+/// in the reply — an argus that reads `total` after setting a prefix would
 /// otherwise be reading a different question than the one it thinks it asked.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_path_prefix_counts_only_that_cells_traffic() {
@@ -518,7 +530,7 @@ async fn no_raw_row_and_no_header_content_leaves_the_endpoint() {
 }
 
 /// Step 7a: a bounded read that hit its bound says so. An aggregate that
-/// silently stopped counting is worse than no aggregate: the steward would read
+/// silently stopped counting is worse than no aggregate: the argus would read
 /// a smaller number as good news.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_exhausted_scan_budget_is_reported_rather_than_hidden() {
@@ -551,7 +563,7 @@ async fn an_exhausted_scan_budget_is_reported_rather_than_hidden() {
 /// Step 7b: the one and only meaning of `unavailable` — **the read could not
 /// happen**.
 ///
-/// This is the fail-closed signal the steward's verdict depends on: it must
+/// This is the fail-closed signal the argus's verdict depends on: it must
 /// never be able to mistake "I could not look" for "I looked and found
 /// nothing". So the reply carries no counts at all — not zeroes — while still
 /// echoing the resolved query, which is what distinguishes it from the
@@ -828,4 +840,244 @@ async fn an_empty_ledger_window_is_refused_rather_than_answered_with_zeroes() {
     );
 
     colony.shutdown().await;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// GH #463 — the usage block travels whole, and counts group by path and error
+// code.
+//
+// Before #463 the `llm` cell wrote four figures into the hop header and the
+// ledger summed two of them. The cache-read count and the provider's own cost
+// were parsed off the wire and dropped, `latency_ms` lived only in the body —
+// which this endpoint never reads — and `group_by` was accepted, echoed and
+// never looked at. A watcher asking "latency per cell" or "cost per model" had
+// the numbers in the log and no way to sum them.
+// ───────────────────────────────────────────────────────────────────────────
+
+/// The whole usage block is summed, not just the two token counts.
+///
+/// `latency_samples` is the load-bearing half: three of the six in-window hops
+/// carry a latency, so a mean computed over `calls` would answer a different,
+/// smaller number and no reader could tell.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn every_figure_of_the_usage_block_is_summed_per_model() {
+    let (_td, db_path) = seed().await;
+
+    let reply = handle_read_ledger(&db_path, query(SINCE, UNTIL)).await;
+    let m = reply.messages.as_ref().expect("messages aggregate present");
+    let a = m.by_model.get("m/a").expect("model m/a is grouped");
+
+    assert_eq!(a.calls, 3);
+    assert_eq!(a.tokens_prompt, 300, "3 x 100 prompt tokens");
+    assert_eq!(a.tokens_completion, 60, "3 x 20 completion tokens");
+    assert_eq!(a.tokens_cached, 120, "3 x 40 cache-read tokens");
+    assert!(
+        (a.cost - 0.006).abs() < 1e-9,
+        "3 x 0.002 of the provider's OWN cost figure, found {}",
+        a.cost
+    );
+    assert_eq!(a.latency_ms, 360, "3 x 120 ms of provider wall time");
+    assert_eq!(
+        a.latency_samples, 3,
+        "the divisor for a mean is the number of hops that CARRIED a latency, \
+         never the call count — most hops in a window carry none"
+    );
+    assert_eq!(a.latency_ms / a.latency_samples as i64, 120, "mean latency");
+
+    // The m/a hops are `llm` hops: they carry no tool-side duration at all, and
+    // the sample count is what says so rather than a zero that reads as "fast".
+    assert_eq!(a.duration_ms, 0);
+    assert_eq!(a.duration_samples, 0, "no m/a hop carried a duration_ms");
+}
+
+/// `group_by=path` groups the same sums by the **receiving** path, and picks up
+/// the `duration_ms` that tool cells write and no model ever carries.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_ledger_read_groups_by_receiving_path_when_asked() {
+    let (_td, db_path) = seed().await;
+
+    let mut q = query(SINCE, UNTIL);
+    q.group_by = Some("path".to_string());
+    let reply = handle_read_ledger(&db_path, q).await;
+    let m = reply.messages.as_ref().expect("messages aggregate present");
+
+    assert_eq!(
+        m.by_path.len(),
+        6,
+        "six in-window rows, six distinct to_paths, found {:?}",
+        m.by_path.keys().collect::<Vec<_>>()
+    );
+
+    // Row 5 ARRIVES at the target; row 6 LEAVES it. The grouping keys on
+    // `to_path`, so the target's group is the arrival — the same direction the
+    // cycle counter means.
+    let arrived = m.by_path.get(TARGET).expect("the target is a group");
+    assert_eq!(arrived.calls, 1, "one row arrived at the target");
+    assert_eq!(arrived.duration_ms, 25);
+    assert_eq!(arrived.duration_samples, 1);
+    let left = m
+        .by_path
+        .get("/main/talky/out")
+        .expect("the target's answer is grouped under ITS receiver");
+    assert_eq!(left.duration_ms, 5, "row 6 counts at the cell it reached");
+
+    assert_eq!(
+        m.by_path
+            .get("/other/b")
+            .expect("an m/a receiver")
+            .latency_ms,
+        120,
+        "an llm hop's latency is summed under the path it reached"
+    );
+
+    // A second map beside `by_model`, never a filter over it: asking for one
+    // grouping must not shrink the answer the caller did not ask about.
+    assert_eq!(m.total, 6);
+    assert_eq!(m.by_model.get("m/a").expect("m/a still grouped").calls, 3);
+    assert!(
+        m.by_error_code.is_empty(),
+        "only the requested second grouping is computed"
+    );
+}
+
+/// `group_by=error_code` groups by the typed failure code. A hop that did not
+/// fail carries none and creates no group — an invented `null` key would be a
+/// bucket nobody can read.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_ledger_read_groups_by_error_code_when_asked() {
+    let (_td, db_path) = seed().await;
+
+    let mut q = query(SINCE, UNTIL);
+    q.group_by = Some("error_code".to_string());
+    let reply = handle_read_ledger(&db_path, q).await;
+    let m = reply.messages.as_ref().expect("messages aggregate present");
+
+    assert_eq!(
+        m.by_error_code.len(),
+        1,
+        "one in-window hop failed, found {:?}",
+        m.by_error_code.keys().collect::<Vec<_>>()
+    );
+    let rl = m
+        .by_error_code
+        .get("rate_limit")
+        .expect("the typed code is the group key");
+    assert_eq!(rl.calls, 1);
+    assert_eq!(
+        rl.latency_ms, 90,
+        "a failed call took time too, and that time is summable"
+    );
+    assert_eq!(rl.latency_samples, 1);
+    assert_eq!(rl.tokens_prompt, 0, "a call that failed reports no tokens");
+
+    assert_eq!(m.errors, 1, "the window-wide error count is unchanged");
+    assert!(
+        m.by_path.is_empty(),
+        "only the requested grouping is computed"
+    );
+}
+
+/// The compatibility half of #463: a caller that asks for no grouping — the
+/// only caller shape that existed before — gets the reply it has always got,
+/// with the two new maps not merely empty but **absent** from the JSON.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_ungrouped_read_answers_the_shape_it_always_answered() {
+    let (_td, db_path) = seed().await;
+
+    let reply = handle_read_ledger(&db_path, query(SINCE, UNTIL)).await;
+    let json = serde_json::to_value(&reply).expect("the reply serialises");
+    let messages = json["messages"].as_object().expect("messages object");
+
+    assert!(
+        messages.contains_key("by_model"),
+        "by_model is answered whether or not a grouping was asked for"
+    );
+    for added in ["by_path", "by_error_code"] {
+        assert!(
+            !messages.contains_key(added),
+            "`{added}` must not appear in an ungrouped reply — an empty map \
+             would be a new field every existing reader has to learn to ignore"
+        );
+    }
+}
+
+/// The aggregates-only ruling under a grouping the caller chose (GH #267,
+/// ruling Q14, widened by #463): a group KEY is the dimension the caller asked
+/// to be grouped along. Nothing else of the row travels with it — no envelope,
+/// no header value, no body.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_grouped_read_reveals_its_group_keys_and_nothing_else() {
+    let (_td, db_path) = seed().await;
+
+    let mut q = query(SINCE, UNTIL);
+    q.group_by = Some("path".to_string());
+    let reply = handle_read_ledger(&db_path, q).await;
+    let json = serde_json::to_value(&reply).expect("the reply serialises");
+
+    let mut keys = Vec::new();
+    collect_keys(&json, &mut keys);
+    for forbidden in [
+        "headers",
+        "body_payload",
+        "message_json",
+        "payload_json",
+        "id",
+        "trace_id",
+        "to_path",
+        "from_path",
+    ] {
+        assert!(
+            !keys.iter().any(|k| k == forbidden),
+            "key `{forbidden}` must not occur anywhere in a grouped ledger reply"
+        );
+    }
+
+    let m = reply.messages.as_ref().expect("messages aggregate present");
+    let group_keys: Vec<String> = m.by_model.keys().chain(m.by_path.keys()).cloned().collect();
+    let caller_strings = ["path"];
+    let mut strings = Vec::new();
+    collect_strings(&json, &mut strings);
+    for s in &strings {
+        assert!(
+            caller_strings.contains(&s.as_str()) || group_keys.contains(s),
+            "string `{s}` leaves the endpoint although it is neither the \
+             caller's own word nor a group key of the grouping it asked for"
+        );
+    }
+}
+
+/// The grouping vocabulary is exactly three words, and the list is closed.
+///
+/// A caller word must never reach SQL: it selects one of three fixed
+/// expressions or it is refused under the one documented `invalid_query`.
+#[test]
+fn the_grouping_vocabulary_is_three_words_and_closed() {
+    use meclaw_colony::colony_dispatch::parse_read_query_ledger_filters;
+
+    for accepted in ["model", "path", "error_code"] {
+        let body = serde_json::json!({
+            "query": {"since": SINCE, "until": UNTIL, "group_by": accepted}
+        });
+        let q = parse_read_query_ledger_filters(&body)
+            .unwrap_or_else(|e| panic!("`{accepted}` must be accepted: {}", e.details));
+        assert_eq!(
+            q.group_by.as_deref(),
+            Some(accepted),
+            "the accepted grouping is echoed verbatim"
+        );
+    }
+
+    for refused in ["cell_type", "to_path", "PATH", "", "model, path"] {
+        let body = serde_json::json!({
+            "query": {"since": SINCE, "until": UNTIL, "group_by": refused}
+        });
+        let err = parse_read_query_ledger_filters(&body)
+            .expect_err("an unknown grouping is refused, never silently ignored");
+        assert_eq!(err.key, "query.group_by");
+        assert!(
+            err.details.contains("error_code"),
+            "the refusal names the vocabulary it has, found {}",
+            err.details
+        );
+    }
 }

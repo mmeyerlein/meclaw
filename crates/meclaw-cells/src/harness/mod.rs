@@ -13,7 +13,8 @@
 //! written BEFORE the child is spawned, and a restart turns every unfinished
 //! row into "unknown outcome, inspect the workspace" — never into a new run.
 //!
-//! See `plans/p8-harness-cell.md` for the ratified design.
+//! The design is ratified; its shipped surface is documented in
+//! `docs/cell-types.md` § `harness`.
 
 /// Which vendor dialect the child speaks.
 pub mod adapter;

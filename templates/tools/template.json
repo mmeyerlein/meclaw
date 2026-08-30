@@ -1,13 +1,14 @@
 {
   "name": "tools",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": {
-    "purpose": "The tool surface of one assistant as ONE node with ONE contract: `tool_call` in, `tool_result` out. Today three occupants stand behind it -- a sandboxed one-shot shell, a GET-only HTTP client and a generic search wrapper -- and which of them serves a call is decided inside the hive, on `hop.tool_name`. Because the contract names lanes rather than cells, the whole implementation is one `swap_nodes` away from being something else: N tool cells today, one code-executing cell tomorrow, with no edge of the caller moving.",
-    "use_when": "One per assistant. Draw ONE edge to the hive path stamping `hop.route = 'tool_call'`, and one back off it on `tool_result` -- the pairing is declared in `params.required_drains` and a mutation that wires only the first is refused. `params.ports` is empty: the hive path is the only address, so no caller can grow an edge to a single tool and thereby pin the set.",
-    "not_in_scope": "No tool schemas -- they belong in the calling brain's `system.tools`, next to the model that has to choose. No per-tool credentials: a cell that needs one binds it itself, late, from the environment. No judgement about which tool to call or whether it should have been called -- that happened upstream, and a hive that re-decided it would be a second brain with no conversation in front of it. No memory tool either: a memory is a hive of the MEMBER (ADR-0002 E1) and reaching it is a lane of its own, not an occupant of this one.",
+    "purpose": "The tool surface of one assistant as ONE node with ONE contract: `tool_call` in, `tool_result` out -- and, since 1.2.0, a second question it answers about ITSELF: name the tools you use and take their schemas back on `tool_schemas`. Which occupant serves a call is decided inside the hive, on `hop.tool_name`. Because the contract names lanes rather than cells, the whole implementation is one `swap_nodes` away from being something else: N tool cells today, one code-executing cell tomorrow, with no edge of the caller moving.",
+    "use_when": "One per assistant. Draw ONE edge to the hive path stamping `hop.route = 'tool_call'`, and one back off it on `tool_result` -- the pairing is declared in `params.required_drains` and a mutation that wires only the first is refused. A cell that USES tools draws the second pair as well, `in_schemas` out and `tool_schemas` back, and asks once at start-up with the names its own template declares. `params.ports` is empty: the hive path is the only address, so no caller can grow an edge to a single tool and thereby pin the set.",
+    "not_in_scope": "No per-tool credentials: a cell that needs one binds it itself, late, from the environment. No judgement about which tool to call or whether it should have been called -- that happened upstream, and a hive that re-decided it would be a second brain with no conversation in front of it. No record of WHO asked for which schemas: what a cell uses is declared in that cell's own template, and a subscriber table here would be a second copy of it that drifts on the first rewiring. No memory tool either: a memory is a hive of the MEMBER (ADR-0002 E1) and reaching it is a lane of its own, not an occupant of this one. And no MCP SERVER as an occupant -- an MCP server is something a cell talks to; the `mcp` cell that talks to it stands here like every other tool.",
     "examples": [
       "a brain emits a tool_call bundle -> the dispatcher splits it -> one message per call reaches this hive on hop.route == 'tool_call' -> one tool_result comes back per call, whichever tool ran",
-      "adding a fourth tool is a change INSIDE this hive: one occupant directory, one edge in `params.graph`, no change to the caller -- which is the property the single contract buys",
+      "a cell starts and sends {\"tools\": [\"web_search\", \"web_fetch\"]} on in_schemas -> two declarations come back on tool_schemas, and a name the hive does not have comes back in `unknown` rather than as a silence",
+      "adding a tool is a change INSIDE this hive: one occupant directory, two edges in `params.graph`, one row in the `schemas` cell's table -- no change to the caller, which is the property the single contract buys",
       "hop.tool_name == 'web_search' selects the search occupant; the two environment tokens it binds (SEARCH_ENDPOINT, SEARCH_API_KEY) are declared in `requires.env` and carry no value in this tree"
     ]
   },
@@ -22,6 +23,21 @@
         "type": "string",
         "required": false,
         "because": "binds `params.api_key` of the `web_search` occupant, written `${SEARCH_API_KEY:-}`. Not required, because the cell filters the empty string and queries the endpoint anonymously -- that is the occupant's own declared contract (`contract.settings.api_key`), and requiring the key here would contradict the cell it configures. Set it when the configured endpoint wants a bearer token. It carries no value in this tree and never should: the token is the name of a secret, not the secret"
+      },
+      "TOOLS_FILE_ROOT": {
+        "type": "string",
+        "required": false,
+        "because": "binds `params.base_path` of BOTH the `file` and the `edit` occupant, written `${TOOLS_FILE_ROOT:-/tmp}`. One key for two cells is deliberate: one assistant has one file root, and a tool that could edit what its neighbour cannot read would be a boundary nobody could state. Not required, and the default is the honest part -- `base_path` must name a directory that EXISTS or the cell refuses to spawn, and the only directory that exists on every machine is the scratch one. So unset, this assistant's file surface is rooted at /tmp: that is a real reach, it is nobody's mistake, and nothing anywhere reports it -- which is exactly why the key is written down here. Set it to the directory this assistant may actually touch"
+      },
+      "MCP_ENDPOINT": {
+        "type": "string",
+        "required": false,
+        "because": "binds `params.endpoint` of the `mcp` occupant, written `${MCP_ENDPOINT:-}`. It has NO default, unlike every other key here, and that is deliberate (GH #489): an MCP bridge is a long-running cell, and one pointed at a guessed loopback placeholder reconnects to nothing -- it used to panic five times per boot and leave a permanently `failed` cell in every colony that ever grew this template. Unset therefore means UNSET: the occupant spawns, holds no connection, calls nothing, and answers any call that does reach it with `error_code: \"endpoint_unset\"`. The occupant is also UNWIRED here (no edge names it), but that alone is not the safeguard -- derived island inactivity is a first-boot state, not a persisted one. Declared and not required for the same reason the search endpoint is -- an instantiation that wants the shell and the fetcher must not be refused over a server it will never call"
+      },
+      "TOOLS_VAULT_BROKER": {
+        "type": "string",
+        "required": false,
+        "because": "binds `params.broker` of the `vault` occupant, written `${TOOLS_VAULT_BROKER:-/os/access/invoke}`. A vault answers exactly ONE sender and attests its own inbound edges before it accepts key material; the sender is a capability broker's `invoke` cell, and there is none in this hive. That is why the occupant ships unwired and why this key exists: naming the broker is the decision, drawing the edges is the consequence. It names an ADDRESS, never key material -- the vault's own key source is VAULT_KEY_SOURCE, and no value of either travels in this tree"
       }
     }
   },
@@ -29,7 +45,7 @@
     "trust": "full",
     "network": "allow",
     "filesystem": "unrestricted",
-    "because": "The widest occupant wins on every axis, and on every axis the widest is an occupant that declares no `params.sandbox` at all: `web_fetch` and `web_search` carry none, which is the shipped truth rather than an omission -- egress IS what those two cells do, `network: \"deny\"` would turn them off, and a process sandbox has no notion of an allowed host. Either one of them alone therefore sets the whole hive to trust `full`, network `allow`, filesystem `unrestricted`. `bash` (`trust: restricted`, `network: deny`, `filesystem.runtime: true`) and `unknown` (the same block, the tightest in the hive) tighten nothing about the hive as a WHOLE: a union is not an average, and the two sandboxed occupants only bound what happens once dispatch has already chosen them. This reads uncomfortable and it is meant to: the radius already exists collectively and was invisible while it was spread over four `config.json` files. Written down, it is what a replacement is measured against -- a single code-executing cell that needs exactly this is not a widening, and one that needs more is, visibly, in the diff of this file. Two occupants joined the hive with R6 (`build`, `apply`) and neither widens this union by a hair: both carry the tightest block in the tree (`trust: restricted`, network `deny`, filesystem `runtime`), the same one `bash` and `unknown` carry. They are named here anyway, because a union that leaves half its posts out of the calculation is the defect this block exists to prevent -- and because their REACH is the thing that is new about them, which is stated where reach belongs: in `params.contract`, on the `build` lane."
+    "because": "The widest occupant wins on every axis, and on every axis the widest is an occupant that declares no `params.sandbox` at all. Six do: `web_fetch` and `web_search` (egress IS what those two cells do -- `network: \"deny\"` would turn them off, and a process sandbox has no notion of an allowed host), `file` and `edit` (they do their own I/O rather than starting a runner, so a process sandbox has nothing to bound here; their fence is `params.base_path`, checked lexically and again after canonicalisation), and `mcp` and `vault` (long-running and stateful respectively, and both UNWIRED in this tree -- no edge names their directory, so the substrate derives them inactive and nothing routes to them; they are counted here anyway, because a union that leaves a directory out of the calculation is the invisibility this block exists to end, and because waking one is one `add_edges` pair rather than a new file). Any single one of those six therefore sets the whole hive to trust `full`, network `allow`, filesystem `unrestricted`. The five that DO carry a block -- `bash`, `unknown`, `build`, `apply` and `schemas`, all of them `trust: restricted`, network `deny`, `filesystem.runtime: true`, the tightest in the library -- tighten nothing about the hive as a WHOLE: a union is not an average, and what they bound is what happens once dispatch has already chosen them. This reads uncomfortable and it is meant to: the radius already exists collectively and was invisible while it was spread over separate `config.json` files. Written down, it is what a replacement is measured against -- a single code-executing cell that needs exactly this is not a widening, and one that needs more is, visibly, in the diff of this file."
   },
   "reentrancy": {
     "bash": {
@@ -55,6 +71,26 @@
     "apply": {
       "reentrant": true,
       "because": "The same shape: it carries a manifest out and a receipt back, keeping nothing. Two submissions in flight are two manifests the colony rolls off one after the other, in the order they reach the mutation door -- and because a manifest has no rollback, that order is the colony's to decide and never this cell's to assume."
+    },
+    "file": {
+      "reentrant": true,
+      "because": "A stateless request/response cell over the filesystem: one op per call, no handle and no cursor carried between calls, so `params.max_concurrency` is a queue and never a serialisation. Two READS of one file cannot disturb each other; two WRITES of one path race in the filesystem rather than in this cell, and that is the caller's ordering to make -- which is exactly why the neighbour `edit` answers this question the other way."
+    },
+    "edit": {
+      "reentrant": false,
+      "because": "The one `false` in this block, and it is the reason the block exists. An edit is a read-modify-write with no lock and no tempfile+rename (`cell-types.md` § edit: \"Concurrent edit on the same file: race condition possible ... The caller topology serializes if needed\"). A caller cannot see that hazard from outside, so this occupant serialises instead of asking it to: `params.max_concurrency: 1`, a strict queue. A brain may still fan a round out across the other occupants; the edits of that round run one after another."
+    },
+    "schemas": {
+      "reentrant": true,
+      "because": "It reads a list of names and writes a list of declarations out of a table that is compiled into its own script. No disk, no network, no state, nothing shared -- two start-up questions in flight cannot reach each other, and they are the only kind of message it ever gets."
+    },
+    "mcp": {
+      "reentrant": true,
+      "because": "A long-running bridge with one in-flight request per JSON-RPC id, so two calls are two ids and neither can be answered with the other's result. Declared although the occupant is UNWIRED in this tree: the hazard #286 named is a swap that quietly turns a parallel round sequential, and the occupant nobody declared is exactly the one whose serialisation surprises the caller the day somebody draws its edges."
+    },
+    "vault": {
+      "reentrant": true,
+      "because": "One operation per message against its own `cell.db`, and a cell is one task working its mailbox one message at a time -- two calls are two turns, never two halves of one. Declared for the same reason `mcp` is: it is UNWIRED here, and an entry that appears only once somebody wires a cell is an entry nobody reads at the moment it would have mattered."
     }
   },
   "tags": [
@@ -63,6 +99,9 @@
     "bash",
     "web_fetch",
     "web_search",
+    "file",
+    "edit",
+    "schemas",
     "tool-loop"
   ],
   "author": "@mmeyerlein",

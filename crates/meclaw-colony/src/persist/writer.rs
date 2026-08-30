@@ -67,6 +67,31 @@ pub enum ColonyWriteOp {
         /// Unix seconds of the status change.
         updated_at: i64,
     },
+    /// GH #491: UPDATE-only of the `registry.dormant` column for an existing
+    /// row (`UPDATE registry SET dormant=?, updated_at=? WHERE path=?`).
+    ///
+    /// The durable record of an EXPLICIT decision that a node is asleep —
+    /// `add_nodes[].birth: "inactive"` and the `ref` marker's equivalent. It is
+    /// not a second activity state: activity stays derived from the edge table,
+    /// and the marker only tells the connectivity recompute that this node's
+    /// inactivity was DECLARED, so a mutation that merely REACHES it (a
+    /// recompute scope that expands over its subtree) must not derive it active
+    /// again. A mutation that ADDRESSES the node clears it, and then the
+    /// ordinary reconnect applies as it always did.
+    ///
+    /// Same shape and the same reason as [`Self::SetRegistryStatus`]: the row is
+    /// created by `UpsertRegistry`, this op is the SOLE write-authority for the
+    /// column, and it is always enqueued AFTER the `UpsertRegistry` of the same
+    /// path (the writer channel is FIFO, so the row exists by then).
+    SetRegistryDormant {
+        /// Cell path (primary key of the row to update).
+        path: Path,
+        /// `true` when the node's sleep was declared, `false` once a mutation
+        /// that names it has woken it.
+        dormant: bool,
+        /// Unix seconds of the change.
+        updated_at: i64,
+    },
     /// GH #169: UPDATE-only re-address of an existing `registry` row
     /// (`UPDATE registry SET path=?, updated_at=? WHERE path=?`) — the durable
     /// half of a `move_nodes` relocation.
@@ -487,6 +512,16 @@ fn apply_op(
             tx.execute(
                 "UPDATE registry SET status=?, updated_at=? WHERE path=?",
                 rusqlite::params![status, updated_at, path.as_str()],
+            )?;
+        }
+        ColonyWriteOp::SetRegistryDormant {
+            path,
+            dormant,
+            updated_at,
+        } => {
+            tx.execute(
+                "UPDATE registry SET dormant=?, updated_at=? WHERE path=?",
+                rusqlite::params![dormant, updated_at, path.as_str()],
             )?;
         }
         ColonyWriteOp::MoveRegistryPath {

@@ -1,0 +1,74 @@
+{
+  "cell": {
+    "type": "store"
+  },
+  "params": {
+    "schema": {
+      "views": {
+        "owner": "text",
+        "view_id": "text",
+        "region": "text",
+        "kind": "text",
+        "content": "json",
+        "components": "json",
+        "ttl_ms": "int",
+        "updated_at": "int"
+      }
+    },
+    "query_timeout_ms": 5000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "results": {
+          "type": "array",
+          "required": false
+        }
+      },
+      "hop": {
+        "operation": {
+          "type": "string",
+          "required": true
+        },
+        "rows_affected": {
+          "type": "number",
+          "required": false
+        },
+        "duration_ms": {
+          "type": "number",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        },
+        "bundle_errors": {
+          "type": "number",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "What is on the screen right now, as one table of rows. Eight slots per view: `owner` (the `envelope.reply_to` of whoever put it up -- never a field out of a body), `view_id` (that sender's own name for it, `[a-z0-9-]{1,64}`), `region` (where on the screen; v1 knows one, `main`), `kind` (`prose` or `component`), `content` (the prose `{title, body}`, or the root node of a component tree), `components` (the `component.define` arguments the view brought with it, so a later write can be compared against them and skipped when nothing changed), `ttl_ms` (how long the view stays fresh; `0` is forever) and `updated_at` (epoch milliseconds, which is what orders the screen newest first).",
+    "use_when": "Inside a display hive only. The compose cell is the sole reader and the sole writer; a second writer would be a second opinion about what is on the screen, and the screen has only one.",
+    "not_in_scope": "It decides nothing and enforces nothing. IDENTITY IS `(owner, view_id)`, and this cell cannot say so: a store schema declaration carries column types and nothing else -- no PRIMARY KEY, no UNIQUE, no index -- so the uniqueness is held by `compose`, which writes a view as a DELETE on that pair followed by an INSERT, in one bundle, in that order. A bundle is not a transaction, which is why the select that reads the before-state is the FIRST leg rather than a second round trip. Nothing here sweeps either: an expired row stays until something overwrites it, and it simply stops being drawn."
+  }
+}

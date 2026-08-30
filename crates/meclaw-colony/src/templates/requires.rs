@@ -5,7 +5,7 @@
 //! reading it instead of by being rejected one key per attempt. The two
 //! placeholder classes stay apart because they behave differently: `${ctx.X}`
 //! resolves onto disk while staging, `${ENV}` stays a token and binds late.
-//! Shape: `plans/composition-reference/spec.md` part 2 (:139-149).
+//! Shape: part 2 of the composition-reference spec — the exact JSON of GH #292.
 //!
 //! **Deliberate non-goal: no `templates` table column and no schema migration.**
 //! The declaration is not indexed and not carried through `colony.db`. The
@@ -102,7 +102,7 @@ mod tests {
         p
     }
 
-    /// The exact JSON of GH #292 / `plans/composition-reference/spec.md` :139-149.
+    /// The exact JSON of GH #292.
     #[test]
     fn reads_the_shape_the_issue_specifies() {
         let td = TempDir::new().unwrap();

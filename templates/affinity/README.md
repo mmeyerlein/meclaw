@@ -1,19 +1,20 @@
-# `affinity@3.0.0`
+# `affinity@3.2.0`
 
 The curated record of the people and agents a colony knows -- as one hive of existing
 cell types. No new cell type, no Rust, and no model: every judgement in here is a
 comparison, so a brief costs nothing and a push tick over unchanged data costs two
 selects.
 
-Five cells:
+Six cells:
 
 | path | type | role |
 |---|---|---|
-| `store` | `store` | the domain: entities, relations, trust, disclosure, subscribers, proposals, audit |
+| `store` | `store` | the domain: entities, relations, trust, disclosure, subscribers, proposals, audit -- plus `port_scratch`, which is not domain at all (§ The seed) |
 | `brief` | `code` | the only reader of the domain -- audience filter and pack rendering. Appends its own `audit` row per brief |
 | `gate` | `code` | the only writer of the domain -- AIeOS validation, minting, audit |
 | `push` | `code` | push-on-change: hashes what a subscriber would get, and stays silent when it did not move. Writes that hash and `sent_at` back onto the subscriber row, plus an `audit` row |
 | `clock` | `timer` | the push tick (6-field Quartz cron, **UTC**) |
+| `porter` | `code` | the transfer lane: walks the record out as a versioned document, takes one part back into a running hive. It transfers and decides nothing (§ Taking the record out) |
 
 **This is the first hive with a domain of its own.** Memory produces the raw material
 (extracted, unkuratiert, with a confidence); affinity decides. The way from there to
@@ -85,6 +86,13 @@ only affinity is quoted. Memory is allowed to be wrong; affinity has to have dec
   `system.peer`, `system.relationship` and `system.channel`, and an `llm` cell accumulates
   those four per path in its own `cell.db`: an attune at birth and every later change
   update only the slot that moved.
+- **And the agent's own identity has its durable home here too** (GH #488). The `system.*`
+  tree of a brain is a delivered COPY; what an agent is and how it answers lives in the
+  reserved `mx.brain` subtree of its own entity record, is asked for by the fifth request
+  slot `brain`, and therefore travels on the export lane this hive already has. Until then
+  those slots existed only in a brain's `cell.db`, nothing exported them and a rebuilt
+  colony greeted its own agent as the vendor's default assistant. See § The agent's own
+  identity lives here.
 - **And every slot carries its own rendering** (GH #258). The right *place* is not yet the
   right *shape*. An `llm` cell flattens what arrives in `system.*` into leaves, stopping at
   the first object that carries a `text` key, and concatenates exactly those `text` values
@@ -124,33 +132,38 @@ only affinity is quoted. Memory is allowed to be wrong; affinity has to have dec
 ## Cells and lanes
 
 ```
-affinity/                     hive  -- scope marker, eight internal edges
-  store/                      store -- the domain (7 tables + 2 store-owned alias tables)
-    seed/{entities,relations,trust,disclosure}.jsonl
+affinity/                     hive  -- scope marker, ten internal edges
+  store/                      store -- 7 domain tables + `port_scratch` + 2 store-owned alias tables
+    seed/{entities,relations,trust,disclosure,subscribers}.jsonl
   brief/                      code  -- read port: trust -> disclosure -> traverse -> entity
   gate/                       code  -- write port: validate -> store ops -> audit -> ack
   push/                       code  -- change detector, renders nothing itself
   clock/                      timer -- the tick
+  porter/                     code  -- transfer port: the record out as a document, one part back in
   aieos.schema.json           the VENDORED AIeOS 1.1.0 skeleton (see below)
 ```
 
 A `code` cell has no `cell.db`, so a lane that needs several reads keeps its state on the
-wire: `brief` and `push` emit their phase and their carry on the **hop**, the internal edge
-promotes both to **context**, and the store's answer brings them back. The store round trip
-*is* the cell's memory. That is why this hive has eight edges and not four.
+wire: `brief`, `push` and `porter` emit their phase and their carry on the **hop**, the
+internal edge promotes both to **context**, and the store's answer brings them back. The store
+round trip *is* the cell's memory. That is why this hive has ten internal edges and not five.
 
 ### Ports
 
 | port | direction | lane |
 |---|---|---|
 | `in_brief` | in -> the **hive path** | the request as a `tool_call` turn (`{subject, channel, slots}`), plus TWO facts a body may never carry: `hop.audience` (who asks) and `hop.audience_set` (the round, a JSON array of participant ids). The door edge promotes both to `context.asker` and `context.audience_set` -- a caller that promotes those keys on its own edge is served the same way, and **wins** where both exist (see § Identity comes from the edge). `participants` is **retired, not aliased** ([#330](https://github.com/mmeyerlein/meclaw/issues/330); see the retraction note under the audience-SET rule) -- a request that spells the round that way declared no round at all. **Both facts are required** -- no asker is `no_audience`, no round is `no_round`, and either is a denial with an `audit` row and no `system` slot at all |
-| `out_brief` | `./brief` -> the asking `llm` cell, or an agent hive's tool lane | `hop.route == 'answer' && hop.subscriber == ''`: the four `system.*` slots **and** the same pack as JSON in the `tool_result`, under the id of the call being answered |
+| `out_brief` | `./brief` -> the asking `llm` cell, or an agent hive's tool lane | `hop.route == 'answer' && hop.subscriber == ''`: the `system.*` slots the request asked for **and** the same pack as JSON in the `tool_result`, under the id of the call being answered |
 | `in_propose` | in -> the **hive path** | the proposal as a `tool_call` turn (`{op, ...}`); the edge **MUST** promote the writer to `context.actor` and, for `subscribe`, the subscribing cell's address to `context.subscriber` |
 | `out_ack` | `./gate` -> the proposer | `hop.route == 'ack'`, `accepted` or `rejected` plus a `reason_code` |
-| `out_push` | `./brief` -> each subscribed `llm` cell | `hop.route == 'answer' && hop.subscriber == '<cell path>'`: the four `system.*` slots and **no** turn beside them, so the update costs a write and not an inference (GH #263; the `llm` cell returns without calling when a body carries no `messages[]`) |
+| `out_push` | `./brief` -> each subscribed `llm` cell | `hop.route == 'answer' && hop.subscriber == '<cell path>'`: the `system.*` slots the subscription asked for and **no** turn beside them, so the update costs a write and not an inference (GH #263; the `llm` cell returns without calling when a body carries no `messages[]`) |
 | `out_error` | `./gate`, `./brief`, `./push` -> a drain | `hop.route == 'error'` -- the parent MUST wire it |
+| `in_export` | in -> the **hive path** | a demand that this hive hand out everything it holds. No keys travel with it: an export is about the whole hive, never about a round (§ Taking the record out) |
+| `in_import` | in -> the **hive path** | ONE part of such a document, for a hive that is already running. Applying the same part twice leaves the same state |
+| `out_dump` | `./porter` -> a drain | `hop.route == 'dump'`: one export part (`hop.dump_kind == 'export_part'`) or the receipt of one applied part (`'import_receipt'`). The edge that satisfies the gate must be **plain** -- see below |
+| `out_reject` | `./porter` -> a drain | `hop.route == 'reject'`: a transfer this hive would not carry out, with `hop.reject_reason` naming the case. `reject` is new in `affinity@3.2.0`; before it the hive spoke only `answer`, `ack` and `error` |
 
-Both in-lanes are asserted at the hive path and not at a cell behind it: `params.ports`
+All four in-lanes are asserted at the hive path and not at a cell behind it: `params.ports`
 is empty, so a wiring that names `./brief` or `./gate` is refused with
 `hive_port_boundary`. Which cell serves a lane is the template's business, which is what
 makes it replaceable.
@@ -161,6 +174,32 @@ audience filter can only be wrong in one place. Both lanes leave on `answer`, so
 `hop.subscriber` is what tells them apart -- an `out_brief` edge written without that
 condition also collects every push, and the asking cell then gets slot writes meant for
 somebody else.
+
+### The slots a request may ask for
+
+`slots` in the request body names what the pack carries. Four of them are **person** slots
+-- projections of somebody's curated document, rendered here and read by a model -- and the
+fifth is the agent's own durable state:
+
+| slot | reads | lands in the recipient as |
+|---|---|---|
+| `identity` | the subject's AIeOS identity, motivations and summary | `system.identity`, one rendered leaf |
+| `peer` | how the subject speaks and what it likes | `system.peer`, one rendered leaf |
+| `relationship` | the relation walk from the asker to the subject | `system.relationship`, one rendered leaf |
+| `channel` | the channel persona for `channel` | `system.channel`, one rendered leaf |
+| `brain` | the reserved `mx.brain` subtree of the subject's own record ([#488](https://github.com/mmeyerlein/meclaw/issues/488)) | one `system.<family>` per family, one leaf per raw text below it -- see § The agent's own identity lives here |
+
+**A request with no `slots` field gets the four person slots and never `brain`.** That is a
+decision and not an omission: `brain` is asked for by a self-subscription and by nothing
+else, and a caller that wanted a briefing on a person must not be handed that person's
+agent's charter because it left a field empty.
+
+**`identity` and `brain` cannot travel in one request.** Both land on the same top-level
+key -- the rendered person slot is exactly one leaf, an `mx.brain` `identity` family is one
+leaf per path below it -- so delivered together the rendered one swallows every path under
+it, silently, and the damage shows up two turns later as an agent that has stopped knowing
+its own soul. The request is refused whole with `slots_conflict` and an `audit` row rather
+than served half; subscribe the two separately.
 
 ### Wiring `out_push` for a subscribing brain
 
@@ -202,6 +241,32 @@ edge behind it is accepted, written and silently undeliverable; that is the pare
 avoid and not something the hive can refuse for it
 ([#289](https://github.com/mmeyerlein/meclaw/issues/289)).
 
+### Subscribing is one act with two halves
+
+A subscription becomes live through **one act with two halves**, and
+[#458](https://github.com/mmeyerlein/meclaw/issues/458) fixes their order:
+
+**The edge is drawn first, the row is stamped second.** A mutation adds the push edge --
+from `<member>/affinity` to the subscriber's own hive path, guarded on
+`hop.subscriber == '<that same path>'` and re-stamped onto the subscriber's `in_pack` lane
+-- and only then does a `subscribe` op reach `./gate`, which writes the row `active`.
+
+**Why that order and not the other.** An edge with no active row behind it carries
+**nothing**: `push` selects on `status = 'active'`, never sees the subscriber, and emits no
+pack, so the intermediate state is inert and invisible. A row with no edge behind it is the
+opposite -- accepted, written and **silently undeliverable**, which is exactly the failure
+[#289](https://github.com/mmeyerlein/meclaw/issues/289) named and could not refuse. The
+order is chosen so that the half-finished state is the harmless one.
+
+**Nobody mints the token.** `hop.subscriber` carries the row's own `cell_path`, so the
+subscriber's **address is** the token -- both halves can name it before either has run, and
+there is no third value to agree on.
+
+**And the same mutation draws the lane the `subscribe` itself travels.** `./gate` takes the
+subscriber from `context.subscriber` on the edge and refuses a body that asserts one
+(`subscriber_not_on_edge`, `identity_from_body`), so the propose edge with its
+`set_context` is part of the same act -- not a prerequisite somebody wires later.
+
 ### The persona is a projection, not a copy
 
 The seed under `seed/entities.jsonl` is the **birth state** and nothing more. After birth
@@ -219,10 +284,82 @@ The shipped library no longer carries an example of it: the demo bots that did h
 way to the seed route (`templates/talky/brain/seed/system.jsonl`), which writes the
 identity once at birth instead of once per turn.
 
-**This template only offers the lane.** Which brains subscribe to what by default, and
-which cell in an assistant tree owns the subscription, is a composite decision and lands
-with [#302](https://github.com/mmeyerlein/meclaw/issues/302). Until then a parent wires the
-two edges above by hand.
+**Who owns the subscription: the `member`.** That was the open half of
+[#302](https://github.com/mmeyerlein/meclaw/issues/302) and it is decided
+([#453](https://github.com/mmeyerlein/meclaw/issues/453)). The record lives at the member
+level because two assistants of one person read one record; a subscription is a **row in
+that record**, so it belongs to the level that holds it and not to the generation that
+reads it. An assistant is replaced per generation -- a subscription owned there would have
+to be re-written on every swap, and the brain that comes up after the swap would be silent
+until somebody remembered to.
+
+**The seeded subscription ships INACTIVE.** `seed/subscribers.jsonl` ships exactly one row --
+the seeded agent's own document, addressed at the seeded agent's own brain, on every
+channel (§ The seed) -- and it ships it with `status: "inactive"`
+([#458](https://github.com/mmeyerlein/meclaw/issues/458)). A row is only half a
+subscription: the other half is an edge, and writing an edge is a mutation, so mutation
+authority being the colony's is exactly why the shipped half cannot be the whole. A row
+that called itself `active` at birth therefore claimed a delivery the tree cannot make --
+its `cell_path` names a brain no shipped graph draws an edge to, and until #458 no shipped
+brain even had a lane that accepts an identity. The row is an **example of the shape**, not
+a live subscription.
+
+The `cell_path` in it is a **birth-state token**, exactly as `entity:alex` is: the mutation
+that instantiates the member either draws the push edge conditioned on that token, or
+rewrites the row through `./gate` with a `subscribe` naming the real address. Either way
+the two edges above are drawn by that mutation, one per subscribing cell -- and `./gate`
+mints the live row under an id of its own (`sub:<subscriber>|<subject>`), so the seeded one
+stays the inactive example it was born as.
+
+**What the silence means is written on the row.** An untouched hive ticks and says nothing
+because **nothing has subscribed**, not because nothing changed -- and the two are told
+apart by reading `status`, a fact anybody may select. `docs/development-rules.md` § 2c (an
+empty result and a forgotten call must never look alike) is satisfied by the column rather
+than by a fiction: `./push` selects `where status = 'active'` and finds no subscriber at
+all, which is a different, readable state from finding one whose hash did not move.
+
+### The agent's own identity lives here (`mx.brain`, #488)
+
+A brain's `system.*` tree is a **delivered copy**. The durable home of what an agent is and
+how it answers is a reserved subtree of its own entity record in this hive, `mx.brain` --
+one object per `system.*` family, one raw text per leaf:
+
+```json
+"mx": {"brain": {"identity": {"soul": "You are Aiden ..."},
+                 "instructions": {"reply": "Answer in the language ..."}}}
+```
+
+The dotted path of a leaf **is** the slot path the receiving brain ends up with
+(`identity.soul`), and the text is wrapped as `{"text": ...}` on the way -- which is exactly
+the value shape an `llm` cell writes into its own `system` table, so a slot that made the
+round trip is byte-identical to the one it was read from. These leaves therefore do **not**
+go through the renderer every person slot goes through: that renderer puts a `text` at the
+top of a slot, which is what makes a person slot one leaf, and doing it here would collapse
+the whole family to one leaf and lose every path below it.
+
+**Why it lives here and not in the brain.** Until #488 those slots existed only in a brain's
+own `cell.db`: nothing exported them, no template seeded them, and a colony rebuilt from its
+own export brought a brain up with an empty charter that answered as the vendor's default
+assistant. `entities.mx` is a `json` column of a table this hive already exports (§ Taking
+the record out), so putting them there gives the identity the transfer lane it was missing
+without a fifth holder, a new document format or a change to `./porter`.
+
+**The way back out is an ordinary self-subscription.** The agent subscribes to its own
+subject with `slots: ["brain"]`, `./push` notices a changed hash, `./brief` reads the
+subtree and emits it on `out_push` as `system.*` and no turn beside it, and the receiving
+composite's `in_pack` lane upserts it into the brain -- the same two halves as any other
+subscription (§ Subscribing is one act with two halves), and the same closed list of
+families the pack lane accepts (`identity`, `persona`, `handover`, `instructions`; see
+`templates/collector/README.md` § "The door in the wall"). One consequence worth knowing on
+a rebuild: `subscribers.pack_hash` and `sent_at` are cleared by `./porter` on import, which
+is why the first identity pack after a rebuild fires at all instead of being read as
+already delivered.
+
+**And the disclosure filter applies unchanged.** `mx.brain` is a field path like any other:
+without a `disclosure` row naming it for the asking audience the renderer delivers nothing
+at all, fail-closed, and the only thing that leaves is an audit line. The seed ships that
+row for the placeholder agent (`disc:aiden-self-brain`, § The seed) so the path is a worked
+example and not a description.
 
 ### Identity comes from the edge, never from the body
 
@@ -341,15 +478,19 @@ proposals:
   push-on-change mechanism: without persisting it there is nothing to compare the next
   tick against, and every tick would resend. Neither column is domain content and neither
   is reachable from a proposal.
+- **`porter` writes `port_scratch` and the two alias tables.** The notepad is the transfer
+  lane's own state and no reader takes it as truth; `set_alias` and `reject_pair` re-derive
+  an identity binding the source hive had already decided, from a table that travelled in the
+  same document. Neither is a fresh judgement about a person, which is what `gate` owns.
 
-So the sentence holds for what a reader believes and does not hold for the two ledgers the
-lane keeps about itself.
+So the sentence holds for what a reader believes and does not hold for the three ledgers the
+lanes keep about themselves.
 
 How far that is *enforced* rather than agreed:
 
 | layer | mechanism | does it hold? |
 |---|---|---|
-| internal edges | only `gate`, `brief` and `push` have an edge to `./store`. `brief` reads with `select`/`traverse` and appends its own `audit` row; `push` reads, appends `audit`, and updates `pack_hash`/`sent_at` on the subscriber row it served. Neither touches domain content | template convention. The store does not check which op came from whom. |
+| internal edges | only `gate`, `brief`, `push` and `porter` have an edge to `./store`. `brief` reads with `select`/`traverse` and appends its own `audit` row; `push` reads, appends `audit`, and updates `pack_hash`/`sent_at` on the subscriber row it served; `porter` reads every domain table and writes only `port_scratch` plus the two tables the store keys itself. None of them touches domain content | template convention. The store does not check which op came from whom. |
 | external access | a parent scope can no longer wire a deep endpoint into `affinity/store` **by mutation**: `params.ports` is empty, so every path inside the hive is rejected with `hive_port_boundary` (GH #133) and the two lanes are asserted at the hive path itself (`in_brief`, `in_propose`). A **bootstrap** `params.graph` of a parent still can — the birth topology is the colony author's sovereign design; the seal guards against runtime mutation. | **prevented for mutations, by design not for boot.** |
 | writing | the store declares `write_surface: "internal"` (GH #132): a write op from a sender outside `/…/affinity` is refused with `write_denied` before it reaches the database, whatever the wiring path. Reads stay free from anywhere — which is what keeps a debug probe straight into `./store` a legitimate move. | **prevented.** |
 | `capabilities` | a discovery hint | no. There is no permission layer: whoever can route, may. |
@@ -362,11 +503,15 @@ so without a second declaration an `import` would write rows straight past the o
 sentence this hive is built on. `store/config.json` therefore also carries
 `"write_surface": "internal"` in its **`contract`** block. Both halves compute the same
 owning scope, so the store has exactly one boundary; an `export` is a read and neither
-half bounds it. `clock` carries the contract half as well: its `cell.db` is where the
+half bounds it. The transfer lane of `affinity@3.2.0` is not an exception to that and does
+not need to be: `./porter` stands **inside** the hive scope and writes through the store's
+own ops, so it is bounded by the same sentence as `./gate` is. `clock` carries the contract half as well: its `cell.db` is where the
 schedules live, and a planted schedule fires into `./push` with an `emit_to` of the
-writer's choosing. `brief`, `gate` and `push` do not -- a `code` cell keeps this lane's
-state on the wire (the store round trip *is* its memory), so their `cell.db` holds
-nothing to protect and a boundary around it would be decoration.
+writer's choosing. `brief`, `gate`, `push` and `porter` do not -- a `code` cell keeps this
+lane's state on the wire (the store round trip *is* its memory), so their `cell.db` holds
+nothing to protect and a boundary around it would be decoration. `porter` is the sharpest
+case of that: the one thing it cannot keep on the wire -- one import part beside the probe
+result -- it parks in the STORE, under `port_scratch`, and not in a `cell.db` of its own.
 
 So v1 is **soft sovereignty**: one port, documented edges, an `audit` table and this README.
 A bypass is possible and it is *visible afterwards* -- it is not prevented. The boundary
@@ -436,7 +581,170 @@ answer on the first boot, and the disclosure rows are deliberately **narrow**: `
 sees names, text style, idiolect and a summary of the favourites, and nothing else. An
 audience that is not in that file is told nothing about anybody, which is the whole point.
 
-Seed applies only on `OpenStatus::Created`; a re-open never overwrites it.
+`entity:aiden` also carries the reserved `mx.brain` subtree as a worked example -- an
+`identity.soul` and an `instructions.reply`, the two slots that decide who a brain is and
+how it answers (§ The agent's own identity lives here) -- released to the agent itself by
+`disc:aiden-self-brain` on the field path `mx.brain`. Without that release the subtree is
+read by nobody, the same as every other field in here.
+
+`seed/subscribers.jsonl` is the fifth table and the only one that is a **wiring** birth
+state rather than a data one: one **inactive** row, `entity:aiden` addressed at
+`./assistants/aiden/brain` on channel `*` in the `identity` slot, cut by the
+`disc:aiden-self-*` releases that name `aieos.identity.names`, `aieos.motivations` and
+`aieos.linguistics.text_style`. It ships inactive
+([#458](https://github.com/mmeyerlein/meclaw/issues/458)) because a row alone is half a
+subscription and the edge behind it can only be drawn by a mutation: it is the **shape** a
+`subscribe` writes, not a delivery the template can keep. A fresh hive therefore ticks
+silently, and `status` is where a reader finds out why -- see § *Wiring `out_push` for a
+subscribing brain* and § *Subscribing is one act with two halves* for what the `cell_path`
+token is and who turns it into a subscription.
+
+Seed applies only on `OpenStatus::Created`; a re-open never overwrites it. That is also the
+reason the transfer lane exists at all: everything the record decided AFTER a seed was written
+has no way into a running hive except a message (§ Taking the record out).
+
+**One table in the store is seeded by nobody and is not domain.** `port_scratch`
+(`key`, `kind`, `payload`, `created_at`) is the transfer lane's notepad -- the place one import
+part and the answer to the probe about what this store already holds meet under a single key,
+because a `code` cell holds no state between hops and a store cannot return two result sets at
+once. It ships no seed file, `./porter` is the only cell that reads or writes it, and it never
+travels in an export: carrying it would restart another hive's half-finished import in a colony
+that never had one. Counting it, the store declares eight tables and creates two more of its own
+(`entity_aliases`, `entity_rejected_pairs`) out of `params.canonical`.
+
+## Taking the record out, putting it into another hive (#471)
+
+`memory` produces and `affinity` decides. Until `affinity@3.2.0` a member's export carried the
+memory hive and nothing else, so a member reborn from it remembered everything it had been told
+and knew nothing about who may be told what -- the curated record IS the disclosure machinery,
+and an export carrying one and not the other is not a smaller backup, it is a different posture
+wearing the same name. Two lanes close it, both served by `./porter`: `in_export` walks the
+record out as a versioned document, `in_import` takes one part of one back into a hive that is
+already **running**. The porter transfers without deciding -- no filter, no audience test, no
+second opinion about an identity. What leaves is what `./gate` had already decided.
+
+### Four edges, and both drains in the same mutation
+
+```json
+{"from": ".", "to": "./porter", "condition": "has(hop.route) && hop.route == 'in_export'",
+ "modifier": {"set_context": {"port_phase": "'export'"}}},
+{"from": ".", "to": "./porter", "condition": "has(hop.route) && hop.route == 'in_import'",
+ "modifier": {"set_context": {"port_phase": "'import'"}}},
+{"from": "./porter", "to": ".", "condition": "has(hop.route) && hop.route == 'dump'"},
+{"from": "./porter", "to": ".", "condition": "has(hop.route) && hop.route == 'reject'"}
+```
+
+Inside, `./porter -> ./store` on `hop.route == 'astore'` promotes `affinity_origin`,
+`port_phase`, `port_run` and `port_table`; `./store -> ./porter` brings them back on
+`context.affinity_origin == 'aporter'`. Both ingress edges land on the same cell and differ only
+in the phase they pin, because a `code` cell has no `cell.db` to tell a walk out from a walk in
+with -- and `port_phase` is the porter's own key, so the lanes that were here first cannot
+collide with it.
+
+**`params.required_drains` names four pairs** (`in_export`->`dump`, `in_export`->`reject`,
+`in_import`->`dump`, `in_import`->`reject`): whoever draws an ingress edge draws both drains in
+the SAME mutation, or the mutation is refused. Each pair prevents a state nothing else notices.
+An export nobody drains reads the whole store and reaches nobody. An export that aborts mid-walk
+has already emitted parts, so an undrained `reject` leaves a partial document that looks
+complete. An undrained receipt means nobody learns whether an import landed, and an undrained
+refusal makes a transfer this hive would not carry out look exactly like one it did. **The drain
+has to be a PLAIN `hop.route == 'dump'` edge**: one that also tests `hop.dump_kind` reads to the
+required-drains probe as no drain at all, and the mutation is refused although the wiring looks
+finished. Tell the two kinds apart *inside* the drain.
+
+### The document
+
+Nine parts, one per table, each a whole JSON object on the `dump` lane. There is no monolithic
+file: the store cannot return two result sets at once, so a part *is* what one read of one table
+answers.
+
+```json
+{"format": "meclaw-affinity-export/1", "hive_template": "affinity",
+ "export_id": "…", "exported_at": "…",
+ "table": "disclosure", "part": 6, "of": 9, "final": false, "absent": false,
+ "key": ["id"], "schema": {"id": "text", "…": "…", "audience_set": "json"},
+ "rows": [ {"…": "…"} ]}
+```
+
+The header travels beside it, so a drain can file a part without parsing it: `hop.route ==
+'dump'`, `hop.dump_kind` (`export_part` or `import_receipt`), `hop.port_hive == 'affinity'`,
+`hop.port_table`, `hop.export_part` of `hop.export_of`, `hop.export_final` (`"1"` on the last
+part), and on a receipt only `hop.rows_written`.
+
+The walk order is fixed -- `entity_aliases`, `entity_rejected_pairs`, `entities`, `relations`,
+`trust`, `disclosure`, `subscribers`, `proposals`, `audit` -- and load-bearing on the way **in**:
+the two alias families come first because `entities.canonical_name` is derived from them, so a
+document in this order needs no repair. Out of order it still lands right, but only because the
+final part triggers a `canonicalize` over `entities.display_name`. `format` is a version because
+a document outlives the code that wrote it: a reader meeting an unknown one refuses instead of
+guessing. `final` is the completeness marker -- a document missing the part that carries it is
+incomplete, and nothing else in the pile says so. And `absent` is not `rows: []`: an empty table
+says *this hive decided nothing here*, an absent one says *it never had the table*.
+
+### What travels, and what deliberately does not
+
+`port_scratch` never travels -- it is this lane's own notepad, and carrying it would restart
+another hive's half-finished import in a colony that never had one. The FTS shadow tables stay
+for a different reason: the store rebuilds them from `params.fts` when it wakes, so they are a
+derived index rather than something the source decided.
+
+`entity_aliases` and `entity_rejected_pairs` are store-owned (created out of `params.canonical`)
+and travel as parts of their own, applied through `set_alias` and `reject_pair` -- the store's
+own upserts on a real `PRIMARY KEY`, so applying such a part twice is arithmetic rather than a
+second row. `entities.canonical_name` is **derived** and travels anyway, because a backup that
+cannot be diffed against the store it came from is not a backup; it is stripped before the insert
+and re-derived from the alias table that arrived in the same document -- a deterministic function
+of transferred data, which is the line this lane runs on: *transfer what was decided, do not
+decide it again.*
+
+**`subscribers.pack_hash` and `sent_at` are RESET to `""` on the way in**, the one place a column
+is blanked rather than copied. They do not say what the source **decided**, they say what it had
+already **delivered** -- to a cell path in a colony that no longer exists. Carried over, the
+receiving push lane compares a fresh pack against a hash it never sent and stays silent for ever
+(`templates/affinity/push/config.json`), so a reborn member would never get its first identity
+pack. The subscription *decision* travels untouched: who, which subject, which slots, which
+channel, and `status`.
+
+### Provenance is never reconstructed
+
+A transfer is exactly where a row can lose what governs who may be told it, so the guard is
+fail-closed and refuses whole parts rather than single rows. A part whose declared `schema` does
+not carry those columns is rejected with `missing_audience` and nothing is written: `disclosure`
+needs `audience` and `audience_set`, `trust` needs `audience`, `subscribers` needs `audience`. A
+row whose audience did not survive is a row that may be told to anyone, and an audience is not
+something anybody can reconstruct afterwards. An audience present but **empty** is written as it
+stands -- empty means invisible, the honest fate of such a row, and inventing one would *be* the
+laundering. The other refusals: `export_read_failed` (a read failed mid-walk; a partial document
+is worse than none, because it looks complete to whoever imports it), `import_format`,
+`import_unknown_table`, `import_schema_drift` (the source declares a column this store lacks --
+growing the schema is a template change, not something an import may do silently),
+`import_probe_failed` and `import_write_failed`.
+
+### Idempotency, and why it needs a probe
+
+`params.schema` declares columns and types and no keys, so a repeated `insert` would duplicate a
+row. The importer asks first: it parks the part and the key columns the target already holds
+under one `port_scratch` key, reads both back in a single `select`, and inserts only what is not
+there. The keys are `entity_id` for `entities`, `id` for `relations`, `trust`, `disclosure`,
+`subscribers`, `proposals` and `audit`. **The same document applied twice leaves the same state**
+-- which makes the repair for any failure "send it again", with no compensating action to get
+wrong, and a partial import a state rather than a failure.
+
+### Birth is a different act and uses no lane at all
+
+A seed is read **once**, when the `cell.db` is created, and is inert for ever after. For a birth,
+write each part as `store/seed/<table>.jsonl` (line 1 `{"schema": …}`, then one line per row) and
+instantiate; no message travels. [`examples/memory-import/build_import.py`](../../examples/memory-import/)
+does that for a whole member, and it **deletes** the placeholder seeds this hive ships wherever
+the export carries it -- a fictional `Alex Kern` beside an imported record would be a second
+person nobody imported. `in_import` is the other half: the way into a hive that is already
+running, which no seed can reach.
+
+`affinity` hangs directly under the member (`member/affinity`, a `ref` to `affinity@3.2.0`) and
+its `in_export` is fanned by the member's own. The sink files the parts under
+`<export_dir>/affinity/seed/`, and a directory per hive is a requirement rather than tidiness:
+`memory-hive` and `affinity` both have a table called `entities`, and a flat sink would have
+written one over the other.
 
 ## Settings
 
@@ -469,8 +777,19 @@ reference pattern.
 - **No per-turn recall.** Affinity is never in the turn hot path. The per-turn wire stays
   collector -> memory (`system.memory`); affinity owns `identity`, `peer`, `relationship`
   and `channel`, one writer per system path.
-- **No export lane.** The substrate does have a counterpart to the seed -- the `transfer`
-  body slot, `export` and `import`, answered before `handle()` for every cell with a
-  `cell.db`. This template declares no lane for it and bounds the `import` half to the
-  hive scope (`contract.write_surface`, see "The writing row has two halves" above), so a
-  backup from outside is a read: an `export`, or a `select` plus a file.
+- **~~No export lane.~~ Retracted in `affinity@3.2.0`
+  ([#471](https://github.com/mmeyerlein/meclaw/issues/471)).** This entry used to read: *"No
+  export lane. The substrate does have a counterpart to the seed -- the `transfer` body slot,
+  `export` and `import`, answered before `handle()` for every cell with a `cell.db`. This
+  template declares no lane for it ... so a backup from outside is a read: an `export`, or a
+  `select` plus a file."* The hive now declares `in_export` and `in_import` and serves both
+  from `./porter` (§ Taking the record out). The retraction is written out rather than the
+  paragraph quietly deleted, because a promise this README made is a promise somebody may have
+  wired against, and `docs/development-rules.md` § 3 asks for the withdrawal in the text.
+
+  What was true in it and stays true: the substrate's own `transfer` slot is still bounded to
+  the hive scope by `contract.write_surface`, and this lane does not widen that -- `./porter`
+  writes from **inside** the hive, through the store's own ops. What was wrong was the
+  conclusion. A `select` plus a file is not a backup of this hive: it carries no schema header
+  that says what the columns meant, no completeness marker, and no guard at all against a
+  disclosure row arriving somewhere without the audience it was decided for.

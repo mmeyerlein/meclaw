@@ -1,7 +1,7 @@
-//! GH #342 — the steward judge's declared tool set and charter reach the model,
+//! GH #342 — the argus judge's declared tool set and charter reach the model,
 //! or the charter rule is unenforceable.
 //!
-//! `templates/steward/judge/config.json` shipped its charter as `params.system`
+//! `templates/argus/judge/config.json` shipped its charter as `params.system`
 //! and its one tool as `params.tools`. `LlmParams` has **neither** field, and
 //! `LlmParams::parse` is a plain `serde_json::from_value` without
 //! `deny_unknown_fields`, so both keys were dropped in silence at spawn. The
@@ -10,8 +10,8 @@
 //! were simply gone.
 //!
 //! The consequence is the charter's own closing sentence — *"Answer with
-//! exactly one tool_call to `steward_change`, and nothing else"* — addressed to
-//! a model that was never shown a tool called `steward_change`, and never shown
+//! exactly one tool_call to `argus_change`, and nothing else"* — addressed to
+//! a model that was never shown a tool called `argus_change`, and never shown
 //! the charter either.
 //!
 //! The only spawn-time route into the persistent `system` tree is
@@ -23,7 +23,7 @@
 //!
 //! Asserting on the seed file's content would pass on a seed the loader never
 //! reads, and asserting on a fixture would pass on a fixture nobody ships. The
-//! chain here is the shipped one: the bytes of `templates/steward/judge/`
+//! chain here is the shipped one: the bytes of `templates/argus/judge/`
 //! (config **and** seed), `substitute_env_only` — the colony's own late-binding
 //! pass — and `LlmCellFactory::spawn_cell`, which loads the seed exactly the
 //! way a boot loads it. The assertion is on what the provider recorded.
@@ -46,22 +46,22 @@ fn core_root() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-const JUDGE_DIR: &str = "templates/steward/judge";
+const JUDGE_DIR: &str = "templates/argus/judge";
 
 /// The tool the charter tells the judge to answer with.
-const TOOL: &str = "steward_change";
+const TOOL: &str = "argus_change";
 
 /// The charter's closing sentence, verbatim from the shipped `answer` block.
 /// If the seed stops carrying it, the instruction that names the tool is gone
 /// and the tool alone would not restore it.
 const ANSWER_SENTENCE: &str =
-    "Answer with exactly one tool_call to `steward_change`, and nothing else.";
+    "Answer with exactly one tool_call to `argus_change`, and nothing else.";
 
 /// The charter's opening words, verbatim from the shipped `role` block —
 /// `system_order` has to put this first, or the argument arrives shuffled.
 const ROLE_OPENING: &str = "You are the judge of a colony's control loop.";
 
-/// Whether the steward ships with this checkout (the documented R2b exception
+/// Whether the argus ships with this checkout (the documented R2b exception
 /// form): a public clone without the template skips instead of failing on a
 /// dead `templates/` reference.
 fn shipped() -> Option<std::path::PathBuf> {
@@ -130,7 +130,7 @@ fn spawn(
     // `CellDied` into it); leaking it keeps the channel open for the test.
     std::mem::forget(irx);
     let kind = Arc::new(LlmCellFactory).spawn_cell(
-        Path::new("/steward/judge"),
+        Path::new("/argus/judge"),
         raw,
         otx,
         cell_dir.to_path_buf(),
@@ -158,7 +158,7 @@ fn spawn(
 ///
 /// Nothing here re-states a shipped param: the env below binds only the four
 /// settings `contract.settings` declares, exactly as an operator's `.env`
-/// would. `STEWARD_JUDGE_PROVIDER` is bound to `openai` because that is what the
+/// would. `ARGUS_JUDGE_PROVIDER` is bound to `openai` because that is what the
 /// template now DEFAULTS to (GH #387): `LlmParams` accepts no other adapter
 /// today, so the binding here restates the shipped default rather than
 /// overriding it -- the mock speaks the same Chat-Completions wire.
@@ -166,12 +166,12 @@ async fn drive_the_shipped_judge(mock: &MockOpenAI) -> OpenAiRequestSnapshot {
     let shipped_dir = shipped().expect("caller checked");
     let td = TempDir::new().expect("tempdir");
     let env = HashMap::from([
-        ("STEWARD_JUDGE_PROVIDER".to_string(), "openai".to_string()),
+        ("ARGUS_JUDGE_PROVIDER".to_string(), "openai".to_string()),
         (
-            "STEWARD_JUDGE_BASE_URL".to_string(),
+            "ARGUS_JUDGE_BASE_URL".to_string(),
             format!("{}/v1", mock.base_url),
         ),
-        ("STEWARD_JUDGE_MODEL".to_string(), "gpt-x".to_string()),
+        ("ARGUS_JUDGE_MODEL".to_string(), "gpt-x".to_string()),
         ("OPENROUTER_API_KEY".to_string(), "sk-test".to_string()),
     ]);
     let cell_dir = install_resolved_judge(&td, &shipped_dir, &env);
@@ -189,8 +189,8 @@ async fn drive_the_shipped_judge(mock: &MockOpenAI) -> OpenAiRequestSnapshot {
     wake(receiver);
     sender
         .send(
-            MessageBuilder::new(Path::new("/steward/judge"))
-                .reply_to(Path::new("/steward/mutator"))
+            MessageBuilder::new(Path::new("/argus/judge"))
+                .reply_to(Path::new("/argus/mutator"))
                 .body(Body::Inline(json!({
                     "messages": [{
                         "origin": "user", "type": "text",
@@ -208,12 +208,12 @@ async fn drive_the_shipped_judge(mock: &MockOpenAI) -> OpenAiRequestSnapshot {
     snaps.remove(0)
 }
 
-/// The defect. The charter orders exactly one `tool_call` to `steward_change`;
+/// The defect. The charter orders exactly one `tool_call` to `argus_change`;
 /// if the tool is not on the wire the model cannot obey, and the rule the whole
-/// steward rests on — a change comes with its own pre-authored revert plan —
+/// argus rests on — a change comes with its own pre-authored revert plan —
 /// is unenforceable at the only place it could be enforced.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_shipped_judge_declares_steward_change_to_the_provider() {
+async fn the_shipped_judge_declares_argus_change_to_the_provider() {
     if shipped().is_none() {
         return;
     }

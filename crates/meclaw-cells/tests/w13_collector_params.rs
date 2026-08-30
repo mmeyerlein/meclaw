@@ -28,7 +28,7 @@ use std::process::{Command, Stdio};
 
 const ASSEMBLE_CONFIG: &str = "../../templates/collector/assemble/config.json";
 
-/// The twenty knobs, with the kind of accessor the script reads each one with.
+/// The twenty-six knobs, with the kind of accessor the script reads each one with.
 /// Restated here on purpose: this is the inventory the migration claims to be
 /// complete, and a knob that quietly leaves the config should fail the pin.
 const KNOBS: &[(&str, &str)] = &[
@@ -45,6 +45,11 @@ const KNOBS: &[(&str, &str)] = &[
     ("round_idle_ms", "_int"),
     ("prune_after_ms", "_int"),
     ("turn_write", "_str"),
+    // GH #525 -- the inline extraction contract. It sits beside `turn_write`
+    // because the two are one sentence: this one asks the brain for the
+    // annotation, that one mints the episode the annotation is bound to, and a
+    // block whose turn is not yet an episode is rejected by design.
+    ("inline_extraction", "_str"),
     ("context_window", "_int"),
     ("curate_soft", "_float"),
     ("curate_hard", "_float"),
@@ -52,6 +57,20 @@ const KNOBS: &[(&str, &str)] = &[
     ("recoverability", "_str"),
     ("thread_recall", "_str"),
     ("thread_recall_budget", "_float"),
+    // GH #451 -- the curator's widened contract. `tool_menu` is the one that
+    // moves an OWNERSHIP: with it set, the collector writes `system.tools` and
+    // the tool declarations become curatable; empty, the menu stays in the
+    // brain and nothing about this cell changes.
+    ("tool_menu", "_str"),
+    ("tool_desc_chars", "_int"),
+    ("curate_slot_chars", "_int"),
+    ("curate_budget_line", "_str"),
+    // GH #464 -- the DECLARATION. It is the only knob whose value is a list,
+    // and the only one whose effect is a QUESTION rather than a number: the
+    // names in it are what the menu tick asks a tools hive for. Empty is the
+    // shipped default and asks nothing, which is why a collector that ships
+    // without a tools hive beside it is silent rather than noisy.
+    ("tools", "_list"),
 ];
 
 fn config() -> serde_json::Value {
@@ -170,7 +189,7 @@ fn nothing_in_the_shipped_collector_reads_the_environment_any_more() {
 /// The script literal is read out of the source text rather than exercised,
 /// because that literal IS the fallback: `_int("window_turns", 12)` is the
 /// value a cell uses when its config says nothing, and comparing the text is
-/// the complete check over all twenty knobs.
+/// the complete check over all twenty-five knobs.
 #[test]
 fn every_knob_is_a_param_a_setting_and_a_script_literal_with_one_value() {
     let cfg = config();
@@ -209,7 +228,7 @@ fn every_knob_is_a_param_a_setting_and_a_script_literal_with_one_value() {
         );
     }
 
-    // No knob may hide: every non-substrate param is one of the twenty above.
+    // No knob may hide: every non-substrate param is one of the twenty-five above.
     //
     // The allow-list is the `code` cell's OWN param surface, i.e. every key
     // `CodeParams::parse` reads (crates/meclaw-cells/src/code/params.rs) --

@@ -6,179 +6,230 @@
         "add_nodes": [
           {
             "name": "os",
-            "template": "meclaw-os@1.2.3"
+            "template": "meclaw-os@1.6.0"
           }
         ],
         "add_edges": []
       }
     },
     {
-      "scope": "/os",
+      "scope": "/os/orgs",
       "diff": {
         "add_nodes": [
           {
-            "name": "orgs/acme",
-            "template": "org@1.1.0"
+            "name": "acme",
+            "template": "org@1.3.0"
           }
         ],
         "add_edges": [
           {
-            "from": "./orgs",
-            "to": "./orgs/acme",
-            "condition": "has(hop.route) && hop.route == 'in_turn'"
+            "from": ".",
+            "to": "./acme",
+            "condition": "has(hop.route) && hop.route == 'in_turn' && (!has(context.org) || context.org == 'acme')"
           },
           {
-            "from": "./orgs",
-            "to": "./orgs/acme",
-            "condition": "has(hop.route) && hop.route == 'in_recall'"
+            "from": ".",
+            "to": "./acme",
+            "condition": "has(hop.route) && hop.route == 'in_recall' && (!has(context.org) || context.org == 'acme')"
           },
           {
-            "from": "./orgs",
-            "to": "./orgs/acme",
-            "condition": "has(hop.route) && hop.route == 'in_brief'"
+            "from": ".",
+            "to": "./acme",
+            "condition": "has(hop.route) && hop.route == 'in_brief' && (!has(context.org) || context.org == 'acme')"
           },
           {
-            "from": "./orgs",
-            "to": "./orgs/acme",
-            "condition": "has(hop.route) && hop.route == 'in_propose'"
+            "from": ".",
+            "to": "./acme",
+            "condition": "has(hop.route) && hop.route == 'in_propose' && (!has(context.org) || context.org == 'acme')"
           },
           {
-            "from": "./orgs/acme",
-            "to": "./orgs",
+            "from": ".",
+            "to": "./acme",
+            "condition": "has(hop.route) && hop.route == 'in_build_result' && (!has(context.org) || context.org == 'acme')"
+          },
+          {
+            "from": ".",
+            "to": "./acme",
+            "condition": "has(hop.route) && hop.route == 'in_export' && (!has(context.org) || context.org == 'acme')"
+          },
+          {
+            "from": "./acme",
+            "to": ".",
             "condition": "has(hop.route) && hop.route == 'answer'"
           },
           {
-            "from": "./orgs/acme",
-            "to": "./orgs",
+            "from": "./acme",
+            "to": ".",
+            "condition": "has(hop.route) && hop.route == 'bundle'"
+          },
+          {
+            "from": "./acme",
+            "to": ".",
             "condition": "has(hop.route) && hop.route == 'ack'"
           },
           {
-            "from": "./orgs/acme",
-            "to": "./orgs",
+            "from": "./acme",
+            "to": ".",
             "condition": "has(hop.route) && hop.route == 'reject'"
           },
           {
-            "from": "./orgs/acme",
-            "to": "./orgs",
+            "from": "./acme",
+            "to": ".",
             "condition": "has(hop.route) && hop.route == 'error'"
           },
           {
-            "from": "./orgs/acme",
-            "to": "./orgs",
+            "from": "./acme",
+            "to": ".",
             "condition": "has(hop.route) && hop.route == 'write'"
           },
           {
-            "from": "./orgs/acme",
-            "to": "./orgs",
+            "from": "./acme",
+            "to": ".",
             "condition": "has(hop.route) && hop.route == 'turn_write'"
           },
           {
-            "from": "./orgs/acme",
-            "to": "./orgs",
+            "from": "./acme",
+            "to": ".",
             "condition": "has(hop.route) && hop.route == 'prune'"
           },
           {
-            "from": "./orgs/acme",
-            "to": "./orgs",
+            "from": "./acme",
+            "to": ".",
             "condition": "has(hop.route) && hop.route == 'build'"
           },
           {
-            "from": "./orgs",
-            "to": "./orgs/acme",
-            "condition": "has(hop.route) && hop.route == 'in_build_result'"
+            "from": "./acme",
+            "to": ".",
+            "condition": "has(hop.route) && hop.route == 'close_report'"
+          },
+          {
+            "from": "./acme",
+            "to": ".",
+            "condition": "has(hop.route) && hop.route == 'export_done'"
+          },
+          {
+            "from": "./acme",
+            "to": ".",
+            "condition": "has(hop.route) && hop.route == 'pack_ack'"
           }
         ]
       }
     },
     {
-      "scope": "/os/orgs/acme",
+      "scope": "/os/orgs/acme/members",
       "diff": {
         "add_nodes": [
           {
-            "name": "members/alex",
-            "template": "member@1.1.0"
+            "name": "alex",
+            "template": "member@1.4.0"
           }
         ],
         "add_edges": [
           {
-            "from": "./members",
-            "to": "./members/alex",
-            "condition": "has(hop.route) && hop.route == 'in_turn'"
+            "from": ".",
+            "to": "./alex",
+            "condition": "has(hop.route) && hop.route == 'in_turn' && (!has(context.member) || context.member == 'alex')"
           },
           {
-            "from": "./members",
-            "to": "./members/alex",
-            "condition": "has(hop.route) && hop.route == 'in_recall'"
+            "from": ".",
+            "to": "./alex",
+            "condition": "has(hop.route) && hop.route == 'in_recall' && (!has(context.member) || context.member == 'alex')"
           },
           {
-            "from": "./members",
-            "to": "./members/alex",
-            "condition": "has(hop.route) && hop.route == 'in_brief'"
+            "from": ".",
+            "to": "./alex",
+            "condition": "has(hop.route) && hop.route == 'in_brief' && (!has(context.member) || context.member == 'alex')"
           },
           {
-            "from": "./members",
-            "to": "./members/alex",
-            "condition": "has(hop.route) && hop.route == 'in_propose'"
+            "from": ".",
+            "to": "./alex",
+            "condition": "has(hop.route) && hop.route == 'in_propose' && (!has(context.member) || context.member == 'alex')"
           },
           {
-            "from": "./members/alex",
-            "to": "./members",
+            "from": ".",
+            "to": "./alex",
+            "condition": "has(hop.route) && hop.route == 'in_build_result' && (!has(context.member) || context.member == 'alex')"
+          },
+          {
+            "from": ".",
+            "to": "./alex",
+            "condition": "has(hop.route) && hop.route == 'in_export' && (!has(context.member) || context.member == 'alex')"
+          },
+          {
+            "from": "./alex",
+            "to": ".",
             "condition": "has(hop.route) && hop.route == 'answer'"
           },
           {
-            "from": "./members/alex",
-            "to": "./members",
+            "from": "./alex",
+            "to": ".",
+            "condition": "has(hop.route) && hop.route == 'bundle'"
+          },
+          {
+            "from": "./alex",
+            "to": ".",
             "condition": "has(hop.route) && hop.route == 'ack'"
           },
           {
-            "from": "./members/alex",
-            "to": "./members",
+            "from": "./alex",
+            "to": ".",
             "condition": "has(hop.route) && hop.route == 'reject'"
           },
           {
-            "from": "./members/alex",
-            "to": "./members",
+            "from": "./alex",
+            "to": ".",
             "condition": "has(hop.route) && hop.route == 'error'"
           },
           {
-            "from": "./members/alex",
-            "to": "./members",
+            "from": "./alex",
+            "to": ".",
             "condition": "has(hop.route) && hop.route == 'write'"
           },
           {
-            "from": "./members/alex",
-            "to": "./members",
+            "from": "./alex",
+            "to": ".",
             "condition": "has(hop.route) && hop.route == 'turn_write'"
           },
           {
-            "from": "./members/alex",
-            "to": "./members",
+            "from": "./alex",
+            "to": ".",
             "condition": "has(hop.route) && hop.route == 'prune'"
           },
           {
-            "from": "./members/alex",
-            "to": "./members",
+            "from": "./alex",
+            "to": ".",
             "condition": "has(hop.route) && hop.route == 'build'"
           },
           {
-            "from": "./members",
-            "to": "./members/alex",
-            "condition": "has(hop.route) && hop.route == 'in_build_result'"
+            "from": "./alex",
+            "to": ".",
+            "condition": "has(hop.route) && hop.route == 'close_report'"
+          },
+          {
+            "from": "./alex",
+            "to": ".",
+            "condition": "has(hop.route) && hop.route == 'export_done'"
+          },
+          {
+            "from": "./alex",
+            "to": ".",
+            "condition": "has(hop.route) && hop.route == 'pack_ack'"
           }
         ]
       }
     },
     {
-      "scope": "/os/orgs/acme/members/alex",
+      "scope": "/os/orgs/acme/members/alex/assistants",
       "ctx": {
         "model": "${MODEL_CORE}",
-        "model_fast": "${MODEL_CORE_FAST}"
+        "model_fast": "${MODEL_CORE_FAST}",
+        "model_surface": "${MODEL_SURFACE}"
       },
       "diff": {
         "add_nodes": [
           {
-            "name": "assistants/scribe",
-            "template": "assistant@1.1.0",
+            "name": "scribe",
+            "template": "assistant@2.2.0",
             "override_params": {
               "cogny/brain": {
                 "temperature": 0.2
@@ -188,105 +239,118 @@
         ],
         "add_edges": [
           {
-            "from": "./assistants",
-            "to": "./assistants/scribe",
-            "condition": "has(hop.route) && hop.route == 'in_turn' && has(context.agent) && context.agent == 'scribe'"
+            "from": ".",
+            "to": "./scribe",
+            "condition": "has(hop.route) && hop.route == 'in_turn' && has(context.assistant) && context.assistant == 'scribe'"
           },
           {
-            "from": "./assistants",
-            "to": "./assistants/scribe",
-            "condition": "has(hop.route) && hop.route == 'in_bundle' && has(context.agent) && context.agent == 'scribe'"
+            "from": ".",
+            "to": "./scribe",
+            "condition": "has(hop.route) && hop.route == 'in_bundle' && has(context.assistant) && context.assistant == 'scribe'"
           },
           {
-            "from": "./assistants/scribe",
-            "to": "./assistants",
-            "condition": "has(hop.route) && hop.route == 'turn'"
+            "from": "./scribe",
+            "to": ".",
+            "condition": "has(hop.route) && hop.route == 'answer'"
           },
           {
-            "from": "./assistants/scribe",
-            "to": "./assistants",
+            "from": "./scribe",
+            "to": ".",
             "condition": "has(hop.route) && hop.route == 'recall'"
           },
           {
-            "from": "./assistants/scribe",
-            "to": "./assistants",
+            "from": "./scribe",
+            "to": ".",
             "condition": "has(hop.route) && hop.route == 'extraction'"
           },
           {
-            "from": "./assistants/scribe",
-            "to": "./assistants",
+            "from": "./scribe",
+            "to": ".",
             "condition": "has(hop.route) && hop.route == 'write'"
           },
           {
-            "from": "./assistants/scribe",
-            "to": "./assistants",
+            "from": "./scribe",
+            "to": ".",
             "condition": "has(hop.route) && hop.route == 'turn_write'"
           },
           {
-            "from": "./assistants/scribe",
-            "to": "./assistants",
+            "from": "./scribe",
+            "to": ".",
             "condition": "has(hop.route) && hop.route == 'prune'"
           },
           {
-            "from": "./assistants/scribe",
-            "to": "./assistants",
+            "from": "./scribe",
+            "to": ".",
             "condition": "has(hop.route) && hop.route == 'error'"
           },
           {
-            "from": "./assistants/scribe",
-            "to": "./assistants",
+            "from": "./scribe",
+            "to": ".",
             "condition": "has(hop.route) && hop.route == 'build'",
             "modifier": {
               "set_context": {
-                "agent": "'scribe'"
+                "assistant": "'scribe'"
               }
             }
           },
           {
-            "from": "./assistants",
-            "to": "./assistants/scribe",
-            "condition": "has(hop.route) && hop.route == 'in_build_result' && (!has(context.agent) || context.agent == 'scribe')"
+            "from": ".",
+            "to": "./scribe",
+            "condition": "has(hop.route) && hop.route == 'in_build_result' && (!has(context.assistant) || context.assistant == 'scribe')"
+          },
+          {
+            "from": ".",
+            "to": "./scribe",
+            "condition": "has(hop.route) && hop.route == 'in_export' && has(context.assistant) && context.assistant == 'scribe'"
+          },
+          {
+            "from": ".",
+            "to": "./scribe",
+            "condition": "has(hop.route) && hop.route == 'in_import' && has(context.assistant) && context.assistant == 'scribe'"
+          },
+          {
+            "from": "./scribe",
+            "to": ".",
+            "condition": "has(hop.route) && hop.route == 'dump'"
           }
         ]
       }
     },
     {
-      "scope": "/os/orgs/acme/members/alex/assistants/scribe",
+      "scope": "/os/orgs/acme/members/alex/channels",
       "ctx": {
-        "model": "${MODEL_BRAIN}"
+        "member_person": "alex"
       },
       "diff": {
         "add_nodes": [
           {
-            "name": "channels/telegram-connector",
-            "template": "telegram-connector@2.0.1"
-          },
-          {
-            "name": "channels/talky",
-            "template": "talky@4.2.3"
+            "name": "telegram",
+            "template": "telegram-connector@2.0.1",
+            "birth": "inactive"
           }
         ],
         "add_edges": [
           {
-            "from": "./channels/telegram-connector",
-            "to": "./channels",
+            "from": "./telegram",
+            "to": ".",
             "condition": "!has(hop.error_code)",
             "modifier": {
               "set_hop": {
                 "route": "'turn'"
               },
               "set_context": {
-                "channel": "'telegram'",
-                "agent": "'scribe'",
-                "chat_id": "hop.chat_id",
-                "user_id": "hop.user_id",
-                "audience_set": "'[\"member:alex\",\"agent:scribe\"]'"
+                "channel_node": "'telegram'",
+                "channel": "has(hop.chat_id) ? hop.chat_id : ''",
+                "assistant": "has(context.assistant) && context.assistant != '' ? context.assistant : (has(hop.addressed_to) && hop.addressed_to != '' ? hop.addressed_to : 'scribe')",
+                "chat_id": "has(hop.chat_id) ? hop.chat_id : ''",
+                "user_id": "has(hop.user_id) ? hop.user_id : ''",
+                "audience_set": "'[\"agent:scribe\",\"member:alex\"]'"
               }
             }
           },
           {
-            "from": "./channels/telegram-connector",
-            "to": "./channels",
+            "from": "./telegram",
+            "to": ".",
             "condition": "has(hop.error_code)",
             "modifier": {
               "set_hop": {
@@ -295,79 +359,9 @@
             }
           },
           {
-            "from": "./channels/talky",
-            "to": "./channels/telegram-connector",
-            "condition": "has(hop.route) && hop.route == 'answer'"
-          },
-          {
-            "from": "./channels",
-            "to": "./channels/talky",
-            "condition": "has(hop.route) && hop.route == 'in_turn'"
-          },
-          {
-            "from": "./channels",
-            "to": "./channels/talky",
-            "condition": "has(hop.route) && hop.route == 'in_bundle'"
-          },
-          {
-            "from": "./channels",
-            "to": "./channels/talky",
-            "condition": "has(hop.route) && hop.route == 'in_advice'"
-          },
-          {
-            "from": "./channels",
-            "to": "./channels/talky",
-            "condition": "has(hop.route) && hop.route == 'in_sweep'"
-          },
-          {
-            "from": "./channels",
-            "to": "./channels/talky",
-            "condition": "has(hop.route) && hop.route == 'in_prune'"
-          },
-          {
-            "from": "./channels",
-            "to": "./channels/talky",
-            "condition": "has(hop.route) && hop.route == 'in_round_sweep'"
-          },
-          {
-            "from": "./channels",
-            "to": "./channels/talky",
-            "condition": "has(hop.route) && hop.route == 'in_tool'"
-          },
-          {
-            "from": "./channels/talky",
-            "to": "./channels",
-            "condition": "has(hop.route) && hop.route == 'write'"
-          },
-          {
-            "from": "./channels/talky",
-            "to": "./channels",
-            "condition": "has(hop.route) && hop.route == 'turn_write'"
-          },
-          {
-            "from": "./channels/talky",
-            "to": "./channels",
-            "condition": "has(hop.route) && hop.route == 'extraction'"
-          },
-          {
-            "from": "./channels/talky",
-            "to": "./channels",
-            "condition": "has(hop.route) && hop.route == 'recall'"
-          },
-          {
-            "from": "./channels/talky",
-            "to": "./channels",
-            "condition": "has(hop.route) && hop.route == 'tool'"
-          },
-          {
-            "from": "./channels/talky",
-            "to": "./channels",
-            "condition": "has(hop.route) && hop.route == 'prune'"
-          },
-          {
-            "from": "./channels/talky",
-            "to": "./channels",
-            "condition": "has(hop.route) && hop.route == 'error'"
+            "from": ".",
+            "to": "./telegram",
+            "condition": "has(hop.route) && hop.route == 'answer' && has(context.channel_node) && context.channel_node == 'telegram'"
           }
         ]
       }

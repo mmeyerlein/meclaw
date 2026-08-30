@@ -14,6 +14,13 @@
 //!   3. pass-through with `header.sidecar == "malformed"` when a block is there
 //!      but unreadable.
 //!
+//! **The third form was RETRACTED in GH #534** and its test moved to
+//! `gh534_an_unreadable_block_still_leaves_the_answer.rs`. The pass-through half
+//! of it stands -- one message, `sidecar: malformed`, nothing on `extraction` --
+//! but the answer no longer keeps the fence: a model dropped one closing brace
+//! in a running colony and the raw JSON reached a person's chat window. Found
+//! decides the cut; valid decides the lane.
+//!
 //! Why a test that runs the SHIPPED script through `python3` rather than a
 //! colony: the grammar is a 1:1 port of the harness parser that measured the
 //! adoption number (`run_guide.py` `find_annotation`/`annotation_shape`), and a
@@ -213,20 +220,28 @@ fn the_nothing_form_travels_too() {
 }
 
 #[test]
-fn an_unreadable_block_is_flagged_and_the_answer_is_left_alone() {
-    // (d) Half-cutting a block nobody can read would corrupt the answer for the
-    // sake of a write that cannot happen anyway. So: the answer travels as it
-    // is, fence included, and the flag says a block WAS seen.
+fn an_unreadable_block_is_flagged_and_leaves_the_answer_all_the_same() {
+    // (d) RETRACTED and rewritten (GH #534). This test used to assert
+    // `out["messages"][0]["text"] == answer` -- the fence stayed in, on the
+    // reasoning that half-cutting a block nobody can read would corrupt the
+    // answer for the sake of a write that cannot happen anyway. It was measured
+    // wrong: there is no half cut, the span is the one the parser already found,
+    // and a model one closing brace short put raw JSON in front of a reader.
+    //
+    // What survives from the old decision is the half that was right: nothing
+    // unreadable is repaired and nothing unreadable travels. One message, the
+    // flag on the hop, no `extraction`. The forms of the cut live in
+    // `gh534_an_unreadable_block_still_leaves_the_answer.rs`.
     let answer = "Bitte sehr.\n\n```memory\n{\"facts\": [oops\n```";
     let out = split(completion("stop", serde_json::json!([text_turn(answer)])));
-    assert!(out.is_object(), "no cut: {out}");
+    assert!(out.is_object(), "nothing readable to route: {out}");
     assert_eq!(
         out["header"]["sidecar"], "malformed",
         "but the miss is on the record: {out}"
     );
     assert_eq!(
-        out["messages"][0]["text"], answer,
-        "and the answer is untouched: {out}"
+        out["messages"][0]["text"], "Bitte sehr.",
+        "and the reader never sees a fence this cell found: {out}"
     );
 }
 

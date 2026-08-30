@@ -18,7 +18,7 @@
 //! 3. It DECLARES the one lane on which a tool of this surface reaches out of
 //!    the assistant, and the return lane that answers it.
 //! 4. Every lane pair is written in the LANE form of `required_drains`
-//!    (GH #237), and the substrate's own reader KEEPS both pairings.
+//!    (GH #237), and the substrate's own reader KEEPS every one of them.
 //!
 //! **Points 2 and 3 were one assertion until R6** (GH #425, the builder intake),
 //! and the change is sanctioned rather than accidental. The old wording was
@@ -45,16 +45,24 @@
 //! `gh202_shipped_drain_requirements` does, rather than by a second opinion
 //! about what a lane form looks like.
 //!
-//! **What this file deliberately does NOT assert.** Not the edges: at this
-//! version `params.graph.edges` is empty and the internal dispatch (one
-//! conditioned edge per tool plus one guarded default) is authored separately —
-//! an assertion about the wiring here would be an assertion about work that has
-//! not happened yet. Not the occupant list either: a fourth occupant is what
-//! adding a tool LOOKS like, and a test that fixed the count would fail on
-//! exactly the change this template exists to make cheap. What is asserted
-//! about the occupants is what #286 measured and what a later declaration is
-//! measured against: the three tool cells are the shipped cell types, `bash`
-//! carries the sandbox block verbatim, and the two web cells carry none.
+//! **GH #464 adds a third lane pair**, `in_schemas` / `tool_schemas`, and the
+//! reasoning above carries over unchanged: it is not a second RESULT lane, it is
+//! a question about this hive. A result belongs to a call somebody made; a
+//! declaration belongs to a start-up question, and folding the two would make
+//! every collector guess which of them it was handed. So the shape is now "one
+//! result lane, one declared reach with its return, and one declaration lane
+//! with its return".
+//!
+//! **What this file deliberately does NOT assert.** Not the edges — the internal
+//! dispatch (one conditioned door per tool, one guarded default per lane, one
+//! exit per occupant) is asserted in `gh286_one_call_reaches_exactly_one_tool`,
+//! where it can be driven as well as read. Not the occupant COUNT either: a new
+//! occupant is what adding a tool LOOKS like, and a test that fixed the number
+//! would fail on exactly the change this template exists to make cheap. What is
+//! asserted about the occupants is what #286 measured and what a later
+//! declaration is measured against: each named occupant is the shipped cell type
+//! of its own name, `bash` carries the sandbox block verbatim, and the cells that
+//! carry none carry none for a reason this file states.
 
 use meclaw_colony::CellFactory;
 use meclaw_colony::config::{DrainSpec, HiveParams};
@@ -148,23 +156,28 @@ fn the_contract_is_one_result_lane_and_one_declared_reach() {
     let accepts: Vec<&str> = contract.accepts.iter().map(|l| l.route.as_str()).collect();
     assert_eq!(
         accepts,
-        vec!["tool_call", "in_build_result"],
-        "the tools hive takes a call in and takes the builder's answer back in, and \
-         nothing else. A third inbound lane would be a third thing a caller has to \
-         know about this hive."
+        vec!["tool_call", "in_build_result", "in_schemas"],
+        "the tools hive takes a call in, takes the builder's answer back in, and — since \
+         1.2.0 (GH #464) — takes a caller's declaration of the tool NAMES it uses. The \
+         third lane is a question about this hive rather than a fourth thing a caller has \
+         to know: it exists so that the list of tools stops being typed into every \
+         caller's prompt by hand."
     );
 
     let emits: Vec<&str> = contract.emits.iter().map(|l| l.route.as_str()).collect();
     assert_eq!(
         emits,
-        vec!["tool_result", "build"],
+        vec!["tool_result", "build", "tool_schemas"],
         "there is exactly ONE result lane, `tool_result` — whatever the tool was. A \
          second RESULT lane would put the choice of tool back into the caller's edge \
          table, which is the coupling this hive exists to remove; a tool's own refusal \
          travels as `hop.error_code` on that lane, not as a route of its own. `build` \
          is not a result: it is the REACH of this surface, the one lane on which a tool \
          of this assistant addresses something outside it, and it is declared here \
-         rather than left to be discovered in an edge table."
+         rather than left to be discovered in an edge table. `tool_schemas` is not a \
+         result either: a result belongs to a call somebody made, a declaration belongs \
+         to a start-up question, and folding the two would make every collector guess \
+         which of them it was handed."
     );
 
     for lane in contract.accepts.iter().chain(contract.emits.iter()) {
@@ -184,10 +197,17 @@ fn the_two_lanes_are_paired_in_the_lane_form() {
     let declared = hive_params()
         .required_drains
         .expect("templates/tools declares params.required_drains");
-    // Two pairings since R6, one per direction the surface is wired in:
+    // Three pairings since GH #464, one per direction the surface is wired in:
     // send me `tool_call` and subscribe to `tool_result`; send me
-    // `in_build_result` and subscribe to `build`.
-    let want = [("tool_call", "tool_result"), ("in_build_result", "build")];
+    // `in_build_result` and subscribe to `build`; send me `in_schemas` and
+    // subscribe to `tool_schemas`. The third rests on the first's argument: a
+    // caller that asks what there is and does not take the answer back starts
+    // with an empty menu and no way to learn that it is empty.
+    let want = [
+        ("tool_call", "tool_result"),
+        ("in_build_result", "build"),
+        ("in_schemas", "tool_schemas"),
+    ];
     assert_eq!(
         declared.len(),
         want.len(),
@@ -220,7 +240,11 @@ fn the_substrate_keeps_the_pairing_it_is_handed() {
     // a warning and nothing else — so a declaration that no longer applies
     // reads exactly like one that does.
     let reqs = requirements_the_substrate_reads();
-    let want = [("tool_call", "tool_result"), ("in_build_result", "build")];
+    let want = [
+        ("tool_call", "tool_result"),
+        ("in_build_result", "build"),
+        ("in_schemas", "tool_schemas"),
+    ];
     assert_eq!(
         reqs.len(),
         want.len(),
@@ -258,16 +282,22 @@ const BASH_SANDBOX: &str =
     r#"{"trust":"restricted","network":"deny","filesystem":{"runtime":true}}"#;
 
 #[test]
-fn the_five_tool_occupants_are_the_shipped_cell_types() {
-    // `build` and `apply` joined with R6 (GH #425). They are `code` cells, which
-    // is the point: no cell type is invented in this hive, and the two that
-    // reach out of the assistant reach with the tightest sandbox in the tree.
+fn the_tool_occupants_are_the_shipped_cell_types() {
+    // `build` and `apply` joined with R6 (GH #425); `file`, `edit`, `mcp`,
+    // `vault` and `schemas` with GH #464. No cell type is invented in this hive:
+    // every occupant is the library's own cell of that name, or a `code` cell
+    // where what is needed is a carrier rather than a capability.
     for (dir, cell_type) in [
         ("bash", "bash"),
         ("web_fetch", "web_fetch"),
         ("web_search", "web_search"),
+        ("file", "file"),
+        ("edit", "edit"),
+        ("mcp", "mcp"),
+        ("vault", "vault"),
         ("build", "code"),
         ("apply", "code"),
+        ("schemas", "code"),
     ] {
         let val = config_at(&format!("{dir}/config.json"));
         assert_eq!(
@@ -308,9 +338,15 @@ fn bash_carries_the_sandbox_the_issue_measured_and_the_substrate_accepts_it() {
         .expect("the bash factory reads templates/tools/bash's params");
 }
 
+/// The occupants that carry no `params.sandbox`, and the two different reasons
+/// for it. `web_fetch`/`web_search`: egress IS the job. `file`/`edit`/`mcp`/
+/// `vault`: the cell does its own I/O rather than starting a runner, so a
+/// PROCESS sandbox bounds nothing it uses — the fence is `params.base_path`
+/// resp. the broker attestation. Either way the absence is a measurement, and it
+/// is what the declared `sandbox_union` is a union over.
 #[test]
-fn the_two_web_occupants_carry_no_sandbox_and_that_is_the_shipped_truth() {
-    for dir in ["web_fetch", "web_search"] {
+fn the_unsandboxed_occupants_carry_no_sandbox_and_that_is_the_shipped_truth() {
+    for dir in ["web_fetch", "web_search", "file", "edit", "mcp", "vault"] {
         let val = config_at(&format!("{dir}/config.json"));
         let params = val
             .get("params")
@@ -318,8 +354,9 @@ fn the_two_web_occupants_carry_no_sandbox_and_that_is_the_shipped_truth() {
         assert!(
             params.get("sandbox").is_none(),
             "templates/tools/{dir} grew a `params.sandbox`. That is not a tightening to wave \
-             through: egress IS what this cell does, `network: \"deny\"` would turn it off, \
-             and the absence is the measurement #286 took. If it is ever added on purpose, \
+             through: for the two web cells egress IS what they do and `network: \"deny\"` \
+             would turn them off; for the four others a process sandbox bounds nothing they \
+             use, and their fence lives elsewhere. The absence is the measurement #286 took. If it is ever added on purpose, \
              the declared blast radius of this hive changes with it and this assertion is \
              where that shows."
         );

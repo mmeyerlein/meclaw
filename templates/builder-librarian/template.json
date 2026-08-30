@@ -1,13 +1,14 @@
 {
   "name": "builder-librarian",
-  "version": "2.0.7",
+  "version": "2.1.1",
   "description": {
-    "purpose": "Lexical retrieval over the builder's knowledge base: the spec and the template catalogue, plus -- where the tree carries them -- the cookbook patterns, the corpus briefs and the pinned error codes, chunked by section and ranked with BM25.",
-    "use_when": "In front of any authoring cell, so a model retrieves the pattern instead of carrying the whole corpus in its prompt. One per builder hive.",
-    "not_in_scope": "No embeddings and no semantic leg: a local chat endpoint serves no embedding model, and metered embeddings for a corpus that answers to names would be the wrong trade. No writes at runtime -- the seed is a build product of this repository's corpus generator, and a published tree carries a corpus built from the published sources alone (#441).",
+    "purpose": "Lexical retrieval over the builder's knowledge base: the spec and the template catalogue, plus -- where the tree carries them -- the cookbook patterns, the corpus briefs and the pinned error codes, chunked by section and ranked with BM25. Since 2.1.0 it can also reconcile that catalogue against the colony's own template registry, so a class registered after this librarian was born stops being invisible to the composer. Since 2.1.1 every catalogue row also says what an `override_params` may name, per cell, which is the third demand the mutation door enforces and the corpus did not publish.",
+    "use_when": "In front of any authoring cell, so a model retrieves the pattern instead of carrying the whole corpus in its prompt. One per builder hive. Drive `in_ingest` whenever the library changed -- after a manifest with `add_templates`, after a rescan, once at deployment.",
+    "not_in_scope": "No embeddings and no semantic leg: a local chat endpoint serves no embedding model, and metered embeddings for a corpus that answers to names would be the wrong trade. It does not maintain its own seed -- `store/seed/docs.jsonl` is a build product of this repository's corpus generator, a published tree carries a corpus built from the published sources alone (#441), and no runtime path writes, replaces or deletes a seeded row. The one runtime write is the `in_ingest` reconciliation, and it only ADDS names the corpus does not carry -- from the registry's projection, which is an identity and not a declaration, so the row it writes says what it cannot know rather than inventing a `requires` block.",
     "examples": [
       "'a timer that writes a note every hour' -> BM25 over docs -> the timer cell section, the scheduled-workflow cookbook pattern",
-      "retrieve -> store(search) -> retrieve(brief) -> the authoring cell's prompt"
+      "retrieve -> store(search) -> retrieve(brief) -> the authoring cell's prompt",
+      "a manifest registers `local/foo` -> a nudge on in_ingest -> catalogue -> /colony/templates -> store -> `catalogue_lookup \"foo\"` answers 'the request names templates that exist: foo'"
     ]
   },
   "tags": [
@@ -15,7 +16,8 @@
     "retrieval",
     "fts5",
     "store",
-    "hive"
+    "hive",
+    "catalogue"
   ],
   "author": "@mmeyerlein",
   "license": "MIT"

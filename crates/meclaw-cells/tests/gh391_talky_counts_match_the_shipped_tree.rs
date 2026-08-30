@@ -15,7 +15,7 @@
 //!
 //! A `ref` cell is expanded, because a reader counting cells in a running
 //! colony counts what the registry holds, and the registry holds the referenced
-//! sub-units (GH #277) — `talky` names four of them and carries copies of none.
+//! sub-units (GH #277) — `talky` names three of them and carries copies of none.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -112,11 +112,21 @@ fn word(n: usize) -> &'static str {
     let table: BTreeMap<usize, &'static str> = [
         (3, "three"),
         (4, "four"),
+        (5, "five"),
         (8, "eight"),
+        (9, "nine"),
+        (10, "ten"),
         (11, "eleven"),
         (12, "twelve"),
+        (13, "thirteen"),
+        (14, "fourteen"),
+        (15, "fifteen"),
         (16, "sixteen"),
+        (24, "twenty-four"),
+        (26, "twenty-six"),
         (27, "twenty-seven"),
+        (28, "twenty-eight"),
+        (31, "thirty-one"),
     ]
     .into_iter()
     .collect();

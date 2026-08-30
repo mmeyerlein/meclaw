@@ -4,7 +4,7 @@
 //! addressed to whoever asks next, so a sentence learned in a two-person
 //! channel answers a question asked in front of a third person. This file is
 //! the proof of the gate that closes that, written against
-//! `plans/0.16.0-audience-gate/contract.md` — the shared contract, not against
+//! the 0.16.0 audience-gate contract (GH #244) — the shared contract, not against
 //! whatever the templates happen to contain today.
 //!
 //! # What is under test, and how honestly
@@ -767,6 +767,7 @@ fn an_entity_edge_is_gated_like_the_episode_it_came_from() {
         let parked_legs = json!({"kw-ep": [], "kw-fact": [], "temporal": [],
                                  "beliefs": [], "anchors": [], "axis": {},
                                  "model": {"model_id": "m", "dim": 1024}});
+        let ctx2 = ctx.clone();
         let body = json!({
             "header": {"context": ctx,
                        "hop": {"operation": "bundle", "rows_affected": 1,
@@ -788,7 +789,49 @@ fn an_entity_edge_is_gated_like_the_episode_it_came_from() {
                  "rows_affected": 2, "duration_ms": 0}
             ]
         });
-        let out = emitted(&run_hop("recall", &body));
+        let mut out = emitted(&run_hop("recall", &body));
+        if out[0]["header"]["phase"] == "t1-graph" {
+            // GH #520: a walk that reached a node is one bundle short of the
+            // facts that node is about, so the fusion runs a hop later. It is
+            // answered here with an EMPTY fact page on purpose -- this test
+            // measures the gate ON THE EDGE, not the join behind it, and the
+            // two cases whose edge is invisible never get this far: the gate
+            // runs before the nodes are read off the walk.
+            let mut page = vec![
+                json!({"request_id": "r1", "leg": "legs", "fired": 0,
+                       "payload": parked_legs.to_string()}),
+                json!({"request_id": "r1", "leg": "sem", "fired": 0, "payload": "[]"}),
+            ];
+            for t in out[0]["messages"].as_array().expect("the join calls") {
+                let args: Value =
+                    meclaw_core::serde_json::from_str(t["text"].as_str().unwrap_or("{}"))
+                        .expect("op args");
+                if args["operation"] == "insert" {
+                    page.push(json!({"request_id": "r1", "leg": args["row"]["leg"],
+                                     "fired": 0, "payload": args["row"]["payload"]}));
+                }
+            }
+            let mut join_ctx = ctx2.clone();
+            join_ctx["mem_phase"] = json!("t1-graph");
+            let join = json!({
+                "header": {"context": join_ctx,
+                           "hop": {"operation": "bundle", "rows_affected": 1,
+                                   "bundle_errors": 0}},
+                "messages": [
+                    {"origin": "tool", "type": "tool_result", "id": "r-graph-fact",
+                     "text": "[]"},
+                    {"origin": "tool", "type": "tool_result", "id": "r-graph-read",
+                     "text": json!(page).to_string()}
+                ],
+                "results": [
+                    {"tool_call_id": "r-graph-fact", "operation": "select",
+                     "rows_affected": 0, "duration_ms": 0},
+                    {"tool_call_id": "r-graph-read", "operation": "select",
+                     "rows_affected": 4, "duration_ms": 0}
+                ]
+            });
+            out = emitted(&run_hop("recall", &join));
+        }
         assert_eq!(out.len(), 1, "the fusion emits ONE store message: {out:?}");
         let fused = out[0]["messages"]
             .as_array()

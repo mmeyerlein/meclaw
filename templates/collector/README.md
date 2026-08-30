@@ -1,7 +1,8 @@
-# `collector@3.0.2`
+# `collector@3.4.0`
 
-Context assembly as a hive of existing cell types -- no new cell type, no Rust. Two cells:
-`assemble` (a `code` cell, the state machine) and `window` (a `store` cell, the state).
+Context assembly as a hive of existing cell types -- no new cell type, no Rust. Three cells:
+`assemble` (a `code` cell, the state machine), `window` (a `store` cell, the state) and,
+since `3.3.0`, `menu-clock` (a `timer`, the one question this hive asks of its own accord).
 
 The collector is the orchestrator of one agent's context window. It decides **what enters
 the window and what leaves it**, in one place, and hands the result to the brain over
@@ -68,8 +69,9 @@ the window and what leaves it**, in one place, and hands the result to the brain
 
 | cell | type | what it holds |
 |---|---|---|
-| `assemble` | `code` | the whole state machine: eleven entry lanes, the fan-in gate, the eviction policy, the seam, the round-robustness exits, the prune chain |
-| `window` | `store` | `turns` (the rolling conversation) and `round` (the per-turn slate: the assembled legs plus the tool round) -- both carry `session_id`, which is what makes them readable as a whole session at close time, and write times, which is what makes them prunable. Plus `batched`, the delivery ledger of the close lane. |
+| `assemble` | `code` | the whole state machine: thirteen entry lanes plus the internal `in_menu_tick`, the fan-in gate, the eviction policy, the seam, the round-robustness exits, the prune chain |
+| `window` | `store` | `turns` (the rolling conversation) and `round` (the per-turn slate: the assembled legs plus the tool round) -- both carry `session_id`, which is what makes them readable as a whole session at close time, and write times, which is what makes them prunable. Plus `batched`, the delivery ledger of the close lane, and -- since `3.4.0` -- `menu`, one row per answerer, which is the memory the tool menu is merged out of (GH #529). |
+| `menu-clock` | `timer` | the one question this hive asks of its own accord (GH #464): a tick into `./assemble` that makes it ask the tools hive for the declarations of the tools `params.tools` names. It sends, it decides nothing. |
 
 ## Ports
 
@@ -96,6 +98,8 @@ message context.
 | `in_close` | the session keeper, on `hop.route == 'close'` | reads the whole session back and batches it out |
 | `in_prune` | a timer or an operator, on `hop.route == 'prune'` | prunes delivered-and-aged sessions; the template **never fires this itself** |
 | `in_round_sweep` | a timer or an operator, on `hop.route == 'sweep'` | re-checks every open tool round and closes the stale ones; equally **never fired by the template itself** |
+| `in_pack` | whatever curates this agent's identity -- `affinity`'s push lane is the worked example | a durable `system.*` slot for the brain: `identity`, `persona`, `handover` or `instructions`, and nothing else. The one lane that carries state meant to OUTLIVE the round. See "The door in the wall" below |
+| `in_menu` | the tools hive this agent's tools live in, answering on `tool_schemas` | the declarations of the tools this agent DECLARED it uses: `schemas[]` and the names the hive had nothing under. Since `3.4.0` the answer is filed under `context.tool_answerer` as ONE row of the `menu` table and the menu is re-derived as the union over every answerer's row (GH #529). See "The menu is asked for" below |
 
 Exits leave **from the hive path** on `hop.route`:
 
@@ -107,11 +111,15 @@ Exits leave **from the hive path** on `hop.route`:
 | `write` | wherever a closed session belongs | one batch per close: `messages[]` the whole conversation, the raw round rows in the top-level slot `rounds`. `messages[]` is what a PARTICIPANT said and nothing else (GH #282) -- interim answers, `advice` rows and any other role stay in the window; `origin` comes from an explicit `user`/`assistant` mapping, never from a fallback. See "Per-turn episodes" below. |
 | `turn_write` | a memory hive's episode lane | **one message per turn, never a batch** (GH #298): after every stored turn and every stored answer, every turn of the session that has not been written yet leaves as its own message -- one `user`/`assistant` turn in `messages[]`, `hop.turn_id` = `<session_id>#<index>`, `hop.turn_index` and `hop.happened_at` beside it. Filtered and attributed by the same rule as `write`, but **not the same document**: `write` is a closed day with its `rounds`, this is a turn. On by default. See "Per-turn episodes" below. |
 | `prune` | a log sink or the operator surface | one report per pruned session (`hop.session_id`, `hop.pruned_turns`, `hop.pruned_rounds`, `hop.prune_boundary`) -- or a single zero report when nothing was eligible -- or, since `collector@2.1.1`, a zero report marked `hop.degraded=1` because the store refused one of the prune chain's own reads or deletes |
+| `pack` | the agent LLM | an accepted pack, as `system.*` and **no** `messages[]` beside it. Not the `brain` route: that one carries an assembled turn and is bounded by `hop.iter`, and a pack belongs to no turn and no round. A parent that wires `in_pack` MUST wire this into the brain, or every accepted pack dead-letters after this cell already told its sender it was accepted |
+| `pack_ack` | back towards whoever pushed | the receipt of one pack, unconditionally: `hop.pack_owner`, `hop.pack_slots`, `hop.error_code` (empty, `slot_unknown` or `pack_empty`), `hop.pack_unknown`. Every key always present and empty rather than absent |
+| `schemas` | a tools hive's `in_schemas` door | the tool names `params.tools` declares, as the whole body (`{"tools": [...]}`); `["*"]` asks for everything that hive has. It leaves on a TICK, not per turn. A parent that wires this must wire the answer back, or the tick asks into a dead letter every period |
+| `menu` | the agent LLM | the menu as `system.tools` and **no** `messages[]` beside them -- durable, like `pack`, and for the same reason: an `llm` cell upserts the subtree into its own `cell.db` and it stands there until something overwrites that path. The subtree carries `$replace`, so a menu with nothing usable in it writes NOTHING rather than an empty menu that would revoke the model's whole tool set. Since `3.4.0` what travels here is not one answer but the UNION over every answerer's stored row, plus the names this hive serves itself (GH #529); `hop.menu_answerers` names the answerers it was derived from, beside `menu_count`, `menu_self` and `menu_unknown` |
 | `condense` | -- | **reserved, never emitted today.** The value is declared in the enum so the fold lane can be wired later without widening a published contract; nothing in this cell writes it. |
 | `cstore` | `window`, inside the hive | **interior, and it never crosses the hive path.** Every store round-trip of the state machine rides on it (`hop.phase` carries the state, `hop.turn_id` the turn). It is in the enum because the assembler emits it, and it is in no parent's wiring because the seal gives it nowhere to go. |
 
 The enum itself is `contract.emits.hop.route` in `assemble/config.json` -- that declaration
-is the authority, this table is its prose. Six of its eight values are the hive's declared
+is the authority, this table is its prose. Ten of its twelve values are the hive's declared
 exits (`params.contract.emits` in `config.json`, the list a parent may wire): `cstore` stays
 inside, and `condense` is reserved.
 
@@ -209,7 +217,7 @@ for how to retune one, and for what `override_params` can and cannot do).
 | `tool_chars` | `4000` | per-item character cap on tool **result** texts before they enter the seam. |
 | `round_bytes` | `16000` | byte cap over the whole tool round, counted from the newest iteration backwards. What does not fit falls as a whole **iteration**. |
 | `memory_chars` | `8000` | character cap on the memory bundle **where the bundle travels**: the synthetic `memory_recall` tool result. ONE cap over the whole result text, so under `memory_form: both` it bounds the readable block and the machine-readable form *together* rather than each of them separately. `hop.memory_capped` is measured on that result. |
-| `max_iter` | `8` | how often a turn may re-enter the brain with a tool round. At the cap the seam leaves on `answer` instead. |
+| `max_iter` | `8` | how often a turn may re-enter the brain with a tool round. At the cap the seam leaves on `answer` instead. The count belongs to ONE round, and a turn opens one: since [#541](https://github.com/mmeyerlein/meclaw/issues/541) the two turn-opening lanes (`in_turn`, `in_advice`) start at zero whatever `iter` the arrival carried. `in_advice` is the answer lane of another hive's round and carries ITS count -- a core that spent nine iterations used to hand the surface a turn that was over before it began, and the seam left on `answer` with the raw assembled round where the answer belonged, no brain call at all. |
 | `round_idle_ms` | `120000` | idle window of one tool round (two minutes). A round whose last progress is older **and** whose fan-in is incomplete is closed at the next occasion with synthetic error results and fires with `hop.round_stale=1`. |
 | `memory_tier` | `""` | empty = no memory leg at all, and the assembly waits for the window leg alone. `"0"` / `"1"` / `"2"` request that recall tier once per turn, and **the ambient leg arrives as a synthetic `memory_recall` result** at the end of the round -- never as durable system state (`collector@2.1.0`, GH #278). |
 | `memory_form` | `"readable"` | which form of the bundle reaches the brain **in that tool result**: `readable` (the rendered block a model reads), `json` (the machine-readable bundle), `both` (the two joined by a newline, under one call id and one cap). Applies to the ambient leg and to a model's own `memory_recall` call alike. Whatever the form, `system.memory` carries only the revocation -- the empty leaf on the fixed path `recall` plus the `$replace` marker on the node above it (see the `brain` lane, `collector@2.0.4`) -- and both halves are sent unconditionally, no longer chosen by this knob: an instance retuned from `readable` to `json` would otherwise carry its last leaf, or its last keys, for the rest of its life. |
@@ -217,6 +225,7 @@ for how to retune one, and for what `override_params` can and cannot do).
 | `async_tools` | -- | **not a collector knob.** The async class is declared once, at the dispatcher (`DISPATCHER_ASYNC_TOOLS`), and travels as `hop.async_calls`. |
 | `prune_after_ms` | `604800000` | age gate on the prune lane (seven days). A session is pruned only when its close batch left **and** that delivery is older than this. |
 | `turn_write` | `"1"` | **on by default since GH #298** -- it is the only path from a conversation into an episodes table, and a shipped "off" would be a shipped agent that remembers nothing. Every stored turn hands out one message per unwritten turn on route `turn_write`. `""` or `"0"` switch it off, and off means nothing said in this session reaches a memory *at all*, not that it reaches one later. Switch it off only where that route is unwired: an unrouted emission per turn is a dead letter per turn. |
+| `inline_extraction` | `""` | **the inline extraction contract** (GH #525). Non-empty writes the shipped block to `system.instructions.sidecar` on every turn assembly -- which is what asks the brain for the ```` ```memory ```` block a memory hive's `in_remember` lane reads. It ships OFF, and that is the one place it differs from `turn_write` one row up: what takes the block back OUT of the answer is a `splitter` between the brain and the dispatcher, and this cell cannot see whether one stands behind it -- asking with nothing cutting leaves a json block in the reader's face on every turn. So the COMPOSITE decides: `talky` cuts the block and switches it on, `cogny` has no splitter and leaves it off. The write carries no `$replace` marker, so a person's charter in `instructions.reply` is untouched, and the leaf name sorts AFTER it on purpose -- an `llm` cell walks a family's leaves alphabetically and the block belongs after the answer it follows. The text is byte-identical to the fence of `templates/memory-hive/inline-contract.md`, which stays the authority. |
 | `context_window` | `0` | **the curator's budget**, in tokens. `0` or empty = curation off and every byte of behaviour is the pre-wave-11 behaviour. See "The curator" below. |
 | `curate_soft` | `0.5` | the working mark, as a fraction of the budget: at or above it the curator elides in stages until the projection fits under it again. |
 | `curate_hard` | `0.75` | the emergency mark. It changes no behaviour of its own -- it is *reported* as `hop.curate_mark='hard'` and means the curator is out of stages. |
@@ -224,6 +233,11 @@ for how to retune one, and for what `override_params` can and cannot do).
 | `recoverability` | `""` | what may be elided, **declared per tool name**: `read_file:repeatable,write_file:env`. Everything not named is `unique` and is never elided. |
 | `thread_recall` | `"1"` | the thread tool. Empty switches it off and a call is answered with a typed error. Switching it off should mean switching curation off. |
 | `thread_recall_budget` | `0.2` | the share of the budget one turn's recalls may spend. Over it the call is refused, never truncated. |
+| `tool_menu` | `""` | the tool menu this collector **owns**, as the provider-native JSON array (GH #451). Empty = the menu lives in the brain's own `system.tools` and this cell writes none, exactly as before. Set it, and the declarations count towards the budget and become stage-4 candidates. A malformed value reads as empty, never as half a menu. |
+| `tool_desc_chars` | `200` | how much of a stubbed declaration's description survives beside its name. |
+| `tools` | `[]` | the tool names this agent **declares** it uses (GH #464), e.g. `["web_search", "web_fetch"]`; `["*"]` asks for everything the tools hive has. A comma string reads the same way. It is the OTHER half of `tool_menu`: with it set, the menu is asked for; with `tool_menu` set, it is typed and nothing is asked. Empty is the shipped default and asks nothing at all -- a collector standing in a colony with no tools hive is silent rather than noisy. |
+| `curate_slot_chars` | `2000` | size above which a `system.*` slot of this cell's **own** making becomes a stage-5 candidate. The protected families are never candidates at any size. `0` switches the stage off. |
+| `curate_budget_line` | `"1"` | the deterministic remaining-budget sentence in `system.budget`. `""` or `"0"` sends the leaf **empty** rather than not sending it -- `system.*` is durable, and a number left standing from the last busy turn is worse than none. |
 
 A knob set to `null` or to a blank string means "not configured" and falls back to the default
 above, so an operator who empties a line gets the shipped behaviour rather than a dead cell.
@@ -233,6 +247,257 @@ param produces.
 `collector` is the **reference migration** for this move: every other template's `${VAR}`
 knobs are a declared EXPERIMENTAL config surface that follows the same route onto `params`,
 one template at a time (`refs #136`, `refs #138`).
+
+### The door in the wall (`in_pack`, GH #458)
+
+Everything above this line is a **projection of one round**, rebuilt from the ledger at
+every assembly. `in_pack` is the one lane that is not, and that is the whole reason it is
+a lane of its own rather than a flag on an existing one.
+
+The `in_tool` lane drops `system.*` on purpose, and the paragraph under "What a tool
+result may carry" says why at length: what leaves this seam in `system.*` is UPSERTed into
+the brain's own `cell.db` and stands there until something overwrites **that exact path**.
+For a tool result that is wrong -- it gets no second chance to correct itself, and a brief
+about one subject would still be in the prompt three subjects later. For an *identity* it
+is exactly right. The two are told apart by the LANE, so the distinction is drawn by an
+edge the colony wrote rather than by a key in a body that a model could have written.
+
+Why the lane has to exist at all: the agent composites this hive stands in (`talky`,
+`cogny`) are **sealed**. An edge naming their `./brain` is refused with
+`hive_port_boundary`, so every path from outside to a brain runs through this cell -- and
+until GH #458 there was none for durable state. `affinity` could push and there was
+nowhere to push to.
+
+**What may be written is a closed list** -- `identity`, `persona`, `handover` and
+`instructions` -- and it is a subset of `SYS_KEEP` by construction:
+
+```python
+SYS_KEEP  = ("handover", "persona", "identity", "instructions", "tools", "budget")
+PACK_SLOTS = ("identity", "persona", "handover", "instructions")
+```
+
+Two subtractions are left, and both of them are the reason the subset exists. `tools` and
+`budget` are re-derived here every round, so a sender writing them would fight this cell
+for the same path forever.
+
+`instructions` was a THIRD subtraction until GH #488, and the measurement is what took it
+away. It was held out of the lane because an identity that could overwrite the charter
+would be an identity that could rewrite what the agent is for -- which assumed the charter
+had some OTHER owner. It had none: nothing exported it, no template seeded it, and a grown
+generation came up with an empty charter and answered as the vendor's default assistant. A
+family nobody may write is not a protected family, it is an empty one, so the charter joins
+the lane. What protects it now is the lane itself rather than a hole in the lane: the door
+is a route stamped by an EDGE, and that edge is drawn only through the access rule that
+lets a brain draw its OWN push edge and no other, from a source whose single writer is
+`affinity`'s audited gate. A charter arriving through it was curated, released by a
+disclosure decision and written by somebody the audit table names.
+
+What remains is the four families that are durable, protected from the curator at any
+budget (stage 5 never touches them), and owned by nobody in here. A drift lock asserts the
+subset relation rather than trusting this paragraph.
+
+**Two body shapes, one meaning.** `system` carrying the slot subtrees is what an `llm`
+cell upserts and what `affinity`'s push lane emits -- the slots and **no** turn beside
+them, so the update costs the agent a write and not an inference (GH #263).
+`{"slot": ..., "content": ...}` is the same for a single slot, written by hand. Both may
+travel in one message; the single slot is merged over the tree.
+
+The single-slot form is a **convenience, not a body of its own**. A UBF body has to carry
+`messages` or `system` -- that is the substrate's `anyOf`, not this template's rule -- so a
+hand-written slot rides beside an empty `system`:
+
+```json
+{"system": {}, "slot": "persona", "content": {"text": "terse, never chatty"}}
+```
+
+Without the `system` key the message is dead-lettered as `invalid_ubf_body` and never
+reaches this cell at all. Measured, not reasoned about.
+
+**All or nothing.** An unknown slot refuses the whole pack with `slot_unknown`, an empty
+one with `pack_empty`. Writing the half that was understood would hand the sender an `ok`
+it cannot tell apart from a complete write, and a half-written identity is worse than
+none -- the same reason the substrate delivers a message whose pointers would not all
+resolve not at all rather than half-expanded.
+
+**The owner comes off `envelope.reply_to`**, never out of the body: a cell knows no
+sender, and the only trustworthy origin in this substrate is what the substrate wrote.
+
+**The receipt is unconditional**, accepted and refused alike, because from the sending
+side a push that landed and a push that reached nothing are otherwise the same silence
+(`docs/development-rules.md` § 2c). The composites above pair the two lanes in their
+`required_drains`.
+
+**`./assemble`'s own cell contract moved with the lane** (`contract.version` 1.4.0):
+`messages` became **optional** in `consumes.body` and in `emits.body` alike, because a
+pack carries slots and no turn in both directions and a required key would have refused it
+at the delivery boundary, before this cell ever saw it. `system`, `slot` and `content` are
+declared on the way in; `pack` and `pack_ack` joined the `route` enum on the way out,
+together with `pack_owner`, `pack_slots`, `pack_unknown` and `error_code`. Every other
+lane still sends turns; a body without them simply carries no text, which the script
+already reads as the empty string.
+
+### The menu is asked for, not typed (`in_menu`, GH #464)
+
+`tool_menu` one table up is a list somebody wrote out. It works, and it has the property
+every hand-kept list has: adding a tool to a colony means editing the prompt of every
+caller that may use it, and no caller can offer a model anything nobody typed.
+
+`3.3.0` turns that around. `params.tools` is a list of **names** -- the tools this agent's
+own template says it uses -- and the schemas behind those names are **asked for**:
+
+```json
+{"add_nodes": [{"name": "scribe", "template": "collector@3.4.0",
+                "override_params": {"assemble": {"tools": ["web_search", "web_fetch"]}}}]}
+```
+
+**The template is the contract, and the declaration is where the rest of the contract is.**
+The tools hive keeps no table of who asks (`templates/tools/README.md` § *Asking for the
+declarations*): whoever designed this agent decided what it uses, so the list lives here,
+next to `window_turns` and `max_iter`, and a reader of the instance can see it.
+
+**Two lanes, and the second one is durable state.** `schemas` carries `{"tools": [...]}` out
+to the tools hive's `in_schemas` door; `in_menu` brings `schemas[]` and `unknown[]` back.
+What leaves on `menu` is `system.tools` and no turn beside it -- the same shape as `pack`
+one section up, and durable for the same reason: an `llm` cell upserts `system.*` per slot
+path into its own `cell.db`, where it stands until something overwrites that exact path. So
+the menu costs **one write per change and nothing per turn**, which is the whole reason it
+is not asked in front of every assembly.
+
+**The provider envelope is wrapped here.** The hive answers `{name, description,
+parameters}` and stops there on purpose: a hive that wrapped would have to be told which
+provider its caller talks to, which is a second thing every caller would have to tell it and
+a first thing it would be wrong about. This cell knows its provider, so it produces
+`{"type": "function", "function": {...}}` -- the same shape a typed `tool_menu` carries, read
+by the same `fn_of` the curator's stage 4 reads.
+
+**The tick, and why it is a tick.** The substrate hands a cell no message at spawn, so
+nothing can ask "at boot": the first ask is the first firing of `./menu-clock`, a `timer`
+inside this hive whose cadence is `MENU_CRON` (default: every five minutes, UTC). That is
+the honest form and it is also the useful one -- a tool ADDED to the hive by mutation
+reaches this agent at the next tick, and nothing over there had to push, which is exactly
+what that hive's contract says about asking again. An operator who does not want to wait
+sends the timer `{"op": "trigger", "schedule_id": "..."}`.
+
+**It is the one schedule this hive has, and that is not a reversal.** The two schedules it
+still refuses -- the prune and the stale-round exit -- would DESTROY or CLOSE somebody's
+turns, and deciding when that happens is an operator's business, not a template's. A menu
+tick creates nothing and destroys nothing: it asks a question whose answer overwrites one
+slot with the same value until something over there changes.
+
+**An unknown name is named.** A declared name the hive has nothing under comes back in
+`unknown[]`, lands in `hop.menu_unknown` on the `menu` message, and is written to stderr --
+which a `code` cell puts into `log.jsonl` at warn level and flags with `had_stderr` on the
+emission. A declaration pointing at nothing is a defect in this agent's own template, and
+the whole value of declaring is that somebody can see it.
+
+**`tool_menu` wins, and then nothing is asked.** A collector carrying a typed menu answers
+the tick with silence. Two writers on one `system.tools` path would overwrite each other
+every round, and the knob is the manual override rather than a second source.
+
+**`./assemble`'s cell contract moved again** (`contract.version` 1.5.1): `tools`,
+`schemas` and `unknown` on the way in, `tools` on the way out, `schemas` and `menu` in the
+`route` enum, and `asked_count` / `menu_count` / `menu_self` / `menu_unknown` beside them.
+
+**And the menu keeps the two tools this hive answers itself** (`3.3.1`, GH #512). Two names
+on a collector's menu are not the parent's: `memory_recall` is served out of this hive's own
+recall port and `thread_recall` out of its own slate, the composite around it routes both
+here BY NAME, and no tools hive has -- or could have -- a declaration for either. They used
+to ship as SEED rows in the brain's `cell.db`. A seed is written once, at birth; the menu
+write is a `$replace`; so the first tick deleted both, and a grown agent lost its memory tool
+minutes into its life while the whole recall chain below it stayed wired and idle.
+
+The declarations belong to the cell that answers the calls, so this one holds them and adds
+them to every menu it writes. **Which** of the two is not a new knob: it is the two switches
+that already decide whether the lane is answered at all instead of refused with a typed
+error -- `memory_call_tier` (empty = off) and `thread_recall`. A collector that declares a
+tool it would refuse, and one that refuses a tool it declared, are the same defect from two
+sides, and the shipped `cogny` is the worked example of the other side: it routes no
+`memory_recall` edge, so it sets `memory_call_tier` to `""`.
+
+Two properties keep the addition honest. It happens **after** the empty-menu guard and never
+instead of it -- the self-served names are not evidence that the hive answered, and a menu
+carrying only them would still be the revocation `$replace` makes of an empty write. And a
+name the hive DID answer **wins**: a parent that wired a real cell behind `memory_recall` has
+overridden this collector, and no menu declares one tool twice. What came from here rather
+than from the hive rides on `hop.menu_self`.
+
+#### One menu, several answerers (`3.4.0`, GH #529)
+
+Everything above describes **one** question with **one** answer: parse `schemas[]`, add the
+self-served names, write the lot on `system.tools` with `$replace`. That is right while
+exactly one thing answers, and it is the whole defect the moment two do. The second answer
+would not merge with the first -- `$replace` replaces -- it would **delete** it, and the two
+answerers would take the menu away from each other on every tick, forever.
+
+A second answerer is not hypothetical. A tool the composite reaches by an edge on its NAME is
+topology of the level that draws that edge, and only the side that ANSWERS a call can declare
+it: `consult_cogny` is answered by an advisor core, `web_search` by the tools hive, and
+neither of them can declare the other's.
+
+**The union needs a memory, and the memory is a table of this hive's own.** `window` carries
+one more table, `menu`, with one row per answerer:
+
+| column | what it holds |
+|---|---|
+| `answerer` | who delivered this submenu -- the key of the row |
+| `tools` (`json`) | that answerer's declarations, already in the provider envelope |
+| `unknown` | the names IT had nothing under, comma-joined -- carried rather than reported (see below) |
+| `recorded_at` | when the row was written |
+
+So `in_menu` writes no `system.tools` at all any more. It writes **one row** and reads the
+whole table back **in one message**: `delete where answerer`, `insert`, `select` -- the #419
+bundle form, in phase `menu-merge`. Delete-then-insert rather than an update, because the
+store has no upsert and a first answer has no row to update; the `select` rides in the same
+bundle, so it runs over the same connection *after* the write and sees it.
+
+**The answerer comes off the message, never out of a body.** `context.tool_answerer` is the
+mirror of the `context.tool_caller` a request already carries: the caller says who asked so
+the answer comes back to the right occupant, and this says who answered so the menu can be
+merged instead of overwritten. **An answer without one is the one-answerer shape** and counts
+as the default answerer `"tools"` -- a tree wired before this keeps exactly one row, replaces
+it on every tick, and behaves exactly as it did.
+
+**The menu is derived, never accumulated.** The reply to the bundle sorts the rows by
+`answerer` and walks them in that order, so the same rows produce the same menu on every tick
+and a re-derivation is not a diff. A name two answerers both declare is taken from the
+**first** of them: a menu that declared one tool twice is a menu no provider accepts, and
+which of the two won has to be something a reader can predict. The self-served names of
+`3.3.1` are appended after that, still only where nobody delivered them, and the result is
+written with `$replace` exactly as one answer used to be.
+
+**Both guards stand, one at each end of the round trip.** The empty-menu guard is unchanged
+and still in FRONT: an answer with no usable declaration writes nothing -- and, since
+`3.4.0`, **records** nothing either, so it does not overwrite that answerer's stored row with
+an empty one, and the other answerers' rows stand untouched. The second guard is on the way
+back: a merge that came out empty writes nothing, for the same reason the first one exists.
+`$replace` over an empty menu is a revocation of the model's whole tool set.
+
+**`hop.menu_unknown` is computed against the MERGED menu.** A declared name is a finding only
+when NOBODY delivered it -- not when the answerer that happened to reply had nothing under it.
+That is what makes one declared list askable of several answerers at once: a surface naming
+`consult_cogny` beside its search tools asks both, the tools hive has nothing under the first
+and the core nothing under the other two, and neither of those is a defect. So the `unknown[]`
+of one answer travels **into its row** instead of being reported at the door, and the warn
+line moved with it: it reads `collector: no answerer has a declaration for: ...`, it is
+written once per **merge** rather than once per answer, and it still lands in `log.jsonl` at
+warn level with `had_stderr` on the emission.
+
+**`hop.menu_answerers`** joins `menu_count`, `menu_self` and `menu_unknown` on the `menu`
+message: the sorted list of the answerers whose rows went into this menu. It is what makes a
+merged menu readable at all -- `menu_count` alone cannot say whether the second answerer was
+in it.
+
+**A store refusal in a `menu` phase is a warn line and a stop, not a `degraded` answer.**
+Every other phase of this cell reports a refusal on `answer`, because that is where the turn
+was going anyway (see "When the store says no"). A menu has no turn beside it, so that report
+would put "context assembly stopped" in front of somebody who asked nothing. A menu is durable
+state, the next tick asks again, and stopping is the honest exit -- which is one more reason
+the ask is a tick.
+
+**Two answerers replying at the same time converge.** The bundle is one message and the
+`store` is one task with one connection, so the two bundles run sequentially: whichever runs
+second sees both rows and writes the full union. There is no lost update to guard against and
+no guard row to win.
 
 ### The curator (wave 11)
 
@@ -280,13 +545,47 @@ reports how far it had to go.
 | 1 | `tool_result` payloads whose class is `env` | the stub, the call, the tool name |
 | 2 | `tool_result` payloads whose class is `repeatable` | the stub, the call, the tool name |
 | 3 | `tool_call` **arguments** of old calls | the call and its name |
+| 4 | the **schema** of a declaration unused for `keep_rounds` | the name and one line of description |
+| 5 | the tail of an over-size `system.*` slot of this cell's own | the head, and a marker naming the cut |
+
+Stages 4 and 5 are `collector@3.1.0`
+([#451](https://github.com/mmeyerlein/meclaw/issues/451)), and they are what makes the
+arithmetic honest. Until then `curate()` was handed the rounds and, for everything else, a
+single integer -- `len(json.dumps(system))`, with the tool declarations in **no sum at all**.
+That is the largest block in a real prompt: measured on one turn, **5267 characters of tool
+declarations against 3998 characters for everything else**. A curator could therefore sit at
+`hard`, out of stages, having elided every payload it was allowed to touch, while the single
+biggest consumer of the window stood outside its sums. The contract is now the whole
+projection -- rounds, window, `system.*` as a tree, `tools[]` as an array -- and any of it may
+be left out, always against something that says how to get it back.
+
+**Stage 4 is usage, not judgement.** A call id carries its tool name and every item carries
+the iteration it belongs to, so "used recently" is a lookup over two facts the cell already
+holds -- no ranking, no similarity, no model. A tool called inside the newest `keep_rounds`
+iterations is one the model is working with right now, and taking its schema away mid-task is
+how an agent forgets how to do the thing it is doing. `thread_recall` itself is exempt at
+every budget: eliding the way back is the thrashing loop, one level up from the exemption
+stage 1 already makes for a recalled result. What a stub keeps is the name, one line, and the
+key: `thread_recall(call_id="tool:<name>")` -- answered straight out of the menu this cell
+holds, with no store read. `parameters` becomes the empty object schema rather than
+disappearing, because a declaration without it is one no provider accepts, and a curation that
+produced a rejected request would have traded a large prompt for no answer at all.
+
+**Stage 5 cuts, it does not reference.** `system.*` is upserted per slot path in the brain, so
+a leaf sent from here **overwrites** the durable one -- a stub with no text would revoke
+somebody's state instead of shortening one prompt. Only slots this cell re-derives from live
+state every round are candidates, the cut lasts exactly one round, and the marker says so.
 
 #### What is never touched, at any stage and any budget
 
 - the **conversation window** -- every user and assistant turn, verbatim
-- **`system.*`** -- instructions and handover. It counts towards the budget and is never a
-  candidate, which is exactly why hard constraints belong there and not in the chat: what
-  is only in the conversation is compaction-mortal everywhere else. Since
+- **`system.*`, the protected families** -- `instructions`, `identity`, `persona`,
+  `handover`. They count towards the budget and are never candidates at any size or budget,
+  which is exactly why hard constraints belong there and not in the chat: what is only in the
+  conversation is compaction-mortal everywhere else. Since `collector@3.1.0` the promise is
+  narrower and therefore true: not *all* of `system.*` is out of reach, but that list is, and
+  it is a list read out of one constant (`SYS_KEEP`) with a test pinning it. What became
+  reachable is a slot the collector itself writes and re-derives every round. Since
   `collector@2.1.0` the **memory bundle is no longer on this list** (GH #278): it is an
   ordinary row of the round now, in `messages[]` beside every other result. Saying so
   explicitly, because "not on the never-touched list" reads like "elidable" and it is not:
@@ -299,6 +598,8 @@ reports how far it had to go.
   doing it a second time
 - the newest **`keep_rounds`** iterations, verbatim
 - every result whose class is **`unique`**
+- every **tool in use** -- a declaration whose tool was called inside the newest
+  `keep_rounds` iterations keeps its schema, whatever the budget says
 
 That list is the reason the invariance gate below holds. Constraints, obscure details and
 time markers live in exactly those places, and the curator has no path to any of them.
@@ -335,6 +636,36 @@ because a threshold edge over an absent `hop.tokens_prompt` fails to evaluate, d
 branches of an exact partition, and parks the turn in silence. A missing usage field costs an
 estimate and a flag here, never a turn.
 
+#### The budget is told, not only enforced
+
+`hop.tokens_window` is a number for the *operator*. Since `collector@3.1.0` the **generator**
+is told as well: one short deterministic sentence in `system.budget`, computed out of the
+numbers the report already carries.
+
+```
+Context budget: 41207 of 128000 tokens used, 86793 left.
+```
+
+No model produced it and nothing in it can drift. It is a `system` slot rather than a message
+because it is a fact about the request rather than something somebody said -- and being a
+`system` slot, it obeys the revocation rule: switched off (`curate_budget_line` `""` or `"0"`)
+the leaf travels **empty**, because a slot that simply stops being sent stands in the prompt
+forever, quoting whatever turn last wrote it. With curation itself off no leaf travels at all.
+
+The sentence is placed in the tree, not in the order: `system_order` in the brain decides
+where it lands, and a brain that wants it last names `budget` last in that list.
+
+#### Message validity beats message count
+
+The hard rule, and it outranks every byte this component saves: **no stage removes a row.**
+Stages 1 and 2 replace a payload and leave the `tool_result` standing under its own call id,
+stage 3 empties an argument string, and stages 4 and 5 do not touch `messages[]` at all -- so
+every `tool_result` in the projection keeps the assistant `tool_call` that asked for it. A
+body whose `tool_result` has no partner is one every provider rejects, which makes a
+projection that is one row smaller and structurally invalid infinitely more expensive than the
+window it was shrinking. Pinned across every budget and both menu states in
+`crates/meclaw-cells/tests/w11_curator.rs`.
+
 #### The curation-invariance gate
 
 Nobody in the field measures multi-fold degradation; it is folklore with anecdotes. The gate
@@ -363,9 +694,12 @@ because the collector owns the slate the stub points at.
 `in_thread_call` is a declared lane of the hive contract since `collector@2.0.1`
 ([#245](https://github.com/mmeyerlein/meclaw/issues/245)) -- before that the edge above was
 refused with `hive_contract` at mutation time, so every stub the curator left pointed at a tool
-no caller could wire. A composite that carries this collector as a sub-unit has to declare the
-lane **at its own hive path** as well and forward it through its door edge; `talky` does (since `talky@3.0.1`),
-`cogny` does not (its seal admits one lane in total, [#240](https://github.com/mmeyerlein/meclaw/issues/240)).
+no caller could wire. A composite that carries this collector as a sub-unit and lets an OUTSIDE dispatcher
+route the call has to declare the lane **at its own hive path** as well and forward it through
+its door edge; `talky` does (since `talky@3.0.1`). A composite whose dispatcher is its own
+does not need the door at all -- the edge never leaves the composite -- and that is what
+`cogny` draws in its `params.graph`, one ordinary edge on the reserved tool name, with
+its seal unchanged ([#240](https://github.com/mmeyerlein/meclaw/issues/240)).
 
 The tool schema is a **seed**, not a contract of this template -- what the brain may ask for
 is decided where the brain's `system.tools` is written:
@@ -465,9 +799,12 @@ A colony-global value is still reachable where one is actually wanted: a param m
 as before. The difference is that sharing is now a **choice made per instance** instead of the
 only shape available.
 
-`context_window` still defaults to *off* rather than to a number, but no longer because of the
-sharing edge: a curator budget is a property of the model behind the seam, and inventing one
-for a template that does not know its brain would be a guess.
+`context_window` still defaults to *off* rather than to a number **in this template**, and no
+longer because of the sharing edge: a curator budget is a property of the model behind the
+seam, and inventing one for a template that does not know its brain would be a guess. A
+composite that DOES know its brain names one -- `cogny` sets it in the
+`override_params` of its collector reference, together with the `thread_recall` edge the
+stubs need (GH #451).
 
 ### A cap is a preview, never a delete
 
@@ -947,6 +1284,19 @@ prune-cut   -> update batched set pruned_at   phase prune-mark  report, NO delet
                                                                out of results[]
 ```
 
+and, when an answerer answers a menu question (GH #529):
+
+```
+in_menu    -> delete menu (this answerer)  phase menu-merge <- one row per answerer,
+            +  insert menu (answerer,                          keyed by
+                            tools, unknown)                    context.tool_answerer
+            +  select menu (every row)                      <- the #419 form: the
+                                                               select sees the insert
+menu-merge -> ROUTE menu                                    <- the UNION over the rows,
+              (nothing else: a menu is durable                 self-served names after
+               state and no turn travels beside it)            it, written with $replace
+```
+
 An incomplete fan-in emits **nothing** (empty multi-send, terminal by design) -- the same
 discipline as the store-backed tool loop this grew out of.
 
@@ -1021,8 +1371,47 @@ does not wait at all:
    advisor keeps one thread across question and answer.
 
 An `advice` row is inbound on the wire (`origin: user`), because that is the only inbound
-role a provider knows. In the store it keeps its own role, so a batch and a prune can
-still tell an event from a user's word.
+role a provider accepts mid-conversation. In the store it keeps its own role, so a batch
+and a prune can still tell an event from a user's word.
+
+**And on the wire it says so ([#540](https://github.com/mmeyerlein/meclaw/issues/540)).**
+The role alone was the whole frame until then, and a role a provider knows is a role the
+MODEL reads: an advisor's answer arrived byte for byte in the shape of a new sentence by
+the person, and was read as one. Measured on a live colony, one "plan me a thorough
+three-day trip to Athens, compare two options with numbers" turn, fresh session: the
+surface answered with an interim sentence and consulted, correctly; the core's plan came
+back on `in_advice`; the surface consulted a **second** time, its context quoting the core
+back as *"he supplied the following plan figures, not checked live"*; and then it told the
+person **"Yes. We take the cheap option."** — an answer to a question nobody had asked.
+The plan, with its two options and its numbers, never left the seam. It is not the runaway
+of [#539](https://github.com/mmeyerlein/meclaw/issues/539): one advice, one confusion, no
+loop needed.
+
+So the assembly frames the row for what it is, and the row alone:
+
+```
+[advice from your reasoning core, consult k-7]
+cheap: flight 180, hostel 3x40 ...
+```
+
+with no id in the frame when the row carries none — a printed empty id would invite a
+consult call carrying one. **Why a frame and not a role**: `tool` is the role that would
+say it truly, under the `consult_cogny` call id, and it is not available here. That call
+belongs to a round that has **ended**; it is not in `messages[]`, and a tool result with no
+preceding call is a provider error, not a better frame. `system` mid-conversation is the
+other candidate and buys nothing a text frame does not: what was missing was never the role
+on its own, it was that nothing beside the text said what the text is.
+
+**The rule travels with the ids.** Knowing a row is an advice does not yet say what to do
+with one, so `system.consult.text` carries, under the open ids, the one sentence that does:
+an advice is the answer to YOUR consultation, pass it on to the person in your own words,
+do not consult again about it — unless the core asks YOU something back, and then you
+answer the core, with its `consult_id`, never the person. It is here and not in a seed
+charter for the reason [#512](https://github.com/mmeyerlein/meclaw/issues/512) and
+[#525](https://github.com/mmeyerlein/meclaw/issues/525) both measured: a seed is read once
+at birth, and a brain that grew — imported, rebuilt, transferred — never receives it. A
+slot this cell re-derives every round reaches every `talky` standing in front of a core.
+It is revoked with the ids, by the same empty rendering, for the same reason.
 
 ```json
 { "from": "./dispatcher", "to": "/front/cogny",
@@ -1072,7 +1461,11 @@ still tell an event from a user's word.
   instead: the key of a bundle the next turn does not name is gone, one marker covers
   both legs under `both`, and -- the counter-pin that matters more -- the marker sits on
   that node and on no other, so `system.consult` and every slot the collector never wrote
-  stay untouched.
+  stay untouched. Since GH #540 also the wire shape of an `advice` row: the frame and its
+  correlation id, the frame without one, the person's word and the agent's own voice left
+  unframed beside it, and the rule under the open ids. Since GH #541 the round budget of a
+  turn-opening lane -- an `in_advice` arrival carrying `iter=9` opens its round at zero, and
+  the counter-pin that a tool result still carries the round it belongs to.
 - `crates/meclaw-cells/tests/gh278_the_ambient_recall_is_a_tool_result.rs` -- the channel
   itself, since 2.1.0: the ambient bundle leaves the seam as the last `tool_call` /
   `tool_result` pair of `messages[]`, the call id is derived and therefore stable across a

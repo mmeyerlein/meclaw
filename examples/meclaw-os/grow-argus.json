@@ -1,0 +1,15 @@
+{
+  "scope": "/",
+  "ctx": {
+    "model": "${MODEL_CORE}"
+  },
+  "diff": {
+    "add_nodes": [
+      {
+        "name": "argus",
+        "template": "argus"
+      }
+    ],
+    "add_edges": []
+  }
+}

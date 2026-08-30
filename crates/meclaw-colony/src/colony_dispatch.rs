@@ -532,6 +532,110 @@ const READ_TAG_MAX_CHARS: usize = 64;
 /// Maximum length of a `cycle_id` filter, in characters. Refused, not clamped.
 const LEDGER_CYCLE_ID_MAX_CHARS: usize = 64;
 
+/// The three dimensions `/colony/ledger` can group its sums by (GH #463).
+///
+/// Every one of them is a SQL expression over the windowed sub-query, and each
+/// excludes its own NULL group on purpose: a hop without a model is not a
+/// model, a hop that did not fail is not an error code, and grouping either
+/// would invent a key nobody can read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LedgerGrouping {
+    /// `$.hop.model` — what the `llm` cell reported the provider answered with.
+    Model,
+    /// `to_path` — the RECEIVING cell. Not `from_path`: "the message reached
+    /// that cell" is the fact the prefix and cycle counters already answer, and
+    /// three counters that disagree about which end of a hop they mean would be
+    /// worse than one that is narrow.
+    Path,
+    /// `$.hop.error_code` — the typed failure code of a failed hop.
+    ErrorCode,
+}
+
+impl LedgerGrouping {
+    /// The SQL expression this grouping keys on. A fixed `&'static str` per
+    /// variant, never a caller string: the value reaches us from an HTTP query
+    /// parameter, and the only safe way to put a caller's word into a statement
+    /// is not to.
+    fn sql(self) -> &'static str {
+        match self {
+            Self::Model => "json_extract(headers, '$.hop.model')",
+            Self::Path => "to_path",
+            Self::ErrorCode => "json_extract(headers, '$.hop.error_code')",
+        }
+    }
+}
+
+/// Read a JSON-summed column as `i64`.
+///
+/// `SUM(json_extract(...))` answers INTEGER for integral values and REAL as
+/// soon as one row carried a decimal, and rusqlite refuses a REAL into `i64`.
+/// A provider that writes `"tokens_prompt": 100.0` must not turn the whole
+/// ledger read into an `unavailable` — so the sum is read as a float and
+/// rounded once, at the edge.
+fn sum_as_i64(row: &rusqlite::Row<'_>, idx: usize) -> rusqlite::Result<i64> {
+    Ok(row.get::<_, f64>(idx)?.round() as i64)
+}
+
+/// One grouped aggregate over the message window: `calls` plus every summable
+/// figure the hop header carries (GH #463).
+///
+/// The two `*_samples` counters are not decoration. `latency_ms` and
+/// `duration_ms` are written by *some* cells on *some* hops, so the number of
+/// hops in the group is the wrong divisor for a mean — counting the rows that
+/// actually carried the field is the only way the caller can compute one
+/// without inventing data.
+fn grouped_aggregate(
+    conn: &rusqlite::Connection,
+    grouping: LedgerGrouping,
+    since: i64,
+    until: i64,
+    budget: i64,
+) -> rusqlite::Result<std::collections::BTreeMap<String, crate::api_dto::LedgerAggregate>> {
+    let key = grouping.sql();
+    let sql = format!(
+        "SELECT {key} AS grp,
+                COUNT(*),
+                COALESCE(SUM(json_extract(headers, '$.hop.tokens_prompt')), 0),
+                COALESCE(SUM(json_extract(headers, '$.hop.tokens_completion')), 0),
+                COALESCE(SUM(json_extract(headers, '$.hop.tokens_cached')), 0),
+                COALESCE(SUM(json_extract(headers, '$.hop.cost')), 0.0),
+                COALESCE(SUM(json_extract(headers, '$.hop.latency_ms')), 0),
+                COALESCE(SUM(CASE WHEN json_extract(headers, '$.hop.latency_ms')
+                                       IS NOT NULL THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(json_extract(headers, '$.hop.duration_ms')), 0),
+                COALESCE(SUM(CASE WHEN json_extract(headers, '$.hop.duration_ms')
+                                       IS NOT NULL THEN 1 ELSE 0 END), 0)
+           FROM (SELECT headers, to_path FROM message_log
+                  WHERE created_at >= ?1 AND created_at < ?2
+                  LIMIT ?3)
+          WHERE {key} IS NOT NULL
+          GROUP BY grp"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params![since, until, budget], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            crate::api_dto::LedgerAggregate {
+                calls: r.get::<_, i64>(1)? as u64,
+                tokens_prompt: sum_as_i64(r, 2)?,
+                tokens_completion: sum_as_i64(r, 3)?,
+                tokens_cached: sum_as_i64(r, 4)?,
+                cost: r.get::<_, f64>(5)?,
+                latency_ms: sum_as_i64(r, 6)?,
+                latency_samples: r.get::<_, i64>(7)? as u64,
+                duration_ms: sum_as_i64(r, 8)?,
+                duration_samples: r.get::<_, i64>(9)? as u64,
+            },
+        ))
+    })?;
+    let mut out = std::collections::BTreeMap::new();
+    for row in rows {
+        let (key, agg) = row?;
+        out.insert(key, agg);
+    }
+    Ok(out)
+}
+
 /// GH #267 (ruling Q14, 2026-08-21): answer `/colony/ledger` — counts and sums
 /// over one time window of `colony.db`, never rows.
 ///
@@ -551,6 +655,17 @@ const LEDGER_CYCLE_ID_MAX_CHARS: usize = 64;
 /// `None`: the caller must never be able to read a zero out of a read that did
 /// not happen. A filter that could not be *parsed* never reaches this function
 /// — that is the `invalid_query` refusal taken in the endpoint (GH #341/#359).
+///
+/// **GH #463 — what is summed, and along which axis.** Every group carries the
+/// whole usage block the `llm` cell now writes into the hop header
+/// (`tokens_prompt`, `tokens_completion`, `tokens_cached`, `cost`,
+/// `latency_ms`) plus the tool-side `duration_ms` that `file`, `bash`,
+/// `web_search`, `mcp` and `vault` already wrote. `by_model` is answered
+/// unconditionally, as it has been since #267; `group_by=path` and
+/// `group_by=error_code` each add ONE further map beside it, so a caller that
+/// asks nothing gets exactly the reply it got before. The aggregates-only
+/// ruling is untouched: a group KEY is the dimension the caller asked to be
+/// grouped along, and no row, envelope or header value comes with it.
 pub async fn handle_read_ledger(
     db_path: &std::path::Path,
     query: crate::api_dto::LedgerQuery,
@@ -572,6 +687,7 @@ pub async fn handle_read_ledger(
     let budget = query.scan_budget as i64;
     let prefix_like = query.path_prefix.as_ref().map(|p| format!("{p}%"));
     let cycle_id = query.cycle_id.clone();
+    let group_by = query.group_by.clone();
 
     type LedgerCounts = (
         crate::api_dto::LedgerMessages,
@@ -598,36 +714,24 @@ pub async fn handle_read_ledger(
             |r| Ok((r.get::<_, i64>(0)? as u64, r.get::<_, i64>(1)? as u64)),
         )?;
 
-        // (2) per-model calls and token sums. The NULL group is excluded on
-        // purpose: a hop without `$.hop.model` is not a model, and grouping it
-        // would invent a key nobody can read.
-        let mut by_model = std::collections::BTreeMap::new();
-        {
-            let mut stmt = conn.prepare(
-                "SELECT json_extract(headers, '$.hop.model') AS model,
-                        COUNT(*),
-                        COALESCE(SUM(json_extract(headers, '$.hop.tokens_prompt')), 0),
-                        COALESCE(SUM(json_extract(headers, '$.hop.tokens_completion')), 0)
-                   FROM (SELECT headers FROM message_log
-                          WHERE created_at >= ?1 AND created_at < ?2
-                          LIMIT ?3)
-                  WHERE json_extract(headers, '$.hop.model') IS NOT NULL
-                  GROUP BY model",
-            )?;
-            let rows = stmt.query_map(rusqlite::params![since, until, budget], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    crate::api_dto::LedgerModel {
-                        calls: r.get::<_, i64>(1)? as u64,
-                        tokens_prompt: r.get::<_, i64>(2)?,
-                        tokens_completion: r.get::<_, i64>(3)?,
-                    },
-                ))
-            })?;
-            for row in rows {
-                let (model, agg) = row?;
-                by_model.insert(model, agg);
+        // (2) the grouped sums. `by_model` is answered unconditionally — it
+        // predates `group_by` being read at all, and a caller that sends none
+        // still gets it. A second map is computed only when asked for, which
+        // is what keeps the ungrouped reply byte-identical to the #267 one.
+        let by_model = grouped_aggregate(&conn, LedgerGrouping::Model, since, until, budget)?;
+        let mut by_path = std::collections::BTreeMap::new();
+        let mut by_error_code = std::collections::BTreeMap::new();
+        match group_by.as_deref() {
+            Some("path") => {
+                by_path = grouped_aggregate(&conn, LedgerGrouping::Path, since, until, budget)?;
             }
+            Some("error_code") => {
+                by_error_code =
+                    grouped_aggregate(&conn, LedgerGrouping::ErrorCode, since, until, budget)?;
+            }
+            // `model` needs no second read, and an unknown value never gets
+            // this far — the parser refuses it as `invalid_query`.
+            _ => {}
         }
 
         // (3) the prefix counter: traffic touching that cell in EITHER
@@ -710,6 +814,8 @@ pub async fn handle_read_ledger(
                 path_prefix_total,
                 path_prefix_cycle_total,
                 by_model,
+                by_path,
+                by_error_code,
             },
             crate::api_dto::LedgerCount {
                 total: dead_letter_total,
@@ -1110,8 +1216,8 @@ pub fn parse_read_query_trace_filters(
 ///
 /// **Refused**: a non-object `query`; a non-numeric, negative or fractional
 /// `since`/`until`/`scan_budget`; a non-string `path_prefix`/`group_by`/`tag`/
-/// `cycle_id`; a `group_by` other than `"model"`; a `cycle_id` longer than 64
-/// characters. All of them under the one documented `invalid_query` code — the
+/// `cycle_id`; a `group_by` other than `"model"`, `"path"` or `"error_code"`
+/// (GH #463); a `cycle_id` longer than 64 characters. All of them under the one documented `invalid_query` code — the
 /// ledger is the fifth read under that code, not a sixth vocabulary.
 pub fn parse_read_query_ledger_filters(
     body: &meclaw_core::serde_json::Value,
@@ -1156,14 +1262,17 @@ pub fn parse_read_query_ledger_filters(
         .map(|v| (v as usize).clamp(LEDGER_SCAN_BUDGET_MIN, LEDGER_SCAN_BUDGET_MAX))
         .unwrap_or(LEDGER_SCAN_BUDGET_DEFAULT);
 
+    // GH #463: three groupings, and the list is closed. A caller word never
+    // reaches SQL — it selects one of three fixed expressions or it is refused.
     let group_by = match read_opt_str(q, "group_by")? {
-        Some("model") => Some("model".to_string()),
+        Some(g @ ("model" | "path" | "error_code")) => Some(g.to_string()),
         Some(other) => {
             return Err(ReadQueryError {
                 key: "query.group_by".into(),
                 details: format!(
-                    "`query.group_by` must be \"model\", found \"{other}\" — the \
-                     ledger groups by model and by nothing else"
+                    "`query.group_by` must be one of \"model\", \"path\", \
+                     \"error_code\", found \"{other}\" — the ledger groups by \
+                     those three and by nothing else"
                 ),
             });
         }
@@ -2561,6 +2670,7 @@ mod tests {
             eager_on_reconnect: true,
             active,
             failed,
+            dormant: false,
             stop_tx: None,
             death_ack_rx: None,
         }

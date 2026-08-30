@@ -197,6 +197,7 @@ fn build_root_from(seed: &str, root: &std::path::Path) {
          MODEL_BRAIN=gpt-4o-mock\n\
          MODEL_CORE=gpt-4o-mock\n\
          MODEL_CORE_FAST=gpt-4o-mock-fast\n\
+         MODEL_SURFACE=gpt-4o-mock-surface\n\
          MODEL_CLOSER=gpt-4o-mock\n\
          MODEL_DIALECTIC=gpt-4o-mock\n\
          MODEL_DREAMER=gpt-4o-mock\n\
@@ -423,7 +424,7 @@ fn blank_uuids(v: &mut Value) {
 /// The boot-grown ref is byte-identical to the mutation-grown tree.
 ///
 /// **The pin for `SNB-graph-bootstrap-{de,en}`** in
-/// `plans/spec-claims/claims.tsv`: a declaration in the root tree provides the
+/// `.github/gates/claims.tsv`: a declaration in the root tree provides the
 /// initial desired state for its position on first instantiation, and it does
 /// so through the very chain a mutation takes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

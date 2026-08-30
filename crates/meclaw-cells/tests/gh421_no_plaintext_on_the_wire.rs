@@ -590,11 +590,11 @@ fn sweep(td: &tempfile::TempDir) -> Sweep {
 ///
 /// The order of the assertions is the order of the evidence. First the round has
 /// to actually happen (a green sweep over a round that never ran is a green
-/// sweep over nothing): the model refuses its first turn with
-/// `credential_pending`, the broker books a `vault.deliver` spend, and the mock
-/// provider sees `Authorization: Bearer <the seeded secret>` — which no code
-/// path could produce unless the box really opened in the model's RAM. Only
-/// then is the log swept.
+/// sweep over nothing): the model parks its first turn and asks (GH #457), the
+/// broker books a `vault.deliver` spend, and the mock provider then sees
+/// `Authorization: Bearer <the seeded secret>` for that very turn — which no
+/// code path could produce unless the box really opened in the model's RAM.
+/// Only then is the log swept.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_full_credential_round_leaves_no_plaintext_in_the_log_or_in_a_blob() {
     let Some(access) = shipped_access() else {
@@ -626,26 +626,38 @@ async fn a_full_credential_round_leaves_no_plaintext_in_the_log_or_in_a_blob() {
     // 2. The grant the model's config already names.
     plant_grant(&h, &mut rx).await;
 
-    // 3. First turn: no credential in RAM, so the model asks and refuses this
-    //    one message. It must NOT have called the provider.
+    // 3. First turn: no credential in RAM, so the model asks — and PARKS this
+    //    message rather than refusing it (GH #457). The answer below is that
+    //    same turn, coming back after the box did.
     h.send(to("/brain", "ping")).await;
-    let pending = recv_where(&mut rx, "the credential_pending refusal", |m| {
-        hop_of(m, "error_code") == "credential_pending"
+
+    // 4. The parked turn, answered. No second gesture from the user: the model
+    //    got its credential and served the message that had asked for it.
+    //
+    //    Waited for BEFORE the usage probe below, and that order is load-bearing
+    //    now: `probe` reads this same sink and SKIPS what it is not looking for,
+    //    so a poll loop running while the answer is in flight would swallow it.
+    //    Under GH #421 the answer could only appear after a second turn, which
+    //    is why the old order worked.
+    let answer = recv_where(&mut rx, "the model's answer", |m| {
+        hop_of(m, "finish_reason") == "stop"
     })
     .await;
-    assert_eq!(
-        hop_of(&pending, "finish_reason"),
-        "error",
-        "a refused turn is an error turn: {:?}",
-        pending.headers.hop
+    assert_ne!(
+        hop_of(&answer, "error_code"),
+        "credential_pending",
+        "the parked turn was refused instead of answered: {:?}",
+        answer.headers.hop
     );
-    assert!(
-        captured.lock().await.is_empty(),
-        "a cell without a credential called the provider anyway"
+    assert_eq!(
+        body_of(&answer)["messages"][0]["text"],
+        "pong",
+        "the mock's answer came back: {}",
+        turn_text(&answer)
     );
 
-    // 4. The sealed round runs beside us. Its positive receipt is the booked
-    //    spend — `invoke` writes the usage row only after the box came back.
+    // 5. And the sealed round that made it possible left its own receipt: the
+    //    booked spend, which `invoke` writes only after the box came back.
     let mut booked = false;
     for _ in 0..40 {
         let usage = probe(
@@ -670,19 +682,6 @@ async fn a_full_credential_round_leaves_no_plaintext_in_the_log_or_in_a_blob() {
     assert!(
         booked,
         "no vault.deliver spend was ever booked for {GRANT_ID}"
-    );
-
-    // 5. Second turn: the credential is in RAM now, so the provider is called.
-    h.send(to("/brain", "ping again")).await;
-    let answer = recv_where(&mut rx, "the model's answer", |m| {
-        hop_of(m, "finish_reason") == "stop"
-    })
-    .await;
-    assert_eq!(
-        body_of(&answer)["messages"][0]["text"],
-        "pong",
-        "the mock's answer came back: {}",
-        turn_text(&answer)
     );
 
     // 6. THE proof that the RAM credential is the real one. Nothing else in this

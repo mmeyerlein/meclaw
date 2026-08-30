@@ -1,0 +1,141 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json, hashlib, uuid, datetime\n\n# The operator's submission occupant. It composes nothing and it decides\n# nothing: it takes a manifest an operator posted (or the `lifecycle` occupant\n# assembled next door), draws the digest over the bytes it is about to forward,\n# and emits it once on `apply`.\n#\n# Being a CELL is the whole point. The substrate stamps the emitting cell's path\n# as `envelope.reply_to`, so a submission that leaves here arrives at the\n# submitter's gate with `/os/operator/submit` on it -- and the gate, which takes\n# the requester off the envelope and refuses `requester_unknown` when there is\n# none, has somebody to attribute the mutation to. That is the whole of the\n# hole: an agent inside the colony IS a cell and has a path; a person with a\n# shell is not a cell and has none, so the operator lends them one.\n#\n# It gives IDENTITY and never AUTHENTICATION. There is no token here, no header\n# check and no secret -- who may reach the front door is a reverse proxy's\n# question, and what the holder of this identity may DO is the broker's.\n#\n# GH #474 -- IT ALSO HOLDS A DRAFT STILL. A manifest the baumeister drew for an\n# operator arrives here on `in_draft`, and what happens to it is the opposite of\n# what happens on `in_submit`: it is parked in the `drafts` store beside this\n# cell, under its own digest, and answered with a receipt that names the digest\n# and the place it waits. NOTHING is applied. The second act is the operator's\n# own `in_submit` naming that digest and no manifest -- read back off the store,\n# checked against the digest it was asked for, and only then forwarded on\n# `apply`. A digest nothing is parked under is a `digest_mismatch` receipt and\n# not a submission.\n\n# --8<-- digest-helper\ndef canonical(declarations):\n    # Canonical bytes: keys sorted, no spaces, no ascii escaping. The digest has\n    # to survive a round trip through a CHAT -- the draft is shown to a human,\n    # the model repeats it in the second tool call, and the submitter refuses\n    # anything whose bytes changed on the way. Without that, the manifest a\n    # human said yes to and the manifest that gets applied are only PROBABLY\n    # the same one.\n    return json.dumps(declarations, sort_keys=True, separators=(\",\", \":\"),\n                      ensure_ascii=False)\n\n\ndef digest(declarations):\n    return hashlib.sha256(canonical(declarations).encode(\"utf-8\")).hexdigest()\n# --8<-- end\n\ndoc = json.load(sys.stdin)\nenv = doc[\"envelope\"]\nhop = (env.get(\"header\") or {}).get(\"hop\") or {}\nctx = (env.get(\"header\") or {}).get(\"context\") or {}\nbody = doc[\"body\"]\n\n# The correlation id of the round, and it is PREFIXED on purpose. The\n# submitter puts the id it was given back on the receipt verbatim, and the\n# level above uses that prefix to hand an operator's receipt to the operator\n# rather than to every other subscriber of the submitter's `receipt` lane.\n# A marker on the id is what the round has; the context a request travelled in\n# does not survive the colony's answer, which begins a fresh trace.\n#\n# There are TWO doors and therefore two markers. `op:` is a person with a\n# shell -- the request arrived at the rim and the answer leaves the colony.\n# `op:agent:` is an assistant inside the colony whose `build` / `build_op ==\n# 'apply'` the shell re-stamped onto this hive's `in_submit` lane (R-Zielfluss\n# (a): ONE submission front door, not two). Its answer does not leave: it goes\n# back down to the assistant that asked, and the marker is how the level above\n# knows which of the two it is holding.\nAGENT_MARK = \"op:agent:\"\nOP_MARK = \"op:\"\n\n# WHICH DOOR, ON THE WAY BACK: read from TWO carriers, because neither survives\n# every road on its own and the two failures are disjoint.\n#\n#   `context.operator_caller`  set by the shell's `./orgs -> ./operator` edge.\n#       It survives a refusal the submitter's gate raises inside the level --\n#       and that is the case where the id is EMPTY, because a refused manifest\n#       is never parked and the flight row that would have carried the id was\n#       never written.\n#   the `op:agent:` prefix on the id  survives the mutation door, whose answer\n#       begins a FRESH TRACE that carries no promoted context. That is the case\n#       where the flight row exists and hands the marked id back verbatim.\n#\n# One carrier would be a lane that works until the outcome changes.\n\n\ndef agent_round(raw_id):\n    return raw_id.startswith(AGENT_MARK) or \\\n        str(ctx.get(\"operator_caller\") or \"\") == \"agent\"\n\n\ndef unmark(raw):\n    \"\"\"The id as the CALLER knows it. The marker records which door a request\n    came in at, which is a fact of this level and never a caller's claim -- so\n    it is stripped off anything arriving and stripped off everything leaving.\"\"\"\n    if raw.startswith(AGENT_MARK):\n        return raw[len(AGENT_MARK):]\n    if raw.startswith(OP_MARK):\n        return raw[len(OP_MARK):]\n    return raw\n\n\nROUTE = str(hop.get(\"route\") or \"\")\nRAW_ID = str(hop.get(\"tool_call_id\") or \"\")\n\n# The drafts store's answer, recognised POSITIVELY by the marker this hive's own\n# edge promoted to context. `op_*` is this hive's OWN key space, for the same\n# reason the submitter's is `sub_*`: a marker under a name another template\n# writes would not survive a round trip that passes through it.\nSTORE_ORIGIN = str(ctx.get(\"op_origin\") or \"\")\nSTORE_PHASE = str(ctx.get(\"op_phase\") or \"\")\ntry:\n    CARRY = json.loads(str(ctx.get(\"op_carry\") or \"{}\"))\nexcept Exception:\n    CARRY = {}\nif not isinstance(CARRY, dict):\n    CARRY = {}\n\nif ROUTE == \"in_receipt\":\n    # Phase B. The id is READ here and never rewritten: which door this round\n    # came in at was settled one round ago.\n    AGENT = agent_round(RAW_ID)\n    CALL_ID = RAW_ID\nelif STORE_ORIGIN == \"drafts\":\n    # The un-parking read. A store answer begins with no hop of this cell's\n    # own, so both facts ride in the carry the hive's edge promoted.\n    CALL_ID = str(CARRY.get(\"call_id\") or \"\")\n    AGENT = bool(CARRY.get(\"agent\"))\nelse:\n    # Phase A. The EDGE decides, and a caller that marked its own id is\n    # unmarked first: the prefix records which edge a request arrived on, and\n    # that is the level's fact rather than the caller's claim.\n    AGENT = agent_round(\"\")\n    CALL_ID = (AGENT_MARK if AGENT else OP_MARK) + (\n        unmark(RAW_ID) or uuid.uuid4().hex[:12])\n\n# What goes back to whoever asked is the id THEY used. The marker never leaves\n# this hive: an assistant's fan-in waits for the id its own tool call carried,\n# and a tool_result under a different one is a round that never ends.\nOUT_ID = unmark(CALL_ID)\n\n\ndef receipt(text, code=\"\", extra=None):\n    \"\"\"One receipt, on the lane every occupant of this hive answers on.\"\"\"\n    header = {\"route\": \"receipt\", \"operation\": \"operator_submit\"}\n    if code:\n        header[\"error_code\"] = code\n    if OUT_ID:\n        header[\"tool_call_id\"] = OUT_ID\n    if AGENT:\n        # The level above routes on this and on nothing else: an agent's\n        # receipt goes back DOWN as `in_build_result`, an operator's leaves the\n        # colony. One lane, two destinations, told apart by a fact rather than\n        # by a guess about who might be listening.\n        header[\"submitter_kind\"] = \"agent\"\n    header.update(extra or {})\n    sys.stdout.write(json.dumps({\n        \"header\": header,\n        \"messages\": [{\"origin\": \"tool\", \"type\": \"tool_result\", \"id\": OUT_ID,\n                      \"text\": text}]}))\n    sys.exit(0)\n\n\ndef now():\n    # Fixed width, microseconds, UTC. `at` is ordered as TEXT, so\n    # lexicographic order has to be chronological order.\n    return datetime.datetime.now(datetime.timezone.utc).strftime(\n        \"%Y-%m-%dT%H:%M:%S.%fZ\")\n\n\ndef store(operation, phase, carry, **rest):\n    \"\"\"One operation for the drafts store beside this cell.\n\n    It is a LANE of this hive's interior and never of its rim: `dstore` reaches\n    `./drafts` and nothing else, and the store's answer comes back under the\n    context the same edge promoted.\n    \"\"\"\n    args = {\"operation\": operation}\n    args.update(rest)\n    return {\"header\": {\"route\": \"dstore\", \"operation\": \"operator_submit\",\n                       \"phase\": phase,\n                       \"carry\": json.dumps(carry) if carry is not None else \"\"},\n            \"messages\": [{\"origin\": \"assistant\", \"type\": \"tool_call\",\n                          \"id\": uuid.uuid4().hex[:12], \"text\": json.dumps(args)}]}\n\n\ndef rows_of(d):\n    \"\"\"A store `select` answers with its rows as the TEXT of one turn.\"\"\"\n    msgs = d.get(\"messages\") or []\n    if not msgs:\n        return []\n    try:\n        v = json.loads(msgs[-1].get(\"text\") or \"null\")\n    except Exception:\n        return []\n    return v if isinstance(v, list) else []\n\n\ndef as_list(v):\n    \"\"\"A `json` column comes off the wire as the TEXT the store kept.\"\"\"\n    if isinstance(v, list):\n        return v\n    if isinstance(v, str) and v.strip():\n        try:\n            p = json.loads(v)\n        except Exception:\n            return []\n        return p if isinstance(p, list) else []\n    return []\n\n\ndef scope_root(decls):\n    \"\"\"The longest common PATH-SEGMENT prefix of every declaration's scope.\n\n    It is written on the receipt so that a person reading a draft sees WHERE it\n    would land before saying yes -- the same root the submitter later asks the\n    broker about. Segments, not characters: `/os` and `/oscar` join at `/`.\n    \"\"\"\n    parts = None\n    for d in decls:\n        s = str((d or {}).get(\"scope\") or \"\")\n        if not s.startswith(\"/\"):\n            return \"/\"\n        segs = [x for x in s.split(\"/\") if x]\n        if parts is None:\n            parts = segs\n            continue\n        keep = []\n        for a, b in zip(parts, segs):\n            if a != b:\n                break\n            keep.append(a)\n        parts = keep\n    return \"/\" + \"/\".join(parts or [])\n\n\ndef drafts_path():\n    \"\"\"Where a parked draft waits, as an address a person can ask.\n\n    Derived from the target this message was delivered to rather than written\n    down: this template is instantiable anywhere, so a hard-coded `/os/...`\n    would be a claim about one colony's tree. The sibling is named `drafts` in\n    the same hive, which is a fact of THIS template and the one thing it may\n    assume about itself.\n    \"\"\"\n    target = str(env.get(\"target\") or \"\")\n    if not target.startswith(\"/\"):\n        return \"./drafts\"\n    segs = [s for s in target.split(\"/\") if s]\n    if segs and segs[-1] == \"submit\":\n        segs = segs[:-1]\n    return \"/\" + \"/\".join(segs + [\"drafts\"])\n\n\ndef asked_digest():\n    \"\"\"The digest an operator names when they submit a draft rather than a\n    manifest -- on the hop as a pin, or in a `{op: 'submit', digest}` turn.\"\"\"\n    pin = str(hop.get(\"manifest_sha256\") or \"\")\n    if pin:\n        return pin\n    raw = \"\"\n    for m in (body.get(\"messages\") or []):\n        if m.get(\"type\") == \"tool_call\" and m.get(\"text\"):\n            raw = m[\"text\"]\n    try:\n        v = json.loads(raw)\n    except Exception:\n        v = None\n    if not isinstance(v, dict):\n        return \"\"\n    return str(v.get(\"digest\") or \"\")\n\n\n# ---- The drafts store's answer, on the way back into this cell.\nif STORE_ORIGIN == \"drafts\":\n    if STORE_PHASE != \"unpark\":\n        # `written` -- an insert with nothing left to say.\n        sys.stdout.write(\"[]\")\n        sys.exit(0)\n    wanted = str(CARRY.get(\"digest\") or \"\")\n    rows = [] if str(hop.get(\"error_code\") or \"\") else rows_of(body)\n    row = rows[0] if rows and isinstance(rows[0], dict) else {}\n    decls = as_list(row.get(\"manifest\"))\n    if not decls:\n        # A digest nothing is parked under is NOT a submission that failed --\n        # it is a submission that was never made, and it is said in those words.\n        receipt(\"no draft is parked under that digest -- nothing was submitted\",\n                \"digest_mismatch\", {\"expected\": wanted})\n    actual = digest(decls)\n    if actual != wanted:\n        # Belt and braces: the row was found by its digest column, so this can\n        # only fire if the parked bytes and the column disagree. That is a\n        # corrupted park and never something to forward.\n        receipt(\"the parked draft does not match the digest it was asked for\",\n                \"digest_mismatch\", {\"expected\": wanted, \"actual\": actual})\n    # The draft is NOT deleted. A refusal at the broker leaves the operator with\n    # a digest they can still submit once the policy allows it, and a draft is\n    # the record of what this door offered.\n    sys.stdout.write(json.dumps({\n        \"header\": {\"route\": \"apply\", \"operation\": \"operator_submit\",\n                   \"manifest_sha256\": actual,\n                   \"declaration_count\": len(decls),\n                   \"tool_call_id\": CALL_ID},\n        \"manifest\": decls,\n        \"messages\": []}))\n    sys.exit(0)\n\n# ---- Phase B: the submitter's receipt, on its way back to whoever asked.\n#\n# Recognised POSITIVELY by the lane the level re-stamps it onto. It is rendered\n# rather than forwarded: the facts an operator needs are on the HOP (`applied`,\n# `failed_at`, `remaining`, `error_code`), and a receipt that carried them only\n# in a header nobody reads would leave a person guessing whether the colony\n# changed.\nif ROUTE == \"in_receipt\":\n    said = \"\"\n    for m in (body.get(\"messages\") or []):\n        if m.get(\"text\"):\n            said = str(m[\"text\"])\n    code = str(hop.get(\"error_code\") or \"\")\n    extra = {}\n    for key in (\"applied\", \"failed_at\", \"remaining\", \"manifest_sha256\",\n                \"mutation_id\"):\n        if hop.get(key) is not None:\n            extra[key] = hop[key]\n    if code:\n        text = \"the submission was refused: %s\" % code\n        if said:\n            text += \" -- \" + said[:600]\n    else:\n        text = said or \"the submission came back without a sentence\"\n    receipt(text, code, extra)\n\n# ---- GH #474, Phase D: a draft, to be LOOKED AT rather than applied.\n#\n# The baumeister's own contract calls what it emits a PROPOSAL -- \"a sentence a\n# human can read before saying yes\". Since the rim learned to ask for a draft\n# (GH #469) that sentence travelled straight past the human, because the only\n# road out of the builder for an operator-initiated round was this hive's\n# `in_submit`. This lane is the halt: park it, answer with the digest and the\n# place it waits, and apply nothing.\nif ROUTE == \"in_draft\":\n    drawn = body.get(\"manifest\")\n    if not isinstance(drawn, list) or not drawn:\n        receipt(\"in_draft needs a manifest: an ordered list of declarations\",\n                \"manifest_missing\")\n    drawn_sha = digest(drawn)\n    pinned = str(hop.get(\"manifest_sha256\") or \"\")\n    if pinned and pinned != drawn_sha:\n        # The baumeister stamps its own digest. If it disagrees with the bytes\n        # that arrived, the draft is not parked at all -- a park under the wrong\n        # digest is a draft nobody can ever submit.\n        receipt(\"the draft does not match the digest it was drawn with\",\n                \"manifest_digest_mismatch\",\n                {\"expected\": pinned, \"actual\": drawn_sha})\n    at = drafts_path()\n    root = scope_root(drawn)\n    header = {\"route\": \"receipt\", \"operation\": \"operator_submit\",\n              \"draft_state\": \"draft_ready\", \"manifest_sha256\": drawn_sha,\n              \"declaration_count\": len(drawn), \"draft_path\": at}\n    if OUT_ID:\n        header[\"tool_call_id\"] = OUT_ID\n    if AGENT:\n        header[\"submitter_kind\"] = \"agent\"\n    text = (\"draft %s is ready and nothing has been applied: %d declaration(s) \"\n            \"under %s, parked at %s. Submit it by posting `in_submit` with \"\n            \"manifest_sha256 %s and no manifest; leaving it alone discards it.\"\n            % (drawn_sha, len(drawn), root, at, drawn_sha))\n    sys.stdout.write(json.dumps([\n        store(\"insert\", \"written\", None, table=\"drafts\",\n              row={\"id\": uuid.uuid4().hex, \"at\": now(),\n                   \"manifest_sha256\": drawn_sha, \"tool_call_id\": OUT_ID,\n                   \"scope_root\": root, \"declaration_count\": len(drawn),\n                   \"manifest\": drawn}),\n        {\"header\": header, \"manifest\": drawn,\n         \"messages\": [{\"origin\": \"tool\", \"type\": \"tool_result\", \"id\": OUT_ID,\n                       \"text\": text}]}]))\n    sys.exit(0)\n\n# ---- Phase A: a manifest to submit -- or the digest of a draft that waits.\nmanifest = body.get(\"manifest\")\nif not isinstance(manifest, list) or not manifest:\n    wanted = asked_digest()\n    if wanted:\n        # The second act. The manifest is not re-posted: it is read back out of\n        # the store under the digest the operator quotes, which is what makes\n        # `submit <digest>` a decision about the bytes somebody looked at rather\n        # than about the bytes they happen to be holding.\n        sys.stdout.write(json.dumps([store(\n            \"select\", \"unpark\",\n            {\"digest\": wanted, \"call_id\": CALL_ID, \"agent\": AGENT},\n            table=\"drafts\",\n            columns=[\"id\", \"manifest\", \"manifest_sha256\", \"tool_call_id\"],\n            where={\"manifest_sha256\": wanted},\n            order_by=[{\"col\": \"at\", \"dir\": \"desc\"}, {\"col\": \"id\", \"dir\": \"asc\"}],\n            limit=1)]))\n        sys.exit(0)\n    receipt(\"in_submit needs a manifest -- an ordered list of declarations, or \"\n            \"the digest of a draft that waits\", \"manifest_missing\")\n\nactual = digest(manifest)\nclaimed = str(hop.get(\"manifest_sha256\") or \"\")\nif claimed and claimed != actual:\n    # A caller MAY pin the bytes, and when it does the pin is honoured here\n    # rather than three hops later: the submitter would refuse the same\n    # manifest with the same code, and a refusal that travels further than it\n    # has to is a refusal an operator has to trace.\n    receipt(\"the manifest does not match the digest it was posted with\",\n            \"manifest_digest_mismatch\",\n            {\"expected\": claimed, \"actual\": actual})\n\n# No pin is not a defect here. The digest exists because a DRAFT passes through\n# a chat -- shown to a human, repeated by a model -- and the bytes have to be\n# checkable across that gap. An operator posting a manifest directly IS the\n# human, and the bytes are the ones they sent; so the digest is drawn over what\n# arrived, and the submitter checks the same bytes it was handed.\nsys.stdout.write(json.dumps({\n    \"header\": {\"route\": \"apply\", \"operation\": \"operator_submit\",\n               \"manifest_sha256\": actual,\n               \"declaration_count\": len(manifest),\n               \"tool_call_id\": CALL_ID},\n    \"manifest\": manifest,\n    \"messages\": []}))\n",
+    "external_timeout_ms": 10000,
+    "sandbox": {
+      "trust": "restricted",
+      "network": "deny",
+      "filesystem": {
+        "runtime": true
+      }
+    }
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "multi_send_capable": true,
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "manifest": {
+          "type": "array",
+          "required": false
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "apply",
+            "receipt",
+            "dstore"
+          ],
+          "required": true
+        },
+        "operation": {
+          "type": "string",
+          "values": [
+            "operator_submit"
+          ],
+          "required": true
+        },
+        "manifest_sha256": {
+          "type": "string",
+          "required": false
+        },
+        "declaration_count": {
+          "type": "number",
+          "required": false
+        },
+        "tool_call_id": {
+          "type": "string",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        },
+        "applied": {
+          "type": "number",
+          "required": false
+        },
+        "failed_at": {
+          "type": "number",
+          "required": false
+        },
+        "remaining": {
+          "type": "number",
+          "required": false
+        },
+        "mutation_id": {
+          "type": "string",
+          "required": false
+        },
+        "expected": {
+          "type": "string",
+          "required": false
+        },
+        "actual": {
+          "type": "string",
+          "required": false
+        },
+        "submitter_kind": {
+          "type": "string",
+          "required": false
+        },
+        "phase": {
+          "type": "string",
+          "required": false
+        },
+        "carry": {
+          "type": "string",
+          "required": false
+        },
+        "draft_state": {
+          "type": "string",
+          "required": false
+        },
+        "draft_path": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "manifest": {
+          "type": "array",
+          "required": false
+        },
+        "messages": {
+          "type": "array",
+          "required": false
+        }
+      },
+      "context": {}
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "The cell an operator's submission BECOMES, so that it has a sender. It draws the canonical digest over the manifest it forwards and emits it once on `apply`; the receipt that comes back is rendered into one sentence and one set of counts.",
+    "use_when": "Reached only through this hive's `in_submit` door, or from the `lifecycle` occupant next door. Never addressed by name: the hive path is the only address.",
+    "not_in_scope": "No drafting, no composing, no policy and no authentication. It holds no secret, reads no header for a token and checks no caller: what it supplies is an IDENTITY -- the path the substrate stamps on its own emission -- and who may spend that identity is the capability broker's answer, not this cell's.",
+    "emits_meaning": "route apply: the manifest on its way to the submitter, with `hop.manifest_sha256` drawn over the bytes being forwarded. route receipt: what happened, for whoever asked -- `hop.error_code` names a refusal, `hop.applied` / `failed_at` / `remaining` say what a partly applied manifest left behind. hop.tool_call_id on `apply` is MARKED -- `op:` for a person with a shell, `op:agent:` for an assistant whose apply the shell re-stamped onto `in_submit` -- and the submitter hands the marked id back verbatim, which is one of the two carriers that say which door a returning receipt belongs to (the other is `context.operator_caller`, and the two are read together because neither survives every road). On `receipt` the marker is stripped off the id again and `hop.submitter_kind` carries it instead: an assistant's fan-in waits for the id its own tool call used.",
+    "consumes_meaning": "manifest[]: the ordered list of declarations. hop.manifest_sha256: an OPTIONAL pin -- when it is there the bytes must match it, when it is not the digest is drawn over what arrived. context.operator_caller: set to 'agent' by the level's `./orgs -> ./operator` edge and by nothing else; absent means the request came in at the rim, from a person with a shell.",
+    "examples": [
+      "in_submit with a two-declaration manifest and no pin -> apply, hop.manifest_sha256 drawn over the two declarations, reply_to /os/operator/submit",
+      "in_submit with a pin that does not match -> receipt, hop.error_code 'manifest_digest_mismatch', nothing leaves for the submitter",
+      "in_receipt carrying hop.applied 2 -> receipt, the submitter's sentence, the counts on the hop",
+      "in_submit with context.operator_caller 'agent' and tool_call_id 'c2' -> apply under 'op:agent:c2'; the receipt comes back as 'c2' with hop.submitter_kind 'agent', and the level above sends it down to the assistant instead of out of the colony"
+    ]
+  }
+}

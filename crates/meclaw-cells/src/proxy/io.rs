@@ -273,6 +273,21 @@ pub fn run_io(
                         tracing::debug!(?reason, "get_updates transient");
                         backoff.after_transient_failure();
                     }
+                    // GH #468: a 409 recovers like a transient — the other
+                    // consumer may stop, and a switchover is the case where it
+                    // does — but it is the one failure an operator can act on,
+                    // so it leaves the DEBUG bucket and names itself. Two
+                    // pollers on one token used to be indistinguishable from a
+                    // quiet chat.
+                    Err(TelegramError::Conflict(reason)) => {
+                        tracing::warn!(
+                            error_code = "conflict_other_poller",
+                            ?reason,
+                            "getUpdates refused: another consumer holds this bot token \
+                             (one getUpdates consumer per token; the lane keeps polling)"
+                        );
+                        backoff.after_transient_failure();
+                    }
                     Err(TelegramError::Permanent(reason)) => {
                         tracing::warn!(?reason, "get_updates permanent (5min sleep)");
                         backoff.after_permanent_failure();

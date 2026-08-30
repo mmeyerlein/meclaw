@@ -155,6 +155,10 @@ fn write_collector_topology(root: &std::path::Path) {
         Some("answer"),
     );
     echo_cell(root, "main/collector/window", "/collector", None);
+    // GH #464: the hive file draws an edge from its own `menu-clock`, so the
+    // stand-in tree needs one or the boot dangles. It never fires here -- an
+    // echo cell has no schedule.
+    echo_cell(root, "main/collector/menu-clock", "/collector", None);
 }
 
 /// The caller addresses the HIVE and names a lane — no cell of the hive appears
@@ -253,6 +257,15 @@ fn write_talky_topology(root: &std::path::Path) {
     echo_cell(
         root,
         "main/agent/collector/window",
+        "/agent/collector",
+        None,
+    );
+    // GH #464: the hive file draws an edge from its own `menu-clock`, so the
+    // stand-in tree needs one or the boot dangles. It never fires here -- an
+    // echo cell has no schedule.
+    echo_cell(
+        root,
+        "main/agent/collector/menu-clock",
         "/agent/collector",
         None,
     );

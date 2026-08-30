@@ -574,8 +574,17 @@ fn the_prompt_window_still_shows_the_advice_turn_and_its_consult_id() {
         .find(|m| hop(m, "route") == "brain" || hop(m, "route") == "answer")
         .expect("the seam");
     assert!(
-        texts(seam).contains(&ADVICE.to_string()),
+        texts(seam).iter().any(|t| t.ends_with(ADVICE)),
         "the advice turn stays in the prompt -- {seam:?}"
+    );
+    // Since GH #540 it stays there SAYING what it is: the frame is what the
+    // model reads instead of the role, and the role alone was what made an
+    // advisor's answer indistinguishable from a new sentence by the person.
+    assert!(
+        texts(seam)
+            .iter()
+            .any(|t| t == &format!("[advice from your reasoning core, consult c-42]\n{ADVICE}")),
+        "and it is framed as an event of the agent's own machinery -- {seam:?}"
     );
     assert_eq!(
         seam["system"]["consult"]["open"],

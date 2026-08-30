@@ -73,17 +73,19 @@ const GROWN_FROM: [(&str, &str); 3] = [
 
 /// Three checked-in cells (the import lane plus the memory's two -- the hive
 /// marker is a scope, not a cell) and fourteen grown ones: one from `door@1`,
-/// twelve from `talky` (the twelfth is the sidecar splitter, talky@4.1.0,
-/// GH #379), one from `terminal@1`.
+/// twelve from `talky` (the tenth is the sidecar splitter, talky@4.1.0, GH #379;
+/// the summarizer's two left with talky@4.3.0, GH #447; the eleventh is the
+/// collector's `menu-clock`, collector@3.3.0, GH #464; the twelfth is the
+/// keeper's own `porter`, session-keeper@2.1.0, GH #471), one from `terminal@1`.
 const CELLS_AFTER_GROW: usize = 17;
 
-/// GH #277: `talky` REFERENCES its four sub-units instead of carrying copies of
-/// them, so the library the colony scans has to hold them next to it. They are
-/// NOT `grow.json` entries -- the mutation still names `talky` alone, and the
-/// registry resolves the rest.
-const REFERENCED_SUB_UNITS: [(&str, &str); 4] = [
+/// GH #277: `talky` REFERENCES its three sub-units instead of carrying copies
+/// of them, so the library the colony scans has to hold them next to it. They
+/// are NOT `grow.json` entries -- the mutation still names `talky` alone, and
+/// the registry resolves the rest. The `summarizer` left the set with
+/// `talky@4.3.0` (GH #447).
+const REFERENCED_SUB_UNITS: [(&str, &str); 3] = [
     ("collector", "templates/collector"),
-    ("summarizer", "templates/summarizer"),
     ("session-keeper", "templates/session-keeper"),
     ("dispatcher", "templates/dispatcher"),
 ];
@@ -374,7 +376,10 @@ fn factories() -> Vec<(String, Arc<dyn CellFactory>)> {
     ]
 }
 
-/// Never during a test run: the shipped keeper default is the real night.
+/// Never during a test run: the shipped keeper default is the real night, and
+/// the shipped menu tick (GH #464) would ask a tools hive this example has not
+/// got -- one dead letter every five minutes, against an example whose whole
+/// claim is an empty queue.
 const NEVER: &str = "0 0 0 1 1 *";
 
 /// The seed as the reader gets it, plus the template library next to it and the
@@ -386,14 +391,9 @@ fn build_root(td: &tempfile::TempDir, base_url: &str) {
     for (name, dir) in GROWN_FROM.iter().chain(REFERENCED_SUB_UNITS.iter()) {
         copy_tree(&repo_path(dir), &root.join("templates").join(name));
     }
-    for rel in [
-        "templates/talky/brain/config.json",
-        "templates/summarizer/writer/config.json",
-    ] {
-        patch(&root.join(rel), |v| {
-            v["params"]["base_url"] = json!(base_url)
-        });
-    }
+    patch(&root.join("templates/talky/brain/config.json"), |v| {
+        v["params"]["base_url"] = json!(base_url)
+    });
     // The per-turn lane is NOT patched here any more (GH #220). It is a
     // collector param, and since GH #140 `override_params` reaches a subtree
     // template's sub-cells by path, so `grow.json` carries
@@ -414,7 +414,7 @@ fn build_root(td: &tempfile::TempDir, base_url: &str) {
         root.join(".env"),
         format!(
             "OPENROUTER_API_KEY=test-key\nMODEL_BRAIN=gpt-4o-mock\n\
-             KEEPER_NIGHT_CRON={NEVER}\n"
+             KEEPER_NIGHT_CRON={NEVER}\nMENU_CRON={NEVER}\n"
         ),
     )
     .unwrap();

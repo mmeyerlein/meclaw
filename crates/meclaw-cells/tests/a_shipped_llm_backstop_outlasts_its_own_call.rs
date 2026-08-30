@@ -26,7 +26,7 @@
 //! `external_timeout_ms: 170000` and no backstop — so the watchdog killed the
 //! cell at 60 s, the supervisor restarted it, and what the caller saw was
 //! `message_timeout` instead of an answer. The measurement that found it
-//! (`plans/welle-2026-08-27/receipts/builder-messreihe.md`) spent a whole run
+//! (the 34-build run series, `CHANGELOG.md` § 0.27.0) spent a whole run
 //! series reading that as a statement about the MODEL: `effort: high` died 5
 //! times out of 6, `low` never did, because reasoning depth lengthens exactly
 //! the call the backstop cuts. The defect does not announce itself as a

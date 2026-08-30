@@ -108,6 +108,21 @@ pub fn parse_entry(entry: &Value) -> Result<TemplateRegistration, MutationError>
              rescan would drop it silently"
         )));
     }
+    if !files.contains_key("config.json") {
+        // GH #509. `template.json` says a directory IS a template; `config.json`
+        // at the root says what an instance of it is — the cell for a
+        // single-cell class, the hive with its `params.graph` for a composite.
+        // Every template in the tree carries one, and a class without one
+        // registers a directory nothing can be an instance OF. Refused HERE,
+        // at the entry's own position, because the alternative is what was
+        // measured: the class stages without complaint and the manifest is
+        // refused one phase later with `template_missing` against the node,
+        // naming a class the same diff had just registered — true about
+        // nothing the author did wrong, and repairable from nothing it says.
+        return Err(MutationError::Schema(format!(
+            "add_templates[] '{name}' carries no config.json at its root. A              template.json says the directory is a template; the root              config.json says what an instance of it IS — one cell, or the              hive whose params.graph wires the rest. Files in subdirectories              are the cells INSIDE that hive and cannot stand in for it"
+        )));
+    }
     Ok(TemplateRegistration {
         name: name.to_string(),
         files,
@@ -134,23 +149,126 @@ pub fn refuse_if_taken(
     Ok(())
 }
 
-/// Write every registration atomically and return the registry rows to upsert.
+/// Every registration of one mutation, written but not yet visible.
+///
+/// The declaration lives here for the whole mutation and enters the library
+/// with one `rename(2)` per entry immediately before the commit flush
+/// ([`StagedRegistrations::commit`]). That ordering is the whole point of GH
+/// #443: `add_templates` has to run FIRST, because a later entry of the same
+/// diff must be able to resolve what it declared — but until the commit stands,
+/// nothing about it may be visible in the library, or every refusal below it
+/// leaves a directory `colony.db` has no row for.
+///
+/// The `Drop` impl removes the mutation's own staging area on every path out of
+/// `handle_mutation`, committed or refused. It touches nothing but the bytes
+/// this mutation wrote itself — no compensating delete under `local/`, which is
+/// exactly the second write path the issue rejected.
+pub struct StagedRegistrations {
+    /// `{root}/.staging-templates/{mutation_id}` — owned by this mutation alone.
+    staging: std::path::PathBuf,
+    /// Per entry: where it lies now, where it belongs, and the parsed row.
+    pending: Vec<(
+        std::path::PathBuf,
+        std::path::PathBuf,
+        crate::templates::ScannedTemplate,
+    )>,
+}
+
+impl std::fmt::Debug for StagedRegistrations {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StagedRegistrations")
+            .field("staging", &self.staging)
+            .field("pending", &self.pending.len())
+            .finish()
+    }
+}
+
+impl Drop for StagedRegistrations {
+    fn drop(&mut self) {
+        // Best-effort by construction: a mutation that is already returning
+        // must not be held up by a failed cleanup, and what stays behind is
+        // under `.staging-templates`, which no reader of the library walks.
+        let _ = std::fs::remove_dir_all(&self.staging);
+    }
+}
+
+impl StagedRegistrations {
+    /// The registrations as a later entry of the SAME diff resolves them:
+    /// `filesystem_path` points into the staging area, because that is where
+    /// the bytes are until the commit. They are the same bytes the library
+    /// directory will hold — the move is a `rename(2)`, not a rewrite.
+    pub fn snapshot(&self) -> Vec<crate::templates::ScannedTemplate> {
+        self.pending
+            .iter()
+            .map(|(stage_dir, _, parsed)| crate::templates::ScannedTemplate {
+                filesystem_path: stage_dir.clone(),
+                ..parsed.clone()
+            })
+            .collect()
+    }
+
+    /// Move every staged registration into the library and return the rows as
+    /// they must be persisted — `filesystem_path` on the final directory.
+    ///
+    /// Called immediately before the commit flush. If a `rename(2)` fails part
+    /// way through the list, the entries that already moved are renamed BACK
+    /// into their own staging directories: the mutation only ever moves bytes
+    /// it wrote itself, so there is no compensating delete and nothing that
+    /// could touch a pre-existing template.
+    pub fn commit(&mut self) -> Result<Vec<crate::templates::ScannedTemplate>, MutationError> {
+        let mut moved: Vec<(std::path::PathBuf, std::path::PathBuf)> = Vec::new();
+        let mut out = Vec::with_capacity(self.pending.len());
+        for (stage_dir, target, parsed) in &self.pending {
+            if let Err(e) = std::fs::rename(stage_dir, target) {
+                for (back_stage, back_target) in moved.iter().rev() {
+                    if let Err(undo) = std::fs::rename(back_target, back_stage) {
+                        tracing::error!(
+                            target = %back_target.display(),
+                            error = %undo,
+                            "a registered template could not be taken back out of the library — \
+                             the mutation is refused and the directory stays"
+                        );
+                    }
+                }
+                return Err(MutationError::Schema(format!(
+                    "add_templates[] '{}' could not be moved into the library: {e}",
+                    parsed.name
+                )));
+            }
+            moved.push((stage_dir.clone(), target.clone()));
+            out.push(crate::templates::ScannedTemplate {
+                filesystem_path: target.clone(),
+                ..parsed.clone()
+            });
+        }
+        self.pending.clear();
+        Ok(out)
+    }
+}
+
+/// Write every registration into the mutation's own staging area.
+///
+/// Everything that can be refused about a declaration is refused HERE — a
+/// template.json the scanner rejects, a declared name that disagrees with the
+/// entry name, a target the library already holds. What is deliberately NOT
+/// here is the `rename(2)` into the library: it belongs to
+/// [`StagedRegistrations::commit`], so that a refusal anywhere below in the
+/// same mutation leaves the library exactly as it found it.
 ///
 /// Staging plus one `rename(2)` per entry, never a recursive copy into the live
 /// library: a half-written `template.json` is exactly what a concurrent rescan
 /// would pick up.
-pub fn apply_registrations(
+pub fn stage_registrations(
     regs: &[TemplateRegistration],
     templates_root: &std::path::Path,
     root: &std::path::Path,
     mutation_id: &str,
-) -> Result<Vec<crate::templates::ScannedTemplate>, MutationError> {
+) -> Result<StagedRegistrations, MutationError> {
     let staging = root.join(".staging-templates").join(mutation_id);
     let local = templates_root.join("local");
-    let mut scanned = Vec::with_capacity(regs.len());
-
-    let cleanup = |staging: &std::path::Path| {
-        let _ = std::fs::remove_dir_all(staging);
+    let mut staged = StagedRegistrations {
+        staging: staging.clone(),
+        pending: Vec::with_capacity(regs.len()),
     };
 
     for reg in regs {
@@ -167,7 +285,6 @@ pub fn apply_registrations(
             Ok(())
         };
         if let Err(e) = write_all() {
-            cleanup(&staging);
             return Err(MutationError::Schema(format!(
                 "add_templates[] '{}' could not be staged: {e}",
                 reg.name
@@ -180,7 +297,6 @@ pub fn apply_registrations(
         let parsed = match crate::templates::parse_template_json(&stage_dir.join("template.json")) {
             Ok(p) => p,
             Err(e) => {
-                cleanup(&staging);
                 return Err(MutationError::Schema(format!(
                     "add_templates[] '{}' carries a template.json the scanner refuses: {e:?}",
                     reg.name
@@ -188,7 +304,6 @@ pub fn apply_registrations(
             }
         };
         if parsed.name != reg.name {
-            cleanup(&staging);
             return Err(MutationError::Schema(format!(
                 "add_templates[] '{}' ships a template.json that declares the name \
                  '{}'. The entry name is the directory and the declared name is what \
@@ -198,7 +313,6 @@ pub fn apply_registrations(
         }
 
         if let Err(e) = std::fs::create_dir_all(&local) {
-            cleanup(&staging);
             return Err(MutationError::Schema(format!(
                 "the local template root could not be created: {e}"
             )));
@@ -209,7 +323,6 @@ pub fn apply_registrations(
             // `refuse_if_taken`) but a directory no row names: the residue of an
             // aborted run, or something placed by hand. Refused by name rather
             // than overwritten — No-Delete.
-            cleanup(&staging);
             return Err(MutationError::TemplateNameTaken(format!(
                 "'{}' already lies in the local template root and no registry row \
                  names it. It is refused rather than overwritten (No-Delete); \
@@ -217,20 +330,22 @@ pub fn apply_registrations(
                 reg.name
             )));
         }
-        if let Err(e) = std::fs::rename(&stage_dir, &target) {
-            cleanup(&staging);
-            return Err(MutationError::Schema(format!(
-                "add_templates[] '{}' could not be moved into the library: {e}",
+        // GH #443: an earlier entry of the SAME diff already claims this target.
+        // `refuse_if_taken` cannot see it (nothing is registered yet) and the
+        // library cannot either (nothing has moved yet), so the claim is checked
+        // against what this mutation itself has staged. Without it the collision
+        // would only surface as a failed `rename(2)` at commit time.
+        if staged.pending.iter().any(|(_, t, _)| *t == target) {
+            return Err(MutationError::TemplateNameTaken(format!(
+                "add_templates[] declares '{}' twice in one diff. Both entries \
+                 would become the same directory under the local template root, \
+                 so one of them is a name nobody could resolve",
                 reg.name
             )));
         }
-        scanned.push(crate::templates::ScannedTemplate {
-            filesystem_path: target,
-            ..parsed
-        });
+        staged.pending.push((stage_dir, target, parsed));
     }
-    cleanup(&staging);
-    Ok(scanned)
+    Ok(staged)
 }
 
 #[cfg(test)]
@@ -239,7 +354,10 @@ mod tests {
     use meclaw_core::serde_json::json;
 
     fn entry(name: &str) -> meclaw_core::serde_json::Value {
-        json!({"name": name, "files": {"template.json": "{}"}})
+        // A root `config.json` beside it, because a class without one is not
+        // instantiable and is refused (GH #509) — these cases are about the
+        // NAME, so they must get past that guard.
+        json!({"name": name, "files": {"template.json": "{}", "config.json": "{}"}})
     }
 
     /// Every value here would have become a directory name under the colony's
@@ -318,6 +436,27 @@ mod tests {
         let err = refusal_of(&json!({"name": "note-unit", "files": {"config.json": "{}"}}));
         assert_eq!(err.error_code(), "schema", "{}", err.message());
         assert!(err.message().contains("template.json"), "{}", err.message());
+    }
+
+    #[test]
+    fn a_registration_without_a_root_config_json_is_refused() {
+        // GH #509. Every instantiable template in the tree carries a
+        // `config.json` at its root — the cell for a single-cell class, the
+        // hive with its `params.graph` for a composite. Without one the scan
+        // registers a directory nothing can be an instance OF, and the refusal
+        // arrives one phase later as `template_missing` against the NODE that
+        // named the class the same manifest had just registered. Measured: a
+        // two-cell class written as `fetch/config.json` + `parse/config.json`,
+        // no root, staged without complaint, and "the template you named does
+        // not exist" back about a name in the caller's own diff.
+        let err = refusal_of(&json!({"name": "note-unit", "files": {
+            "template.json": "{}",
+            "fetch/config.json": "{}",
+            "parse/config.json": "{}"
+        }}));
+        assert_eq!(err.error_code(), "schema", "{}", err.message());
+        assert!(err.message().contains("config.json"), "{}", err.message());
+        assert!(err.message().contains("note-unit"), "{}", err.message());
     }
 
     /// The registry, not the filesystem, decides whether a name is taken —

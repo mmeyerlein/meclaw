@@ -28,7 +28,7 @@
 
 use super::MutationError;
 use meclaw_core::JsonValue;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 pub fn substitute_env_only(
     diff: &JsonValue,
@@ -244,6 +244,71 @@ fn walk_ctx_keys(
         JsonValue::Object(m) => {
             for val in m.values() {
                 walk_ctx_keys(val, found)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Every `${ENV_VAR}` name that occurs in a STRING VALUE of `value`, and
+/// whether that occurrence carried a default (GH #465).
+///
+/// The env twin of [`collect_ctx_keys`], and it exists for the same reason: a
+/// `requires.env` declaration is the read half of what a template USES, so the
+/// two have to be derivable from one another or they drift. It is asked of the
+/// substrate's own scanner ([`expand_with`]) and its own token grammar
+/// ([`parse_env_token`]) rather than of a pattern of its own — a test with a
+/// regex would be free to disagree with both.
+///
+/// The boolean is `true` when the token spelled a POSIX default
+/// (`${VAR:-fallback}`), `false` for the plain `${VAR}` that is a hard
+/// requirement at substitution time. A name that appears BOTH ways collapses to
+/// `false`: one plain occurrence is enough to make the key unavoidable.
+///
+/// `${ctx.<key>}` tokens are skipped (they are [`collect_ctx_keys`]'s), and so
+/// are the `${uuid7:*}` labels and every unsupported operator form — those are
+/// not environment at all, and mis-reporting one as a variable would put a
+/// name into a declaration that nothing can ever satisfy.
+pub fn collect_env_keys(value: &JsonValue) -> Result<BTreeMap<String, bool>, MutationError> {
+    let found = std::cell::RefCell::new(BTreeMap::new());
+    walk_env_keys(value, &found)?;
+    Ok(found.into_inner())
+}
+
+fn walk_env_keys(
+    v: &JsonValue,
+    found: &std::cell::RefCell<BTreeMap<String, bool>>,
+) -> Result<(), MutationError> {
+    match v {
+        JsonValue::String(s) => {
+            expand_with(s, true, |inner| {
+                if !inner.starts_with("ctx.") && !inner.starts_with("uuid7:") {
+                    match parse_env_token(inner) {
+                        EnvToken::Plain(name) => {
+                            found.borrow_mut().insert(name, false);
+                        }
+                        EnvToken::DefaultIfUnsetOrEmpty { name, .. } => {
+                            // A plain occurrence elsewhere wins: `or` never
+                            // turns a hard requirement into a soft one.
+                            found.borrow_mut().entry(name).or_insert(true);
+                        }
+                        EnvToken::Unsupported(_) => {}
+                    }
+                }
+                Ok(String::new())
+            })?;
+            Ok(())
+        }
+        JsonValue::Array(a) => {
+            for item in a {
+                walk_env_keys(item, found)?;
+            }
+            Ok(())
+        }
+        JsonValue::Object(m) => {
+            for val in m.values() {
+                walk_env_keys(val, found)?;
             }
             Ok(())
         }
@@ -992,5 +1057,52 @@ mod tests {
             replace_env("über-${V}-😀-$${X}", &env).unwrap(),
             "über-wert-😀-${X}"
         );
+    }
+}
+
+#[cfg(test)]
+mod collect_env_keys_tests {
+    use super::collect_env_keys;
+    use meclaw_core::serde_json::json;
+
+    /// GH #465 — the two token shapes, told apart by the boolean.
+    #[test]
+    fn a_plain_token_is_required_and_a_defaulted_one_is_not() {
+        let v = json!({"a": "${HARD}", "b": "${SOFT:-x}"});
+        let found = collect_env_keys(&v).unwrap();
+        assert_eq!(found.get("HARD"), Some(&false));
+        assert_eq!(found.get("SOFT"), Some(&true));
+        assert_eq!(found.len(), 2);
+    }
+
+    /// One plain occurrence makes the key unavoidable, wherever the soft one
+    /// stands — otherwise the walk order would decide a contract.
+    #[test]
+    fn a_key_written_both_ways_is_required() {
+        for v in [json!(["${K:-d}", "${K}"]), json!(["${K}", "${K:-d}"])] {
+            assert_eq!(collect_env_keys(&v).unwrap().get("K"), Some(&false));
+        }
+    }
+
+    /// The instance class is not environment, and neither is an escape or an
+    /// unsupported operator form: naming one in a `requires.env` block would ask
+    /// an operator for a value nothing can ever bind.
+    #[test]
+    fn ctx_uuid_escapes_and_unsupported_forms_are_not_environment() {
+        let v = json!({
+            "a": "${ctx.model}",
+            "b": "${uuid7:cell}",
+            "c": "$${LITERAL}",
+            "d": "${WEIRD:=x}",
+            "e": "plain text, no dollar",
+        });
+        assert!(collect_env_keys(&v).unwrap().is_empty());
+    }
+
+    /// Object KEYS are names, never placeholders — only values substitute.
+    #[test]
+    fn object_keys_are_not_scanned() {
+        let v = json!({"${NOT_A_TOKEN}": "literal"});
+        assert!(collect_env_keys(&v).unwrap().is_empty());
     }
 }

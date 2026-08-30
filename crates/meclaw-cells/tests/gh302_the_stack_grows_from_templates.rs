@@ -5,8 +5,18 @@
 //! `examples/organism/` is a colony with **zero cells checked in**: a
 //! `colony.json`, one empty root hive, and five declarations. Applied in order
 //! they instantiate the four composition levels of this wave and one channel
-//! into the innermost of them — a shell, an organisation, a person, one
-//! generation of that person's agent, and a Telegram surface for it.
+//! into the THIRD of them — a shell, an organisation, a person, one Telegram
+//! channel of that person, and one generation of that person's agent.
+//!
+//! Since GH #454 the channel is a node in `<member>/channels`, not in
+//! `<assistant>/channels`. A channel belongs to the PERSON and the assistant is
+//! addressed THROUGH it: the connector's own edge stamps `context.assistant`
+//! on the way up, the member's `./assistants` container reads that key to pick
+//! a generation, and the answer comes back down `./assistants -> ./channels`
+//! guarded on `context.channel_node`. What that buys is measured in
+//! [`d_a_second_channel_is_one_instantiation_in_the_member`]: one bot can serve
+//! two generations of one person, and a generation swap does not take the chat
+//! account with it.
 //!
 //! This file is the acceptance of GH #302, one named assertion per bullet:
 //!
@@ -15,7 +25,7 @@
 //! | created by instantiating templates, not by hand-writing edges | [`a_the_declarations_hand_write_no_edge_that_reaches_inside_a_template`] |
 //! | the registry records the true origin at every level | [`b_the_registry_records_the_true_origin_at_every_level`] |
 //! | a second assistant is one instantiation with its own parameters | [`c_a_second_assistant_is_one_instantiation_with_its_own_parameters`] |
-//! | a second channel is two instantiations into `channels`, no intermediate hive | [`d_a_second_channel_is_two_instantiations_and_no_intermediate_hive`] |
+//! | a second channel is ONE instantiation in the member, and the assistant never learns of it | [`d_a_second_channel_is_one_instantiation_in_the_member`] |
 //!
 //! WHY THE CELLS ARE INERT
 //! =======================
@@ -76,7 +86,11 @@ const DECLARATIONS: [&str; 5] = [
 
 const ASSISTANT: &str = "/os/orgs/acme/members/alex/assistants/scribe";
 const MEMBER: &str = "/os/orgs/acme/members/alex";
-const CHANNELS: &str = "/os/orgs/acme/members/alex/assistants/scribe/channels";
+/// The channel container. Since GH #454 it stands in the MEMBER — a channel
+/// belongs to the person, not to one of their generations.
+const CHANNELS: &str = "/os/orgs/acme/members/alex/channels";
+/// The one channel the shipped declaration instantiates into it.
+const CHANNEL_NODE: &str = "telegram";
 
 /// `examples/organism`, or `None` when this tree did not ship it (GH #49).
 fn shipped() -> Option<std::path::PathBuf> {
@@ -253,6 +267,7 @@ fn build_root(root: &std::path::Path) {
          MODEL_BRAIN=gpt-4o-mock\n\
          MODEL_CORE=gpt-4o-mock\n\
          MODEL_CORE_FAST=gpt-4o-mock-fast\n\
+         MODEL_SURFACE=gpt-4o-mock-surface\n\
          MODEL_CLOSER=gpt-4o-mock\n\
          MODEL_DIALECTIC=gpt-4o-mock\n\
          MODEL_DREAMER=gpt-4o-mock\n\
@@ -378,19 +393,37 @@ impl Grown {
         self.rows.iter().map(|r| r.path.as_str()).collect()
     }
 
-    /// Edges between the `channels` container and its siblings — the fan-in
-    /// `assistant@1.0.0` ships, which a second channel must not move (GH #303).
+    /// Edges between the `channels` container and everything outside it — the
+    /// fan-in the MEMBER template ships since GH #454, which a second channel
+    /// must not move (GH #303's ruling, one level up).
+    ///
+    /// Written as "one endpoint IS the container, the other is not below it"
+    /// rather than against a written-down list of siblings: the member's
+    /// occupants are the member template's business, and a list here would have
+    /// to be re-derived by hand every time one moves.
     fn channels_to_siblings(&self) -> usize {
-        let siblings = [
-            ASSISTANT,
-            "/os/orgs/acme/members/alex/assistants/scribe/cogny",
-            "/os/orgs/acme/members/alex/assistants/scribe/tools",
-        ];
+        let below = format!("{CHANNELS}/");
         self.edges
             .iter()
             .filter(|(from, to)| {
-                (from == CHANNELS && siblings.contains(&to.as_str()))
-                    || (to == CHANNELS && siblings.contains(&from.as_str()))
+                (from == CHANNELS && !to.starts_with(&below))
+                    || (to == CHANNELS && !from.starts_with(&below))
+            })
+            .count()
+    }
+
+    /// Every edge with at least one endpoint inside the assistant's subtree —
+    /// the number GH #454 predicts a second CHANNEL cannot move, because the
+    /// assistant has no channels any more.
+    fn touching_the_assistant(&self) -> usize {
+        let below = format!("{ASSISTANT}/");
+        self.edges
+            .iter()
+            .filter(|(from, to)| {
+                from == ASSISTANT
+                    || to == ASSISTANT
+                    || from.starts_with(&below)
+                    || to.starts_with(&below)
             })
             .count()
     }
@@ -496,27 +529,49 @@ fn second_assistant() -> Value {
     v
 }
 
-/// A second channel into the same `channels` container: two instantiations and
-/// their pairing edges, one mutation, derived the same way — the two node names
-/// change, the second bot brings its own token, and the topology is untouched.
+/// The second channel of the SAME person: ONE instantiation into the member's
+/// `channels` container, one mutation, derived from the shipped declaration the
+/// way an operator derives it — the node name changes, the second bot brings its
+/// own token, and the channel name it stamps and guards on changes with it.
+///
+/// Nothing about the assistant appears in this edit, and that is the point of
+/// GH #454: a channel is wired to the container it stands in, and the generation
+/// it reaches is named in `context.assistant`, not in an endpoint.
 fn second_channel() -> Value {
     let mut v = read_json(&repo("examples/organism/grow-channel.json"));
-    v["diff"]["add_nodes"][0]["name"] = json!("channels/telegram-connector-2");
+    // Since GH #503 the declaration stands AT `channels`, so the node is named
+    // bare and its endpoint is `./<name>`. The path in the tree is the same one.
+    let old_node = format!("./{CHANNEL_NODE}");
+    let new_node = format!("./{SECOND_CHANNEL_NODE}");
+    v["diff"]["add_nodes"][0]["name"] = json!(SECOND_CHANNEL_NODE);
     v["diff"]["add_nodes"][0]["override_params"] = json!({"bot_token": "${TELEGRAM_BOT_TOKEN_2}"});
-    v["diff"]["add_nodes"][1]["name"] = json!("channels/talky-2");
+
+    // The channel NAME is a value, not a path: it is stamped by the connector's
+    // own edge and read back by the guard on the way down. Both spellings move
+    // together or the answer would come back to the wrong bot.
+    let old_name = format!("'{CHANNEL_NODE}'");
+    let new_name = format!("'{SECOND_CHANNEL_NODE}'");
     for edge in v["diff"]["add_edges"].as_array_mut().unwrap() {
         for side in ["from", "to"] {
-            let renamed = match edge[side].as_str().unwrap_or_default() {
-                "./channels/telegram-connector" => "./channels/telegram-connector-2",
-                "./channels/talky" => "./channels/talky-2",
-                other => other,
+            if edge[side].as_str() == Some(old_node.as_str()) {
+                edge[side] = json!(new_node);
             }
-            .to_string();
-            edge[side] = json!(renamed);
+        }
+        if let Some(c) = edge["condition"].as_str() {
+            edge["condition"] = json!(c.replace(&old_name, &new_name));
+        }
+        if let Some(ch) = edge["modifier"]["set_context"]["channel"].as_str()
+            && ch == old_name
+        {
+            edge["modifier"]["set_context"]["channel"] = json!(new_name);
         }
     }
     v
 }
+
+/// The name of the second channel — a second bot of the same person, reaching
+/// the same assistant.
+const SECOND_CHANNEL_NODE: &str = "telegram-2";
 
 // ══════════════════════════════════════════════════ (a) no hand-written edge
 
@@ -589,8 +644,16 @@ fn a_the_declarations_hand_write_no_edge_that_reaches_inside_a_template() {
 
 /// The other half of the same bullet, so that "no hand-written internal edge"
 /// cannot be satisfied by a stack that instantiates nothing: the five
-/// declarations name the four levels and the two halves of a channel, by
+/// declarations name the four levels and the one node a channel is, by
 /// PINNED reference, and each pin resolves against the tree it ships with.
+///
+/// A channel used to be TWO nodes here — a connector and a talky beside it,
+/// paired by fifteen hand-written edges. Since GH #454 the conversation surface
+/// ships INSIDE `assistant@2.0.0` (`<assistant>/surface`, a ref on talky), so
+/// the channel declaration instantiates the connector and nothing else. `talky`
+/// therefore no longer appears in this list, while still standing in the grown
+/// tree — which is exactly the difference between what a declaration names and
+/// what a template carries.
 #[test]
 fn a_the_five_declarations_name_the_whole_stack_by_pinned_reference() {
     let Some(_) = shipped() else { return };
@@ -631,10 +694,11 @@ fn a_the_five_declarations_name_the_whole_stack_by_pinned_reference() {
             "meclaw-os".to_string(),
             "member".to_string(),
             "org".to_string(),
-            "talky".to_string(),
             "telegram-connector".to_string(),
         ],
-        "the stack is the four levels plus the two halves of one channel"
+        "the stack is the four levels plus the ONE node a channel is (GH #454). \
+         `talky` is not named by any declaration any more: it arrives as \
+         `<assistant>/surface`, a ref of `assistant@2.0.0`."
     );
 }
 
@@ -690,8 +754,10 @@ async fn b_the_registry_records_the_true_origin_at_every_level() {
             .collect::<Vec<_>>()
     );
 
-    // (2) the connector's proxy cell.
-    let connector = grown.row(&format!("{CHANNELS}/telegram-connector"));
+    // (2) the connector's proxy cell. Since GH #454 it stands in the MEMBER's
+    // container, which is the whole of what the move changed for the registry:
+    // the row's path lost the assistant, and its chain never had one.
+    let connector = grown.row(&format!("{CHANNELS}/{CHANNEL_NODE}"));
     assert_eq!(connector.template.as_deref(), Some("telegram-connector"));
     assert_eq!(
         connector.template_version.as_deref(),
@@ -700,7 +766,7 @@ async fn b_the_registry_records_the_true_origin_at_every_level() {
     let grown_config = read_json(
         &grown
             .root
-            .join("os/orgs/acme/members/alex/assistants/scribe/channels/telegram-connector")
+            .join(format!("os/orgs/acme/members/alex/channels/{CHANNEL_NODE}"))
             .join("config.json"),
     );
     assert_eq!(
@@ -708,6 +774,15 @@ async fn b_the_registry_records_the_true_origin_at_every_level() {
         Some("proxy"),
         "the connector is ONE cell since telegram-connector@2.0.0 (GH #303), and the \
          stamped row is that cell's"
+    );
+    assert!(
+        !grown
+            .paths()
+            .iter()
+            .any(|p| p.starts_with(&format!("{ASSISTANT}/channels"))),
+        "a channel row stands under the assistant — since GH #454 `channels` is the \
+         MEMBER's container: {:?}",
+        grown.paths()
     );
     assert_eq!(
         connector.chain(),
@@ -848,37 +923,73 @@ async fn c_a_second_assistant_is_one_instantiation_with_its_own_parameters() {
             .count();
     assert_eq!(
         member_fan_in, declared,
-        "the live tree draws a different number of member-to-container edges than \
-         member@1.0.0 declares"
+        "the live tree draws a different number of member-to-container edges than the \
+         `member` template on disk declares"
     );
     assert_eq!(
-        declared, 11,
+        declared, 21,
         "the member's own edges to and from its assistants container are the member \
-         template's, drawn ONCE at member instantiation: three down (the screened turn \
-         coming back off ./firewall, the memory hive's bundle, and the builder's answer \
-         since GH #425) and eight up (turn, recall, extraction, write, turn_write, prune, \
-         error, and `build`). A second agent must not move this number — that is what \
-         makes it one instantiation."
+         template's, drawn ONCE at member instantiation. EIGHT reach the container: the \
+         screened turn coming back off ./firewall, the memory hive's bundle \u{2014} as the \
+         DEFAULT since GH #533, so a bundle addressed to the asker OUTSIDE the member takes \
+         the level's own exit instead \u{2014} the memory hive's REFUSAL of a recall an asker \
+         inside raised, re-stamped to `in_bundle` and told from the hive's other refusals by \
+         the same reply-to token (GH #533), the \
+         builder's answer since GH #425, since GH #459 a screen's `event` and `receipt` \
+         off ./channels, re-stamped to `in_turn` with the lane on `hop.kind`, because the \
+         assistant level has no event lane and did not grow one, and \u{2014} since GH #475 \
+         \u{2014} the two transfer lanes `in_export` and `in_import`, carried in plain, so \
+         that the session ledger of a NAMED generation can leave and come back. THIRTEEN \
+         leave it: recall, extraction, write, turn_write, prune, error, `build`, the \
+         second fan-out of `write` that fires the close pass into the memory hive since \
+         GH #447, the second fan-out of `turn_write` that writes the EPISODE into that same \
+         hive since GH #527 \u{2014} the only path in this substrate from a conversation into \
+         an `episodes` table, and the one this level declined until then \u{2014} the TWO exits \
+         an `answer` has since GH #454 (one down to `./channels` \
+         guarded on `context.channel_node`, one out at the rim as the guarded default for a \
+         turn that arrived through the member's own door), `pack_ack` since GH #458 \
+         \u{2014} the receipt of an identity ./affinity pushed INTO a generation, which nothing \
+         at this level consumes and nothing at this level can \u{2014} and `dump` since \
+         GH #475, the transfer document of that generation's session keeper, which this \
+         level DOES consume: it lands in the member's own export sink, in a directory \
+         beside the three holders' own. The push itself draws no edge here: producer and \
+         consumer are siblings, so it addresses \
+         `<member>/assistants/<agent>` at its own path. A second agent must not move this \
+         number \u{2014} that is what makes it one instantiation."
     );
 }
 
-// ═════════════════════════════ (d) a second channel, no intermediate hive
+// ═══════════════ (d) a second channel, in the member, invisible to the agent
 
-/// GH #302, fourth bullet: *a second channel is two instantiations into
-/// `channels`, still one mutation, with no intermediate hive.*
+/// GH #302's fourth bullet, re-cut by GH #454: *a second channel is ONE
+/// instantiation into the MEMBER's `channels` container, still one mutation,
+/// with no intermediate hive — and the assistant does not learn of it.*
 ///
-/// Three measurements:
+/// The bullet used to read "two instantiations": a channel was a connector and
+/// a talky beside it, standing in `<assistant>/channels`. Both halves of that
+/// moved. The conversation surface came home into `assistant@2.0.0`
+/// (`<assistant>/surface`), so a channel is ONE node; and the container went up
+/// a level to the person, so a second bot is a second way to REACH the same
+/// generations rather than a second thing inside one of them.
 ///
-/// 1. The mutation is ONE, and it instantiates exactly two nodes.
-/// 2. The resulting paths have **no intermediate hive**: each of the two is a
-///    direct child of the container, so a channel node sits two segments below
-///    the assistant (`channels/<node>`) and four below the member
-///    (`assistants/<agent>/channels/<node>`) — the shape the live tree already
-///    had, minus the retired `channel` level (GH #303).
-/// 3. The eighteen edges between `./channels` and its siblings do not move, and
-///    the second channel costs exactly its own wiring again.
+/// Four measurements:
+///
+/// 1. The mutation is ONE and it instantiates exactly ONE node.
+/// 2. The resulting path has **no intermediate hive**: the node is a direct
+///    child of the container, two segments below the member
+///    (`channels/<node>`) — and NOTHING of it stands below the assistant.
+/// 3. The nine edges between `./channels` and the rest of the member are the
+///    MEMBER template's and do not move — three from GH #454 and six more from
+///    GH #455/#459, when a screen became one of these channels; the second
+///    channel costs exactly its own wiring again.
+/// 4. **The assistant never learns of it.** Every edge touching the assistant's
+///    subtree is identical in count before and after, because a channel is
+///    wired to the container it stands in and names the generation it reaches
+///    in `context.assistant` instead of in an endpoint. This is the assertion
+///    that would have been impossible to write before GH #454: a second channel
+///    used to cost the assistant its whole fan-in again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn d_a_second_channel_is_two_instantiations_and_no_intermediate_hive() {
+async fn d_a_second_channel_is_one_instantiation_in_the_member() {
     let Some(_) = shipped() else { return };
     if !library_is_complete() {
         return;
@@ -887,63 +998,96 @@ async fn d_a_second_channel_is_two_instantiations_and_no_intermediate_hive() {
     let decl = second_channel();
     assert_eq!(
         decl["diff"]["add_nodes"].as_array().map(Vec::len),
-        Some(2),
-        "a channel is a connector and a talky — two instantiations, one mutation"
+        Some(1),
+        "a channel is ONE node since GH #454 — the connector. The talky beside it became \
+         `<assistant>/surface` and is not a channel's business any more"
+    );
+    assert_eq!(
+        decl["scope"].as_str(),
+        Some(format!("{MEMBER}/channels").as_str()),
+        "a channel is instantiated into the PERSON's own channel container, not \
+         into one of their generations. Since GH #503 the declaration stands AT \
+         that container: the node lands at the same path either way, and the \
+         scope root is the address the broker judges"
+    );
+    assert_eq!(
+        arr(&decl["diff"]["add_edges"]).len(),
+        3,
+        "three edges and no more: the raw turn up (stamping route, channel, chat, user, \
+         audience and the assistant it is addressed to), the connector's error up, and the \
+         answer back down guarded on `context.channel_node`"
     );
 
     let one = grow(vec![]).await;
     let two = grow(vec![decl]).await;
 
-    // (2) no intermediate hive.
-    for node in ["telegram-connector-2", "talky-2"] {
-        let path = format!("{CHANNELS}/{node}");
-        assert!(
-            two.rows.iter().any(|r| r.path == path)
-                || two
-                    .rows
-                    .iter()
-                    .any(|r| r.path.starts_with(&format!("{path}/"))),
-            "the second channel's {node} is not at {path}; rows: {:?}",
-            two.paths()
-        );
-        let from_assistant: Vec<&str> = path
-            .strip_prefix(&format!("{ASSISTANT}/"))
-            .unwrap()
-            .split('/')
-            .collect();
-        assert_eq!(
-            from_assistant,
-            vec!["channels", node],
-            "a channel node is a DIRECT child of the container. A third segment here is \
-             the retired `channel` hive coming back (GH #303)."
-        );
-        let from_member: Vec<&str> = path
-            .strip_prefix(&format!("{MEMBER}/"))
-            .unwrap()
-            .split('/')
-            .collect();
-        assert_eq!(
-            from_member.len(),
-            4,
-            "the shape the live tree already had — <member>/assistants/<agent>/channels/\
-             <node>, four segments: {from_member:?}"
-        );
-    }
+    // (2) no intermediate hive, and nothing under the assistant.
+    let path = format!("{CHANNELS}/{SECOND_CHANNEL_NODE}");
+    assert!(
+        two.rows.iter().any(|r| r.path == path)
+            || two
+                .rows
+                .iter()
+                .any(|r| r.path.starts_with(&format!("{path}/"))),
+        "the second channel is not at {path}; rows: {:?}",
+        two.paths()
+    );
+    let from_member: Vec<&str> = path
+        .strip_prefix(&format!("{MEMBER}/"))
+        .unwrap()
+        .split('/')
+        .collect();
+    assert_eq!(
+        from_member,
+        vec!["channels", SECOND_CHANNEL_NODE],
+        "a channel node is a DIRECT child of the member's container. A third segment here \
+         is the retired `channel` hive coming back (GH #303); an `assistants/<agent>` \
+         prefix is the level GH #454 took it out of."
+    );
+    assert!(
+        !two.paths()
+            .iter()
+            .any(|p| p.starts_with(&format!("{ASSISTANT}/channels"))),
+        "the second channel landed under the assistant: {:?}",
+        two.paths()
+    );
 
-    // (3) the fan-in is the template's, drawn once.
+    // (3) the fan-in is the member template's, drawn once. Read off
+    // `templates/member/config.json` rather than written down here, so the live
+    // number and the shipped number are one statement.
+    let declared =
+        arr(&read_json(&repo("templates/member/config.json"))["params"]["graph"]["edges"])
+            .iter()
+            .filter(|e| e["from"] == json!("./channels") || e["to"] == json!("./channels"))
+            .count();
+    assert_eq!(
+        declared, 9,
+        "the member ships nine edges between `./channels` and the rest of itself. Three \
+         are the chat channel's own, from GH #454: the screened turn into `./firewall`, \
+         the answer coming back from `./assistants` guarded on `context.channel_node`, and \
+         the connector's error out at the rim. Six more arrived with GH #455/#459, when \
+         a SCREEN became one of these channels: `./apps -> ./channels` carries an app's \
+         `view` towards the display named in the edge that leaves the app, and the way \
+         back off the screen is split on the OWNER the display stamped — `event` and \
+         `receipt` into `./assistants` for `hop.owner.contains('/assistants/')`, the \
+         same pair into `./apps` for `'/apps/'`, and one catch-all out at the rim on \
+         `error` for an owner this level cannot place, carrying the original lane on \
+         `hop.kind`. A second channel must not move any of them \
+         (templates/member/README.md § Why a container carries no contract). Move the \
+         README with the number."
+    );
     assert_eq!(
         one.channels_to_siblings(),
-        18,
-        "assistant@1.0.0 ships eighteen edges between ./channels and its siblings \
-         (templates/assistant/README.md § What the level owns). Move the README with the \
-         number."
+        declared,
+        "the live tree draws a different number of container-to-member edges than the \
+         `member` template on disk declares"
     );
     assert_eq!(
         one.channels_to_siblings(),
         two.channels_to_siblings(),
-        "a second channel moved the fan-in between ./channels and its siblings from {} to \
-         {}. #303's whole ruling is that this number is a property of the TEMPLATE and is \
-         drawn once.",
+        "a second channel moved the fan-in between ./channels and the rest of the member \
+         from {} to {}. #303's whole ruling — one level up since #454 — is that this \
+         number is a property of the TEMPLATE and is drawn once.",
         one.channels_to_siblings(),
         two.channels_to_siblings()
     );
@@ -953,6 +1097,22 @@ async fn d_a_second_channel_is_two_instantiations_and_no_intermediate_hive() {
         "a second channel costs exactly its own wiring again: {} -> {}",
         one.inside_channels(),
         two.inside_channels()
+    );
+
+    // (4) the assistant learns nothing.
+    assert_eq!(
+        one.touching_the_assistant(),
+        two.touching_the_assistant(),
+        "a second channel moved the assistant's edge count from {} to {}. Since GH #454 a \
+         channel is wired to the member's container and names the generation it reaches in \
+         `context.assistant`, so an agent's own topology is not a function of how many \
+         bots the person owns — which is the whole reason the level moved.",
+        one.touching_the_assistant(),
+        two.touching_the_assistant()
+    );
+    assert!(
+        one.touching_the_assistant() > 0,
+        "the assistant has no edges at all — the assertion above would be vacuous"
     );
 }
 
@@ -970,8 +1130,9 @@ async fn print_the_measurement() {
     let grown = grow(vec![]).await;
     println!("registry rows      = {}", grown.rows.len());
     println!("edges              = {}", grown.edges.len());
-    println!("channels<->sibling = {}", grown.channels_to_siblings());
+    println!("channels<->member  = {}", grown.channels_to_siblings());
     println!("inside channels    = {}", grown.inside_channels());
+    println!("touching assistant = {}", grown.touching_the_assistant());
     let mut declared = 0usize;
     for file in DECLARATIONS {
         let d = read_json(&repo(file));

@@ -1,0 +1,82 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json\n\n# The target of this hive's guarded default door: a request on a lane nobody\n# wired comes back as ONE ordinary receipt naming the lane that was asked for,\n# on the same lane every occupant answers on.\n#\n# Not a dead letter. A dead letter is a message the colony lost; this is a\n# message the colony read, understood as unaddressed, and answered. An operator\n# who mistyped a lane learns which one they typed, in the same round, instead of\n# reading a queue.\n\ndoc = json.load(sys.stdin)\nhop = ((doc[\"envelope\"].get(\"header\") or {}).get(\"hop\") or {})\nroute = str(hop.get(\"route\") or \"\")\nasked = route if route else \"(none)\"\ncall_id = str(hop.get(\"tool_call_id\") or \"\")\nsys.stdout.write(json.dumps({\n    \"header\": {\"route\": \"receipt\", \"operation\": \"operator_unknown\",\n               \"error_code\": \"unknown_route\", \"route_asked\": route,\n               \"tool_call_id\": call_id},\n    \"messages\": [{\"origin\": \"tool\", \"type\": \"tool_result\", \"id\": call_id,\n                  \"text\": \"no lane named %s is wired into this hive\" % asked}]}))\n",
+    "external_timeout_ms": 10000,
+    "sandbox": {
+      "trust": "restricted",
+      "network": "deny",
+      "filesystem": {
+        "runtime": true
+      }
+    }
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "receipt"
+          ],
+          "required": true
+        },
+        "operation": {
+          "type": "string",
+          "values": [
+            "operator_unknown"
+          ],
+          "required": true
+        },
+        "error_code": {
+          "type": "string",
+          "values": [
+            "unknown_route"
+          ],
+          "required": true
+        },
+        "route_asked": {
+          "type": "string",
+          "required": true
+        },
+        "tool_call_id": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "The target of this hive's guarded default door: a request on a lane nobody wired comes back as ONE ordinary receipt naming the lane that was asked for.",
+    "use_when": "Never wired by hand and never addressed by name. It is reached only when no positive lane door fired, and only because the default door's own guard held.",
+    "not_in_scope": "Not a lane: nothing is read out of the request, nothing is executed and no near-miss name is suggested. And not a drain -- a cell that accepted the request and emitted nothing would be the swallowing sink GH #284 removed from this repository.",
+    "emits_meaning": "route receipt: the one outward lane of this hive, so the caller's single return edge takes this the way it takes every answer. hop.error_code is always `unknown_route` and hop.route_asked is the lane that was asked for, verbatim, including the empty string.",
+    "consumes_meaning": "The request as it arrived. It is not parsed -- what it wanted is irrelevant once there is no lane to serve it.",
+    "examples": [
+      "hop.route == 'in_restart' -> receipt 'no lane named in_restart is wired into this hive', hop { error_code: 'unknown_route', route_asked: 'in_restart' }",
+      "a request with no hop.route at all -> the same refusal, route_asked empty -- the caller learns the lane was lost instead of watching the request stall"
+    ]
+  }
+}

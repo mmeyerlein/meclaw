@@ -8,15 +8,15 @@
 //!
 //! # The construct under test (GH #283, ruling Q1)
 //!
-//! Three ordinary conditioned edges out of the hive path, one per tool, plus
-//! **one guarded default edge** to `./unknown`. The whole behaviour follows from
-//! two properties of `apply_edges`
+//! One ordinary conditioned edge out of the hive path per tool, plus **one
+//! guarded default edge** to `./unknown`. The whole behaviour follows from two
+//! properties of `apply_edges`
 //! (`crates/meclaw-colony/src/edge_table.rs`, the two-phase evaluation):
 //!
 //! * **Suppression is sender-wide.** If ANY regular edge of the sender decided,
-//!   the default phase never runs. The three positive edges are mutually
-//!   exclusive by construction, so a known tool name fires exactly one of them
-//!   and thereby silences the default.
+//!   the default phase never runs. The positive edges are mutually exclusive by
+//!   construction, so a known tool name fires exactly one of them and thereby
+//!   silences the default.
 //! * **A guarded default needs BOTH.** Nothing regular fired AND its own
 //!   condition holds. An unknown tool name — or a call carrying no
 //!   `hop.tool_name` at all — fires no positive edge, so the default is
@@ -29,25 +29,30 @@
 //! # How the tree is built
 //!
 //! The shipped `templates/tools` directory is copied cell by cell and every
-//! directory stays where it is. Only the `config.json` of the three TOOL
-//! occupants is overwritten, with a `code` double that answers and stamps the
-//! same `hop.operation` the real cell stamps. So the GRAPH under test is the
-//! shipped one, byte for byte, and the doubles sit at the end of three of its
-//! edges without changing any of them.
+//! directory stays where it is. Only the `config.json` of the TOOL occupants
+//! that need a provider, a network or a filesystem is overwritten, with a `code`
+//! double that answers and stamps the same `hop.operation` the real cell stamps.
+//! So the GRAPH under test is the shipped one, byte for byte, and the doubles
+//! sit at the end of some of its edges without changing any of them.
 //!
-//! `./unknown` is never doubled. It is a `code` cell already, it needs no
-//! provider and no network, and both tests want the shipped one: in the second
-//! because its refusal is the subject, in the first because its silence is.
+//! `./unknown` and `./schemas` are never doubled. Both are `code` cells already,
+//! neither needs a provider or a network, and both tests want the shipped
+//! `unknown`: in the second because its refusal is the subject, in the first
+//! because its silence is. `./mcp` and `./vault` are not doubled either — no
+//! edge reaches them (GH #464 ships them unwired), so a double there would be a
+//! cell nothing can call.
 //!
 //! **Observed at the exit, not at the occupants**, and that is a property of the
 //! doubles rather than a concession: every occupant of this hive answers, so
 //! `hop.operation` on the way out names the one that was served, and a second
 //! occupant being served would be a second message rather than a silence to be
 //! waited out. Capturing at the occupants instead would leave the hive with
-//! three cells that never answer — a different topology from the shipped one on
+//! cells that never answer — a different topology from the shipped one on
 //! exactly the property under test.
 
+use meclaw_cells::McpCellFactory;
 use meclaw_cells::code::CodeCellFactory;
+use meclaw_cells::vault::VaultCellFactory;
 use meclaw_colony::config::{EdgeSpec, HiveParams};
 use meclaw_colony::edge_table::{Edge, EdgeTable, apply_edges};
 use meclaw_colony::{CellFactory, CellFactoryRegistry, bootstrap_from_filesystem};
@@ -142,16 +147,15 @@ fn surface_cell() -> Value {
 /// `hop.operation` the real cell of that directory stamps, so the shipped
 /// return edge takes the double exactly as it takes the original.
 ///
-/// **It emits no `tool_name`, and that is faithful rather than convenient.**
-/// None of the three real cells does — `bash`, `web_fetch` and `web_search`
-/// stamp `operation` and their own outcome keys, and a cell emission mints a
-/// fresh hop, so the name the call was dispatched on does not survive the
-/// answer. A double that echoed it was how the loop of ruling W7-R4 was found:
-/// before the doors read the lane, such an answer went straight back through the
-/// door it came in by. Both halves of that guard are pinned below —
-/// `the_shipped_dispatch_is_three_narrowing_doors_and_one_guarded_default` for
-/// the doors, `no_occupant_answers_with_the_key_the_doors_dispatch_on` for the
-/// occupants.
+/// **It emits no `tool_name`, and that is faithful rather than convenient.** No
+/// real tool cell does — they stamp `operation` and their own outcome keys, and
+/// a cell emission mints a fresh hop, so the name the call was dispatched on
+/// does not survive the answer. A double that echoed it was how the loop of
+/// ruling W7-R4 was found: before the doors read the lane, such an answer went
+/// straight back through the door it came in by. Both halves of that guard are
+/// pinned below — `the_shipped_dispatch_is_narrowing_doors_and_one_guarded_default_per_lane`
+/// for the doors, `no_occupant_answers_with_the_key_the_doors_dispatch_on` for
+/// the occupants.
 fn double_script(op: &str) -> String {
     format!(
         r#"
@@ -206,30 +210,45 @@ fn double_cell(op: &str) -> Value {
 /// a hive door pointing at a directory that is not there leaves the inside
 /// unroutable — the boot itself still succeeds, which is what made it look like
 /// a routing bug rather than a tree with holes in it.
-fn build_tree(td: &tempfile::TempDir, doubled: &[&str]) {
+fn build_tree(td: &tempfile::TempDir, doubled: &[(&str, &str)]) {
     let root = td.path();
     write(root, "main/config.json", &main_config());
     write(root, "main/surface/config.json", &surface_cell());
     copy_cells(&templates_root().join("tools"), &root.join("main/tools"));
-    for name in doubled {
+    for (name, op) in doubled {
         let rel = format!("main/tools/{name}/config.json");
         assert!(
             root.join(&rel).exists(),
             "{rel} is not in the shipped template — the double would create a \
              node the hive has no edge to"
         );
-        write(root, &rel, &double_cell(name));
+        write(root, &rel, &double_cell(op));
     }
 }
 
 /// The caller's drain. Everything the hive answers arrives here, and
 /// `hop.operation` says which occupant answered.
 async fn boot(td: &tempfile::TempDir) -> (ColonyHandle, mpsc::Receiver<Message>) {
+    // `mcp` and `vault` are registered although nothing routes to them: the boot
+    // PLAN refuses a cell type it does not know before it ever asks whether the
+    // node is active, so the two UNWIRED occupants (GH #464) still need their
+    // factories — which is a property of the substrate, and exactly what a real
+    // colony provides.
     let factories = || -> Vec<(String, Arc<dyn CellFactory>)> {
-        vec![(
-            "code".to_string(),
-            Arc::new(CodeCellFactory) as Arc<dyn CellFactory>,
-        )]
+        vec![
+            (
+                "code".to_string(),
+                Arc::new(CodeCellFactory) as Arc<dyn CellFactory>,
+            ),
+            (
+                "mcp".to_string(),
+                Arc::new(McpCellFactory) as Arc<dyn CellFactory>,
+            ),
+            (
+                "vault".to_string(),
+                Arc::new(VaultCellFactory) as Arc<dyn CellFactory>,
+            ),
+        ]
     };
     let h = ColonyHandle::new_with_factories_at(td, factories());
     let (sink_tx, sink_rx) = mpsc::channel::<Message>(16);
@@ -315,11 +334,26 @@ fn received_nothing(rx: &mut mpsc::Receiver<Message>, who: &str) {
 
 // ═══════════════════════════════════════════════════════════════════════ pins
 
-/// The three tool occupants, doubled. `unknown` is never doubled: it is a
-/// `code` cell already, it answers by itself, and both tests need the SHIPPED
-/// one — in the second because its refusal is the subject, in the first because
-/// its silence is.
-const TOOLS: [&str; 3] = ["bash", "web_fetch", "web_search"];
+/// The tool occupants that need a double, each with the `hop.operation` its real
+/// cell stamps — which is not always its directory name, and that is the point
+/// of the pair. `file` labels the OP it ran (`read`/`write`/`list`/`stat`) and
+/// `edit` likewise (`find_replace`/`insert_at_line`), so the shipped exit edge
+/// names several values for each; a double stamping the directory name would
+/// match no exit and its answer would stand at the hive path.
+///
+/// Not doubled, deliberately: `unknown` and `schemas` are `code` cells already
+/// and answer by themselves — both tests need the SHIPPED `unknown` (in the
+/// second because its refusal is the subject, in the first because its silence
+/// is). `mcp` and `vault` are not doubled either, because no edge reaches them:
+/// they are the unwired occupants, and a double there would be a cell nothing
+/// can call.
+const TOOLS: [(&str, &str); 5] = [
+    ("bash", "bash"),
+    ("web_fetch", "web_fetch"),
+    ("web_search", "web_search"),
+    ("file", "read"),
+    ("edit", "find_replace"),
+];
 
 /// Every occupant of this hive answers, so `hop.operation` on the way out names
 /// the one that was served — and a second occupant being served would be a
@@ -396,8 +430,8 @@ async fn a_named_call_reaches_that_tool_and_the_default_stays_silent() {
 /// one outward lane — not a dead letter, and not a silent nothing.
 ///
 /// Same tree as the test above, so the two differ in exactly one thing: the name
-/// on the hop. `unknown` is the shipped cell; the three doubles are what prove
-/// the negative, because either of them being served would answer with its own
+/// on the hop. `unknown` is the shipped cell; the doubles are what prove the
+/// negative, because any of them being served would answer with its own
 /// `hop.operation` instead.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_unknown_tool_name_leaves_as_one_named_tool_result() {
@@ -644,8 +678,8 @@ fn no_occupant_answers_with_the_key_the_doors_dispatch_on() {
         .collect();
     assert_eq!(
         dispatched.len(),
-        5,
-        "five tool doors — three tools plus the two halves of a build round: {dispatched:?}"
+        7,
+        "seven tool doors — five tools plus the two halves of a build round: {dispatched:?}"
     );
 
     for name in &dispatched {
@@ -699,8 +733,11 @@ fn the_shipped_dispatch_is_narrowing_doors_and_one_guarded_default_per_lane() {
     let doors: Vec<&EdgeSpec> = hp.graph.edges.iter().filter(|e| e.from == ".").collect();
     assert_eq!(
         doors.len(),
-        9,
-        "five tool doors, two build-result doors, and one guarded default each: {doors:#?}"
+        12,
+        "seven tool doors, two build-result doors, one guarded default for each of those \
+         two lanes, and the single `in_schemas` door — which has no default beside it, \
+         because that lane has exactly one consumer and a default there would be a second \
+         answer to the same question: {doors:#?}"
     );
 
     // ONE guarded default PER LANE. The old wording was "exactly one default
@@ -788,7 +825,14 @@ fn the_shipped_dispatch_is_narrowing_doors_and_one_guarded_default_per_lane() {
                 == Some("'tool_result'")
         })
         .collect();
-    assert_eq!(exits.len(), 6, "one result exit per occupant: {exits:#?}");
+    assert_eq!(
+        exits.len(),
+        8,
+        "one `tool_result` exit per occupant that serves a CALL — the five tools, the two \
+         build halves and the refusal cell. `schemas` is not among them: it answers the \
+         `in_schemas` lane on `tool_schemas`, which is a declaration and not a result: \
+         {exits:#?}"
+    );
     for exit in &exits {
         assert!(
             !exit.is_default,

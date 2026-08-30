@@ -1,0 +1,75 @@
+{
+  "cell": {
+    "type": "store"
+  },
+  "params": {
+    "schema": {
+      "drafts": {
+        "id": "text",
+        "at": "text",
+        "manifest_sha256": "text",
+        "tool_call_id": "text",
+        "scope_root": "text",
+        "declaration_count": "int",
+        "manifest": "json"
+      }
+    },
+    "query_timeout_ms": 5000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "write_surface": "internal",
+    "transfer": "none",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "results": {
+          "type": "array",
+          "required": false
+        }
+      },
+      "hop": {
+        "operation": {
+          "type": "string",
+          "required": true
+        },
+        "rows_affected": {
+          "type": "number",
+          "required": false
+        },
+        "duration_ms": {
+          "type": "number",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        },
+        "bundle_errors": {
+          "type": "number",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "The one thing this front door remembers: `drafts`, one row per manifest the baumeister drew for an operator and nobody has said yes to yet. The digest is the key, because the digest is what a person quotes back when they decide -- `submit <digest>` is a decision about the bytes that were shown, and a store keyed on anything else would answer a different question than the one that was asked.",
+    "use_when": "Inside the operator hive only, and reached only by `./submit`. A `code` cell has no `cell.db` (`docs/cell-types.md` § code), so the round trip to this store IS the front door's memory: the draft waits here between the round that drew it and the round that submits it, and the state of that two-act request rides in the hop keys the hive's internal edges promote to context.",
+    "not_in_scope": "It decides nothing, it checks nothing and it applies nothing. A row here is a PROPOSAL and never a submission -- what turns one into the other is an operator quoting its digest on `in_submit`, after which the manifest travels the submitter, the gate and the broker exactly as any other does. `contract.write_surface` is `internal` because the hive declares `params.ports: []`: the hive path is the only address, and the only sender inside it is `./submit`. Rows are not swept: a draft the broker refused is a draft its requester may submit again once the policy allows it, and a store that forgot it would have thrown away the only copy."
+  }
+}

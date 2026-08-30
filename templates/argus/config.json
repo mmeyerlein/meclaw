@@ -1,0 +1,261 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "ports": [],
+    "contract": {
+      "accepts": [
+        {
+          "route": "in_cycle",
+          "because": "run a cycle NOW rather than at the next tick -- a cost alert or a DLQ spike is a reason not to wait for the clock"
+        }
+      ],
+      "emits": [
+        {
+          "route": "mutate",
+          "because": "the change this loop decided on, as an ordinary params update -- body `{system:{}, params:{...}}`, hop.target naming the cell it belongs to. The parent draws one edge per cell the loop may reach, so what is in range is a fact about the seed"
+        },
+        {
+          "route": "alert",
+          "because": "a watched symptom crossed zero and no model was asked about it -- the metric, the goal that watched for it, the count and the window it was counted over. This is the whole of what an `observe` goal does when it sees something, and it is deliberately not a decision: a control loop that reacts to a symptom without a hypothesis is a random walk with receipts. A parent that draws no edge for it gets the receipt and no alert, which is a legitimate way to run it."
+        },
+        {
+          "route": "error",
+          "because": "a step of the cycle could not complete; which step it was is this hive business, that it failed is the caller business"
+        }
+      ]
+    },
+    "graph": {
+      "edges": [
+        {
+          "from": ".",
+          "to": "./meter",
+          "condition": "has(hop.route) && hop.route == 'in_cycle'",
+          "modifier": {
+            "set_context": {
+              "argus_origin": "'meter'",
+              "ar_phase": "''",
+              "ar_carry": "''"
+            }
+          }
+        },
+        {
+          "from": "./clock",
+          "to": "./meter",
+          "condition": "has(hop.schedule_name) && hop.schedule_name == 'argus-cycle'",
+          "modifier": {
+            "set_context": {
+              "argus_origin": "'meter'",
+              "ar_phase": "''",
+              "ar_carry": "''"
+            }
+          }
+        },
+        {
+          "from": "./meter",
+          "to": "./charter",
+          "condition": "has(hop.route) && hop.route == 'cstore'",
+          "modifier": {
+            "set_context": {
+              "argus_origin": "'meter'",
+              "ar_phase": "hop.phase",
+              "ar_carry": "hop.carry"
+            }
+          }
+        },
+        {
+          "from": "./charter",
+          "to": "./meter",
+          "condition": "context.argus_origin == 'meter'"
+        },
+        {
+          "from": "./meter",
+          "to": "./receipts",
+          "condition": "has(hop.route) && hop.route == 'rstore'",
+          "modifier": {
+            "set_context": {
+              "argus_origin": "'meter'",
+              "ar_phase": "hop.phase",
+              "ar_carry": "hop.carry"
+            }
+          }
+        },
+        {
+          "from": "./meter",
+          "to": "./judge",
+          "condition": "has(hop.route) && hop.route == 'judge'",
+          "modifier": {
+            "set_context": {
+              "ar_cycle": "hop.cycle_id",
+              "ar_goal": "hop.goal",
+              "ar_measured": "hop.measured",
+              "ar_require_plan": "hop.require_plan"
+            }
+          }
+        },
+        {
+          "from": "./judge",
+          "to": "./mutator",
+          "condition": "true"
+        },
+        {
+          "from": "./meter",
+          "to": "./mutator",
+          "condition": "has(hop.route) && hop.route == 'revert'",
+          "modifier": {
+            "set_context": {
+              "ar_cycle": "hop.cycle_id"
+            }
+          }
+        },
+        {
+          "from": "./mutator",
+          "to": "./receipts",
+          "condition": "has(hop.route) && hop.route == 'rstore'",
+          "modifier": {
+            "set_context": {
+              "argus_origin": "'mutator'",
+              "ar_phase": "hop.phase"
+            }
+          }
+        },
+        {
+          "from": "./mutator",
+          "to": "./probe",
+          "condition": "has(hop.route) && hop.route == 'probe'",
+          "modifier": {
+            "set_context": {
+              "argus_origin": "'probe'",
+              "ar_cycle": "hop.cycle_id",
+              "ar_phase": "''"
+            }
+          }
+        },
+        {
+          "from": "./probe",
+          "to": "./receipts",
+          "condition": "has(hop.route) && hop.route == 'rstore'",
+          "modifier": {
+            "set_context": {
+              "argus_origin": "'probe'",
+              "ar_phase": "hop.phase",
+              "ar_cycle": "hop.cycle_id",
+              "ar_reason": "hop.verdict"
+            }
+          }
+        },
+        {
+          "from": "./receipts",
+          "to": "./mutator",
+          "condition": "context.argus_origin == 'mutator'"
+        },
+        {
+          "from": "./receipts",
+          "to": "./probe",
+          "condition": "context.argus_origin == 'probe'"
+        },
+        {
+          "from": "./probe",
+          "to": "./mutator",
+          "condition": "has(hop.route) && hop.route == 'revert'",
+          "modifier": {
+            "set_context": {
+              "ar_cycle": "hop.cycle_id"
+            }
+          }
+        },
+        {
+          "from": "./receipts",
+          "to": "./meter",
+          "condition": "context.argus_origin == 'meter'"
+        },
+        {
+          "from": "./mutator",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'mutate'",
+          "modifier": {
+            "delete_context": [
+              "ar_carry",
+              "ar_cycle",
+              "ar_goal",
+              "ar_measured",
+              "ar_phase",
+              "ar_reason",
+              "ar_require_plan",
+              "argus_origin"
+            ]
+          }
+        },
+        {
+          "from": "./meter",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'alert'",
+          "modifier": {
+            "delete_context": [
+              "ar_carry",
+              "ar_cycle",
+              "ar_goal",
+              "ar_measured",
+              "ar_phase",
+              "ar_reason",
+              "ar_require_plan",
+              "argus_origin"
+            ]
+          }
+        },
+        {
+          "from": "./meter",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'error'",
+          "modifier": {
+            "delete_context": [
+              "ar_carry",
+              "ar_cycle",
+              "ar_goal",
+              "ar_measured",
+              "ar_phase",
+              "ar_reason",
+              "ar_require_plan",
+              "argus_origin"
+            ]
+          }
+        },
+        {
+          "from": "./meter",
+          "to": "/colony/ledger",
+          "condition": "has(hop.route) && hop.route == 'ledger'"
+        },
+        {
+          "from": "./probe",
+          "to": "/colony/ledger",
+          "condition": "has(hop.route) && hop.route == 'ledger'"
+        },
+        {
+          "from": "./probe",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'error'",
+          "modifier": {
+            "delete_context": [
+              "ar_carry",
+              "ar_cycle",
+              "ar_goal",
+              "ar_measured",
+              "ar_phase",
+              "ar_reason",
+              "ar_require_plan",
+              "argus_origin"
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "description": {
+    "purpose": "Scope marker of the argus hive: the colony's control loop and its watcher. Charter -> measure -> judge (and simulate) -> params update to the named cell -> health check -> measure the effect -> keep or revert -> receipt. EVERY tick leaves a receipt, the tick that found nothing enabled and the cycle that died at a store reject included, so the table is a chain rather than a list of the moments something was decided. THE HIVE IS THE ADDRESS: `params.ports` is empty, so no edge reaches a cell in here; a caller names the hive and a lane on `hop.route`.",
+    "use_when": "Once per colony, under /colony's sibling level. The charter ships every goal DISABLED, so a freshly grown argus changes nothing until somebody turns a row on -- it does still tick, and every one of those ticks is receipted as `idle`, because a loop whose clock has stopped and a loop with an empty charter must not write the same nothing.",
+    "not_in_scope": "No operator lane -- a change leaves as an ordinary message and only reaches a cell a human wired an edge to. No mutation at all, in fact: nothing in here authors a diff, so the loop cannot add, remove or rewire a cell. No topology change either: radius v1 is model choice plus numeric params, and a topology proposal is recorded for a human rather than executed. And no second bookkeeping: what it measures, it reads out of the substrate's own ledger, read-only.",
+    "contract_in": "One lane, at the hive path. in_cycle -- run a cycle now instead of waiting for the clock. Which cell starts it is this hive's business.",
+    "contract_out": "Three lanes, out of the hive path. mutate -- the decided change as an ordinary params update, hop.target naming the cell it is for; a parent wires one edge per cell the loop may reach, and a parent that wires none gets an argus that measures and receipts and changes nothing. alert -- a watched symptom crossed zero, deterministically and without a model: the metric, its count and the window. error -- a step of the cycle could not complete."
+  }
+}

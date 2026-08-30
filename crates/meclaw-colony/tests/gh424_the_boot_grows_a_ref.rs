@@ -217,7 +217,7 @@ fn cell_ids(root: &std::path::Path) -> Vec<(String, String)> {
 /// lookup and its own override addressing.
 ///
 /// Pins `SNB-graph-nodes-note-{de,en}` and `SNB-graph-nodes-{de,en}` in
-/// `plans/spec-claims/claims.tsv`.
+/// `.github/gates/claims.tsv`.
 #[test]
 fn a_hive_declaring_params_graph_nodes_refuses_the_boot() {
     let td = tempfile::TempDir::new().unwrap();
@@ -300,7 +300,7 @@ async fn a_root_tree_with_a_ref_marker_grows_on_the_first_boot() {
 /// The boot instantiates once, and a reboot keeps every `cell_id`.
 ///
 /// **This is the pin for `SNB-instantiation-{de,en}`** in
-/// `plans/spec-claims/claims.tsv` — the claim that a cell's identity is minted
+/// `.github/gates/claims.tsv` — the claim that a cell's identity is minted
 /// exactly once and survives a restart. It could not be pinned before, because
 /// the boot did not instantiate at all.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

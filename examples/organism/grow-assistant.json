@@ -1,14 +1,15 @@
 {
-  "scope": "/os/orgs/acme/members/alex",
+  "scope": "/os/orgs/acme/members/alex/assistants",
   "ctx": {
     "model": "${MODEL_CORE}",
-    "model_fast": "${MODEL_CORE_FAST}"
+    "model_fast": "${MODEL_CORE_FAST}",
+    "model_surface": "${MODEL_SURFACE}"
   },
   "diff": {
     "add_nodes": [
       {
-        "name": "assistants/scribe",
-        "template": "assistant@1.1.0",
+        "name": "scribe",
+        "template": "assistant@2.2.0",
         "override_params": {
           "cogny/brain": {
             "temperature": 0.2
@@ -18,64 +19,79 @@
     ],
     "add_edges": [
       {
-        "from": "./assistants",
-        "to": "./assistants/scribe",
-        "condition": "has(hop.route) && hop.route == 'in_turn' && has(context.agent) && context.agent == 'scribe'"
+        "from": ".",
+        "to": "./scribe",
+        "condition": "has(hop.route) && hop.route == 'in_turn' && has(context.assistant) && context.assistant == 'scribe'"
       },
       {
-        "from": "./assistants",
-        "to": "./assistants/scribe",
-        "condition": "has(hop.route) && hop.route == 'in_bundle' && has(context.agent) && context.agent == 'scribe'"
+        "from": ".",
+        "to": "./scribe",
+        "condition": "has(hop.route) && hop.route == 'in_bundle' && has(context.assistant) && context.assistant == 'scribe'"
       },
       {
-        "from": "./assistants/scribe",
-        "to": "./assistants",
-        "condition": "has(hop.route) && hop.route == 'turn'"
+        "from": "./scribe",
+        "to": ".",
+        "condition": "has(hop.route) && hop.route == 'answer'"
       },
       {
-        "from": "./assistants/scribe",
-        "to": "./assistants",
+        "from": "./scribe",
+        "to": ".",
         "condition": "has(hop.route) && hop.route == 'recall'"
       },
       {
-        "from": "./assistants/scribe",
-        "to": "./assistants",
+        "from": "./scribe",
+        "to": ".",
         "condition": "has(hop.route) && hop.route == 'extraction'"
       },
       {
-        "from": "./assistants/scribe",
-        "to": "./assistants",
+        "from": "./scribe",
+        "to": ".",
         "condition": "has(hop.route) && hop.route == 'write'"
       },
       {
-        "from": "./assistants/scribe",
-        "to": "./assistants",
+        "from": "./scribe",
+        "to": ".",
         "condition": "has(hop.route) && hop.route == 'turn_write'"
       },
       {
-        "from": "./assistants/scribe",
-        "to": "./assistants",
+        "from": "./scribe",
+        "to": ".",
         "condition": "has(hop.route) && hop.route == 'prune'"
       },
       {
-        "from": "./assistants/scribe",
-        "to": "./assistants",
+        "from": "./scribe",
+        "to": ".",
         "condition": "has(hop.route) && hop.route == 'error'"
       },
       {
-        "from": "./assistants/scribe",
-        "to": "./assistants",
+        "from": "./scribe",
+        "to": ".",
         "condition": "has(hop.route) && hop.route == 'build'",
         "modifier": {
           "set_context": {
-            "agent": "'scribe'"
+            "assistant": "'scribe'"
           }
         }
       },
       {
-        "from": "./assistants",
-        "to": "./assistants/scribe",
-        "condition": "has(hop.route) && hop.route == 'in_build_result' && (!has(context.agent) || context.agent == 'scribe')"
+        "from": ".",
+        "to": "./scribe",
+        "condition": "has(hop.route) && hop.route == 'in_build_result' && (!has(context.assistant) || context.assistant == 'scribe')"
+      },
+      {
+        "from": ".",
+        "to": "./scribe",
+        "condition": "has(hop.route) && hop.route == 'in_export' && has(context.assistant) && context.assistant == 'scribe'"
+      },
+      {
+        "from": ".",
+        "to": "./scribe",
+        "condition": "has(hop.route) && hop.route == 'in_import' && has(context.assistant) && context.assistant == 'scribe'"
+      },
+      {
+        "from": "./scribe",
+        "to": ".",
+        "condition": "has(hop.route) && hop.route == 'dump'"
       }
     ]
   }

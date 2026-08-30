@@ -1,4 +1,4 @@
-//! GH #302 — `org@1.0.0` is a namespace, and the file says so by being thin.
+//! GH #302 — `org@1.2.1` is a namespace, and the file says so by being thin.
 //!
 //! The level rule of this wave is *a level owns what its siblings must share*.
 //! The members of one organisation share a name and a boundary. They share
@@ -359,12 +359,21 @@ fn member_reference() -> Option<String> {
 /// This level was first authored against a `member` template that did not exist
 /// yet, and it guessed — `in_turn` in, `turn`/`error` out. Every third of that
 /// guess was wrong in a way nothing would have reported: `turn` is a lane **no
-/// member ever emits** (a member consumes its own turn internally,
+/// member ever emits** (a member consumes its own turn internally — since GH
+/// #454 on `./channels -> ./firewall`, before it on
 /// `./assistants -> ./firewall`), so the exit edge carrying it could never
 /// fire; and `answer`, `ack`, `reject`, `in_recall`, `in_brief`, `in_propose`
 /// were missing, so a member's answer and — worse — a member's *refusal* would
 /// have died as `no_route` at a level boundary, which is exactly the silent
 /// swallowing GH #284 has just finished taking out of this tree.
+///
+/// GH #454 is the case that shows why reading both files is worth more than a
+/// list: the channel moved out of the assistant and into the member, which
+/// re-cut every turn inside `member@1.3.0` — and this level's two lists did not
+/// move by one entry. `turn` was never a lane here and still is not; `answer`
+/// was always here and now carries an answered turn as well as an affinity
+/// brief. A re-layering two levels down does not reach a namespace, and the
+/// only way to say that with evidence is to re-derive the union from the tree.
 ///
 /// A list written down here would have to be re-derived by hand every time the
 /// occupant moves, which is the thing that already failed once. Reading both
@@ -397,10 +406,16 @@ fn the_level_declares_the_union_of_its_occupants_lanes() {
          a refusal swallowed at a level boundary (GH #284)."
     );
     assert!(
+        org_emits.iter().any(|l| l == "answer"),
+        "`answer` is the lane an answered turn leaves the member on since GH #454, and the \
+         one an affinity brief always left on. A namespace that drops it stops the only \
+         reply its occupant has: {org_emits:?}"
+    );
+    assert!(
         !org_emits.iter().any(|l| l == "turn"),
         "`turn` is not a lane a member emits — it is consumed inside the member \
-         (./assistants -> ./firewall). An org that declares it carries an exit that can \
-         never fire: {org_emits:?}"
+         (./channels -> ./firewall since GH #454, ./assistants -> ./firewall before it). \
+         An org that declares it carries an exit that can never fire: {org_emits:?}"
     );
 }
 

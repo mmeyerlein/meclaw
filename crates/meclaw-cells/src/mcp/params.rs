@@ -23,6 +23,27 @@ pub enum McpTransport {
         /// How to start that child.
         spec: ChildSpec,
     },
+    /// GH #489: no provider was named. `endpoint` absent, or present and empty
+    /// (`${MCP_ENDPOINT:-}` with the variable unset), on the `http` transport.
+    ///
+    /// This is a STATE, not a configuration error, and the distinction is the
+    /// whole point: a bridge whose far side has not been named has nothing to
+    /// connect to, so it runs no handshake, panics at nothing, and answers
+    /// every call with the `endpoint_unset` receipt. What it must never be is
+    /// a cell that looks like a fault — the shipped occupant used to carry a
+    /// guessed loopback default and turned every colony that grew it into a
+    /// colony with a permanently `failed` cell in it.
+    ///
+    /// GH #270's rule is kept intact rather than reversed: empty and absent
+    /// still land in exactly the same state, and that state still has a name
+    /// an operator can read. Only the state changed — from "refuse the cell"
+    /// to "the cell is idle and says so".
+    ///
+    /// The `stdio` transport keeps the loud reject for an absent or empty
+    /// `command` (below): a config that declares `transport: "stdio"` names a
+    /// binary or it names nothing, and nothing in the shipped tree writes that
+    /// key through an environment default that could legitimately be blank.
+    Unset,
 }
 
 /// Parsed mcp params after validation. All fields owned.
@@ -138,17 +159,24 @@ impl McpParams {
 
 /// The pre-P7 shape: endpoint plus optional bearer.
 fn parse_http(obj: &serde_json::Map<String, JsonValue>) -> Result<McpTransport, String> {
-    // An EMPTY endpoint is not an endpoint (GH #270). `${MCP_ENDPOINT}` without
-    // a default already fails loudly when the variable is unset; `MCP_ENDPOINT=`
-    // in an .env slipped through and left a cell that looked healthy and failed
-    // at URL build on every single call. Same message as the absent case — for
-    // an operator it is the same mistake with the same fix.
-    let endpoint = obj
+    // An EMPTY endpoint is not an endpoint (GH #270) — and since GH #489 an
+    // ABSENT one is not a refusal either. Both mean the same thing, which is
+    // GH #270's actual rule and the half that stays: an operator must never
+    // face two different outcomes for `MCP_ENDPOINT=` and for never having set
+    // it. What GH #489 changed is what that one outcome IS. It used to be a
+    // parse error, which at boot means a cell that cannot spawn; it is now the
+    // `Unset` state, which is a cell that spawns, stays idle and answers
+    // `endpoint_unset`. The failure mode GH #270 was written against — a cell
+    // that looked healthy and failed at URL build on every call, saying nothing
+    // an operator could act on — is still gone, and now it has a name.
+    let Some(endpoint) = obj
         .get("endpoint")
         .and_then(|x| x.as_str())
         .filter(|s| !s.is_empty())
-        .ok_or("endpoint: required (HTTP+JSON-RPC URL)")?
-        .to_string();
+        .map(str::to_string)
+    else {
+        return Ok(McpTransport::Unset);
+    };
     // An empty token is no token (GH #268). `auth.bearer` is written as
     // `${MCP_BEARER:-}` wherever the operator may leave the variable unset, and
     // the substitution turns that into `""`. Sending `Authorization: Bearer `
@@ -228,4 +256,48 @@ fn parse_stdio(obj: &serde_json::Map<String, JsonValue>) -> Result<McpTransport,
             ..ChildSpec::default()
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// GH #489: the shipped occupant with `MCP_ENDPOINT` unset. Absent and
+    /// empty are ONE state, and that state parses.
+    #[test]
+    fn an_unnamed_provider_parses_to_the_unset_transport() {
+        for raw in [json!({}), json!({"endpoint": ""})] {
+            let p = McpParams::parse(&raw).expect("an unnamed provider must parse");
+            assert!(
+                matches!(p.transport, McpTransport::Unset),
+                "expected Unset for {raw}, got {:?}",
+                p.transport
+            );
+        }
+    }
+
+    /// The unset state keeps its timeouts: they configure `handle()` and the
+    /// `cell.db`, both of which still run.
+    #[test]
+    fn the_unset_transport_keeps_the_timeout_defaults() {
+        let p = McpParams::parse(&json!({})).unwrap();
+        assert_eq!(p.external_timeout_ms, 30_000);
+        assert_eq!(p.query_timeout_ms, 5_000);
+    }
+
+    /// The stdio half is untouched (GH #270 as written): a declared child
+    /// process that names no binary is still a loud reject.
+    #[test]
+    fn an_empty_stdio_command_is_still_refused_by_name() {
+        let err = McpParams::parse(&json!({"transport": "stdio", "command": ""})).unwrap_err();
+        assert!(err.contains("command"), "got: {err}");
+    }
+
+    /// A named endpoint still builds the http transport, unchanged.
+    #[test]
+    fn a_named_endpoint_still_builds_the_http_transport() {
+        let p = McpParams::parse(&json!({"endpoint": "https://x.example/rpc"})).unwrap();
+        assert!(matches!(p.transport, McpTransport::Http { .. }));
+    }
 }

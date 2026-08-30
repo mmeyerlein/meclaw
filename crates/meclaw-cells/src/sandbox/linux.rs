@@ -30,8 +30,8 @@
 //! cannot be written. Requiring the operator to weaken the host's hardening in
 //! exchange for cell hardening is the wrong trade. Landlock needs no
 //! capability, no mount and no uid mapping, only `PR_SET_NO_NEW_PRIVS`, and it
-//! answers exactly the question the profile asks. See
-//! `plans/s4-sandbox/design.md` for the full survey.
+//! answers exactly the question the profile asks. The full
+//! host survey behind that choice was ratified in GH #35.
 //!
 //! # Why the network namespace is still a namespace
 //!

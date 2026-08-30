@@ -1,6 +1,7 @@
 //! Phase-8 `llm`-Cell module — OpenAI Translate, atomic-emit, with cell.db.
 //!
-//! Grows incrementally over T2..T26 per plans/archive/phase-8-llm.md.
+//! Grown incrementally over the phase-8 task series T2..T26; the shipped
+//! surface is documented in `docs/cell-types.md` § `llm`.
 
 pub mod auth;
 pub mod cell;

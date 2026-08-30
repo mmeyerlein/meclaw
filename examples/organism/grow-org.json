@@ -1,77 +1,102 @@
 {
-  "scope": "/os",
+  "scope": "/os/orgs",
   "diff": {
     "add_nodes": [
       {
-        "name": "orgs/acme",
-        "template": "org@1.1.0"
+        "name": "acme",
+        "template": "org@1.3.0"
       }
     ],
     "add_edges": [
       {
-        "from": "./orgs",
-        "to": "./orgs/acme",
-        "condition": "has(hop.route) && hop.route == 'in_turn'"
+        "from": ".",
+        "to": "./acme",
+        "condition": "has(hop.route) && hop.route == 'in_turn' && (!has(context.org) || context.org == 'acme')"
       },
       {
-        "from": "./orgs",
-        "to": "./orgs/acme",
-        "condition": "has(hop.route) && hop.route == 'in_recall'"
+        "from": ".",
+        "to": "./acme",
+        "condition": "has(hop.route) && hop.route == 'in_recall' && (!has(context.org) || context.org == 'acme')"
       },
       {
-        "from": "./orgs",
-        "to": "./orgs/acme",
-        "condition": "has(hop.route) && hop.route == 'in_brief'"
+        "from": ".",
+        "to": "./acme",
+        "condition": "has(hop.route) && hop.route == 'in_brief' && (!has(context.org) || context.org == 'acme')"
       },
       {
-        "from": "./orgs",
-        "to": "./orgs/acme",
-        "condition": "has(hop.route) && hop.route == 'in_propose'"
+        "from": ".",
+        "to": "./acme",
+        "condition": "has(hop.route) && hop.route == 'in_propose' && (!has(context.org) || context.org == 'acme')"
       },
       {
-        "from": "./orgs/acme",
-        "to": "./orgs",
+        "from": ".",
+        "to": "./acme",
+        "condition": "has(hop.route) && hop.route == 'in_build_result' && (!has(context.org) || context.org == 'acme')"
+      },
+      {
+        "from": ".",
+        "to": "./acme",
+        "condition": "has(hop.route) && hop.route == 'in_export' && (!has(context.org) || context.org == 'acme')"
+      },
+      {
+        "from": "./acme",
+        "to": ".",
         "condition": "has(hop.route) && hop.route == 'answer'"
       },
       {
-        "from": "./orgs/acme",
-        "to": "./orgs",
+        "from": "./acme",
+        "to": ".",
+        "condition": "has(hop.route) && hop.route == 'bundle'"
+      },
+      {
+        "from": "./acme",
+        "to": ".",
         "condition": "has(hop.route) && hop.route == 'ack'"
       },
       {
-        "from": "./orgs/acme",
-        "to": "./orgs",
+        "from": "./acme",
+        "to": ".",
         "condition": "has(hop.route) && hop.route == 'reject'"
       },
       {
-        "from": "./orgs/acme",
-        "to": "./orgs",
+        "from": "./acme",
+        "to": ".",
         "condition": "has(hop.route) && hop.route == 'error'"
       },
       {
-        "from": "./orgs/acme",
-        "to": "./orgs",
+        "from": "./acme",
+        "to": ".",
         "condition": "has(hop.route) && hop.route == 'write'"
       },
       {
-        "from": "./orgs/acme",
-        "to": "./orgs",
+        "from": "./acme",
+        "to": ".",
         "condition": "has(hop.route) && hop.route == 'turn_write'"
       },
       {
-        "from": "./orgs/acme",
-        "to": "./orgs",
+        "from": "./acme",
+        "to": ".",
         "condition": "has(hop.route) && hop.route == 'prune'"
       },
       {
-        "from": "./orgs/acme",
-        "to": "./orgs",
+        "from": "./acme",
+        "to": ".",
         "condition": "has(hop.route) && hop.route == 'build'"
       },
       {
-        "from": "./orgs",
-        "to": "./orgs/acme",
-        "condition": "has(hop.route) && hop.route == 'in_build_result'"
+        "from": "./acme",
+        "to": ".",
+        "condition": "has(hop.route) && hop.route == 'close_report'"
+      },
+      {
+        "from": "./acme",
+        "to": ".",
+        "condition": "has(hop.route) && hop.route == 'export_done'"
+      },
+      {
+        "from": "./acme",
+        "to": ".",
+        "condition": "has(hop.route) && hop.route == 'pack_ack'"
       }
     ]
   }

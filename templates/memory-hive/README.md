@@ -1,4 +1,4 @@
-# `memory-hive@3.0.4`
+# `memory-hive@3.1.0`
 
 A **member's** memory as a hive of existing cell types — no new cell type, no Rust. Thirteen cells:
 `store` (all durable data), `writer`, `recall`, `extract-glue`, `close-glue`, `closer`,
@@ -353,12 +353,12 @@ ruling F3. Both halves use the same owning scope, so the store still has exactly
 | Lane | Direction | The edge must carry |
 |---|---|---|
 | `in_episode` | in → `./memory` | one turn to remember — **one message carries one turn and its own provenance**, which is why `speaker` is answerable at all: identity travels per message, so two turns of one session can name two different people (GH #272). `session_id`/`turn_id` are ingress context keys and travel by themselves; optionally `set_context: {happened_at: "hop.happened_at"}` for historical ingest. **Plus the provenance of the turn, and it is not optional**: `set_context: {audience_set: …, channel: …, speaker: …}` (or `agent_id` on an assistant turn). Missing `audience_set` or `channel` → nothing is written and the turn leaves on `reject` — see [The audience gate](#the-audience-gate--who-may-be-told-what-244) |
-| `in_query` | in → `./memory` | `set_context: {recall_query: "hop.recall_query", memory_tier: "hop.memory_tier", recall_as_of: "''", recall_window_from: "hop.recall_window_from", recall_window_to: "hop.recall_window_to"}` — the caller must send all five keys on EVERY hop, empty string = unset (see the trap below). **`recall_as_of` has no producer in the shipped composites**: `collector/assemble`'s `emits.hop` carries `recall_query`, `memory_tier`, `recall_window_from` and `recall_window_to` and no as-of key, so an edge reading `hop.recall_as_of` would fail to evaluate and the colony would skip the whole edge. Promote the constant empty string there — a point recall — unless your own caller has a source for the instant. The `phase: "recall"` hop that starts a fresh chain is stamped by the hive's OWN door edge now, not by the caller. **Plus the asking round**: `audience_now` and `channel` are required, `channel_open_history` is optional (default closed); without the first two the question is refused rather than answered unfiltered |
-| `in_remember` | in → `./memory` | the same `audience_set` and `channel` as `in_episode` — this lane mints facts directly, so it is the one place a missing audience would produce an untagged row with no episode to refuse it first. Beyond that, nothing but the block itself: the door stamps `store_origin`/`mem_phase` inside. The front model's persona carries the block form from [`inline-contract.md`](inline-contract.md), and the block has TWO parts (#299): `facts`, the delta of world state the turn carried, and `topic`, where the conversation stands — a `topic` with `movement: "start"` or `"end"` writes the topics row next to the facts, `continue` writes none, and a turn that carried nothing still sends `{"nothing_new": true, "facts": [], "topic": {"movement": "continue"}}` rather than nothing at all. The caller's `session_id` must be in the context (it is, in the `talky` composite): a block that names no episode is BOUND to the newest `user` turn of that session, and one that arrives without a session cannot be bound and is rejected |
+| `in_query` | in → `./memory` | `set_context: {recall_query: "hop.recall_query", memory_tier: "hop.memory_tier", recall_as_of: "''", recall_window_from: "hop.recall_window_from", recall_window_to: "hop.recall_window_to"}` — the caller must send all five keys on EVERY hop, empty string = unset (see the trap below). **`recall_as_of` has no producer in the shipped composites**: `collector/assemble`'s `emits.hop` carries `recall_query`, `memory_tier`, `recall_window_from` and `recall_window_to` and no as-of key, so an edge reading `hop.recall_as_of` would fail to evaluate and the colony would skip the whole edge. Promote the constant empty string there — a point recall — unless your own caller has a source for the instant. The `phase: "recall"` hop that starts a fresh chain is stamped by the hive's OWN door edge now, not by the caller. **Two more keys are read and neither is required**: `session_id` scopes the session read (the tier-0 leg answers with THAT session's episodes; a question naming none reads a session called `default`), and `recall_caller` is a **reply-to token this hive never reads** -- whatever a caller puts there rides through untouched and comes back on `hop.recall_caller` of the `bundle` and of a `reject`, which is how one hive serves several askers and each of them gets ITS answer ([#532](https://github.com/mmeyerlein/meclaw/issues/532)). It has to change compartment on the way out, and this hive is the only place that can do it for every caller at once: on the hop it would not survive, because the `recall` cell forms its own hop and only context travels (GH #411), and a door guarded on context ALONE is condemned by `crates/meclaw-cells/tests/gh173_shipped_hive_contracts.rs`. **Plus the asking round**: `audience_now` and `channel` are required, `channel_open_history` is optional (default closed); without the first two the question is refused rather than answered unfiltered |
+| `in_remember` | in → `./memory` | the same `audience_set` and `channel` as `in_episode` — this lane mints facts directly, so it is the one place a missing audience would produce an untagged row with no episode to refuse it first. Beyond that, nothing but the block itself: the door stamps `store_origin`/`mem_phase` inside. The block form comes from [`inline-contract.md`](inline-contract.md) and is delivered by the front model's own composite rather than by its persona (`talky`'s collector writes it into the brain on every assembly, GH #525), and the block has TWO parts (#299): `facts`, the delta of world state the turn carried, and `topic`, where the conversation stands — a `topic` with `movement: "start"` or `"end"` writes the topics row next to the facts, `continue` writes none, and a turn that carried nothing still sends `{"nothing_new": true, "facts": [], "topic": {"movement": "continue"}}` rather than nothing at all. The caller's `session_id` must be in the context (it is, in the `talky` composite): a block that names no episode is BOUND to the newest `user` turn of that session, and one that arrives without a session cannot be bound and is rejected |
 | `in_close_pass` | in → `./memory` | a session that just ended, to be read WHOLE once (GH #300, ruling Q9 of 2026-08-21). **Nothing travels in the body** — the lane names a session and the hive reads its own turns. The context is the same provenance every write lane of this hive demands and is not optional: `set_context: {session_id: …, audience_set: …, channel: …}`; the pass proposes writes, so a pass without them would mint sharpened rows nobody can filter afterwards. The shipped caller already has all three — `talky`'s `./session-keeper → ./collector` close edge promotes exactly this set. Wire `close_report` in the SAME mutation. The pass costs one strong-model call per session — see [What a close pass costs](#what-a-close-pass-costs-measured) |
 | `in_export` | in → `./memory` | nothing. The lane names the whole memory; the hive walks its own tables and answers with one part per table on `dump` (see [Transfer](#taking-a-memory-out-putting-it-into-another-243)). Wire `dump` in the SAME mutation — `required_drains` enforces it, and an export nobody drains reads the whole store for nothing |
 | `in_import` | in → `./memory` | ONE part of such a document, as the body of the message; nothing on the hop and nothing in the context. Applying the same part twice leaves the same state. A part whose declared schema lost `audience_set` or `channel` is refused on `reject` with nothing written |
-| `bundle` | out → your consumer | condition `hop.route == 'bundle'` on an edge FROM `./memory` |
+| `bundle` | out → your consumer | condition `hop.route == 'bundle'` on an edge FROM `./memory`. It carries `hop.recall_caller` back, off the `context.recall_caller` the question came in with and empty when it came with none — a caller with more than one asker routes the answer on it, and one with a single asker ignores it ([#532](https://github.com/mmeyerlein/meclaw/issues/532)) |
 | `close_report` | out → your drain | condition `hop.route == 'close_report'` on an edge FROM `./memory`. **Drain it.** It is the ONLY positive signal the close lane has — the pass writes through the inline ingress, which answers nobody, so without this drain a caller cannot tell a pass that ran and changed nothing from a pass that never ran at all. Eight numbers ride on the hop: `added`, `sharpened`, `corrected`, `closed`, `restated`, `unseen_refs`, `exceptions` (the `pending` rows of this session the pass swept) and `truncated` (what the page bounds left behind). A pass that got no verdict leaves on `reject` instead, with `hop.reject_reason == 'closer_failed'` — nothing was written and the exception list was NOT swept |
 | `dump` | out → your drain | condition `hop.route == 'dump'` on an edge FROM `./memory`, and make it a PLAIN one: an edge that also tests `hop.dump_kind` evaluates to `false` under the `required_drains` probe and reads as no drain. `hop.dump_kind` tells the two payloads apart — `export_part` (one part of the document, `hop.export_part` of `hop.export_of`, `hop.export_final == '1'` on the last) and `import_receipt` (`hop.rows_written` for one applied part) |
 | `reject` | out → your drain | condition `hop.route == 'reject'` on an edge FROM `./memory`. **Drain it.** `hop.reject_reason` names the case: `missing_audience` and `missing_channel` for a turn, block or question whose provenance was incomplete (#244), `inline_invalid` for a block that did not survive validation. The transfer lane adds `import_format`, `import_unknown_table`, `import_schema_drift`, `import_probe_failed`, `import_write_failed` and `export_read_failed`, and it reuses `missing_audience`/`missing_channel` for a document part that lost a provenance column on the way. Beyond those, two older things arrive here and the body says which: an inline block the hive could not bind, and a HALF window (exactly one of `recall_window_from`/`_to` non-empty), which is a caller bug and leaves at request entry before the leg fan. Undrained, a refused block is an unrouted dead end — nobody ever learns the memory was not written — and a refused question leaves the caller waiting for a bundle that never comes. A colony that ran the inline lane for weeks with only the recall half drained is where that lesson comes from. **Since 2.3.1 the same lane also carries what this hive's own STORE would not do** (`hop.reject_reason == 'store_refused'`, `hop.store_error` = the store's `error_code`, `hop.store_operation` = the op it refused): a read or a write that came back refused stops its lane there instead of being read as zero rows. The nightly consolidation reports here too -- it has no caller of its own, and the alternative was reporting nowhere. See [When the store says no](#when-the-store-says-no-gh-343-since-231) |
@@ -711,8 +711,8 @@ here because they are the evidence #253's design needs:
    FTS5 indexes built with `meclaw_stem_v1`, a tokenizer that lives in the Rust store cell, and
    their triggers are `AFTER INSERT/UPDATE/DELETE ON <table>` — not column-scoped. Any write
    from a plain `sqlite3` client fires a trigger that cannot resolve its tokenizer and fails;
-   `plans/0.16.0-audience-gate/backfill_audience.py` had to detach and reattach those triggers
-   inside one transaction to get a backfill through. **This lane simply does not have the
+   the 0.16.0 audience backfill ([#244](https://github.com/mmeyerlein/meclaw/issues/244)) had to detach and reattach those
+   triggers inside one transaction to get a backfill through. **This lane simply does not have the
    problem**: it writes through the store's own `insert`, so the triggers fire inside the cell
    that owns the tokenizer and an imported row is searchable the moment it lands.
 2. **`seed/<table>.jsonl` carries a schema header the boot validates.** Add a column to
@@ -907,7 +907,48 @@ Nothing in that sequence touches a `cell.db`. There is no `sqlite3`, no trigger 
 schema header to lift by hand: the FTS indexes of `episodes` and `facts` are maintained by
 `AFTER INSERT` triggers whose tokenizer lives in the store cell, so a row that arrives through
 this lane is searchable the moment it lands — which is the exact obstacle
-`plans/0.16.0-audience-gate/backfill_audience.py` had to detach and reattach triggers around.
+the 0.16.0 audience backfill ([#244](https://github.com/mmeyerlein/meclaw/issues/244)) had to detach and reattach triggers around.
+
+### The import at birth, and a retraction (#255, #467)
+
+**Retraction.** Three sentences above say the birth seeder cannot carry the
+store-keyed identity families, and give the reason: a seed header carries column
+names and a coarse type and no key, so the seeder builds `claim_aliases` and its
+five siblings **without** one, and `apply_canonical_ddl`'s `IF NOT EXISTS` then
+finds the keyless table and leaves it — which does not duplicate an upsert, it
+makes it FAIL. The three are: the `keys` row of the seeder/`in_import` table, the
+paragraph beginning *"The two **store-keyed** families never go through that path
+at all"*, and step **4b** of the migration sketch (*"they have to go through 4a,
+because a seeded keyed table is a table without its key"*).
+
+The mechanism they describe was real and is fixed.
+[#255](https://github.com/mmeyerlein/meclaw/issues/255) made the store **assert**
+the key at its first wake instead of assuming it: a store-owned table found
+standing without its primary key is rebuilt with it, every row carried over,
+duplicates collapsed onto the key, and a column the old table had and the
+declared shape has not is carried over too. So a seeded alias table keeps its
+upsert property, and the exception in 4b is retired. What stays true of those
+sentences is everything else: a seed header still cannot express a key, and it is
+the store that repairs the consequence rather than the seeder that avoids it.
+
+**What that buys.** The WHOLE document is a birth seed — all sixteen parts, the
+identity families included. Writing each part as
+`{"schema": <part.schema>}` plus one row per line under
+`<template>/store/seed/<part.table>.jsonl` and instantiating is the complete
+import at birth, and it needs no message at all.
+
+**The one thing it still cannot be.** The seed is read when the `cell.db` is
+created and is inert for ever after. A hive that is already running is `in_import`
+territory and nothing else, which is why the two lanes are complements rather
+than a choice: **the seeder births, the lane transfers.**
+
+**Where the tree does it.** A member reaches this hive through a `ref`, and a
+reference carries no files, so the seed set cannot be handed to it directly. The
+reference has to be written out into a derived template that is registered and
+instantiated in one diff — [`examples/memory-import/`](../../examples/memory-import/)
+is that recipe end to end, and
+`crates/meclaw-cells/tests/gh467_a_member_is_born_with_its_history.rs` drives it
+against a colony that never saw the memory written.
 
 ### Limits, stated so nobody meets them as a surprise
 
@@ -992,6 +1033,11 @@ rollout, and set it to the strongest model you have (see below).
 | `MEMORY_BUNDLE_EPISODE_BUDGET` | `6` | the episode share of the fusion cut (P15 O-7): episodes take at most this many of the `TOPK` slots and keep that many against any fact wall. Whichever side cannot fill its share lets the other backfill, so the bundle is never shorter than a plain prefix would be |
 | `MEMORY_TIER1_GRAPH_DEPTH` | `2` | `max_depth` of the graph leg's `traverse` (store cap: 5) |
 | `MEMORY_TIER1_GRAPH_NODES` | `200` | `max_nodes` of the graph leg's `traverse` — the fan-out kill switch, so one hub entity cannot turn a recall into a walk of the whole graph |
+| `MEMORY_TIER1_GRAPH_FACT_NODES` | `64` | how many distinct walked nodes go into the join's `in` filter (GH #520). The walk is already ranked when the cut is taken, so what falls off is the tail of the walk, never its front |
+| `MEMORY_TIER1_GRAPH_FACT_LIMIT` | `100` | page bound of the join's `select facts` (GH #520). Generous on purpose: one popular subject carries a long version chain, and the leg's own `MEMORY_TIER1_LEG_LIMIT` is the cut that decides what votes. A full page marks the leg **capped**, exactly as a full traverse page does |
+| `MEMORY_TIER1_SELF_LIMIT` | `20` | page bound of the **self** leg (GH #536): how many of the asker's own facts it NOMINATES, newest first. Generous, because a member's dossier is a small bounded set (21 live rows on the hive this was measured on) and the leg has no query signal to rank by: what it cannot rank it must not cut early |
+| `MEMORY_TIER1_SELF_BUDGET` | `6` | how many of them may occupy a **bundle slot** while query-driven hits are waiting (GH #536). A different question from the one above: the leg nominates, the composition seats. Without it the dossier ate the fact half of every bundle — two different questions, one identical `FACTS` section. Leftover slots still fall back to the dossier, so it is a ceiling against competition and never a cut |
+| `MEMORY_SELF_LEGACY_SUBJECT` | `user` | the pre-canonicalisation spelling of *the member whose hive this is* (GH #536). The extraction lane writes a PERSON NAME into `facts.subject` today; everything written before it did carries the literal `user` — 23 of 29 self facts on the measured hive — and those rows are about the asker exactly as the new ones are. A **migration artefact**, named as one: the empty string switches it off for a hive that never had them |
 | `MEMORY_SEM_MAX_DISTANCE` | `0.5` | relevance floor of the **semantic** leg (#297), as a fraction of the embedding's BIT WIDTH: a hit at or beyond `0.5 × dim` differing bits is where a random binary vector sits, so at the default the cut removes coin flips and cannot cost a genuine hit. `similar` RANKS and never filters — without this every one of its `MEMORY_TIER1_LEG_LIMIT` rows votes in the fusion as loudly as a real hit. A missing, zero or non-numeric `dim` means no scale, and without a scale there is no cut |
 | `MEMORY_KW_MIN_SCORE_RATIO` | `0.10` | relevance floor of the **keyword** leg (#297), as a fraction of that page's OWN best bm25 rank — so the fact search and the episode search are never measured against each other's scale. bm25 is smaller-is-better, so the floor is `best × ratio` and a row survives at or below it. `0` switches the cut off (the ablation knob), and a page whose best rank is not negative carries no usable signal, so it is left uncut |
 | `MEMORY_RRF_AGREEMENT` | `0.5` | strength of the agreement factor in the fusion (#297): a candidate two VOTING legs found is multiplied once, three legs twice. `0` restores the plain rank sum |
@@ -1003,6 +1049,7 @@ rollout, and set it to the strongest model you have (see below).
 | `MEMORY_QUERY_MAX_CHARS` | `250` | hard clamp of the hygiene guard: whatever survived the question / tail-sentence steps is cut to its last this many characters, so the cost of a recall stops depending on how much context the caller pasted |
 | `MEMORY_QUERY_TOKENS` | `24` | how many tokens of the sanitised query reach the FTS matcher, taken from the TAIL — after the hygiene guard the tail is the question (GH #88) |
 | `MEMORY_RRF_W_TEMPORAL` | `1.0` | weight of the temporal leg **in window mode only** (P15 O-4) |
+| `MEMORY_RRF_W_SELF` | `1.0` | weight of the **self** leg (GH #536). Its rank list is recency, not relevance — it is the one leg the query does not shape — so a hit two query-driven legs agree on outranks it through the agreement factor rather than through a special case. `0` leaves the leg as discovery only, which is the ablation the eval prices |
 | `MEMORY_RRF_W_TEMPORAL_POINT` | `0.0` | weight of the temporal leg in **point** mode. Measured, not chosen: 50 identical LongMemEval extractions, paired — `0.0` gives R@1 **84.0 vs 74.0** and R@5 **98.0 vs 96.0**, flips **11:1** (sign test p=0.0063), and across 100 runs (2×50) the leg never carried a hit **alone**. Set it to `1.0` to restore the pre-O-4 fusion |
 | `OPENROUTER_HTTP_REFERER` / `OPENROUTER_X_TITLE` | `https://meclaw.ai` / `MeClaw` | OpenRouter app attribution headers |
 
@@ -1048,7 +1095,7 @@ nothing. Retune one per instance by editing the instantiated `config.json`.
 | param | default | meaning |
 |---|---|---|
 | `timeout_ms` | `20000` | **write lane.** A-timeout of one bulk corpus embedding call. Throughput, not latency: a failed batch leaves its rows `status='queued'` and the nightly backfill picks them up, so a tight bound that frees the concurrency slot is the cheap answer. That backfill IS this lane's retry, which is why there is no in-process one |
-| `query_timeout_ms` | `30000` | **read lane.** A-timeout of ONE query-embedding attempt. Deliberately more generous than the write lane: the query vector is what recall's semantic leg waits on, and losing it costs a whole leg of the four-leg fan |
+| `query_timeout_ms` | `30000` | **read lane.** A-timeout of ONE query-embedding attempt. Deliberately more generous than the write lane: the query vector is what recall's semantic leg waits on, and losing it costs a whole leg of the five-leg fan |
 | `query_retries` | `1` | **read lane.** Extra attempts after the first before the lane answers degraded. `0` switches the retry off; the fail-open contract is unaffected either way — a retry never replaces it |
 | `query_retry_backoff_ms` | `250` | **read lane.** Pause between two attempts. Short by design: the measured failure was CPU contention on the box, not a rate limit |
 
@@ -1143,9 +1190,10 @@ Nothing about **what** the bundle says moved with it: the audience gate, the per
 episodes) are the same code they were, and a tier-0 round now writes **no `recall_scratch` row
 at all**.
 
-### And six for tier 1 (GH #418)
+### And six for tier 1 (GH #418), seven when the graph leg joins (GH #520)
 
-A tier-1 recall costs the store **six messages**. Until 3.0.1 it cost 47 — measured, not
+A tier-1 recall costs the store **six messages**, and a seventh exactly when the graph walk
+reached a node (S4a below). Until 3.0.1 it cost 47 — measured, not
 estimated, out of the `message_log` of a scenario colony — of which twenty were the bookkeeping
 of a fan-in: an insert per leg, a select to ask whether they had all landed, a guarded update to
 elect the one hop allowed to carry on, and a select to read back what had just been written.
@@ -1154,11 +1202,12 @@ The chain, in the order it happens:
 
 | # | Phase | The ops of that ONE message | What the answer carries |
 |---|---|---|---|
-| S1 | `t1-fan` | `search episodes` · `search facts` · `select facts` (as-of) · `select emb_models` · *(tier 2:* `select beliefs`*)* | every leg that needs no query vector, at once; beside it (**not** a store message) the `embed` request |
-| S2 | `t1-park` | `insert recall_scratch 'legs'` · `select recall_scratch` | parks the four legs, the raw counts, the model, the anchors and the axis map — **and** asks in the same message whether the vector has landed |
+| S1 | `t1-fan` | `search episodes` · `search facts` · `select facts` (as-of) · `select facts` (the asker's own — GH #536) · `select emb_models` · *(tier 2:* `select beliefs`*)* | every leg that needs no query vector, at once; beside it (**not** a store message) the `embed` request |
+| S2 | `t1-park` | `insert recall_scratch 'legs'` · `select recall_scratch` | parks the five legs, the raw counts, the model, the anchors and the axis map — **and** asks in the same message whether the vector has landed |
 | Sq | `t1-qvec-park` | `insert recall_scratch 'qvec'` · `select recall_scratch` | the other half of the same question |
 | S3 | `t1-join` | `select entities` (anchors) · `similar embeddings` | both are free from the rendezvous on; the vector comes from `'qvec'`, the anchors and the `model_id` from `'legs'` |
-| S4 | `t1-legs` | `insert 'sem'` · `traverse entity_edges` · `select facts` (the semantic companion) · `select recall_scratch` | the walk, the audience of the semantic leg's owning facts and everything parked, in ONE answer — **the fusion runs here, in code** |
+| S4 | `t1-legs` | `insert 'sem'` · `traverse entity_edges` · `select facts` (the semantic companion) · `select recall_scratch` | the walk, the audience of the semantic leg's owning facts and everything parked, in ONE answer — **the fusion runs here** unless the walk reached a node |
+| S4a | `t1-graph` | `insert 'graph-walk'` · `insert 'sem-aud'` · `select facts` (the walked nodes) · `select recall_scratch` | GH #520 — the facts the walk's nodes are ABOUT. **Conditional**: the nodes a walk passed through are only known after the walk, so this is the one message a recall pays only when there is something to join; **the fusion runs here when it does** |
 | S5 | `t1-emit` | `insert 'fused'` · `select facts` (hydration) · `select episodes` (hydration) · `select facts` (the axis page) · `select predicate_cardinality` · `select recall_scratch` | hydration, axis expansion and the judged verdicts at once — **the reply to this renders and emits, and asks nothing more** |
 
 **Why there is no gate any more.** The `store` is a **stateful** cell (`docs/cell-types.md`,
@@ -1168,7 +1217,8 @@ the `insert`s in front of it, and **of two hops that park concurrently exactly o
 complete set**. That is precisely what `update … set fired=1 where fired=0` plus its
 `rows_affected` used to buy, and it costs no message of its own. Pinned in
 `crates/meclaw-cells/tests/gh418_a_bundle_sees_its_own_writes.rs`; the count is pinned in
-`gh418_tier1_is_one_bundle_per_step.rs::a_tier1_recall_costs_six_store_messages`.
+`gh418_tier1_is_one_bundle_per_step.rs::a_tier1_recall_costs_six_store_messages`, and the
+conditional seventh in `gh520_from_an_entity_to_a_fact.rs`.
 
 **What `recall_scratch` still is on the tier-1 path.** The **wait for the embedder** — the
 rendezvous between the parked `legs` row and the parked `qvec` row — plus two carrier rows
@@ -1296,11 +1346,17 @@ Not everything that matches is here -- the fusion cut at TOPK=20.               
 FACTS (extracted, canonical, dated)
   user favorite_editor = vscode   since 2026-08-08 (previously: Helix until 2026-08-08)
 WHAT WAS SAID (verbatim, not interpreted)
+  (an earlier answer claiming something is NOT stored is evidence about that answer and nothing else -- never a measurement of this memory)
   user on 2026-08-08: "I've switched to vscode."
 ```
 
 The kind is the SECTION, not a bracket in front of the row, and a section with no rows is left
-out. The header ASSERTS — it says what the document IS and as of when, which is the one piece of
+out. The parenthesis under the second header is [#537](https://github.com/mmeyerlein/meclaw/issues/537):
+the header says how the lines were *produced* and nothing about what they are worth, and a raw turn
+in that section may be the agent's OWN earlier answer -- measured on a live hive, three lines
+saying nothing was stored were retrieved as evidence, repeated, and written back, so every failed
+round made the next one more certain the memory was empty. The header string itself is unchanged;
+the caveat is its own line, and it holds with or without a `FACTS` section above it. The header ASSERTS — it says what the document IS and as of when, which is the one piece of
 framing a reader can use. The run's own description is not gone: it is the first line of
 `recall_diagnostic["text"]`, `MEMORY (tier 1, N candidates, RRF over …)` followed by the flat
 ranked lines with their leg tags, byte for byte what the bundle used to show.
@@ -1324,16 +1380,64 @@ reads: it means the embedder produced no vector, and the floor empties the seman
 as a dead embedder does. "Hits came back and were floored" is visible as `leg_sizes` against
 `leg_sizes_raw` in the diagnostic; the flag stays there, for whoever debugs the embedder.
 
-**The four legs (tier 1).** Each leg returns a *ranked id list*; content is fetched once, at the
+**The five legs (tier 1).** Each leg returns a *ranked id list*; content is fetched once, at the
 end, in a single hydration round. That is what keeps the fusion cheap and the scratch payloads
 small.
 
 | Leg | Store op | Ranked by | Yields |
 |---|---|---|---|
 | keyword | `search episodes` + `search facts` (bm25) | `rank`, merged facts-before-episodes on a tie | facts + episodes |
-| semantic | `similar embeddings` | hamming `distance` | facts (via `owner_id`) |
-| graph | `select entities` → `traverse entity_edges` | depth, then accumulated weight | episodes (via the edge's `episode_id`) |
+| semantic | `similar embeddings` | hamming `distance` | facts + episodes (via `owner_id`, kind from `owner_table` — GH #519) |
+| graph | `select entities` → `traverse entity_edges` → `select facts` (the walked nodes) | depth, then accumulated weight — each node's episode, then that node's facts | episodes (via the edge's `episode_id`) + facts (via the node's `canonical_subject` — GH #520) |
 | temporal | point mode: as-of `select facts` · window mode: a generous interval pre-filter, exact cut in code | point mode: `recorded_at` desc · window mode: `valid_from` desc, `recorded_at` desc, `id` asc | facts |
+| self | as-of `select facts` over the ASKER'S OWN subjects (GH #536) | `recorded_at` desc, `id` asc — the one leg the question does not shape | facts |
+
+**The self leg (GH #536).** A question in the first person — *"what are my sons called?"* — names
+nobody, and every other leg is built from what the question named. The keyword leg has no lexical
+overlap between *sons* and `has_child`; the graph anchors resolve the interrogative words against
+`entities` and come back empty, so the walk never starts; the semantic leg competes with a corpus
+of episodes; and the temporal leg has no vote in point mode. Measured on a two-week-old hive that
+HELD the answer: `leg_sizes {keyword: 20, semantic: 20, graph: 0, temporal: 20}` and **not one
+fact** among the 20 fused candidates.
+
+The asker was never missing from the request. `audience_now` carries the participant set, and its
+`member:`/`person:` tokens are people — the read path just never read it as an *identity*, only as
+the audience gate's yardstick. The self leg reads it as one: the asker's subjects are
+`memory_holder`, `user_id` and the member tokens of the asking round, plus
+`MEMORY_SELF_LEGACY_SUBJECT` (default `user`), which is what the extraction lane wrote into
+`facts.subject` before it wrote person names there. `agent:` tokens are deliberately not people:
+the hive belongs to a MEMBER (ADR-0002 E1) and an agent is a lens on it.
+
+Three properties are load-bearing. It rides the **fan's own bundle** — the identity is known at
+request entry, so the leg waits on nothing and costs no round trip. It is a **leg of its own**
+rather than an extension of the graph leg: a member's dossier would otherwise spend the graph
+leg's whole `LEG_LIMIT` and starve the walk of every slot it has, and a wide walk would do the
+same to the dossier. And it has a **budget** — see below. What it does *not* do is widen
+disclosure: an anchor decides what is looked up, never what is seen, and every row it nominates is
+measured against `audience_now` by the same gate as every other row.
+
+**The dossier budget (`MEMORY_TIER1_SELF_BUDGET`, default 6).** The leg answers *who is asking*,
+which is the same answer whatever is asked — so its rows are not competing on relevance and must
+not be seated as though they were. DOSSIER FLOOD, measured live on the first build of this leg:
+two different questions came back with a **byte-identical `FACTS` section**, because twenty
+dossier rows had taken every slot the query-driven legs were competing for, and a weather fact
+about a city outranked the fact that answered the question. So `fuse_rank` composes **three**
+classes, not two: a fact only the `self` leg nominated gets at most `SELF_BUDGET` slots while
+query hits are waiting; a fact a query leg *also* found is not a dossier row at all and is seated
+with the rest, agreement bonus and everything. Leftover slots fall back to the dossier, so a
+question nothing else answered — the case this leg exists for — is still answered by it.
+
+**What was tried and rejected: the asker as a graph anchor.** Anchoring the walk on the asker as
+well *does* reach a subject spelling the audience token does not carry (`member:alex` → the edge
+`alex → Alex Example` → the facts written under the fuller name). But an asker is a **hub**, and a
+hub anchor is true of every question: the walk came back full on every one of them, and the graph
+leg then voted at full weight for twenty rows nobody had asked about. A leg whose rank list is the
+same for every question is a constant, not a retrieval. The graph leg keeps the one property it
+has — that the question named where it starts — and the asker lives in the leg with the budget.
+The cost of that decision is named rather than hidden: a hive that holds one person under two
+subject spellings (`user` and `Alex Example`) reaches only the spellings `self_subjects()` knows.
+Joining those two is the identity axis's job (`subject_aliases`, the nightly identity round), not
+the retrieval's.
 
 **RRF.** `score(d) = (Σ_legs w_leg / (K + rank_leg(d))) × (1 + A × (agreement(d) − 1))`, `K = 60`,
 weights 1.0 — except the temporal leg, whose weight depends on the mode (O-4, below) — and
@@ -1346,7 +1450,7 @@ performs its own cut — and **nominates nothing**: a candidate no voting leg fo
 the ranking at all, and one that a voting and a non-voting leg both found has an agreement of one.
 Every fused candidate carries the count in `recall_diagnostic`; `legs` keeps meaning discovery
 (O-4b, below) and keeps listing the non-voting leg. Ties break by best rank, then leg priority (keyword,
-semantic, graph, temporal), then — on an **exact** score tie — the temporal leg's own rank, and
+semantic, graph, temporal, self), then — on an **exact** score tie — the temporal leg's own rank, and
 only then kind and id: two identical requests produce byte-identical candidate lists.
 
 **The temporal leg does not vote in point mode (P15 O-4).** In a point query the leg runs exactly
@@ -1692,7 +1796,7 @@ path is deterministic end to end, but the query VECTOR is not: measured on the L
 stage (2026-08-11), one identical query text produced **2 distinct vectors and 3 distinct semantic
 orderings across 8 recalls**. The provider is the source (batching / hardware non-determinism), so
 "same `cell.db` + same request ⇒ byte-identical bundle" is exact with a dead or local embedder and
-approximate with a remote one. Registered in `docs/roadmap.md`, not worked around here.
+approximate with a remote one. Registered in `docs/defer-register.md`, not worked around here.
 
 **Cross-model invariant.** `similar` is never called without a `model_id` filter, and the value
 comes from `emb_models` where `active = 1`. No active generation, or no query vector, means an
@@ -1739,6 +1843,38 @@ for as long as the gap lasts.
 that a future change to the packing can be told apart from the vectors already stored; a filter on
 it would be additive, and until one exists a rotation is identified by `model_id` alone.
 
+### Backfilling the episodes of a hive older than GH #519
+
+Until `memory-hive@3.1.0` only facts were embedded, so the semantic leg of the tier-1 fan could
+only ever return facts — and an episode is raw conversational text, exactly the material a lexical
+index is worst at. `./writer` now mints a queued `embeddings` row beside every episode it writes
+and sends the turn's text straight to `./embed`, so a hive grown from 3.1.0 needs nothing here.
+
+A hive that already holds episodes has to mint the missing rows once. That is a **store op**, not
+a script: the nightly chain in `./dream-glue` fills every `status: "queued"` row it finds, of
+either owner kind, so minting the rows IS the backfill and the night is what pays for it.
+
+```jsonc
+// one row per episode that has none, minted through the hive's own store lane.
+// `blob` stays NULL and `status` stays `queued`: that pair is precisely what the
+// nightly backfill selects, and what makes a repeat run a no-op rather than a
+// second charge.
+{"operation": "insert", "table": "embeddings",
+ "row": {"id": "<uuid>", "owner_table": "episodes", "owner_id": "<episode id>",
+         "model_id": "", "dim": 0, "binarization_version": "", "blob": null,
+         "status": "queued", "created_at": "<now>"}}
+```
+
+Two properties are worth stating, because both are what keeps this safe to run against a live
+memory. The insert touches no episode, no fact and no index — it adds rows to a table whose only
+reader is the semantic leg, and a queued row with a null blob is invisible to that leg
+(`status: "ready"` is part of its filter). And it is idempotent by *selection*, not by the store:
+minting a second row for an episode that already has one costs a second embedding, so the id set
+is taken from `episodes` minus the `owner_id`s already in `embeddings`.
+
+The cost is one embedding call per episode, once. The fill then runs on the next nightly firing,
+along with every fact whose own embedding never landed.
+
 **The gap statement is enforced, not hoped for.** `recall` parses the dialectic answer; if the
 `gap` field is missing or the answer is not JSON, the answer is still delivered but carries
 `gap_missing: true` in the body and `hop.gap_missing='1'`. A provider error downgrades to the
@@ -1751,8 +1887,8 @@ the hydration fan-in, each running the P2 collector protocol
 same hop for free, because the `store` runs a bundle's ops in order over its one connection.
 Explicitly withdrawn: **nothing on the tier-1 read path writes or reads `fired` any more.**
 
-Cost: a tier-1 recall is **six** store round trips — see
-[And six for tier 1](#and-six-for-tier-1-gh-418).
+Cost: a tier-1 recall is **six** store round trips, seven when the graph leg has nodes to join
+(GH #520) — see [And six for tier 1](#and-six-for-tier-1-gh-418-seven-when-the-graph-leg-joins-gh-520).
 
 ## Temporal questions — what is answerable, and what is not
 
@@ -1983,6 +2119,17 @@ both sides of a search are folded onto one term and the OTHER direction works to
 question reaches a singular index term, which is what issue #14 was about. Known limit: only
 tables from `params.schema` can carry an index, never one created at runtime via `create_table`.
 
+**The recall lane cuts words, it does not fold them** — folding lives in exactly one place, and
+that place is the store's tokenizer above. `tokens_of` in `./recall` splits a question into words
+on the Unicode-aware word class (a letter of any script, a digit, the underscore, plus the hyphen
+of a compound name) and hands them over as written; `unicode61` then case-folds and strips the
+diacritic on the query text exactly as it did on the indexed text, so the two meet. GH #518 is
+what the other arrangement costs: the splitter used to keep only ASCII letters, so a German word
+arrived at the matcher as a fragment (`Söhne` → `hne`) or, when every fragment fell under the
+three-character floor, not at all (`Größe` → nothing) — and the graph anchors, which are matched
+against entity names exactly, named nobody. The rule generalises past German: any script whose
+letters are not ASCII is searchable for the same reason.
+
 **Growing `params.fts` on an EXISTING `cell.db` is now a supported migration (P15 R8).** Adding
 `predicate` to a declared index used to be a loud `fts column drift` failure at spawn. Since
 `5326290` a **purely additive** drift — the existing columns are a true prefix of the declared
@@ -2025,8 +2172,8 @@ exactly as before, which is also why the scenario runner's `db_assertions` never
 |---|---|
 | skills population, decay/freshness scoring | spec phase 5 |
 | entity dedup, fuzzy index on `entities.canonical_name` (graph anchors match EXACTLY today) — the predicate half is done (0.2.0 P1 + P2) | GitHub #23 |
-| statement identity: W1 to W6 have shipped (session guard + currency marker, `canonical_claim` as the identity, judged closures, extractor `replaces`, judged cardinality, judged claim aliases). What is left of the track is the ONE paid run of ruling Q5 and the ranking demotion of closed statements (ruling Q6 option C) | GitHub #13, rulings `plans/statement-identity/rulings.md`, brief `plans/0.2.0-memory-quality/statement-identity-brief.md` |
-| irregular morphology in the keyword leg (`ging`/`gehen`); a window in tier 0 — regular inflection is done (0.2.0 P3) | `docs/roadmap.md` § P15 |
+| statement identity: W1 to W6 have shipped (session guard + currency marker, `canonical_claim` as the identity, judged closures, extractor `replaces`, judged cardinality, judged claim aliases). What is left of the track is the ONE paid run of ruling Q5 and the ranking demotion of closed statements (ruling Q6 option C) | GitHub #13 — the rulings of this track and its brief are recorded there |
+| irregular morphology in the keyword leg (`ging`/`gehen`); a window in tier 0 — regular inflection is done (0.2.0 P3) | `docs/defer-register.md` § P15 |
 | store constraints (UNIQUE), native BLOB write path, ANN index for `similar` | roadmap defers |
 | **embedding generation rotation is manual.** Changing `MEMORY_EMBED_MODEL` does not move `emb_models.active`, because that table is seeded once at `cell.db` creation — the semantic leg keeps filtering for the retired generation and silently sees no new fact. The operator recipe is three store ops (see "Rotating the embedding model" above); automating it would mean a template that rewrites its own seed table | — |
 | `embeddings.binarization_version` is written and read nowhere. A filter on it would be additive; until then a generation is identified by `model_id` alone | — |

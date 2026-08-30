@@ -22,6 +22,7 @@ use meclaw_cells::web::WebCellFactory;
 use meclaw_colony::{CellFactory, ContractView, SpawnedCellKind};
 use meclaw_core::serde_json::{Value, json};
 use meclaw_core::{Body, CellEmission, MessageBuilder, Path};
+use meclaw_testing::free_port;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
@@ -31,13 +32,6 @@ use tokio_tungstenite::tungstenite::Message as WsMessage;
 /// The failure-marker window (30 s convention): generous, because it only has
 /// to be longer than a healthy run ever takes.
 const MARKER: Duration = Duration::from_secs(30);
-
-fn free_port() -> u16 {
-    let l = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind");
-    let p = l.local_addr().expect("addr").port();
-    drop(l);
-    p
-}
 
 /// One page with one line of text on it, so "the new listener serves the same
 /// display" is an assertion about content and not merely about a 200.

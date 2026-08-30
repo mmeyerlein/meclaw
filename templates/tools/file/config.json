@@ -1,0 +1,81 @@
+{
+  "cell": {
+    "type": "file"
+  },
+  "params": {
+    "base_path": "${TOOLS_FILE_ROOT:-/tmp}",
+    "max_concurrency": 8
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {
+      "base_path": {
+        "type": "string",
+        "secret": false,
+        "default": "/tmp",
+        "description": "TOOLS_FILE_ROOT -- the one directory this assistant's file surface may reach. Every path in a call is relative to it and the boundary is checked twice, lexically and after canonicalisation."
+      }
+    },
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "operation": {
+          "type": "string",
+          "values": [
+            "read",
+            "write",
+            "list",
+            "stat",
+            "unknown"
+          ],
+          "required": true
+        },
+        "bytes": {
+          "type": "number",
+          "required": false
+        },
+        "duration_ms": {
+          "type": "number",
+          "required": false
+        },
+        "encoding": {
+          "type": "string",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "fs:read",
+      "fs:write"
+    ]
+  },
+  "description": {
+    "purpose": "Filesystem CRUD inside one boundary: read, write, list and stat under `params.base_path`, and nothing above it.",
+    "use_when": "The `file` occupant of a tools hive, reached on hop.tool_name == 'file'. Point `TOOLS_FILE_ROOT` at the directory this assistant may actually touch; the shipped default is the machine's scratch directory, which is a real reach and is written down rather than left to be discovered.",
+    "not_in_scope": "No editing in place -- that is the `edit` occupant beside it, sharing the same boundary code and the same root. No path outside the root, ever: `..` and absolute paths are refused before anything is opened, and the check runs again after canonicalisation, so a symlink out is refused too. And NO `params.sandbox`: this cell does its own I/O rather than starting a runner, so a process sandbox has nothing to bound here -- the boundary IS `base_path`.",
+    "emits_meaning": "messages[]: one tool_result turn. hop.operation names which of the four ops ran -- and `unknown` when the arguments did not parse far enough to say, which is why this hive's exit edge names that value too. hop.bytes on a payload, hop.encoding only when the payload is base64 rather than text.",
+    "consumes_meaning": "messages[]: a tool_call turn whose text is JSON args {op, path, ...}.",
+    "examples": [
+      "{\"op\":\"read\",\"path\":\"notes.md\"} -> tool_result with the file's text, hop { operation: 'read', bytes: 412 }",
+      "{\"op\":\"write\",\"path\":\"out/a.txt\",\"content\":\"hi\"} -> tool_result, hop { operation: 'write' }",
+      "{\"op\":\"read\",\"path\":\"../etc/passwd\"} -> tool_result, hop { operation: 'read', error_code: 'path_outside_boundary' } -- an ordinary result on the ordinary lane"
+    ]
+  }
+}

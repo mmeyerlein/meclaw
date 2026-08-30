@@ -1,4 +1,4 @@
-//! GH #302 — `meclaw-os@1.0.0`, the outermost level: the colony shell.
+//! GH #302 — `meclaw-os@1.5.0`, the outermost level: the colony shell.
 //!
 //! The four composition templates are authored under one rule, and every one of
 //! their READMEs repeats it in the same words: **a level owns what its siblings
@@ -15,7 +15,7 @@
 //! # What is asserted, and why each one is asserted of the substrate
 //!
 //! 1. **Shape.** The shell is a hive with exactly three occupants: `access` and
-//!    `steward` as `ref`s, and `orgs` as a real, open, empty container hive.
+//!    `argus` as `ref`s, and `orgs` as a real, open, empty container hive.
 //! 2. **The pins resolve.** Both refs name `<name>@<version>` and the
 //!    `TemplatesRegistry` — the same registry a mutation resolves against —
 //!    answers with the directory on disk. A bare name would resolve to the
@@ -33,7 +33,7 @@
 //!    "we forgot it" and "we mean it" look identical in a file.
 //! 4. **The contract is the occupants' lanes, measured.** The shell's `accepts`
 //!    and `emits` are read against `templates/access/config.json` and
-//!    `templates/steward/config.json` as they stand, never against a list kept
+//!    `templates/argus/config.json` as they stand, never against a list kept
 //!    here — a list would agree with itself while disagreeing with the tree.
 //!    `connect` is the one subtraction: `access` requires that lane to be the
 //!    only edge reaching the connector cell, and that edge is drawn where the
@@ -43,13 +43,13 @@
 //! 6. **No swallowing sink** (#284, ruling Q2): nothing in here resolves to
 //!    `terminal`, and every refusal lane leaves the shell instead of ending in
 //!    it.
-//! 7. **No second vault** (#302 ruling Q20): `access@2.2.0` carries its own
+//! 7. **No second vault** (#302 ruling Q20): `access@2.3.2` carries its own
 //!    interior `vault`, and the standalone `vault` template attests its inbound
 //!    edges against `params.broker` — with no broker at this level it would boot
 //!    locked and inert.
 //! 8. **The README says the four things a reader cannot see in the JSON**: the
 //!    level rule, the undeclared unbound behaviour of `orgs`, the vault finding,
-//!    and that the steward of this shell talks to the colony directly.
+//!    and that the argus of this shell talks to the colony directly.
 
 use meclaw_colony::config::HiveParams;
 use meclaw_colony::edge_table::{Edge, EdgeTable};
@@ -67,7 +67,7 @@ const HIVE: &str = "/h";
 /// The template under test, and the two it references.
 const SHELL: &str = "meclaw-os";
 const BROKER: &str = "access";
-const LOOP: &str = "steward";
+const LOOP: &str = "argus";
 
 /// GH #425 / R6 — the two halves of the ONE authoring path a colony has: the
 /// baumeister that drafts, and the submitter that is the only cell in the tree
@@ -76,6 +76,13 @@ const LOOP: &str = "steward";
 /// audit trail — yes.
 const BAUMEISTER: &str = "builder";
 const SUBMITTER: &str = "submit";
+/// GH #446 / R4 — the ONE front door a person addresses the OS through. It
+/// passes the same question ADR-0013 asks: a colony has one operator surface,
+/// and the identity a request acquires there is the identity every organisation
+/// under this level sees. It stands here and not one level down for the same
+/// reason the submitter does — it has to be a sibling of the submitter to hand
+/// it anything at all.
+const FRONT_DOOR: &str = "operator";
 /// The container the organisations are instantiated into.
 const CONTAINER: &str = "orgs";
 /// The one lane of the broker that is deliberately NOT re-emitted outward.
@@ -91,15 +98,39 @@ const NOT_RE_EMITTED: &str = "connect";
 /// applied: the lane is invisible at the rim precisely because the baumeister
 /// stands INSIDE.
 ///
+/// GH #469 took `in_build` OUT of this list, and the retraction is the
+/// interesting half. The argument above holds for `build` and
+/// `in_build_result`, which are an ORGANISATION's names for the round. It broke
+/// for the one caller it had to hold for: the first build of a colony, where
+/// `./orgs` is empty by construction, so the edge the whole subtraction rested
+/// on has no sender. `in_build` is what an operator asks for at the rim, and a
+/// lane the level does not declare is a lane no caller can be told about.
+///
 /// | lane | who ships it | who inside answers for it |
 /// |---|---|---|
-/// | `build` | `org`, emitted | `./builder` / `./submit`, by class |
-/// | `in_build_result` | `org`, accepted | `./builder` / `./submit`, on the way back |
-/// | `in_build` | `builder`, accepted | produced by the `./orgs -> ./builder` edge |
-/// | `in_apply` | `submit`, accepted | produced by the `./orgs -> ./submit` edge |
-/// | `manifest` | `builder`, emitted | consumed by the `./builder -> ./orgs` edge |
-/// | `receipt` | `submit`, emitted | consumed by the `./submit -> ./orgs` edge |
-/// | `in_receipt` | `builder`, accepted | produced by the `./submit -> ./builder` edge |
+/// | `build` | `org`, emitted | `./builder` / `./operator`, by class |
+/// | `in_build_result` | `org`, accepted | `./builder` / `./operator`, on the way back |
+/// | `in_apply` | `submit`, accepted | produced by the `./operator -> ./submit` edge |
+/// | `in_submit` | `operator`, accepted | a RIM lane, and also produced by the `./orgs -> ./operator` edge |
+/// | `manifest` | `builder`, emitted | consumed by the `./builder -> ./orgs` edge, or by `./builder -> ./operator` when the round came in at the rim |
+/// | `in_receipt` | `builder` and `operator`, accepted | produced by the `./submit -> ./builder` and `./submit -> ./operator` edges |
+/// | `apply` | `operator`, emitted | consumed by the `./operator -> ./submit` edge |
+/// | `export` | `operator`, emitted | re-stamped `in_export` by the `./operator -> ./orgs` edge |
+/// | `export_done` | `operator`, accepted | produced by the `./orgs -> ./operator` edge |
+///
+/// `receipt` used to stand in this list and no longer does (GH #446). It has
+/// TWO producers now: the submitter, whose receipts are taken by `./builder`
+/// and by the front door inside, and the front door itself, whose receipts are
+/// the answer whoever asked is owed. A lane with one producer inside and one
+/// that crosses is a lane that crosses — subtracting it would take away the
+/// only exit the front door has.
+///
+/// R-Zielfluss (a): the front door's `receipt` has TWO destinations at this
+/// level and one lane to be told apart by. An assistant's goes back down
+/// (`./operator -> ./orgs`, re-stamped `in_build_result`), a person's leaves on
+/// the rim, and `hop.submitter_kind == 'agent'` is the discriminator on both
+/// edges. `in_submit` is where the two callers meet: a rim door for the person
+/// and the `./orgs -> ./operator` edge for the assistant.
 ///
 /// `mutate` is deliberately NOT here: the submitter emits it and the shell
 /// re-emits it, because it has to leave the level to reach the mutation door.
@@ -107,10 +138,15 @@ const NOT_RE_EMITTED: &str = "connect";
 const CONSUMED_INSIDE: &[&str] = &[
     "build",
     "in_build_result",
-    "in_build",
     "in_apply",
     "manifest",
-    "receipt",
+    // GH #446 — the front door's three internal lanes. `apply` reaches the
+    // submitter, `export` is re-stamped onto the organisation's `in_export`,
+    // and `export_done` comes back the same way. Producer and consumer are
+    // siblings here, so none of the three names reaches the rim.
+    "apply",
+    "export",
+    "export_done",
     // GH #435: the submitter asks the broker whether a manifest may be applied,
     // and both halves of that question are siblings at THIS level. `ask` leaves
     // the submitter and reaches the broker as `in_request`; the verdict leaves
@@ -126,6 +162,22 @@ const CONSUMED_INSIDE: &[&str] = &[
     // declaring it outward would offer a caller a lane no edge of this level
     // would ever fill.
     "in_receipt",
+    // GH #474 — the halt. The baumeister raises `manifest`, this level's own
+    // `./builder -> ./operator` edge re-stamps it to `in_draft`, and the front
+    // door parks it. Producer and consumer are siblings here, so the name never
+    // reaches the rim: an operator asks on `in_build` and says yes on
+    // `in_submit`, and both of those ARE rim lanes. A caller that could post
+    // `in_draft` from outside could park a manifest nobody drafted.
+    "in_draft",
+    // GH #504 — the corpus nudge, and the exact mirror of `in_receipt` one
+    // lane over. The submitter raises `receipt`, this level's own
+    // `./submit -> ./builder` edge re-stamps it to `in_ingest` when the
+    // committed diff registered a class, and the baumeister forwards it to the
+    // librarian it refs. Producer and consumer are siblings here, so the name
+    // never reaches the rim. Its answer `catalogue` is NOT in this list: the
+    // builder emits it and this level re-emits it, because nothing inside
+    // consumes a report.
+    "in_ingest",
 ];
 /// The template an organisation is grown from. Its lanes are read off the tree,
 /// never listed here — see `the_org_lanes_cross_this_level_unchanged`.
@@ -215,16 +267,74 @@ fn sorted(mut v: Vec<String>) -> Vec<String> {
 
 /// The headers a message on `route` carries, as the router would see them —
 /// the same probe `gh173_shipped_hive_contracts` and the substrate's own lane
-/// check build.
-fn probe(route: &str) -> meclaw_core::Headers {
+/// check build — plus every `context.<key> == '<value>'` clause `condition`
+/// demands.
+///
+/// GH #469. A door or an exit may discriminate on a PROMOTED context key rather
+/// than on the lane alone — the level stamps `context.build_caller` on the way
+/// in, and the builder's two answers are told apart by it on the way out. A
+/// bare lane probe reads such an edge as one that never fires, and the checks
+/// below would then report an edge that demonstrably carries a declared lane as
+/// carrying none. What is asked here is whether an edge NAMES a lane, so the
+/// probe carries what the edge asks for; whether it fires for a given message
+/// is a statement about the messages the inside produces, and the substrate's
+/// own `door_states_lane` refuses to judge that for the same reason.
+fn probe_guarded(route: &str, condition: Option<&str>) -> meclaw_core::Headers {
     let mut hop = meclaw_core::serde_json::Map::new();
     hop.insert("route".to_string(), Value::String(route.to_string()));
-    meclaw_core::Headers::from_parts(meclaw_core::serde_json::Map::new(), hop)
+    let mut context = meclaw_core::serde_json::Map::new();
+    for (key, value) in context_equalities(condition.unwrap_or_default()) {
+        context.insert(key, Value::String(value));
+    }
+    meclaw_core::Headers::from_parts(context, hop)
+}
+
+/// Every `context.<key> == '<value>'` pair a CEL condition states, in order.
+///
+/// Deliberately literal: it reads equalities and nothing else, so a negated
+/// guard (`context.x != 'y'`) contributes nothing and the probe stays the bare
+/// one for it — which is right, because that edge fires without the key.
+fn context_equalities(condition: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut rest = condition;
+    while let Some(at) = rest.find("context.") {
+        rest = &rest[at + "context.".len()..];
+        let end = rest
+            .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .unwrap_or(rest.len());
+        let (key, after) = rest.split_at(end);
+        rest = after;
+        let Some(tail) = rest.strip_prefix(" == '") else {
+            continue;
+        };
+        let Some(close) = tail.find('\'') else {
+            continue;
+        };
+        out.push((key.to_string(), tail[..close].to_string()));
+        rest = &tail[close..];
+    }
+    out
 }
 
 fn readme() -> String {
     let p = shell_dir().join("README.md");
     std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()))
+}
+
+/// The shipped library, as the registry a mutation resolves against.
+fn registry() -> TemplatesRegistry {
+    let scanned = scan_templates_dir(&templates_root()).expect("the templates directory scans");
+    TemplatesRegistry::from_entries(
+        scanned
+            .into_iter()
+            .map(|s| TemplateEntry {
+                template_id: format!("gh302:{}", s.filesystem_path.display()),
+                name: s.name,
+                version: s.version,
+                filesystem_path: s.filesystem_path,
+            })
+            .collect(),
+    )
 }
 
 fn template_json() -> Value {
@@ -236,7 +346,7 @@ fn template_json() -> Value {
 // ─────────────────────────────────────────────────────────────── the shape
 
 #[test]
-fn the_shell_holds_four_refs_and_one_empty_container() {
+fn the_shell_holds_five_refs_and_one_empty_container() {
     let dir = shell_dir();
     let _ = hive_params(&dir); // it is a hive, and its params parse
 
@@ -244,6 +354,7 @@ fn the_shell_holds_four_refs_and_one_empty_container() {
         BROKER.to_string(),
         BAUMEISTER.to_string(),
         CONTAINER.to_string(),
+        FRONT_DOOR.to_string(),
         LOOP.to_string(),
         SUBMITTER.to_string(),
     ];
@@ -252,8 +363,8 @@ fn the_shell_holds_four_refs_and_one_empty_container() {
         children(&dir),
         want,
         "the shell's occupants are exactly `{BROKER}`, `{LOOP}`, `{BAUMEISTER}`, \
-         `{SUBMITTER}` and the `{CONTAINER}` container — a level that grows a sixth \
-         sibling has taken on something its siblings do not share"
+         `{SUBMITTER}`, `{FRONT_DOOR}` and the `{CONTAINER}` container — a level that \
+         grows a seventh sibling has taken on something its siblings do not share"
     );
 
     // A ref directory holds nothing besides its own `config.json` (the
@@ -285,18 +396,7 @@ fn the_shell_holds_four_refs_and_one_empty_container() {
 #[test]
 fn both_refs_pin_an_exact_version_the_registry_can_resolve() {
     let dir = shell_dir();
-    let scanned = scan_templates_dir(&templates_root()).expect("the templates directory scans");
-    let registry = TemplatesRegistry::from_entries(
-        scanned
-            .into_iter()
-            .map(|s| TemplateEntry {
-                template_id: format!("gh302:{}", s.filesystem_path.display()),
-                name: s.name,
-                version: s.version,
-                filesystem_path: s.filesystem_path,
-            })
-            .collect(),
-    );
+    let registry = registry();
 
     for name in [BROKER, LOOP] {
         let reference = ref_target(&dir.join(name))
@@ -363,6 +463,7 @@ fn the_shells_contract_is_its_occupants_lanes_minus_the_ones_that_stay_inside() 
     let (loop_in, loop_out) = occupant_routes(LOOP);
     let (builder_in, builder_out) = occupant_routes(BAUMEISTER);
     let (submit_in, submit_out) = occupant_routes(SUBMITTER);
+    let (door_in, door_out) = occupant_routes(FRONT_DOOR);
 
     // Five occupants, and the one in the container — the organisation — has no
     // contract of its own to read here, because it does not exist until
@@ -371,18 +472,27 @@ fn the_shells_contract_is_its_occupants_lanes_minus_the_ones_that_stay_inside() 
     let (tenant_in, tenant_out) = occupant_routes(TENANT);
 
     let expect_in = sorted(
-        [broker_in, loop_in, tenant_in, builder_in, submit_in]
-            .concat()
-            .into_iter()
-            .filter(|r| !CONSUMED_INSIDE.contains(&r.as_str()))
-            .collect::<Vec<_>>(),
+        [
+            broker_in, loop_in, tenant_in, builder_in, submit_in, door_in,
+        ]
+        .concat()
+        .into_iter()
+        .filter(|r| !CONSUMED_INSIDE.contains(&r.as_str()))
+        .collect::<Vec<_>>(),
     );
     let expect_out = sorted(
-        [broker_out, loop_out, tenant_out, builder_out, submit_out]
-            .concat()
-            .into_iter()
-            .filter(|r| r != NOT_RE_EMITTED && !CONSUMED_INSIDE.contains(&r.as_str()))
-            .collect::<Vec<_>>(),
+        [
+            broker_out,
+            loop_out,
+            tenant_out,
+            builder_out,
+            submit_out,
+            door_out,
+        ]
+        .concat()
+        .into_iter()
+        .filter(|r| r != NOT_RE_EMITTED && !CONSUMED_INSIDE.contains(&r.as_str()))
+        .collect::<Vec<_>>(),
     );
 
     let hp = hive_params(&shell_dir());
@@ -547,6 +657,16 @@ fn the_container_declares_nothing_and_the_level_carries_its_lanes() {
 /// direction of slack and only one: a level may subtract a lane a sibling INSIDE
 /// it consumes. Nothing inside this shell consumes an organisation's output, so
 /// on this level containment is exact for the emit half too.
+///
+/// GH #454 is the measurement that gives this test its most interesting green.
+/// A channel stopped belonging to one generation of an agent and started
+/// belonging to the person, which re-cut the turn path inside `member@1.3.0`
+/// and bumped `assistant` to `2.0.0`. Two levels further out, HERE, not one
+/// entry of either list moved: `turn` was never a rim lane of an organisation
+/// and still is not, and `answer` was always one — it merely carries an
+/// answered turn now beside what it carried before. That is the property a
+/// namespace is for, and it is only an observation because the lists on both
+/// sides are re-derived from the tree in the same run.
 #[test]
 fn the_org_lanes_cross_this_level_unchanged() {
     let (tenant_in, tenant_out) = occupant_routes(TENANT);
@@ -578,6 +698,21 @@ fn the_org_lanes_cross_this_level_unchanged() {
         );
     }
 
+    // GH #454, stated rather than implied: the re-layering two levels down did
+    // not reach this rim. `turn` is consumed inside a member and is not a lane
+    // of this shell; `answer` is how an answered turn leaves it.
+    assert!(
+        !mine_out.iter().chain(mine_in.iter()).any(|l| l == "turn"),
+        "the shell declares `turn`. A member consumes its own turn internally \
+         (`./channels -> ./firewall` since GH #454), so an organisation never raises the \
+         lane and an exit carrying it here could never fire: {mine_out:?}"
+    );
+    assert!(
+        mine_out.iter().any(|l| l == "answer"),
+        "the shell dropped `answer` — the one lane an answered turn leaves an organisation \
+         on: {mine_out:?}"
+    );
+
     // The subtractions are decisions, so they are asserted as ones: each lane in
     // CONSUMED_INSIDE that the TENANT ships must still be shipped by it, and
     // must still not be declared here. A lane the org stopped raising would
@@ -601,18 +736,27 @@ fn the_org_lanes_cross_this_level_unchanged() {
     // lane this level KEPT after the tenant stopped raising it — the exact shape
     // of the `turn` defect: an exit edge that can never fire, declared as if it
     // could.
+    //
+    // GH #469 widened the list of occupants read here to ALL of them. It used
+    // to name four, which was enough only while the authoring path raised
+    // nothing at the rim; `in_build` is raised by the baumeister and reaches
+    // the rim, so a check that never opened the baumeister's contract would
+    // have called a lane with an occupant behind it a lane without one.
     let raises_or_takes = |lane: &String| -> bool {
-        [BROKER, LOOP, TENANT].into_iter().any(|t| {
-            let (accepts, emits) = occupant_routes(t);
-            accepts.contains(lane) || emits.contains(lane)
-        })
+        [BROKER, LOOP, TENANT, FRONT_DOOR, BAUMEISTER, SUBMITTER]
+            .into_iter()
+            .any(|t| {
+                let (accepts, emits) = occupant_routes(t);
+                accepts.contains(lane) || emits.contains(lane)
+            })
     };
     for lane in mine_out.iter().chain(mine_in.iter()) {
         assert!(
             raises_or_takes(lane),
             "this level declares `{lane}`, and no occupant raises or takes it — \
-             `{BROKER}`, `{LOOP}` and `{TENANT}` were all read at the tree. A lane with no \
-             occupant behind it is an edge that can never fire, declared as if it could."
+             `{BROKER}`, `{LOOP}`, `{TENANT}`, `{FRONT_DOOR}`, `{BAUMEISTER}` and `{SUBMITTER}` \
+             were all read at the tree. A lane with no occupant behind it is an edge that can \
+             never fire, declared as if it could."
         );
     }
 }
@@ -633,7 +777,8 @@ fn every_edge_is_a_door_or_an_exit_and_every_one_carries_a_declared_lane() {
     // occupants to each other". It was a coincidence of who lived here. ADR-0013
     // says a level OWNS what its siblings must share, and owning a baumeister
     // means the container is wired to it — exactly as `assistant` wires
-    // `./cogny -> ./tools` and `member` wires `./assistants -> ./firewall`.
+    // `./cogny -> ./tools` and `member` wires `./channels -> ./firewall`
+    // (`./assistants -> ./firewall` until GH #454 moved the channel up a level).
     //
     // What survives of the old rule is the part that was load-bearing: an
     // occupant-to-occupant edge must name a lane, so it can be read, and it must
@@ -662,7 +807,8 @@ fn every_edge_is_a_door_or_an_exit_and_every_one_carries_a_declared_lane() {
     for e in hp.graph.edges.iter().filter(|e| e.from == ".") {
         let target = format!("{HIVE}/{}", e.to.trim_start_matches("./"));
         let covered = spec.accepts.iter().any(|l| {
-            meclaw_colony::edge_table::apply_edges(&table, &hive, &probe(&l.route))
+            let headers = probe_guarded(&l.route, e.condition.as_deref());
+            meclaw_colony::edge_table::apply_edges(&table, &hive, &headers)
                 .iter()
                 .any(|d| d.target.as_str() == target)
         });
@@ -676,7 +822,8 @@ fn every_edge_is_a_door_or_an_exit_and_every_one_carries_a_declared_lane() {
     for e in hp.graph.edges.iter().filter(|e| e.to == ".") {
         let src = Path::new(&format!("{HIVE}/{}", e.from.trim_start_matches("./")));
         let covered = spec.emits.iter().any(|l| {
-            meclaw_colony::edge_table::apply_edges(&table, &src, &probe(&l.route))
+            let headers = probe_guarded(&l.route, e.condition.as_deref());
+            meclaw_colony::edge_table::apply_edges(&table, &src, &headers)
                 .iter()
                 .any(|d| d.target.as_str() == HIVE)
         });
@@ -726,13 +873,18 @@ fn every_edge_is_a_door_or_an_exit_and_every_one_carries_a_declared_lane() {
         );
     }
 
-    // GH #425 — the container reaches the baumeister and the submitter, and both
-    // answer it back. Four edges, and the two upward ones discriminate on
-    // `hop.build_op` rather than on the lane, because the lane is one and the
-    // classes are two.
+    // GH #425 — the container reaches the baumeister and, since R-Zielfluss (a),
+    // the FRONT DOOR rather than the submitter, and both answer it back. Four
+    // edges, and the two downward ones discriminate on `hop.build_op` rather
+    // than on the lane, because the lane is one and the classes are two.
+    //
+    // `./orgs -> ./submit` is deliberately absent: one submission front door
+    // and not two. An assistant's apply becomes `in_submit` at the front door,
+    // travels the submitter, its gate and the broker exactly as before, and the
+    // receipt comes back through the front door as well.
     for (to, op) in [
         (format!("./{BAUMEISTER}"), "draft"),
-        (format!("./{SUBMITTER}"), "apply"),
+        (format!("./{FRONT_DOOR}"), "apply"),
     ] {
         assert!(
             hp.graph.edges.iter().any(|e| e.from == child
@@ -922,12 +1074,12 @@ fn the_readme_carries_the_version_the_level_rule_and_the_two_undeclared_facts() 
         "the README does not point at the resolution code that measured why there is no slot here"
     );
 
-    // W6 moved the steward's counting out of `colony.db` and onto a virtual
+    // W6 moved the argus's counting out of `colony.db` and onto a virtual
     // endpoint. Those two lanes travel with the ref; this shell writes no edge
     // for them, and must not look as though it sealed them away.
     assert!(
         text.contains("/colony/ledger"),
-        "the README does not say that this shell's steward talks to the colony directly — two \
+        "the README does not say that this shell's argus talks to the colony directly — two \
          absolute lanes travel with the ref and no edge here draws them"
     );
     // And the lane that is deliberately not passed on.
@@ -938,28 +1090,177 @@ fn the_readme_carries_the_version_the_level_rule_and_the_two_undeclared_facts() 
 }
 
 #[test]
-fn the_shell_declares_no_requirement_because_its_own_values_use_none() {
-    // W3's validator collects the union across the refs itself
-    // (`addressed_requires` resolves each `ref_chain`), so a level declares only
-    // what its OWN config values use. This one substitutes nothing — and the
-    // `ctx` half of that is gated in both directions by
-    // `gh292_every_ctx_key_is_declared`, so a declaration without a use would be
-    // red there rather than harmless here.
+fn the_shell_substitutes_nothing_in_its_own_config_values() {
+    // The shell has no cell, so it configures nothing: neither `${ctx.*}` nor
+    // `${ENV}` occurs in a value it owns. The `ctx` half of that is gated in
+    // both directions by `gh292_every_ctx_key_is_declared`, so a `requires.ctx`
+    // entry without a use would be red there rather than harmless here — which
+    // is why this level declares `env` and no `ctx` at all.
     let dir = shell_dir();
     let mut values = String::new();
     for sub in [None, Some(BROKER), Some(LOOP), Some(CONTAINER)] {
         let d = sub.map_or_else(|| dir.clone(), |s| dir.join(s));
         values.push_str(&std::fs::read_to_string(d.join("config.json")).unwrap());
     }
-    let substitutes = values.contains("${");
     assert!(
-        !substitutes,
-        "the shell's config values substitute something — then it owes a `requires` declaration"
+        !values.contains("${"),
+        "the shell's own config values substitute something — then this level configures a cell, \
+         and it is no longer only a boundary"
+    );
+    let requires = template_json();
+    let requires = requires
+        .get("requires")
+        .expect("GH #465: the shell declares its environment surface");
+    assert!(
+        requires.get("ctx").is_none(),
+        "the shell declares a `ctx` requirement while substituting no `${{ctx.*}}`; a mutation \
+         would be refused for a key nothing here consumes"
+    );
+}
+
+/// GH #465 — `requires.env` on the shell is the ROLL-UP of what its refs
+/// substitute, derived rather than transcribed, in both directions.
+///
+/// This is the deliberate exception to the rule `gh292_every_ctx_key_is_declared`
+/// states for `ctx` ("a template declares what IT uses"), and the exception is
+/// the whole point of the issue: a `ctx` key is supplied by the mutation that
+/// instantiates, so the walk over `ref_chain` can collect it at the door and
+/// nobody has to know beforehand. An `env` key is supplied by the COLONY, hours
+/// earlier, by a person editing a file — and until this block existed the only
+/// way to learn that the shell wants `OPENROUTER_API_KEY` was to grow it and
+/// watch the control loop fail at its first cycle. So the level says it, and
+/// the saying is gated from both sides:
+///
+/// - **undeclared** — a key one of the refs substitutes and this block omits is
+///   a shell that boots and dies later. An occupant bump that adds a key and
+///   forgets this file is red here.
+/// - **superfluous** — a key declared here that nothing under the shell
+///   substitutes is a leaflet: it asks an operator for a value that goes
+///   nowhere, and nothing else would ever notice.
+/// - **`required` is derived, never chosen.** Exactly the keys written with no
+///   POSIX default (`${VAR}`, not `${VAR:-x}`) are required, because those are
+///   precisely the ones whose absence the substitution cannot survive.
+///
+/// The keys come out of `mutation::substitute::collect_env_keys`, the
+/// substrate's own scanner, and the declaration out of `templates::read_requires`,
+/// the reader the enforcement point uses. A regex of this test's own would be
+/// free to disagree with both.
+#[test]
+fn the_shells_requires_env_is_the_rollup_of_what_its_refs_substitute() {
+    use meclaw_colony::mutation::substitute::collect_env_keys;
+    use meclaw_colony::templates::read_requires;
+
+    let registry = registry();
+
+    /// Every `${VAR}` reachable from `dir`, following `ref` markers through the
+    /// registry — name → "this occurrence carried a default".
+    fn walk(
+        dir: &std::path::Path,
+        registry: &TemplatesRegistry,
+        seen: &mut Vec<String>,
+        out: &mut std::collections::BTreeMap<String, bool>,
+    ) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        let mut kids: Vec<std::path::PathBuf> = entries.flatten().map(|e| e.path()).collect();
+        kids.sort();
+        if dir.join("config.json").is_file() {
+            let val = config_at(dir);
+            if let Some(reference) = ref_target(dir) {
+                if !seen.contains(&reference) {
+                    seen.push(reference.clone());
+                    let entry = registry
+                        .resolve(&reference)
+                        .unwrap_or_else(|e| panic!("{reference}: {e}"));
+                    walk(&entry.filesystem_path, registry, seen, out);
+                }
+                return; // a marker's own file carries nothing else.
+            }
+            for (name, has_default) in collect_env_keys(&val).expect("the config scans") {
+                out.entry(name)
+                    .and_modify(|d| *d = *d && has_default)
+                    .or_insert(has_default);
+            }
+        }
+        for kid in kids {
+            if kid.is_dir() {
+                walk(&kid, registry, seen, out);
+            }
+        }
+    }
+
+    let mut used = std::collections::BTreeMap::new();
+    walk(&shell_dir(), &registry, &mut Vec::new(), &mut used);
+
+    // Anti-vacuity: a walk that found nothing would agree with an empty block.
+    assert!(
+        used.len() > 10,
+        "the ref walk found only {} keys — it stopped following refs",
+        used.len()
+    );
+
+    let declared = read_requires(&shell_dir()).expect("the shell's `requires` block parses");
+
+    let used_names: Vec<&String> = used.keys().collect();
+    let declared_names: Vec<&String> = declared.env.keys().collect();
+    assert_eq!(
+        declared_names, used_names,
+        "`requires.env` and the environment surface under the shell disagree; declared-but-unused \
+         asks an operator for nothing, used-but-undeclared is a shell that boots and fails later"
+    );
+
+    for (name, has_default) in &used {
+        let decl = &declared.env[name];
+        assert_eq!(
+            decl.required, !has_default,
+            "`{name}`: `required` is derived from the tree — a key written `${{{name}}}` with no \
+             default is required, one written `${{{name}:-…}}` is not"
+        );
+        assert!(
+            decl.because.as_ref().is_some_and(|b| !b.trim().is_empty()),
+            "`{name}` is declared without a `because`; the sentence is what a refusal quotes"
+        );
+    }
+
+    // The one required key is a fact of the tree, not of this list — but the
+    // COUNT is asserted, because a walk that silently stopped finding plain
+    // tokens would satisfy every assertion above.
+    let required: Vec<&String> = used
+        .iter()
+        .filter(|(_, has_default)| !*has_default)
+        .map(|(n, _)| n)
+        .collect();
+    assert_eq!(
+        required.len(),
+        1,
+        "exactly one value under this shell is written with no default, and it is the reason \
+         `requirement_missing` can be pre-destructive at all; found {required:?}"
+    );
+
+    // The prose half of the same promise (`docs/development-rules.md` § 2d): the
+    // README tells a reader what the shell needs, and the key it names is READ
+    // OFF the tree here rather than typed in.
+    let text = readme();
+    assert!(
+        text.contains(required[0].as_str()),
+        "the README does not name `{}`, the one key without which this shell refuses to grow",
+        required[0]
     );
     assert!(
-        template_json().get("requires").is_none(),
-        "the shell declares `requires` while substituting nothing; the refs' own requirements are \
-         collected through the ref chain and are not this template's to repeat"
+        text.contains("requirement_missing"),
+        "the README does not name the code the refusal carries, so a reader who meets it cannot \
+         look it up"
+    );
+    assert!(
+        text.contains(".env.example"),
+        "the README does not point at the copy-ready file that lists the surface"
+    );
+    // The countable half (§ 2d): the sentence stands only while the tree makes
+    // it true, and the condition is the derived set two assertions up.
+    assert!(
+        text.contains("Exactly **one** of those keys is required"),
+        "the tree has exactly one required key and the README does not say so"
     );
 }
 

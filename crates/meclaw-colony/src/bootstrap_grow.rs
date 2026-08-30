@@ -28,6 +28,10 @@
 //!
 //! THE ORDER, AND WHY
 //! ==================
+//! 0. GH #465 — `validate_requires`, the mutation door's own stage 3, against
+//!    the marker read as the one-entry diff it is. A declaration the colony
+//!    cannot satisfy is refused as `requirement_missing` here, before step 1
+//!    writes anything at all.
 //! 1. `stage_subtree` builds the whole tree under `{root}/.staging/boot-<id>/`
 //!    — fresh UUIDs, substitution, seeds: everything a mutation does.
 //! 2. every CHILD directory is `rename(2)`d into the marker directory;
@@ -98,6 +102,35 @@ fn grow_one(
     // The marker's path split into the scope it hangs in and its own last
     // segment — the two `stage_subtree` addresses a subtree by.
     let (scope, name) = split_scope_and_name(&g.path);
+
+    // GH #465 — the declared requirements, asked BEFORE the first byte is
+    // staged, and asked with the mutation door's own walk.
+    //
+    // A `requires` block is a contract (GH #292), and until this ran the boot
+    // was the one instantiating path that did not read it: a marker naming a
+    // template whose occupants substitute a key the colony does not hold was
+    // grown, and the omission surfaced at the first turn — or, for a key with
+    // an empty default, not at all. `validate_requires` is the very function
+    // `/colony/mutations` runs at its stage 3, handed the diff this growth IS,
+    // so the two doors cannot grow a second opinion about what a template
+    // needs. The refusal is `requirement_missing`, and it is pre-destructive:
+    // it precedes `stage_subtree`, so nothing is written and the marker is
+    // still a marker.
+    let diff = meclaw_core::serde_json::json!({
+        "add_nodes": [{ "name": name, "template": g.reference }],
+    });
+    crate::mutation::validate::validate_requires(
+        &diff,
+        templates,
+        ctx,
+        env,
+        &[],
+        crate::mutation::validate::LiveTree {
+            root,
+            scope: &scope,
+        },
+    )
+    .map_err(|e| growth_error(g, &e))?;
 
     let mutation_id = format!("boot-{}", meclaw_core::Uuid::now_v7());
     let staged = crate::mutation::subtree::stage_subtree(
@@ -234,6 +267,9 @@ fn growth_error(g: &PlannedGrowth, e: &MutationError) -> BootstrapError {
     let reason = match e {
         MutationError::TemplateMissing(m) => format!("template_missing: {m}"),
         MutationError::TemplateRefCycle(m) => format!("template_ref_cycle: {m}"),
+        // GH #465 — the pre-staging refusal of the declared requirements, in
+        // the door's own wording.
+        MutationError::RequirementMissing(m) => format!("requirement_missing: {m}"),
         MutationError::Schema(m) => format!("schema: {m}"),
         other => format!("{other:?}"),
     };

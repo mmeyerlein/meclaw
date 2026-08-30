@@ -32,25 +32,119 @@ env:
   # died on ENOSPC in the middle of the build). Tests do not need line info.
   CARGO_PROFILE_DEV_DEBUG: 0
   CARGO_PROFILE_TEST_DEBUG: 0
+  # Incremental compilation pays for itself when the same target directory is
+  # compiled twice. A runner compiles it once and throws it away, so all the
+  # scheme does here is write incremental state nobody reads -- and that state
+  # is large enough to matter for the ENOSPC ceiling above.
+  CARGO_INCREMENTAL: 0
 
 jobs:
-  linux:
+  # ---------------------------------------------------------------------
+  # Fast fail. fmt + clippy used to sit in front of the test step in one
+  # long job, so a formatting slip cost the full suite before it was
+  # reported (measured 2026-08-27: fmt 3s, clippy 47s, test 10m43s -- the
+  # 50s verdict arrived eleven minutes late).
+  #
+  # It is deliberately NOT a `needs:` of the test job. Chaining would put
+  # those 50s in front of every shard's build and lengthen the critical
+  # path to save runner minutes we are not paying for. Parallel means the
+  # lint verdict lands about a minute in, while the suite keeps running --
+  # and a red lint is visible on the run long before the tests finish.
+  # ---------------------------------------------------------------------
+  lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Its own key: clippy builds dependencies as `check` artifacts
+          # (.rmeta), the test job needs them as real rlibs. Sharing one key
+          # would hand the test shards a cache "hit" that still forces a full
+          # dependency rebuild.
+          shared-key: lint
       - name: fmt
         run: cargo fmt --check
       - name: clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
-      # `--no-fail-fast` because the default stops at the first failing test
-      # BINARY, and this suite has 400+ of them. A red run then reports one
-      # defect and hides every other -- W3's export CI showed exactly one of two
+
+  # ---------------------------------------------------------------------
+  # The suite, cut into shards. Two changes over the old single `cargo test`
+  # step, and they attack the two halves of the 10m43s it took:
+  #
+  #   1. cargo-nextest instead of cargo test. `cargo test` runs the ~650 test
+  #      BINARIES one after another and only threads within each one; nextest
+  #      runs tests from different binaries at the same time. The measured
+  #      sum of per-binary wall time was 404s, with the longest single binary
+  #      at 30s -- i.e. the old run was mostly waiting.
+  #   2. `--partition count:N/3`, so the run time is divided again across
+  #      three runners.
+  #
+  # Each shard builds its own test binaries rather than downloading a
+  # `nextest archive` from a build job. That is deliberate: the build is
+  # ~3m50s and would sit in FRONT of every shard as a serial stage, plus the
+  # transfer of a multi-hundred-megabyte archive. Built per shard, the three
+  # builds run at the same time, and the dependency half of the build comes
+  # out of the shared cache below -- no shard compiles a dependency twice.
+  # It costs runner minutes, not wall clock, and runner minutes are free on
+  # a public repository.
+  # ---------------------------------------------------------------------
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      # Same reasoning as `--no-fail-fast` below, one level up: if shard 2
+      # fails, shards 1 and 3 must still report. A cancelled shard hides
+      # every defect it was carrying.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # All three shards compile the identical dependency graph, so they
+          # share one cache entry.
+          shared-key: test
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      # `--no-fail-fast` because the default stops at the first failing test,
+      # and this suite has 650+ binaries. A red run then reports one defect
+      # and hides every other -- W3's export CI showed exactly one of two
       # identically-caused vacuity-floor failures, so the fix session repaired
       # one, pushed, and found the second on the next run (GH #356). One run
-      # should cost one round, not one defect.
-      - name: test
-        run: cargo test --workspace --no-fail-fast
+      # should cost one round, not one defect. (The `ci` profile in
+      # .config/nextest.toml sets `fail-fast = false` as well; the flag is
+      # repeated here so that the property survives a profile edit.)
+      #
+      # No `-E` filterset: this is tier t2 in the vocabulary of
+      # scripts/test-tier.sh -- the whole suite. The tiers exist to make a
+      # human's pre-commit loop cheap; CI has no reason to skip anything.
+      # nextest is invoked directly rather than through that script because
+      # the script wraps every run in the nice/ionice/flock hygiene that
+      # belongs to the shared build machine, not to a dedicated runner.
+      - name: test (shard ${{ matrix.shard }}/3)
+        run: >
+          cargo nextest run
+          --workspace
+          --profile ci
+          --no-fail-fast
+          --partition count:${{ matrix.shard }}/3
+      # nextest does not run doctests -- it has no way to, they are rustdoc's.
+      # `cargo test --doc` keeps them in the run; it is cheap here because the
+      # libraries are already built by the step above (measured: ~2s for all
+      # seven crates). One shard is enough, doctests do not partition.
+      - name: doctests
+        if: matrix.shard == 1
+        run: cargo test --workspace --doc
+      # The `ci` profile writes JUnit XML. Keeping it makes a red shard
+      # readable without scrolling a log.
+      - name: junit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-shard-${{ matrix.shard }}
+          path: target/nextest/ci/junit.xml
+          if-no-files-found: ignore
 
   windows:
     runs-on: windows-latest
@@ -63,16 +157,17 @@ jobs:
   # The rules that used to live only in a document and in somebody's memory.
   gates:
     runs-on: ubuntu-latest
+    # No rust-cache here on purpose: every step below is bash or python over
+    # text. The job used to restore a Rust cache it never read.
     steps:
       - uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
       # Two frozen function bodies in crates/meclaw-colony/src/colony.rs,
       # byte-compared against their reference under .github/fixtures/.
       - name: corridor byte gates
         run: .github/gates/corridor_byte_gates.sh
       # CONTRIBUTING bans unwrap()/expect() outside tests. The clippy lints for
-      # it are allow-by-default, so `-D warnings` above never saw them. This
-      # pins the existing count per package and fails when it grows.
+      # it are allow-by-default, so `-D warnings` in the lint job never saw
+      # them. This pins the existing count per package and fails when it grows.
       - name: unwrap/expect budget
         run: python3 .github/gates/unwrap_budget.py
       # docs/development-rules.md § 2a (GH #254). A review compares code
@@ -92,7 +187,7 @@ jobs:
       # English half of every row is checked here and the German half is
       # skipped with a counted, named notice (its document does not travel).
       # The strict both-languages run, including the canonical-vs-copy
-      # divergence, is a private-tree matter and rides `cargo test` via
+      # divergence, is a private-tree matter and rides the suite via
       # crates/meclaw-colony/tests/a3_spec_claims_gate_drift.rs.
       - name: spec-claims registry
         run: python3 scripts/check_claims.py --check
@@ -110,10 +205,21 @@ jobs:
       # which does travel, and crates/ is exactly where the deletion this gate
       # exists to catch would be visible. The private half -- the ADR texts
       # themselves, the missing-Pinned-by check, and the byte-exactness of the
-      # derived copy -- rides `cargo test` via
+      # derived copy -- rides the suite via
       # crates/meclaw-colony/tests/a4_adr_anchor_gate_drift.rs.
       - name: ADR anchors
         run: python3 scripts/check_adr_anchors.py --check
+      # docs/development-rules.md § 5b (2026-08-28 ruling). A roadmap ages
+      # without anybody touching it: the tracker moves, the file does not, and
+      # a stream still naming work that shipped two releases ago reads as
+      # current. Every stream bullet therefore names an OPEN issue or a
+      # (register: <id>) row, and this step resolves both. The register does
+      # not travel, so here only the tracker half is load-bearing -- the
+      # register anchors are skipped and counted. An unreachable GitHub API is
+      # a counted notice and exit 0, never a red build for somebody else's
+      # outage.
+      - name: roadmap anchors
+        run: python3 scripts/check_roadmap_anchors.py --check
       # GH #234 -- a gate USED to stand here: `build_librarian_seed.py --check`
       # (GH #205), guarding a committed tree that is generated. Do not put it
       # back. The generator lives under workshop/, which is not part of this
@@ -122,12 +228,17 @@ jobs:
       # drifted. (A second such step, `build_builder_hive.py --check` (GH #217),
       # stood beside it; that generator was retired with its tree, GH #434.)
       #
-      # It now runs where its sources are: as R11 of the release gate, in the
-      # tree that has workshop/, before an export is built. The shipped Rust
-      # twin (librarian_seed_corpus.rs) covers this clone and skips when no
-      # generator is present -- which here is always, so a green run of its own
-      # asserts nothing about the corpus. That is intentional: the assertion
-      # belongs to the tree that can make it.
+      # It now runs where its sources are, in the tree that has workshop/, and
+      # since GH #466 in three places rather than two -- because the two it had
+      # were a release gate and a test tier that the pre-push rule does not run,
+      # so between a commit and a release the drift was invisible:
+      #   1. plans/meclaw-os/a2-pre-push-gates.sh, block 1 -- every push
+      #   2. R11 of the release gate (plans/export-fixtures/make_export.py)
+      #   3. crates/meclaw-cells/tests/librarian_seed_corpus.rs, in tier t1
+      # The shipped Rust twin (3) covers this clone and skips when no generator
+      # is present -- which here is always, so a green run of its own asserts
+      # nothing about the corpus. That is intentional: the assertion belongs to
+      # the tree that can make it.
 
   deny:
     runs-on: ubuntu-latest

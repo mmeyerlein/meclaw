@@ -11,9 +11,12 @@ fn validate_accepts_minimal_required() {
     f.validate_params(&json!({"endpoint":"https://x"})).unwrap();
 }
 
+/// GH #489: naming no provider is a state, not a config error, so the
+/// pre-spawn validation accepts it. The refusals it still owes are pinned in
+/// `mcp_params_parse.rs` (unknown transport, both transports at once, an empty
+/// stdio `command`).
 #[test]
-fn validate_rejects_missing_endpoint() {
+fn validate_accepts_a_config_that_names_no_provider() {
     let f: Arc<McpCellFactory> = Arc::new(McpCellFactory);
-    let err = f.validate_params(&json!({})).unwrap_err();
-    assert!(err.contains("endpoint"), "got: {err}");
+    f.validate_params(&json!({})).expect("GH #489");
 }

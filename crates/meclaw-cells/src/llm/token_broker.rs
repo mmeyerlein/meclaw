@@ -30,7 +30,7 @@
 //! This serializes within one process. A different process (an interactive
 //! `codex` session) writing the same store can still race us. One colony is one
 //! process, and `auth_ref` has no default precisely so that sharing a store with
-//! a live session is a deliberate act. Registered in `docs/roadmap.md`.
+//! a live session is a deliberate act. Registered in `docs/defer-register.md`.
 
 use crate::llm::auth::{self, AuthError, StoredTokens};
 use std::collections::HashMap;

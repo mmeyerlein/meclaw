@@ -1,0 +1,18 @@
+{
+  "name": "colony-view",
+  "version": "1.0.0",
+  "tags": [
+    "app"
+  ],
+  "description": {
+    "purpose": "The colony, drawn: a timer takes a topology snapshot and a code cell turns it into one view of hives, edges and cells. An app, so it owns no channel and no port -- it produces a picture and a display holds it. The browser owns two things and neither of them is the picture: the drag, and where you are looking.",
+    "use_when": "Somebody should see and rearrange what the colony knows, in a browser, without an operator UI release for every new kind of object. Wire this hive to a display and the view appears there; wire it to two and it appears on both.",
+    "not_in_scope": "It draws nothing the topology snapshot does not hold, and that snapshot arrives on a timer through this hive's OWN lane to the colony's read-only graph endpoint, so the picture is as fresh as that timer. No port and no authentication: an app has no surface, and whatever stands in front of the display stands in front of this. No object vocabulary beyond cells, hives and edges. No interior address: params.ports is empty, so no cell in here is an endpoint -- a caller names the hive and a lane (in_refresh in, view out).",
+    "examples": [
+      "every minute: a topology snapshot becomes one view, and the display it is wired to catches up",
+      "a drag lands in the display's own database and the next view leaves those two props alone, so the box stays where a hand put it",
+      "a second display wired to the same hive shows the same picture, and neither of them is named here"
+    ]
+  },
+  "author": "meclaw"
+}

@@ -208,8 +208,8 @@ fn findings(templates_root: &std::path::Path, checked: &mut usize) -> Vec<String
 ///
 /// This is the sweep's floor, and it is derived rather than declared. A number
 /// cannot be: the library ships in two sizes (this tree carries every template,
-/// the published tree a subset — `PUBLIC_TEMPLATES` in
-/// `plans/export-fixtures/make_export.py`), so a count that is honest in one is
+/// the published tree a subset — `PUBLIC_TEMPLATES` in the maintainers'
+/// export script), so a count that is honest in one is
 /// either red or vacuous in the other. What the floor is for survives the
 /// derivation intact — a sweep must not be able to pass by finding nothing —
 /// and it gets there by comparing the recursive walk against a second,

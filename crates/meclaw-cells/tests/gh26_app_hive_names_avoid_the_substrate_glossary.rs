@@ -170,7 +170,7 @@ fn the_narrowness_is_the_point() {
         "memory-hive/store",
         "talky/collector",
         "talky/dispatcher",
-        "steward/timer",
+        "argus/timer",
     ]);
     let mut checked = 0usize;
     let found = findings(td.path(), &mut checked);

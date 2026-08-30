@@ -434,7 +434,8 @@ mod tests {
     }
 
     /// The shipped template must keep parsing — the gate is a hardening, not a
-    /// migration (compat receipt: plans/p3-fixtures/identifier-compat-scan.py).
+    /// migration: an identifier-compatibility scan over every shipped template
+    /// ran before the gate landed and found nothing that had to move.
     ///
     /// Fixture: `tests/fixtures/memory_hive_store_config.json` — a snapshot of
     /// `templates/memory-hive/store/config.json`, deliberately beside

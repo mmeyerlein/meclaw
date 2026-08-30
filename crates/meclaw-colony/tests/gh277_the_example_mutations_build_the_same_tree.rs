@@ -3,7 +3,7 @@
 //!
 //! WHAT THIS FILE IS
 //! =================
-//! Spec acceptance 7 of `plans/composition-reference/spec.md` asks for a
+//! Acceptance 7 of the composition-reference spec asks for a
 //! fixture that instantiates the shipped composites and measures the result.
 //! No such fixture existed: the "six mutations, 13 templates, 39 edges" of the
 //! spec is a design sketch, not a file — no test, no script in the tree carried
@@ -18,7 +18,7 @@
 //! | `examples/never-forgets/grow.json`| 3                     |
 //! | `examples/meclaw-os/grow.json`    | 4                     |
 //! | `examples/meclaw-os/grow-cogny.json`   | 1                |
-//! | `examples/meclaw-os/grow-steward.json` | 1                |
+//! | `examples/meclaw-os/grow-argus.json` | 1                |
 //!
 //! This file applies those five, verbatim, to ONE colony — each into a scope of
 //! its own so the names do not collide — and writes down what the run really
@@ -152,7 +152,7 @@ const DECLARATIONS: [(&str, &str); 5] = [
     ("examples/never-forgets/grow.json", "/never-forgets"),
     ("examples/meclaw-os/grow.json", "/meclaw-os"),
     ("examples/meclaw-os/grow-cogny.json", "/meclaw-os"),
-    ("examples/meclaw-os/grow-steward.json", "/meclaw-os"),
+    ("examples/meclaw-os/grow-argus.json", "/meclaw-os"),
 ];
 
 /// The three seeds, each copied under the scope its declarations address. A
@@ -238,6 +238,7 @@ fn build_root(root: &std::path::Path) {
          MODEL_BRAIN=gpt-4o-mock\n\
          MODEL_CORE=gpt-4o-mock\n\
          MODEL_CORE_FAST=gpt-4o-mock-fast\n\
+         MODEL_SURFACE=gpt-4o-mock-surface\n\
          KEEPER_NIGHT_CRON=0 0 0 1 1 *\n",
     )
     .unwrap();
@@ -406,7 +407,7 @@ async fn run_the_five() -> (tempfile::TempDir, Run) {
 // ──────────────────────────────────────────────────────────────────────────────
 //
 // Every number in this block was READ OFF THE RUN, not taken from the spec.
-// `plans/composition-reference/spec.md` acceptance 7 sketched "13 templates and
+// Acceptance 7 of the composition-reference spec sketched "13 templates and
 // 39 edges"; the thirteen WAS a real property of the shipped files until GH #298
 // (ruling Q11) removed the `memory-drain` node from two of the five, and it is
 // checked against the files themselves below. The rest is what the substrate
@@ -431,7 +432,28 @@ const TEMPLATE_REFERENCES_IN_THE_FIVE: usize = 11;
 /// cells each (`drain`, `ledger`). Moved 42 -> 44 with GH #379: `talky@4.1.0`
 /// grew the sidecar `splitter`, and two of the five declarations instantiate a
 /// `talky`.
-const TEMPLATE_BORN_ROWS: usize = 44;
+///
+/// Moved 44 -> 40 with GH #447 (ruling R1): `talky@4.3.0` dropped its
+/// `summarizer` ref, and the summarizer is two cells (`prep`, `writer`). Two of
+/// the five instantiate a `talky`, so the tree loses four actors. The handover
+/// it used to write comes out of the recall bundle now; the template itself
+/// still ships, deprecated, and nothing in these five names it any more.
+///
+/// Moved 40 -> 43 with GH #464: `collector@3.3.0` grew one cell, the
+/// `menu-clock` timer that asks a tools hive what this agent's declared tools
+/// look like, and three of the instantiated composites carry a collector (two
+/// `talky`s and one `cogny`).
+///
+/// Moved 43 -> 46 with GH #471: three hives grew a `porter`, the one cell that
+/// walks a hive's own tables out as a document and takes one back. Two of the
+/// five declarations instantiate a `talky`, and every `talky` references a
+/// `session-keeper` (**+2**); exactly one grows a `firewall` (**+1**).
+/// `affinity` also grew one, and it costs nothing here — none of these five
+/// declarations names it.
+///
+/// Moved 46 -> 47 with GH #450: the one `firewall` grew a `warden`, the cell
+/// that holds a parked turn until a person answers.
+const TEMPLATE_BORN_ROWS: usize = 47;
 
 /// Distinct `registry.template` values across those rows. Fewer than the
 /// eleven references above, because three scopes instantiate the same
@@ -443,13 +465,20 @@ const TEMPLATE_BORN_ROWS: usize = 44;
 ///
 /// Moved 11 -> 10 with GH #298 (ruling Q11): no declaration names
 /// `memory-drain` any more, so no registry row claims it.
-const DISTINCT_TEMPLATES: usize = 10;
+///
+/// Moved 10 -> 9 with GH #447 (ruling R1): `summarizer` left `talky`'s
+/// composition, and it was the only route by which a row could claim it.
+const DISTINCT_TEMPLATES: usize = 9;
 
 /// The sub-units that appear in the registry although NO declaration names
 /// them: they arrive through `talky`'s and `cogny`'s `cell.type: "ref"` cells.
 /// Before this wave they were byte copies and every one of them claimed to be
 /// an instance of the composite.
-const REFERENCED_SUB_UNITS: [&str; 4] = ["collector", "dispatcher", "session-keeper", "summarizer"];
+///
+/// Moved from four to three with GH #447 (ruling R1): `summarizer` is no longer
+/// one of `talky`'s refs. `session-keeper` stays — it is the clock, the
+/// generation ledger and the ingress stamp, and none of those is memory work.
+const REFERENCED_SUB_UNITS: [&str; 3] = ["collector", "dispatcher", "session-keeper"];
 
 /// Rows in `colony.db`'s `edges` table after all five declarations — the
 /// declarations' own wiring plus every edge the instantiated composites draw
@@ -482,10 +511,10 @@ const REFERENCED_SUB_UNITS: [&str; 4] = ["collector", "dispatcher", "session-kee
 /// `splitter -> .` are new), and two of the five declarations instantiate a
 /// `talky`.
 ///
-/// Moved 158 -> 160 with GH #267: `steward@2.0.8` stops opening `colony.db` and
+/// Moved 158 -> 160 with GH #267: the argus stops opening `colony.db` and
 /// asks `/colony/ledger` instead, which is +2 edges per instance
 /// (`./meter -> /colony/ledger` and `./probe -> /colony/ledger`). Exactly one of
-/// the five declarations grows a `steward` (`examples/meclaw-os`), so the tree
+/// the five declarations grows an `argus` (`examples/meclaw-os`), so the tree
 /// gains two. They are the only edges in the tree whose endpoint is neither the
 /// hive nor a child of it, and they are sanctioned: `/colony/ledger` is the
 /// second entry of `MUTATION_DRAWABLE_VIRTUAL_ENDPOINTS`, beside `/colony/graph`
@@ -494,10 +523,10 @@ const REFERENCED_SUB_UNITS: [&str; 4] = ["collector", "dispatcher", "session-kee
 /// Moved 160 -> 156 with GH #284: four declaration edges routed a `reject` or an
 /// `error` into a node grown from `terminal`, which accepts the refusal and
 /// drops it. All four were deleted rather than re-pointed — none was load-bearing
-/// (`firewall` and `steward` declare no `required_drains`, and `talky`'s only
+/// (`firewall` and `argus` declare no `required_drains`, and `talky`'s only
 /// pairing is `in_prune -> prune`), so each emission becomes `no_route` and
 /// localises itself in the dead-letter queue. One each in
-/// `examples/meclaw-os/grow-steward.json` and `examples/never-forgets/grow.json`,
+/// `examples/meclaw-os/grow-argus.json` and `examples/never-forgets/grow.json`,
 /// two in `examples/meclaw-os/grow.json`.
 ///
 /// Moved 156 -> 160 with GH #55: `talky@4.2.0` draws the two tool lanes it used
@@ -506,7 +535,89 @@ const REFERENCED_SUB_UNITS: [&str; 4] = ["collector", "dispatcher", "session-kee
 /// declarations instantiate a `talky`, so the tree gains exactly four. No
 /// declaration changed: this is the composite carrying wiring a parent no longer
 /// has to draw, which is the whole of #55's edge half.
-const EDGES: usize = 160;
+///
+/// Moved 160 -> 145, and it is two changes rather than one:
+///
+/// - **-16**, GH #447 (ruling R1): `talky@4.3.0` dropped the `summarizer` ref.
+///   That is 5 internal edges of the summarizer hive itself plus the 3 edges of
+///   `talky` that named it (`./collector -> ./summarizer` and the two out of
+///   it), and two of the five declarations instantiate a `talky`.
+/// - **+1**, GH #451: `cogny@4.1.0` drew the `./dispatcher -> ./collector`
+///   edge on `thread_recall` that was missing — the tool lane existed and had
+///   no wire. Exactly one of the five grows a `cogny`.
+///
+/// Moved 145 -> 153 with GH #458, the identity lane. `talky@4.4.0` draws two
+/// internal edges for it (`./collector -> ./brain` on `pack`,
+/// `./collector -> .` on `pack_ack`) and two of the five declarations
+/// instantiate a `talky`, so **+4**; `cogny@4.2.0` draws three, because the
+/// pack goes to BOTH brains, and exactly one of the five grows a `cogny`, so
+/// **+3**. The remaining **+1** is the receipt finding its way out of the
+/// levels above: `pack_ack` is emitted by nothing inside a `member`, an `org`
+/// or the shell, so each of them declares it and lets it out — and the example
+/// stack grows exactly one edge for that on the path this count walks. The door
+/// term is folded into an existing edge's condition in every composite and
+/// costs no edge at all. No declaration changed.
+///
+/// Moved 153 -> 154 with GH #462, the `steward` -> `argus` rename, and the whole
+/// of the move is ONE edge in the control loop's own graph. Three edges changed
+/// there and they very nearly cancel: **+1** the `alert` exit
+/// (`./meter -> .` on `hop.route == 'alert'`), the third outbound lane beside
+/// `mutate` and `error` — a watched symptom the meter counted with no model
+/// asked; **+1** the `./receipts -> ./mutator` return edge, the repair of a
+/// store answer to a mutator write that used to dead-letter as `no_route`; and
+/// **-1** the `./mutator -> .` error edge, which was dead — nothing on that
+/// path raises it. So the loop's hive goes 20 -> 21 edges, exactly one of the
+/// five declarations grows one (`examples/meclaw-os/grow-argus.json`), and the
+/// tree gains exactly one edge. The shell's own `alert` exit does NOT show up
+/// here: no declaration of the five instantiates `meclaw-os`, so the shell's
+/// graph is not part of this measurement at all.
+///
+/// Moved to 163 with GH #464, the asked-for tool menu, and RE-MEASURED with
+/// [`print_the_measurement`] rather than added up -- the readout is the
+/// authority here, because this constant moved twice in one wave.
+/// `collector@3.3.0` brings ONE internal edge (`./menu-clock -> ./assemble`,
+/// the tick) and three of the instantiated composites carry a collector;
+/// `talky@4.5.1` draws two more (`./collector -> ./brain` on `menu`,
+/// `./collector -> .` on `schemas`) and two of the five grow a talky;
+/// `cogny@4.3.0` draws three, because the menu reaches BOTH brains, and exactly
+/// one of the five grows a cogny. The `in_menu` door term is folded into an
+/// existing condition in both composites and costs no edge at all.
+///
+/// Moved 163 -> 181 with GH #471, and the sum is exact: a hive's transfer lane
+/// is SIX internal edges -- the two doors (`. -> ./porter` on `in_export` and
+/// on `in_import`), the round trip to its own store (`./porter -> ./<store>`
+/// and back on the porter's own origin word) and the two exits (`dump` and
+/// `reject`). Three of the hives these five declarations instantiate grew one:
+/// a `session-keeper` inside each of the two `talky`s, and the one `firewall`.
+/// 3 x 6 = 18, and RE-MEASURED with [`print_the_measurement`] rather than only
+/// added up.
+///
+/// Moved 181 -> 187 with GH #475, and this sum is exact too: `talky@4.5.1`
+/// forwards the keeper's two transfer lanes and carries its `dump` back out --
+/// three edges, all of them pure transit -- and two of the five declarations
+/// grow a talky. 2 x 3 = 6. No `assistant` and no `member` is among the five, so
+/// the levels ABOVE the talky contribute nothing here; the same three edges cost
+/// a member's own container fourteen instead of eleven per generation, which is
+/// measured where a generation is grown. RE-MEASURED with
+/// [`print_the_measurement`].
+///
+/// Moved 187 -> 195 with GH #449 / GH #450: `firewall@2.2.0` grew a fourth
+/// cell, `warden`, and eight internal edges with it -- the screen's `hold`
+/// route into it, the two hold ingress lanes, the store leg in both
+/// directions, and its three exits (`pass`, `reject`, `hold`). Exactly one of
+/// the five declarations grows a firewall, so the sum is 1 x 8. RE-MEASURED
+/// with [`print_the_measurement`].
+///
+/// Moved 195 -> 190 with GH #528, and this one SHRINKS. `cogny@4.4.0` went from
+/// 24 internal edges to 20: the lookup lane took four with it (the second seam
+/// edge, the `pack` and `menu` fan-outs to `./brain_fast`, its `stop`/`length`
+/// and error exits, and the `escalate_to_deep` loopback), and the declaration
+/// pair of `./declare` plus the `memory_recall` lane put three back. Exactly one
+/// of the five declarations grows a cogny, so that is 1 x -4. The fifth is in
+/// the declaration itself: `examples/meclaw-os/grow-cogny.json` drew three edges
+/// and now draws two, because the `ask_memory` ingress is gone. RE-MEASURED with
+/// [`print_the_measurement`].
+const EDGES: usize = 190;
 
 /// Cells that were on disk before the first declaration — the three seeds' own
 /// cells (`hard-shell`'s `probe`, `never-forgets`'s `replay`,

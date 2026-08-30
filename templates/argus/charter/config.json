@@ -1,0 +1,80 @@
+{
+  "cell": {
+    "type": "store"
+  },
+  "params": {
+    "schema": {
+      "goals": {
+        "id": "text",
+        "metric": "text",
+        "direction": "text",
+        "window_minutes": "int",
+        "min_samples": "int",
+        "min_delta_pct": "int",
+        "quality_gate": "text",
+        "enabled": "int",
+        "note": "text"
+      },
+      "rules": {
+        "id": "text",
+        "kind": "text",
+        "value": "text",
+        "note": "text"
+      }
+    },
+    "write_surface": "internal",
+    "query_timeout_ms": 5000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "write_surface": "internal",
+    "settings": {},
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "results": {
+          "type": "array",
+          "required": false
+        }
+      },
+      "hop": {
+        "operation": {
+          "type": "string",
+          "required": true
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        },
+        "rows_affected": {
+          "type": "number",
+          "required": false
+        },
+        "duration_ms": {
+          "type": "number",
+          "required": false
+        },
+        "bundle_errors": {
+          "type": "number",
+          "required": false
+        }
+      }
+    }
+  },
+  "description": {
+    "purpose": "The charter: what the argus shall achieve, what it may do, and every threshold a judge needs to decide -- as ROWS. Goals carry their own measurement window, their minimum sample count and the significance floor below which nothing is done; rules carry the mutation radius, the budget cap and the quality gate.",
+    "use_when": "One per argus hive. A goal is turned on by setting `enabled` to 1 -- a fresh instance ships every row disabled, so a newly grown argus measures nothing and changes nothing until somebody means it.",
+    "not_in_scope": "No history: what happened lives in `receipts`. A charter says what SHALL be, not what WAS."
+  }
+}

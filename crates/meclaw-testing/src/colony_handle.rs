@@ -598,6 +598,9 @@ impl ColonyHandle {
                         active: true,
                         // Fresh spawn is never failed.
                         failed: false,
+                        // GH #491: nor declared asleep — a harness spawn is a
+                        // fresh, awake cell.
+                        dormant: false,
                         // Lazy stateful (Dormant kind) → wake-on-message.
                         eager_on_reconnect: false,
                         ack: ack_tx,

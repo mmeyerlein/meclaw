@@ -42,8 +42,8 @@ fn templates_root() -> std::path::PathBuf {
 ///
 /// This is the sweep's floor, and it is derived rather than declared. A number
 /// cannot be: the library ships in two sizes (the private tree carries every
-/// template, the public export a subset — `PUBLIC_TEMPLATES` in
-/// `plans/export-fixtures/make_export.py`), so a count that is honest in one
+/// template, the public export a subset — `PUBLIC_TEMPLATES` in the
+/// maintainers' export script), so a count that is honest in one
 /// tree is either red or vacuous in the other, and two hard-coded numbers are
 /// two chances to pick the wrong one. What the floor is actually for survives
 /// the derivation intact: the sweep must not be able to pass by finding
@@ -273,6 +273,48 @@ fn condition_reads_a_hop_key_the_probe_cannot_carry(
     false
 }
 
+/// GH #469 — the outward mirror of
+/// [`condition_reads_a_hop_key_the_probe_cannot_carry`]: an exit that narrows
+/// WITHIN a declared lane on a PROMOTED `context` key the bare probe cannot
+/// carry.
+///
+/// `probe(route)` builds an EMPTY context compartment. An exit conditioned on
+/// `has(context.build_caller) && context.build_caller == 'operator'` can
+/// therefore never fire under it — not because the lane is undeclared, but
+/// because the probe is not the message the condition is about. `meclaw-os`
+/// stamps that key at its own door and tells the baumeister's two answers
+/// apart by it; both answers travel a lane the level declares, and only the
+/// DESTINATION differs. Reading such an edge as "carries a lane no `emits`
+/// entry names" is the same false positive W7-R1 closed on the inward half,
+/// one compartment over.
+///
+/// Deliberately narrow, exactly like its inward twin: an exit with no
+/// condition, or one that reads only `hop.*`, still goes through the router
+/// unchanged, so an exit whose LANE is genuinely undeclared is condemned as
+/// before. Two other readers keep the case honest — the substrate's own
+/// `hive_contract::exit_exists` at mutation time, and
+/// `gh302_meclaw_os_shell::every_edge_is_a_door_or_an_exit_and_every_one_carries_a_declared_lane`,
+/// which probes the shell's edges WITH the context each one demands rather
+/// than exempting them.
+fn condition_reads_a_context_key(spec: &meclaw_colony::config::EdgeSpec) -> bool {
+    let Some(src) = spec.condition.as_deref() else {
+        return false;
+    };
+    let mut rest = src;
+    while let Some(at) = rest.find("context.") {
+        let after = &rest[at + "context.".len()..];
+        let key: String = after
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        if !key.is_empty() {
+            return true;
+        }
+        rest = after;
+    }
+    false
+}
+
 /// True iff SOME edge crossing the hive path outward names `route` on itself.
 fn an_exit_names_lane(hp: &HiveParams, route: &str) -> bool {
     hp.graph
@@ -343,7 +385,7 @@ fn every_lane_the_graph_opens_is_declared() {
                     || apply_edges(&table, &src, &probe(&l.route))
                         .iter()
                         .any(|d| d.target.as_str() == HIVE)
-            });
+            }) || condition_reads_a_context_key(spec);
             assert!(
                 covered,
                 "{name}: the exit {} -> {} carries a lane no `emits` entry names",

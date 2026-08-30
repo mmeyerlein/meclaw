@@ -4,7 +4,7 @@
     "add_nodes": [
       {
         "name": "canvy",
-        "template": "canvy@2.1.9",
+        "template": "canvy@2.1.10",
         "override_params": {
           "web": {
             "port": 7811

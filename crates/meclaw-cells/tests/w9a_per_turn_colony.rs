@@ -27,8 +27,8 @@
 //!    collector's own `episode_written` column, measured here across two turns
 //!    of one live session and across the close that follows them.
 //!
-//! The write path is model-free by spec; the only provider calls in this tree
-//! are the talky's own brain and summarizer, and both talk to the mock wire.
+//! The write path is model-free by spec; the only provider call in this tree
+//! is the talky's own brain, and it talks to the mock wire.
 
 #[path = "mock_openai.rs"]
 mod mock_openai;
@@ -241,6 +241,15 @@ fn main_config() -> Value {
          "condition": "has(hop.route) && hop.route == 'error'"},
         {"from": "./memory/writer", "to": "./void",
          "condition": "has(hop.route) && hop.route == 'enqueue'"},
+        // GH #519: the writer mints an embedding row beside the episode and
+        // sends the text to the embedder on a THIRD leg. The hive drains it to
+        // `./embed` (`templates/memory-hive/config.json`); this island does not
+        // instantiate the embedder, so the leg is terminated here. Voided, not
+        // ignored -- an unrouted leg is a dead letter, and the DLQ assertions
+        // below are what makes this track's "nothing was lost" claim mean
+        // anything.
+        {"from": "./memory/writer", "to": "./void",
+         "condition": "has(hop.route) && hop.route == 'embed'"},
         {"from": "./memory/store", "to": "./void",
          "condition": "context.store_origin == 'episode'"}
     ]}}})
@@ -277,15 +286,19 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str) {
         v["params"]["schedules"][0]["schedule_id"] = json!(SCHEDULE_ID);
         v["params"]["schedules"][0]["cron"] = json!(NEVER);
     });
-    for rel in [
-        "main/talky/brain/config.json",
-        "main/talky/summarizer/writer/config.json",
-    ] {
-        patch(root, rel, |v| {
-            v["params"]["base_url"] = json!(base_url);
-            v["params"]["model"] = json!("gpt-4o-mock");
-        });
-    }
+    // GH #464 -- the second timer of a shipped composite, and the same two
+    // patches for the same two reasons: `${uuid7:*}` is an INSTANTIATION
+    // substitution and a tree written straight to disk carries a literal, and a
+    // menu tick during a test run would ask a tools hive this colony does not
+    // have.
+    patch(root, "main/talky/collector/menu-clock/config.json", |v| {
+        v["params"]["schedules"][0]["schedule_id"] = json!(SCHEDULE_ID);
+        v["params"]["schedules"][0]["cron"] = json!(NEVER);
+    });
+    patch(root, "main/talky/brain/config.json", |v| {
+        v["params"]["base_url"] = json!(base_url);
+        v["params"]["model"] = json!("gpt-4o-mock");
+    });
 }
 
 async fn boot(td: &tempfile::TempDir) -> (ColonyHandle, mpsc::Receiver<Message>) {

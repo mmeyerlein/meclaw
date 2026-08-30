@@ -163,7 +163,7 @@ fn a_declared_default_is_the_default_the_script_resolves() {
     // The floor is MEASURED, in both tree shapes, and it has to hold in the
     // smaller one. Measured 2026-08-22: 61 comparisons over the private
     // `templates/`, 49 over the subset the export publishes
-    // (`PUBLIC_TEMPLATES` in `plans/export-fixtures/make_export.py`).
+    // (`PUBLIC_TEMPLATES` in the maintainers' export script).
     //
     // Both numbers moved on 2026-08-27 (S5): `bot-basic` and `llm-unit` were
     // deleted, so the private pool shrank, and `daily-digest` was released, so

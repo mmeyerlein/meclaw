@@ -27,15 +27,15 @@
    "code"
   ],
   [
-   "/os/steward/judge",
+   "/os/argus/judge",
    "llm"
   ],
   [
-   "/os/steward/ledger",
+   "/os/argus/ledger",
    "store"
   ],
   [
-   "/os/steward/charter",
+   "/os/argus/charter",
    "code"
   ],
   [
@@ -262,13 +262,13 @@
   ],
   [
    "c05",
-   "/os/steward/judge",
-   "/os/steward/ledger"
+   "/os/argus/judge",
+   "/os/argus/ledger"
   ],
   [
    "c06",
-   "/os/steward/ledger",
-   "/os/steward/charter"
+   "/os/argus/ledger",
+   "/os/argus/charter"
   ],
   [
    "c07",
@@ -473,7 +473,7 @@
   [
    "x07",
    "/org/desk/triage",
-   "/os/steward/judge"
+   "/os/argus/judge"
   ],
   [
    "x08",
@@ -527,7 +527,7 @@
   ],
   [
    "x18",
-   "/os/steward/judge",
+   "/os/argus/judge",
    "/farm/jobs/watch"
   ]
  ],

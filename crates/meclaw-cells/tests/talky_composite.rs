@@ -1,19 +1,19 @@
 //! meclaw-os -- the `talky` composite in a running colony (GH #112).
 //!
-//! The four sub-templates have their own pins (`session_keeper.rs`,
-//! `collector_window.rs` / `collector_colony.rs`, `dispatcher_split.rs`,
-//! `summarizer_prep.rs` / `summarizer_colony.rs`). This file asks the only
+//! The three sub-templates have their own pins (`session_keeper.rs`,
+//! `collector_window.rs` / `collector_colony.rs`, `dispatcher_split.rs`).
+//! This file asks the only
 //! question the composite adds: is the WIRING between them right? So it boots
 //! the shipped `talky` tree and drives
 //!
 //!   turn -> stamp -> seam -> brain(mock) -> split -> fake tool -> seam -> answer
 //!
 //! and a close through the write path, where the batch leaves on the write
-//! port AND enters the summarizer, whose handover reaches the brain's
-//! `system.handover` without a provider call.
+//! port -- which since `talky@4.3.0` (GH #447) is the whole of the close path:
+//! the composite carries no summarizer, so the close costs no inference.
 //!
-//! Free of a real provider by construction: both `llm` cells talk to the mock
-//! OpenAI wire, and every other cell is a `code`/`store`/`timer` cell that
+//! Free of a real provider by construction: the one `llm` cell talks to the
+//! mock OpenAI wire, and every other cell is a `code`/`store`/`timer` cell that
 //! reports what it was given.
 //!
 //! The byte-identity pin over the four sub-unit copies retired with the copies
@@ -284,21 +284,25 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str) {
         v["params"]["schedules"][0]["schedule_id"] = json!(SCHEDULE_ID);
         v["params"]["schedules"][0]["cron"] = json!(NEVER);
     });
+    // GH #464 -- the second timer of a shipped composite, and the same two
+    // patches for the same two reasons: `${uuid7:*}` is an INSTANTIATION
+    // substitution and a tree written straight to disk carries a literal, and a
+    // menu tick during a test run would ask a tools hive this colony does not
+    // have.
+    patch(root, "main/talky/collector/menu-clock/config.json", |v| {
+        v["params"]["schedules"][0]["schedule_id"] = json!(SCHEDULE_ID);
+        v["params"]["schedules"][0]["cron"] = json!(NEVER);
+    });
     // The age gate of the prune lane, opened all the way: per-INSTANCE tuning,
     // the same knob a live parent sets, not a behaviour patch. The shipped week
     // would put every prune of a test run behind the gate.
     patch(root, "main/talky/collector/assemble/config.json", |v| {
         v["params"]["prune_after_ms"] = json!(0);
     });
-    for rel in [
-        "main/talky/brain/config.json",
-        "main/talky/summarizer/writer/config.json",
-    ] {
-        patch(root, rel, |v| {
-            v["params"]["base_url"] = json!(base_url);
-            v["params"]["model"] = json!("gpt-4o-mock");
-        });
-    }
+    patch(root, "main/talky/brain/config.json", |v| {
+        v["params"]["base_url"] = json!(base_url);
+        v["params"]["model"] = json!("gpt-4o-mock");
+    });
 }
 
 async fn boot(
@@ -505,14 +509,14 @@ async fn an_annotated_answer_splits_into_the_reply_and_the_sidecar() {
 }
 
 /// The close path: the keeper seals the generation, the collector batches it,
-/// and the batch fans out -- to the write port the parent wired AND into the
-/// summarizer, whose handover reaches the brain as a `system.handover` update
-/// without a third provider call.
+/// and the batch leaves on the write port the parent wired. Since
+/// `talky@4.3.0` (GH #447) that is the WHOLE of the close path -- the composite
+/// carries no summarizer any more, so closing a generation costs no inference
+/// and writes no `system.handover` slot behind the brain's back.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_close_fans_the_batch_out_and_hands_the_summary_to_the_brain() {
+async fn a_close_leaves_on_the_write_port_and_costs_no_inference() {
     let mock = MockOpenAI::start(vec![
         canned_chat_completion("Noted.", "stop"),
-        canned_chat_completion("The user lives in Berlin and said so once.", "stop"),
         canned_chat_completion("Still here.", "stop"),
     ])
     .await;
@@ -537,54 +541,41 @@ async fn a_close_fans_the_batch_out_and_hands_the_summary_to_the_brain() {
         "user turn and answer left as one batch: {text}"
     );
 
-    // The same batch entered the summarizer, and its handover reached the brain
-    // WITHOUT a provider call of its own: three calls would mean the update
-    // triggered an inference.
-    let mut reqs = mock.recorded_requests().await;
-    for _ in 0..30 {
-        if reqs.len() >= 2 {
-            break;
-        }
+    // The close is model-free. Settle generously (30 s convention) so a second
+    // call would have had every chance to arrive: nothing behind the batch asks
+    // a provider any more.
+    for _ in 0..15 {
         tokio::time::sleep(Duration::from_millis(200)).await;
-        reqs = mock.recorded_requests().await;
+        assert_eq!(
+            mock.recorded_requests().await.len(),
+            1,
+            "the close path is model-free since 4.3.0 -- only the turn's own \
+             brain call reached the provider"
+        );
     }
-    assert_eq!(
-        reqs.len(),
-        2,
-        "one brain call and one summarizer call -- the handover update is silent"
-    );
-    let sys = meclaw_core::serde_json::to_string(reqs[1].messages().expect("wire messages"))
-        .unwrap_or_default();
-    assert!(
-        sys.contains("never invent"),
-        "the second call is the summarizer's: {sys}"
-    );
 
-    // And the brain KEPT it. Settle first: the handover update is one hop
-    // behind the summarizer's answer, and only a delivered update can show up
-    // in the next prompt. This is a settle wait, not a timing discriminator --
-    // generous on purpose (30 s convention).
-    for _ in 0..150 {
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        if mock.recorded_requests().await.len() >= 2 {
-            break;
-        }
-    }
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
+    // And the next generation opens on the same cells with nothing smuggled
+    // into its system state: its turn is the SECOND provider call, not the
+    // third, and the closed batch is not in the prompt.
     h.send(turn("still there?")).await;
     recv_bounded(&mut sink_rx).await.expect("the second answer");
     let reqs = mock.recorded_requests().await;
-    assert_eq!(reqs.len(), 3, "the second turn is the third provider call");
-    let msgs = reqs[2].messages().expect("wire messages");
-    let system = msgs
+    assert_eq!(
+        reqs.len(),
+        2,
+        "the second turn is the second provider call -- the close added none"
+    );
+    let msgs = reqs[1].messages().expect("wire messages");
+    let sys_text = msgs
         .iter()
         .find(|m| m["role"] == "system")
-        .expect("system message on the wire");
-    let sys_text = system["content"].as_str().unwrap_or_default();
+        .and_then(|m| m["content"].as_str())
+        .unwrap_or_default()
+        .to_string();
     assert!(
-        sys_text.contains("The user lives in Berlin and said so once."),
-        "the handover of the closed generation reached the next one: {sys_text}"
+        !sys_text.contains("batch|session="),
+        "no handover slot: the closed generation does not ride into the next \
+         prompt as system state: {sys_text}"
     );
 
     h.shutdown().await;

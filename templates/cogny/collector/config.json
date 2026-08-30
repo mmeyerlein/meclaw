@@ -1,6 +1,17 @@
 {
   "cell": {
     "type": "ref",
-    "template": "collector@3.0.2"
+    "template": "collector@3.4.0"
+  },
+  "override_params": {
+    "assemble": {
+      "context_window": 128000,
+      "memory_call_tier": "1",
+      "curate_soft": 0.5,
+      "curate_hard": 0.75,
+      "tools": [
+        "*"
+      ]
+    }
   }
 }

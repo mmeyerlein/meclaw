@@ -1,9 +1,9 @@
-# `meclaw-os@1.2.3`
+# `meclaw-os@1.6.0`
 
 The colony shell: the outermost of the four composition levels, and the tree everything
-else is grown into. It holds no cell of its own. It holds four occupants, one empty
-container and twenty-five edges, and its entire job is to be the boundary those things
-share.
+else is grown into. It holds no cell of its own. It holds five occupants, one empty
+container and the transit graph between them, and its entire job is to be the boundary
+those things share.
 
 ## The rule this level was authored under
 
@@ -23,10 +23,13 @@ a shell that grew one would have stopped being a boundary and become a participa
 | Occupant | What it is | Why it is at THIS level |
 |---|---|---|
 | `access` | a `ref` to the `access` template — the capability broker, with its own interior `vault` | every organisation asks the same broker; two brokers are two answers to one question |
-| `steward` | a `ref` to the `steward` template — the control loop | one colony, one loop; it ships with every goal disabled |
+| `argus` | a `ref` to the `argus` template — the control loop | one colony, one loop; it ships with every goal disabled |
+| `builder` | a `ref` to the `builder` template — the intake that drafts a manifest | one authoring path per colony; a second baumeister would be a second audit trail |
+| `submit` | a `ref` to the `submit` template — the only reach onto the mutation door | the guardrail of R6 is a MISSING edge, and a missing edge can only be missing between two nodes |
+| `operator` | a `ref` to the `operator` template — the one front door a person addresses the OS through | a POST carries no sender, and only this level stands beside both the submitter and the container the request has to reach |
 | `orgs` | a real, empty, open container hive that declares nothing | the address an organisation is instantiated **at**; the shell declares where, not which — and declares the container's lanes for it (see below) |
 
-Both occupants are pinned to an **exact** version. A bare name resolves to the newest
+All five occupants are pinned to an **exact** version. A bare name resolves to the newest
 version present on disk, so a shell that named one would silently adopt a new broker the
 day a bump landed — which is exactly the drift `registry.template_chain` exists to make
 visible, not to excuse. Whatever the reference form, the resolved exact version is what
@@ -46,15 +49,30 @@ open state — so the shell draws no boundary of its own around its occupants.
 | `in_recall` | — | a question against a member's memory, asked from outside the organisation |
 | `in_brief` | — | a read against a member's curated record |
 | `in_propose` | — | a write against that record: a correction, a trust decision, a subscription |
+| `in_build` | — | the baumeister: a build somebody wants **drafted**. The lane an operator uses, because the first build of a fresh colony has no assistant to raise `build` — `./orgs` is empty by construction. The door stamps `context.build_caller = 'operator'`, which is what sends the draft to the front door instead of back into that empty container |
+| `in_submit` | — | the front door: a manifest somebody wants applied. Two callers — a person at the rim, and an assistant inside the colony, whose apply this level re-stamps onto the same lane |
+| `in_dump` | — | the front door: produce a dump of a member's memory, triggered from the OS side |
+| `in_lifecycle` | — | the front door: birth, sleep or wake for a node somewhere in the colony |
+| `in_export` | — | the `orgs` container: hand a member's memory out as a versioned document. The usual sender is the front door, whose `export` lane this level re-stamps onto it |
+| `in_import` | — | the `orgs` container: one part of such a document, on its way back into the memory of the member it belongs to. The return leg of `in_export`, crossing untouched — the shell reads no part and decides nothing about what may enter |
 
 | Out | What it carries |
 |---|---|
 | `grant` | the broker's verdict — a handle, never a credential |
 | `ack` | an outcome that was **decided**: the broker spending a grant, or an organisation acknowledging a proposed change. Two senders, one lane |
 | `mutate` | the change the loop decided on, as an ordinary params update |
+| `alert` | a symptom the loop **watched** for and counted -- the metric, the goal, the count and the window. Deterministic, no model asked, and deliberately not a decision. Nothing here can act on it, so the shell hands it out |
 | `answer` | what an organisation produced for whoever asked — a turn answered, a brief read |
+| `bundle` | the answer to a question asked at a member's own `in_recall` door, carried out of the organisation and out of the shell. The lane arrived with [#533](https://github.com/mmeyerlein/meclaw/issues/533): the question has crossed this level since it was written, and the answer had no exit at any of the three levels it has to leave |
 | `reject` | a refusal from inside an organisation that is a **verdict**, not a failure |
 | `error` | a lane of the broker, of the loop or of an organisation failed and it was not a verdict. **The colony that instantiates this shell must drain it, and `reject` with it.** |
+| `receipt` | what the front door answered — a submission's counts, an export's result, a refusal, or a lane nobody wired. **Drain it too:** a manifest has no rollback, so an operator who learns nothing is the one outcome there is no recovery from. |
+| `write` | an assistant's batched conversation write, handed straight out. The shell owns no archive |
+| `turn_write` | one finished turn, offered for archiving as it is produced. A **copy**: since [#527](https://github.com/mmeyerlein/meclaw/issues/527) the member that produced it also fans it into its own memory hive, so this lane is an archive offer and no longer the only place the turn could go. A distribution that wires it nowhere dead-letters it here — `examples/meclaw-os/` routes it to `./sink` |
+| `prune` | a housekeeping report raised inside an organisation. Nothing here schedules it |
+| `close_report` | what one close pass did to an ended session. Nothing here triggers the pass and nothing here reads the receipt |
+| `pack_ack` | the receipt of one identity pack a member's record pushed into one of its generations. Two travel per pack, one per occupant |
+| `catalogue` | what one reconciliation of the baumeister's corpus against the colony's own template registry did: how many names the registry holds, how many the corpus already carried, how many rows were written and which. Nothing here reads it — the shell drives the nudge, so the shell hands out the report |
 
 Both broker lanes demand a promoted `context.requester`, and the shell demands it too. A
 level forwards a requirement; it cannot satisfy one. An edge that carries `in_request` into
@@ -62,22 +80,116 @@ this shell without having promoted the requester somewhere upstream is refused w
 `hive_contract` before anything is staged — a grant issued to whoever asked loudest is the
 one failure the broker cannot recover from afterwards.
 
-## The twenty-five edges
+## The forty-nine edges
 
-Nineteen of them are a door or an exit, and every declared lane has exactly one. The
+Thirty-four of them are a door or an exit, and every declared lane has at least one. The
 broker knows nothing about the loop, the loop asks the colony rather than the broker, and
 neither of them knows an organisation exists.
 
-**Eight wire two occupants to each other, and that is what owning a baumeister looks
-like.**
+**Fifteen wire two occupants to each other, and that is what owning a baumeister and a
+front door looks like.**
 Until R6 every edge here touched the rim, and it was tempting to read that as a rule. It
 was a coincidence of who lived at this level: `assistant` wires `./cogny -> ./tools` and
 `member` wires `./assistants -> ./firewall`, because a level owns what its siblings must
 share and sharing means being wired to it. The container reaches the builder on `build`
-with `hop.build_op == 'draft'`, reaches the submitter with `'apply'`, and both answer it
+with `hop.build_op == 'draft'` and the FRONT DOOR with `'apply'`, and both answer it
 back on `in_build_result`. Since GH #435 the submitter asks the broker as well, and that
 pair can only be drawn here for the same reason: the two are siblings at this level and
 nowhere else.
+
+Since GH #446 the same is true of the front door: `./operator -> ./submit` on `apply`,
+re-stamped `in_apply`, and `./submit -> ./operator` back on `receipt`. That edge is
+**unguarded, and that is a consequence rather than a looseness**: since R-Zielfluss (a) the
+front door is the ONLY sender of `in_apply`, so every receipt the submitter raises belongs
+to a round it began. It was guarded while `./orgs` also submitted — the guard was
+`hop.tool_call_id.startsWith('op:')` — and the marker on the id did not go away with the
+guard: it moved INSIDE the front door, where it now tells the two callers of `in_submit`
+apart (see below). The submitter's `receipt` still fans out to `./builder`, guarded by
+`has(hop.error_code)`, which is the repair lane of GH #425. Two further edges carry the
+export trigger down into the container and its answer back up.
+
+**An operator can drive the baumeister, and since 1.5.0 that is a lane rather than a
+trick.** `in_build` at the rim reaches `./builder`, and the door stamps
+`context.build_caller = 'operator'` on the way in — which door a round came in at is a fact
+of this level, never a caller's claim. On the way back the marker decides the destination:
+`./builder -> ./operator` carries the draft to the one submission front door, re-stamped
+`in_submit`, and `./builder -> .` hands a failure out on `error`. The two older
+`./builder -> ./orgs` edges carry the counter-guard `context.build_caller != 'operator'`,
+so an assistant's round still goes home to its own organisation and an operator's is never
+delivered twice — edges fan out, and a lane with two destinations and no discriminator is
+two deliveries.
+
+**And since GH #474 the draft STOPS at the front door.** The rim door reads one more word off
+the wish, `hop.auto_submit`, and the default is the halt: `./builder -> ./operator` re-stamps an
+operator-asked draft onto `in_draft`, where it is parked under its own digest and answered with a
+receipt naming that digest — nothing is applied. The operator's second act is an ordinary
+`in_submit` quoting the digest and carrying no manifest. `auto_submit: true` keeps the one-act road
+for the caller that wants it (a rebuild script replaying wishes somebody already read), and it is
+a second guarded edge rather than a branch inside a cell: which road a round takes is a fact of
+this level, told by the same discriminator pattern the two `./orgs -> ./builder` / `./orgs ->
+./operator` edges have used since R6. The builder's own contract calls what it emits a PROPOSAL —
+"a sentence a human can read before saying yes" — and between 1.5.0 and this change that sentence
+travelled past the human.
+
+This retracts half of what this file said through 1.4.0. The builder lane pair was
+described as deliberately absent from the rim, because `./orgs` raises it and `./builder`
+takes it, so it crosses nothing. That is still true of `build` and `in_build_result` — an
+organisation's names for the same round. It was wrong about the case that matters most:
+the FIRST build of a colony, where the container is empty and no assistant exists to raise
+anything, so the road the argument rested on has no traveller and the draft died as
+`hive_no_route`. What the lane buys is an answer instead of that silence; whether the
+answer is a yes is the broker's business, not the wiring's. The shipped
+`colony.mutate.default` policy row scopes an agent's mutations to `/os/orgs`, so a first
+ORGANISATION — whose scope is necessarily `/os` — comes back as a named
+`requester_not_permitted`, and growing the shell itself stays an operator act at
+`/colony/mutations`.
+
+**There is one road to the mutation door, and it starts at the front door.** The container
+used to reach `./submit` directly on `build`/`build_op == 'apply'`, so a colony had two
+submission fronts: an assistant's and an operator's. R-Zielfluss (a) collapsed them. The
+edge is now `./orgs -> ./operator`, re-stamped `in_submit` and marked
+`context.operator_caller = 'agent'`; `./orgs -> ./submit` and the `./submit -> ./orgs`
+receipt edge that answered it are gone. The front door writes the same fact into the
+correlation id (`op:agent:<id>` rather than `op:<id>`), reads BOTH carriers off the
+returning receipt, and puts `hop.submitter_kind` on what it emits. This level routes on
+that and on nothing else: an agent's receipt goes back DOWN as `./operator -> ./orgs` with
+`in_build_result`, an operator's leaves on the rim. The marker never crosses either edge —
+the id on the receipt is the one the caller used, because an assistant's fan-in waits for
+the id its own tool call carried.
+
+**Two carriers, because neither survives every road.** A manifest the gate refuses BEFORE
+it parks anything leaves no flight row, so the receipt comes back with an EMPTY
+`tool_call_id` — and context is what survives that. A manifest that reaches the mutation
+door comes back on a fresh trace that carries no promoted context — and the marked id off
+the flight row is what survives that. The two failures are disjoint, so the front door
+reads both; the details are in `templates/operator/README.md` § Wiring.
+
+**The front door gives an identity, never an authentication.** It exists because
+`envelope.reply_to` is stamped on a CELL's emission and a person with a shell is not a
+cell — so an operator's submission used to be refused as anonymous, or to walk past the
+gate entirely through `/colony/mutations`. What it supplies is a path. It supplies no
+token, checks no header and keeps no secret: that is a reverse proxy's job in front of the
+API, and the broker's behind this level.
+
+**Since 1.6.0 the submitter also nudges the corpus, and this is the only level that can
+draw that edge either.** The baumeister's librarian holds its corpus as a **seed**: it is
+loaded once, when the store's `cell.db` is created, so it describes the library of the
+moment the colony was born. A class registered afterwards by an `add_templates` is
+resolvable at the mutation door and invisible to the composer — measured as seven rounds
+spent looking for a template that had been in the library for an hour. GH #496 built the
+reconciliation and named the wiring that should fire it: *an edge from `submit` after a
+committed submission whose diff carried `add_templates` — the one cell that knows both
+facts.* The form it named, `./submit/gate -> ./builder/librarian`, is undrawable by
+anybody: both endpoints are interior nodes of sealed hives, and the refusal
+(`hive_port_boundary`, twice) is right on both counts. The drawable form is the one
+between the two **hive paths**, and it needed a lane at each end: `builder` accepts
+`in_ingest` and forwards it to its librarian, `submit` publishes
+`hop.registers_class` on the receipt, and the edge here reads both that key and the
+absence of `hop.error_code`. Both guards are load-bearing — the key alone would nudge
+after a manifest that registered a class and was refused at the door, and `committed`
+alone after every submission a colony ever makes. `./builder -> .` carries the report back
+out on `catalogue`, because the baumeister pairs the two in its own `required_drains`: the
+counts are the only thing that tells *nothing was missing* from *the nudge never ran*.
 
 ```json
 {"add_edges": [
@@ -86,26 +198,35 @@ nowhere else.
   {"from": "<shell>/access",    "to": "<shell>",         "condition": "!has(context.sub_ask) && has(hop.route) && hop.route == 'grant'"},
   {"from": "<shell>/access",    "to": "<shell>",         "condition": "has(hop.route) && hop.route == 'ack'"},
   {"from": "<shell>/access",    "to": "<shell>",         "condition": "has(hop.route) && hop.route == 'error'"},
-  {"from": "<shell>",           "to": "<shell>/steward", "condition": "has(hop.route) && hop.route == 'in_cycle'"},
-  {"from": "<shell>/steward",   "to": "<shell>",         "condition": "has(hop.route) && hop.route == 'mutate'"},
-  {"from": "<shell>/steward",   "to": "<shell>",         "condition": "has(hop.route) && hop.route == 'error'"},
+  {"from": "<shell>",           "to": "<shell>/argus",   "condition": "has(hop.route) && hop.route == 'in_cycle'"},
+  {"from": "<shell>/argus",     "to": "<shell>",         "condition": "has(hop.route) && hop.route == 'mutate'"},
+  {"from": "<shell>/argus",     "to": "<shell>",         "condition": "has(hop.route) && hop.route == 'alert'"},
+  {"from": "<shell>/argus",     "to": "<shell>",         "condition": "has(hop.route) && hop.route == 'error'"},
   {"from": "<shell>",           "to": "<shell>/orgs",    "condition": "has(hop.route) && hop.route == 'in_turn'"},
   {"from": "<shell>",           "to": "<shell>/orgs",    "condition": "has(hop.route) && hop.route == 'in_recall'"},
   {"from": "<shell>",           "to": "<shell>/orgs",    "condition": "has(hop.route) && hop.route == 'in_brief'"},
   {"from": "<shell>",           "to": "<shell>/orgs",    "condition": "has(hop.route) && hop.route == 'in_propose'"},
   {"from": "<shell>/orgs",      "to": "<shell>",         "condition": "has(hop.route) && hop.route == 'answer'"},
+  {"from": "<shell>/orgs",      "to": "<shell>",         "condition": "has(hop.route) && hop.route == 'bundle'"},
   {"from": "<shell>/orgs",      "to": "<shell>",         "condition": "has(hop.route) && hop.route == 'ack'"},
   {"from": "<shell>/orgs",      "to": "<shell>",         "condition": "has(hop.route) && hop.route == 'reject'"},
   {"from": "<shell>/orgs",      "to": "<shell>",         "condition": "has(hop.route) && hop.route == 'error'"},
   {"from": "<shell>/orgs",      "to": "<shell>",         "condition": "has(hop.route) && hop.route == 'write'"},
   {"from": "<shell>/orgs",      "to": "<shell>",         "condition": "has(hop.route) && hop.route == 'turn_write'"},
   {"from": "<shell>/orgs",      "to": "<shell>",         "condition": "has(hop.route) && hop.route == 'prune'"},
+  {"from": "<shell>",           "to": "<shell>/orgs",    "condition": "has(hop.route) && hop.route == 'in_export'"},
+  {"from": "<shell>",           "to": "<shell>/orgs",    "condition": "has(hop.route) && hop.route == 'in_import'"},
+  {"from": "<shell>/orgs",      "to": "<shell>",         "condition": "has(hop.route) && hop.route == 'close_report'"},
+  {"from": "<shell>/orgs",      "to": "<shell>",         "condition": "has(hop.route) && hop.route == 'pack_ack'"},
 
   {"from": "<shell>/orgs",      "to": "<shell>/builder", "condition": "has(hop.route) && hop.route == 'build' && has(hop.build_op) && hop.build_op == 'draft'"},
-  {"from": "<shell>/orgs",      "to": "<shell>/submit",  "condition": "has(hop.route) && hop.route == 'build' && has(hop.build_op) && hop.build_op == 'apply'"},
+  {"from": "<shell>/orgs",      "to": "<shell>/operator","condition": "has(hop.route) && hop.route == 'build' && has(hop.build_op) && hop.build_op == 'apply'"},
   {"from": "<shell>/builder",   "to": "<shell>/orgs",    "condition": "has(hop.route) && hop.route == 'manifest'"},
   {"from": "<shell>/builder",   "to": "<shell>/orgs",    "condition": "has(hop.route) && hop.route == 'error'"},
-  {"from": "<shell>/submit",    "to": "<shell>/orgs",    "condition": "has(hop.route) && hop.route == 'receipt'"},
+  {"from": "<shell>/operator",  "to": "<shell>/orgs",    "condition": "has(hop.route) && hop.route == 'receipt' && has(hop.submitter_kind) && hop.submitter_kind == 'agent'"},
+  {"from": "<shell>/builder",   "to": "<shell>",         "condition": "has(hop.route) && hop.route == 'catalogue'"},
+  {"from": "<shell>/submit",    "to": "<shell>/builder", "condition": "has(hop.route) && hop.route == 'receipt' && !has(hop.error_code) && has(hop.registers_class) && hop.registers_class == true",
+   "modifier": {"set_hop": {"route": "'in_ingest'"}}},
   {"from": "<shell>/submit",    "to": "<shell>",         "condition": "has(hop.route) && hop.route == 'mutate'"},
 
   {"from": "<shell>/submit",    "to": "<shell>/access",  "condition": "has(hop.route) && hop.route == 'ask'",
@@ -143,7 +264,7 @@ edge out of the shell, and one privileged edge means one audit trail — which i
 of R6's guardrail. The builder gets no such edge, and cannot be given one later:
 `/colony/mutations` is not an endpoint a mutation may draw, on any scope.
 
-Those twenty-five travel with the template; they are shown here so a reader can see the shape,
+Those edges travel with the template; they are shown here so a reader can see the shape,
 not so anyone has to draw them. The last three arrived when the level below them started
 re-emitting what a member's assistants raise and nothing at member level consumes — nobody
 re-derived the list by hand, `gh302_meclaw_os_shell.rs` read `templates/org/config.json`
@@ -184,8 +305,8 @@ the code does rather than what the field is named.
 So the rule, and all four levels follow it: **the level declares the transit lanes, and the
 level's own edges satisfy them from birth.** `in_turn` has a door because the shell routes
 it into `./orgs`, and `orgs` lies inside the shell; `answer`, `ack`, `reject`, `error`,
-`write`, `turn_write` and `prune` have exits because the shell routes them back out of
-`./orgs`. Below the container there is nothing to route to
+`write`, `turn_write`, `prune`, `close_report` and `pack_ack` have exits because the shell
+routes them back out of `./orgs`. Below the container there is nothing to route to
 until an organisation is instantiated, and the mutation that grows one draws its own edges —
 but the level's promise is already true and already checkable on the day it ships.
 
@@ -200,7 +321,7 @@ that answers nobody, which reads like a working component right up to the moment
 needs it.
 
 **No swallowing sink.** No `terminal`, and no refusal lane that ends inside the shell. The
-dead-letter queue is the record (GH #284, ruling Q2). Both `error` exits leave the level;
+dead-letter queue is the record (GH #284, ruling Q2). All three `error` exits leave the level;
 what happens to them is the colony's decision, made where the colony is wired.
 
 **No `turn` lane outward, and that is the union rule doing its job.** A level declares the
@@ -229,34 +350,104 @@ reaches `orgs` before an organisation is instantiated into it takes the ordinary
 full finding was read out of the slot resolution itself:
 `unbound_slot_behaviour` in `crates/meclaw-colony/src/colony.rs`, which steps aside as soon as the target is a registered hive scope.
 
-**This shell's steward talks to the colony directly.** Since GH #267 the loop's meter and
+**This shell's argus talks to the colony directly.** Since GH #267 the loop's meter and
 probe ask `/colony/ledger` for their numbers instead of opening a database they do not own
-— `STEWARD_COLONY_DB` was retracted with that change. The two absolute lanes that carry
+— `ARGUS_COLONY_DB` was retracted with that change. The two absolute lanes that carry
 those asks travel with the `ref`, so this level writes no edge for them; it also must not
 seal them away, which is one more reason `params.ports` stays absent here. The virtual
 endpoints are in bounds at every scope, so wrapping the loop one level deeper changes
-nothing about them. Their two settings, `STEWARD_MAX_LEDGER_ROWS` and
-`STEWARD_PROBE_LEDGER_TRIES`, both carry defaults inside the loop's own cells and need no
+nothing about them. Their two settings, `ARGUS_MAX_LEDGER_ROWS` and
+`ARGUS_PROBE_LEDGER_TRIES`, both carry defaults inside the loop's own cells and need no
 pass-through from this level; an operator who wants other values sets them in the
 environment the colony runs in.
 
 **No `requires` block.** This template substitutes nothing in its own config values, so it
-declares nothing. The requirements of `access` and `steward` are **not** repeated here:
+declares nothing. The requirements of `access` and `argus` are **not** repeated here:
 W3's validator resolves each node's ref chain back to the template it came from and
 collects that template's own declaration, so a requirement of a referenced template is
 already a requirement of this composite.
 
+## Stage one: one declaration
+
+A built colony arrives in two stages. **Stage one** puts this shell there. **Stage two** is the
+authoring path inside it growing everything else — an organisation, a member, an assistant — as
+manifests the baumeister drafts and the submitter carries to the door. The two are different
+kinds of act, and stage one is deliberately the small one: it takes a root tree with **no cell
+in it at all**.
+
+```
+seed-ref/
+├── colony.json            substrate defaults. two lines.
+├── main/config.json       type: "hive", one edge, and not one cell
+└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@1.6.0"}}
+```
+
+```bash
+meclaw --root ./examples/meclaw-os/seed-ref --templates ./templates \
+       --daemon --api 127.0.0.1:7777
+```
+
+That third file is a **declaration, not a cell**. The FIRST start resolves it against the
+template library and grows it — through the very resolution and staging a mutation takes, which
+is why the result is byte-identical to what the equivalent `add_nodes` builds. Then the marker
+is **gone**: what stands at its address is the shell it named. Two consequences follow from that
+rather than being bookkept — a second boot finds nothing to grow, and a node you later remove
+with `remove_nodes` cannot be re-declared into existence by a restart.
+
+**The one edge is the whole birth topology.** `./os -> /colony/mutations`, conditioned on the
+`mutate` lane, is the line the next section explains: it cannot be added by a mutation on any
+scope, so it lives in the root tree or it does not exist. A `ref` marker declares a **node** and
+never an **edge**, so the seed writes it by hand — one line, and the only one.
+
+**It is read, not generated.** A colony root somebody's script writes before the first boot is a
+tree nobody can diff, and the two things that decide whether the colony can ever change itself —
+the marker and that edge — are exactly the two a generator gets wrong in silence. So the root
+tree is checked in, beside the example that uses it, and pinned:
+[`examples/meclaw-os/seed-ref/`](../../examples/meclaw-os/seed-ref/) with
+`crates/meclaw-cells/tests/gh465_one_declaration_boots_the_os.rs`. That test is the only proof
+stage one may cite.
+
+What stage one does **not** do is grow the organism. A marker names one node; everything under
+`./orgs` is stage two's business, and `examples/organism/` is where the whole stack from one
+file is written out.
+
+## What it needs before it runs
+
+`template.json` § `requires.env` is this level's environment surface, rolled up from its
+occupants and derived from them by test: every `${VAR}` any config value under this shell
+substitutes is named there, with a sentence saying what it binds and why.
+
+Exactly **one** of those keys is required, and it is the only value in the whole shell written
+with no default: `OPENROUTER_API_KEY`, the credential of the control loop's judge. A colony that
+grows this shell without it is refused with `requirement_missing` **before a single byte is
+staged** — the marker is still a marker afterwards, there is nothing to clean up, and the
+refusal quotes the declaration's own sentence so a reader learns what the key is for. The
+alternative, and the state before GH #465, was a shell that boots, looks healthy, and fails at
+the first cycle the loop runs.
+
+Everything else has a default in the template it configures and is declared anyway, so that a
+builder learns this shell's environment surface by reading it rather than by watching a cell
+answer nothing. Two of them are worth knowing before you start:
+[`MODEL_BUILDER`](../builder/) and `LOCAL_LLM_BASE_URL` are what the composer asks its model
+through, they default to empty, and unset they leave the authoring path inert — the shell boots,
+the front door answers, the submitter gates, and no manifest is ever drafted. **Stage two cannot
+run until they are set.** A copy-ready file with every name and no value stands beside the seed:
+[`examples/meclaw-os/seed-ref/.env.example`](../../examples/meclaw-os/seed-ref/.env.example).
+
 ## Growing a colony out of it
+
+The other way in — into a colony that is already up, from an operator's shell rather than from a
+root tree:
 
 ```json
 {"scope": "/",
- "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.2.3"}],
+ "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.6.0"}],
           "add_edges": []}}
 ```
 
 One node and no edges at all: the shell is the outermost boundary, so what reaches it comes
 from outside the colony and what leaves it leaves the colony. The broker, the control loop,
-the `orgs` container, the baumeister, the submitter and the twenty-seven edges between them
+the `orgs` container, the baumeister, the submitter, the front door and every edge between them
 came with the template.
 
 **One line is still missing, and it has to be written by hand:** the edge from the shell to
@@ -271,7 +462,7 @@ Then one organisation at a time, into the container, each with its transit edges
 
 ```json
 {"scope": "/os",
- "diff": {"add_nodes": [{"name": "orgs/acme", "template": "org@1.1.0"}],
+ "diff": {"add_nodes": [{"name": "orgs/acme", "template": "org@1.3.0"}],
           "add_edges": [{"from": "./orgs", "to": "./orgs/acme",
                          "condition": "has(hop.route) && hop.route == 'in_turn'"},
                         {"from": "./orgs/acme", "to": "./orgs",
@@ -286,9 +477,11 @@ rejected with `edge_schema`. An **absolute** endpoint does not work either — `
 "/os/orgs/acme"` is refused with `scope_out_of_bounds` before anything else is looked at,
 whatever the scope. Endpoints are scope-relative, always.
 
-Eleven such edges carry an organisation (four lanes down, seven back up), and
+A fully wired organisation costs one such edge per lane the [`org`](../org/) level
+declares — its accepts down into the node, its emits back up into the container.
 [`examples/organism`](../../examples/organism/) is the whole stack written out that way:
-five declarations, one per level.
+five declarations, one per level, and its organisation step draws the seventeen its
+walkthrough exercises.
 
 The broker starts inert by design — every seeded policy row ships disabled — and so does
 the control loop: every charter goal ships disabled too. A fresh shell therefore grants

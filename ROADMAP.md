@@ -4,7 +4,12 @@ The [issue tracker](https://github.com/mmeyerlein/meclaw/issues) is the single
 source of truth for everything actionable. This file only orders it: what comes
 next, what comes after, and why.
 
-Three rules keep it from silting up:
+The four horizons are relative to the work, not to a calendar: **Now** is the
+running wave, **Next** is the wave after the next instance rebuild, **Later**
+has no date, and **Alongside** is cross-cutting — it rides with whatever wave
+touches it.
+
+Four rules keep it from silting up:
 
 - **A stream names open issues only.** Work that shipped leaves the stream and
   appears once, as one line, under [§ Shipped](#shipped).
@@ -12,83 +17,104 @@ Three rules keep it from silting up:
   carries the ordering and the reason.
 - **Closed issues are not eulogised here.** Their record lives where they
   closed — in the issue itself.
+- **Every entry carries an anchor**: an open issue, or `(register: <id>)`. The
+  second marks something deliberately *not* built, with a named trigger that
+  would make it due. The register holding those reasons is internal, so the
+  marker is the whole of what this file gives you about such a line — and that
+  is the point: it is deferred on purpose, not forgotten.
+
+A gate resolves both kinds on every push, and a line pointing at a closed issue
+is a red build.
 
 Release detail is in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
-## Now: meclaw-os, the organism
+## Now: the wave that shipped, and what it left standing
 
-A colony grown from a seed into a personal operating system — the four
-composition levels ship as templates, and
+The organism wave is **released as v0.28.0**. A colony grown from a seed into a
+personal operating system — the four composition levels ship as templates, and
 [`examples/meclaw-os`](examples/meclaw-os/) proves the claim end to end: an
-empty seed, one declaration, seventeen cells. The gate for a public showcase is
-a provably better agent, not more memory machinery.
+empty seed, one declaration, a whole shell. What the wave did is the
+[`[0.28.0]`](CHANGELOG.md) section of the changelog: a way in for the organism,
+surfaces of its own, a boundary, an authoring loop that still knows what it was
+asked for and who to answer after it has looked something up, a broker that
+answers the question it was asked rather than the one before it, and containers
+whose children are addresses rather than a broadcast. The measurement that
+opened the wave closed with it: the fast lookup lane is gone, a conversation
+surface asks its own memory in the round it is already running, and the
+reasoning core is consulted for thinking alone.
 
-- [#124](https://github.com/mmeyerlein/meclaw/issues/124) — the first thing the
-  advisor measured about itself: a consult round trip is far too slow for a
-  question memory could have answered.
+Nothing is open under this horizon. The streams below carry what comes next; the
+tracker carries the rest.
 
 ## Next: substrate flanks
 
 Findings from running the thing.
 
-- [#443](https://github.com/mmeyerlein/meclaw/issues/443) — an `add_templates`
-  declaration that survives a refusal one stage later in the same diff leaves
-  its staged library entry behind, so the retry is refused by name.
-
-Two lines here are **triggered**, not scheduled: metering what a subscription
-plan carries (fires when a recurring lane wants the subscription path, was
-[#48](https://github.com/mmeyerlein/meclaw/issues/48)), and the message-header
-size watch (fires on drift past ~100 KB on a single hop; last reading 5.4 KB
-max, query in [#141](https://github.com/mmeyerlein/meclaw/issues/141)).
+- Re-measuring the builder's acceptance quota, once the acceptance cases stop
+  moving under it. The last run measured four cases, one of them ordering a
+  build no template could deliver; a quota read off that is a reading about the
+  cases. *(register: builder-acceptance-quota)*
+- Metering what a subscription plan actually carries until it resets.
+  Triggered, not scheduled: it fires when a recurring lane wants the
+  subscription path. *(register: subscription-budget)*
+- The message-header size watch. Headers carry no cap by design, so the watch
+  is the instrument: it fires on drift past ~100 KB on a single hop, and the
+  last reading was 5.4 KB max. *(register: header-size)*
+- Telling submissions apart by the door they came in at. Every question the
+  broker is asked carries the same requester and the same subject whichever
+  front raised it, so a rule that would open the shell to the operator and not
+  to an agent cannot be written today — the shell-scoped rule ships switched
+  off instead. *(register: policy-by-requester-origin)*
 
 ## Later: memory, after the measurement
 
 The memory hive is public since 0.9.0. The one finding that orders this stream,
 from a 50-question LongMemEval run: **the bottleneck is the synthesis, not the
 remembering** — in nineteen of twenty-one wrong answers the retrieval had
-already delivered the gold session
-([#148](https://github.com/mmeyerlein/meclaw/issues/148), measured on 0.9.0).
-The re-run waits until the memory chain (collector, recall, curator, memory
-hive) stops moving between builds.
+already delivered the gold session.
 
 - [#261](https://github.com/mmeyerlein/meclaw/issues/261) — the memory porter
   predates the substrate's `transfer` slot and duplicates four things it does
-  natively; it can shrink to a walk over the sixteen tables. Not urgent, but it
-  is the one component where a member's history is at stake, so it earns a slot
-  of its own rather than a place at the end of a wave.
+  natively; it can shrink to a walk over the sixteen tables. Not urgent, but
+  it is the one component where a member's history is at stake, so it earns a
+  slot of its own rather than a place at the end of a wave.
+- Re-running the answer half of that measurement, directed and stratified. It
+  waits until the memory chain — collector, recall, curator, memory hive —
+  stops moving between builds; a measurement of a surface still in motion buys
+  a number that is stale by the next build. *(register: memory-answer-half)*
 
-## Alongside: surfaces and docs
+## Alongside: surfaces, docs, and the way it is operated
 
 - [#43](https://github.com/mmeyerlein/meclaw/issues/43) — the README showcase
-  is down to its last piece: the moving proof is a capture of `canvy` now, or
-  nothing; the keyless quickstart and the annotated trace shipped long ago.
-
-Realtime voice is the near-term line in this stream — not a further channel but
-the way the thing is meant to be operated, spoken intent straight into
-structure in the tree. It gets a design round of its own before it gets an
-issue. Dictation (a voice note through the ordinary text path) stays fully
-designed and explicitly secondary.
-
-## Ongoing: community templates
-
-The template surface is open: a template is a directory, a README and a
-`template.json`. Thirty are listed in
-[`templates/README.md`](templates/README.md) as worked examples; what a hive
-template has to satisfy is § *The hive boundary* there — a requirement, not a
-convention.
-
+  is down to its last piece: the moving proof is a capture of the colony view
+  now, or nothing; the keyless quickstart and the annotated trace shipped long
+  ago.
 - [#138](https://github.com/mmeyerlein/meclaw/issues/138) — the environment
   knobs are a declared **experimental** surface; ~140 knob names remain across
   the shipped templates and migrate to params one template at a time, defaults
   bit-identical. Order: `memory-hive`, then `builder-librarian`, then the long
   tail.
+- Realtime voice — not a further channel but the way the thing is meant to be
+  operated: spoken intent straight into structure in the tree. It gets a
+  design round of its own before it gets an issue. Dictation (a voice note
+  through the ordinary text path) stays fully designed and explicitly
+  secondary. *(register: voice-realtime)*
+
+The template surface is open alongside all of this, and it needs no entry to
+stay that way: a template is a directory, a README and a `template.json`.
+Thirty-eight are listed in [`templates/README.md`](templates/README.md) as worked
+examples; what a hive template has to satisfy is § *The hive boundary* there —
+a requirement, not a convention.
 
 ## Shipped
 
 One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- **v0.28.0** — the organism grows its own surfaces: four composition levels from
+  one catalogue, a builder that submits through one front, a core with one brain
+  that declares its own errand, and one memory hive for several askers.
 - **v0.27.0** — the builder stops guessing and starts looking: the intake is a
   bounded, typed tool loop with four eyes and no hand.
 - **v0.26.0** — a template arrives in a running colony (`add_templates`), and

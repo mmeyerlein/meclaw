@@ -1,0 +1,57 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "ports": [],
+    "contract": {
+      "accepts": [
+        {
+          "route": "in_refresh",
+          "because": "redraw against a fresh picture of the colony NOW, rather than at the next tick; the hive ticks on its own, this is the extra one"
+        }
+      ],
+      "emits": [
+        {
+          "route": "view",
+          "because": "one view towards a display; who that display is, is the wiring's question. The app says what the picture IS and says it whole; it does not know which surface will hold it, whether anybody is looking, or whether a second display holds the same view beside the first"
+        }
+      ]
+    },
+    "graph": {
+      "edges": [
+        {
+          "from": ".",
+          "to": "./probe",
+          "condition": "has(hop.route) && hop.route == 'in_refresh'"
+        },
+        {
+          "from": "./refresh",
+          "to": "./probe"
+        },
+        {
+          "from": "./probe",
+          "to": "/colony/graph",
+          "condition": "has(hop.route) && hop.route == 'ask_colony'"
+        },
+        {
+          "from": "./probe",
+          "to": "./layout",
+          "condition": "has(hop.route) && hop.route == 'snapshot'"
+        },
+        {
+          "from": "./layout",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'view'"
+        }
+      ]
+    }
+  },
+  "description": {
+    "purpose": "An app: it draws the colony and hands the drawing to whoever is wired to hold it. A timer takes a topology snapshot and a code cell turns it into one view -- a component tree plus the components it is written in. THE HIVE IS THE ADDRESS: params.ports is empty, so no edge reaches a cell in here; a caller names the hive and a lane on hop.route.",
+    "use_when": "Somebody should see and rearrange what the colony knows, and a display is already there to show it. An app owns no channel and no port of its own, which is what lets the same drawing go to a display on a laptop, a display behind a proxy, or two displays at once, without this template knowing any of it.",
+    "not_in_scope": "It draws nothing the topology snapshot does not hold, and it takes that snapshot on a timer through this hive's own lane to the colony's read-only graph endpoint (GH #163: that endpoint is one of the absolute endpoints a mutation may draw, because it is the sanctioned alternative to reading colony.db; the counts-never-content ledger endpoint joined it with GH #267). So the picture is as fresh as that timer. No port, no authentication, no TLS -- an app has no surface to protect, and whatever guards the display guards this too. No object vocabulary beyond cells, hives and edges. No stored camera: where a person is looking is theirs and stays in their browser.",
+    "contract_in": "One lane, at the hive path. in_refresh -- take the topology snapshot now instead of at the next tick. Which cell does the asking is this hive's business.",
+    "contract_out": "One lane, out of the hive path. view -- the whole picture, ready to be laid on a surface. An edge from this hive to a display carries it and renames the lane to what the display accepts."
+  }
+}

@@ -43,7 +43,13 @@ async fn rescan_templates(
         })
         .await
         .unwrap();
-    ack_rx.await.unwrap();
+    // GH #440: the ack carries the scan outcome. Assert it — a silently aborted
+    // rescan would leave the template unknown, and the mutation below would then
+    // fail for a reason that has nothing to do with what this test injects.
+    ack_rx
+        .await
+        .unwrap()
+        .expect("the template rescan must succeed");
 }
 
 /// Chain: set hook → send mutation → parks after rename → the in_flight row is

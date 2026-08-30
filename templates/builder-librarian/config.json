@@ -9,12 +9,20 @@
         {
           "route": "in_request",
           "because": "a build request to find patterns for. The briefing comes back on `brief`; the original question rides along in it"
+        },
+        {
+          "route": "in_ingest",
+          "because": "a nudge to reconcile the catalogue against the colony's own template registry. The corpus is a seed, so it describes the library of the moment this librarian was born; anything registered since -- an `add_templates`, a hand-dropped directory plus a rescan -- is resolvable at the mutation door and invisible here until this lane is driven (GH #496). The body is not read: the message IS the nudge"
         }
       ],
       "emits": [
         {
           "route": "brief",
           "because": "the request plus the patterns found for it, for the authoring cell behind this librarian. Retrieval is an enhancement: a failed lookup comes back here too, degraded and marked, and never hangs a build"
+        },
+        {
+          "route": "catalogue",
+          "because": "the reconciliation's own report -- how many templates the registry holds, how many the corpus already carried, how many rows were written, and which names. Counted on the hop (`catalogue_known`, `catalogue_ingested`) so a run that found nothing is distinguishable from one that did not run. A refusal comes back here too, named and with the corpus untouched"
         }
       ]
     },
@@ -44,7 +52,58 @@
         {
           "from": "./retrieve",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'brief'"
+          "condition": "has(hop.route) && hop.route == 'brief'",
+          "modifier": {
+            "delete_context": [
+              "cat_added",
+              "cat_note",
+              "cat_seen",
+              "librarian_origin",
+              "orig_request"
+            ]
+          }
+        },
+        {
+          "from": ".",
+          "to": "./catalogue",
+          "condition": "has(hop.route) && hop.route == 'in_ingest'"
+        },
+        {
+          "from": "./catalogue",
+          "to": "/colony/templates",
+          "condition": "has(hop.route) && hop.route == 'cat_read'"
+        },
+        {
+          "from": "./catalogue",
+          "to": "./store",
+          "condition": "has(hop.route) && hop.route == 'cat_store'",
+          "modifier": {
+            "set_context": {
+              "librarian_origin": "'catalogue'",
+              "cat_seen": "hop.cat_seen",
+              "cat_added": "hop.cat_added",
+              "cat_note": "hop.cat_note"
+            }
+          }
+        },
+        {
+          "from": "./store",
+          "to": "./catalogue",
+          "condition": "context.librarian_origin == 'catalogue'"
+        },
+        {
+          "from": "./catalogue",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'catalogue'",
+          "modifier": {
+            "delete_context": [
+              "cat_added",
+              "cat_note",
+              "cat_seen",
+              "librarian_origin",
+              "orig_request"
+            ]
+          }
         }
       ]
     }

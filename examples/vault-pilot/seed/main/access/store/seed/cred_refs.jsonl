@@ -1,0 +1,2 @@
+{"schema": {"connector": "text", "env_var": "text", "owner": "text", "ref": "text", "rotated_at": "text", "status": "text"}}
+{"connector": "./brain", "env_var": "EXAMPLE_PROVIDER_KEY", "owner": "member:example", "ref": "cred:example-provider:primary", "rotated_at": "2026-01-01T00:00:00.000000Z", "status": "active"}

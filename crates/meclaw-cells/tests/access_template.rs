@@ -36,7 +36,7 @@
 //! is guarded per file by [`shipped_access`]; in the public clone the guard
 //! exits cleanly and these tests skip instead of failing on a dead `templates/`
 //! reference. Same form as `affinity_template.rs`, and the matching
-//! `ALLOWED_HITS` entry lives in `plans/export-fixtures/make_export.py`.
+//! `ALLOWED_HITS` entry lives in the maintainers' export script.
 
 use meclaw_cells::code::CodeCellFactory;
 use meclaw_cells::store::StoreCellFactory;
@@ -653,22 +653,49 @@ fn the_hive_carries_six_cells_no_model_and_starts_inert() {
         );
     }
 
-    // 1. Every seeded policy row is disabled.
+    // 1. Two seeded policy rows are on, by name, and every other one is off.
+    //    Ruling R-Policy-Default (2026-08-28): a freshly instantiated OS has to
+    //    be able to build and its brains have to be able to register for their
+    //    own identity, so `colony.mutate.default` and `affinity.subscribe.default`
+    //    ship enabled. The list is a LITERAL rather than a count, because the
+    //    thing worth pinning is WHICH rules grant on a fresh tree -- a third one
+    //    slipping into the on-set is exactly the drift this test exists to catch.
+    //    `code.author.default` is on the off-side of that line and its presence
+    //    there is asserted rather than implied: a fresh colony may build, and it
+    //    may still not author code nobody reviewed.
+    const ENABLED_BY_DEFAULT: [&str; 2] = ["colony.mutate.default", "affinity.subscribe.default"];
     let raw = std::fs::read_to_string(root.join("store/seed/policy.jsonl")).unwrap();
     let mut rules = 0usize;
+    let mut on: Vec<String> = Vec::new();
+    let mut off: Vec<String> = Vec::new();
     for line in raw.lines().filter(|l| !l.trim().is_empty()) {
         let row: Value = meclaw_core::serde_json::from_str(line).unwrap();
         // Line 1 of a seed file is the column-type header, not a row.
         if row.get("schema").is_some() {
             continue;
         }
-        assert_eq!(
-            row["enabled"].as_i64(),
-            Some(0),
-            "a seeded policy row is ENABLED: {row}"
-        );
+        let id = row["rule_id"].as_str().unwrap_or_default().to_string();
+        match row["enabled"].as_i64() {
+            Some(0) => off.push(id),
+            Some(1) => on.push(id),
+            other => panic!("policy.enabled is neither 0 nor 1 ({other:?}): {row}"),
+        }
         rules += 1;
     }
+    on.sort();
+    let mut want: Vec<String> = ENABLED_BY_DEFAULT.iter().map(|s| s.to_string()).collect();
+    want.sort();
+    assert_eq!(
+        on, want,
+        "exactly two seeded rules grant on a fresh tree, and they are named here. \
+         Anything else that ships enabled is a colony authorising something nobody \
+         asked it to"
+    );
+    assert!(
+        off.iter().any(|r| r == "code.author.default"),
+        "`code.author.default` must stay OFF: the default set lets a fresh colony build \
+         and register its brains, and stops exactly there. Rows found off: {off:?}"
+    );
     assert!(
         rules >= 2,
         "the policy seed pin swept almost nothing: {rules}"

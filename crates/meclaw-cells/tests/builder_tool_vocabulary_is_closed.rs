@@ -1,7 +1,7 @@
 //! What makes this builder concretely buildable where a general harness is not:
 //! its tool vocabulary is CLOSED, and every tool in it answers a refusal this
 //! system has actually produced
-//! (`plans/welle-2026-08-27/receipts/s12-luna-run.md`).
+//! (the S12 build runs, `CHANGELOG.md` § 0.26.0).
 //!
 //! So the ban is on the general-harness vocabulary — a shell, the open web, a
 //! file path, and above all a hand. None of them is missing by oversight; each
@@ -14,7 +14,7 @@
 //! test, not what a grep finds in the file.
 
 use meclaw_core::serde_json::{Value, json};
-use meclaw_testing::{emit_one, shipped_script};
+use meclaw_testing::{emit_all, shipped_script};
 use std::path::{Path, PathBuf};
 
 const TOOLS: &[&str] = &[
@@ -40,6 +40,15 @@ const BRIEF: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../templates/builder/brief/config.json"
 );
+
+/// The leg of the brief that reaches `./compose`. Since GH #477 the cell is a
+/// multi-send: the store leg that parks the question and the instructions in
+/// the round table travels first, the briefing itself second.
+fn compose_leg(all: Vec<Value>) -> Value {
+    all.into_iter()
+        .find(|m| m["header"]["route"] == "compose")
+        .expect("the brief's leg to the composer")
+}
 
 fn builder_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../templates/builder")
@@ -70,7 +79,7 @@ fn configs() -> Vec<(PathBuf, Value)> {
 /// One rendered briefing — the same execution `builder_brief_mutation_grammar.rs`
 /// performs, kept in step with it deliberately.
 fn briefed_body() -> Value {
-    emit_one(
+    compose_leg(emit_all(
         &shipped_script(BRIEF),
         &json!({
             "target": "/os/builder/brief",
@@ -86,7 +95,7 @@ fn briefed_body() -> Value {
                  "text": "### config.md -- required_drains (spec) [d-17]\na drain is …"}
             ],
         }),
-    )
+    ))
 }
 
 /// The tool names the briefing seeds into `system.tools`.

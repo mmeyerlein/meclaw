@@ -136,12 +136,22 @@ sys.stdout.write(json.dumps([]))
 
 /// The barrier of `w10b_remember_colony.rs`, unchanged: hold the tool call until
 /// the test has seen the episode it must bind to, then forward it byte for byte.
+///
+/// **The marker path is substituted into the script (GH #526).** It used to be
+/// read out of the process environment while the key was only written into
+/// `{root}/.env` -- and `.env` feeds `${VAR}` substitution in `config.json`
+/// values, not the environment a `code` cell's subprocess inherits. The lookup
+/// returned `""`, the `while marker and ...` loop never ran once, and the
+/// barrier held nothing back. It fails loudly now rather than quietly not
+/// existing.
 const GATE: &str = r#"
 import sys, json, os, time
 d = json.load(sys.stdin)["body"]
-marker = os.environ.get("GH372_MARKER", "")
+marker = "GH372_MARKER_PATH"
+if not marker or marker.endswith("_MARKER_PATH"):
+    raise SystemExit("gate: no marker path was substituted into this script")
 deadline = time.time() + 25
-while marker and not os.path.exists(marker) and time.time() < deadline:
+while not os.path.exists(marker) and time.time() < deadline:
     time.sleep(0.02)
 sys.stdout.write(json.dumps([{"header": {"route": "remember"},
                               "messages": d.get("messages", [])}]))
@@ -222,27 +232,25 @@ fn main_config() -> Value {
          "condition": "has(hop.route) && hop.route == 'turn'",
          "modifier": {"set_hop": {"route": "'in_turn'"},
                       "set_context": {"channel": "hop.chat_id"}}},
-        {"from": "./talky", "to": "./drain",
+        // THE PER-TURN LANE, straight at the writer port (GH #523). It ran
+        // through `memory-drain` until that issue: the adapter's ledger is a
+        // per-session high-water mark over ONE closed batch, and a per-turn
+        // cadence hands it two batches of one session at once -- the probe then
+        // reads the LAST parked batch and the user turn is lost. Ruling Q11 (GH
+        // #298) retracted the edge; `w9a_per_turn_colony.rs` and
+        // `member@1.4.0` draw the one below.
+        {"from": "./talky", "to": "./memory/writer",
          "condition": "has(hop.route) && hop.route == 'turn_write'",
-         "modifier": {"set_hop": {"route": "'in_batch'"},
-                      "set_context": {"session_id": "hop.session_id",
-                                      "audience_set": "'[\"member:user\",\"agent:assistant\"]'",
-                                      "speaker": "'member:user'",
-                                      "agent_id": "'agent:assistant'"}}},
-        {"from": "./talky", "to": "./drain",
-         "condition": "has(hop.route) && hop.route == 'write'",
-         "modifier": {"set_hop": {"route": "'in_batch'"},
-                      "set_context": {"session_id": "hop.session_id",
-                                      "audience_set": "'[\"member:user\",\"agent:assistant\"]'",
-                                      "speaker": "'member:user'",
-                                      "agent_id": "'agent:assistant'"}}},
-        {"from": "./drain", "to": "./memory/writer",
-         "condition": "has(hop.route) && hop.route == 'episode'",
          "modifier": {"set_context": {"session_id": "hop.session_id",
                                       "turn_id": "hop.turn_id",
-                                      "happened_at": "hop.happened_at"}}},
-        {"from": "./drain", "to": "/reject",
-         "condition": "has(hop.route) && hop.route == 'reject'"},
+                                      "happened_at": "hop.happened_at",
+                                      "audience_set": "'[\"member:user\",\"agent:assistant\"]'",
+                                      "speaker": "'member:user'",
+                                      "agent_id": "'agent:assistant'"}}},
+        // The close route reaches no memory any more (Q11); it is terminated
+        // rather than left unrouted, so the DLQ assertions keep meaning.
+        {"from": "./talky", "to": "./void",
+         "condition": "has(hop.route) && hop.route == 'write'"},
         {"from": "./talky", "to": "./gate",
          "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'remember'"},
         {"from": "./gate", "to": "./memory/extract-glue",
@@ -253,9 +261,16 @@ fn main_config() -> Value {
          "condition": "has(hop.route) && hop.route == 'reject'"},
         {"from": "./talky", "to": "/sink",
          "condition": "has(hop.route) && hop.route == 'answer'"},
-        {"from": "./drain/ledger", "to": "./void"},
         {"from": "./talky", "to": "./void",
          "condition": "has(hop.route) && hop.route == 'error'"},
+        // GH #519: since the writer mints an embedding row beside the episode,
+        // the SAME lane leaves the writer too. The hive drains both to
+        // `./embed` (`templates/memory-hive/config.json`); this island does not
+        // instantiate the embedder, so the leg is terminated here rather than
+        // left unrouted -- an unrouted leg is a dead letter, and the DLQ
+        // assertions are what makes the "nothing was lost" claim mean anything.
+        {"from": "./memory/writer", "to": "./void",
+         "condition": "has(hop.route) && hop.route == 'embed'"},
         {"from": "./memory/extract-glue", "to": "./void",
          "condition": "has(hop.route) && (hop.route == 'extract' || hop.route == 'embed')"}
     ]}}})
@@ -265,11 +280,12 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str, marker: &std::path::Path) 
     let root = td.path();
     std::fs::write(
         root.join(".env"),
-        format!(
-            "OPENROUTER_API_KEY=test-key\nKEEPER_IDLE_MS=0\n\
-             DISPATCHER_ASYNC_TOOLS=remember\nGH372_MARKER={}\n",
-            marker.display()
-        ),
+        // No GH372_MARKER here, and that is the repair of GH #526: the
+        // barrier's path is substituted into its SCRIPT below, because `.env`
+        // feeds `${VAR}` substitution in config values and not the environment
+        // a `code` cell's subprocess sees.
+        "OPENROUTER_API_KEY=test-key\nKEEPER_IDLE_MS=0\n\
+         DISPATCHER_ASYNC_TOOLS=remember\n",
     )
     .unwrap();
     write(root, "main/config.json", &main_config());
@@ -285,7 +301,11 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str, marker: &std::path::Path) 
     write(
         root,
         "main/gate/config.json",
-        &code_cell(GATE, &["remember"], json!({})),
+        &code_cell(
+            &GATE.replace("GH372_MARKER_PATH", &marker.display().to_string()),
+            &["remember"],
+            json!({}),
+        ),
     );
     write(
         root,
@@ -293,7 +313,6 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str, marker: &std::path::Path) 
         &code_cell(VOID, &[], json!({})),
     );
     copy_cells(&repo("templates/talky"), &root.join("main/talky"));
-    copy_cells(&repo("templates/memory-drain"), &root.join("main/drain"));
     memory_hive(root);
 
     patch(root, "main/talky/collector/assemble/config.json", |v| {
@@ -303,15 +322,19 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str, marker: &std::path::Path) 
         v["params"]["schedules"][0]["schedule_id"] = json!(SCHEDULE_ID);
         v["params"]["schedules"][0]["cron"] = json!(NEVER);
     });
-    for rel in [
-        "main/talky/brain/config.json",
-        "main/talky/summarizer/writer/config.json",
-    ] {
-        patch(root, rel, |v| {
-            v["params"]["base_url"] = json!(base_url);
-            v["params"]["model"] = json!("gpt-4o-mock");
-        });
-    }
+    // GH #464 -- the second timer of a shipped composite, and the same two
+    // patches for the same two reasons: `${uuid7:*}` is an INSTANTIATION
+    // substitution and a tree written straight to disk carries a literal, and a
+    // menu tick during a test run would ask a tools hive this colony does not
+    // have.
+    patch(root, "main/talky/collector/menu-clock/config.json", |v| {
+        v["params"]["schedules"][0]["schedule_id"] = json!(SCHEDULE_ID);
+        v["params"]["schedules"][0]["cron"] = json!(NEVER);
+    });
+    patch(root, "main/talky/brain/config.json", |v| {
+        v["params"]["base_url"] = json!(base_url);
+        v["params"]["model"] = json!("gpt-4o-mock");
+    });
 }
 
 async fn boot(
@@ -427,7 +450,18 @@ fn dlq_count(root: &std::path::Path) -> i64 {
         .expect("dead_letters count")
 }
 
-const EPISODES: &str = "SELECT id, turn_id, sender FROM episodes";
+/// The episode the annotation BINDS TO -- not "some episode". The lane writes
+/// two rows per turn, and under cargo-parallel load the assistant's can be
+/// committed first: a wait for one row then returns the wrong one, and the two
+/// ways that goes wrong are exactly the two intermittent failures measured on
+/// this pair. Either the row is the assistant's and `find(sender == "user")`
+/// finds nothing, or -- worse, because it reads like a lane defect -- the
+/// barrier is released while the user's row is still unwritten, the ingress
+/// finds no turn to bind to and rejects, and the test dies 30 s later on a fact
+/// that was never going to arrive. The condition being waited for is therefore
+/// the condition being relied on, spelled out in SQL.
+const USER_EPISODE: &str = "SELECT id, turn_id, sender FROM episodes \
+                            WHERE sender = 'user'";
 const FACTS: &str = "SELECT episode_id, subject, predicate, claim FROM facts";
 
 const REMEMBER_ARGS: &str = r#"{"facts":[{"subject":"user","predicate":"Favorite Editor","claim":"Helix","fact_kind":"world","confidence":90}],"nothing_new":false}"#;
@@ -457,11 +491,8 @@ async fn an_async_only_round_still_answers() {
 
     // The per-turn lane mints the episode the inline block will bind to; the
     // barrier is released once it exists (see the module note).
-    let episodes = await_rows(&db, EPISODES, 1);
-    let user_turn = episodes
-        .iter()
-        .find(|r| r[2] == "user")
-        .expect("the user turn is an episode");
+    let user_rows = await_rows(&db, USER_EPISODE, 1);
+    let user_turn = &user_rows[0];
     std::fs::write(&marker, b"go").unwrap();
 
     // CLAIM 1 -- the round comes back and the channel is answered. Before the
@@ -553,11 +584,8 @@ async fn a_mixed_completion_answers_the_turn_it_spoke_for() {
 
     h.send(turn("my favourite editor is Helix")).await;
 
-    let episodes = await_rows(&db, EPISODES, 1);
-    let user_turn = episodes
-        .iter()
-        .find(|r| r[2] == "user")
-        .expect("the user turn is an episode");
+    let user_rows = await_rows(&db, USER_EPISODE, 1);
+    let user_turn = &user_rows[0];
     std::fs::write(&marker, b"go").unwrap();
 
     // CLAIM 1 -- the channel is answered, and the answer is the sentence the
@@ -628,4 +656,30 @@ async fn a_mixed_completion_answers_the_turn_it_spoke_for() {
     }
 
     h.shutdown().await;
+}
+
+/// GH #526, the same lock as in `w10b_remember_colony.rs` and for the same
+/// reason: this file's barrier read its marker out of the process environment
+/// while the key was only ever written into the root env file -- which feeds
+/// `config.json` VALUE substitution, not a `code` cell's subprocess. The wait
+/// was skipped, and the ordering this test relies on was a race.
+#[test]
+fn the_barrier_carries_its_marker_in_its_own_script() {
+    assert!(
+        !GATE.contains("os.environ"),
+        "the barrier reads its marker out of the environment again -- a `code` \
+         cell's subprocess does not see the root env file (GH #526)"
+    );
+    let td = tempfile::TempDir::new().unwrap();
+    let marker = td.path().join("episode-seen");
+    build_tree(&td, "http://127.0.0.1:1/v1", &marker);
+    let cfg = std::fs::read_to_string(td.path().join("main/gate/config.json")).unwrap();
+    let v: Value = meclaw_core::serde_json::from_str(&cfg).unwrap();
+    let script = v["params"]["script_inline"]
+        .as_str()
+        .expect("script_inline");
+    assert!(
+        script.contains(&marker.display().to_string()),
+        "the deployed barrier does not carry the marker path it waits for: {script}"
+    );
 }

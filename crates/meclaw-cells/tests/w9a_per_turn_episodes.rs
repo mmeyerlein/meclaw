@@ -377,9 +377,9 @@ fn the_per_turn_lane_is_on_unless_somebody_turns_it_off() {
 /// What leaves is the day in the order it happened, on its OWN route -- but as
 /// one message per turn, because the hive's writer takes the first
 /// user/assistant turn of a body and ignores the rest. The `write` route stays
-/// what it was: it feeds the summarizer inside the talky, and firing that per
-/// turn would be an LLM call per turn -- the exact opposite of an LLM-free
-/// write path.
+/// what it was: a closed day for whoever archives one, and a memory hive's
+/// close pass behind it -- firing that per turn would be the exact opposite of
+/// an LLM-free write path.
 #[test]
 fn the_day_leaves_as_one_message_per_turn_in_the_order_it_happened() {
     let out = collector(select_reply(

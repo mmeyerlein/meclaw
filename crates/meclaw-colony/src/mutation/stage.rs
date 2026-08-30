@@ -560,6 +560,40 @@ pub(crate) fn copy_dir_recursive(
     Ok(())
 }
 
+/// Names a staged file the way a refusal can carry it: relative to the staged
+/// node, never as a host path (GH #507).
+///
+/// A staging refusal is read twice and by neither of the two readers on the
+/// machine that raised it: the requester gets it as the mutation's `details`,
+/// and since GH #502 the submitter's receipt carries that string verbatim into
+/// the next prompt of the cell that composed the manifest. The host path of
+/// `{root}/.staging/<mutation id>/` addresses nobody there — staging is
+/// pre-destructive, so the directory is already gone when the sentence is read,
+/// and what locates the defect (the node name and the `params` pointer the
+/// factory wrote) sits after it anyway.
+///
+/// So everything up to and including the `.staging` component AND the mutation
+/// id that follows it is cut. What is left is `<node>/config.json`,
+/// `<node>/<sub>/config.json` for a cell inside a staged subtree, and
+/// `<node>/seed/<table>.jsonl` for the seed loader, which refuses out of the
+/// same tree to the same readers. A path with no `.staging` component — no
+/// caller has one today, and a future one must not leak either — keeps its last
+/// component only. Non-UTF8 components are rendered lossily rather than dropped.
+fn refusal_name(path: &std::path::Path) -> String {
+    let parts: Vec<String> = path
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    // `.staging` is followed by the mutation id; the node name is the one after.
+    if let Some(i) = parts.iter().rposition(|c| c == ".staging")
+        && let Some(tail) = parts.get(i + 2..)
+        && !tail.is_empty()
+    {
+        return tail.join("/");
+    }
+    parts.last().cloned().unwrap_or_default()
+}
+
 /// Read + substitute + UUID-patch `config.json` inside the staging dir.
 ///
 /// Two views of the same config (GH #20): the DISK view resolves the instance
@@ -732,7 +766,7 @@ pub(crate) fn patch_and_substitute_config(
     {
         return Err(MutationError::InvalidParams(format!(
             "{}: {reason}",
-            cfg_path.display()
+            refusal_name(&cfg_path)
         )));
     }
     // Extract the contract block from the post-substitution config (T23) and
@@ -753,14 +787,15 @@ pub(crate) fn patch_and_substitute_config(
     // markers are exempt (scope markers, their contract block is not
     // evaluated). This single site covers add_nodes, the swap_nodes with-side
     // AND the subtree staging paths (`stage_subtree`/`stage_rename_root`),
-    // which all parse their per-cell config right here. The staging path in
-    // the error message carries the mutation id + node name (builder feedback).
+    // which all parse their per-cell config right here. The error message names
+    // the config by the node it belongs to -- `<node>/config.json`, the tail
+    // `refusal_name` keeps of the staging path (GH #507).
     if cell_type != "hive"
         && let Err(reason) = crate::config::validate_contract_presence(&contract_block)
     {
         return Err(MutationError::ContractIncomplete(format!(
             "{}: {reason}",
-            cfg_path.display()
+            refusal_name(&cfg_path)
         )));
     }
     let contract_view = crate::bootstrap::compile_contract_view(&contract_block)
@@ -905,6 +940,11 @@ pub(crate) fn seed_cell_db_if_present(
 /// Line 1: `{"schema": {"<col>": "<type>", ...}}` (text | int | json).
 /// Line 2+: `{"<col>": <value>, ...}` data rows.
 /// Table name is derived from the file stem (`items.jsonl` → `items`).
+///
+/// Every refusal here names the file through [`refusal_name`] — the
+/// seeder runs inside the staging tree, so the raw path would carry the host
+/// prefix into a receipt the requester reads elsewhere (GH #507). What is left
+/// is `<node>/seed/<table>.jsonl`, which is what the operator edits anyway.
 fn apply_seed_jsonl(
     conn: &rusqlite::Connection,
     path: &std::path::Path,
@@ -913,24 +953,25 @@ fn apply_seed_jsonl(
         .file_stem()
         .and_then(|s| s.to_str())
         .ok_or_else(|| {
-            MutationError::Schema(format!("seed file stem missing: {}", path.display()))
+            MutationError::Schema(format!("seed file stem missing: {}", refusal_name(path)))
         })?
         .to_string();
     let content = std::fs::read_to_string(path)
-        .map_err(|e| MutationError::Schema(format!("read seed {}: {e}", path.display())))?;
+        .map_err(|e| MutationError::Schema(format!("read seed {}: {e}", refusal_name(path))))?;
     let mut lines = content.lines();
     let header_line = lines
         .next()
-        .ok_or_else(|| MutationError::Schema(format!("empty seed {}", path.display())))?;
-    let header: JsonValue = meclaw_core::serde_json::from_str(header_line)
-        .map_err(|e| MutationError::Schema(format!("seed {} header parse: {e}", path.display())))?;
+        .ok_or_else(|| MutationError::Schema(format!("empty seed {}", refusal_name(path))))?;
+    let header: JsonValue = meclaw_core::serde_json::from_str(header_line).map_err(|e| {
+        MutationError::Schema(format!("seed {} header parse: {e}", refusal_name(path)))
+    })?;
     let schema_obj = header
         .get("schema")
         .and_then(|v| v.as_object())
         .ok_or_else(|| {
             MutationError::Schema(format!(
                 "seed {} header: missing schema object",
-                path.display()
+                refusal_name(path)
             ))
         })?;
     // CREATE TABLE IF NOT EXISTS from schema line. Type-mapping per Spec.
@@ -954,7 +995,7 @@ fn apply_seed_jsonl(
         &format!("CREATE TABLE IF NOT EXISTS \"{table}\" ({col_defs})"),
         [],
     )
-    .map_err(|e| MutationError::Schema(format!("seed {} CREATE TABLE: {e}", path.display())))?;
+    .map_err(|e| MutationError::Schema(format!("seed {} CREATE TABLE: {e}", refusal_name(path))))?;
     // INSERT rows with param-bind.
     let col_names: Vec<&String> = cols.iter().map(|(c, _)| c).collect();
     let placeholders = col_names.iter().map(|_| "?").collect::<Vec<_>>().join(",");
@@ -969,12 +1010,12 @@ fn apply_seed_jsonl(
             continue;
         }
         let row: JsonValue = meclaw_core::serde_json::from_str(raw).map_err(|e| {
-            MutationError::Schema(format!("seed {} line {}: {e}", path.display(), idx + 2))
+            MutationError::Schema(format!("seed {} line {}: {e}", refusal_name(path), idx + 2))
         })?;
         let row_obj = row.as_object().ok_or_else(|| {
             MutationError::Schema(format!(
                 "seed {} line {}: not an object",
-                path.display(),
+                refusal_name(path),
                 idx + 2
             ))
         })?;
@@ -987,7 +1028,7 @@ fn apply_seed_jsonl(
         conn.execute(&stmt, bind.as_slice()).map_err(|e| {
             MutationError::Schema(format!(
                 "seed {} line {} INSERT: {e}",
-                path.display(),
+                refusal_name(path),
                 idx + 2
             ))
         })?;
@@ -999,7 +1040,7 @@ fn apply_seed_jsonl(
 ///
 /// Layering-Invariante: meclaw-colony MUST NOT import meclaw-cells.
 /// Phase-16-Cleanup-Backlog: move to `meclaw-core` when a third consumer appears.
-fn json_to_sql_value(v: Option<&JsonValue>) -> rusqlite::types::Value {
+pub(crate) fn json_to_sql_value(v: Option<&JsonValue>) -> rusqlite::types::Value {
     use rusqlite::types::Value as SqlV;
     match v {
         None | Some(JsonValue::Null) => SqlV::Null,
@@ -1024,6 +1065,40 @@ mod tests {
     use std::collections::HashMap;
     use std::path::PathBuf;
     use tempfile::TempDir;
+
+    // GH #507 -- the refusal string a requester and a receipt reader get.
+    // `.staging/<mutation id>/` is machine-local and gone by the time the
+    // sentence is read; what stays is what locates the defect.
+
+    #[test]
+    fn a_staged_config_is_named_by_its_node() {
+        assert_eq!(
+            refusal_name(std::path::Path::new(
+                "/srv/colony/.staging/01a0-4c01-1397/feed-clock-a/config.json"
+            )),
+            "feed-clock-a/config.json"
+        );
+    }
+
+    #[test]
+    fn a_config_inside_a_staged_subtree_keeps_the_path_below_the_staged_root() {
+        assert_eq!(
+            refusal_name(std::path::Path::new(
+                "/srv/colony/.staging/01a0-4c01-1397/unit/inner/deep/config.json"
+            )),
+            "unit/inner/deep/config.json"
+        );
+    }
+
+    #[test]
+    fn a_path_without_a_staging_component_still_carries_no_host_prefix() {
+        let named = refusal_name(std::path::Path::new("/srv/colony/live/config.json"));
+        assert_eq!(named, "config.json");
+        assert!(
+            !named.contains('/'),
+            "the fallback must never render a directory prefix: {named}"
+        );
+    }
 
     fn make_registry(td: &TempDir, dir: &str, name: &str) -> (PathBuf, TemplatesRegistry) {
         let tpl = td.path().join("templates").join(dir);

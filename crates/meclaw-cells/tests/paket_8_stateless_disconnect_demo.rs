@@ -44,7 +44,7 @@
 //!   2. `cargo test -p meclaw-colony handle_cell_died`
 //!      — the `handle_cell_died` corridor unit-suite stays green.
 //!   3. `diff <(sed -n '/^async fn handle_cell_died(/,/^}$/p' colony.rs)
-//!         plans/paket-6-fixtures/expected_handle_cell_died_body.txt` — MUST be empty
+//!         .github/fixtures/expected_handle_cell_died_body.txt` — MUST be empty
 //!      (the `#[rustfmt::skip]`-frozen corridor: `Normal` → remove unchanged).
 //!   4. `cargo test -p meclaw-colony
 //!         cell_task::tests::stateless_dispatcher_fires_peace_on_stop_not_on_mailbox_close`

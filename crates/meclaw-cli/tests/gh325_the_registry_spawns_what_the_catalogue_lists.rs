@@ -27,7 +27,7 @@ fn repo(rel: &str) -> PathBuf {
 ///
 /// In the private tree `docs/cell-types.md` is the German edition and
 /// `docs/cell-types.en.md` the English one. The export collapses that pair:
-/// `DOCS_MAP` in `plans/export-fixtures/make_export.py` copies `.en.md` ONTO
+/// `DOCS_MAP` in the maintainers' export script copies `.en.md` ONTO
 /// the plain name and ships nothing else, so a public clone holds exactly one
 /// edition — the English text under `cell-types.md`, with no `.en.md` beside
 /// it. There "both editions agree" has nothing to compare, and the read that
