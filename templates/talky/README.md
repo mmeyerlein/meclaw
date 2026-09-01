@@ -567,7 +567,7 @@ The source is the affinity **hive** path and not `<...>/affinity/push`: affinity
 into `./push` is refused by the same rule that protects `./brain` here.
 
 **Drawing that first edge is a formal act.** It is a mutation like any other -- through
-`tools/apply`, the operator, `submit`, the gate and the broker -- and the gate recognises
+`tools/build-apply`, the operator, `submit`, the gate and the broker -- and the gate recognises
 it by its form: an `add_edges` entry whose `modifier.set_hop.route` is `'in_pack'` opens
 a door into somebody's prompt, so the gate checks that the door is the requester's **own**
 (the target is the requester's hive, the source is an `affinity`) and the broker answers

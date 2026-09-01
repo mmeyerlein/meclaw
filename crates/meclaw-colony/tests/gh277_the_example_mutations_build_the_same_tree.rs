@@ -612,7 +612,7 @@ const REFERENCED_SUB_UNITS: [&str; 3] = ["collector", "dispatcher", "session-kee
 /// 24 internal edges to 20: the lookup lane took four with it (the second seam
 /// edge, the `pack` and `menu` fan-outs to `./brain_fast`, its `stop`/`length`
 /// and error exits, and the `escalate_to_deep` loopback), and the declaration
-/// pair of `./declare` plus the `memory_recall` lane put three back. Exactly one
+/// pair of `./schemas` plus the `memory_recall` lane put three back. Exactly one
 /// of the five declarations grows a cogny, so that is 1 x -4. The fifth is in
 /// the declaration itself: `examples/meclaw-os/grow-cogny.json` drew three edges
 /// and now draws two, because the `ask_memory` ingress is gone. RE-MEASURED with

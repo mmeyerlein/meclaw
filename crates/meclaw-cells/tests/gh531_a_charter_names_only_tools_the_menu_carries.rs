@@ -126,7 +126,7 @@ const COMPOSITES: &[Composite] = &[
         graph: "assistant/config.json",
         layers: &[
             ("talky/collector/config.json", "assemble"),
-            ("assistant/surface/config.json", "collector/assemble"),
+            ("assistant/talky/config.json", "collector/assemble"),
         ],
     },
 ];

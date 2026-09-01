@@ -32,10 +32,16 @@ list is enumerated rather than prefixed. The edge that carries a submission to
 the door therefore lives in the **birth topology** and nowhere else.
 
 Because it lives in exactly one place, the audit trail lives in exactly one
-place too. That is the whole architecture: the builder next door drafts and has
+place too. That is the whole architecture: the builder drafts and has
 no such edge, so "the builder never applies" is a missing edge rather than a
 promise, and a missing edge can only be missing **between two nodes**. That is
-why drafting and submitting are two occupants of the OS level and not one.
+why drafting and submitting are two nodes and not one.
+
+Since GH #556 the two are not siblings any more: the drafter is an occupant of the
+OS level and this hive is an occupant of the **front door** beside it
+(`/os/operator/submit`). The guardrail is unchanged, because it was never about
+who stood where — it is about the edge that is absent between the drafter and the
+submitter, and an absent edge is absent at every address.
 
 ## Phases, recognised positively
 
@@ -168,10 +174,14 @@ So the flight row keeps one column of the diff it no longer holds (`registers`,
 derived by the same `add_templates` read `authors_code` makes for the second
 question), and the pop reads it back with the correlation.
 
-The caller this exists for is the shell one level up: `meclaw-os` draws
-`./submit -> ./builder` on a committed receipt that carries the key, re-stamped
-`in_ingest`, because the librarian's corpus is a seed that stops describing the
-library the moment a manifest registers a class (GH #496). The submitter is the
+The caller this exists for is the shell two levels up: `meclaw-os` draws
+`./operator -> ./builder` on a committed `sub_receipt` that carries the key,
+re-stamped `in_ingest`, because the librarian's corpus is a seed that stops
+describing the library the moment a manifest registers a class (GH #496).
+Until `meclaw-os@1.6.1` it read `./submit -> ./builder` on this hive's own
+`receipt`; since GH #556 this hive lives inside the front door, whose
+`sub_receipt` lane carries the receipt out for exactly the facts the shell
+reads. The submitter is the
 one cell in a tree that knows both facts — and it knows them without being told
 anything about who is listening.
 
@@ -350,8 +360,11 @@ have to be the mutation door. That would be a **second** edge onto
 true. Check-only is not the cheap option; the full lane is the wrong one.
 
 **The requester is not the fragende.** `access` reads `requester` off the
-**edge** and never out of a body (R-AC-1), and the edge says `/os/submit` — this
-hive, asking. The identity the substrate stamped on the submission travels as
+**edge** and never out of a body (R-AC-1), and the edge says `/os/operator/submit`
+— this hive, asking. (It said `/os/submit` while this hive was an occupant of the
+shell; since GH #556 it is an occupant of the front door, and the shipped policy
+rows moved with the path. The template itself did not change: it is re-homed, not
+rewritten.) The identity the substrate stamped on the submission travels as
 `subject`, the axis the broker already has for exactly this case and the one that
 is caller-written by design. The rule then reads *submit may `colony.mutate` **on
 behalf of** subject S under prefix P*, and the delegation stands visible in a row

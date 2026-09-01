@@ -370,7 +370,7 @@ fn the_named_stop_carries_the_caller_as_well() {
 /// this hive reads off the context. That is three keys and not six —
 /// `build_caller` and `build_auto_submit`, which the shell's four
 /// `./builder -> X` edges decide the door on, and `build_call_id`, which
-/// `tools/build` and `tools/apply` read back when the answer returns through
+/// `tools/build-draft` and `tools/build-apply` read back when the answer returns through
 /// their `in_build_result` door. `agent`, `build_op` and `build_scope` still
 /// leave on the HOP, where `head()` stamps them; nothing outside reads them off
 /// the context, and a `set_context` beside the `delete_context` of the same key

@@ -104,7 +104,7 @@ const CELLS_AFTER_GROW: usize = 18;
 /// Plus six from `cogny`: the brain, the cell that declares the core's own
 /// errand (`cogny@4.4.0`, GH #528), the three collector cells (the menu clock
 /// came with `collector@3.3.0`, GH #464) and the split. The lookup lane's brain
-/// was the sixth until 4.4.0 and `./declare` took its place in the count, which
+/// was the sixth until 4.4.0 and `./schemas` took its place in the count, which
 /// is a coincidence of arithmetic and not a swap: one is an `llm`, the other a
 /// `code` cell answering a menu question.
 const CELLS_AFTER_COGNY: usize = 24;
@@ -619,7 +619,7 @@ async fn the_seed_plus_grow_json_is_a_living_agent() {
     let with_core = registry_paths(&h).await;
     for expected in [
         "/cogny/brain",
-        "/cogny/declare",
+        "/cogny/schemas",
         "/cogny/collector/assemble",
         "/cogny/collector/window",
         "/cogny/dispatcher",

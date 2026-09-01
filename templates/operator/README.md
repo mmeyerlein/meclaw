@@ -1,9 +1,15 @@
-# `operator@1.0.0`
+# `operator@1.1.0`
 
-**One front door into the OS.** A sealed hive at the colony shell with one occupant per
-subject, reached by naming a lane and never a cell. It decides nothing, reaches the mutation
-door no more directly than a model's tool call does, and remembers exactly one thing: a draft
-nobody has said yes to yet.
+**One front door into the OS, and one place a submission lives.** A sealed hive at the
+colony shell with one occupant per subject, reached by naming a lane and never a cell. It
+decides nothing, and it remembers exactly one thing: a draft nobody has said yes to yet.
+
+Since 1.1.0 ([#556](https://github.com/mmeyerlein/meclaw/issues/556)) the **submitter** is
+one of the occupants. It used to be a hive of its own beside this one, which meant a
+submission crossed two shell stations for what is one job and the road was only readable by
+reading two templates. What moved is where the submitter *stands* — not what it may do: the
+drafter and the submitter are still two nodes, they still share no edge, and the reach onto
+`/colony/mutations` is still birth topology or nothing (ADR-0015 § Amendment 2026-08-31).
 
 What it adds is one thing, and the whole template follows from it.
 
@@ -28,7 +34,10 @@ that does work, `POST /colony/mutations`, walks past the gate and the broker ent
 lands in the mutation log with no requester at all.
 
 This hive lends that person a path. A request that arrives on `in_submit` becomes a message
-emitted by `/os/operator/submit`, and that is the identity that reaches the door.
+emitted by `/os/operator/intake`, and that is the identity that reaches the door one edge
+later. (Through 1.0.0 that cell was called `submit`; the name now belongs to the ref onto
+the `submit` template beside it, because a ref inside a template is named after the template
+it references — `docs/development-rules.md` § 8a, R1.)
 
 **It is not authentication and it must never become authentication.** There is no token
 here, no header check, no caller allow-list, no signature and no secret. This hive answers
@@ -46,11 +55,18 @@ question this template does not ask.
 | in | `in_dump` | `{target: <member path>}` — produce a dump of that member's memory |
 | in | `in_lifecycle` | `{op: 'birth' \| 'sleep' \| 'wake', scope, node?, edges?}` |
 | in | `in_draft` | a manifest the baumeister drew for an operator. Parked, answered, **not applied** — the only sender is the level's own `./builder -> ./operator` edge |
-| in | `in_receipt` | the submitter's answer to a submission this hive made |
+| in | `in_verdict` | the broker's answer to the one capability question a submission asks — the only sender is the level's own `./access -> ./operator` edge |
 | in | `export_done` | what the export lane answered |
-| out | `apply` | the manifest, digested, on its way to the submitter |
 | out | `export` | the export request on its way down, carrying `hop.target` |
 | out | `receipt` | what happened — **four senders, one lane** |
+| out | `ask` | the capability question, raised by `./submit` and answered back in on `in_verdict` |
+| out | `mutate` | the checked, attributed manifest, on its way to a door the colony's root draws or nobody does |
+| out | `sub_receipt` | the submitter's own receipt, let out **only** when it carries `hop.error_code` or `hop.registers_class` |
+
+`in_receipt` and `apply` were lanes of this rim through 1.0.0 and are edges inside it now:
+`./intake -> ./submit` and `./submit -> ./intake`. Three lanes arrived in their place, and
+none of the three is the front door's own — they are the submitter's, crossing this rim
+because the broker and the mutation door are outside the hive it now lives in.
 
 `params.ports` is `[]`. The hive path is the only address, so **a new subject is an occupant
 directory and a door inside this hive** — `add_nodes` plus one edge — and never a change to
@@ -74,19 +90,20 @@ learns which one they typed instead of reading a queue.
 
 | directory | reached on | what it does |
 |---|---|---|
-| `submit/` | `in_submit`, `in_draft`, `in_receipt` | draws the digest, emits `apply`, parks a draft and renders the receipt |
+| `intake/` | `in_submit`, `in_draft`, the submitter's `in_receipt` | draws the digest, emits `apply` next door, parks a draft and renders the receipt |
+| `submit/` | `in_apply`, `in_verdict` | a **ref** onto the `submit` template: the gate that asks the broker and the one node in the tree with a reach onto the mutation door |
 | `export/` | `in_dump`, `export_done` | turns `{target}` into a request on the lane the memory accepts |
-| `lifecycle/` | `in_lifecycle` | composes a birth / sleep / wake manifest and hands it to `submit` next door |
+| `lifecycle/` | `in_lifecycle` | composes a birth / sleep / wake manifest and hands it to `intake` next door |
 | `unknown/` | nothing else fired | one receipt, `unknown_route` |
-| `drafts/` | only `./submit` | a `store`: one row per parked draft, keyed by its digest |
+| `drafts/` | only `./intake` | a `store`: one row per parked draft, keyed by its digest |
 
-`lifecycle` has no digest of its own and no edge to the rim's `apply` lane: it emits one
-declaration internally to `submit`, which draws the digest over the bytes it forwards. One
-definition of a manifest's identity per hive, in one cell.
+`lifecycle` has no digest of its own and no edge onto `./submit`: it emits one declaration
+internally to `intake`, which draws the digest over the bytes it forwards. One definition of
+a manifest's identity per hive, in one cell.
 
 ### The digest
 
-`submit` carries the same `canonical()` / `digest()` helper the builder and the submitter
+`intake` carries the same `canonical()` / `digest()` helper the builder and the submitter
 carry, byte for byte, between the markers `# --8<-- digest-helper` and `# --8<-- end`;
 `gh425_the_digest_is_one_definition` compares the copies.
 
@@ -158,10 +175,14 @@ applies itself by default is the surprising one.
 
 ## What it is not
 
-- **Not a decider.** Every manifest that leaves here travels the submitter, its gate and the
-  broker exactly as a model's manifest does. No cell in this hive has an edge onto the
-  mutation door and none may acquire one — that edge lives in the birth topology and
-  nowhere else.
+- **Not a decider.** Every manifest still travels the digest, the gate and the broker
+  exactly as a model's manifest does. The sentence *"no cell in this hive has an edge onto
+  the mutation door"* is **precised rather than dropped** with GH #556: the submitter lives
+  here now, so `mutate` crosses this rim — but no cell of the *front door* raises it, none
+  may, and the reach itself did not change hands. `/colony/mutations` is not an endpoint a
+  mutation may draw at any scope, so the edge that finally carries the lane out of the
+  colony's root is birth topology or it does not exist, and nothing that happens in here can
+  acquire it.
 - **Not the control loop.** The loop is an ACTOR with a charter of its own and the subject
   `/os/argus`; this is the hand of a person, subject `/os/operator`. The broker can rule
   the two differently, and that is the point of them being two.
@@ -176,8 +197,8 @@ applies itself by default is the surprising one.
 
 ## Wiring it: the contract at the level above
 
-The shell (`meclaw-os`) is the only level that can wire this hive, because the submitter and
-the organisation container are its siblings only there.
+The shell (`meclaw-os`) is the only level that can wire this hive, because the broker, the
+baumeister and the organisation container are its siblings only there.
 
 ```
 .            --in_submit-->    ./operator        one lane per subject, at the hive path
@@ -195,34 +216,57 @@ the organisation container are its siblings only there.
 ./builder    --manifest-->     ./operator        set_hop route 'in_submit', guarded:
                                                  context.build_auto_submit == 'yes'   (the one-act road)
 
-./operator   --apply-->        ./submit          set_hop route 'in_apply'
-./submit     --receipt-->      ./operator        set_hop route 'in_receipt' (unguarded: one sender of in_apply)
+./operator   --ask-->          ./access          set_hop route 'in_request', set_context
+                                                 requester '/os/operator/submit', sub_ask '1',
+                                                 sub_sha hop.manifest_sha256          (R-AC-1)
+./access     --grant-->        ./operator        guarded: context.sub_ask == '1'
+                                                 set_hop route 'in_verdict'
+./operator   --mutate-->       .                 the one privileged lane, on out of the shell
+./operator   --sub_receipt-->  ./builder         guarded: has(hop.error_code)
+                                                 set_hop route 'in_receipt'            (GH #425)
+./operator   --sub_receipt-->  ./builder         guarded: NOT error_code AND registers_class
+                                                 set_hop route 'in_ingest'             (GH #504)
+
 ./operator   --export-->       ./orgs            set_hop route 'in_export', carries hop.target
 ./orgs       --export_done-->  ./operator
 ```
 
-**The round is told apart by the id.** `./submit` raises `receipt` for every submission it
-handles, and the `submit` occupant here marks the id it sends so that the marked id comes
-back: the submitter hands it over verbatim off its own flight row. It has to be the id and
-not the context, because the colony's answer to a mutation begins a **fresh trace** and
-nothing this hive promoted on the way out survives the round trip.
+The four bottom edges arrived with the submitter (#556). Through `operator@1.0.0` they were
+drawn from `./submit`, a sibling of this hive; the guards, the lanes and the re-stamps are
+the same ones, one hive further out. The two that are **gone** from the shell entirely are
+`./operator -> ./submit` on `apply` and `./submit -> ./operator` on `receipt`: they are now
+`./intake -> ./submit` and `./submit -> ./intake`, inside this file, and they cross nothing.
 
-The shell's `./submit -> ./operator` edge itself is **unguarded**, and that is a
-consequence of R-Zielfluss (a) rather than a looseness: this hive is the only sender of
-`in_apply`, so every receipt the submitter raises belongs to a round that started here. The
-marker still does its work, one level in — it is what tells this hive's TWO callers apart
-on the way back out. (The submitter's `receipt` does fan out once more, to `./builder`,
-guarded by `has(hop.error_code)`: that is the repair lane of GH #425.)
+**The round is told apart by the id.** `./submit` raises `receipt` for every submission it
+handles, and `intake` marks the id it sends so that the marked id comes back: the submitter
+hands it over verbatim off its own flight row. It has to be the id and not the context,
+because the colony's answer to a mutation begins a **fresh trace** and nothing this hive
+promoted on the way out survives the round trip.
+
+The interior `./submit -> ./intake` edge is **unguarded**, and that is a consequence of
+R-Zielfluss (a) rather than a looseness: `intake` is the only sender of `in_apply`, so every
+receipt the submitter raises belongs to a round that started here. The marker still does its
+work — it is what tells this hive's TWO callers apart on the way back out.
+
+**Why the submitter's receipt also leaves on a lane of its own.** It fans out a second time,
+to `./builder` at the level above: `in_receipt` when it carries a refusal (GH #425) and
+`in_ingest` when a committed diff registered a template class (GH #504). That copy leaves on
+`sub_receipt` and **not** on `receipt`, guarded here by exactly those two facts. The reason
+is arithmetic rather than taste: `receipt` is the lane a caller subscribes to, and a
+submission that answered on it twice — once rendered by `intake`, once raw from the gate —
+is a submission whose caller cannot tell which answer is the outcome. An ordinary committed
+receipt therefore has nothing to say outward and stays inside.
 
 **The direct path is gone, and this is where it went.** `member → org → submit` used to
 carry an assistant's `apply` straight to the submitter. It does not any more (R-Zielfluss
 (a)): an assistant's `build` / `build_op == 'apply'` becomes `in_submit` at `/os/operator`,
 and there is ONE submission front door rather than two. Nothing about the submitter
-changed; what changed is who addresses it. `./orgs -> ./submit` no longer exists, and
-neither does the `./submit -> ./orgs` receipt edge that answered it.
+changed; what changed is who addresses it — and since #556 the submitter is not even a node
+the shell could address: `/os/submit` no longer exists, and every road to the mutation door
+runs through this hive.
 
 **Two doors, one lane, and two carriers for which is which.** The `./orgs -> ./operator`
-edge sets `context.operator_caller = 'agent'`; the `submit` occupant reads it and writes
+edge sets `context.operator_caller = 'agent'`; the `intake` occupant reads it and writes
 the same fact into the correlation id as `op:agent:<id>` instead of `op:<id>`. On the way
 back it reads BOTH, puts `hop.submitter_kind` on the receipt, and the shell routes on
 THAT: an agent's receipt goes back down to `./orgs` as `in_build_result`, an operator's
@@ -244,7 +288,7 @@ reaching the assistant that submitted. `crates/meclaw-cells/tests/operator_one_f
 pins both roads.
 
 **The identity is the front door's, for both callers.** `envelope.reply_to` on what leaves
-`./operator/submit` is `/os/operator/submit` whether a person or an assistant asked, so an
+`./operator/intake` is `/os/operator/intake` whether a person or an assistant asked, so an
 agent's mutation is attributed to the front door and not to the assistant's own path. That
 is the ruling as taken (R4, R-Zielfluss (a)): the broker rules the front door, and the
 assistant reaches the door only through it. A per-caller subject is the `operator`-as-member

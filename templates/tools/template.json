@@ -1,10 +1,10 @@
 {
   "name": "tools",
-  "version": "1.2.0",
+  "version": "1.4.0",
   "description": {
-    "purpose": "The tool surface of one assistant as ONE node with ONE contract: `tool_call` in, `tool_result` out -- and, since 1.2.0, a second question it answers about ITSELF: name the tools you use and take their schemas back on `tool_schemas`. Which occupant serves a call is decided inside the hive, on `hop.tool_name`. Because the contract names lanes rather than cells, the whole implementation is one `swap_nodes` away from being something else: N tool cells today, one code-executing cell tomorrow, with no edge of the caller moving.",
+    "purpose": "The tool surface of one assistant as ONE node with ONE contract: `tool_call` in, `tool_result` out -- and, since 1.2.0, a second question it answers about ITSELF: name the tools you use and take their schemas back on `tool_schemas`. Which occupant serves a call is decided inside the hive, on `hop.tool_name`. Because the contract names lanes rather than cells, the whole implementation is one `swap_nodes` away from being something else: N tool cells today, one code-executing cell tomorrow, with no edge of the caller moving. Since 1.3.0 every occupant is REACHABLE: the two that stood here unwired, `mcp` and `vault`, are gone -- a cell type is not a tool, and an occupant nobody can reach teaches nothing (GH #547). Since 1.4.0 the two halves of the build round are named as a pair: `build` and `apply` are `build-draft` and `build-apply`, because one fetches a draft and the other submits it, and a shared prefix makes the pair visible in the graph (GH #554). The tool names the model sees are untouched -- `build_topology` and `apply_manifest` are the contract surface, and a cell name is not a tool name.",
     "use_when": "One per assistant. Draw ONE edge to the hive path stamping `hop.route = 'tool_call'`, and one back off it on `tool_result` -- the pairing is declared in `params.required_drains` and a mutation that wires only the first is refused. A cell that USES tools draws the second pair as well, `in_schemas` out and `tool_schemas` back, and asks once at start-up with the names its own template declares. `params.ports` is empty: the hive path is the only address, so no caller can grow an edge to a single tool and thereby pin the set.",
-    "not_in_scope": "No per-tool credentials: a cell that needs one binds it itself, late, from the environment. No judgement about which tool to call or whether it should have been called -- that happened upstream, and a hive that re-decided it would be a second brain with no conversation in front of it. No record of WHO asked for which schemas: what a cell uses is declared in that cell's own template, and a subscriber table here would be a second copy of it that drifts on the first rewiring. No memory tool either: a memory is a hive of the MEMBER (ADR-0002 E1) and reaching it is a lane of its own, not an occupant of this one. And no MCP SERVER as an occupant -- an MCP server is something a cell talks to; the `mcp` cell that talks to it stands here like every other tool.",
+    "not_in_scope": "No per-tool credentials: a cell that needs one binds it itself, late, from the environment. No judgement about which tool to call or whether it should have been called -- that happened upstream, and a hive that re-decided it would be a second brain with no conversation in front of it. No record of WHO asked for which schemas: what a cell uses is declared in that cell's own template, and a subscriber table here would be a second copy of it that drifts on the first rewiring. No memory tool either: a memory is a hive of the MEMBER (ADR-0002 E1) and reaching it is a lane of its own, not an occupant of this one. And no MCP SERVER as an occupant -- an MCP server is something a cell talks to. Since 1.3.0 the `mcp` CELL is not an occupant either, and neither is a `vault` (GH #547): a cell type is not a tool. This hive holds the cells this agent's tool calls REACH. A `vault` answers exactly one sender, its broker, and stands in the broker's own hive beside `invoke` -- which is what `templates/access` already ships. An `mcp` bridges ONE named server and is wired the day somebody names it. Both stood here unwired for four minor versions, and an occupant nobody can reach is a placeholder with documentation attached.",
     "examples": [
       "a brain emits a tool_call bundle -> the dispatcher splits it -> one message per call reaches this hive on hop.route == 'tool_call' -> one tool_result comes back per call, whichever tool ran",
       "a cell starts and sends {\"tools\": [\"web_search\", \"web_fetch\"]} on in_schemas -> two declarations come back on tool_schemas, and a name the hive does not have comes back in `unknown` rather than as a silence",
@@ -28,16 +28,6 @@
         "type": "string",
         "required": false,
         "because": "binds `params.base_path` of BOTH the `file` and the `edit` occupant, written `${TOOLS_FILE_ROOT:-/tmp}`. One key for two cells is deliberate: one assistant has one file root, and a tool that could edit what its neighbour cannot read would be a boundary nobody could state. Not required, and the default is the honest part -- `base_path` must name a directory that EXISTS or the cell refuses to spawn, and the only directory that exists on every machine is the scratch one. So unset, this assistant's file surface is rooted at /tmp: that is a real reach, it is nobody's mistake, and nothing anywhere reports it -- which is exactly why the key is written down here. Set it to the directory this assistant may actually touch"
-      },
-      "MCP_ENDPOINT": {
-        "type": "string",
-        "required": false,
-        "because": "binds `params.endpoint` of the `mcp` occupant, written `${MCP_ENDPOINT:-}`. It has NO default, unlike every other key here, and that is deliberate (GH #489): an MCP bridge is a long-running cell, and one pointed at a guessed loopback placeholder reconnects to nothing -- it used to panic five times per boot and leave a permanently `failed` cell in every colony that ever grew this template. Unset therefore means UNSET: the occupant spawns, holds no connection, calls nothing, and answers any call that does reach it with `error_code: \"endpoint_unset\"`. The occupant is also UNWIRED here (no edge names it), but that alone is not the safeguard -- derived island inactivity is a first-boot state, not a persisted one. Declared and not required for the same reason the search endpoint is -- an instantiation that wants the shell and the fetcher must not be refused over a server it will never call"
-      },
-      "TOOLS_VAULT_BROKER": {
-        "type": "string",
-        "required": false,
-        "because": "binds `params.broker` of the `vault` occupant, written `${TOOLS_VAULT_BROKER:-/os/access/invoke}`. A vault answers exactly ONE sender and attests its own inbound edges before it accepts key material; the sender is a capability broker's `invoke` cell, and there is none in this hive. That is why the occupant ships unwired and why this key exists: naming the broker is the decision, drawing the edges is the consequence. It names an ADDRESS, never key material -- the vault's own key source is VAULT_KEY_SOURCE, and no value of either travels in this tree"
       }
     }
   },
@@ -45,7 +35,7 @@
     "trust": "full",
     "network": "allow",
     "filesystem": "unrestricted",
-    "because": "The widest occupant wins on every axis, and on every axis the widest is an occupant that declares no `params.sandbox` at all. Six do: `web_fetch` and `web_search` (egress IS what those two cells do -- `network: \"deny\"` would turn them off, and a process sandbox has no notion of an allowed host), `file` and `edit` (they do their own I/O rather than starting a runner, so a process sandbox has nothing to bound here; their fence is `params.base_path`, checked lexically and again after canonicalisation), and `mcp` and `vault` (long-running and stateful respectively, and both UNWIRED in this tree -- no edge names their directory, so the substrate derives them inactive and nothing routes to them; they are counted here anyway, because a union that leaves a directory out of the calculation is the invisibility this block exists to end, and because waking one is one `add_edges` pair rather than a new file). Any single one of those six therefore sets the whole hive to trust `full`, network `allow`, filesystem `unrestricted`. The five that DO carry a block -- `bash`, `unknown`, `build`, `apply` and `schemas`, all of them `trust: restricted`, network `deny`, `filesystem.runtime: true`, the tightest in the library -- tighten nothing about the hive as a WHOLE: a union is not an average, and what they bound is what happens once dispatch has already chosen them. This reads uncomfortable and it is meant to: the radius already exists collectively and was invisible while it was spread over separate `config.json` files. Written down, it is what a replacement is measured against -- a single code-executing cell that needs exactly this is not a widening, and one that needs more is, visibly, in the diff of this file."
+    "because": "The widest occupant wins on every axis, and on every axis the widest is an occupant that declares no `params.sandbox` at all. Four do: `web_fetch` and `web_search` (egress IS what those two cells do -- `network: \"deny\"` would turn them off, and a process sandbox has no notion of an allowed host), and `file` and `edit` (they do their own I/O rather than starting a runner, so a process sandbox has nothing to bound here; their fence is `params.base_path`, checked lexically and again after canonicalisation). Any single one of those four therefore sets the whole hive to trust `full`, network `allow`, filesystem `unrestricted`. The five that DO carry a block -- `bash`, `unknown`, `build-draft`, `build-apply` and `schemas`, all of them `trust: restricted`, network `deny`, `filesystem.runtime: true`, the tightest in the library -- tighten nothing about the hive as a WHOLE: a union is not an average, and what they bound is what happens once dispatch has already chosen them. This reads uncomfortable and it is meant to: the radius already exists collectively and was invisible while it was spread over separate `config.json` files. Written down, it is what a replacement is measured against -- a single code-executing cell that needs exactly this is not a widening, and one that needs more is, visibly, in the diff of this file. Until 1.3.0 the sum also counted `mcp` and `vault`, two occupants no edge reached; they left the hive with GH #547, and a union over the occupants that actually answer is the narrower and the honest one."
   },
   "reentrancy": {
     "bash": {
@@ -64,11 +54,11 @@
       "reentrant": true,
       "because": "It formats a string out of the hop it was handed and emits it. It reads nothing, writes nothing and executes nothing, so there is no state for a concurrent call to reach. Declared explicitly although it is not a tool: #286's hazard is a swap that quietly turns a parallel tool round sequential, and a declaration with a hole cannot catch that -- the occupant nobody declared is the one whose serialisation surprises the caller."
     },
-    "build": {
+    "build-draft": {
       "reentrant": true,
       "because": "It reads a hop and a turn and writes a turn: no disk, no network, no state of its own. The correlation of a round runs over `tool_call_id`, which travels in the CONTEXT of that round's own message, so two builds in flight cannot reach each other's. What they DO share is the builder at the OS level -- one baumeister for the whole colony -- and that is a queue there, not a serialisation here: the second round waits for its own answer and still gets it under its own id."
     },
-    "apply": {
+    "build-apply": {
       "reentrant": true,
       "because": "The same shape: it carries a manifest out and a receipt back, keeping nothing. Two submissions in flight are two manifests the colony rolls off one after the other, in the order they reach the mutation door -- and because a manifest has no rollback, that order is the colony's to decide and never this cell's to assume."
     },
@@ -83,14 +73,6 @@
     "schemas": {
       "reentrant": true,
       "because": "It reads a list of names and writes a list of declarations out of a table that is compiled into its own script. No disk, no network, no state, nothing shared -- two start-up questions in flight cannot reach each other, and they are the only kind of message it ever gets."
-    },
-    "mcp": {
-      "reentrant": true,
-      "because": "A long-running bridge with one in-flight request per JSON-RPC id, so two calls are two ids and neither can be answered with the other's result. Declared although the occupant is UNWIRED in this tree: the hazard #286 named is a swap that quietly turns a parallel round sequential, and the occupant nobody declared is exactly the one whose serialisation surprises the caller the day somebody draws its edges."
-    },
-    "vault": {
-      "reentrant": true,
-      "because": "One operation per message against its own `cell.db`, and a cell is one task working its mailbox one message at a time -- two calls are two turns, never two halves of one. Declared for the same reason `mcp` is: it is UNWIRED here, and an entry that appears only once somebody wires a cell is an entry nobody reads at the moment it would have mattered."
     }
   },
   "tags": [

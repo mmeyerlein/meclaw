@@ -7,15 +7,15 @@
       "accepts": [
         {
           "route": "in_turn",
-          "because": "a screened turn on its way to the surface -- the one a channel of the MEMBER raised and the member's firewall passed back down. Since GH #454 the channel is one level up: it belongs to the person, not to one of their generations, so a second assistant of the same person is reached through the same bot by name. The turn arrives with `context.channel_node` (the node the answer routes back to), `context.channel` (the chat it is in -- GH #522), `context.user_id` and `context.audience_set` already stamped by the channel's own edge and re-stamped by the member's door, and with `context.assistant` naming which of the person's agents it was addressed to -- the member's container reads that key and nothing below it does. Derived from the accepts list of talky@4.5.1, which is what stands in ./surface"
+          "because": "a screened turn on its way to the surface -- the one a channel of the MEMBER raised and the member's firewall passed back down. Since GH #454 the channel is one level up: it belongs to the person, not to one of their generations, so a second assistant of the same person is reached through the same bot by name. The turn arrives with `context.channel_node` (the node the answer routes back to), `context.channel` (the chat it is in -- GH #522), `context.user_id` and `context.audience_set` already stamped by the channel's own edge and re-stamped by the member's door, and with `context.assistant` naming which of the person's agents it was addressed to -- the member's container reads that key and nothing below it does. Derived from the accepts list of talky@4.5.1, which is what stands in ./talky"
         },
         {
           "route": "in_bundle",
-          "because": "a memory bundle, coming back from whatever keeps this person's memory -- under GH #122 that is the MEMBER's memory hive, one level up, because two assistants of one person must know the same person. The assistant carries the answer down to the occupant that ASKED and keeps no copy. Since GH #532 there are two of them, and `hop.recall_caller` is what tells them apart: 'cogny' reaches the reasoning core through its own door, anything else -- including nothing at all -- takes the DEFAULT door to ./surface, which is where every bundle went before. The token is the asker's own, stamped on the way out and handed back onto the hop by the memory hive itself (memory-hive `bundle`); this level mints none of it and reads nothing else in it. Derived from the accepts list of talky@4.5.1"
+          "because": "a memory bundle, coming back from whatever keeps this person's memory -- under GH #122 that is the MEMBER's memory hive, one level up, because two assistants of one person must know the same person. The assistant carries the answer down to the occupant that ASKED and keeps no copy. Since GH #532 there are two of them, and `hop.recall_caller` is what tells them apart: 'cogny' reaches the reasoning core through its own door, anything else -- including nothing at all -- takes the DEFAULT door to ./talky, which is where every bundle went before. The token is the asker's own, stamped on the way out and handed back onto the hop by the memory hive itself (memory-hive `bundle`); this level mints none of it and reads nothing else in it. Derived from the accepts list of talky@4.5.1"
         },
         {
           "route": "in_advice",
-          "because": "an advisor's answer arriving as its own turn. The reasoning core inside this level answers on this lane too (./cogny -> ./surface), and the lane stays outward-facing for the other case: a SECOND agent, outside this assistant, that was asked something and answered late. Derived from the accepts list of talky@4.5.1"
+          "because": "an advisor's answer arriving as its own turn. The reasoning core inside this level answers on this lane too (./cogny -> ./talky), and the lane stays outward-facing for the other case: a SECOND agent, outside this assistant, that was asked something and answered late. Derived from the accepts list of talky@4.5.1"
         },
         {
           "route": "in_sweep",
@@ -31,20 +31,20 @@
         },
         {
           "route": "in_build_result",
-          "because": "the builder's answer on its way back to the tool round that asked -- a draft manifest, or the receipt of one that was submitted. It enters at the assistant path because its producer sits four levels up, at the OS level, where a level owns what its siblings must share (ADR-0013): one baumeister, one corpus, one audit trail for every organisation in the colony. This level only carries it down to the tool surface; it reads nothing in it. Derived from the accepts list of tools@1.2.0"
+          "because": "the builder's answer on its way back to the tool round that asked -- a draft manifest, or the receipt of one that was submitted. It enters at the assistant path because its producer sits four levels up, at the OS level, where a level owns what its siblings must share (ADR-0013): one baumeister, one corpus, one audit trail for every organisation in the colony. This level only carries it down to the tool surface; it reads nothing in it. Derived from the accepts list of tools@1.4.0"
         },
         {
           "route": "in_pack",
-          "because": "a durable `system.*` slot for this generation's brains -- `identity`, `persona`, `handover` or `instructions`, and nothing else. The charter is on that list since GH #488: it had been held out of the lane to keep a subscription from overwriting what the agent is for, which assumed it had another owner, and it had none -- so a rebuilt generation came up with an empty charter and answered as the vendor's default assistant. It crosses this level because BOTH occupants accept it and neither produces it: the surface's brain and the core's two brains are the same agent, and a generation whose channel voice knew who it was while its reasoning core did not would answer as two different people. So the door edge is a fan-out to both, and the pack is written three times because there are three `llm` cells behind this path -- each upserts into its own `cell.db`, which is the only place durable system state can live. WHAT THE FAN-OUT COSTS THE AUTHOR, measured on a live generation (GH #538): one text reaches two occupants with different MENUS, so an instruction that obliges the reader to call a tool has to say which reader it is for. A charter sharpened into *`consult_cogny` is mandatory* made the CORE -- which does not carry that name, because it IS the core -- answer three consultations in a row with `the reasoning core is not available in this session`. The cure is a role test inside the sentence (`if consult_cogny is on your menu`) plus the other half said out loud (`if it is not, you are the core`), not a second pack: this lane is deliberately one document for one agent. Derived from the accepts lists of talky@4.5.1 and cogny@4.4.0 (GH #458). PAIRED with `pack_ack` in `params.required_drains`"
+          "because": "a durable `system.*` slot for this generation's brains -- `identity`, `persona`, `handover` or `instructions`, and nothing else. The charter is on that list since GH #488: it had been held out of the lane to keep a subscription from overwriting what the agent is for, which assumed it had another owner, and it had none -- so a rebuilt generation came up with an empty charter and answered as the vendor's default assistant. It crosses this level because BOTH occupants accept it and neither produces it: the surface's brain and the core's two brains are the same agent, and a generation whose channel voice knew who it was while its reasoning core did not would answer as two different people. So the door edge is a fan-out to both, and the pack is written three times because there are three `llm` cells behind this path -- each upserts into its own `cell.db`, which is the only place durable system state can live. WHAT THE FAN-OUT COSTS THE AUTHOR, measured on a live generation (GH #538): one text reaches two occupants with different MENUS, so an instruction that obliges the reader to call a tool has to say which reader it is for. A charter sharpened into *`consult_cogny` is mandatory* made the CORE -- which does not carry that name, because it IS the core -- answer three consultations in a row with `the reasoning core is not available in this session`. The cure is a role test inside the sentence (`if consult_cogny is on your menu`) plus the other half said out loud (`if it is not, you are the core`), not a second pack: this lane is deliberately one document for one agent. Derived from the accepts lists of talky@4.5.1 and cogny@4.5.0 (GH #458). PAIRED with `pack_ack` in `params.required_drains`"
         },
         {
           "route": "in_export",
-          "because": "a demand that this generation hand out the one store it holds that the member cannot recompute: the session ledger of `./surface`, which decides whether a conversation continues or starts at zero. The lane crosses this level unchanged into the surface, which passes it on to its own keeper (talky@4.5.1 -> session-keeper@2.1.0, GH #475). Neither this level nor the surface reads a part or decides what may leave -- that is the keeper's own walk, the same arrangement the member's three holders have had since GH #471. What the member does with the parts is the member's: they leave here on `dump` and land in that level's export sink",
+          "because": "a demand that this generation hand out the one store it holds that the member cannot recompute: the session ledger of `./talky`, which decides whether a conversation continues or starts at zero. The lane crosses this level unchanged into the surface, which passes it on to its own keeper (talky@4.5.1 -> session-keeper@2.1.0, GH #475). Neither this level nor the surface reads a part or decides what may leave -- that is the keeper's own walk, the same arrangement the member's three holders have had since GH #471. What the member does with the parts is the member's: they leave here on `dump` and land in that level's export sink",
           "context": []
         },
         {
           "route": "in_import",
-          "because": "one part of such a document, for a generation that is already running. The other half of `in_export` and the return leg of the same document: the keeper's seed was read once, when its `cell.db` was created, so a ledger walked out of another colony after that moment has no way in except a message. It crosses unchanged into `./surface` (talky@4.5.1). WHICH generation a part belongs to is decided one level up, in the member's own container, by the edge that addresses this assistant -- a member with two generations has two ledgers, and they are not one document (GH #475)",
+          "because": "one part of such a document, for a generation that is already running. The other half of `in_export` and the return leg of the same document: the keeper's seed was read once, when its `cell.db` was created, so a ledger walked out of another colony after that moment has no way in except a message. It crosses unchanged into `./talky` (talky@4.5.1). WHICH generation a part belongs to is decided one level up, in the member's own container, by the edge that addresses this assistant -- a member with two generations has two ledgers, and they are not one document (GH #475)",
           "context": []
         }
       ],
@@ -67,7 +67,7 @@
         },
         {
           "route": "recall",
-          "because": "a memory read this turn needs, for the member's memory hive. ONE lane, TWO askers since GH #532: the conversation surface and the reasoning core both leave here, and each stamps `context.recall_caller` with its own name on the way out -- 'surface' or 'cogny'. That token is the whole of what identifies the asker, and it travels in CONTEXT because nothing else survives the hive (GH #411); the hive hands it back on the hop of the returning `in_bundle`, which is the compartment a door of this level is allowed to be guarded on. STAMPED, never defaulted: the core's answer re-enters the surface on `in_advice` carrying the core's whole context, so a leg that only wrote the token when it was missing would inherit 'cogny' from the consultation it just had and post its own bundle through the core's door. A caller at this boundary sends nothing new -- the lane is the same lane, and the second asker costs it no key. Derived from the emits list of talky@4.5.1 and of the reasoning core in ./cogny"
+          "because": "a memory read this turn needs, for the member's memory hive. ONE lane, TWO askers since GH #532: the conversation surface and the reasoning core both leave here, and each stamps `context.recall_caller` with its own name on the way out -- 'talky' or 'cogny'. That token is the whole of what identifies the asker, and it travels in CONTEXT because nothing else survives the hive (GH #411); the hive hands it back on the hop of the returning `in_bundle`, which is the compartment a door of this level is allowed to be guarded on. STAMPED, never defaulted: the core's answer re-enters the surface on `in_advice` carrying the core's whole context, so a leg that only wrote the token when it was missing would inherit 'cogny' from the consultation it just had and post its own bundle through the core's door. A caller at this boundary sends nothing new -- the lane is the same lane, and the second asker costs it no key. Derived from the emits list of talky@4.5.1 and of the reasoning core in ./cogny"
         },
         {
           "route": "prune",
@@ -75,19 +75,19 @@
         },
         {
           "route": "error",
-          "because": "a normalised failure report from anything inside this generation -- the surface or the reasoning core. A CHANNEL's failure is no longer among them: since GH #454 the connector stands in the member's `channels` container and its failures leave on the member's own `error` lane, one level up and beside this one. Which cell produced it is not the caller's business; the assistant is a boundary, not a consumer, and an error that crosses it is one the parent owes a drain. Derived from the emits lists of talky@4.5.1 and cogny@4.4.0"
+          "because": "a normalised failure report from anything inside this generation -- the surface or the reasoning core. A CHANNEL's failure is no longer among them: since GH #454 the connector stands in the member's `channels` container and its failures leave on the member's own `error` lane, one level up and beside this one. Which cell produced it is not the caller's business; the assistant is a boundary, not a consumer, and an error that crosses it is one the parent owes a drain. Derived from the emits lists of talky@4.5.1 and cogny@4.5.0"
         },
         {
           "route": "build",
-          "because": "a structural wish leaving this generation, or a manifest being submitted by whoever drafted it. It is the one lane on which a tool of this assistant reaches OUT of the assistant, and it is declared rather than hidden: the reach exists, and a contract that did not name it would be the same defect `sandbox_union` was written to fix one level down. Derived from the emits list of tools@1.2.0"
+          "because": "a structural wish leaving this generation, or a manifest being submitted by whoever drafted it. It is the one lane on which a tool of this assistant reaches OUT of the assistant, and it is declared rather than hidden: the reach exists, and a contract that did not name it would be the same defect `sandbox_union` was written to fix one level down. Derived from the emits list of tools@1.4.0"
         },
         {
           "route": "pack_ack",
-          "because": "the receipt of one pack, unconditionally -- accepted and refused alike. TWO travel here per pack and that is the lane's arithmetic rather than a defect: the fan-out above is to two sealed occupants, each of which answers once for itself (the cogny answers once for both of its brains). A caller at this boundary therefore counts OCCUPANTS and not packs, and the sender that pushed reads its own delivery off `hop.pack_owner` and `hop.error_code`, both of which every receipt carries. Joining the two into one would need a cell at this level to hold them, and this level holds no state of any kind. Derived from the emits lists of talky@4.5.1 and cogny@4.4.0 (GH #458)"
+          "because": "the receipt of one pack, unconditionally -- accepted and refused alike. TWO travel here per pack and that is the lane's arithmetic rather than a defect: the fan-out above is to two sealed occupants, each of which answers once for itself (the cogny answers once for both of its brains). A caller at this boundary therefore counts OCCUPANTS and not packs, and the sender that pushed reads its own delivery off `hop.pack_owner` and `hop.error_code`, both of which every receipt carries. Joining the two into one would need a cell at this level to hold them, and this level holds no state of any kind. Derived from the emits lists of talky@4.5.1 and cogny@4.5.0 (GH #458)"
         },
         {
           "route": "dump",
-          "because": "the output of the two transfer lanes, raised by the keeper inside `./surface` and carried out of this level unchanged (talky@4.5.1): `hop.dump_kind == 'export_part'` is one part of the session document, `hop.dump_kind == 'import_receipt'` says what one applied part wrote. Drain it with a PLAIN `hop.route == 'dump'` edge -- an edge that also tested `dump_kind` reads as no drain under the required_drains probe -- and the member does exactly that, into the same export sink its own three holders write to (GH #475). A refusal does not travel here: the porter refuses on the keeper's own lane, which the surface normalises into `error` before it ever reaches this level"
+          "because": "the output of the two transfer lanes, raised by the keeper inside `./talky` and carried out of this level unchanged (talky@4.5.1): `hop.dump_kind == 'export_part'` is one part of the session document, `hop.dump_kind == 'import_receipt'` says what one applied part wrote. Drain it with a PLAIN `hop.route == 'dump'` edge -- an edge that also tested `dump_kind` reads as no drain under the required_drains probe -- and the member does exactly that, into the same export sink its own three holders write to (GH #475). A refusal does not travel here: the porter refuses on the keeper's own lane, which the surface normalises into `error` before it ever reaches this level"
         }
       ]
     },
@@ -105,7 +105,7 @@
       {
         "accepts": "in_pack",
         "emits": "pack_ack",
-        "because": "a pack answers unconditionally -- with the slots it wrote, or with the code that refused it. Undrained, every push dead-letters its own receipt and the sender's `sent_at` stamp records a delivery nobody can confirm. Taken from talky@4.5.1 and cogny@4.4.0, which pair the same two lanes one level down"
+        "because": "a pack answers unconditionally -- with the slots it wrote, or with the code that refused it. Undrained, every push dead-letters its own receipt and the sender's `sent_at` stamp records a delivery nobody can confirm. Taken from talky@4.5.1 and cogny@4.5.0, which pair the same two lanes one level down"
       },
       {
         "accepts": "in_export",
@@ -122,7 +122,7 @@
       "edges": [
         {
           "from": ".",
-          "to": "./surface",
+          "to": "./talky",
           "condition": "has(hop.route) && hop.route == 'in_turn'"
         },
         {
@@ -132,33 +132,33 @@
         },
         {
           "from": ".",
-          "to": "./surface",
+          "to": "./talky",
           "default": true,
           "condition": "has(hop.route) && hop.route == 'in_bundle'"
         },
         {
           "from": ".",
-          "to": "./surface",
+          "to": "./talky",
           "condition": "has(hop.route) && hop.route == 'in_advice'"
         },
         {
           "from": ".",
-          "to": "./surface",
+          "to": "./talky",
           "condition": "has(hop.route) && hop.route == 'in_sweep'"
         },
         {
           "from": ".",
-          "to": "./surface",
+          "to": "./talky",
           "condition": "has(hop.route) && hop.route == 'in_prune'"
         },
         {
           "from": ".",
-          "to": "./surface",
+          "to": "./talky",
           "condition": "has(hop.route) && hop.route == 'in_round_sweep'"
         },
         {
           "from": ".",
-          "to": "./surface",
+          "to": "./talky",
           "condition": "has(hop.route) && hop.route == 'in_pack'"
         },
         {
@@ -167,7 +167,7 @@
           "condition": "has(hop.route) && hop.route == 'in_pack'"
         },
         {
-          "from": "./surface",
+          "from": "./talky",
           "to": ".",
           "condition": "has(hop.route) && hop.route == 'answer'",
           "modifier": {
@@ -180,7 +180,7 @@
           }
         },
         {
-          "from": "./surface",
+          "from": "./talky",
           "to": ".",
           "condition": "has(hop.route) && hop.route == 'write'",
           "modifier": {
@@ -193,7 +193,7 @@
           }
         },
         {
-          "from": "./surface",
+          "from": "./talky",
           "to": ".",
           "condition": "has(hop.route) && hop.route == 'turn_write'",
           "modifier": {
@@ -206,7 +206,7 @@
           }
         },
         {
-          "from": "./surface",
+          "from": "./talky",
           "to": ".",
           "condition": "has(hop.route) && hop.route == 'extraction'",
           "modifier": {
@@ -219,12 +219,12 @@
           }
         },
         {
-          "from": "./surface",
+          "from": "./talky",
           "to": ".",
           "condition": "has(hop.route) && hop.route == 'recall'",
           "modifier": {
             "set_context": {
-              "recall_caller": "'surface'"
+              "recall_caller": "'talky'"
             },
             "delete_context": [
               "col_phase",
@@ -250,7 +250,7 @@
           }
         },
         {
-          "from": "./surface",
+          "from": "./talky",
           "to": ".",
           "condition": "has(hop.route) && hop.route == 'prune'",
           "modifier": {
@@ -263,7 +263,7 @@
           }
         },
         {
-          "from": "./surface",
+          "from": "./talky",
           "to": ".",
           "condition": "has(hop.route) && hop.route == 'error'",
           "modifier": {
@@ -276,7 +276,7 @@
           }
         },
         {
-          "from": "./surface",
+          "from": "./talky",
           "to": ".",
           "condition": "has(hop.route) && hop.route == 'pack_ack'",
           "modifier": {
@@ -302,7 +302,7 @@
           }
         },
         {
-          "from": "./surface",
+          "from": "./talky",
           "to": "./cogny",
           "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'consult_cogny'",
           "modifier": {
@@ -318,7 +318,7 @@
           }
         },
         {
-          "from": "./surface",
+          "from": "./talky",
           "to": "./tools",
           "default": true,
           "condition": "has(hop.route) && hop.route == 'tool'",
@@ -327,12 +327,12 @@
               "route": "'tool_call'"
             },
             "set_context": {
-              "tool_caller": "'surface'"
+              "tool_caller": "'talky'"
             }
           }
         },
         {
-          "from": "./surface",
+          "from": "./talky",
           "to": "./tools",
           "condition": "has(hop.route) && hop.route == 'schemas'",
           "modifier": {
@@ -340,12 +340,12 @@
               "route": "'in_schemas'"
             },
             "set_context": {
-              "tool_caller": "'surface'"
+              "tool_caller": "'talky'"
             }
           }
         },
         {
-          "from": "./surface",
+          "from": "./talky",
           "to": "./cogny",
           "condition": "has(hop.route) && hop.route == 'schemas'",
           "modifier": {
@@ -353,13 +353,13 @@
               "route": "'in_schemas'"
             },
             "set_context": {
-              "tool_caller": "'surface'"
+              "tool_caller": "'talky'"
             }
           }
         },
         {
           "from": "./cogny",
-          "to": "./surface",
+          "to": "./talky",
           "condition": "has(hop.route) && hop.route == 'answer'",
           "modifier": {
             "set_hop": {
@@ -373,7 +373,7 @@
         },
         {
           "from": "./cogny",
-          "to": "./surface",
+          "to": "./talky",
           "condition": "has(hop.route) && hop.route == 'tool_schemas'",
           "modifier": {
             "set_hop": {
@@ -435,7 +435,7 @@
         },
         {
           "from": "./tools",
-          "to": "./surface",
+          "to": "./talky",
           "condition": "has(hop.route) && hop.route == 'tool_result' && (!has(context.tool_caller) || context.tool_caller != 'cogny')",
           "modifier": {
             "set_hop": {
@@ -445,7 +445,7 @@
         },
         {
           "from": "./tools",
-          "to": "./surface",
+          "to": "./talky",
           "condition": "has(hop.route) && hop.route == 'tool_schemas' && (!has(context.tool_caller) || context.tool_caller != 'cogny')",
           "modifier": {
             "set_hop": {
@@ -489,16 +489,16 @@
         },
         {
           "from": ".",
-          "to": "./surface",
+          "to": "./talky",
           "condition": "has(hop.route) && hop.route == 'in_export'"
         },
         {
           "from": ".",
-          "to": "./surface",
+          "to": "./talky",
           "condition": "has(hop.route) && hop.route == 'in_import'"
         },
         {
-          "from": "./surface",
+          "from": "./talky",
           "to": ".",
           "condition": "has(hop.route) && hop.route == 'dump'",
           "modifier": {
@@ -514,10 +514,10 @@
     }
   },
   "description": {
-    "purpose": "One generation of one person's agent: the conversation surface, the reasoning core and the tool surface. Three refs and no container at all. Since GH #454 the level is complete at birth: the channels moved up to the MEMBER, so what used to be an open `channels` container filled one mutation per channel is now one shipped `surface` -- the talky that keeps this generation's sessions -- wired to its two siblings by edges of this template. A second channel costs nothing here; it is a node in the person's `channels` container and an edge that names this assistant.",
-    "use_when": "One per generation of an assistant, instantiated into a member's ./assistants container, with its transit lanes wired in the same mutation. Nothing comes afterwards: there is no per-channel follow-up mutation any more. Give the generation its model and its prompt with `override_params` on `<assistant>/surface/brain` and `<assistant>/surface/collector`. The member's own container is what decides which generation a turn was addressed to -- one edge per assistant, guarded on `context.assistant`, drawn by the mutation that instantiates this node (templates/member/README.md, 'Addressing an assistant through a channel'). Replacing the generation replaces this node; the older one stays in place, silent and readable.",
+    "purpose": "One generation of one person's agent: the conversation surface, the reasoning core and the tool surface. Three refs and no container at all. Since GH #454 the level is complete at birth: the channels moved up to the MEMBER, so what used to be an open `channels` container filled one mutation per channel is now one shipped `talky` -- the talky that keeps this generation's sessions -- wired to its two siblings by edges of this template. A second channel costs nothing here; it is a node in the person's `channels` container and an edge that names this assistant.",
+    "use_when": "One per generation of an assistant, instantiated into a member's ./assistants container, with its transit lanes wired in the same mutation. Nothing comes afterwards: there is no per-channel follow-up mutation any more. Give the generation its model and its prompt with `override_params` on `<assistant>/talky/brain` and `<assistant>/talky/collector`. The member's own container is what decides which generation a turn was addressed to -- one edge per assistant, guarded on `context.assistant`, drawn by the mutation that instantiates this node (templates/member/README.md, 'Addressing an assistant through a channel'). Replacing the generation replaces this node; the older one stays in place, silent and readable.",
     "not_in_scope": "No channel and no connector: a channel belongs to the PERSON, not to one of their generations (GH #454) -- a bot a generation owned would have to be re-created on every swap, and a screen two agents share could not hang anywhere. No memory hive and no memory-drain: the memory belongs to the MEMBER (GH #122, ADR 0012) and per-turn extraction (GH #298, ruling Q11) replaced the drain -- `extraction` leaves this level on its own lane. No firewall: the screen sits one level up, outside the generation, so two channels meet one view of an attacker and a swap does not restart the rate window. No terminal and no sink of any kind (ruling Q2, GH #284): `error` leaves the level and becomes no_route in the DLQ if nobody consumes it, which is recorded and self-localising. No tool schemas of its own: since GH #464 they live in ./tools, beside the cells they describe, and each caller inside this level ASKS for the ones its own template declares -- the answer lands in the calling brain's system.tools, which is where a menu was always read from and is now no longer typed.",
-    "contract_derivation": "The fifteen lanes are the union of what this level's three occupants accept and emit at the versions named in each `because` (talky in ./surface, cogny, tools), minus the lanes a sibling inside the level consumes itself. Three subtractions, all real: `tool` (both the surface's and the core's, consumed by ./tools through the guarded default), `tool_call`/`tool_result` (the tool surface's own pair, both ends inside), and `in_tool` (supplied by ./tools, never from outside). `in_memory_call` and `in_thread_call` are declared by talky@4.3.0 and are deliberately NOT declared here: no occupant outside this level produces them, and giving them a door would be an interface promising something nothing sends (GH #55 serves them inside the talky). Until GH #532 the reasoning core's `recall` was the one occupant emit with no home, and the reason it gave was a real constraint read one step short: at this boundary the surface's recall leg and the core's collapse onto ONE lane pair, a hop key does not survive the member's memory hive (GH #411 -- the `recall` cell forms its own hop, and only context travels), and a door guarded on context ALONE is condemned by crates/meclaw-cells/tests/gh173_shipped_hive_contracts.rs, whose probe carries a bare route and an EMPTY context compartment. What resolves it is a reply-to token that CHANGES COMPARTMENT on the way home: each asker stamps `context.recall_caller` on its own `recall` exit, the hive carries a key it never named through untouched, and the hive's own exit hands it back on `hop.recall_caller` -- so the core's door is guarded on a HOP key, which is exactly the carve-out W7-R1 (GH #286) grants a door reading a key the probe cannot carry, and the surface's door becomes the `default`, so an absent or unknown token lands where every bundle landed before. It is the arrangement this level already uses one door over: `context.tool_caller` is what tells the surface's and the core's tool results apart on their way back from ./tools. The lane SET at this boundary is unchanged -- one `recall` out, one `in_bundle` in, and no key a caller must now promote -- and what is new is that a caller can address the core with a bundle, which it never could. GH #454 moved exactly one lane in each direction and both fall out of the rule rather than out of a decision: `answer` stopped being subtracted, because the connector that consumed it inside this level is now the member's and stands outside; `turn` stopped being emitted, because the raw wire that produced it is outside too and reaches the member's screen without crossing this level at all. GH #458 adds one lane in each direction and both fall out of the same rule: `in_pack` and `pack_ack` are new on talky@4.5.1 and cogny@4.4.0, no sibling inside this level consumes either, so both cross. `in_pack` is the one door edge that is a deliberate FAN-OUT rather than a route to one occupant -- one generation is one person's agent, and its three `llm` cells must not disagree about who that is -- which is why `pack_ack` crosses twice per pack and the lane's own `because` says so instead of leaving a caller to discover it. GH #464 adds a lane in each direction to BOTH occupants and neither of them crosses, for the same reason `tool_call`/`tool_result` do not: `schemas` (the tool names a caller declares it uses) is consumed by ./tools inside this level, and `in_menu` (the declarations coming back) is supplied by ./tools and never from outside. So the lane set at this boundary is unchanged and the level grows four edges instead -- the same pair, drawn once for the surface and once for the core, told apart on the way back by `context.tool_caller` exactly as a tool result is. That is the third digit: nothing a caller at this boundary can do is new. GH #529 adds that same pair a SECOND time -- surface to core and back -- and GH #530 removes the `ask_memory` errand edge. Neither touches the lane set at this boundary, for the reason #464 already gave: `schemas` is consumed by an occupant inside this level, `in_menu` is supplied by one, and an errand name is an edge CONDITION rather than an address. WHAT THE FOUR EDGES SAY, since an edge carries no `because` of its own. (1) `./surface -> ./cogny` on `schemas`: the same question asked of the OTHER answerer. A tool the composite reaches by an edge on its NAME is not the tool hive's, it is topology of the level that draws the edge, and only the side that ANSWERS it can declare it -- `consult_cogny`'s schema used to be a hand-typed seed row in the surface's brain, and #464 replaced the hand-typed menu with an asked-for one and took the row with it. Both `schemas` edges are regular and both fire for one message: the tick asks every answerer at once, and the guarded default that carries `tool` is not affected, because a `schemas` message does not match its condition. (2) `./cogny -> ./surface` on `tool_schemas`: the core's answer, landing on the surface's `in_menu` lane and stamping `context.tool_answerer` so the collector MERGES this half with the hive's instead of replacing it -- the menu write is a `$replace`. It is told apart from the core's own `schemas` REQUEST by the lane and not by a negation: asking and answering are two routes. (3)+(4) the two `./tools -> X` `tool_schemas` edges stamp the same key with the hive's name; `tool_answerer` is the mirror of the `context.tool_caller` the request already carried. And on the consult errand, which is now the only one: `context.session_id` is NOT promoted there and must not be. It is already on the errand -- `context` is persistent and `hop` is single-hop (GH #521), the surface's keeper stamped the session at the start of the turn and nothing between there and here deletes it -- while `hop.session_id` is absent from a dispatcher's tool emission, so a modifier reading it would FAIL, and a failed modifier SKIPS the edge, which would silently kill every consult.",
+    "contract_derivation": "The fifteen lanes are the union of what this level's three occupants accept and emit at the versions named in each `because` (talky in ./talky, cogny, tools), minus the lanes a sibling inside the level consumes itself. Three subtractions, all real: `tool` (both the surface's and the core's, consumed by ./tools through the guarded default), `tool_call`/`tool_result` (the tool surface's own pair, both ends inside), and `in_tool` (supplied by ./tools, never from outside). `in_memory_call` and `in_thread_call` are declared by talky@4.3.0 and are deliberately NOT declared here: no occupant outside this level produces them, and giving them a door would be an interface promising something nothing sends (GH #55 serves them inside the talky). Until GH #532 the reasoning core's `recall` was the one occupant emit with no home, and the reason it gave was a real constraint read one step short: at this boundary the surface's recall leg and the core's collapse onto ONE lane pair, a hop key does not survive the member's memory hive (GH #411 -- the `recall` cell forms its own hop, and only context travels), and a door guarded on context ALONE is condemned by crates/meclaw-cells/tests/gh173_shipped_hive_contracts.rs, whose probe carries a bare route and an EMPTY context compartment. What resolves it is a reply-to token that CHANGES COMPARTMENT on the way home: each asker stamps `context.recall_caller` on its own `recall` exit, the hive carries a key it never named through untouched, and the hive's own exit hands it back on `hop.recall_caller` -- so the core's door is guarded on a HOP key, which is exactly the carve-out W7-R1 (GH #286) grants a door reading a key the probe cannot carry, and the surface's door becomes the `default`, so an absent or unknown token lands where every bundle landed before. It is the arrangement this level already uses one door over: `context.tool_caller` is what tells the surface's and the core's tool results apart on their way back from ./tools. The lane SET at this boundary is unchanged -- one `recall` out, one `in_bundle` in, and no key a caller must now promote -- and what is new is that a caller can address the core with a bundle, which it never could. GH #454 moved exactly one lane in each direction and both fall out of the rule rather than out of a decision: `answer` stopped being subtracted, because the connector that consumed it inside this level is now the member's and stands outside; `turn` stopped being emitted, because the raw wire that produced it is outside too and reaches the member's screen without crossing this level at all. GH #458 adds one lane in each direction and both fall out of the same rule: `in_pack` and `pack_ack` are new on talky@4.5.1 and cogny@4.5.0, no sibling inside this level consumes either, so both cross. `in_pack` is the one door edge that is a deliberate FAN-OUT rather than a route to one occupant -- one generation is one person's agent, and its three `llm` cells must not disagree about who that is -- which is why `pack_ack` crosses twice per pack and the lane's own `because` says so instead of leaving a caller to discover it. GH #464 adds a lane in each direction to BOTH occupants and neither of them crosses, for the same reason `tool_call`/`tool_result` do not: `schemas` (the tool names a caller declares it uses) is consumed by ./tools inside this level, and `in_menu` (the declarations coming back) is supplied by ./tools and never from outside. So the lane set at this boundary is unchanged and the level grows four edges instead -- the same pair, drawn once for the surface and once for the core, told apart on the way back by `context.tool_caller` exactly as a tool result is. That is the third digit: nothing a caller at this boundary can do is new. GH #529 adds that same pair a SECOND time -- surface to core and back -- and GH #530 removes the `ask_memory` errand edge. Neither touches the lane set at this boundary, for the reason #464 already gave: `schemas` is consumed by an occupant inside this level, `in_menu` is supplied by one, and an errand name is an edge CONDITION rather than an address. WHAT THE FOUR EDGES SAY, since an edge carries no `because` of its own. (1) `./talky -> ./cogny` on `schemas`: the same question asked of the OTHER answerer. A tool the composite reaches by an edge on its NAME is not the tool hive's, it is topology of the level that draws the edge, and only the side that ANSWERS it can declare it -- `consult_cogny`'s schema used to be a hand-typed seed row in the surface's brain, and #464 replaced the hand-typed menu with an asked-for one and took the row with it. Both `schemas` edges are regular and both fire for one message: the tick asks every answerer at once, and the guarded default that carries `tool` is not affected, because a `schemas` message does not match its condition. (2) `./cogny -> ./talky` on `tool_schemas`: the core's answer, landing on the surface's `in_menu` lane and stamping `context.tool_answerer` so the collector MERGES this half with the hive's instead of replacing it -- the menu write is a `$replace`. It is told apart from the core's own `schemas` REQUEST by the lane and not by a negation: asking and answering are two routes. (3)+(4) the two `./tools -> X` `tool_schemas` edges stamp the same key with the hive's name; `tool_answerer` is the mirror of the `context.tool_caller` the request already carried. And on the consult errand, which is now the only one: `context.session_id` is NOT promoted there and must not be. It is already on the errand -- `context` is persistent and `hop` is single-hop (GH #521), the surface's keeper stamped the session at the start of the turn and nothing between there and here deletes it -- while `hop.session_id` is absent from a dispatcher's tool emission, so a modifier reading it would FAIL, and a failed modifier SKIPS the edge, which would silently kill every consult.",
     "contract_in": "Seven lanes, all at the assistant's own path: in_turn, in_bundle, in_advice, in_sweep, in_prune, in_round_sweep, in_build_result.",
     "contract_out": "Eight lanes, all leaving the assistant's path: answer, write, turn_write, extraction, recall, prune, error, build. The member consumes answer, recall and extraction itself; the other five cross it."
   }

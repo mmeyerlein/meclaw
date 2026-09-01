@@ -27,8 +27,11 @@
 //!    that the level's own door stamped. The caller never says which door it
 //!    came in at; the level does.
 //! 2. **The draft gets out, into the submission front door.** A `manifest` the
-//!    builder raises in that round reaches `/os/operator/submit`, with the
-//!    manifest and the digest the front door reads. R-Zielfluss (a): the
+//!    builder raises in that round reaches `/os/operator/intake`, with the
+//!    manifest and the digest the front door reads. That address is the cell
+//!    that was called `/os/operator/submit` through operator@1.0.0 — since GH
+//!    #556 the name `submit` belongs to the SUBMITTER hive, which moved in
+//!    beside it and is one interior edge further on. R-Zielfluss (a): the
 //!    operator hive is the ONE submission front door, and an operator-initiated
 //!    draft takes the same road an assistant's does. The LANE it arrives on is
 //!    `in_draft` since GH #474 and was `in_submit` through 1.5.0 — the address
@@ -78,8 +81,11 @@ const OS: &str = "/os";
 const BUILDER_ENTRY: &str = "/os/builder/classify";
 /// The cell that raises a recipe-drawn manifest.
 const BUILDER_RECIPES: &str = "/os/builder/recipes";
-/// The one submission front door (R-Zielfluss (a)).
-const FRONT_DOOR_SUBMIT: &str = "/os/operator/submit";
+/// The occupant of the one submission front door that takes a request in and
+/// gives it a sender (R-Zielfluss (a)). Since GH #556 its sibling
+/// `/os/operator/submit` is the submitter hive itself, reached over the front
+/// door's own `./intake -> ./submit` edge and never from outside.
+const FRONT_DOOR_INTAKE: &str = "/os/operator/intake";
 /// The container an organisation is instantiated into — empty in a fresh
 /// colony, which is the whole of the defect.
 const CONTAINER: &str = "/os/orgs";
@@ -447,7 +453,7 @@ async fn an_operators_wish_reaches_the_baumeister_through_the_rim() {
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// The manifest an operator-initiated round produced reaches
-/// `/os/operator/submit`, carrying what the front door reads.
+/// `/os/operator/intake`, carrying what the front door reads.
 ///
 /// **RETRACTED, GH #474: the lane is `in_draft` and no longer `in_submit`.**
 /// What GH #469 bought is that the draft reaches the one submission front door
@@ -488,7 +494,7 @@ async fn an_operator_initiated_draft_lands_at_the_submission_front_door() {
         .await
         .expect("the outputs channel is the production emission path");
 
-    let got = arrival_at(&mut grown.arrivals, FRONT_DOOR_SUBMIT).await;
+    let got = arrival_at(&mut grown.arrivals, FRONT_DOOR_INTAKE).await;
     assert_eq!(
         got.headers.hop.get("route"),
         Some(&json!("in_draft")),
@@ -584,7 +590,7 @@ async fn an_agent_initiated_draft_still_goes_home_and_not_to_the_front_door() {
     );
     let elsewhere = drained(&mut grown.arrivals);
     assert!(
-        !elsewhere.iter().any(|p| p == FRONT_DOOR_SUBMIT),
+        !elsewhere.iter().any(|p| p == FRONT_DOOR_INTAKE),
         "an agent's draft reached the operator's front door — the guard on the new edge is not \
          guarding: {elsewhere:?}"
     );

@@ -1,4 +1,4 @@
-# `tools@1.2.0`
+# `tools@1.4.0`
 
 The tool surface of one assistant as **one node with one contract**: `tool_call` in,
 `tool_result` out.
@@ -68,52 +68,20 @@ because the contract does not change.
 | `web_search/` | `web_search` | `hop.tool_name == 'web_search'` | none |
 | `file/` | `file` | `hop.tool_name == 'file'` | none |
 | `edit/` | `edit` | `hop.tool_name == 'edit'` | none |
-| `build/` | `code` | `hop.tool_name == 'build_topology'` | `{"trust": "restricted", "network": "deny", "filesystem": {"runtime": true}}` |
-| `apply/` | `code` | `hop.tool_name == 'apply_manifest'` | `{"trust": "restricted", "network": "deny", "filesystem": {"runtime": true}}` |
+| `build-draft/` | `code` | `hop.tool_name == 'build_topology'` | `{"trust": "restricted", "network": "deny", "filesystem": {"runtime": true}}` |
+| `build-apply/` | `code` | `hop.tool_name == 'apply_manifest'` | `{"trust": "restricted", "network": "deny", "filesystem": {"runtime": true}}` |
 | `schemas/` | `code` | the `in_schemas` lane | `{"trust": "restricted", "network": "deny", "filesystem": {"runtime": true}}` |
 | `unknown/` | `code` | nothing else fired | `{"trust": "restricted", "network": "deny", "filesystem": {"runtime": true}}` |
-| `mcp/` | `mcp` | **nothing -- unwired** | none |
-| `vault/` | `vault` | **nothing -- unwired** | none |
+
+**Every occupant in this table is reached**, and since 1.3.0 there is no row left saying
+*nothing* in the third column.
 
 `file` and `edit` share ONE root (`TOOLS_FILE_ROOT`, § *The environment surface*), and that
 is a decision rather than a convenience: one assistant has one file root, and a tool that
 could edit what its neighbour cannot read would be a boundary nobody could state.
 
-**`mcp/` and `vault/` stand here and are not wired**, and the two facts belong together.
-Activity in this substrate is derived from the edges alone -- a cell no edge touches is an
-island, and the boot registers it, keeps its `cell_id` and never spawns it. So an occupant
-directory with no door is the template-level way to ship a cell asleep, and it costs
-nothing: waking one is one `add_edges` pair inside this hive, not a new directory and not a
-change to any caller. Each of the two is unwired for a reason that is a DECISION somebody
-has to make first, and that no template can make for them:
-
-* `mcp` bridges one MCP server, and nobody has named the server. It is a long-running cell:
-  wired at a loopback placeholder it would reconnect to nothing, in every colony that ever
-  grew this template. Name `MCP_ENDPOINT`, then draw the pair.
-* `vault` answers exactly ONE sender -- its broker -- and attests its own inbound edges
-  before it will accept key material. There is no broker in this hive; the shipped
-  arrangement puts a vault in the capability broker's own hive, beside the `invoke` cell
-  that is allowed to spend it. Wired here with no broker beside it, every call would come
-  back `attestation_failed`, which is the refusal working rather than the cell failing.
-
-The pair that wakes either of them, written out so it is a copy rather than a design:
-
-```json
-[
-  { "from": ".", "to": "./mcp",
-    "condition": "has(hop.route) && hop.route == 'tool_call' && has(hop.tool_name) && hop.tool_name == 'mcp'" },
-  { "from": "./mcp", "to": ".",
-    "condition": "has(hop.mcp_tool)",
-    "modifier": { "set_hop": { "route": "'tool_result'" } } }
-]
-```
-
-The exit condition reads `hop.mcp_tool` and not `hop.operation`, because the `mcp` cell
-stamps no `operation` at all -- an exit that asked for one would leave every answer standing
-at the hive path. A schema row in `schemas/` goes with the pair; § *The declarations* says
-why the two edits travel together.
-
-`build` and `apply` are the two halves of one round and carry the tightest block in the
+`build-draft` and `build-apply` are the two halves of one round -- **and since 1.4.0 they
+are named as one** (§ *What `1.4.0` changed*). They carry the tightest block in the
 tree: they compute nothing, reach nothing and store nothing. What they do is carry -- a
 wish out and a draft back, then that same draft out again and a receipt back. Both phases
 of both cells are recognised POSITIVELY, and the correlation of the round travels in the
@@ -121,22 +89,89 @@ CONTEXT (`build_call_id`), because `hop` is a one-hop compartment and the builde
 hops away.
 
 Every occupant is a copy of a shape the library already carries -- `bash` after the coder
-pipeline's runner, `web_fetch` after the daily digest's fetcher, `web_search`, `file`,
-`edit`, `mcp` and `vault` after the cell types of the same names -- so no cell type is
-invented here. `unknown` is not a tool at all; it is the subject of the dispatch section
+pipeline's runner, `web_fetch` after the daily digest's fetcher, `web_search`, `file` and
+`edit` after the cell types of the same names -- so no cell type is invented here. The
+converse does not hold, and 1.3.0 is where that is written down: a cell type existing is
+not a reason for a directory here. `unknown` is not a tool at all; it is the subject of the dispatch section
 below, and `schemas` is not a tool either: it answers a lane of its own and no `tool_call`
 ever reaches it.
 
 **The `none` rows are the shipped truth, not an oversight**, and they are two different
 sentences. For `web_fetch` and `web_search`, egress is what those cells are for:
 `network: "deny"` would turn them off, and a process sandbox has no notion of an allowed
-host. For `file`, `edit`, `mcp` and `vault`, a process sandbox has nothing to bound at all
--- those cells do their own I/O rather than starting a runner, so the fence is somewhere
-else: `params.base_path` for the two file cells, checked lexically and again after
-canonicalisation, and the broker attestation for the vault. Either way the rows are written
-down as they are so that the blast radius of this hive is a thing one can read instead of a
-thing one discovers. `bash` carries the block GH #286 measured on the shipped instance,
+host. For `file` and `edit`, a process sandbox has nothing to bound at all -- those cells do
+their own I/O rather than starting a runner, so the fence is somewhere else:
+`params.base_path`, checked lexically and again after canonicalisation. Either way the rows
+are written down as they are so that the blast radius of this hive is a thing one can read
+instead of a thing one discovers. `bash` carries the block GH #286 measured on the shipped instance,
 verbatim.
+
+### RETRACTED in 1.3.0: ~~`mcp/` and `vault/` stand here and are not wired~~ ([#547](https://github.com/mmeyerlein/meclaw/issues/547))
+
+Until 1.3.0 two further directories stood in this table with **nothing** in the *reached
+on* column, and this section explained at length how to wake them. Both are gone, and the
+sentence that carried them is retracted rather than quietly deleted
+(`docs/development-rules.md` § 3).
+
+> **A cell type is not a tool.** The tools hive holds the cells this agent's tool calls
+> reach. Every shipped cell type does not belong here by virtue of being a cell type: a
+> `vault` answers its broker and stands in the broker's hive, and an `mcp` bridges one
+> named server and is wired when somebody names it. Neither is wired here any more,
+> because an occupant nobody can reach teaches nothing.
+
+The argument the old text made was true about the SUBSTRATE and wrong about the LIBRARY. It
+is true that activity here is derived from the edges alone -- a cell no edge touches is an
+island, the boot registers it, keeps its `cell_id` and never spawns it -- and shipping a
+cell asleep is a real technique that costs one `add_edges` pair to undo. What does not
+follow is that a shipped TEMPLATE should do it. A template in this library is a worked
+example; an occupant nobody can reach is a placeholder with documentation attached, and the
+documentation had grown longer than the thing it documented.
+
+The `vault` case is the sharper of the two, because it taught the opposite of the shipped
+arrangement. A vault answers exactly ONE sender -- its broker -- and attests its own inbound
+edges before it will accept key material. The arrangement that works is the one
+[`templates/access`](../access/) already ships, where the vault stands in the capability
+broker's own hive beside the `invoke` cell that is allowed to spend it. A `vault/` directory
+in a tools hive says a vault is a tool, and the paragraph under it then had to spend itself
+un-saying that.
+
+The `mcp` case is the same shape for a different reason: an `mcp` cell bridges ONE MCP
+server, nobody had named the server, and a long-running cell wired at a loopback
+placeholder reconnects to nothing forever. Naming the server is a decision, and a template
+that cannot make it should not ship the half of the answer that looks like it did.
+
+**Neither capability is lost, and neither is hard to draw.** An assistant that talks to a
+named MCP server adds an `mcp` cell to this hive the way any tool is added -- one occupant
+directory, two edges, one row in the `schemas` cell's table, all three in one diff (§ *The
+declarations*). An assistant that needs a vault gets one where a vault belongs, in the
+broker's hive. `workshop/corpus/13-mcp-lane/` is the worked example for the first, and it
+is a whole colony rather than a directory nobody reaches.
+
+## What `1.4.0` changed: the build pair is named as a pair
+
+[#554](https://github.com/mmeyerlein/meclaw/issues/554). The two occupants that carry a
+build were called `build` and `apply`, and the tree said nothing about the fact that they
+are two halves of ONE round: one fetches a draft, the other submits it, and a reader of
+the graph had to know the story before the two names looked related at all.
+
+They are `build-draft/` and `build-apply/` now. **`draft` names what the first half
+delivers** -- the sentence *"This is a DRAFT"* is verbatim in its `tool_result` -- and the
+shared `build-` prefix is what makes the pair visible where a reader actually meets it: in
+the nine edges of `params.graph` and in a colony's registry listing, both of which sort the
+two neighbours together instead of scattering them alphabetically between `bash` and
+`edit`.
+
+**The tool names the model sees did not move**, and that is the whole boundary of this
+change: `build_topology` and `apply_manifest` are the contract surface a brain's
+`system.tools` names and a door dispatches on (`hop.tool_name`), and a cell name is not a
+tool name. The `schemas` occupant's table, the two doors' conditions and every caller's
+prompt are byte-identical across this version.
+
+What moved is this hive's own address space, which is why it is the second digit: a
+mutation or an `override_params` path that named `<assistant>/tools/build` names
+`<assistant>/tools/build-draft` from 1.4.0 on. A generation already grown from 1.3.0 keeps
+the names it was grown under -- the template library is not on the running path of a booted
+colony, and the pair lands with the next instance built.
 
 ## The declared blast radius
 
@@ -147,21 +182,22 @@ writing down. `template.json` writes it down, in two machine-readable blocks.
 
 | axis | union | who sets it |
 |---|---|---|
-| `trust` | `full` | the six occupants that declare no block: `web_fetch`, `web_search`, `file`, `edit`, `mcp`, `vault` |
-| `network` | `allow` | the same six |
-| `filesystem` | `unrestricted` | the same six |
+| `trust` | `full` | the four occupants that declare no block: `web_fetch`, `web_search`, `file`, `edit` |
+| `network` | `allow` | the same four |
+| `filesystem` | `unrestricted` | the same four |
 
-A union is not an average. `bash`, `unknown`, `build`, `apply` and `schemas` are as
+A union is not an average. `bash`, `unknown`, `build-draft`, `build-apply` and `schemas` are as
 restricted as the library gets, and they tighten **nothing** about the hive as a whole: what
 they bound is what happens once dispatch has already chosen them. Any single unsandboxed
 occupant alone puts every axis at its widest, and that is the honest reading of what handing
 this hive a `tool_call` can set in motion.
 
-`mcp` and `vault` are counted here although no edge reaches them. That is deliberate, and it
-is the argument the block itself rests on: a union that leaves a directory out of the
-calculation is the invisibility this declaration exists to end, and waking one of the two is
-one `add_edges` pair rather than a new file -- so a reader who takes them out of the sum is
-reading a radius that is one mutation away from being wrong.
+Until 1.3.0 the sum also counted `mcp` and `vault`, on the argument that a union leaving a
+directory out is the invisibility this declaration exists to end. That argument was right,
+and it is why the two were counted for as long as they stood here. They no longer stand
+here ([#547](https://github.com/mmeyerlein/meclaw/issues/547)), so the union is over the
+occupants that actually answer -- narrower on no axis, because the four that set it are
+unchanged, and honest about what it is a union over.
 
 That is uncomfortable to read, and it is supposed to be. The radius is not new -- GH #286
 measured it on the shipped instance -- it was merely spread across files where nobody had to
@@ -179,10 +215,8 @@ cell that needs exactly this is not a widening; one that needs more is.**
 | `edit` | **no** | a read-modify-write with no lock; two edits of one file race in the filesystem, and the caller cannot see that |
 | `unknown` | yes | it formats a string; there is no state to reach |
 | `schemas` | yes | it reads names and writes declarations out of a table compiled into its own script |
-| `build` | yes | it reads a hop and a turn and writes a turn; the correlation runs over the round's own context |
-| `apply` | yes | the same, and the ORDER of two submissions is the colony's to decide at the door, never this cell's to assume |
-| `mcp` | yes | one in-flight request per JSON-RPC id -- declared although the occupant is unwired |
-| `vault` | yes | one op per message against its own `cell.db` -- declared although the occupant is unwired |
+| `build-draft` | yes | it reads a hop and a turn and writes a turn; the correlation runs over the round's own context |
+| `build-apply` | yes | the same, and the ORDER of two submissions is the colony's to decide at the door, never this cell's to assume |
 
 `params.max_concurrency` is a queue and not a serialisation wherever the verdict is `yes`:
 the call over the cap waits and still answers on its own `tool_result`. **`edit` is the one
@@ -195,8 +229,6 @@ across the other occupants; the edits in that round run one after another.
 Every entry is stated even where the answer repeats, because the hazard this declaration
 exists for is a **swap** that quietly makes a parallel tool round sequential -- and an
 occupant nobody declared is exactly the one whose serialisation surprises the caller. The
-two unwired occupants are declared for the same reason: an entry that appears only once
-somebody draws an edge is an entry nobody read at the moment it would have mattered. The
 check runs in both directions: every occupant directory has an entry, and every entry names
 a directory that exists, so an entry cannot outlive the cell it described.
 
@@ -396,8 +428,9 @@ directory, two edges and one row, all three in this one directory, all three in 
 
 The two halves cannot drift apart in silence: a test walks the dispatch graph and requires
 that every tool a door names has a row, and that every row names a tool a door dispatches
-to. The unwired occupants (`mcp`, `vault`) are in neither, by the same rule -- a schema for
-a tool no edge reaches would offer a model a call that goes nowhere.
+to. Until 1.3.0 the two unwired occupants were in neither list, by the same rule -- a schema
+for a tool no edge reaches would offer a model a call that goes nowhere. With them gone,
+the rule has nothing left to except, which is the better shape for a rule to be in.
 
 ## Wiring it
 
@@ -484,8 +517,6 @@ and says which value each one fills:
 | `SEARCH_ENDPOINT` | `web_search`'s `params.endpoint`, written `${SEARCH_ENDPOINT:-http://127.0.0.1:8080/search}` | no |
 | `SEARCH_API_KEY` | `web_search`'s `params.api_key`, written `${SEARCH_API_KEY:-}` | no |
 | `TOOLS_FILE_ROOT` | `params.base_path` of BOTH `file` and `edit`, written `${TOOLS_FILE_ROOT:-/tmp}` | no |
-| `MCP_ENDPOINT` | `mcp`'s `params.endpoint` -- an occupant that is unwired until somebody answers this | no |
-| `TOOLS_VAULT_BROKER` | `vault`'s `params.broker` -- likewise unwired until somebody answers this | no |
 
 Neither is required, and that is a decision worth stating rather than leaving to be
 inferred. Both tokens carry a `:-` default, so an instantiation without them succeeds --
@@ -508,9 +539,11 @@ surface is rooted at `/tmp`: nobody's mistake, nothing anywhere reports it, and 
 argument as the search endpoint one line up -- which is why it is written down rather than
 discovered. Set it to the directory this assistant may actually touch.
 
-`MCP_ENDPOINT` and `TOOLS_VAULT_BROKER` are the other shape: they are not defaults anybody
-falls back on, they are the questions that keep two occupants unwired (§ *The occupants*).
-Answering one is the first half of waking a cell; drawing its two edges is the second.
+`MCP_ENDPOINT` and `TOOLS_VAULT_BROKER` were declared here until 1.3.0 and are gone with
+the two occupants they configured ([#547](https://github.com/mmeyerlein/meclaw/issues/547)).
+They were never defaults anybody fell back on; they were the questions that kept two cells
+unwired, and a template's environment surface is not the place to ask a question the
+template cannot use the answer to.
 
 No token carries a value in this tree and none ever should: what is declared is the name of
 a secret or the address of a service, never the secret itself.

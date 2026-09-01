@@ -47,7 +47,7 @@ fn the_hive_carries_the_interim_answer_off_the_dispatcher() {
     let carried: Vec<&Value> = edges
         .iter()
         .filter(|e| {
-            e["from"] == "./dispatch"
+            e["from"] == "./dispatcher"
                 && e["condition"]
                     .as_str()
                     .unwrap_or("")
@@ -59,10 +59,10 @@ fn the_hive_carries_the_interim_answer_off_the_dispatcher() {
         1,
         "the dispatcher emits the model's sentence on `answer` whenever it \
          narrates beside a call, and no edge takes it: every narrating round is \
-         a no_route dead letter. Edges out of ./dispatch: {:?}",
+         a no_route dead letter. Edges out of ./dispatcher: {:?}",
         edges
             .iter()
-            .filter(|e| e["from"] == "./dispatch")
+            .filter(|e| e["from"] == "./dispatcher")
             .map(|e| e["condition"].clone())
             .collect::<Vec<_>>()
     );

@@ -616,7 +616,7 @@ fn the_assistant_draws_the_pair_for_both_of_its_callers() {
             .clone()
     };
 
-    for caller in ["./surface", "./cogny"] {
+    for caller in ["./talky", "./cogny"] {
         let out = find(caller, "./tools", "schemas");
         assert_eq!(
             out["modifier"]["set_hop"]["route"], "'in_schemas'",
@@ -702,10 +702,11 @@ fn build_tree(td: &tempfile::TempDir, composite: &str, declared: &Value, base_ur
     copy_cells(&templates_root().join("tools"), &root.join("main/tools"));
     // Every occupant of the tools hive whose cell type is not `code` is replaced
     // by a `code` double. The BOOT PLAN refuses a cell type it does not know
-    // before it ever asks whether the node is active, so an unwired occupant
-    // still needs a factory -- and this file is about the declaration lane, not
-    // about what the tools themselves do. `schemas` is the one cell it must NOT
-    // touch: that one is the shipped answer.
+    // before it ever asks whether the node is active -- which is why an unwired
+    // occupant used to need a factory too, and since `tools@1.3.0` there is no
+    // unwired occupant to provide one for (GH #547). This file is about the
+    // declaration lane, not about what the tools themselves do. `schemas` is the
+    // one cell it must NOT touch: that one is the shipped answer.
     double_the_tool_cells(&root.join("main/tools"));
 
     let keeper = root.join(format!("main/{composite}/session-keeper/night/config.json"));

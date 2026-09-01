@@ -188,7 +188,7 @@ PIN-tools-sandbox-union	templates/tools/README.md	**`sandbox_union` -- the wides
 PIN-tools-reentrancy	templates/tools/README.md	**`reentrancy` -- one entry per occupant	pinned	every_occupant_has_a_reentrancy_entry_and_every_entry_has_an_occupant
 PIN-tools-schemas-lane	templates/tools/README.md	A name the hive does not have comes back in `unknown`, never dropped	pinned	a_name_the_hive_does_not_have_comes_back_named
 PIN-tools-schemas-drift	templates/tools/README.md	The two halves cannot drift apart in silence: a test walks the dispatch graph	pinned	every_dispatched_tool_has_a_schema_and_every_schema_has_a_door
-PIN-tools-unwired-occupants	templates/tools/README.md	**`mcp/` and `vault/` stand here and are not wired**	pinned	the_two_unwired_occupants_are_islands_by_construction
+PIN-tools-no-unwired-occupant	templates/tools/README.md	**A cell type is not a tool.**	pinned	the_tools_hive_has_no_unwired_occupant
 PIN-tools-edit-serialises	templates/tools/README.md	exception, and its cap of one is the verdict, not a tuning.**	pinned	the_editor_declares_the_serialisation_it_actually_ships
 PIN-channel-level-dissolved	templates/assistant/README.md	dissolved the four-segment channel path	pinned	nothing_shipped_still_addresses_the_connector_inside_the_level
 PIN-assistant-wires-channels-once	templates/assistant/README.md	The measured fan-in, and what actually moves it	pinned	a_second_channel_costs_this_level_nothing_at_all

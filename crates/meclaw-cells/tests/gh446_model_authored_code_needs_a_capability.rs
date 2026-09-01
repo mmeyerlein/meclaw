@@ -278,7 +278,10 @@ fn the_broker_seeds_the_capability_and_grants_it_to_nobody() {
         .find(|r| r["capability"] == "code.author")
         .expect("a seeded code.author rule");
     assert_eq!(row["enabled"], 0, "a fresh colony authors no code");
-    assert_eq!(row["requester"], "/os/submit", "edge-borne, R-AC-1");
+    assert_eq!(
+        row["requester"], "/os/operator/submit",
+        "edge-borne, R-AC-1"
+    );
     assert_eq!(row["subject"], "*");
     assert_eq!(row["scope_match"]["scope_prefix"], "/os/orgs");
     assert_eq!(row["scope_match"]["actions"], json!(["apply"]));

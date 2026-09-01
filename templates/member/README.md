@@ -589,17 +589,33 @@ of their agents may hold views on it at the same time. A screen owned by a
 generation would go dark on a swap and could not be shared at all.
 
 Since GH #459 the cell that stands there is real: [`display@1.0.0`](../display/).
-Three edges instantiate one, and only the third of them says anything a chat
-channel's edges do not:
+**Two** edges instantiate one — one fewer than a chat channel costs — and the
+second of them says the only thing a chat channel's edges do not:
 
 | edge | condition | why |
 |---|---|---|
 | `./channels/display-<s> -> ./channels` | `event` or `receipt` | what the screen produced, stamped with `context.channel_node` and `context.channel`, which on a screen are the same word |
-| `./channels/display-<s> -> ./channels` | `has(hop.error_code)` | the screen's own failure, re-stamped to `error` |
 | `./channels -> ./channels/display-<s>` | `answer` or `view`, `context.channel_node == '<s>'` | re-stamped to the display's own `in_view` |
 
+**A screen has no error wire, and drawing one would be drawing into the void.**
+A connector's third edge exists because a connector *emits a failure of its own*:
+`telegram-connector` declares an `error` lane and stamps `hop.error_code` on it,
+which is what the `has(hop.error_code)` edge above catches. The display declares
+exactly two emissions — `event` and `receipt`
+(`templates/display/config.json`, `params.contract.emits`) — and its graph
+carries exactly the two matching edges out of the hive. A refused write **is**
+the display's failure lane, and its `error_code` travels in the **body** of the
+receipt beside `owner`, `view_id` and a detail string, while the hop carries
+`route`, `owner` and `view_id` and never an `error_code`
+(`templates/display/compose/compose.py`, `refuse`). So a third edge on
+`has(hop.error_code)` would have no producer: nothing a screen puts on the wire
+could ever match it, and a receipt — the one thing that *does* carry the word —
+would not, because it carries it a compartment away. The substrate's own
+`contract_violation` reply is addressed to the caller's `reply_to` and never
+routed by this graph, so it owes no edge either.
+
 **The smallest view needs no app.** An agent's ordinary `answer` becomes a view
-through that third edge — the same `./assistants -> ./channels` lane GH #454 drew
+through that second edge — the same `./assistants -> ./channels` lane GH #454 drew
 for a chat answer carries it, and nothing at this level knows the difference. An
 agent that only wants to show a paragraph does not have to become an application
 first, which was the half of GH #455 that had nowhere to live.
@@ -762,7 +778,7 @@ lanes (`../assistant/README.md` § *Instantiating* writes them out):
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@2.2.0"}],
+  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@2.3.0"}],
   "add_edges": [
     {"from": "./assistants", "to": "./assistants/scribe",
      "condition": "has(hop.route) && hop.route == 'in_turn' && has(context.assistant) && context.assistant == 'scribe'"},

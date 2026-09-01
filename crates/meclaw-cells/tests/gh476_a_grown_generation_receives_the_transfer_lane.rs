@@ -1,7 +1,7 @@
 //! GH #476 — a generation grown from a WISH receives the transfer lane, not
 //! only one instantiated by hand out of the README.
 //!
-//! GH #475 opened the lane: `assistant@2.2.0` accepts `in_export` and
+//! GH #475 opened the lane: `assistant@2.3.0` accepts `in_export` and
 //! `in_import` and emits `dump`, and `member@1.4.0` carries an export into
 //! `./assistants` when the caller names a generation on `context.assistant`.
 //! Reaching a generation therefore costs FOURTEEN edges in the member's
@@ -143,7 +143,7 @@ fn grow_level(params: Value) -> Value {
 fn rendered_transfer_edges(name: &str) -> Vec<Value> {
     let decl = grow_level(json!({
         "scope": format!("/members/{MEMBER}"), "level": "assistant", "name": name,
-        "template": "assistant@2.2.0"}));
+        "template": "assistant@2.3.0"}));
     decl["diff"]["add_edges"]
         .as_array()
         .expect("add_edges")
@@ -525,7 +525,7 @@ fn member_manifest(export_dir: &std::path::Path) -> Value {
 fn grown_generation(name: &str) -> Value {
     let decl = grow_level(json!({
         "scope": format!("/members/{MEMBER}"), "level": "assistant", "name": name,
-        "template": "assistant@2.2.0",
+        "template": "assistant@2.3.0",
         // The three brains of a generation are the doubles named in the header,
         // and a `ctx` key is still required: the model is a RESOLVED literal in
         // the template's `requires`, and the mutation refuses a generation whose
@@ -739,7 +739,7 @@ async fn a_generation_grown_from_a_wish_receives_the_export_that_names_it() {
     let base = format!("/members/{MEMBER}");
     let keeper_db = |agent: &str| {
         td.path().join(format!(
-            "main/members/{MEMBER}/assistants/{agent}/surface/session-keeper/sessions/cell.db"
+            "main/members/{MEMBER}/assistants/{agent}/talky/session-keeper/sessions/cell.db"
         ))
     };
 

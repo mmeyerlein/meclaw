@@ -9,7 +9,7 @@
 //!
 //! **A `cogny` has no channel.** It is "structurally a talky without a channel"
 //! (`templates/cogny/template.json`), and its answer lane IS the advice lane of
-//! the voice that asked: the assistant graph wires `./cogny -> ./surface` on
+//! the voice that asked: the assistant graph wires `./cogny -> ./talky` on
 //! `hop.route == 'answer'` into that surface's `in_advice`. So every interim
 //! sentence of the core arrived as an advisor's ANSWER, was recorded as one,
 //! re-entered the surface's brain, was verbalised to the user -- and sometimes

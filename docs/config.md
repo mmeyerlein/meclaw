@@ -210,17 +210,20 @@ Cell-type-specific. Each cell type defines its own `params` structure (see `cell
 the one place where the colony reads into `params`: `graph.edges[]` is the
 initial target graph of its subtree (full form and semantics:
 `meclaw-overview.md` § Graph schema and § Edge model). `from` and `to` are
-mandatory; three optional fields join them:
+mandatory; four optional fields join them:
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `condition` | CEL boolean as a string | `null` (= always matches) | decides whether the edge is responsible for this message; reads `context.*` and `hop.*`. A number out of a compartment binds as `int` (or `uint` above `i64::MAX`, `double` otherwise), so `hop.http_status == 200` is true on a message carrying 200 — GH #500, detail in `meclaw-overview.md` § Edge expression language. |
 | `modifier` | object | `null` (= identity) | `set_context`/`delete_context`/`set_hop`/`delete_hop`/`restore_ttl` — the edge's sole header authority. |
 | `default` | boolean | `false` | GH #283, since **v0.18.0**: `true` makes the edge a **default edge** — it is consulted only after no regular out-edge of the same sender fired, which makes it the declared consumer for what would otherwise dead-letter as `no_route` (or `hive_no_route`). It may carry a `condition` as well; without one the colony boots with a hint in its advisories, never with a refusal. |
+| `lane` | string | `null` | GH #559: the name of the lane this edge runs — the declaration that turns a multi-segment deep edge into a **v-lane**. With the key absent the edge is an ordinary one and keeps exactly today's behaviour. Named rather than guessed: no validator reads the lane reliably out of a CEL guard. What the declaration permits and what it demands (connect point, mandatory hops, the three `error_code` strings) is in `meclaw-overview.md` § v-lanes. |
 
-An edge in a mutation diff (`add_edges[]`) carries the same three fields, and
-`remove_edges[].match` can pattern on all three — with `default` absent there the
-routing phase is unconstrained and the pattern hits both (§ Mutation format).
+An edge in a mutation diff (`add_edges[]`) carries the same fields, and
+`remove_edges[].match` can pattern on `condition`, `modifier` and `default` —
+with `default` absent there the routing phase is unconstrained and the pattern
+hits both (§ Mutation format). `lane` is **not** a match term: a v-lane is named
+by the same terms as any other edge.
 
 In both usages `from`/`to` are paths relative to the scope the declaration sits in,
 and **`.` names that scope itself** — at boot the hive whose `config.json` carries
@@ -280,7 +283,32 @@ of the hive appears anywhere — which is what makes the inside free to change.
 | `emits[]` | Lanes the hive sends back **out** through its own path. |
 | `…[].route` | The `hop.route` value that **is** the lane. Never a cell name — the whole abstraction rests on this. |
 | `…[].context` | `context` keys a caller must have promoted beforehand. **A requirement, checked** (see below). |
+| `…[].at` | A list of scope-relative paths: **where** this lane connects at this hive — the connect point of a v-lane (GH #559). Optional; `"."` is the hive's own rim. |
 | `…[].because` | What the lane is for, in the hive's own words. Travels verbatim into a rejection. |
+
+**`at` — the connect point of a v-lane** (GH #559). A v-lane is an edge that
+skips levels and names its lane explicitly (`meclaw-overview.md` § v-lanes). `at`
+is the half of it that belongs to the **target**: the permission to connect deep
+on this lane, and the statement of where. Without `at` there is no connect point
+for that lane — a v-lane onto it is refused with `v_lane_no_connect_point`, and a
+sealed level in between refuses as before with `hive_port_boundary`. A crossed
+level that declares the lane **without** a matching `at` is a mandatory hop and
+may not be skipped (`v_lane_mandatory_hop`).
+
+```json
+"contract": {
+  "accepts": [
+    {"route": "in_pack",
+     "at": ["./talky", "./cogny"],
+     "because": "the identity pack reaches both brains of this generation directly"}
+  ]
+}
+```
+
+Read as: *whoever sends me `in_pack` may draw the edge as far as my occupants
+`talky` and `cogny` — and to no other.* The rest of the inside stays as hidden as
+it was: `at` names exactly the points the contract opens for this one lane, and
+the enumeration is the boundary rather than an example.
 
 **How a lane is named.** A lane name **must** say what the caller wants, never
 where it lands inside. This is the half of the boundary rule that `ports: []`

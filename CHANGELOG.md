@@ -11,6 +11,200 @@ Rust crates are internals and move without notice.
 
 ## [Unreleased]
 
+### Changed
+
+#### `tools@1.3.0`: a cell type is not a tool (GH #547)
+
+`templates/tools` shipped eleven occupants and two of them were reachable from
+nothing. `mcp/` and `vault/` stood in the hive as directories no edge touched;
+the README printed the recipe a reader would have to apply to wire the `mcp`
+themselves, and `requires.env` carried `MCP_ENDPOINT` and `TOOLS_VAULT_BROKER`
+as keys "unwired until somebody answers this". A shipped template is a worked
+example. An occupant nobody can reach is not a worked example: it is a
+placeholder with documentation attached, and the documentation had grown longer
+than the thing it documented.
+
+Both directories are gone, and the sentence that carried them is **retracted**
+in `templates/tools/README.md` rather than silently deleted
+(`docs/development-rules.md` § 3):
+
+> **A cell type is not a tool.** The tools hive holds the cells this agent's
+> tool calls reach. Every shipped cell type does not belong here by virtue of
+> being a cell type: a `vault` answers its broker and stands in the broker's
+> hive, and an `mcp` bridges one named server and is wired when somebody names
+> it. Neither is wired here any more, because an occupant nobody can reach
+> teaches nothing.
+
+`vault` was the sharper of the two, because it taught the opposite of the
+arrangement the library already ships: a vault answers exactly ONE sender, its
+broker, and `templates/access` stands one in the capability broker's own hive
+beside the `invoke` cell that may spend it. `mcp` is the same shape for a
+different reason — it bridges one named server, nobody had named it, and a
+long-running cell wired at a loopback placeholder reconnects to nothing forever.
+
+**Neither capability is lost.** An assistant that talks to a named MCP server
+adds an `mcp` cell the way any tool is added: one occupant directory, two edges,
+one row in the `schemas` cell's table, all three in one diff.
+`workshop/corpus/13-mcp-lane/` is the worked example, and it is a whole colony
+rather than a directory nobody reaches. An assistant that needs a vault gets one
+where a vault belongs.
+
+The declared blast radius moves with them and is narrower for it: `sandbox_union`
+is a union over the occupants that actually answer, and `reentrancy` carries one
+entry per reachable occupant. The gate that asserted the two islands is inverted
+rather than deleted — `the_two_unwired_occupants_are_islands_by_construction`
+becomes `the_tools_hive_has_no_unwired_occupant`, and it now fails on ANY
+occupant directory no edge reaches, so the exemption cannot come back unnoticed.
+
+#### `cogny@4.5.0`: one lane, one cell name (GH #548, first half)
+
+Two hives in the library declared `in_schemas` and answered it with a cell doing
+the same job under two different names — `templates/tools/schemas` and
+`templates/cogny/declare`. The two were not merely similar: both `code`/`python3`,
+both reading `body.tools`, both emitting the same
+`{header, schemas[], unknown[], messages[]}` shape with the same `tools_missing`
+/ `tool_unknown` branches and the same restricted sandbox.
+`templates/cogny/declare/config.json` said so in its own header comment — *"The
+lane pair and the answer shape are the tools hive's, byte for byte."* The scripts
+differ in their `SCHEMAS` table and almost nowhere else.
+
+The caller paid for the divergence: an `override_params` path, a mutation that
+wants to add a schema, a reader following the declaration round of GH #464 —
+each had to know which of the two words this particular hive chose, and the next
+hive would have picked a third. `templates/cogny/declare` is now
+`templates/cogny/schemas`. `schemas` is the survivor because it names what comes
+back and it matches the lane (`in_schemas`). Nothing else moved: the lane pair,
+the request body, the answer shape and the `required_drains` entry are what they
+were, and the composite is still sealed, so no caller could ever name the cell.
+
+**Still open in [#548](https://github.com/mmeyerlein/meclaw/issues/548):** whether
+`memory-hive` gets a declaration lane of its own. It has no `schemas` cell and no
+`in_schemas` lane, so the two tool names an agent uses to reach a memory are
+declared in the collector instead, and `memory_recall`'s schema is a hand-typed
+projection of a contract living one template away — three arguments offered where
+the contract wants seven promoted context keys. That is a contract change on a
+shipped hive plus a design question about who owns the name, and it gets its own
+round.
+
+Both bumps carry their pins: `templates/assistant`'s two ref markers and the
+derivation notes of its lane contract name the new versions, and
+`templates/README.md`'s catalogue rows move with them.
+
+### Added
+
+#### `scripts/check_tree_rules.py`: the tree's naming and wiring rules are a gate (GH #550)
+
+Three rules about the shape of the template tree were enforced by reading the
+tree, which means they were enforced when somebody remembered to look. A sweep
+of all 42 template roots and every example found that each of them had a live
+violation, and that every one of those violations had entered the tree past a
+green gate.
+
+The gate runs from `scripts/strand-gate.sh` in the *catalogue / versions /
+anchors / claims* step, beside the roadmap, ADR and claims gates. It reads
+`templates/` and `examples/` only — no network, no cargo, no travelling copy —
+so it runs unchanged in the private tree and in the published one.
+
+- **R1 — a ref is named after its template.** A `config.json` with
+  `cell.type: "ref"` inside a template sits in a directory named after the
+  template it references. The rule stops at the tree's edge, and the boundary is
+  the point: a `ref` marker inside a template is named after the template it
+  references, an instance grown by a manifest is named by whoever grows it. An
+  example that grows an `org` called `acme` with a `member` called `alex` is
+  teaching exactly that, so `examples/` is reported and never failed.
+- **R3 — no unwired cell in a shipped template.** Every cell directory appears
+  as `from` or `to` of at least one edge in that template's
+  `params.graph.edges[]`. A shipped template is a worked example, and an
+  occupant nobody can reach is a placeholder with documentation attached. One
+  that is deliberately unreachable declares `"unwired": true` in its **own**
+  `config.json`: the declaration is visible in the diff that adds it, a list of
+  exempt paths inside the checker is visible to nobody.
+- **R4 — one lane, one cell name.** A small table maps a lane to the name of the
+  cell that answers it (`in_schemas` → `schemas`). It grows by ruling and not by
+  inference — a checker that guessed which cells do the same thing would be
+  wrong more often than the tree is — so the name families nobody has ruled on
+  are warnings rather than failures.
+
+`--selftest` is the gate's own pin: a fixture tree with one violation of each
+rule plus a declared island and a clean template, each rule required to fire
+exactly once and both controls to stay silent. Violations a strand is fixing
+right now stand in a dated `TRANSITIONAL` table with their issue numbers, and
+the gate names a row that no longer matches anything rather than letting the
+exemption silt up.
+
+### Changed
+
+#### `builder@1.5.2` + `meclaw-os@1.6.1`: a ref is named after its template (GH #545)
+
+An instance is named after the template it is an instance of, and a `ref` onto
+template `X` is a directory called `X`. Two occupants of the baumeister were
+named after the ROLE they play instead: `dispatch`, a ref on `dispatcher@1.1.2`,
+and `librarian`, a ref on `builder-librarian@2.1.1`. Nineteen of the library's
+twenty-two ref markers already carried their template's name --
+`templates/cogny/dispatcher/` and `templates/talky/dispatcher/` among them --
+which made `dispatch` a lone second spelling of a word that is spelled correctly
+twice elsewhere. Where the two names differ, the tree says one thing and the
+address says another, and every reader has to learn the translation before they
+can follow an edge.
+
+**`builder@1.5.2`** -- the two directories are `dispatcher` and
+`builder-librarian`, and the eleven edges that named them move with them. No
+lane, no guard, no cell and no prose about behaviour changed: this is the tree
+spelling what the address already spells. A mutation that named
+`<builder>/dispatch` or `<builder>/librarian` in an `override_params` path stops
+resolving, and that is the whole of the migration -- the level's own address
+space is what moved, which is why a rename is a version event at all.
+
+**`meclaw-os@1.6.1`** -- the baumeister ref re-pinned to `builder@1.5.2`.
+Nothing else at that level moved.
+
+The third and expensive one, the assistant's conversation surface, is the same
+rule on a level whose name travels through twenty test files; it lands
+separately.
+
+#### `assistant@2.3.0`: the conversation surface is called after its template (GH #545)
+
+`talky` has been called `talky` since it shipped, and the name travels: it is in
+test names, in scenario prose, in the guide's own topology tables. Since
+[#454](https://github.com/mmeyerlein/meclaw/issues/454) the assistant level
+holds exactly one of them -- and it held it under a ROLE name, so a reader of
+`templates/assistant/` saw `./surface`, `./cogny` and `./tools`, two of the
+three named after their templates and one not.
+
+The node is `./talky`. **Twenty-six of that level's thirty-seven edges** carry
+the name, and two stamped tokens are renamed with it, because a discriminator
+that outlives the node it is named after is the one word in a file that has to
+be read historically:
+
+* `context.recall_caller` reads `'talky'` where it read `'surface'`
+  ([#532](https://github.com/mmeyerlein/meclaw/issues/532)). Nothing outside the
+  level compares against the value -- `member`, `memory-hive` and `org` carry it
+  through and test only `== 'outside'` -- so neither of those three moves and
+  neither takes a version.
+* `context.tool_caller` likewise ([#464](https://github.com/mmeyerlein/meclaw/issues/464),
+  [#529](https://github.com/mmeyerlein/meclaw/issues/529)); the return edges test
+  `!= 'cogny'` and never resolve the other value against the tree. The README
+  already ruled that this token is renamed with the node it names -- it said
+  `'channels'` until 2.0.0 -- so this is that rule applied, not a new one.
+
+**`ctx.model_surface` is deliberately NOT renamed.** It names the ROLE the model
+plays for the level, which is what a level's own ctx key should name: a `cogny`
+has a brain too, and `model_talky` would say nothing about why the key exists.
+It is also a public contract surface of its own -- `grow-assistant.json`,
+`grow.manifest.json`, the librarian corpus and the builder's README all carry
+it -- and renaming a ref is no reason to move a key.
+
+**Second digit, and the migration is one line.** An `override_params` path or a
+mutation that named `<assistant>/surface/...` names `<assistant>/talky/...` from
+2.3.0 on; the level's own address space is what moved. A generation already
+grown from `2.2.0` keeps the node name it was born with -- the template library
+is not on the runtime path of a booted colony, and a grown level is renamed, if
+at all, by a mutation.
+
+`templates/cogny/template.json` carries one corrected sentence with it: its
+DECLARATION PORT paragraph described the pair as `./surface -> ./cogny`. Prose
+about the caller, no version event of its own.
+
 ## [0.28.0] — 2026-08-30
 
 The release in which the organism grows its own surfaces. Four composition levels — a

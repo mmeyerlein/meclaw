@@ -1,4 +1,4 @@
-//! GH #302 — `meclaw-os@1.5.0`, the outermost level: the colony shell.
+//! GH #302 — `meclaw-os@1.7.0`, the outermost level: the colony shell.
 //!
 //! The four composition templates are authored under one rule, and every one of
 //! their READMEs repeats it in the same words: **a level owns what its siblings
@@ -14,8 +14,11 @@
 //!
 //! # What is asserted, and why each one is asserted of the substrate
 //!
-//! 1. **Shape.** The shell is a hive with exactly three occupants: `access` and
-//!    `argus` as `ref`s, and `orgs` as a real, open, empty container hive.
+//! 1. **Shape.** The shell is a hive with exactly five occupants: `access`,
+//!    `argus`, `builder` and `operator` as `ref`s, and `orgs` as a real, open,
+//!    empty container hive. There was a fifth ref until GH #556 took one AWAY:
+//!    the submitter is an occupant of `operator` now, so the shell holds four
+//!    refs and reaches the mutation door through the front door alone.
 //! 2. **The pins resolve.** Both refs name `<name>@<version>` and the
 //!    `TemplatesRegistry` — the same registry a mutation resolves against —
 //!    answers with the directory on disk. A bare name would resolve to the
@@ -32,8 +35,9 @@
 //!    sealed the parent. So the key is absent on both hives — asserted, because
 //!    "we forgot it" and "we mean it" look identical in a file.
 //! 4. **The contract is the occupants' lanes, measured.** The shell's `accepts`
-//!    and `emits` are read against `templates/access/config.json` and
-//!    `templates/argus/config.json` as they stand, never against a list kept
+//!    and `emits` are read against the `config.json` of every occupant —
+//!    `access`, `argus`, `builder`, `operator` and the `org` an instantiation
+//!    grows into the container — as they stand, never against a list kept
 //!    here — a list would agree with itself while disagreeing with the tree.
 //!    `connect` is the one subtraction: `access` requires that lane to be the
 //!    only edge reaching the connector cell, and that edge is drawn where the
@@ -43,7 +47,7 @@
 //! 6. **No swallowing sink** (#284, ruling Q2): nothing in here resolves to
 //!    `terminal`, and every refusal lane leaves the shell instead of ending in
 //!    it.
-//! 7. **No second vault** (#302 ruling Q20): `access@2.3.2` carries its own
+//! 7. **No second vault** (#302 ruling Q20): `access@2.4.3` carries its own
 //!    interior `vault`, and the standalone `vault` template attests its inbound
 //!    edges against `params.broker` — with no broker at this level it would boot
 //!    locked and inert.
@@ -69,20 +73,32 @@ const SHELL: &str = "meclaw-os";
 const BROKER: &str = "access";
 const LOOP: &str = "argus";
 
-/// GH #425 / R6 — the two halves of the ONE authoring path a colony has: the
-/// baumeister that drafts, and the submitter that is the only cell in the tree
-/// with a reach onto the mutation door. Both pass the question ADR-0013 asks
-/// (do all occupants of the level beneath share it?): one colony, one manifest
-/// audit trail — yes.
+/// GH #425 / R6 — the drafting half of the ONE authoring path a colony has. It
+/// passes the question ADR-0013 asks (do all occupants of the level beneath
+/// share it?): one colony, one manifest audit trail — yes.
 const BAUMEISTER: &str = "builder";
-const SUBMITTER: &str = "submit";
 /// GH #446 / R4 — the ONE front door a person addresses the OS through. It
 /// passes the same question ADR-0013 asks: a colony has one operator surface,
 /// and the identity a request acquires there is the identity every organisation
-/// under this level sees. It stands here and not one level down for the same
-/// reason the submitter does — it has to be a sibling of the submitter to hand
-/// it anything at all.
+/// under this level sees.
 const FRONT_DOOR: &str = "operator";
+/// GH #556 — the applying half of that same authoring path, and the only cell
+/// in the tree with a reach onto the mutation door. It is NOT an occupant of
+/// this level any more: it stands inside the front door, as `operator/submit`.
+///
+/// The move is the ADR-0013 question answered a second time and answered
+/// differently. A submitter is not something every occupant of the OS level
+/// shares — only the front door ever hands it anything, and it only ever
+/// answers the front door. What crossed the shell as four edges
+/// (`./operator -> ./submit` on `apply`, `./submit -> ./operator` on `receipt`,
+/// and the two `./submit -> ./builder` restamps) is one hive deeper now: the
+/// first two are interior edges of `operator`, and the last two are drawn from
+/// `./operator` because the submitter's answer leaves its hive as `sub_receipt`.
+///
+/// Named here so the shape test can assert the ABSENCE, and assert where the
+/// name went instead. A const nobody reads would let the two halves of that
+/// sentence drift apart.
+const SUBMITTER: &str = "submit";
 /// The container the organisations are instantiated into.
 const CONTAINER: &str = "orgs";
 /// The one lane of the broker that is deliberately NOT re-emitted outward.
@@ -110,20 +126,32 @@ const NOT_RE_EMITTED: &str = "connect";
 /// |---|---|---|
 /// | `build` | `org`, emitted | `./builder` / `./operator`, by class |
 /// | `in_build_result` | `org`, accepted | `./builder` / `./operator`, on the way back |
-/// | `in_apply` | `submit`, accepted | produced by the `./operator -> ./submit` edge |
 /// | `in_submit` | `operator`, accepted | a RIM lane, and also produced by the `./orgs -> ./operator` edge |
 /// | `manifest` | `builder`, emitted | consumed by the `./builder -> ./orgs` edge, or by `./builder -> ./operator` when the round came in at the rim |
-/// | `in_receipt` | `builder` and `operator`, accepted | produced by the `./submit -> ./builder` and `./submit -> ./operator` edges |
-/// | `apply` | `operator`, emitted | consumed by the `./operator -> ./submit` edge |
+/// | `in_draft` | `operator`, accepted | produced by the `./builder -> ./operator` edge |
+/// | `sub_receipt` | `operator`, emitted | consumed by the two `./operator -> ./builder` edges |
+/// | `in_receipt` | `builder`, accepted | produced by the `./operator -> ./builder` edge, re-stamped off `sub_receipt` |
+/// | `in_ingest` | `builder`, accepted | produced by the other `./operator -> ./builder` edge, off the same lane |
+/// | `ask` | `operator`, emitted | re-stamped `in_request` by the `./operator -> ./access` edge |
+/// | `in_verdict` | `operator`, accepted | produced by the `./access -> ./operator` edge |
 /// | `export` | `operator`, emitted | re-stamped `in_export` by the `./operator -> ./orgs` edge |
 /// | `export_done` | `operator`, accepted | produced by the `./orgs -> ./operator` edge |
 ///
-/// `receipt` used to stand in this list and no longer does (GH #446). It has
-/// TWO producers now: the submitter, whose receipts are taken by `./builder`
-/// and by the front door inside, and the front door itself, whose receipts are
-/// the answer whoever asked is owed. A lane with one producer inside and one
-/// that crosses is a lane that crosses — subtracting it would take away the
-/// only exit the front door has.
+/// GH #556 SHORTENED this list by two rather than lengthening it. `in_apply`
+/// and `apply` were the `./operator -> ./submit` edge, and that edge is now an
+/// interior edge of `operator@1.1.0`. Neither name is shipped by any occupant
+/// of this level any more, so subtracting them would be subtracting nothing —
+/// and a subtraction with no subject is how a list starts agreeing with itself.
+/// Three names took their place, and all three are the SAME shape: `ask`,
+/// `in_verdict` and `sub_receipt` are lanes of the front door's rim now,
+/// because the submitter that raises or takes them stands inside it.
+///
+/// `receipt` used to stand in this list and no longer does (GH #446). At this
+/// level it has exactly ONE producer, the front door, and its receipts are the
+/// answer whoever asked is owed — subtracting it would take away the only exit
+/// the front door has. The submitter's own answer no longer reaches this rim
+/// under that name at all (GH #556): what leaves `operator` is `sub_receipt`,
+/// and that one IS in the list.
 ///
 /// R-Zielfluss (a): the front door's `receipt` has TWO destinations at this
 /// level and one lane to be told apart by. An assistant's goes back down
@@ -132,31 +160,40 @@ const NOT_RE_EMITTED: &str = "connect";
 /// edges. `in_submit` is where the two callers meet: a rim door for the person
 /// and the `./orgs -> ./operator` edge for the assistant.
 ///
-/// `mutate` is deliberately NOT here: the submitter emits it and the shell
+/// `mutate` is deliberately NOT here: the front door emits it and the shell
 /// re-emits it, because it has to leave the level to reach the mutation door.
-/// That is the one lane of this pair that crosses, and it is the whole guardrail.
+/// That is the one lane of this pair that crosses, and it is the whole
+/// guardrail. GH #556 did not touch it — the sender the shell sees changed from
+/// `./submit` to `./operator`, and a caller subscribes to the lane rather than
+/// to whoever raised it.
 const CONSUMED_INSIDE: &[&str] = &[
     "build",
     "in_build_result",
-    "in_apply",
     "manifest",
-    // GH #446 — the front door's three internal lanes. `apply` reaches the
-    // submitter, `export` is re-stamped onto the organisation's `in_export`,
-    // and `export_done` comes back the same way. Producer and consumer are
-    // siblings here, so none of the three names reaches the rim.
-    "apply",
+    // GH #446 — the front door's export pair. `export` is re-stamped onto the
+    // organisation's `in_export`, and `export_done` comes back the same way.
+    // Producer and consumer are siblings here, so neither name reaches the rim.
     "export",
     "export_done",
-    // GH #435: the submitter asks the broker whether a manifest may be applied,
-    // and both halves of that question are siblings at THIS level. `ask` leaves
-    // the submitter and reaches the broker as `in_request`; the verdict leaves
-    // the broker as `grant` and reaches the submitter as `in_verdict`. Neither
-    // name crosses the rim, which is the same reason `build`/`in_apply` do not.
+    // GH #435, re-cut by GH #556: the submitter asks the broker whether a
+    // manifest may be applied, and both halves of that question are still
+    // siblings at THIS level — but the asker is one hive deeper now, so the
+    // question crosses the FRONT DOOR's rim before it crosses nothing here.
+    // `ask` leaves `./operator` and reaches the broker as `in_request`; the
+    // verdict leaves the broker as `grant` and is let back into `./operator` as
+    // `in_verdict`. Neither name crosses the shell's rim, which is the same
+    // reason `build` does not.
     "ask",
     "in_verdict",
+    // GH #556 — the submitter's own receipt, in its own words, on the two
+    // shapes the front door cannot answer for. It leaves `./operator` as
+    // `sub_receipt` and the two `./operator -> ./builder` edges of THIS level
+    // take it: producer and consumer are siblings here, so the name never
+    // reaches the rim.
+    "sub_receipt",
     // The refine lane of the builder's tool loop, and the exact mirror of
-    // `build`/`in_build`: the submitter emits `receipt`, the
-    // `./submit -> ./builder` edge of THIS level renames it to `in_receipt`,
+    // `build`/`in_build`: the front door raises `sub_receipt`, the
+    // `./operator -> ./builder` edge of THIS level renames it to `in_receipt`,
     // and the baumeister takes the refusal back into a repair round. Producer
     // and consumer are both siblings here, so the name never reaches the rim —
     // declaring it outward would offer a caller a lane no edge of this level
@@ -170,8 +207,8 @@ const CONSUMED_INSIDE: &[&str] = &[
     // `in_draft` from outside could park a manifest nobody drafted.
     "in_draft",
     // GH #504 — the corpus nudge, and the exact mirror of `in_receipt` one
-    // lane over. The submitter raises `receipt`, this level's own
-    // `./submit -> ./builder` edge re-stamps it to `in_ingest` when the
+    // lane over. The front door raises `sub_receipt`, this level's own
+    // `./operator -> ./builder` edge re-stamps it to `in_ingest` when the
     // committed diff registered a class, and the baumeister forwards it to the
     // librarian it refs. Producer and consumer are siblings here, so the name
     // never reaches the rim. Its answer `catalogue` is NOT in this list: the
@@ -346,7 +383,7 @@ fn template_json() -> Value {
 // ─────────────────────────────────────────────────────────────── the shape
 
 #[test]
-fn the_shell_holds_five_refs_and_one_empty_container() {
+fn the_shell_holds_four_refs_and_one_empty_container() {
     let dir = shell_dir();
     let _ = hive_params(&dir); // it is a hive, and its params parse
 
@@ -356,21 +393,37 @@ fn the_shell_holds_five_refs_and_one_empty_container() {
         CONTAINER.to_string(),
         FRONT_DOOR.to_string(),
         LOOP.to_string(),
-        SUBMITTER.to_string(),
     ];
     want.sort();
     assert_eq!(
         children(&dir),
         want,
         "the shell's occupants are exactly `{BROKER}`, `{LOOP}`, `{BAUMEISTER}`, \
-         `{SUBMITTER}`, `{FRONT_DOOR}` and the `{CONTAINER}` container — a level that \
-         grows a seventh sibling has taken on something its siblings do not share"
+         `{FRONT_DOOR}` and the `{CONTAINER}` container — a level that \
+         grows a sixth sibling has taken on something its siblings do not share"
+    );
+
+    // GH #556, asserted as the two halves of one sentence: the submitter is
+    // GONE from here, and it is an occupant of the front door instead. The
+    // first half alone would also pass if somebody had simply deleted it.
+    assert!(
+        !children(&dir).iter().any(|c| c == SUBMITTER),
+        "the shell holds a `{SUBMITTER}` occupant again — only the front door ever hands it \
+         anything and it only ever answers the front door, which is the ADR-0013 question \
+         answered no (GH #556)"
+    );
+    assert!(
+        children(&templates_root().join(FRONT_DOOR))
+            .iter()
+            .any(|c| c == SUBMITTER),
+        "`{SUBMITTER}` left this level and did not arrive inside `{FRONT_DOOR}` — the one road \
+         to the mutation door has lost its middle"
     );
 
     // A ref directory holds nothing besides its own `config.json` (the
     // substrate refuses anything else with `schema`,
     // `mutation/subtree.rs:612-634`).
-    for name in [BROKER, LOOP, BAUMEISTER, SUBMITTER] {
+    for name in [BROKER, LOOP, BAUMEISTER, FRONT_DOOR] {
         let d = dir.join(name);
         assert!(
             ref_target(&d).is_some(),
@@ -462,23 +515,27 @@ fn the_shells_contract_is_its_occupants_lanes_minus_the_ones_that_stay_inside() 
     let (broker_in, broker_out) = occupant_routes(BROKER);
     let (loop_in, loop_out) = occupant_routes(LOOP);
     let (builder_in, builder_out) = occupant_routes(BAUMEISTER);
-    let (submit_in, submit_out) = occupant_routes(SUBMITTER);
     let (door_in, door_out) = occupant_routes(FRONT_DOOR);
 
-    // Five occupants, and the one in the container — the organisation — has no
+    // Four refs, and the one in the container — the organisation — has no
     // contract of its own to read here, because it does not exist until
     // somebody instantiates one. Its lanes are the `org` template's, read off
     // the tree exactly like the rest.
     let (tenant_in, tenant_out) = occupant_routes(TENANT);
 
+    // GH #556 — the submitter's contract is deliberately NOT read here, and
+    // that is the whole of what the union rule says. It is not an occupant of
+    // this level, so its lanes reach the shell only as far as `operator@1.1.0`
+    // re-declares them: `ask`, `mutate` and `sub_receipt` out, `in_verdict` in.
+    // Reading `submit` here as well would produce a union that agrees with the
+    // rim by accident, and would go on agreeing with it after the front door
+    // stopped forwarding a lane.
     let expect_in = sorted(
-        [
-            broker_in, loop_in, tenant_in, builder_in, submit_in, door_in,
-        ]
-        .concat()
-        .into_iter()
-        .filter(|r| !CONSUMED_INSIDE.contains(&r.as_str()))
-        .collect::<Vec<_>>(),
+        [broker_in, loop_in, tenant_in, builder_in, door_in.clone()]
+            .concat()
+            .into_iter()
+            .filter(|r| !CONSUMED_INSIDE.contains(&r.as_str()))
+            .collect::<Vec<_>>(),
     );
     let expect_out = sorted(
         [
@@ -486,8 +543,7 @@ fn the_shells_contract_is_its_occupants_lanes_minus_the_ones_that_stay_inside() 
             loop_out,
             tenant_out,
             builder_out,
-            submit_out,
-            door_out,
+            door_out.clone(),
         ]
         .concat()
         .into_iter()
@@ -524,6 +580,29 @@ fn the_shells_contract_is_its_occupants_lanes_minus_the_ones_that_stay_inside() 
         "the shell re-emits `{NOT_RE_EMITTED}` — `{BROKER}` requires that lane to be the ONLY edge \
          reaching the connector cell, and that edge is drawn where the connector stands"
     );
+
+    // GH #556 — the union rule applied ONE level in, and the reason the shell's
+    // own rim did not move by a single entry when the submitter did. Whatever
+    // of the submitter's lanes still shows at this rim shows because the front
+    // door re-declared it: `mutate` and `receipt` do, `ask`, `in_verdict` and
+    // `in_apply` do not. Read off both templates, so a front door that quietly
+    // stopped carrying one is red here rather than at the next boot.
+    let (sub_in, sub_out) = occupant_routes(SUBMITTER);
+    for (half, mine, theirs) in [
+        ("accepts", routes(&c.accepts), (&sub_in, &door_in)),
+        ("emits", routes(&c.emits), (&sub_out, &door_out)),
+    ] {
+        let (submitter_lanes, door_lanes) = theirs;
+        for lane in submitter_lanes.iter().filter(|l| mine.contains(l)) {
+            assert!(
+                door_lanes.contains(lane),
+                "the shell {half} `{lane}`, which `{SUBMITTER}` ships and `{FRONT_DOOR}` does \
+                 not — since GH #556 the submitter is an occupant of the front door, so its \
+                 lanes reach this rim through `{FRONT_DOOR}`'s contract or they do not reach \
+                 it at all"
+            );
+        }
+    }
 
     // Both inbound lanes of the broker demand a promoted requester (R-AC-1). A
     // level that forwards them without saying so hands the requirement to a
@@ -727,7 +806,7 @@ fn the_org_lanes_cross_this_level_unchanged() {
             !mine_out.iter().chain(mine_in.iter()).any(|l| l == lane),
             "the shell declares `{lane}`, which a sibling INSIDE it answers for. On this \
              level the builder lane pair crosses NOTHING: `./orgs` raises it, `./builder` \
-             or `./submit` takes it, and back. Declaring it at the rim would promise a lane \
+             or `./operator` takes it, and back. Declaring it at the rim would promise a lane \
              whose messages never leave."
         );
     }
@@ -742,8 +821,14 @@ fn the_org_lanes_cross_this_level_unchanged() {
     // nothing at the rim; `in_build` is raised by the baumeister and reaches
     // the rim, so a check that never opened the baumeister's contract would
     // have called a lane with an occupant behind it a lane without one.
+    //
+    // GH #556 narrowed it again by one, and the narrowing is the assertion.
+    // `submit` is NOT read here: it is not an occupant of this level, so a lane
+    // that only the submitter ships is a lane with nothing behind it AT THIS
+    // RIM. `mutate` and `receipt` stay green because the front door declares
+    // them itself — which is exactly the statement the union rule makes.
     let raises_or_takes = |lane: &String| -> bool {
-        [BROKER, LOOP, TENANT, FRONT_DOOR, BAUMEISTER, SUBMITTER]
+        [BROKER, LOOP, TENANT, FRONT_DOOR, BAUMEISTER]
             .into_iter()
             .any(|t| {
                 let (accepts, emits) = occupant_routes(t);
@@ -754,8 +839,10 @@ fn the_org_lanes_cross_this_level_unchanged() {
         assert!(
             raises_or_takes(lane),
             "this level declares `{lane}`, and no occupant raises or takes it — \
-             `{BROKER}`, `{LOOP}`, `{TENANT}`, `{FRONT_DOOR}`, `{BAUMEISTER}` and `{SUBMITTER}` \
-             were all read at the tree. A lane with no occupant behind it is an edge that can \
+             `{BROKER}`, `{LOOP}`, `{TENANT}`, `{FRONT_DOOR}` and `{BAUMEISTER}` \
+             were all read at the tree, and `{SUBMITTER}` deliberately was not: since GH #556 \
+             it stands inside `{FRONT_DOOR}` and its lanes reach this rim only where the front \
+             door re-declares them. A lane with no occupant behind it is an edge that can \
              never fire, declared as if it could."
         );
     }
@@ -878,7 +965,8 @@ fn every_edge_is_a_door_or_an_exit_and_every_one_carries_a_declared_lane() {
     // edges, and the two downward ones discriminate on `hop.build_op` rather
     // than on the lane, because the lane is one and the classes are two.
     //
-    // `./orgs -> ./submit` is deliberately absent: one submission front door
+    // `./orgs -> ./submit` is deliberately absent, and since GH #556 there is
+    // no such endpoint at this level to draw it to: one submission front door
     // and not two. An assistant's apply becomes `in_submit` at the front door,
     // travels the submitter, its gate and the broker exactly as before, and the
     // receipt comes back through the front door as well.
@@ -907,6 +995,110 @@ fn every_edge_is_a_door_or_an_exit_and_every_one_carries_a_declared_lane() {
         );
     }
 
+    // GH #556 — the three lanes the shell now sees crossing the FRONT DOOR's
+    // rim that it did not before, and the one it sends back in. They are
+    // interior-to-the-level edges exactly like the builder pair above: producer
+    // and consumer are siblings here, which is why `ask`, `in_verdict` and
+    // `sub_receipt` are subtracted from the shell's own contract. `mutate` is
+    // the exception and is asserted on its own below, because it CROSSES.
+    //
+    // Two round trips, drawn rather than assumed: the capability question out
+    // to the broker and the verdict back, and the submitter's own receipt out
+    // to the baumeister on the two shapes the front door cannot answer for.
+    let door = format!("./{FRONT_DOOR}");
+    let ask = hp
+        .graph
+        .edges
+        .iter()
+        .find(|e| e.from == door && e.to == format!("./{BROKER}"))
+        .unwrap_or_else(|| {
+            panic!(
+                "no `{door} -> ./{BROKER}` edge — since GH #556 the submitter stands INSIDE the \
+                 front door and the broker is its sibling one level out, so the one capability \
+                 question a submission asks has to leave `{FRONT_DOOR}` and be let back in"
+            )
+        });
+    assert!(
+        ask.condition
+            .as_deref()
+            .is_some_and(|c| c.contains("'ask'")),
+        "the `{door} -> ./{BROKER}` edge does not name `ask`"
+    );
+    let stamped = ask
+        .modifier
+        .as_ref()
+        .and_then(|m| m.set_hop.get("route"))
+        .map(|v| v.trim_matches('\'').to_string())
+        .expect("the ask edge re-stamps a lane the broker takes");
+    assert!(
+        occupant_routes(BROKER).0.contains(&stamped),
+        "the ask edge re-stamps `{stamped}`, which `{BROKER}` does not accept"
+    );
+    let requester = ask
+        .modifier
+        .as_ref()
+        .and_then(|m| m.set_context.get("requester"))
+        .map(|v| v.trim_matches('\'').to_string())
+        .expect(
+            "the ask edge promotes no `context.requester` — R-AC-1: the broker rules on an \
+             identity, and a level that forwards the question without naming one issues the \
+             grant to whoever asked loudest",
+        );
+    assert!(
+        requester.ends_with(&format!("/{FRONT_DOOR}/{SUBMITTER}")),
+        "the ask edge names `{requester}` as the requester. The identity the broker rules is the \
+         SUBMITTER's own path, and since GH #556 that path runs through the front door — a level \
+         that still says `/…/{SUBMITTER}` is ruling on a node that no longer exists"
+    );
+    let verdict = hp
+        .graph
+        .edges
+        .iter()
+        .find(|e| e.from == format!("./{BROKER}") && e.to == door)
+        .unwrap_or_else(|| {
+            panic!(
+                "no `./{BROKER} -> {door}` edge — the question left on `ask` and the answer has \
+                 no way back in, so every submission parks forever"
+            )
+        });
+    assert_eq!(
+        verdict
+            .modifier
+            .as_ref()
+            .and_then(|m| m.set_hop.get("route"))
+            .map(|v| v.trim_matches('\'').to_string())
+            .as_deref(),
+        Some("in_verdict"),
+        "the broker's answer reaches the front door on a lane other than `in_verdict`, which is \
+         the only one `{FRONT_DOOR}` declares for it"
+    );
+    let sub_receipts: Vec<&str> = hp
+        .graph
+        .edges
+        .iter()
+        .filter(|e| {
+            e.from == door
+                && e.to == format!("./{BAUMEISTER}")
+                && e.condition
+                    .as_deref()
+                    .is_some_and(|c| c.contains("'sub_receipt'"))
+        })
+        .filter_map(|e| {
+            e.modifier
+                .as_ref()
+                .and_then(|m| m.set_hop.get("route"))
+                .map(|v| v.trim_matches('\''))
+        })
+        .collect();
+    assert_eq!(
+        sorted(sub_receipts.iter().map(|s| s.to_string()).collect()),
+        vec!["in_ingest".to_string(), "in_receipt".to_string()],
+        "the two `{door} -> ./{BAUMEISTER}` edges re-stamp {sub_receipts:?}. Since GH #556 the \
+         submitter's own answer leaves the front door as `sub_receipt`, and this level is what \
+         turns it into the refusal the baumeister repairs (`in_receipt`) and the corpus nudge it \
+         forwards (`in_ingest`) — the pair GH #504 and GH #425 each own one half of"
+    );
+
     // And the one edge that leaves the shell for the mutation door.
     let senders: Vec<&str> = hp
         .graph
@@ -926,9 +1118,11 @@ fn every_edge_is_a_door_or_an_exit_and_every_one_carries_a_declared_lane() {
         "the `mutate` lane carries two senders and no more: {senders:?}"
     );
     assert!(
-        senders.contains(&format!("./{LOOP}").as_str())
-            && senders.contains(&format!("./{SUBMITTER}").as_str()),
-        "the control loop and the submitter, and nobody else: {senders:?}"
+        senders.contains(&format!("./{LOOP}").as_str()) && senders.contains(&door.as_str()),
+        "the control loop and the front door, and nobody else. GH #556 moved the second sender \
+         one hive deeper — the submitter still raises it, but what this LEVEL sees is \
+         `{door} -> .`, because the submitter is an occupant of the front door now. One lane, \
+         one privileged edge out of the shell, one audit trail (R6): {senders:?}"
     );
     assert!(
         !senders.contains(&format!("./{BAUMEISTER}").as_str()),

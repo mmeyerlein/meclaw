@@ -401,7 +401,7 @@ fn a_named_grow_level_missing_its_per_level_parameter_is_refused_not_downgraded(
 #[test]
 fn the_grow_sentence_takes_the_fast_lane_and_a_half_sentence_does_not() {
     let full = run_classify(json!({
-        "request": "grow an assistant named scribe from assistant@2.2.0 under \
+        "request": "grow an assistant named scribe from assistant@2.3.0 under \
                     /os/orgs/acme/members/alex",
         "ctx": {"model": "m", "model_fast": "f", "model_surface": "s"}}));
     assert_eq!(full["header"]["route"], json!("recipe"));

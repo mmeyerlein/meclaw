@@ -470,7 +470,7 @@ fn every_declaration_answer_in_the_shipped_assistant_names_its_answerer() {
     let asks: Vec<&Value> = edges
         .iter()
         .filter(|e| {
-            e["from"] == json!("./surface")
+            e["from"] == json!("./talky")
                 && e["condition"]
                     .as_str()
                     .is_some_and(|c| c.contains("hop.route == 'schemas'"))
@@ -499,7 +499,7 @@ fn every_declaration_answer_in_the_shipped_assistant_names_its_answerer() {
 
 #[test]
 fn the_level_declares_the_errand_its_own_topology_answers() {
-    let Some(surface) = shipped("assistant/surface/config.json") else {
+    let Some(surface) = shipped("assistant/talky/config.json") else {
         return;
     };
     let declared = &surface["override_params"]["collector/assemble"]["tools"];

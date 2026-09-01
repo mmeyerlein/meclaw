@@ -5,6 +5,13 @@
 //! answered with a verdict and no grant. The manifest itself cannot ride that
 //! round trip — `access` answers with a `tool_result` that REPLACES the body —
 //! so it waits parked in the store beside the gate, under its own digest.
+//!
+//! Since GH #556 the round trip crosses TWO rims rather than one: the `submit`
+//! hive is an occupant of `operator`, so the question leaves the front door on
+//! `ask` before the shell hands it to `./access`, and the verdict is let back in
+//! the same way. The pair the shell draws is therefore `./operator -> ./access`
+//! and `./access -> ./operator`, and the requester it promotes is the path of
+//! the occupant the rule is about — `/os/operator/submit`.
 
 use meclaw_core::serde_json::{Value, json};
 use meclaw_testing::code_wire::{emit_all, run_shipped_script, shipped_script};
@@ -21,10 +28,19 @@ const OS: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../templates/meclaw-os/config.json"
 );
-const REQUESTER: &str = "/os/orgs/acme/members/alex/assistants/scribe/tools/apply";
+const OPERATOR: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../templates/operator/config.json"
+);
+const REQUESTER: &str = "/os/orgs/acme/members/alex/assistants/scribe/tools/build-apply";
 
 fn read(path: &str) -> Value {
     meclaw_core::serde_json::from_str(&std::fs::read_to_string(path).expect(path)).expect(path)
+}
+
+/// A shipped template file, addressed relative to the repository root.
+fn shipped(rel: &str) -> Value {
+    read(&format!("{}/../../{rel}", env!("CARGO_MANIFEST_DIR")))
 }
 
 /// The canonical digest of a declaration list, drawn by the same two lines the
@@ -57,7 +73,7 @@ fn submit(decls: &Value, claimed: &str, reply_to: &str) -> Vec<Value> {
     emit_all(
         &shipped_script(GATE),
         &json!({
-            "target": "/os/submit",
+            "target": "/os/operator/submit",
             "reply_to": reply_to,
             "header": { "hop": { "route": "in_apply", "manifest_sha256": claimed,
                                  "tool_call_id": "c2" }, "context": {} },
@@ -84,7 +100,7 @@ fn verdict(status: &str, sha: &str, readable: bool, store_error: bool) -> Vec<Va
     emit_all(
         &shipped_script(GATE),
         &json!({
-            "target": "/os/submit",
+            "target": "/os/operator/submit",
             "header": { "hop": hop,
                         "context": { "sub_ask": "1", "sub_sha": sha } },
             "ttl": 64,
@@ -100,7 +116,7 @@ fn unpark(rows: &Value) -> Vec<Value> {
     emit_all(
         &shipped_script(GATE),
         &json!({
-            "target": "/os/submit",
+            "target": "/os/operator/submit",
             "header": {
                 "hop": { "operation": "select", "rows_affected": 1 },
                 "context": { "sub_origin": "gate", "sub_phase": "parked",
@@ -348,14 +364,18 @@ fn the_shell_wires_the_submitter_to_the_broker_and_back() {
     let edges = os_edges();
     let ask = edges
         .iter()
-        .find(|e| e["from"] == "./submit" && e["to"] == "./access")
-        .expect("submit -> access");
+        .find(|e| e["from"] == "./operator" && e["to"] == "./access")
+        .expect("operator -> access");
     assert_eq!(ask["condition"], "has(hop.route) && hop.route == 'ask'");
     // The broker's own door lane, set by the COLONY on the edge -- and the
     // requester with it. R-AC-1 lives here.
     assert_eq!(ask["modifier"]["set_hop"]["route"], "'in_request'");
+    // The path promoted is the OCCUPANT the rule is about, not the hive that
+    // relays for it: since GH #556 the submitter stands inside the front door,
+    // and a rule written for `/os/operator` would be a rule about every lane
+    // that hive has rather than about the one node with the mutation edge.
     assert_eq!(
-        ask["modifier"]["set_context"]["requester"], "'/os/submit'",
+        ask["modifier"]["set_context"]["requester"], "'/os/operator/submit'",
         "the broker reads the requester from context and nowhere else"
     );
     // A marker in the submitter's OWN key space: `access_origin` and `ac_*` are
@@ -370,13 +390,32 @@ fn the_shell_wires_the_submitter_to_the_broker_and_back() {
 
     let back = edges
         .iter()
-        .find(|e| e["from"] == "./access" && e["to"] == "./submit")
-        .expect("access -> submit");
+        .find(|e| e["from"] == "./access" && e["to"] == "./operator")
+        .expect("access -> operator");
     assert_eq!(
         back["condition"],
         "context.sub_ask == '1' && has(hop.route) && hop.route == 'grant'"
     );
     assert_eq!(back["modifier"]["set_hop"]["route"], "'in_verdict'");
+
+    // …and the half the shell cannot draw, because the submitter is not its
+    // occupant any more: the question has to LEAVE the front door and the
+    // answer has to be let back in. Without this pair the two edges above are
+    // wired to a hive that neither raises `ask` nor forwards `in_verdict`.
+    let inside = read(OPERATOR)["params"]["graph"]["edges"].clone();
+    let inside = inside.as_array().expect("the operator's edges").clone();
+    assert!(
+        inside.iter().any(|e| e["from"] == "./submit"
+            && e["to"] == "."
+            && e["condition"] == "has(hop.route) && hop.route == 'ask'"),
+        "the submitter's question crosses the front door's rim"
+    );
+    assert!(
+        inside.iter().any(|e| e["from"] == "."
+            && e["to"] == "./submit"
+            && e["condition"] == "has(hop.route) && hop.route == 'in_verdict'"),
+        "and the verdict is handed back to the occupant that asked"
+    );
 }
 
 #[test]
@@ -404,32 +443,30 @@ fn a_verdict_for_the_submitter_does_not_also_leave_the_shell() {
 }
 
 #[test]
-fn the_shell_pins_both_halves_of_the_pair() {
-    // The two numbers are DERIVED, not typed (`docs/development-rules.md`
-    // § 2d): a version written here as a literal goes stale on the next bump
-    // of either template and turns a correct tree red — which it did, on
-    // `submit@2.3.0`.
-    for dir in ["access", "submit"] {
+fn every_ref_on_the_road_to_the_broker_is_pinned() {
+    // The versions are DERIVED, not typed (`docs/development-rules.md` § 2d): a
+    // version written here as a literal goes stale on the next bump of either
+    // template and turns a correct tree red — which it did, on `submit@2.3.0`.
+    //
+    // Three refs since GH #556, not two: the pair the shell draws is
+    // `operator`/`access`, and the submitter the pair exists for is a ref one
+    // storey further in, inside the front door. A bare name anywhere on that
+    // road resolves to whatever is newest on disk.
+    for (holder, name) in [
+        ("templates/meclaw-os", "access"),
+        ("templates/meclaw-os", "operator"),
+        ("templates/operator", "submit"),
+    ] {
         let want = format!(
-            "{}@{}",
-            dir,
-            read(&format!(
-                "{}/../../templates/{}/template.json",
-                env!("CARGO_MANIFEST_DIR"),
-                dir
-            ))["version"]
+            "{name}@{}",
+            shipped(&format!("templates/{name}/template.json"))["version"]
                 .as_str()
                 .expect("the referenced template declares a version")
         );
-        let p = format!(
-            "{}/../../templates/meclaw-os/{}/config.json",
-            env!("CARGO_MANIFEST_DIR"),
-            dir
-        );
         assert_eq!(
-            read(&p)["cell"]["template"],
+            shipped(&format!("{holder}/{name}/config.json"))["cell"]["template"],
             want,
-            "the shell's `ref` to {dir} lags the template it names"
+            "the `ref` to {name} under {holder} lags the template it names"
         );
     }
 }

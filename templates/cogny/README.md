@@ -1,8 +1,8 @@
-# `cogny@4.4.0`
+# `cogny@4.5.0`
 
 The agent core as one template. Four units under one hive:
 [`collector`](../collector/) and [`dispatcher`](../dispatcher/) -- each carrying its
-template's own name -- plus ONE `llm` `brain` and one `code` cell, `declare`, which
+template's own name -- plus ONE `llm` `brain` and one `code` cell, `schemas`, which
 hands out the schema of the errand this core takes. No new cell type, no Rust.
 
 **One brain, since 4.4.0** ([#528](https://github.com/mmeyerlein/meclaw/issues/528)).
@@ -74,7 +74,7 @@ runs is a lens on the same hive, and a second one inherits what the member alrea
 | `collector/{assemble,window,menu-clock}` | `code`, `store`, `timer` | `collector` **(sealed)** |
 | `dispatcher` | `code` | `dispatcher` (a single-cell template) |
 | `brain` | `llm` | this template -- the one inference |
-| `declare` | `code` | this template -- the errand schema (4.4.0) |
+| `schemas` | `code` | this template -- the errand schema (4.4.0; named `declare` until 4.5.0) |
 
 **The braces are an inventory, not an address list.** `collector` declares
 `params.ports: []`, so `./collector` is the only address an edge from outside may name and
@@ -122,7 +122,7 @@ declaration for either.
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`cogny@4.4.0` above it in its provenance chain.
+`cogny@4.5.0` above it in its provenance chain.
 
 **The library has to carry both.** A reference resolves against the colony's template
 registry, so `collector` and `dispatcher` have to sit in the same `templates/` directory
@@ -247,6 +247,17 @@ That instruction is in the schema's own `description`, which is also where the *
 boundary** lives -- synthesis, time series, multi-step work and research come here; a quick
 fact the asker looks up in its own memory. One sentence in one file beats a paragraph copied
 into every persona, and the copies are what drift.
+
+**The cell is called `schemas`, and it was called `declare` until 4.5.0**
+([#548](https://github.com/mmeyerlein/meclaw/issues/548)). One lane, one cell name: the
+tools hive answers `in_schemas` with an occupant called `schemas`, this core answered the
+same lane with a cell called `declare`, and the two scripts differ in their schema table and
+almost nowhere else. Two words for one job is cheap on the day it is written and expensive
+the moment a third hive picks a third word -- every `override_params` path, every mutation
+that adds a schema and every reader following the declaration round had to know which word
+this particular hive chose. `schemas` survived because it names what comes back and it
+matches the lane. Nothing else moved: the lane pair, the body, the answer shape and the
+`required_drains` entry are what they were.
 
 **Why the core and not a tools hive.** A tools hive declares the cells it contains, and this
 core is not one of them. Before 4.4.0 the `consult_cogny` schema was typed by hand into every
@@ -435,12 +446,12 @@ dispatcher --(tool_name == memory_recall)--> collector  in_memory_call   <- #528
 
 .          --(in_turn)-----------> collector         THE DOORS
 .          --(in_tool|in_bundle|in_pack|in_menu)-> collector
-.          --(in_schemas)--------> declare           <- #528
+.          --(in_schemas)--------> schemas           <- #528
 collector  --(answer)-----------> .                  THE EXITS
 collector  --(recall)-----------> .
 collector  --(pack_ack)---------> .
 collector  --(schemas)----------> .
-declare    --(operation == schemas)--> .  route := 'tool_schemas'
+schemas    --(operation == schemas)--> .  route := 'tool_schemas'
 dispatcher ==(tool, DEFAULT)==============> .
 brain      --(error|content_filter)--> .  route := 'error'
 ```
@@ -538,7 +549,7 @@ Now the knob is set where it belongs, and the sub-unit stays a reference to the 
 `collector`:
 
 ```json
-{"op": "instantiate", "template": "cogny@4.4.0", "at": "/cores/deep",
+{"op": "instantiate", "template": "cogny@4.5.0", "at": "/cores/deep",
  "override_params": {"collector/assemble": {"context_window": 200000,
                                             "recoverability": "lookup:repeatable,write:env"}}}
 ```
@@ -699,7 +710,7 @@ knowledge ends.
   request comes back on `tool_schemas` carrying the `consult_cogny` schema with `question`
   and `context` both required; `ask_memory` and `escalate_to_deep` appear in no config or
   manifest of the template any more; and the core is one brain, `collector` + `dispatcher` + `brain` +
-  `declare` and nothing else.
+  `schemas` and nothing else.
 - `crates/meclaw-colony/tests/gh277_composite_instantiation_is_byte_identical.rs` -- the
   two golden manifests over the instantiated tree (the sub-unit refs produce the same
   bytes the copies did) plus the stamp pin: a cell inside a referenced sub-unit carries

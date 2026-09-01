@@ -6,7 +6,7 @@
 //! may be told what, and the screen every inbound turn passes. Three holders,
 //! three walks, three directories on disk. What it could not reach was the one
 //! table a rebuild cannot recompute: `sessions`. A session keeper stands four
-//! levels down, inside a generation — `<member>/assistants/<agent>/surface/
+//! levels down, inside a generation — `<member>/assistants/<agent>/talky/
 //! session-keeper` — and the container that holds generations ships EMPTY, so
 //! there was no path from the member's door to it and no path from a derived
 //! member template to its seed. A member exported and reborn kept every episode
@@ -25,7 +25,7 @@
 //!
 //! What runs here is one colony, booted from the shipped library, with the
 //! member grown through the mutation door and TWO generations of
-//! `assistant@2.2.0` grown into its container the way
+//! `assistant@2.3.0` grown into its container the way
 //! `templates/member/README.md` § *Addressing an assistant through a channel*
 //! and `templates/assistant/README.md` § *Instantiating* prescribe — including
 //! the two transfer edges #475 added to that recipe.
@@ -60,7 +60,7 @@
 //! of thing: a cell that would leave this machine.
 //!
 //! * The `llm` cell type is replaced by an inert lazy double. A generation
-//!   carries three of them (`surface/brain`, `cogny/brain`, `cogny/brain_fast`),
+//!   carries three of them (`talky/brain`, `cogny/brain`, `cogny/brain_fast`),
 //!   and a spawned one opens an HTTP connection to a provider. Nothing in this
 //!   file is about what a model answers: the keeper's stamp sits BEFORE the
 //!   brain in `talky`'s graph, so a session is opened by a turn arriving, not by
@@ -556,7 +556,7 @@ fn assistant_manifest(name: &str) -> Value {
         "ctx": {"model": "double/no-network", "model_fast": "double/no-network",
                 "model_surface": "double/no-network"},
         "diff": {
-            "add_nodes": [{"name": format!("assistants/{name}"), "template": "assistant@2.2.0"}],
+            "add_nodes": [{"name": format!("assistants/{name}"), "template": "assistant@2.3.0"}],
             "add_edges": add_edges,
         }
     }]})
@@ -669,7 +669,7 @@ async fn an_export_that_names_a_generation_reaches_that_generations_session_keep
     let base = format!("/members/{MEMBER}");
     let keeper_db = |agent: &str| {
         td.path().join(format!(
-            "main/members/{MEMBER}/assistants/{agent}/surface/session-keeper/sessions/cell.db"
+            "main/members/{MEMBER}/assistants/{agent}/talky/session-keeper/sessions/cell.db"
         ))
     };
 

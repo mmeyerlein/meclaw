@@ -49,7 +49,9 @@ adr	status	anchor_home	target
 0014-the-web-cell-owns-its-listener.md	accepted	self	test:a_web_cell_serves_its_shell_on_its_own_port
 0014-the-web-cell-owns-its-listener.md	accepted	self	test:two_web_cells_serve_two_ports_independently
 0014-the-web-cell-owns-its-listener.md	accepted	self	test:registry_wires_proxy_timer_mcp_factories
-0015-the-builder-belongs-to-the-os-level.md	accepted	self	test:the_shell_holds_five_refs_and_one_empty_container
+0015-the-builder-belongs-to-the-os-level.md	accepted	self	test:the_shell_holds_four_refs_and_one_empty_container
+0015-the-builder-belongs-to-the-os-level.md	accepted	self	test:the_submitter_is_an_occupant_of_the_front_door_and_not_of_the_shell
+0015-the-builder-belongs-to-the-os-level.md	accepted	self	test:the_privileged_lane_leaves_the_front_door_and_then_the_colony
 0015-the-builder-belongs-to-the-os-level.md	accepted	self	test:no_config_in_the_builder_draws_an_edge_onto_the_control_plane
 0015-the-builder-belongs-to-the-os-level.md	accepted	self	test:no_config_in_the_builder_draws_an_edge_onto_the_mutation_door
 0015-the-builder-belongs-to-the-os-level.md	accepted	self	test:no_script_in_the_builder_spells_the_mutation_door
@@ -81,3 +83,4 @@ adr	status	anchor_home	target
 0019-one-hive-several-askers-the-reply-to-token.md	accepted	self	test:each_asker_stamps_its_own_name_on_the_way_out
 0019-one-hive-several-askers-the-reply-to-token.md	accepted	self	test:a_bundle_with_no_token_still_goes_where_every_bundle_went
 0019-one-hive-several-askers-the-reply-to-token.md	accepted	self	file:templates/assistant/README.md#One hive, two askers
+0020-v-lanes-contract-declared-corridors.md	accepted	self	file:scripts/check_tree_rules.py

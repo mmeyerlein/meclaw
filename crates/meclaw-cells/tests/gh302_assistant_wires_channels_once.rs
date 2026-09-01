@@ -12,7 +12,7 @@
 //! the shape the move exists for.
 //!
 //! In the file that is one substitution and one lane swap. The open `channels`
-//! container became `surface`, a single `ref` on the talky that keeps this
+//! container became `talky`, a single `ref` on the talky that keeps this
 //! generation's sessions; the emit `turn` was removed and the emit `answer`
 //! added. Both fall out of the derivation rule rather than out of a decision:
 //! the raw wire that produced `turn` sits outside this level now and reaches
@@ -29,11 +29,11 @@
 //!
 //! # What is asked of the FILES
 //!
-//! 1. **Three children, all `ref`s, and no container at all.** `surface`,
+//! 1. **Three children, all `ref`s, and no container at all.** `talky`,
 //!    `cogny` and `tools`, each pinning the exact version the tree ships — a
 //!    bare `<name>` resolves to the highest one present, which is the drift
 //!    `template_chain` exists to make visible.
-//! 2. **No open container is left on this level**, and `surface` is a ref on
+//! 2. **No open container is left on this level**, and `talky` is a ref on
 //!    the talky version standing in the tree. The container that used to be
 //!    here is the subject GH #454 removed: a channel is instantiated into the
 //!    MEMBER now, so there is nothing at this level for a mutation to put one
@@ -41,8 +41,8 @@
 //! 3. **One edge to the tool surface, and it names no tool.** A single guarded
 //!    default (GH #283, ruling Q1); the two consult errands stay ordinary
 //!    conditioned edges. This is the #286 + #283 win, measured.
-//! 4. **No unconditional tee out of `./surface`.** Suppression is per SENDER:
-//!    if any regular out-edge of `./surface` fires, the default is silent. A
+//! 4. **No unconditional tee out of `./talky`.** Suppression is per SENDER:
+//!    if any regular out-edge of `./talky` fires, the default is silent. A
 //!    logger, a tap or a mirror without its own route condition would take the
 //!    tool surface dark for every call.
 //! 5. **Every edge that discriminates on `hop.tool_name` reads the lane
@@ -137,7 +137,7 @@ fn stated_route(condition: Option<&str>) -> Option<String> {
 
 /// The three occupants of the level, as this template addresses them. There is
 /// no fourth endpoint: what used to be `./channels` is a node of the MEMBER now.
-const SIBLINGS: [&str; 3] = ["./surface", "./cogny", "./tools"];
+const SIBLINGS: [&str; 3] = ["./talky", "./cogny", "./tools"];
 
 // ─────────────────────────────── (1) three children, all refs, no container
 
@@ -158,7 +158,7 @@ fn the_level_ships_three_refs_and_no_container() {
         children,
         vec![
             "cogny".to_string(),
-            "surface".to_string(),
+            "talky".to_string(),
             "tools".to_string()
         ],
         "one generation is the conversation surface, the reasoning core and the tool \
@@ -169,7 +169,7 @@ fn the_level_ships_three_refs_and_no_container() {
     );
 
     for (name, want) in [
-        ("surface", "talky@"),
+        ("talky", "talky@"),
         ("cogny", "cogny@"),
         ("tools", "tools@"),
     ] {
@@ -217,7 +217,7 @@ fn the_level_ships_three_refs_and_no_container() {
 /// instantiated into `<member>/channels`, and this level has nowhere to put one
 /// — which is the point: the assistant is COMPLETE at birth, and no per-channel
 /// follow-up mutation exists any more. So what is measured here is the absence
-/// itself: no child of this level is a hive, and `surface` is a ref on the talky
+/// itself: no child of this level is a hive, and `talky` is a ref on the talky
 /// version standing in the tree, read off `templates/talky/template.json` rather
 /// than written down here, because a pin that ages inside a test goes red for a
 /// reason that has nothing to do with what the test is about.
@@ -251,8 +251,8 @@ fn the_level_carries_no_open_container_and_the_surface_is_the_shipped_talky() {
          owner — the container belongs to the member (GH #454)."
     );
 
-    // `surface` is a ref on the talky the tree actually ships.
-    let surface = config_at(&root.join("surface"));
+    // `talky` is a ref on the talky the tree actually ships.
+    let surface = config_at(&root.join("talky"));
     let talky = repo("templates/talky/template.json");
     if let Ok(raw) = std::fs::read_to_string(&talky) {
         let v: Value = meclaw_core::serde_json::from_str(&raw).unwrap();
@@ -323,7 +323,7 @@ fn the_only_edge_to_the_tool_surface_is_one_guarded_default_naming_no_tool() {
         .graph
         .edges
         .iter()
-        .filter(|e| e.from == "./surface" && e.to == "./tools")
+        .filter(|e| e.from == "./talky" && e.to == "./tools")
         .collect();
     let lanes: Vec<Option<String>> = to_tools
         .iter()
@@ -337,7 +337,7 @@ fn the_only_edge_to_the_tool_surface_is_one_guarded_default_naming_no_tool() {
     let schemas_edge = to_tools[1];
     assert!(
         !schemas_edge.is_default,
-        "the schemas request is an ORDINARY edge: a second default out of ./surface would          make the two compete for every message nothing regular carried: {schemas_edge:#?}"
+        "the schemas request is an ORDINARY edge: a second default out of ./talky would          make the two compete for every message nothing regular carried: {schemas_edge:#?}"
     );
     assert_eq!(
         schemas_edge
@@ -351,7 +351,7 @@ fn the_only_edge_to_the_tool_surface_is_one_guarded_default_naming_no_tool() {
     let tools_edge = to_tools[0];
     assert!(
         tools_edge.is_default,
-        "the tool exit is the GUARDED DEFAULT of ./surface — without `default: true` it \
+        "the tool exit is the GUARDED DEFAULT of ./talky — without `default: true` it \
          is a regular edge and every consult is delivered twice, which is the defect #283 \
          measured: {tools_edge:#?}"
     );
@@ -389,7 +389,7 @@ fn the_only_edge_to_the_tool_surface_is_one_guarded_default_naming_no_tool() {
         .graph
         .edges
         .iter()
-        .filter(|e| e.from == "./surface" && e.to == "./cogny")
+        .filter(|e| e.from == "./talky" && e.to == "./cogny")
         .filter(|e| {
             e.condition
                 .as_deref()
@@ -432,8 +432,8 @@ fn the_only_edge_to_the_tool_surface_is_one_guarded_default_naming_no_tool() {
 // ─────────────────── (4) the suppression precondition: no unconditional tee
 
 /// Suppression is per SENDER (`crates/meclaw-colony/src/edge_table.rs`, the
-/// two-phase evaluation): if ANY regular out-edge of `./surface` decided, the
-/// default phase never runs. Every other edge out of `./surface` is therefore
+/// two-phase evaluation): if ANY regular out-edge of `./talky` decided, the
+/// default phase never runs. Every other edge out of `./talky` is therefore
 /// conditioned on something a `tool` message does not carry — the seven lanes
 /// the surface sends out of the level, and the two errands by name.
 ///
@@ -446,22 +446,22 @@ fn no_regular_out_edge_of_the_surface_is_unconditional() {
     let Some(root) = shipped() else { return };
     let hp = hive_params(&root);
 
-    for e in hp.graph.edges.iter().filter(|e| e.from == "./surface") {
+    for e in hp.graph.edges.iter().filter(|e| e.from == "./talky") {
         if e.is_default {
             continue;
         }
         let cond = e.condition.as_deref().unwrap_or_default();
         assert!(
             cond.contains("hop.route"),
-            "the edge ./surface -> {} carries no route condition. Suppression is per \
-             SENDER: an unconditional tee out of ./surface fires for every tool call and \
+            "the edge ./talky -> {} carries no route condition. Suppression is per \
+             SENDER: an unconditional tee out of ./talky fires for every tool call and \
              silences the guarded default, and the tool surface goes dark. {e:#?}",
             e.to
         );
         let route = stated_route(Some(cond)).unwrap_or_default();
         assert!(
             route != "tool" || cond.contains("hop.tool_name"),
-            "the edge ./surface -> {} takes the whole `tool` lane without naming an \
+            "the edge ./talky -> {} takes the whole `tool` lane without naming an \
              errand, so no tool call ever reaches the default: {e:#?}",
             e.to
         );
@@ -471,8 +471,8 @@ fn no_regular_out_edge_of_the_surface_is_unconditional() {
 // ───────────────────── (5) W7-R4: a discriminator is never read before the lane
 
 /// The loop class GH #286 found and driver ruling **W7-R4** closed, checked here
-/// because this level has the same shape: a message that leaves `./surface` on
-/// a discriminator comes back through `./surface`, and a door that reads only
+/// because this level has the same shape: a message that leaves `./talky` on
+/// a discriminator comes back through `./talky`, and a door that reads only
 /// the discriminator would dispatch an answer to its own sender, round after
 /// round, until the TTL runs out.
 #[test]
@@ -634,13 +634,13 @@ fn the_level_declares_the_lanes_its_occupants_ship() {
          being declared dies as no_route at the boundary: {emits:?}"
     );
     let carries_answer_out = hive_params(&root).graph.edges.iter().any(|e| {
-        e.from == "./surface"
+        e.from == "./talky"
             && e.to == "."
             && stated_route(e.condition.as_deref()).as_deref() == Some("answer")
     });
     assert!(
         carries_answer_out,
-        "`answer` is declared and no edge carries it out of ./surface — the declaration \
+        "`answer` is declared and no edge carries it out of ./talky — the declaration \
          would be a promise with nothing behind it"
     );
     assert!(
@@ -831,7 +831,7 @@ fn paragraph_with(readme: &str, needle: &str) -> String {
 ///
 /// The public surface of this level states four countable promises — how many
 /// lanes it declares, how many drain pairings, how many edges it draws, and how
-/// many of those are drawn around `./surface`. W5 measured the failure mode this
+/// many of those are drawn around `./talky`. W5 measured the failure mode this
 /// prevents: a template README kept describing a lane count the tree had already
 /// moved past, and no test was red because no test ever read the sentence.
 ///
@@ -852,19 +852,19 @@ fn the_readme_counts_are_the_lanes_and_edges_this_level_declares() {
         .graph
         .edges
         .iter()
-        .filter(|e| e.from == "./surface" || e.to == "./surface")
+        .filter(|e| e.from == "./talky" || e.to == "./talky")
         .count();
     let into_surface = hp
         .graph
         .edges
         .iter()
-        .filter(|e| e.from == "." && e.to == "./surface")
+        .filter(|e| e.from == "." && e.to == "./talky")
         .count();
     let out_of_surface = hp
         .graph
         .edges
         .iter()
-        .filter(|e| e.from == "./surface" && e.to == ".")
+        .filter(|e| e.from == "./talky" && e.to == ".")
         .count();
 
     for (n, needle, what) in [
@@ -911,19 +911,19 @@ fn the_readme_counts_are_the_lanes_and_edges_this_level_declares() {
 
     // The fan-in measurement, which is written in digits rather than in words —
     // it is a measurement beside a historical one and reads as a comparison.
-    let fan_in = paragraph_with(&readme, "around `./surface` today");
+    let fan_in = paragraph_with(&readme, "around `./talky` today");
     assert!(
-        fan_in.contains(&format!("**{around_surface}** around `./surface` today")),
+        fan_in.contains(&format!("**{around_surface}** around `./talky` today")),
         "the fan-in measurement must say {around_surface}, which is what the template \
-         draws around ./surface:\n  {fan_in}"
+         draws around ./talky:\n  {fan_in}"
     );
     // `paragraph_with` collapses runs of whitespace, so the aligned table reads
     // as `<count> <from> -> <to> <what>` here — the alignment is the file's, the
     // count is what this asserts.
     let table = paragraph_with(&readme, "the entry lanes that reach the surface");
     for (n, line) in [
-        (into_surface, ". -> ./surface the entry lanes"),
-        (out_of_surface, "./surface -> . the exits it produces"),
+        (into_surface, ". -> ./talky the entry lanes"),
+        (out_of_surface, "./talky -> . the exits it produces"),
     ] {
         assert!(
             table.contains(&format!("{n} {line}")),
@@ -1257,7 +1257,7 @@ fn build_tree(td: &tempfile::TempDir, source: &std::path::Path) {
     write(root, "main/config.json", &main_config());
     write(root, "main/driver/config.json", &driver_cell());
     copy_cells(source, &root.join("main/agent"));
-    write(root, "main/agent/surface/config.json", &talky_cell());
+    write(root, "main/agent/talky/config.json", &talky_cell());
     write(root, "main/agent/cogny/config.json", &cogny_cell());
     write(root, "main/agent/tools/config.json", &tools_cell());
     std::fs::write(root.join(".env"), "").unwrap();
@@ -1350,7 +1350,7 @@ async fn a_tool_call_takes_the_default_and_a_consult_takes_the_regular_edge() {
             .map(|v| v.trim_matches('\'').to_string())
             .unwrap_or_else(|| panic!("no edge {from} -> ./tools stamps context.tool_caller"))
     };
-    let from_surface = stamped_caller("./surface");
+    let from_surface = stamped_caller("./talky");
     let from_cogny = stamped_caller("./cogny");
     assert_ne!(
         from_surface, from_cogny,
@@ -1390,7 +1390,7 @@ async fn a_tool_call_takes_the_default_and_a_consult_takes_the_regular_edge() {
             "talky",
             "{name}: the answer left the level from somewhere other than the surface. There \
              is no connector between the two any more — it is the member's — so the exit is \
-             `./surface -> .` and nothing else: hop {:?}",
+             `./talky -> .` and nothing else: hop {:?}",
             out.headers.hop
         );
         // The two callers of the ONE tool surface, told apart on the way back by
@@ -1447,7 +1447,7 @@ async fn a_consult_never_reaches_the_tool_surface() {
         first.headers.hop
     );
 
-    // Every edge out of `./surface` is decided in ONE `apply_edges` call on ONE
+    // Every edge out of `./talky` is decided in ONE `apply_edges` call on ONE
     // message, so a competing delivery is already in flight by the time the
     // winning one arrives. The wait exists only to let it land.
     tokio::time::sleep(Duration::from_millis(750)).await;
@@ -1515,7 +1515,7 @@ fn a_second_channel_costs_this_level_nothing_at_all() {
         .iter()
         .filter(|e| {
             e.from == "."
-                && e.to == "./surface"
+                && e.to == "./talky"
                 && stated_route(e.condition.as_deref()).as_deref() == Some("in_turn")
         })
         .count();
@@ -1529,7 +1529,7 @@ fn a_second_channel_costs_this_level_nothing_at_all() {
         .edges
         .iter()
         .filter(|e| {
-            e.from == "./surface"
+            e.from == "./talky"
                 && e.to == "."
                 && stated_route(e.condition.as_deref()).as_deref() == Some("answer")
         })

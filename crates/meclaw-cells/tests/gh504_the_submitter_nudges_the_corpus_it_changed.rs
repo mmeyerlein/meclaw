@@ -20,11 +20,19 @@
 //!    be REMEMBERED — the colony answers on a fresh trace carrying `outcome`,
 //!    `applied` and `ids` and nothing about what the declarations were — so it
 //!    travels on the flight row and comes back with the correlation.
-//! 3. `templates/meclaw-os` draws `./submit -> ./builder` on a receipt with no
-//!    `error_code` AND that key, re-stamped `in_ingest`, plus `./builder -> .`
-//!    for the report. Only this level can draw it, for the reason it is the
-//!    only one that can draw `./submit -> ./access`: the two are siblings here
-//!    and nowhere else.
+//! 3. `templates/meclaw-os` draws `./operator -> ./builder` on a submitter's
+//!    receipt with no `error_code` AND that key, re-stamped `in_ingest`, plus
+//!    `./builder -> .` for the report. Only this level can draw it, for the
+//!    reason it is the only one that can draw `./operator -> ./access`: the two
+//!    are siblings here and nowhere else.
+//! 4. Since GH #556 the submitter is an occupant of the FRONT DOOR rather than
+//!    of the shell, so the receipt has to cross one rim before the shell sees
+//!    it: `./submit -> .` inside `templates/operator` re-stamps the submitter's
+//!    own `receipt` onto `sub_receipt`, guarded on the two shapes the front
+//!    door cannot answer for itself — one carrying `hop.error_code`, one whose
+//!    committed diff registered a class. An ordinary committed receipt is
+//!    rendered for the caller inside the hive and does not leave twice, which is
+//!    why the lane is its own name rather than a second sender on `receipt`.
 //!
 //! The last three tests are the drift locks of `docs/development-rules.md`
 //! § 2d: each greps a countable or behavioural promise on a public template
@@ -49,9 +57,13 @@ const FILES: &[&str] = &[
     "templates/submit/gate/config.json",
     "templates/submit/store/config.json",
     "templates/submit/README.md",
+    "templates/operator/config.json",
+    "templates/operator/submit/config.json",
     "templates/meclaw-os/config.json",
     "templates/meclaw-os/template.json",
     "templates/meclaw-os/README.md",
+    "templates/meclaw-os/builder/config.json",
+    "templates/meclaw-os/operator/config.json",
     "templates/builder-librarian/README.md",
 ];
 
@@ -142,7 +154,7 @@ fn the_builder_takes_the_nudge_at_its_hive_path_and_lets_the_report_out() {
     let edges = params["graph"]["edges"].as_array().expect("edges");
     let door = edges
         .iter()
-        .find(|e| e["from"] == "." && e["to"] == "./librarian")
+        .find(|e| e["from"] == "." && e["to"] == "./builder-librarian")
         .expect("the hive path forwards the nudge to the librarian");
     assert_eq!(
         door["condition"],
@@ -157,7 +169,7 @@ fn the_builder_takes_the_nudge_at_its_hive_path_and_lets_the_report_out() {
     let exit = edges
         .iter()
         .find(|e| {
-            e["from"] == "./librarian"
+            e["from"] == "./builder-librarian"
                 && e["to"] == "."
                 && e["condition"] == "has(hop.route) && hop.route == 'catalogue'"
         })
@@ -170,7 +182,7 @@ fn the_builder_takes_the_nudge_at_its_hive_path_and_lets_the_report_out() {
     assert!(
         edges
             .iter()
-            .any(|e| e["from"] == "./lib" && e["to"] == "./librarian"),
+            .any(|e| e["from"] == "./lib" && e["to"] == "./builder-librarian"),
         "the search lane still reaches the librarian"
     );
 }
@@ -183,7 +195,7 @@ fn pop(rows: Value, carry: &str) -> Vec<Value> {
     emit_all(
         &gate(),
         &json!({
-            "target": "/os/submit",
+            "target": "/os/operator/submit",
             "header": {
                 "hop": { "operation": "select", "rows_affected": 1 },
                 "context": { "sub_origin": "gate", "sub_phase": "pop",
@@ -251,13 +263,16 @@ fn a_refused_manifest_carries_the_key_and_the_code_beside_it() {
 
 /// The un-park: the broker said yes, the manifest comes back off the parked row.
 fn unpark(decls: &Value, sha: &str) -> Vec<Value> {
+    // The requester the gate parked is the path the SUBSTRATE stamped on the
+    // emission that reached it — the front door's identity cell, which GH #556
+    // renamed to `intake`.
     let rows = json!([{ "id": "p1", "manifest": decls,
-                        "requester": "/os/operator/submit",
+                        "requester": "/os/operator/intake",
                         "tool_call_id": "c2", "manifest_sha256": sha }]);
     emit_all(
         &gate(),
         &json!({
-            "target": "/os/submit",
+            "target": "/os/operator/submit",
             "header": {
                 "hop": { "operation": "select", "rows_affected": 1 },
                 "context": { "sub_origin": "gate", "sub_phase": "subscribing",
@@ -301,8 +316,17 @@ fn the_flight_row_remembers_the_diff_the_colony_will_not_carry() {
 
 // ----------------------------------------------------------------- 3. the shell
 
-const NUDGE: &str = "has(hop.route) && hop.route == 'receipt' && !has(hop.error_code) \
+/// The shell's guard on the nudge. The lane is the front door's `sub_receipt`
+/// since GH #556 — the submitter's own receipt, re-stamped on its way out of the
+/// hive it now lives in.
+const NUDGE: &str = "has(hop.route) && hop.route == 'sub_receipt' && !has(hop.error_code) \
                      && has(hop.registers_class) && hop.registers_class == true";
+
+/// The front door's own guard, one storey down: which receipts leave the hive at
+/// all. An ordinary committed receipt is answered inside and is not on it.
+const SUB_RECEIPT: &str = "has(hop.route) && hop.route == 'receipt' \
+                           && (has(hop.error_code) \
+                           || (has(hop.registers_class) && hop.registers_class == true))";
 
 #[test]
 fn the_shell_draws_the_edge_no_other_level_could() {
@@ -313,14 +337,36 @@ fn the_shell_draws_the_edge_no_other_level_could() {
     let nudge = edges
         .iter()
         .find(|e| {
-            e["from"] == "./submit"
+            e["from"] == "./operator"
                 && e["to"] == "./builder"
                 && e["modifier"]["set_hop"]["route"] == "'in_ingest'"
         })
-        .expect("./submit -> ./builder, re-stamped in_ingest");
+        .expect("./operator -> ./builder, re-stamped in_ingest");
     assert_eq!(
         nudge["condition"], NUDGE,
         "both guards, and neither is decoration"
+    );
+
+    // The half the shell cannot draw: the submitter is an occupant of the front
+    // door, so its receipt has to be let out before this level ever sees it —
+    // and only in the two shapes the front door cannot answer for itself.
+    let inside = read("templates/operator/config.json");
+    let inside = inside["params"]["graph"]["edges"]
+        .as_array()
+        .expect("the operator's edges")
+        .clone();
+    let lift = inside
+        .iter()
+        .find(|e| {
+            e["from"] == "./submit"
+                && e["to"] == "."
+                && e["modifier"]["set_hop"]["route"] == "'sub_receipt'"
+        })
+        .expect("./submit -> . inside the front door, re-stamped sub_receipt");
+    assert_eq!(
+        lift["condition"], SUB_RECEIPT,
+        "an ordinary committed receipt is answered inside the hive; letting a \
+         copy out as well would be one submission with two answers"
     );
 
     let report = edges
@@ -347,29 +393,36 @@ fn the_shell_draws_the_edge_no_other_level_could() {
     );
 
     // The refusal lane the shell has always had is untouched: an error receipt
-    // still goes to the builder as `in_receipt`, and it is a different edge.
+    // still goes to the builder as `in_receipt`, and it is a different edge. It
+    // travels the same rim as the nudge now, which is why the two are told apart
+    // by `error_code` and not by the lane they arrive on.
     let repair = edges
         .iter()
         .find(|e| {
-            e["from"] == "./submit"
+            e["from"] == "./operator"
                 && e["to"] == "./builder"
                 && e["modifier"]["set_hop"]["route"] == "'in_receipt'"
         })
         .expect("the repair lane of GH #425");
     assert_eq!(
         repair["condition"],
-        "has(hop.route) && hop.route == 'receipt' && has(hop.error_code)"
+        "has(hop.route) && hop.route == 'sub_receipt' && has(hop.error_code)"
     );
 
     // The pins the ref files carry: a bare name would resolve to whatever is
     // newest on disk, which is the drift `registry.template_chain` exists to
-    // make visible rather than to excuse.
+    // make visible rather than to excuse. The submitter's pin moved with it
+    // (GH #556) and is now the front door's.
     assert_eq!(
         read("templates/meclaw-os/builder/config.json")["cell"]["template"],
-        "builder@1.5.1"
+        "builder@1.5.2"
     );
     assert_eq!(
-        read("templates/meclaw-os/submit/config.json")["cell"]["template"],
+        read("templates/meclaw-os/operator/config.json")["cell"]["template"],
+        "operator@1.1.0"
+    );
+    assert_eq!(
+        read("templates/operator/submit/config.json")["cell"]["template"],
         "submit@2.3.0"
     );
 }
@@ -442,9 +495,9 @@ fn the_shell_readme_counts_the_edges_the_shell_has() {
         && e["to"] == "."
         && e["condition"] == "has(hop.route) && hop.route == 'catalogue'"));
     assert!(
-        edges
-            .iter()
-            .any(|e| e["from"] == "./submit" && e["to"] == "./builder" && e["condition"] == NUDGE)
+        edges.iter().any(|e| e["from"] == "./operator"
+            && e["to"] == "./builder"
+            && e["condition"] == NUDGE)
     );
 }
 
@@ -538,7 +591,7 @@ fn the_builder_readme_names_the_transit_lane_it_gained() {
             .as_array()
             .expect("edges")
             .iter()
-            .any(|e| e["from"] == "." && e["to"] == "./librarian")
+            .any(|e| e["from"] == "." && e["to"] == "./builder-librarian")
     );
 }
 
@@ -548,16 +601,29 @@ fn the_builder_readme_names_the_transit_lane_it_gained() {
 /// still be trying to draw it.
 ///
 /// Both halves per `docs/development-rules.md` § 2d: the prose is grepped AND
-/// the two edges it promises are asserted out of the shipped configs.
+/// the edges it promises are asserted out of the shipped configs.
+///
+/// Since GH #556 the drawn form is `./operator -> ./builder` over the front
+/// door's `sub_receipt` lane: the submitter moved into the front door, so the
+/// two hive paths the edge runs between are the operator's and the
+/// baumeister's. The README names that form and retracts the previous one
+/// (`./submit -> ./builder`) by name, which is the § 3 shape this lock exists
+/// to hold — a promise is retired in the text, never silently rewritten.
 #[test]
 fn the_librarian_readme_names_the_wiring_that_can_actually_be_drawn() {
     let Some(_) = shipped() else { return };
     let readme = text("templates/builder-librarian/README.md");
 
-    // The promise, in the terms the shell and the builder are wired in.
+    // The promise, in the terms the README states it in today.
+    assert!(
+        readme.contains("`./operator -> ./builder`"),
+        "the README must name the edge between the two HIVE PATHS the nudge \
+         actually runs between since GH #556"
+    );
     assert!(
         readme.contains("`./submit -> ./builder`"),
-        "the README must name the edge between the two HIVE PATHS"
+        "the form the shell drew through `meclaw-os@1.6.1` is retracted BY NAME \
+         rather than silently rewritten (§ 3)"
     );
     assert!(
         readme.contains("hop.registers_class"),
@@ -578,12 +644,24 @@ fn the_librarian_readme_names_the_wiring_that_can_actually_be_drawn() {
          that retires it"
     );
 
-    // …and the mechanism: both edges stand in the shipped configs.
+    // …and the mechanism: every edge of the road stands in the shipped configs.
+    // Three of them since GH #556 — the receipt leaves the front door, the shell
+    // hands it to the builder, and the builder forwards it to the librarian.
+    let inside = read("templates/operator/config.json")["params"]["graph"]["edges"].clone();
+    let inside = inside.as_array().expect("the operator's edges");
+    assert!(
+        inside.iter().any(|e| e["from"] == "./submit"
+            && e["to"] == "."
+            && e["condition"] == SUB_RECEIPT
+            && e["modifier"]["set_hop"]["route"] == json!("'sub_receipt'")),
+        "the submitter's receipt crosses the front door's rim before the shell sees it"
+    );
+
     let shell = read("templates/meclaw-os/config.json")["params"]["graph"]["edges"].clone();
     let shell = shell.as_array().expect("shell edges");
     let nudge = shell
         .iter()
-        .find(|e| e["from"] == "./submit" && e["to"] == "./builder" && e["condition"] == NUDGE)
+        .find(|e| e["from"] == "./operator" && e["to"] == "./builder" && e["condition"] == NUDGE)
         .expect("the shell draws the nudge edge the README describes");
     assert_eq!(nudge["modifier"]["set_hop"]["route"], json!("'in_ingest'"));
 
@@ -591,12 +669,12 @@ fn the_librarian_readme_names_the_wiring_that_can_actually_be_drawn() {
     let builder = builder.as_array().expect("builder edges");
     assert!(
         builder.iter().any(|e| e["from"] == "."
-            && e["to"] == "./librarian"
+            && e["to"] == "./builder-librarian"
             && e["condition"] == "has(hop.route) && hop.route == 'in_ingest'"),
-        "the builder forwards the nudge from its hive path to ./librarian"
+        "the builder forwards the nudge from its hive path to ./builder-librarian"
     );
     assert!(
-        builder.iter().any(|e| e["from"] == "./librarian"
+        builder.iter().any(|e| e["from"] == "./builder-librarian"
             && e["to"] == "."
             && e["condition"] == "has(hop.route) && hop.route == 'catalogue'"),
         "and lets the report back out, which is the half the README calls the \

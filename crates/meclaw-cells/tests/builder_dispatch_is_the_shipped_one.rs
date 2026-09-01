@@ -8,11 +8,11 @@ use meclaw_core::serde_json::Value;
 use std::path::PathBuf;
 
 #[test]
-fn the_builders_dispatch_is_a_ref_to_the_shipped_dispatcher() {
+fn the_builders_dispatcher_is_a_ref_to_the_shipped_dispatcher() {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../templates/builder/dispatch/config.json");
+        .join("../../templates/builder/dispatcher/config.json");
     let cfg: Value =
-        meclaw_core::serde_json::from_str(&std::fs::read_to_string(p).expect("dispatch config"))
+        meclaw_core::serde_json::from_str(&std::fs::read_to_string(p).expect("dispatcher config"))
             .expect("parses");
     assert_eq!(cfg["cell"]["type"], "ref");
     let t = cfg["cell"]["template"].as_str().expect("template named");

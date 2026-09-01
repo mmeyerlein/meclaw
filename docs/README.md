@@ -1,7 +1,7 @@
 # The meclaw documentation
 
-Six documents, and they are not meant to be read in order. Find the row that
-matches what you are trying to do.
+These documents are not meant to be read in order. Find the row that matches
+what you are trying to do.
 
 ## Where to go
 
@@ -16,6 +16,30 @@ matches what you are trying to do.
 | know what it costs to run | [`costs.md`](costs.md) | How to measure provider spend from a colony's own database, the numbers measured on one production colony, and which tiers are honestly unmeasured. |
 | see what is stable and what is next | [`../ROADMAP.md`](../ROADMAP.md) | What has shipped, what is being worked on, and what is deliberately not planned. The issue tracker carries the substance. |
 | contribute | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | How to build, how to test, and which parts of the codebase are byte-pinned against fixtures on purpose. |
+
+## The why pages
+
+meclaw is different enough that the same questions come up every time. Each has
+a page of its own under [`why/`](why/) — one question, one answer:
+
+- [Everything is a file](why/everything-is-a-file.md) — why the harness lives in
+  the filesystem, and why there is no SDK.
+- [An operating system for agents](why/an-os-for-agents.md) — what meclaw-os is,
+  the four composition levels, the authorities, and apps.
+- [One assistant, two brains](why/two-brains.md) — why the shipped assistant
+  runs two models.
+- [Memory that outlives the window](why/memory.md) — the memory hive, and why
+  the context window is assembled instead of accumulated.
+- [Ontology, in the meclaw sense](why/ontology.md) — the typed catalogue the
+  builder designs against, and how it learns new words.
+- [Recursive self-improvement — seriously?](why/rsi.md) — which primitives
+  exist, and why the loop deliberately does not.
+- [The strange names](why/names.md) — argus, affinity, talky, cogny and
+  friends, one line each.
+- [Why Rust, why Linux only](why/rust-and-linux.md) — the binary, the kernel
+  sandbox, and the reverse-proxy stance.
+- [You talk, it shows](why/you-talk-it-shows.md) — the vision, explicitly
+  marked as an idea rather than a feature.
 
 ## Two step-by-step walkthroughs
 
@@ -69,6 +93,7 @@ when that cycle closed) is part of a published tree, which is why both are
 named here rather than linked: a link to a file the published tree does not
 carry is a dead link in the only tree that matters.
 
-**`demo.sh`, `demo.cast` and `demo.svg`** are the terminal recording embedded in
-the repo README: `docs/demo.sh` driving [`../examples/swarm/`](../examples/swarm/),
-replayable with `asciinema play docs/demo.cast`.
+**`demo.sh`, `demo.cast` and `demo.svg`** are a terminal recording of
+`docs/demo.sh` driving [`../examples/swarm/`](../examples/swarm/) — the
+tool-loop showing up as a path through the tree. Replayable with
+`asciinema play docs/demo.cast`.

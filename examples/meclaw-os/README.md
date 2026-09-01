@@ -26,7 +26,7 @@ meclaw-os/
 ├── grow-cogny.json            step two: the thinking core. one node, three edges.
 ├── grow-argus.json            step three: the control loop. one node, no edge.
 ├── grow-canvy.json            step four: the colony's own picture. one node, no edge.
-├── grow-operator.json         step five: the front door. one node, three edges.
+├── grow-operator.json         step five: the front door. one node, two edges.
 └── seed-ref/                  the OTHER root: stage one of a built colony, see below
     ├── colony.json            substrate defaults. two lines.
     ├── .env.example           every name the shell needs, and not one value
@@ -367,8 +367,9 @@ its own recipe: [`templates/canvy/MIGRATION.md`](../../templates/canvy/MIGRATION
 
 ## Step five: the front door
 
-`grow-operator.json` adds [`operator@1.0.0`](../../templates/operator/) — a sealed hive with
-four cells that turns a request from outside into a message with a **sender**.
+`grow-operator.json` adds [`operator@1.1.0`](../../templates/operator/) — a sealed hive that
+turns a request from outside into a message with a **sender**, and that since GH #556 carries
+the **submitter** as one of its occupants.
 
 ```bash
 curl -s -X POST http://127.0.0.1:7777/colony/mutations \
@@ -380,24 +381,29 @@ curl -s -X POST http://127.0.0.1:7777/colony/mutations \
 agent inside a colony is a cell, so its submissions are attributable; a person with a shell is
 not, so a `POST /messages` arrives with no sender and the submitter's gate refuses it as
 anonymous. This hive lends that person a path: a request on `in_submit` becomes a message
-emitted by `/operator/submit`, and that is the identity the rest of the colony sees.
+emitted by `/operator/intake`, and that is the identity the rest of the colony sees.
 
 **It is identity, never authentication.** No token, no header check, no caller list, no secret
 — the same story the display tells one section up. Who may reach the door is a reverse proxy's
 question; what the holder of an identity may do is the capability broker's.
 
-**One node, three edges — and one existing edge narrowed.** The way in is
+**One node, two edges — and one existing edge narrowed.** The way in is
 `./door -> ./operator`, taken when the channel is literally `operator`, stamping the
-`in_lifecycle` lane. The two out are `./operator -> ./sink` on `receipt` and on `apply`. And
+`in_lifecycle` lane. The way out is `./operator -> ./sink` on `receipt`. And
 `./door -> ./firewall` grows one clause, because edges **fan out**: without it a turn on that
 channel would reach the agent as well, and an operator request is not a conversation.
 
-The `apply` lane ends at the terminal here because **this colony has no submitter** —
-`grow.json` grows an agent, not an OS shell — so a manifest that leaves the front door has
-nowhere to be applied. That is the honest wiring for this example rather than a defect: the
-lane has an address and the dead-letter queue stays empty. Where a submitter *does* stand
-beside it is [`meclaw-os@1.6.0`](../../templates/meclaw-os/), whose own edges carry `apply`
-onto `in_apply` and the receipt back under the requester's identity.
+**Where the round stops here, and why that is the honest wiring.** Through `operator@1.0.0`
+the third edge was `./operator -> ./sink` on `apply`, because the submitter stood outside the
+hive and the manifest had to leave it. Since GH #556 the submitter is an occupant: `apply` is
+an interior edge and never crosses this rim. What crosses instead is `ask`, the one capability
+question a submission asks — and **this colony grows no broker**, so a lifecycle request
+becomes a manifest, reaches the gate, asks, and stops there. The receipt an operator gets is
+the one the front door renders; nothing is applied, and nothing is lost silently. A colony
+that wants the round to finish wires `ask` to a broker, `in_verdict` back, and `mutate` on to
+the mutation door — which is exactly the shape
+[`meclaw-os@1.7.0`](../../templates/meclaw-os/) ships, and the reason a shell is the thing you
+grow when you want an OS rather than an agent with a door.
 
 ```bash
 curl -s -X POST http://127.0.0.1:7777/messages \
@@ -427,7 +433,7 @@ A built colony arrives in two stages instead.
 seed-ref/
 ├── colony.json            substrate defaults. two lines.
 ├── main/config.json       type: "hive", ONE edge, and not one cell
-└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@1.6.0"}}
+└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@1.7.0"}}
 ```
 
 ```bash
@@ -441,9 +447,9 @@ cp examples/meclaw-os/seed-ref/.env.example examples/meclaw-os/seed-ref/.env
 
 The third file is a **declaration, not a cell**. The first start resolves it against the
 template library and grows it — the capability broker, the control loop, the baumeister, the
-submitter, the front door, the empty `orgs` container and the forty-nine edges between them —
+submitter, the front door, the empty `orgs` container and the forty-seven edges between them —
 through the very resolution and staging a mutation takes. Then the marker is **gone**: what stands at its
-address is [`meclaw-os@1.6.0`](../../templates/meclaw-os/). A second boot finds nothing to grow.
+address is [`meclaw-os@1.7.0`](../../templates/meclaw-os/). A second boot finds nothing to grow.
 
 **The one edge is the whole birth topology.** `./os -> /colony/mutations`, on the `mutate` lane
 and nothing else. It cannot be added by a mutation on any scope — an edge *is* a mutation — so it

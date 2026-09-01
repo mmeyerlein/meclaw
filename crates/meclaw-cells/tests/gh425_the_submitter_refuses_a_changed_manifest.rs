@@ -20,7 +20,7 @@ const SUBMIT: &str = concat!(
     "/../../templates/submit/gate/config.json"
 );
 
-const REQUESTER: &str = "/os/orgs/acme/members/alex/assistants/scribe/tools/apply";
+const REQUESTER: &str = "/os/orgs/acme/members/alex/assistants/scribe/tools/build-apply";
 
 fn digest_of(decls: &Value) -> String {
     let program = concat!(

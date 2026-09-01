@@ -38,9 +38,9 @@
 //! `./unknown` and `./schemas` are never doubled. Both are `code` cells already,
 //! neither needs a provider or a network, and both tests want the shipped
 //! `unknown`: in the second because its refusal is the subject, in the first
-//! because its silence is. `./mcp` and `./vault` are not doubled either — no
-//! edge reaches them (GH #464 ships them unwired), so a double there would be a
-//! cell nothing can call.
+//! because its silence is. `./mcp` and `./vault` used to be the third and fourth
+//! exception — no edge reached them — and since `tools@1.3.0` they are not in
+//! this hive at all (GH #547), so the exception list is the two `code` cells.
 //!
 //! **Observed at the exit, not at the occupants**, and that is a property of the
 //! doubles rather than a concession: every occupant of this hive answers, so
@@ -50,9 +50,7 @@
 //! cells that never answer — a different topology from the shipped one on
 //! exactly the property under test.
 
-use meclaw_cells::McpCellFactory;
 use meclaw_cells::code::CodeCellFactory;
-use meclaw_cells::vault::VaultCellFactory;
 use meclaw_colony::config::{EdgeSpec, HiveParams};
 use meclaw_colony::edge_table::{Edge, EdgeTable, apply_edges};
 use meclaw_colony::{CellFactory, CellFactoryRegistry, bootstrap_from_filesystem};
@@ -229,26 +227,15 @@ fn build_tree(td: &tempfile::TempDir, doubled: &[(&str, &str)]) {
 /// The caller's drain. Everything the hive answers arrives here, and
 /// `hop.operation` says which occupant answered.
 async fn boot(td: &tempfile::TempDir) -> (ColonyHandle, mpsc::Receiver<Message>) {
-    // `mcp` and `vault` are registered although nothing routes to them: the boot
-    // PLAN refuses a cell type it does not know before it ever asks whether the
-    // node is active, so the two UNWIRED occupants (GH #464) still need their
-    // factories — which is a property of the substrate, and exactly what a real
-    // colony provides.
+    // One registration is enough since `tools@1.3.0`: the boot PLAN refuses a
+    // cell type it does not know before it ever asks whether the node is active,
+    // so an UNWIRED occupant still needed its factory — and this hive ships none
+    // any more (GH #547).
     let factories = || -> Vec<(String, Arc<dyn CellFactory>)> {
-        vec![
-            (
-                "code".to_string(),
-                Arc::new(CodeCellFactory) as Arc<dyn CellFactory>,
-            ),
-            (
-                "mcp".to_string(),
-                Arc::new(McpCellFactory) as Arc<dyn CellFactory>,
-            ),
-            (
-                "vault".to_string(),
-                Arc::new(VaultCellFactory) as Arc<dyn CellFactory>,
-            ),
-        ]
+        vec![(
+            "code".to_string(),
+            Arc::new(CodeCellFactory) as Arc<dyn CellFactory>,
+        )]
     };
     let h = ColonyHandle::new_with_factories_at(td, factories());
     let (sink_tx, sink_rx) = mpsc::channel::<Message>(16);
@@ -344,9 +331,8 @@ fn received_nothing(rx: &mut mpsc::Receiver<Message>, who: &str) {
 /// Not doubled, deliberately: `unknown` and `schemas` are `code` cells already
 /// and answer by themselves — both tests need the SHIPPED `unknown` (in the
 /// second because its refusal is the subject, in the first because its silence
-/// is). `mcp` and `vault` are not doubled either, because no edge reaches them:
-/// they are the unwired occupants, and a double there would be a cell nothing
-/// can call.
+/// is). `mcp` and `vault` were the other two exceptions until `tools@1.3.0`,
+/// when the two occupants no edge reached left the hive (GH #547).
 const TOOLS: [(&str, &str); 5] = [
     ("bash", "bash"),
     ("web_fetch", "web_fetch"),

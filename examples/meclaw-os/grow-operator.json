@@ -23,11 +23,6 @@
         "from": "./operator",
         "to": "./sink",
         "condition": "has(hop.route) && hop.route == 'receipt'"
-      },
-      {
-        "from": "./operator",
-        "to": "./sink",
-        "condition": "has(hop.route) && hop.route == 'apply'"
       }
     ]
   }

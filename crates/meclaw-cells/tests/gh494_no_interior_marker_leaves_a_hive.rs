@@ -48,7 +48,7 @@
 //! them; both clear their interior keys now, and the table is gone with them.
 //! That pass also moved one key into [`SHARED`]: `build_call_id` is set by
 //! `templates/tools` on its own exit edge and read back off `context` by
-//! `tools/build` and `tools/apply` when a build result returns through the
+//! `tools/build-draft` and `tools/build-apply` when a build result returns through the
 //! `in_build_result` door — clearing it at the builder's rim would leave the
 //! assistant's build tool call open forever.
 //!
@@ -100,7 +100,7 @@ const CARRIED: [(&str, &str, &str); 3] = [
         "tool_caller",
         "the `build` round trip leaves on `./tools -> .` and comes back on the \
          `in_build_result` door, which does not re-establish it — and \
-         `./tools -> ./surface` against `./tools -> ./cogny` is decided on it",
+         `./tools -> ./talky` against `./tools -> ./cogny` is decided on it",
     ),
     (
         "assistant",

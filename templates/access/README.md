@@ -1,4 +1,4 @@
-# `access@2.4.2`
+# `access@2.4.3`
 
 The capability broker: an agent may **ask in natural language**, what travels on the wire
 is a **handle**, and no secret ever travels with a request. Built out of existing cell
@@ -321,13 +321,13 @@ R-Policy-Default, 2026-08-28): `colony.mutate.default` and `affinity.subscribe.d
 A freshly instantiated OS has to be able to build, and its brains have to be able to
 register for their own identity; a default that refused both would make the first mutation
 of every colony an operator step and a shipped agent silent until somebody remembered a
-`UPDATE policy`. The two are narrow rather than open -- requester `/os/submit`, action
+`UPDATE policy`. The two are narrow rather than open -- requester `/os/operator/submit`, action
 `apply`, scoped to `/os/orgs` -- and what they do NOT grant is the sharp part:
 `code.author` stays off, so a manifest that carries a script nobody reviewed is still
 refused on a fresh tree. Narrow these two (a `subject`, a tighter `scope_prefix`) rather
 than switching them off, and set `enabled: 0` if this colony wants no default at all.
 
-The first is `colony.mutate.default` — `requester: "/os/submit"`, `subject: "*"`,
+The first is `colony.mutate.default` — `requester: "/os/operator/submit"`, `subject: "*"`,
 `scope_match: {"scope_prefix": "/os/orgs", "actions": ["apply"]}`. It is the row that
 lets a manifest reach the mutation door, and R-AC-1 is what shapes it: the requester is
 the **submit hive**, promoted by the edge, and the identity on whose behalf it asks
@@ -340,7 +340,7 @@ submission may bring executable behaviour with it*. The submitter derives the ne
 the DIFF rather than from a prompt — an `override_params` (or a `swap_nodes` `with`)
 carrying `script_inline` / `script_path`, or an `add_templates` at all — and asks a
 second check-only question over the same scope root, with the same shape:
-`requester: "/os/submit"`, `subject: "*"`,
+`requester: "/os/operator/submit"`, `subject: "*"`,
 `scope_match: {"scope_prefix": "/os/orgs", "actions": ["apply"]}`.
 
 The two are apart because they are apart in fact: an operator can grant one and refuse the
@@ -357,7 +357,7 @@ The third is `affinity.subscribe.default`, and it is where the boundary of this 
 table becomes visible (GH #458). The `in_pack` lane is the only door through which
 anything outside a sealed agent composite writes a durable `system.*` slot into its
 brain, and a brain opens its own by submitting a mutation that draws that edge. The row
-has the familiar shape — `requester: "/os/submit"`, `subject: "*"`,
+has the familiar shape — `requester: "/os/operator/submit"`, `subject: "*"`,
 `scope_match: {"scope_prefix": "/os/orgs", "actions": ["apply"]}` — and it ships
 **`enabled: 1`** (R-Policy-Default): an agent that cannot subscribe has no identity, and a
 default that refused would make every shipped brain silent until an operator remembered a
@@ -422,11 +422,11 @@ The fourth row the submitter can ask over is that scope:
 
 | rule_id | capability | requester | subject | enabled | priority | scope_match |
 |---|---|---|---|---|---|---|
-| `colony.mutate.shell` | `colony.mutate` | `/os/submit` | `*` | **0** | 90 | `{"actions": ["apply"], "scope_prefix": "/os"}` |
+| `colony.mutate.shell` | `colony.mutate` | `/os/operator/submit` | `*` | **0** | 90 | `{"actions": ["apply"], "scope_prefix": "/os"}` |
 
 **`/os` is the superset, and precedence is what keeps the pair apart.** `scope_prefix` is
 a PATH prefix, so `/os` permits `/os`, `/os/orgs` and every address in the colony —
-`/os/access` and `/os/submit` included — and still not `/oscar`. The enabled rules for one
+`/os/access` and `/os/operator` included — and still not `/oscar`. The enabled rules for one
 capability are read in `priority` **DESC** and the **first match wins**, so at 90 this row
 is examined *after* `colony.mutate.default` at 100: a declaration under `/os/orgs` is
 answered by the narrow row exactly as before, and this one only ever answers for a scope
@@ -444,8 +444,8 @@ colony that switches it on has granted every shell-level topology change with it
 broker itself and the submitter that asks it included — and that is a decision an operator
 makes rather than one a seed makes for them. It is also why the row is not narrowable by
 **where the submission came from**: the requester the broker sees is the literal
-`/os/submit` the shell's own edge promotes, and everything that passes the front door
-carries `/os/operator/submit` as its `subject`, so *which door* is not an axis a rule can
+`/os/operator/submit` the shell's own edge promotes, and everything that passes the front door
+carries `/os/operator/intake` as its `subject`, so *which door* is not an axis a rule can
 compare on today.
 
 #### Enabling the shell for the front
@@ -464,7 +464,7 @@ past it:
        "rows": [
          {"rule_id": "colony.mutate.shell",
           "capability": "colony.mutate",
-          "requester": "/os/submit",
+          "requester": "/os/operator/submit",
           "subject": "*",
           "scope_match": {"actions": ["apply"], "scope_prefix": "/os"},
           "verdict": "allow",

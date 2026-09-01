@@ -11,10 +11,12 @@ const SOURCES: &[(&str, &str)] = &[
     ("recipes", "templates/builder/recipes/config.json"),
     ("normalise", "templates/builder/normalise/config.json"),
     ("submit", "templates/submit/gate/config.json"),
-    // GH #446 — a fourth copy, in the front door's submission occupant. It
-    // draws the digest over the bytes it forwards, so it has to draw it the way
-    // the submitter checks it; registering it here is what keeps that true.
-    ("operator", "templates/operator/submit/config.json"),
+    // GH #446 — a fourth copy, in the front door's intake. It draws the digest
+    // over the bytes it forwards, so it has to draw it the way the submitter
+    // checks it; registering it here is what keeps that true. The cell was
+    // called `submit` through `operator@1.0.0`; since GH #556 that name belongs
+    // to the submitter hive that moved in beside it, and the cell is `intake`.
+    ("operator", "templates/operator/intake/config.json"),
 ];
 
 const OPEN: &str = "# --8<-- digest-helper";

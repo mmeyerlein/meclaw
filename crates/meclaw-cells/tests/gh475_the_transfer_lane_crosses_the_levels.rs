@@ -105,7 +105,7 @@ fn carrying(config: &Value, from: &str, to: &str, route: &str) -> Vec<Value> {
 const CHAIN: [(&str, &str, &str, bool); 3] = [
     (
         "templates/assistant/config.json",
-        "./surface",
+        "./talky",
         "the generation",
         true,
     ),

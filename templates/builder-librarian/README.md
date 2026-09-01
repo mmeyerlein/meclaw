@@ -363,8 +363,8 @@ exist: foo* instead of handing back four neighbours.
 The lane is the mechanism; the nudge is topology. Two wirings, and neither is invented
 here:
 
-* **After a submission that registered a class.** Since `meclaw-os@1.6.0` the shell draws
-  `./submit -> ./builder` on a receipt that carries no `error_code` and whose
+* **After a submission that registered a class.** Since `meclaw-os@1.7.0` the shell draws
+  `./operator -> ./builder` on a `sub_receipt` that carries no `error_code` and whose
   `hop.registers_class` is `true`, re-stamped `set_hop: {route: "'in_ingest'"}`; from
   there `builder` forwards the nudge to `./librarian` and lets the report back out
   on `catalogue`. That closes the loop at the one moment where both facts are known --
@@ -373,7 +373,10 @@ here:
   derives the `code.author` question) and it publishes that verdict as
   `hop.registers_class` on every receipt its renderer produces; the key travels on the
   flight row, because the colony answers on a fresh trace that says nothing about what
-  the declarations were.
+  the declarations were. Until `meclaw-os@1.6.1` the edge read `./submit -> ./builder` on
+  the lane `receipt`, because the submitter was a hive of the shell; since GH #556 it is an
+  occupant of the front door, whose own `sub_receipt` lane carries the submitter's receipt
+  out for exactly the two facts the shell reads here.
 * **Once after a deployment, and after any rescan.** A message to the librarian's hive
   path with `hop.route = "in_ingest"`. That is the whole of the boot reconciliation, and
   it is a message rather than a timer on purpose: a retrieval hive that polls the
@@ -388,8 +391,9 @@ why each end had to grow a lane first.
 
 The nudge is **not** wired inside this template, and cannot be: the librarian does not
 know who its operator is, and a lane that fired itself would be a hive with an opinion.
-Only a level that holds `submit` and `builder` as SIBLINGS can draw it, for the same
-reason only that level can draw `./submit -> ./access`.
+Only a level that holds the submitter's hive and `builder` as SIBLINGS can draw it, for the
+same reason only that level can draw the broker pair -- `./operator -> ./access` on `ask`
+since GH #556, `./submit -> ./access` before it.
 
 ## Lanes
 

@@ -307,7 +307,7 @@ fn the_surface_and_the_core_take_different_models() {
     );
 
     assert_eq!(
-        staged_params(&staged, "/main/gen/surface/brain")["model"],
+        staged_params(&staged, "/main/gen/talky/brain")["model"],
         "the-surface-model",
         "the conversation surface infers with the SURFACE model — this is the \
          whole defect: it used to resolve ctx.model and run the reasoning model"

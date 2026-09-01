@@ -186,7 +186,7 @@ fn the_display_stamps_the_owner_on_the_hop_of_an_event_and_a_receipt() {
 
     // An event on a view of a known owner: the object id carries the owner path
     // with `/` written as `~`, and the hop carries it back as a path.
-    let owner = "/os/orgs/example/members/one/assistants/egon/surface";
+    let owner = "/os/orgs/example/members/one/assistants/egon/talky";
     let oid = format!("view.{}.note", owner.replace('/', "~"));
     let ev = compose_once(
         json!({"messages": [], "event": {"name": "click", "value": oid}}),
@@ -405,12 +405,21 @@ const APP_NAME: &str = "colony-view";
 /// the display would stamp one.
 const MEMBER: &str = "/person";
 
-/// The three edges one SCREEN costs, and not one more than a chat channel costs.
+/// The edges one SCREEN costs — **two** of them, one fewer than a chat channel.
 ///
 /// The down-edge is the only display-specific thing in the whole arrangement: a
 /// screen takes what an agent said (`answer`) or what an app drew (`view`) and
 /// re-stamps it to the display's own `in_view`. A chat channel's down-edge takes
 /// `answer` and leaves the lane alone. Same shape, one literal apart.
+///
+/// A chat channel's THIRD edge catches `hop.error_code`, because a connector
+/// emits a failure of its own. The display does not: its contract declares
+/// `event` and `receipt` and nothing else, and a receipt carries its
+/// `error_code` in the BODY, not on the hop (`templates/display/compose/compose.py`,
+/// `refuse`). A production screen therefore draws no error edge — see
+/// `templates/member/README.md`, "The display channel". The one below is the
+/// TEST's, and it exists for the double's witness lane alone: nothing a shipped
+/// display puts on the wire could ever match it.
 fn screen_edges() -> Vec<Value> {
     vec![
         json!({
@@ -423,6 +432,12 @@ fn screen_edges() -> Vec<Value> {
             "modifier": {"set_context": {"channel_node": format!("'{SCREEN_NAME}'"),
                                          "channel": format!("'{SCREEN_NAME}'")}}
         }),
+        // TEST-ONLY. In production a screen ends the round (a browser sees the
+        // view and the colony does not), so a test needs a witness: the SCREEN
+        // double reports an `in_view` delivery on a header carrying
+        // `error_code`, and this edge is what carries that report out of the
+        // level. A shipped display emits `event` and `receipt` and nothing
+        // else, so no shipped screen ever matches it.
         json!({
             "from": format!("./channels/{SCREEN_NAME}"), "to": "./channels",
             "condition": "has(hop.error_code)",
@@ -564,7 +579,7 @@ fn build_tree(td: &tempfile::TempDir, member: &std::path::Path, assistant: &std:
     copy_cells(assistant, &dst);
     write(
         root,
-        &format!("main/person/assistants/{AGENT}/surface/config.json"),
+        &format!("main/person/assistants/{AGENT}/talky/config.json"),
         &double(
             SURFACE,
             "Test double for the conversation surface of one generation.",
@@ -710,7 +725,7 @@ async fn an_agents_prose_answer_lands_on_the_screen_as_a_view() {
     assert_eq!(hop_of(&got, "shown_kind"), "prose");
     assert_eq!(
         hop_of(&got, "shown_owner"),
-        format!("{MEMBER}/assistants/{AGENT}/surface"),
+        format!("{MEMBER}/assistants/{AGENT}/talky"),
         "the owner of a view is the path of the cell that emitted it, and nothing else"
     );
     assert_eq!(hop_of(&got, "shown_channel"), SCREEN_NAME);
@@ -744,7 +759,7 @@ async fn an_event_on_an_agents_view_reaches_that_agent_as_a_turn() {
     if skip() {
         return;
     }
-    let owner = format!("{MEMBER}/assistants/{AGENT}/surface");
+    let owner = format!("{MEMBER}/assistants/{AGENT}/talky");
     let got = round("screen", "event", &owner).await;
     assert_eq!(hop_of(&got, "error_code"), "surface_saw", "{got:#?}");
     assert_eq!(
@@ -768,7 +783,7 @@ async fn a_receipt_reaches_the_agent_whose_write_was_refused() {
     if skip() {
         return;
     }
-    let owner = format!("{MEMBER}/assistants/{AGENT}/surface");
+    let owner = format!("{MEMBER}/assistants/{AGENT}/talky");
     let got = round("screen", "receipt", &owner).await;
     assert_eq!(hop_of(&got, "error_code"), "surface_saw", "{got:#?}");
     assert_eq!(hop_of(&got, "saw_kind"), "receipt");

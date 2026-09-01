@@ -8,7 +8,7 @@
 //! (GH #480), `bc` = `context.build_caller`:
 //!
 //! ```text
-//! builder/dispatch -> builder/eyes    route=tool      bc='operator'
+//! builder/dispatcher -> builder/eyes  route=tool      bc='operator'
 //! builder/eyes     -> builder/weave   route=eye_out   bc=None      <-- lost
 //! builder/weave    -> builder/compose route=fire      bc=None
 //! builder          -> /os/orgs        route=in_build_result        <-- wrong door

@@ -24,17 +24,18 @@
 //!    directions. The README sentence that promises it is grepped in the same
 //!    test, because a grep alone pins a string and an assertion alone lets the
 //!    prose drift away from the mechanism.
-//! 3. **The unwired pair.** `mcp` and `vault` are occupant directories with no
-//!    edge — an island the substrate derives inactive. That is the whole of how
-//!    a template ships a cell asleep, and it is asserted rather than assumed,
-//!    because "no door" and "somebody forgot the door" look identical in a diff.
+//! 3. **No unwired occupant.** Since `tools@1.3.0` every directory in this hive
+//!    is reached by a name (GH #547). Until then `mcp` and `vault` stood here
+//!    with no edge, and this section asserted the ISLANDS; it now asserts the
+//!    reach, which is the same discipline pointed the other way — "no door" and
+//!    "somebody forgot the door" look identical in a diff, so one of the two
+//!    has to be written down.
 //! 4. **Reachability.** Every occupant a name edge points at is reached by that
 //!    name on a booted colony, and the guarded default stays silent while it
 //!    happens.
 
 use meclaw_cells::code::CodeCellFactory;
-use meclaw_cells::vault::VaultCellFactory;
-use meclaw_cells::{EditCellFactory, FileCellFactory, McpCellFactory};
+use meclaw_cells::{EditCellFactory, FileCellFactory};
 use meclaw_colony::config::HiveParams;
 use meclaw_colony::{CellFactory, CellFactoryRegistry, bootstrap_from_filesystem};
 use meclaw_core::serde_json::{Value, json};
@@ -336,8 +337,6 @@ fn the_substrate_accepts_the_params_of_every_occupant_that_joined() {
     for (dir, factory) in [
         ("file", Arc::new(FileCellFactory) as Arc<dyn CellFactory>),
         ("edit", Arc::new(EditCellFactory) as Arc<dyn CellFactory>),
-        ("mcp", Arc::new(McpCellFactory) as Arc<dyn CellFactory>),
-        ("vault", Arc::new(VaultCellFactory) as Arc<dyn CellFactory>),
     ] {
         let raw =
             std::fs::read_to_string(templates_root().join(format!("tools/{dir}/config.json")))
@@ -357,41 +356,81 @@ fn the_substrate_accepts_the_params_of_every_occupant_that_joined() {
     }
 }
 
-// ═════════════════════════════════════════════════════ 3. the unwired pair
+// ══════════════════════════════════════════════ 3. no unwired occupant
 
-/// `mcp` and `vault` are occupants with no edge. Asserted, because "there is no
-/// door" and "somebody forgot the door" are the same diff, and only one of them
-/// is a decision.
+/// Since `tools@1.3.0` no occupant of this hive is an island (GH #547).
+///
+/// Until then `mcp` and `vault` stood here as directories no edge touched, and
+/// this test asserted exactly that — it WAS the exemption, written down. The
+/// two left with the retraction in the README: a cell type is not a tool, and
+/// an occupant nobody can reach is a placeholder with documentation attached.
+/// So the assertion turns around and the discipline stays: "there is no door"
+/// and "somebody forgot the door" are the same diff, and one of the two has to
+/// be a statement somebody can read.
 #[test]
-fn the_two_unwired_occupants_are_islands_by_construction() {
+fn the_tools_hive_has_no_unwired_occupant() {
     let params = hive_params();
+    let touched: BTreeSet<String> = params
+        .graph
+        .edges
+        .iter()
+        .flat_map(|e| [e.from.clone(), e.to.clone()])
+        .filter(|n| n != ".")
+        .collect();
+
+    let mut occupants: Vec<String> = std::fs::read_dir(templates_root().join("tools"))
+        .expect("templates/tools is readable")
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+    occupants.sort();
+    assert!(
+        occupants.len() >= 5,
+        "templates/tools has almost no occupant directories ({occupants:?}) — the walk \
+         broke, the tree did not"
+    );
+
+    let islands: Vec<&String> = occupants
+        .iter()
+        .filter(|d| !touched.contains(&format!("./{d}")))
+        .collect();
+    assert!(
+        islands.is_empty(),
+        "these occupants of templates/tools are reached by no edge: {islands:?}. Activity \
+         in this substrate is derived from the edges alone, so an occupant with no door is \
+         a cell the boot registers and never spawns — and since 1.3.0 this hive ships none \
+         (GH #547). A cell type is not a tool: the tools hive holds the cells this agent's \
+         tool calls REACH. A `vault` answers its broker and stands in the broker's own \
+         hive; an `mcp` bridges one named server and is wired the day somebody names it. \
+         If a new occupant belongs here, it belongs here WITH its two edges and its schema \
+         row, in the same diff."
+    );
+
     for name in ["mcp", "vault"] {
-        let dir = templates_root().join(format!("tools/{name}/config.json"));
         assert!(
-            dir.is_file(),
-            "templates/tools/{name} is gone. It stands in this hive so that a colony which \
-             wants it has a directory to wake instead of a template to copy."
-        );
-        let touching: Vec<String> = params
-            .graph
-            .edges
-            .iter()
-            .filter(|e| e.to == format!("./{name}") || e.from == format!("./{name}"))
-            .map(|e| format!("{} -> {}", e.from, e.to))
-            .collect();
-        assert!(
-            touching.is_empty(),
-            "an edge now touches ./{name}: {touching:?}. Activity in this substrate is \
-             derived from the edges alone, so this occupant just woke up — and each of the \
-             two is unwired for a reason a template cannot answer: `mcp` needs a server \
-             somebody named, `vault` needs a broker to answer to. Waking one is a decision \
-             plus this pair of edges, and its schema row goes with them."
-        );
-        assert!(
-            !dispatched_names().contains(name),
-            "./{name} is unwired and yet a door dispatches on its name"
+            !templates_root().join(format!("tools/{name}")).exists(),
+            "templates/tools/{name} is back. It left with GH #547 for a reason that did not \
+             expire: it is a cell type, not a tool of this hive. Wiring it here needs the \
+             decision the template cannot make — a server to name, a broker to answer to — \
+             and until somebody makes it, the directory teaches the opposite of the \
+             arrangement templates/access ships."
         );
     }
+
+    // The retraction rather than a silent deletion (development-rules § 3), and
+    // it is grepped WITH the mechanism above rather than in a test of its own.
+    let readme = std::fs::read_to_string(TOOLS_README).expect("templates/tools/README.md");
+    assert!(
+        readme.contains("**A cell type is not a tool.**"),
+        "templates/tools/README.md no longer carries the retraction of #547. Retiring a \
+         promise takes an explicit retraction in the text, never a silent rewrite."
+    );
+    assert!(
+        readme.contains("RETRACTED in 1.3.0"),
+        "the retraction of #547 lost its marker in templates/tools/README.md"
+    );
+
     let table: BTreeSet<String> = names_of(&ask(json!(["*"]))).into_iter().collect();
     for name in ["mcp", "vault"] {
         assert!(
@@ -537,8 +576,8 @@ const DOUBLED: [(&str, &str, &str); 7] = [
     ("web_search", "web_search", "web_search"),
     ("file", "file", "read"),
     ("edit", "edit", "find_replace"),
-    ("build", "build_topology", "build"),
-    ("apply", "apply_manifest", "apply"),
+    ("build-draft", "build_topology", "build"),
+    ("build-apply", "apply_manifest", "apply"),
 ];
 
 fn build_tree(td: &tempfile::TempDir) {
@@ -559,26 +598,14 @@ fn build_tree(td: &tempfile::TempDir) {
 
 async fn boot(td: &tempfile::TempDir) -> (ColonyHandle, mpsc::Receiver<Message>) {
     // `code` serves every doubled occupant AND the two shipped `code` cells this
-    // file wants real (`unknown`, `schemas`). `mcp` and `vault` are registered
-    // although nothing routes to them: the boot PLAN refuses a cell type it does
-    // not know before it ever asks whether the node is active, so an unwired
-    // occupant still needs its factory — which is a property of the substrate
-    // and exactly what a real colony provides.
+    // file wants real (`unknown`, `schemas`). Since `tools@1.3.0` there is no
+    // third registration to make: the two occupants no edge reached are gone
+    // (GH #547), and every cell type this hive still holds is doubled or real.
     let factories = || -> Vec<(String, Arc<dyn CellFactory>)> {
-        vec![
-            (
-                "code".to_string(),
-                Arc::new(CodeCellFactory) as Arc<dyn CellFactory>,
-            ),
-            (
-                "mcp".to_string(),
-                Arc::new(McpCellFactory) as Arc<dyn CellFactory>,
-            ),
-            (
-                "vault".to_string(),
-                Arc::new(VaultCellFactory) as Arc<dyn CellFactory>,
-            ),
-        ]
+        vec![(
+            "code".to_string(),
+            Arc::new(CodeCellFactory) as Arc<dyn CellFactory>,
+        )]
     };
     let h = ColonyHandle::new_with_factories_at(td, factories());
     let (sink_tx, sink_rx) = mpsc::channel::<Message>(32);

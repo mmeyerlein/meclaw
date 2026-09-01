@@ -1,5 +1,5 @@
-//! GH #446 — `operator@1.0.0`: one front door into the OS, and the one thing it
-//! adds is IDENTITY.
+//! GH #446 / GH #556 — `operator@1.1.0`: one front door into the OS, and the
+//! one thing it adds is IDENTITY.
 //!
 //! The substrate stamps `envelope.reply_to` on a **cell's** emission, and the
 //! submitter's gate reads the requester off exactly that and nothing else. An
@@ -10,8 +10,20 @@
 //!
 //! This hive lends that person a path. Everything below measures the two halves
 //! of that: the boundary (sealed, one occupant per subject, an unknown lane is
-//! an answer) and the identity (what leaves `./submit` is what the gate
+//! an answer) and the identity (what leaves `./intake` is what the gate
 //! accepts).
+//!
+//! Since GH #556 the SUBMITTER lives in here, as the `submit` occupant of this
+//! hive rather than as a station of the shell beside it. Three things follow,
+//! and each of them is measured below: the cell that was called `submit`
+//! through 1.0.0 is `intake` — named for what it does rather than for the
+//! subject it serves, because the name `submit` now belongs to the ref beside
+//! it; `apply` and the receipt back are INTERIOR edges of this hive
+//! (`./intake -> ./submit`, `./submit -> ./intake`) instead of two shell edges
+//! across two stations; and what crosses this rim is what the submitter needs
+//! from outside and nothing else — `ask` out with `in_verdict` back, `mutate`
+//! on its way to a door that lives in the birth topology of the colony's root,
+//! and `sub_receipt` for the two answers the front door cannot give.
 //!
 //! It measures no authentication, because there is none to measure. That is the
 //! template's own not-in-scope and the last test in this file holds it there.
@@ -27,9 +39,16 @@ const TPL: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../templates/operator/template.json"
 );
-const SUBMIT: &str = concat!(
+/// The code cell that turns a posted request into a message with a sender. It
+/// was called `submit` through `operator@1.0.0`; `submit` is the ref onto the
+/// submitter hive next door since GH #556.
+const INTAKE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../templates/operator/submit/config.json"
+    "/../../templates/operator/intake/config.json"
+);
+const DRAFTS: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../templates/operator/drafts/config.json"
 );
 const EXPORT: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -52,8 +71,14 @@ const OS: &str = concat!(
     "/../../templates/meclaw-os/config.json"
 );
 
-/// The path the substrate stamps on this occupant's own emission.
-const OPERATOR_SUBMIT: &str = "/os/operator/submit";
+/// The path the substrate stamps on the front door's own emission — the cell
+/// that serves `in_submit`, and therefore the identity the gate reads.
+const OPERATOR_INTAKE: &str = "/os/operator/intake";
+
+/// Where the submitter stands since GH #556: an occupant of the front door
+/// rather than a station of the shell. It is the address the shell's `ask` edge
+/// stamps as the broker's `requester`, and the address of the gate below.
+const SUBMIT_HIVE: &str = "/os/operator/submit";
 
 fn read(path: &str) -> Value {
     meclaw_core::serde_json::from_str(&std::fs::read_to_string(path).expect(path)).expect(path)
@@ -102,6 +127,29 @@ fn the_hive_is_sealed_and_the_path_is_the_only_address() {
 fn every_accepted_lane_has_a_door_and_every_emitted_lane_an_exit() {
     let hive = read(HIVE);
     let es = edges(&hive);
+
+    // The rim of this hive after GH #556, pinned rather than derived: three of
+    // these lanes arrived WITH the submitter and none of them is the front
+    // door's own, so a lane silently appearing or vanishing here is a change to
+    // what the level around this hive has to wire.
+    assert_eq!(
+        routes(&hive, "accepts"),
+        vec![
+            "in_submit",
+            "in_dump",
+            "in_lifecycle",
+            "in_draft",
+            "in_verdict",
+            "export_done"
+        ]
+    );
+    assert_eq!(
+        routes(&hive, "emits"),
+        vec!["export", "receipt", "ask", "mutate", "sub_receipt"],
+        "`apply` and `in_receipt` are NOT rim lanes since GH #556 — they are the \
+         two interior edges between `./intake` and `./submit`"
+    );
+
     for lane in routes(&hive, "accepts") {
         assert!(
             es.iter().any(|e| {
@@ -115,12 +163,17 @@ fn every_accepted_lane_has_a_door_and_every_emitted_lane_an_exit() {
         );
     }
     for lane in routes(&hive, "emits") {
+        // An exit either fires ON the lane or RE-STAMPS an occupant's own lane
+        // onto it on the way out — `sub_receipt` is the second shape: the
+        // submitter raises `receipt`, and the edge that lets the two shapes the
+        // front door cannot answer for out of the rim is what names the lane.
         assert!(
             es.iter().any(|e| {
                 e["to"] == "."
-                    && e["condition"]
+                    && (e["condition"]
                         .as_str()
                         .is_some_and(|c| c.contains(&format!("'{lane}'")))
+                        || e["modifier"]["set_hop"]["route"] == json!(format!("'{lane}'")))
             }),
             "emitted lane {lane} has no exit"
         );
@@ -132,8 +185,9 @@ fn one_occupant_per_subject_and_the_default_cannot_catch_an_answer() {
     let hive = read(HIVE);
     let es = edges(&hive);
     for (lane, occupant) in [
-        ("in_submit", "./submit"),
-        ("in_receipt", "./submit"),
+        ("in_submit", "./intake"),
+        ("in_draft", "./intake"),
+        ("in_verdict", "./submit"),
         ("in_dump", "./export"),
         ("export_done", "./export"),
         ("in_lifecycle", "./lifecycle"),
@@ -207,7 +261,7 @@ fn submit_request(manifest: &Value, pin: &str) -> Vec<Value> {
         hop["manifest_sha256"] = json!(pin);
     }
     run(
-        SUBMIT,
+        INTAKE,
         &json!({
             "target": "/os/operator",
             "header": { "hop": hop, "context": {} },
@@ -261,9 +315,12 @@ fn an_empty_submission_says_so() {
 #[test]
 fn what_leaves_the_front_door_is_what_the_submitters_gate_accepts() {
     // THE test of this template. The same manifest and the same digest, handed
-    // to the shipped gate on the lane the shell re-stamps it onto, with the
-    // front door's own path as `reply_to` — the one the substrate would have
-    // stamped, because the emitting node is a CELL.
+    // to the shipped gate on the lane the edge `./intake -> ./submit` re-stamps
+    // it onto, with the front door's own path as `reply_to` — the one the
+    // substrate would have stamped, because the emitting node is a CELL. The
+    // hop is one edge long since GH #556 and the identity on it is unchanged:
+    // what moved is where the submitter STANDS, not who it is told to attribute
+    // a mutation to.
     let manifest = a_manifest();
     let apply = &submit_request(&manifest, "")[0];
     let sha = apply["header"]["manifest_sha256"].as_str().expect("digest");
@@ -271,8 +328,8 @@ fn what_leaves_the_front_door_is_what_the_submitters_gate_accepts() {
     let out = emit_all(
         &shipped_script(GATE),
         &json!({
-            "target": "/os/submit",
-            "reply_to": OPERATOR_SUBMIT,
+            "target": SUBMIT_HIVE,
+            "reply_to": OPERATOR_INTAKE,
             "header": { "hop": { "route": "in_apply", "manifest_sha256": sha,
                                  "tool_call_id": apply["header"]["tool_call_id"] },
                         "context": {} },
@@ -293,21 +350,21 @@ fn what_leaves_the_front_door_is_what_the_submitters_gate_accepts() {
     )
     .expect("json");
     assert_eq!(
-        park["row"]["requester"], OPERATOR_SUBMIT,
+        park["row"]["requester"], OPERATOR_INTAKE,
         "the operator's mutations carry a name into the log"
     );
     let ask: Value = meclaw_core::serde_json::from_str(
         out[1]["messages"][0]["text"].as_str().expect("a tool_call"),
     )
     .expect("json");
-    assert_eq!(ask["subject"], OPERATOR_SUBMIT);
+    assert_eq!(ask["subject"], OPERATOR_INTAKE);
     assert_eq!(ask["capability"], "colony.mutate");
 }
 
 #[test]
 fn a_receipt_comes_back_as_one_sentence_and_its_counts() {
     let out = run(
-        SUBMIT,
+        INTAKE,
         &json!({
             "target": "/os/operator",
             "header": { "hop": { "route": "in_receipt", "operation": "submit",
@@ -330,7 +387,7 @@ fn a_receipt_comes_back_as_one_sentence_and_its_counts() {
     );
 
     let refused = run(
-        SUBMIT,
+        INTAKE,
         &json!({
             "target": "/os/operator",
             "header": { "hop": { "route": "in_receipt",
@@ -473,26 +530,31 @@ fn a_lifecycle_request_that_names_no_mechanism_is_refused_rather_than_guessed_at
     }
 }
 
-// ── the shell wires it ───────────────────────────────────────────────────────
+// ── the front door carries it, and the shell doors the lanes ─────────────────
 
 #[test]
-fn the_shell_carries_the_front_door_to_the_submitter_and_the_receipt_back() {
-    let os = read(OS);
-    let es = edges(&os);
+fn the_front_door_carries_the_submission_to_the_submitter_and_the_receipt_back() {
+    // GH #556 MOVED this proof, it did not retire it: both edges used to be the
+    // shell's, across two of its stations, for what is one job. They are
+    // interior edges of the front door now, and the road they describe is the
+    // same one — `apply` re-stamped `in_apply` on the way in, `receipt`
+    // re-stamped `in_receipt` on the way back.
+    let hive = read(HIVE);
+    let es = edges(&hive);
     let apply = es
         .iter()
-        .find(|e| e["from"] == "./operator" && e["to"] == "./submit")
-        .expect("operator -> submit");
+        .find(|e| e["from"] == "./intake" && e["to"] == "./submit")
+        .expect("intake -> submit");
     assert_eq!(apply["condition"], "has(hop.route) && hop.route == 'apply'");
     assert_eq!(apply["modifier"]["set_hop"]["route"], "'in_apply'");
 
     let back = es
         .iter()
-        .find(|e| e["from"] == "./submit" && e["to"] == "./operator")
-        .expect("submit -> operator");
+        .find(|e| e["from"] == "./submit" && e["to"] == "./intake")
+        .expect("submit -> intake");
     assert_eq!(back["modifier"]["set_hop"]["route"], "'in_receipt'");
     // R-Zielfluss (a): the edge is UNGUARDED, and that is a consequence rather
-    // than a looseness — this hive is the only sender of `in_apply`, so every
+    // than a looseness — this cell is the only sender of `in_apply`, so every
     // receipt the submitter raises belongs to a round that started here. The
     // assertion is therefore on the premise and not on a condition string: if a
     // second `in_apply` sender ever appears, this is the test that says so.
@@ -507,10 +569,30 @@ fn the_shell_carries_the_front_door_to_the_submitter_and_the_receipt_back() {
         .collect();
     assert_eq!(
         senders,
-        vec!["./operator"],
-        "the unguarded receipt edge above is only correct while the front door          is the ONE sender of `in_apply`: {senders:?}"
+        vec!["./intake"],
+        "the unguarded receipt edge above is only correct while the front door's \
+         own cell is the ONE sender of `in_apply`: {senders:?}"
     );
 
+    // And the shell no longer draws either of them, because it no longer has a
+    // `./submit` to draw them to. An edge that survived the move would deliver
+    // the same submission twice, from two levels.
+    let shell = edges(&read(OS));
+    let stale: Vec<&Value> = shell
+        .iter()
+        .filter(|e| e["from"] == "./submit" || e["to"] == "./submit")
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "the submitter is not an occupant of the shell since GH #556, so no shell \
+         edge may name `./submit`: {stale:?}"
+    );
+}
+
+#[test]
+fn the_shell_doors_every_caller_lane_to_the_front_door_and_takes_the_answer_out() {
+    let os = read(OS);
+    let es = edges(&os);
     for lane in ["in_submit", "in_dump", "in_lifecycle"] {
         assert!(
             es.iter().any(|e| {
@@ -528,13 +610,71 @@ fn the_shell_carries_the_front_door_to_the_submitter_and_the_receipt_back() {
             .any(|e| e["from"] == "./operator" && e["to"] == "."),
         "and take the receipt back out"
     );
+
+    // The three lanes the level had to learn with GH #556, because the
+    // submitter's reach crosses the front door's rim now instead of the shell's
+    // own: the question out to the broker standing beside it, the verdict back,
+    // and the checked manifest on its way to the colony's root.
+    let ask = es
+        .iter()
+        .find(|e| {
+            e["from"] == "./operator"
+                && e["to"] == "./access"
+                && e["condition"]
+                    .as_str()
+                    .is_some_and(|c| c.contains("hop.route == 'ask'"))
+        })
+        .expect("operator -> access on ask");
+    assert_eq!(ask["modifier"]["set_hop"]["route"], "'in_request'");
+    assert_eq!(
+        ask["modifier"]["set_context"]["requester"],
+        format!("'{SUBMIT_HIVE}'"),
+        "R-AC-1: the broker's `requester` is what the EDGE says, and the edge \
+         says the submitter hive — never the front door as a whole"
+    );
+    let verdict = es
+        .iter()
+        .find(|e| {
+            e["from"] == "./access"
+                && e["to"] == "./operator"
+                && e["modifier"]["set_hop"]["route"] == json!("'in_verdict'")
+        })
+        .expect("access -> operator on the verdict");
+    assert!(
+        verdict["condition"]
+            .as_str()
+            .expect("a condition")
+            .contains("context.sub_ask == '1'"),
+        "only the answer to a SUBMISSION's question comes back in on this lane"
+    );
+    assert!(
+        es.iter().any(|e| {
+            e["from"] == "./operator"
+                && e["to"] == "."
+                && e["condition"]
+                    .as_str()
+                    .is_some_and(|c| c.contains("hop.route == 'mutate'"))
+        }),
+        "`mutate` leaves the shell too: the door it ends at is birth topology of \
+         the colony's root and never an edge this template draws"
+    );
+
     assert_eq!(
         read(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../templates/meclaw-os/operator/config.json"
         ))["cell"]["template"],
-        "operator@1.0.0",
+        "operator@1.1.0",
         "pinned exactly: a bare name would adopt a new front door on a bump"
+    );
+    assert!(
+        !std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../templates/meclaw-os/submit"
+        ))
+        .exists(),
+        "the shell has ONE fewer occupant since GH #556, and a directory left \
+         behind would be a second submitter nobody wired"
     );
 }
 
@@ -545,8 +685,10 @@ fn nothing_in_this_hive_authenticates_anything() {
     // The template says it in prose; this is the half that asserts the
     // mechanism. A token check, a header comparison or a secret in any of the
     // four scripts would be a permission layer the substrate does not have, in
-    // the one place a reader has to be able to trust.
-    for cell in [SUBMIT, EXPORT, LIFECYCLE, UNKNOWN] {
+    // the one place a reader has to be able to trust. Four and not six: `drafts`
+    // is a store and runs nothing, and `submit` is a ref that brings its own
+    // sandbox block from its own template rather than widening this one.
+    for cell in [INTAKE, EXPORT, LIFECYCLE, UNKNOWN] {
         let cfg = read(cell);
         // The CODE, without its comments: the prose is allowed to say the word
         // "secret" in order to say there is none, and a gate that could not
@@ -589,7 +731,7 @@ fn nothing_in_this_hive_authenticates_anything() {
         not_in_scope.contains("NEVER AUTHENTICATION"),
         "the prose and the mechanism are one drift lock, not two"
     );
-    assert_eq!(tpl["version"], "1.0.0");
+    assert_eq!(tpl["version"], "1.1.0");
     assert_eq!(
         tpl["sandbox_union"]["trust"], "restricted",
         "the widest axis over every occupant, and here they are all the same"
@@ -597,29 +739,75 @@ fn nothing_in_this_hive_authenticates_anything() {
 }
 
 #[test]
-fn no_cell_in_here_can_reach_the_mutation_door() {
-    // The guardrail of R6 is a MISSING edge, and it stays missing here: the
-    // whole reason this hive is safe to expose is that it is as far from
-    // `/colony/mutations` as a model's tool call is.
-    for cell in [HIVE, SUBMIT, EXPORT, LIFECYCLE, UNKNOWN] {
+fn no_cell_of_the_front_door_can_reach_the_mutation_door() {
+    // The guardrail of R6 is PRECISED by GH #556 rather than dropped, and this
+    // is the precise form. The submitter moved in, so `mutate` crosses this rim
+    // as a declared lane — but the front door's own cells are exactly as far
+    // from `/colony/mutations` as a model's tool call is, and the reach itself
+    // did not change hands: the edge that finally carries the lane there lives
+    // in the birth topology of the colony's root, because `/colony/mutations`
+    // is not an endpoint a mutation may draw at any scope.
+    //
+    // Two halves, and neither of them is `the word does not appear in this
+    // hive` any more — the hive's own prose is where the retraction is written
+    // down, and a test that forbade the string would forbid saying it.
+
+    // (1) No CELL OF THE FRONT DOOR names a colony endpoint at all — not in its
+    //     config, not in the script it runs. `submit` is not in this list on
+    //     purpose: it is a `ref` onto a template that ships its own gate and is
+    //     measured where that template is measured.
+    for cell in [INTAKE, EXPORT, LIFECYCLE, UNKNOWN, DRAFTS] {
         let raw = std::fs::read_to_string(cell).expect(cell);
         assert!(
-            !raw.contains("/colony/mutations"),
-            "{cell} names the mutation door"
+            !raw.contains("/colony/"),
+            "{cell} names a colony endpoint — a front-door cell parses a \
+             request, formats a message and emits it, and reaches nothing"
         );
     }
+
+    // (2) No EDGE this hive draws names one either, and none of them leaves the
+    //     hive's own subtree: every destination is the rim or an occupant, so
+    //     the lane that ends at the mutation door has to be carried there by a
+    //     level this file cannot write.
     let hive = read(HIVE);
     for e in edges(&hive) {
+        for side in ["from", "to"] {
+            let node = e[side].as_str().unwrap_or_default();
+            assert!(
+                !node.contains("/colony/"),
+                "an edge of this hive names {node}: the reach onto the mutation \
+                 door is birth topology and never an edge drawn in here"
+            );
+        }
         let to = e["to"].as_str().unwrap_or_default();
         assert!(
             to == "." || to.starts_with("./"),
             "a template has no edge leaving its own subtree: {to}"
         );
     }
+
+    // (3) And `mutate` is a lane of the RIM rather than of a front-door cell:
+    //     the only edge that raises it comes from `./submit`, which is the ref
+    //     and not a cell of this template.
+    let raisers: Vec<String> = edges(&hive)
+        .iter()
+        .filter(|e| {
+            e["to"] == "."
+                && e["condition"]
+                    .as_str()
+                    .is_some_and(|c| c.contains("hop.route == 'mutate'"))
+        })
+        .map(|e| e["from"].as_str().expect("a from").to_string())
+        .collect();
+    assert_eq!(
+        raisers,
+        vec!["./submit"],
+        "no cell of the front door raises `mutate`, and none may: {raisers:?}"
+    );
     // And the digest is one definition here too — the helper block travels
     // between its markers so `gh425_the_digest_is_one_definition` can compare
     // it against the builder's and the submitter's.
-    let script = read(SUBMIT)["params"]["script_inline"]
+    let script = read(INTAKE)["params"]["script_inline"]
         .as_str()
         .expect("script")
         .to_string();
@@ -644,11 +832,11 @@ fn no_cell_in_here_can_reach_the_mutation_door() {
 
 // ── R-Zielfluss (a): one submission front door, not two ──────────────────────
 
-/// The path a `tools/apply` call takes into the front door and the receipt's
+/// The path a `tools/build-apply` call takes into the front door and the receipt's
 /// way back to the assistant that made it.
 const TOOLS_APPLY: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../templates/tools/apply/config.json"
+    "/../../templates/tools/build-apply/config.json"
 );
 
 /// The marker the shell puts on an assistant's submission, and the only thing
@@ -712,24 +900,33 @@ fn the_shell_hangs_an_assistants_apply_on_the_front_door_and_not_on_the_submitte
     assert_eq!(down["modifier"]["set_hop"]["route"], "'in_build_result'");
     assert_eq!(down["modifier"]["set_hop"]["build_op"], "'apply'");
 
+    // `./operator -> .` is more than one edge since GH #556 — the front door's
+    // rim carries `mutate` out too — so the guard is read off the RECEIPT edge
+    // by name and not off the first match.
     let out = es
         .iter()
-        .find(|e| e["from"] == "./operator" && e["to"] == ".")
-        .expect("operator -> .");
+        .find(|e| {
+            e["from"] == "./operator"
+                && e["to"] == "."
+                && e["condition"]
+                    .as_str()
+                    .is_some_and(|c| c.contains("hop.route == 'receipt'"))
+        })
+        .expect("operator -> . on receipt");
     let cond = out["condition"].as_str().expect("a condition");
     assert!(
         cond.contains("hop.submitter_kind != 'agent'"),
         "and only a person's leaves the colony: {cond}"
     );
 
+    // The submitter has no edge of its own at this level at all any more, so
+    // there is no second road a receipt could take back to the container: it
+    // leaves through the front door that submitted it or not at all.
     assert!(
-        !es.iter().any(|e| e["from"] == "./submit"
-            && e["to"] == "./orgs"
-            && e["condition"]
-                .as_str()
-                .is_some_and(|c| c.contains("'receipt'"))),
-        "the submitter's receipt no longer reaches the container directly — it \
-         goes through the front door that submitted it"
+        !es.iter()
+            .any(|e| e["from"] == "./submit" || e["to"] == "./submit"),
+        "the shell draws no edge to or from `./submit` since GH #556 — the \
+         submitter's receipt reaches the container through the front door"
     );
 }
 
@@ -740,7 +937,7 @@ fn an_assistants_apply_reaches_the_gate_under_the_front_doors_identity() {
     // what the gate reads off the envelope is the front door's path.
     let manifest = a_manifest();
     let out = run(
-        SUBMIT,
+        INTAKE,
         &json!({
             "target": "/os/operator",
             "header": { "hop": { "route": "in_submit", "tool_call_id": "c2" },
@@ -765,8 +962,8 @@ fn an_assistants_apply_reaches_the_gate_under_the_front_doors_identity() {
     let gate = emit_all(
         &shipped_script(GATE),
         &json!({
-            "target": "/os/submit",
-            "reply_to": OPERATOR_SUBMIT,
+            "target": SUBMIT_HIVE,
+            "reply_to": OPERATOR_INTAKE,
             "header": { "hop": { "route": "in_apply", "manifest_sha256": sha,
                                  "tool_call_id": AGENT_ID },
                         "context": {} },
@@ -784,7 +981,7 @@ fn an_assistants_apply_reaches_the_gate_under_the_front_doors_identity() {
     )
     .expect("json");
     assert_eq!(
-        park["row"]["requester"], OPERATOR_SUBMIT,
+        park["row"]["requester"], OPERATOR_INTAKE,
         "an agent's manifest is attributed to the front door it came through"
     );
     assert_eq!(
@@ -799,7 +996,7 @@ fn the_receipt_of_an_assistants_apply_comes_back_under_the_id_the_tool_call_used
     // the fan-in of the round waits for `c2`, and a tool_result under
     // `op:agent:c2` is a round that never ends.
     let back = run(
-        SUBMIT,
+        INTAKE,
         &json!({
             "target": "/os/operator",
             "header": { "hop": { "route": "in_receipt", "operation": "submit",
@@ -864,7 +1061,7 @@ fn a_person_at_the_rim_is_not_marked_as_an_agent() {
     assert!(id.starts_with("op:") && !id.starts_with("op:agent:"));
 
     let back = run(
-        SUBMIT,
+        INTAKE,
         &json!({
             "target": "/os/operator",
             "header": { "hop": { "route": "in_receipt", "applied": 1,
@@ -884,7 +1081,7 @@ fn a_person_at_the_rim_is_not_marked_as_an_agent() {
     // prefix records which edge a request arrived on, and that is this level's
     // fact rather than the caller's claim.
     let forged = run(
-        SUBMIT,
+        INTAKE,
         &json!({
             "target": "/os/operator",
             "header": { "hop": { "route": "in_submit", "tool_call_id": AGENT_ID },
@@ -911,7 +1108,7 @@ fn a_refused_round_is_still_an_agents_round_when_the_id_came_back_empty() {
     // operator's and the receipt would leave the colony instead of reaching the
     // assistant that submitted.
     let back = run(
-        SUBMIT,
+        INTAKE,
         &json!({
             "target": "/os/operator",
             "header": { "hop": { "route": "in_receipt",
@@ -933,7 +1130,7 @@ fn a_refused_round_is_still_an_agents_round_when_the_id_came_back_empty() {
          the id is the one that survives the mutation door — the two failures \
          are disjoint, which is why both are read"
     );
-    // And the id stays empty rather than being invented: `tools/apply` reads
+    // And the id stays empty rather than being invented: `tools/build-apply` reads
     // `context.build_call_id` first for exactly this case, and a made-up id
     // would be the one thing that could close the wrong round.
     assert!(back[0]["header"].get("tool_call_id").is_none());

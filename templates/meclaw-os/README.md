@@ -1,9 +1,17 @@
-# `meclaw-os@1.6.0`
+# `meclaw-os@1.7.0`
 
 The colony shell: the outermost of the four composition levels, and the tree everything
-else is grown into. It holds no cell of its own. It holds five occupants, one empty
+else is grown into. It holds no cell of its own. It holds four occupants, one empty
 container and the transit graph between them, and its entire job is to be the boundary
 those things share.
+
+Since 1.7.0 ([#556](https://github.com/mmeyerlein/meclaw/issues/556)) it is four and not
+five. The **submitter** stopped being a hive of this level and became an occupant of the
+front door: `/os/operator/submit`. One front, one place a submission lives, and a road that
+can be read off the graph — a submission used to cross `./operator` and then `./submit` for
+what is one job. What did NOT move is the guardrail: the drafter and the submitter are still
+two nodes, they still share no edge, and `/colony/mutations` is still an endpoint no
+mutation may draw at any scope (ADR-0015 § Amendment 2026-08-31).
 
 ## The rule this level was authored under
 
@@ -25,11 +33,10 @@ a shell that grew one would have stopped being a boundary and become a participa
 | `access` | a `ref` to the `access` template — the capability broker, with its own interior `vault` | every organisation asks the same broker; two brokers are two answers to one question |
 | `argus` | a `ref` to the `argus` template — the control loop | one colony, one loop; it ships with every goal disabled |
 | `builder` | a `ref` to the `builder` template — the intake that drafts a manifest | one authoring path per colony; a second baumeister would be a second audit trail |
-| `submit` | a `ref` to the `submit` template — the only reach onto the mutation door | the guardrail of R6 is a MISSING edge, and a missing edge can only be missing between two nodes |
-| `operator` | a `ref` to the `operator` template — the one front door a person addresses the OS through | a POST carries no sender, and only this level stands beside both the submitter and the container the request has to reach |
+| `operator` | a `ref` to the `operator` template — the one front door a person addresses the OS through, and since 1.7.0 the hive the **submitter** lives in | a POST carries no sender, and only this level stands beside both the front door and the container the request has to reach. The submitter went inside it because one submission has one front and one place, and the guardrail it carries is a missing edge between the DRAFTER and the submitter — which is missing wherever the submitter stands |
 | `orgs` | a real, empty, open container hive that declares nothing | the address an organisation is instantiated **at**; the shell declares where, not which — and declares the container's lanes for it (see below) |
 
-All five occupants are pinned to an **exact** version. A bare name resolves to the newest
+All four occupants are pinned to an **exact** version. A bare name resolves to the newest
 version present on disk, so a shell that named one would silently adopt a new broker the
 day a bump landed — which is exactly the drift `registry.template_chain` exists to make
 visible, not to excuse. Whatever the reference form, the resolved exact version is what
@@ -80,13 +87,13 @@ this shell without having promoted the requester somewhere upstream is refused w
 `hive_contract` before anything is staged — a grant issued to whoever asked loudest is the
 one failure the broker cannot recover from afterwards.
 
-## The forty-nine edges
+## The forty-seven edges
 
 Thirty-four of them are a door or an exit, and every declared lane has at least one. The
 broker knows nothing about the loop, the loop asks the colony rather than the broker, and
 neither of them knows an organisation exists.
 
-**Fifteen wire two occupants to each other, and that is what owning a baumeister and a
+**Thirteen wire two occupants to each other, and that is what owning a baumeister and a
 front door looks like.**
 Until R6 every edge here touched the rim, and it was tempting to read that as a rule. It
 was a coincidence of who lived at this level: `assistant` wires `./cogny -> ./tools` and
@@ -95,18 +102,16 @@ share and sharing means being wired to it. The container reaches the builder on 
 with `hop.build_op == 'draft'` and the FRONT DOOR with `'apply'`, and both answer it
 back on `in_build_result`. Since GH #435 the submitter asks the broker as well, and that
 pair can only be drawn here for the same reason: the two are siblings at this level and
-nowhere else.
+nowhere else — `./operator -> ./access` on `ask` and `./access -> ./operator` back on
+`grant` since 1.7.0, where they read `./submit -> ./access` and `./access -> ./submit`
+before (#556).
 
-Since GH #446 the same is true of the front door: `./operator -> ./submit` on `apply`,
-re-stamped `in_apply`, and `./submit -> ./operator` back on `receipt`. That edge is
-**unguarded, and that is a consequence rather than a looseness**: since R-Zielfluss (a) the
-front door is the ONLY sender of `in_apply`, so every receipt the submitter raises belongs
-to a round it began. It was guarded while `./orgs` also submitted — the guard was
-`hop.tool_call_id.startsWith('op:')` — and the marker on the id did not go away with the
-guard: it moved INSIDE the front door, where it now tells the two callers of `in_submit`
-apart (see below). The submitter's `receipt` still fans out to `./builder`, guarded by
-`has(hop.error_code)`, which is the repair lane of GH #425. Two further edges carry the
-export trigger down into the container and its answer back up.
+The two edges that carried a manifest out to `./submit` and a receipt back are **gone from
+this file**: they are `./intake -> ./submit` and `./submit -> ./intake` inside the front
+door now, and they cross nothing. What is left of that round at this level is the pair the
+submitter needs from OUTSIDE the hive it lives in — the broker pair above, `./operator -> .`
+on `mutate`, and the two nudges into `./builder` on `sub_receipt`. Two further edges carry
+the export trigger down into the container and its answer back up.
 
 **An operator can drive the baumeister, and since 1.5.0 that is a lane rather than a
 trick.** `in_build` at the rim reaches `./builder`, and the door stamps
@@ -149,7 +154,9 @@ used to reach `./submit` directly on `build`/`build_op == 'apply'`, so a colony 
 submission fronts: an assistant's and an operator's. R-Zielfluss (a) collapsed them. The
 edge is now `./orgs -> ./operator`, re-stamped `in_submit` and marked
 `context.operator_caller = 'agent'`; `./orgs -> ./submit` and the `./submit -> ./orgs`
-receipt edge that answered it are gone. The front door writes the same fact into the
+receipt edge that answered it are gone — and since 1.7.0 `./submit` is not a node of this
+level at all, so the road runs through the front door by construction rather than by
+discipline (#556). The front door writes the same fact into the
 correlation id (`op:agent:<id>` rather than `op:<id>`), reads BOTH carriers off the
 returning receipt, and puts `hop.submitter_kind` on what it emits. This level routes on
 that and on nothing else: an agent's receipt goes back DOWN as `./operator -> ./orgs` with
@@ -185,7 +192,10 @@ anybody: both endpoints are interior nodes of sealed hives, and the refusal
 between the two **hive paths**, and it needed a lane at each end: `builder` accepts
 `in_ingest` and forwards it to its librarian, `submit` publishes
 `hop.registers_class` on the receipt, and the edge here reads both that key and the
-absence of `hop.error_code`. Both guards are load-bearing — the key alone would nudge
+absence of `hop.error_code`. Since 1.7.0 the edge starts at `./operator` and reads the
+lane `sub_receipt` (#556): the submitter is an occupant of the front door, and its own
+receipt leaves that hive on a lane of its own precisely so that a submission is not
+answered twice on the lane a caller subscribes to. Both guards are load-bearing — the key alone would nudge
 after a manifest that registered a class and was refused at the door, and `committed`
 alone after every submission a colony ever makes. `./builder -> .` carries the report back
 out on `catalogue`, because the baumeister pairs the two in its own `required_drains`: the
@@ -225,28 +235,34 @@ counts are the only thing that tells *nothing was missing* from *the nudge never
   {"from": "<shell>/builder",   "to": "<shell>/orgs",    "condition": "has(hop.route) && hop.route == 'error'"},
   {"from": "<shell>/operator",  "to": "<shell>/orgs",    "condition": "has(hop.route) && hop.route == 'receipt' && has(hop.submitter_kind) && hop.submitter_kind == 'agent'"},
   {"from": "<shell>/builder",   "to": "<shell>",         "condition": "has(hop.route) && hop.route == 'catalogue'"},
-  {"from": "<shell>/submit",    "to": "<shell>/builder", "condition": "has(hop.route) && hop.route == 'receipt' && !has(hop.error_code) && has(hop.registers_class) && hop.registers_class == true",
+  {"from": "<shell>/operator",  "to": "<shell>/builder", "condition": "has(hop.route) && hop.route == 'sub_receipt' && !has(hop.error_code) && has(hop.registers_class) && hop.registers_class == true",
    "modifier": {"set_hop": {"route": "'in_ingest'"}}},
-  {"from": "<shell>/submit",    "to": "<shell>",         "condition": "has(hop.route) && hop.route == 'mutate'"},
+  {"from": "<shell>/operator",  "to": "<shell>",         "condition": "has(hop.route) && hop.route == 'mutate'"},
 
-  {"from": "<shell>/submit",    "to": "<shell>/access",  "condition": "has(hop.route) && hop.route == 'ask'",
+  {"from": "<shell>/operator",  "to": "<shell>/access",  "condition": "has(hop.route) && hop.route == 'ask'",
    "modifier": {"set_hop": {"route": "'in_request'"},
-                "set_context": {"requester": "'/os/submit'", "sub_ask": "'1'",
+                "set_context": {"requester": "'/os/operator/submit'", "sub_ask": "'1'",
                                 "sub_sha": "hop.manifest_sha256"}}},
-  {"from": "<shell>/access",    "to": "<shell>/submit",  "condition": "context.sub_ask == '1' && has(hop.route) && hop.route == 'grant'",
+  {"from": "<shell>/access",    "to": "<shell>/operator","condition": "context.sub_ask == '1' && has(hop.route) && hop.route == 'grant'",
    "modifier": {"set_hop": {"route": "'in_verdict'"}}}
 ]}
 ```
 
-**The submitter asks the broker, and only the shell can draw that pair.** The submitter
+**The submitter asks the broker, and only the shell can draw that pair** — since 1.7.0
+across the front door's rim rather than the submitter's own, because the two hives are
+siblings here and nowhere else. The submitter
 holds no policy of its own: it parks a manifest under its digest and asks *may this
 identity have a manifest applied under this scope root*, once, in the check-only form.
 Three things about the outward edge are load-bearing and none of them is decoration.
 
-`context.requester` is stamped to the submit hive's own path, because the broker reads the
-requester from the **edge** and never from a body (R-AC-1) — the identity on whose behalf
-it asks travels as `subject` *inside* the question, so the delegation is visible in the
-rule ("submit may mutate on behalf of S under P") instead of implicit in a script.
+`context.requester` is stamped to the submit hive's own path — `/os/operator/submit` since
+1.7.0 — because the broker reads the requester from the **edge** and never from a body
+(R-AC-1); the identity on whose behalf it asks travels as `subject` *inside* the question,
+so the delegation is visible in the rule ("submit may mutate on behalf of S under P")
+instead of implicit in a script. It names the **occupant** and not the hive around it: the
+reach the rule is about belongs to the submitter, and `/os/operator` would grant an export
+cell and a lifecycle composer the same thing. The edge may say so honestly because `ask` has
+exactly one sender inside that hive, which the `operator` template declares.
 
 `context.sub_sha` carries the digest, because `hop.*` lives for exactly one hop and the
 verdict has to be matched back against the manifest it was asked about.
@@ -379,7 +395,7 @@ in it at all**.
 seed-ref/
 ├── colony.json            substrate defaults. two lines.
 ├── main/config.json       type: "hive", one edge, and not one cell
-└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@1.6.0"}}
+└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@1.7.0"}}
 ```
 
 ```bash
@@ -441,7 +457,7 @@ root tree:
 
 ```json
 {"scope": "/",
- "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.6.0"}],
+ "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.7.0"}],
           "add_edges": []}}
 ```
 

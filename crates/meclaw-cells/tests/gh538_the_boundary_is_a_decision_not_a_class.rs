@@ -3,7 +3,8 @@
 //! An assistant level has two occupants: a conversation surface that answers
 //! fast and a reasoning core it can consult. Which questions cross that
 //! boundary is stated in exactly ONE place — the `description` of the
-//! `consult_cogny` schema, handed out by `templates/cogny/declare` (GH #528),
+//! `consult_cogny` schema, handed out by `templates/cogny/schemas` (GH #528;
+//! the cell was called `declare` until `cogny@4.5.0`, GH #548),
 //! whose own prose calls it *the class boundary*.
 //!
 //! Measured end to end on a live generation, twice, with the same question
@@ -37,7 +38,7 @@ use meclaw_testing::{emit_all, shipped_script};
 
 const DECLARE_CELL: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../templates/cogny/declare/config.json"
+    "/../../templates/cogny/schemas/config.json"
 );
 
 /// The description as the core hands it out — asked the way a caller asks.
@@ -45,7 +46,7 @@ fn shipped_description() -> String {
     let out = emit_all(
         &shipped_script(DECLARE_CELL),
         &json!({
-            "target": "/main/cogny/declare",
+            "target": "/main/cogny/schemas",
             "header": {"hop": {"route": "in_schemas"}, "context": {}},
             "ttl": 64,
             "tools": ["consult_cogny"],

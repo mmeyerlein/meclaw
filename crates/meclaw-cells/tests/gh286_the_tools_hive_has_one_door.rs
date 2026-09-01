@@ -283,20 +283,22 @@ const BASH_SANDBOX: &str =
 
 #[test]
 fn the_tool_occupants_are_the_shipped_cell_types() {
-    // `build` and `apply` joined with R6 (GH #425); `file`, `edit`, `mcp`,
-    // `vault` and `schemas` with GH #464. No cell type is invented in this hive:
-    // every occupant is the library's own cell of that name, or a `code` cell
-    // where what is needed is a carrier rather than a capability.
+    // `build-draft` and `build-apply` joined with R6 (GH #425), under those two
+    // names since `tools@1.4.0` (GH #554); `file`, `edit` and `schemas`
+    // with GH #464. No cell type is invented in this hive: every occupant is the
+    // library's own cell of that name, or a `code` cell where what is needed is
+    // a carrier rather than a capability. `mcp` and `vault` were on this list
+    // until `tools@1.3.0` and left with GH #547 — the converse of the sentence
+    // above does not hold, and a cell type existing is not a reason for a
+    // directory here.
     for (dir, cell_type) in [
         ("bash", "bash"),
         ("web_fetch", "web_fetch"),
         ("web_search", "web_search"),
         ("file", "file"),
         ("edit", "edit"),
-        ("mcp", "mcp"),
-        ("vault", "vault"),
-        ("build", "code"),
-        ("apply", "code"),
+        ("build-draft", "code"),
+        ("build-apply", "code"),
         ("schemas", "code"),
     ] {
         let val = config_at(&format!("{dir}/config.json"));
@@ -339,14 +341,14 @@ fn bash_carries_the_sandbox_the_issue_measured_and_the_substrate_accepts_it() {
 }
 
 /// The occupants that carry no `params.sandbox`, and the two different reasons
-/// for it. `web_fetch`/`web_search`: egress IS the job. `file`/`edit`/`mcp`/
-/// `vault`: the cell does its own I/O rather than starting a runner, so a
-/// PROCESS sandbox bounds nothing it uses — the fence is `params.base_path`
-/// resp. the broker attestation. Either way the absence is a measurement, and it
-/// is what the declared `sandbox_union` is a union over.
+/// for it. `web_fetch`/`web_search`: egress IS the job. `file`/`edit`: the cell
+/// does its own I/O rather than starting a runner, so a PROCESS sandbox bounds
+/// nothing it uses — the fence is `params.base_path`. Either way the absence is
+/// a measurement, and it is what the declared `sandbox_union` is a union over.
+/// `mcp` and `vault` were the fifth and sixth until `tools@1.3.0` (GH #547).
 #[test]
 fn the_unsandboxed_occupants_carry_no_sandbox_and_that_is_the_shipped_truth() {
-    for dir in ["web_fetch", "web_search", "file", "edit", "mcp", "vault"] {
+    for dir in ["web_fetch", "web_search", "file", "edit"] {
         let val = config_at(&format!("{dir}/config.json"));
         let params = val
             .get("params")
@@ -355,8 +357,8 @@ fn the_unsandboxed_occupants_carry_no_sandbox_and_that_is_the_shipped_truth() {
             params.get("sandbox").is_none(),
             "templates/tools/{dir} grew a `params.sandbox`. That is not a tightening to wave \
              through: for the two web cells egress IS what they do and `network: \"deny\"` \
-             would turn them off; for the four others a process sandbox bounds nothing they \
-             use, and their fence lives elsewhere. The absence is the measurement #286 took. If it is ever added on purpose, \
+             would turn them off; for the two file cells a process sandbox bounds nothing \
+             they use, and their fence is `params.base_path`. The absence is the measurement #286 took. If it is ever added on purpose, \
              the declared blast radius of this hive changes with it and this assertion is \
              where that shows."
         );

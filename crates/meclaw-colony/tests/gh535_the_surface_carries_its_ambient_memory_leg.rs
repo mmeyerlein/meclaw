@@ -134,7 +134,7 @@ fn staged_params(staged: &StagedSubtree, absolute_path: &str) -> Value {
 fn the_surface_renders_with_its_ambient_memory_leg() {
     let (_root, staged) = staged_assistant();
     assert_eq!(
-        staged_params(&staged, "/main/gen/surface/collector/assemble")["memory_tier"],
+        staged_params(&staged, "/main/gen/talky/collector/assemble")["memory_tier"],
         "1",
         "the conversation surface reads the member's memory BEFORE it calls its \
          brain — `talky` ships the knob empty because standalone it has no hive \
@@ -165,7 +165,7 @@ fn the_reasoning_core_keeps_no_ambient_leg() {
 #[test]
 fn the_ambient_leg_does_not_replace_the_memory_tool() {
     let (_root, staged) = staged_assistant();
-    let params = staged_params(&staged, "/main/gen/surface/collector/assemble");
+    let params = staged_params(&staged, "/main/gen/talky/collector/assemble");
     assert_eq!(
         params["memory_call_tier"], "1",
         "the memory TOOL is still on — a switch left empty is a lane that \
@@ -181,7 +181,7 @@ fn the_ambient_leg_does_not_replace_the_memory_tool() {
 #[test]
 fn the_knob_stands_on_the_ref_marker_and_talky_keeps_it_empty() {
     let surface: Value = meclaw_core::serde_json::from_str(
-        &std::fs::read_to_string(repo("templates/assistant/surface/config.json"))
+        &std::fs::read_to_string(repo("templates/assistant/talky/config.json"))
             .expect("read the surface ref marker"),
     )
     .expect("parse the surface ref marker");

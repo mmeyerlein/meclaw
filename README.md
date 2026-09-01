@@ -2,389 +2,208 @@
 
 # meclaw
 
-**The harness is a directory tree. Rewiring it is a runtime move.**
+**Where agents build agents.**
 
-**Loops? I don't care. The swarm builds its own. Or it doesn't. Its call.**
+**An agentic build system for agentic systems. Ontology-grounded, audited, one Rust binary.**
 
 [![ci](https://github.com/mmeyerlein/meclaw/actions/workflows/ci.yml/badge.svg)](https://github.com/mmeyerlein/meclaw/actions/workflows/ci.yml)
 [![tests](https://img.shields.io/badge/tests-6200%2B%20passing-brightgreen)](#)
 [![rust](https://img.shields.io/badge/rust-edition%202024-orange)](#)
 [![license](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](#license)
-[![stars](https://img.shields.io/github/stars/mmeyerlein/meclaw?style=social)](#)
+
+[Start an assistant](#start-an-assistant) · [Docs](docs/README.md) ·
+[Templates](templates/README.md) · [Examples](examples/) · [Roadmap](ROADMAP.md)
 
 </div>
 
----
+meclaw is three things, and you only install the first one. **meclaw** is the substrate: a
+directory tree that runs — every folder an actor, every edge a route, one Rust binary
+underneath. **meclaw-os** is a small, experimental operating system for agents, *grown*
+onto that substrate at runtime. An **assistant** is grown into the OS the same way — a
+JSON file, not a deployment. Install once, grow everything else.
 
-Every agent framework ships you the same thing: a loop. Call the model, run a tool, feed the result back, call the model again, until some condition you wrote says stop. That loop is the harness. You hand-build it, you babysit it, you redeploy it when it's wrong.
-
-meclaw doesn't ship you a loop.
-
-An `llm` cell makes one provider call and emits one message. That's it. No inner loop, ever. The tool-loop, ReAct, plan-and-execute, every harness pattern you've ever wired by hand, becomes a shape in your filesystem instead. Tools are cells. The loop is an edge that routes back. The harness is topology.
-
-And since the harness is just files on disk, the swarm can rewrite it. Add a cell. Rewire an edge. Decide a loop was the wrong shape entirely and build something else. You wrote the first version. From there, rewiring is a runtime move, yours or the swarm's.
-
-Here's the whole thing in eight seconds. One task in, one answer out, and the
-tool-loop you'd normally hand-write showing up as a path through the tree:
-
-![meclaw: the loop is an edge](docs/demo.svg)
-
-That's `docs/demo.sh` driving `examples/swarm`. Replay it yourself with
-`asciinema play docs/demo.cast`.
-
-<!-- asciinema: B4 -->
-
-## Try it, no API key
-
-`examples/hard-shell` is a colony with no `llm` cell in it, so there is nothing to
-authenticate: no key, no model, no provider account. It only reaches outwards, and the whole
-example is about where it refuses to. Everything below was run against a fresh clone; the
-output is the real output.
-
-From the 0.9.0 release on there is a prebuilt Linux x86_64 binary, and
-[`scripts/install.sh`](scripts/install.sh) fetches it next to its published SHA-256, verifies
-the sum, and writes one file into `~/.local/bin`. It downloads and checks data; it never pipes
-code into a second shell:
+## Start an assistant
 
 ```bash
+# 1 — install meclaw: one static Linux binary
 curl -fsSL https://meclaw.ai/install.sh | sh
+git clone https://github.com/mmeyerlein/meclaw && cd meclaw
+printf 'OPENROUTER_API_KEY=sk-...\nMODEL_BRAIN=openai/gpt-4o-mini\n' > examples/meclaw-os/seed/.env
+meclaw --root examples/meclaw-os/seed --templates ./templates --daemon --api 127.0.0.1:7777
+
+# 2 — install the OS into the running colony: one POST, nothing restarts
+curl -s -X POST 127.0.0.1:7777/colony/mutations \
+     -H 'Content-Type: application/json' -d @examples/meclaw-os/grow.json
+
+# 3 — talk to your assistant
+curl -s -X POST 127.0.0.1:7777/messages -H 'Content-Type: application/json' \
+     -d '{"target": "/door", "headers": {"channel": "chat-1"},
+          "body": {"messages": [{"origin": "user", "type": "text",
+                                 "text": "Say hello in one short sentence."}]}}'
+
+# 4 — read the answer: nothing is hidden, the reply is a hop on the record
+curl -s '127.0.0.1:7777/colony/trace?limit=200' | jq -r \
+  '[.trace[] | select((.headers_json | fromjson | .hop.route) == "answer")]
+   | last | .body_payload | fromjson | .messages[0].text'
 ```
 
-Building from source works on every release, needs a Rust toolchain, and is what the walkthrough
-below was run against:
+One binary, one key, four commands — and the last one already shows the point:
+the answer is not a return value, it is a message on an audited record.
 
-```bash
-git clone https://github.com/mmeyerlein/meclaw
-cd meclaw
-cargo build --release          # the only slow step. minutes, once.
-```
+## What just happened
 
-Boot the colony as a daemon. It comes up in well under a second:
+**You installed meclaw.** A single Rust binary that turns a directory tree into a running
+colony of actors: every folder is a cell, its `config.json` is its definition, and the
+edges between folders are the routes a message can take. Nothing else got installed.
 
-```bash
-./target/release/meclaw --root ./examples/hard-shell/seed \
-                        --templates ./templates \
-                        --daemon --api 127.0.0.1:7799
-```
+**You installed an operating system — without stopping anything.** `grow.json` is not
+code and was not deployed. It is a *mutation*: nodes and edges, applied over HTTP to a
+colony that was already running. It grew a door, a firewall and a conversation agent out
+of the template library — and that is the only way anything is ever added to a colony,
+which is why the same door is open to the agents themselves.
 
-What is checked in is one cell. Not a framework's worth of scaffolding — one:
+**You talked to an assistant nobody programmed.** No SDK, no agent class, no loop you
+wrote. The assistant is a shape in the filesystem, grown from templates — and the full
+version of that shape ([`examples/organism`](examples/organism/)) grows an organisation,
+a person, their assistant and their channels from five such files.
 
-```console
-$ curl -s http://127.0.0.1:7799/colony/registry | jq -c '.registry[] | {path, cell_type}'
-{"path":"/probe","cell_type":"web_fetch"}
-```
+meclaw is different enough that the same questions come up every time. The rest of this
+page is those questions — each a few lines here, each a real page in
+[`docs/why/`](docs/why/).
 
-Now grow it while it runs. `grow.json` is a mutation: two nodes from the template library,
-four edges, applied to a live colony without a restart.
+## meclaw doesn't ship you a loop
 
-```console
-$ curl -s -X POST http://127.0.0.1:7799/colony/mutations \
-       -H 'Content-Type: application/json' \
-       -d @examples/hard-shell/grow.json | jq -c .
-{"mutation":{"id":"01a00656-d847-72e3-b652-2fc23becf2e8","outcome":"committed"}}
+Every agent framework ships you the same thing: a loop — call the model, run a tool, feed
+the result back, until some condition you wrote says stop. You hand-build that harness
+and redeploy it when it's wrong. In meclaw an `llm` cell makes **one** provider call and
+emits **one** message; tools are cells, the loop is an edge that routes back, the harness
+is topology. Since topology is files, the swarm can rewrite its own harness while it runs.
 
-$ curl -s http://127.0.0.1:7799/colony/registry | jq -c '.registry[] | {path, cell_type}'
-{"path":"/door","cell_type":"code"}
-{"path":"/sink","cell_type":"code"}
-{"path":"/probe","cell_type":"web_fetch"}
-```
+## Everything is a file
 
-Three cells now, and nothing was redeployed. (`/door` there is a `door` cell — a cell path,
-not a URL prefix: nothing is served over HTTP under it. A page with a port of its own is the
-`web` cell, further down.)
+Flexibility is not a feature here — it is the consequence of one decision. Because the
+harness lives in the filesystem, `ls`, `grep`, `diff` and `git` are the tooling, every
+change is diffable, and an agent rebuilds its own topology with the same closed vocabulary
+a human uses. There is no SDK and no plugin API, and that is deliberate: the interface is
+HTTP and files, and 38 shipped templates without a line of Rust are the proof.
+*More: [docs/why/everything-is-a-file.md](docs/why/everything-is-a-file.md)*
 
-Point the colony at the address every
-prompt-injected agent gets told to fetch — `169.254.169.254`, where the cloud hands out
-instance credentials:
+## An operating system for agents
 
-```console
-$ curl -s -X POST http://127.0.0.1:7799/messages \
-       -H 'Content-Type: application/json' \
-       -d '{"target": "/door",
-            "body": {"messages": [{"origin": "assistant", "type": "tool_call", "id": "c1",
-                                   "text": "{\"url\": \"http://169.254.169.254/latest/meta-data/iam/security-credentials/\"}"}]}}' | jq -c .
-{"message_id":"01a00656-d885-7043-9d7b-550e08775200"}
-```
+Every agentic product ends up rebuilding the same things: an organisation, its people,
+their assistants, the channels they are reached on — plus secrets, screening, sessions
+and a control loop across all of them. meclaw-os ships those as templates under one rule:
+**a level owns what its siblings must share.** It is rudimentary and experimental, it
+already has the concept of **apps**, and it exists so a new agent is a grow, not a project.
+*More: [docs/why/an-os-for-agents.md](docs/why/an-os-for-agents.md)*
 
-Nothing in that seed configures a policy, an allow list or a security block. The refusal
-below is the state the thing ships in. Then open <http://127.0.0.1:7799/ui/> and watch it,
-or read the trace it just wrote — which is the next section.
+## One assistant, two brains
 
-## The organism at work
+The shipped assistant runs two models on purpose: a conversation surface that answers
+fast, and a reasoning core that thinks — one job, one brain, one tool menu each, and the
+menu is asked for rather than typed into a prompt. One model doing both is either slow in
+conversation or shallow in reasoning; the split is a harness decision, and the harness is
+a file. *More: [docs/why/two-brains.md](docs/why/two-brains.md)*
 
-One message in, three hops, and the harness is the shape of the tree rather than a loop
-someone wrote. This is the trace of the request above, straight out of the running colony:
+## Memory that outlives the window
 
-```console
-$ curl -s 'http://127.0.0.1:7799/colony/trace?limit=20' \
-  | jq -r '.trace[] | "\(.from_path) -> \(.to_path)   ttl=\(.ttl)\n  hop:  \(.headers_json | fromjson | .hop | tostring)\n  body: \(.body_payload | fromjson | .messages[0] | .type + " | " + .text)\n"'
+A conversation can run for weeks — not because something clever compacts the context, but
+because **the window was never where the conversation was stored**. The memory hive
+writes without an LLM, retrieves over five model-free legs, consolidates nightly by
+superseding instead of deleting, and the window is assembled per turn out of the record,
+under a budget. *More: [docs/why/memory.md](docs/why/memory.md)*
 
-@external -> /door   ttl=63
-  hop:  {}
-  body: tool_call | {"url": "http://169.254.169.254/latest/meta-data/iam/security-credentials/"}
+## Ontology, in the meclaw sense
 
-/door -> /probe   ttl=62
-  hop:  {"chat_id":"default","duration_ms":17,"exit_code":0,"had_stderr":false,"route":"turn"}
-  body: tool_call | {"url": "http://169.254.169.254/latest/meta-data/iam/security-credentials/"}
+Not philosophy: a typed catalogue. The builder designs against the template library and
+its declarations and is validated by them, rather than emitting free-form JSON somebody
+hopes parses. When the catalogue has no word for what you want, the manifest brings one —
+`add_templates` registers a new class into a running colony. Apps are how the ontology
+learns new words. *More: [docs/why/ontology.md](docs/why/ontology.md)*
 
-/probe -> /sink   ttl=61
-  hop:  {"duration_ms":0,"error_code":"target_blocked","finish_reason":"error","operation":"web_fetch","route":"denied"}
-  body: tool_result | web_fetch refuses 169.254.169.254: link-local 169.254.0.0/16 (cloud metadata)
-```
+## Prepared for recursive self-improvement
 
-Read down the `hop` column, because that is where the logic lives:
+The primitives are here and tested: runtime mutation, a builder that turns a wish into a
+manifest, keep-or-revert on a measured window, a receipt for every act. **The loop that
+closes them is not** — deliberately. Nothing in this repository improves itself
+unattended, and every goal the control loop could pursue ships disabled. No blind RSI.
+*More: [docs/why/rsi.md](docs/why/rsi.md)*
 
-- **Hop 1** enters from `@external` — the HTTP ingress — with an empty hop. Nothing has
-  decided anything yet.
-- **Hop 2** carries `route: "turn"`. The `/door` cell put the turn on a *named lane*; the
-  edge to `/probe` fires on that name. The cell did not know `/probe` exists.
-- **Hop 3** is the interesting one. `error_code: "target_blocked"` is a **typed** refusal, and
-  the edge that routed it matched on the code, not on the prose — so the deny gets a lane of
-  its own (`route: "denied"`) instead of dying quietly. There is **no `http_status`**, and that
-  absence is the proof: the address was judged before the connect, so no packet left the
-  machine.
-- **`ttl` counts down** 63 → 62 → 61. A message that loops forever runs out of budget instead
-  of running forever.
+## You talk, it shows
 
-The dead-letter queue is empty, which is the point of the third cell — a refusal that
-dead-letters is a refusal nobody sees:
+**This one is an idea, not a feature.** The vision for the assistant is the movie *Her*:
+you **talk** to it, and it **shows** you — lists, plans, pictures, drawn onto a display
+that belongs to you, not to any one agent. Nothing in this repository does voice today;
+what exists is the window it would draw on.
+*The idea, and what already stands under it: [docs/why/you-talk-it-shows.md](docs/why/you-talk-it-shows.md)*
 
-```console
-$ curl -s http://127.0.0.1:7799/colony/dead_letters | jq -c .
-{"dead_letters":[]}
-```
+## The strange names
 
-[`examples/hard-shell/WALKTHROUGH.md`](examples/hard-shell/WALKTHROUGH.md) takes this further,
-command by command with the real output next to each one: `kill -9` the daemon mid tool run,
-start a second one on the same directory, and watch the same absence of configuration hold.
-Under two minutes, still no key.
+argus, affinity, talky, cogny, hive — the names are roles, not branding, and each has a
+one-line reason. *More: [docs/why/names.md](docs/why/names.md)*
 
-## What meclaw is
+## Why Rust, why Linux only
 
-A framework for building agentic harnesses, and swarms of them, as a directory tree. One Rust binary. Linux.
+One static binary, one async task per cell — and the security model *is* the kernel:
+Landlock, network namespaces, cgroup v2 and seccomp, fail-closed. Without those
+primitives, "sandboxed" would be a promise instead of a property; that is why there is no
+macOS build. Authentication is the reverse proxy's job, as for every Linux daemon.
+*More: [docs/why/rust-and-linux.md](docs/why/rust-and-linux.md)*
 
-A harness is the scaffolding around an LLM: the tool-loop, the orchestration, the control flow, the part everyone hand-codes and nobody enjoys. In meclaw that's a shape in the tree. Compose them. Nest them (meta-harnesses, if you want the buzzword). Swarm them.
+## Limits
 
-- **The filesystem is the topology.** The directory tree *is* your harness. Every node is a Cell (an actor). Folders marked `type: "hive"` are scopes: authority and mutation boundaries that hold the graph. No second config format to learn. The tree is the truth.
-- **Cells are dumb. The edges do the thinking.** A cell has no idea who sent it a message or who comes next. It knows its contract, its params, and the one message in front of it. Routing, filtering, fan-out, loopback, all of it lives on the edges.
-- **One LLM cell, a pile of tool cells.** `llm` thinks. Everything else (`bash`, `code`, `file`, `store`, `web_fetch`, `mcp`, and friends) is a tool cell. There is no built-in loop bolting them together. You draw it. That's the whole trick: the harness is topology, not control flow buried in someone's framework.
-- **The swarm tunes itself.** Rewiring the graph is a runtime primitive. Any cell can emit a mutation and reshape the tree while the colony runs. The goal is agents that write those mutations themselves: read the topology, decide it needs another tool or a smarter loopback, ship the diff. Self-modification isn't a feature bolted on the side. It's the reason the thing exists.
-- **It runs as a daemon.** A long-lived process you drive over HTTP, with a read-only web UI to watch the swarm do its thing. nginx energy. One binary, a few flags, a mode switch.
-- **Durable and atomic.** Messages are atomic. State persists per cell in SQLite. Traces rebuild from a central log. Kill it, restart it, it picks up where it left off.
+`code` cells run `python3`, nothing else. One screen, one app; voice is roadmap, not a
+feature. Not for unsupervised production yet. Running costs, measured on one production
+colony: 0.32 EUR per day in conversation, 0.024 EUR idle
+([`docs/costs.md`](docs/costs.md)).
 
-```bash
-# fire up a swarm as a daemon, with an HTTP API and a UI to watch it:
-meclaw --root ./examples/swarm --templates ./templates --daemon --api 127.0.0.1:7777
-# then open http://127.0.0.1:7777/ui/
-```
+## Under heavy development
 
-`examples/swarm` has an `llm` cell in it, so it wants a provider key in
-`examples/swarm/.env` before it will boot. The quickstart above needs none, because
-`hard-shell` has no `llm` cell at all. [`examples/README.md`](examples/README.md) says which is
-which.
-
-## Why it's different
-
-| | Every other agent framework | meclaw |
-|---|---|---|
-| The harness | control flow hidden in the framework | a folder you can `ls` |
-| The tool-loop | a `while` loop you babysit | an edge that routes back |
-| Tuning the harness | edit code, redeploy, pray | a mutation the swarm writes itself |
-| The LLM call | buried in hidden control flow | one cell, one call, one message |
-| Defining an agent | code or YAML in a repo | a directory tree you `diff` and `git` |
-| Language lock-in | a Python or JS SDK | none. it's an HTTP API |
-| Substrate | "it scales" (citation needed) | Tokio actors, O(1) routing, supervised restarts |
-
-meclaw is not BPMN. It is not Temporal. It does exactly one thing, LLM-shaped flows, and it makes them something you draw, inspect, and hand off to the agents to maintain.
-
-## The shape of a colony
-
-A colony is a folder. A colony that actually does something needs at least a hive and one cell. Only a hive carries a graph, so a lone cell with no edges just sits there routing to nobody:
-
-```
-my-colony/
-└── main/                  # the root hive. holds the graph (the edges).
-    ├── config.json        # type: "hive", params.graph wires its children
-    └── responder/
-        └── config.json    # type: "llm"
-```
-
-`config.json` says what a node is. The folder it sits in says where it is. That's the entire mental model. There is no step three.
-
-## The whole vocabulary
-
-That's the word. "Vocabulary." There isn't more to memorize.
-
-- **Cell**: an actor. One Tokio task, one mailbox, single-threaded on the inside. Knows only its own contract.
-- **Hive**: a folder marked `type: "hive"`. A scope, a boundary, and the thing that holds the graph. Not an actor itself.
-- **Edge**: a routing rule between two paths, with a CEL condition and optional context tweaks. This is where the logic lives.
-- **Colony**: the boss. Owns the registry, routing, templates, lifecycle, mutations. Routing is an O(1) lookup.
-- **Template**: a cell or subtree under `templates/`. A class. An instance is a copy dropped into the tree.
-
-## The cells you get out of the box
-
-`llm` thinks. The rest are tool cells, the working muscle of any harness. Nobody wired a loop around them. You do that.
-
-| cell | what it does |
-|---|---|
-| `llm` | one provider call, one message. any OpenAI-compatible API: OpenAI, OpenRouter, or local via Ollama / vLLM / LiteLLM |
-| `bash` | run a shell command, hand back stdout / stderr / exit code |
-| `code` | run a script (Python), emit one message or many |
-| `file` / `edit` | read, write, and patch files |
-| `store` | durable key/value and history, with full-text search, graph traversal, vector similarity, and canonical identity that folds drifted spellings onto one axis |
-| `timer` | cron-style scheduling, fires messages |
-| `proxy` | a long-running bridge to the outside world (Telegram, or Slack over Socket Mode) |
-| `mcp` | speak the Model Context Protocol to external tools |
-| `web_fetch` / `web_search` | pull the web in |
-| `harness` | run an agent harness (Claude Code, say) as a supervised child process, one child per task |
-| `subcolony` | a whole child colony, addressed as if it were a single cell |
-| `vault` | a sealed secret store — `put`, `rotate`, `use`, `revoke`, and no `get`: the route surface has no operation that returns a secret |
-| `web` | a display on a port of its own — HTTP + WebSocket, an object tree and a component library in its own `cell.db`, server-rendered and materialised, so a page load costs no cell call. Auth is external, forever |
-
-A tool-loop is `llm → dispatcher → tools → collector → llm`, with the loopback condition sitting on one edge. You don't switch a loop on. You compose one. And once it exists as files, the swarm can rebuild it without asking you.
-
-## The template library
-
-Both halves of that tool loop already exist as templates, and so does most of an agent.
-**38 of them ship in this repository**, every one pure DSL — directories, `config.json` files
-and edges, not a line of Rust and no plugin API. Instantiating one *copies* the subtree into
-your colony; from that moment the instance is yours and has no link back to the library.
-
-| | |
-|---|---|
-| the tool loop | `dispatcher` fans a brain's tool calls out, `collector` decides what comes back into the context window, `tools` is the whole tool surface as one node with one contract — and a `schemas` cell in it answers a second question about itself: a template declares the tools it uses (`tools: [...]`), asks at start-up, and the menu is derived rather than hand-kept (`gh464_the_hive_hands_out_its_own_declarations`, `gh464_a_cell_that_uses_tools_declares_them`) |
-| the conversation | `session-keeper` gives a conversation a beginning and an end; the handover into the next generation comes back through the memory hive's recall bundle |
-| the front door | `operator` is the one lane into the OS — one occupant per subject (`submit`, `export`, `lifecycle`), identity taken off the envelope and never authentication (`operator_one_front_door`); outside it sit `door`, `telegram-connector` (a chat as one address), `firewall` (rules that are data, not code), `receptionist` (one agent per channel, built on demand) |
-| memory and identity | `memory-hive` — thirteen cells, an LLM-free write path and a nightly consolidation — plus `memory-drain` and `archive-bridge`, and `affinity` for the curated record of who is who |
-| the screen | `display` is the member's channel: one screen on a port of its own, a `views` table, and any number of agents writing named views onto it — a view is owned by whoever sent it, so a body claiming another owner is refused rather than believed (`gh455_a_screen_holds_two_owners`). `colony-view` is an app (library tag `app`, instantiated under `<member>/apps/<name>`) that draws the colony into one. Together they replace `canvy`, now deprecated |
-| the watcher | `argus` reads a charter, measures its own colony out of the substrate's ledger, has a judge simulate against those numbers, sends the decision on as an ordinary params update, and keeps or reverts it after a window — every tick a receipt. Optimisation is one goal type among others, and every goal ships **disabled**. What is proven is the form, not a result: `gh462_argus_runs_a_full_cycle` drives both outcomes, kept and reverted, over the whole chain on a booted colony. (`steward` is its deprecated former name.) |
-| whole agents | `cogny` is the agent core as one node; `talky` is the full composite, three sub-units pre-wired |
-| the organism | `meclaw-os`, `org`, `member`, `assistant` — four composition levels under one rule, *a level owns what its siblings must share*: the shell owns the front door (`operator`), the broker (`access`), the watcher (`argus`) and the authoring path, and declares the environment it needs as `requires.env`; the organisation owns a namespace, the member owns the memory, the channels and the screen; the assistant owns the reasoning core and the tools |
-| the small ones | `retry`, `terminal` |
-
-The catalogue, with what each one is for and which ports to wire, is
-[`templates/README.md`](templates/README.md). `examples/meclaw-os` boots a seed with **zero
-cells in it** and grows a **fourteen-cell** agent out of that library with one declaration,
-**nineteen** after the second. Beside it, `examples/meclaw-os/seed-ref` is that first boot in
-*one line*: a `cell.type: "ref"` marker on `meclaw-os@1.6.0` and a single edge, and the whole
-shell arrives out of the library — while a key missing from the template's `requires.env`
-refuses the growth with `requirement_missing` before a byte is staged
-(`gh465_one_declaration_boots_the_os`). `examples/organism` boots the same empty seed and
-grows the whole four-level stack — **82 cells and 425 edges** — out of five declarations
-(`gh302_the_stack_grows_from_templates`), and `examples/display-colony-view` puts two owners
-on one screen. A memory can also come back: `examples/memory-import` turns an exported
-`seed/<table>.jsonl` into one manifest, so a rebuilt member is born with its history
-(`gh467_a_member_is_born_with_its_history`).
-
-## Rewiring is a runtime move
-
-Reshaping the graph is a first-class runtime move. A cell emits a mutation diff (`add_nodes`, `add_edges`, `swap_nodes`, and the rest), the colony validates it and applies it atomically while everything keeps running. This part is real and tested today.
-
-The whole idea is agents that maintain their own harness. Read the current topology, notice it needs another tool cell or a smarter loopback, write the diff, ship it.
-
-That part shipped, and so did the thing on top of it. The **builder** — an `llm` plus
-`code` topology that turns a plain-English request into a MANIFEST, itself pure DSL and
-not one line of new Rust — is in this repository, on the public template allow-list, at
-[`templates/builder`](templates/builder/). A wish it recognises does not reach a model at
-all: a fast lane of parameterised recipes renders the manifest deterministically, and
-`grow_level` is the one that turns *grow an assistant named scribe under this member* into
-that level's nodes and its transit edges from a recipe rather than token by token
-(`gh466_grow_level_renders_the_level`, `gh466_a_recipe_grown_level_boots`). What the wish
-does not say, it is asked for instead of guessed. It never applies anything, and that is a
-property of the files rather than a promise in a README: no cell in it has an edge onto
-the control plane. The one reach onto the mutation door in the whole tree is
-[`templates/submit`](templates/submit/), which takes the requester's identity off the
-envelope rather than out of the body. The rails are the interesting part anyway, because
-they are measured substrate behaviour rather than a promise: a cell cannot even *address*
-the mutation lane without an edge, and no mutation whatsoever can create an edge onto the
-control plane — that one is bootstrap-only. Approval is classified by effect, not by name:
-a fresh unwired subtree is inert and auto-approved, while rerouting live traffic or
-touching the control plane escalates to a human.
-
-## Where it's at
-
-meclaw is a **0.x** proof of concept for the DSL and the self-modifying substrate — the version that shipped last is the top entry in [`CHANGELOG.md`](CHANGELOG.md), which is where release truth lives. The on-disk schema only ever grows: the `colony.db` `schema_version` stands at **8**, every step to it was additive, and an older database migrates in place on the boot that finds it. The DSL keeps growing; the database you already have keeps opening.
-
-Real and tested today: the full actor substrate, all 15 built-in cell types, hot and cold lifecycle, runtime mutations, the template system, long-running cells, the HTTP API and web UI, displays that own their own port, agent harnesses as supervised child processes, and child colonies composed as single cells. **6200+ tests. 0 fail. And climbing.** The hot routing paths are byte-pinned against fixtures, so they can't quietly drift.
-
-Not here yet: **composition, not federation.** A child colony is addressable as one cell, and that boundary is pinned by negative tests — a parent path into the child tree does not route, and a mutation scoped into the child creates nothing. Cross-colony routing is a deliberate non-goal, not a missing feature. One builder per scope. A few hardening items are tracked in the open. This is honest infrastructure, not a toy. It's also not something to run unsupervised in production yet. The `bash` cell has full shell access on purpose, so run untrusted topologies somewhere you don't mind a shell.
+meclaw is not finished, and it is open source so it does not have to be finished alone.
+Good first contributions: example colonies, template cells, docs drift-fixes — see
+[CONTRIBUTING.md](CONTRIBUTING.md) and the `good first issue` label. **6200+ tests,
+0 fail**; release truth lives in [CHANGELOG.md](CHANGELOG.md).
 
 ## Stability
 
-**What is the contract, and what is not.** Five surfaces are the public contract of this project:
+**Five surfaces are the public contract of this project:**
 
-- the **HTTP API** — the `/colony/*` routes, `POST /messages`, their query parameters and status codes;
-- the **template DSL** — the `template.json` and `config.json` schemas, including the mutation diff format;
-- the **template ports** — the endpoints a template's README declares as its ingress and exit addresses;
-- the **`web` cell's own origin** — the route grammar a `page.set` accepts, the two reserved names
-  (`/live/websocket` and `/@client/*`), and the closed component-template syntax
-  ([`docs/cell-types.md`](docs/cell-types.md) § `web`). A display owns a port rather than a path
-  under the API, so this is a surface of its own rather than part of the first bullet. There is no
-  `/surface/*` prefix and no `cell.surface` key: both were removed in
-  [#383](https://github.com/mmeyerlein/meclaw/issues/383), and a tree still declaring the key is
-  refused at boot — the migration is [`templates/canvy/MIGRATION.md`](templates/canvy/MIGRATION.md);
-- the **documented `error_code` strings** — the dead-letter codes, the cell-type error enums, and
-  the codes a `/colony` read reply carries (today just `invalid_query`, documented inline at the
-  reads that raise it, [#363](https://github.com/mmeyerlein/meclaw/issues/363)).
+- the **HTTP API** — the `/colony/*` routes, `POST /messages`, their query parameters and
+  status codes;
+- the **template DSL** — the `template.json` and `config.json` schemas, including the
+  mutation diff format;
+- the **template ports** — the endpoints a template's README declares as its ingress and
+  exit addresses;
+- the **`web` cell's own origin** — the route grammar a `page.set` accepts, the two
+  reserved names (`/live/websocket` and `/@client/*`), and the closed component-template
+  syntax ([`docs/cell-types.md`](docs/cell-types.md) § `web`); the removed `/surface/*`
+  prefix and `cell.surface` key stay removed
+  ([#383](https://github.com/mmeyerlein/meclaw/issues/383));
+- the **documented `error_code` strings** — the dead-letter codes, the cell-type error
+  enums, and the codes a `/colony` read reply carries
+  ([#363](https://github.com/mmeyerlein/meclaw/issues/363)).
 
-While meclaw is on `0.x`, changes to those five are **additive**: new fields, new codes, new
-endpoints, new params. A change that breaks an existing topology is a **breaking change** and gets
-its own **Breaking** section in [CHANGELOG.md](CHANGELOG.md), naming what breaks and what to do
-about it. If it is not in that section, it was not meant to break you — file an issue.
+While meclaw is on `0.x`, changes to those five are **additive**. A change that breaks an
+existing topology gets its own **Breaking** section in [CHANGELOG.md](CHANGELOG.md),
+naming what breaks and what to do about it — if it is not in that section, it was not
+meant to break you: file an issue. Two carve-outs: the `${KNOB}` environment variables
+the shipped templates read are a declared **experimental** surface migrating onto
+`params` ([#138](https://github.com/mmeyerlein/meclaw/issues/138)), and **the Rust crates
+are internals** — nothing under `crates/` carries a SemVer guarantee, and there is no
+`meclaw` library API.
 
-One carve-out inside that: the `${KNOB}` environment variables the shipped templates read are an
-**experimental** surface and are migrating onto the `params` block over the `0.x` line, so their
-names are not covered by the promise above ([#138](https://github.com/mmeyerlein/meclaw/issues/138),
-[`templates/README.md`](templates/README.md) § Env knobs).
+## Docs
 
-**The Rust crates are internals.** No Rust item under `crates/` carries a SemVer guarantee: types,
-function signatures, module paths and trait bounds move between releases without notice, including
-on patch bumps. (The manifests do say `publish = true` — only `meclaw-testing` is `publish = false`
-— but no release of this project has pushed a crate to a registry, and nothing in the release
-process does. That flag is readiness for a decision not yet taken, not a promise about the API.)
-There is no `meclaw` library API. If you depend on a crate over a git dependency, pin a commit and expect to
-do the work yourself on every bump — that is a supported thing to do and an unsupported thing to be
-surprised by.
-
-## What it costs to run
-
-A colony spends money in exactly one place: the provider calls its `llm` cells make. On one
-production colony, measured from its own database over a 24-hour window:
-
-**0.32 EUR / 24 h** with a person talking to it, **0.024 EUR / 24 h** unattended.
-
-The method matters more than the number, because the number is dominated by how much you talk
-to the colony and which cells sit on which model tier — in that measurement the frontier model
-was 97 % of the bill on 24 % of the calls. Every figure is re-derivable against your own
-colony with [`scripts/cost_report.py`](scripts/cost_report.py), and
-[`docs/costs.md`](docs/costs.md) states plainly which tiers have **not** been measured rather
-than estimating them.
-
-## Roadmap
-
-**Now: meclaw-os.** The substrate had its waves; the first full agent is being built on top of
-it as pure topology, no new Rust — context orchestration, a conversation lifecycle, a screened
-front door, and memory the agent can ask rather than be handed. Every piece of it is a template
-you can read, and they are all in [`templates/README.md`](templates/README.md). The epic that
-carried it, [#26](https://github.com/mmeyerlein/meclaw/issues/26), is closed — a target picture
-is not something anyone can finish, and the tracker holds work only — but its body is still the
-public record of the settled principles and the one open fork. What comes next and in which
-order lives in [ROADMAP.md](ROADMAP.md).
-
-Also in the queue: cutting the fixed cost of a `code` cell invocation. We measured it instead of guessing — the driver is ~16 ms of interpreter startup per call, not the store and not the payload, so the cost equation is (number of `code` calls on the serial path) × 16 ms. That one line is worth roughly 90 % of the available speedup. After that: more than one builder per scope, capability checks with teeth, durability hardening. All of it is in the open. Pick one, send a PR.
-
-## Contributing
-
-Issues, discussions, PRs, all open. Easy wins: example colonies, new template cells, docs. The spec in `docs/` is the source of truth, so read `docs/meclaw-overview.md` before anything big. [`docs/README.md`](docs/README.md) is the documentation index — which document answers which question, in which order to read them, and which one wins on conflict. What comes next and in which order lives in [ROADMAP.md](ROADMAP.md); the issue tracker carries the substance.
+[`docs/README.md`](docs/README.md) is the index. First stops:
+[glossary](docs/glossary.md) (the words you need first) ·
+[system overview](docs/meclaw-overview.md) ·
+[cell types](docs/cell-types.md) · [config format](docs/config.md) ·
+[template catalogue](templates/README.md) · [examples](examples/).
 
 ## License
 
-Take your pick:
-
-- MIT ([LICENSE-MIT](LICENSE-MIT))
-- Apache 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
-
-Whichever you like.
+MIT ([LICENSE-MIT](LICENSE-MIT)) or Apache 2.0 ([LICENSE-APACHE](LICENSE-APACHE)) —
+whichever you like.
 
 ---
 

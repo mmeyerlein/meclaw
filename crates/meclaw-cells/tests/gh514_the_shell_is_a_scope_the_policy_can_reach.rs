@@ -91,11 +91,15 @@ const SHELL: &str = "colony.mutate.shell";
 const DEFAULT: &str = "colony.mutate.default";
 
 /// What the shell's own edge promotes onto every question the submitter puts —
-/// a literal, and the same one whichever door the submission came in at.
-const REQUESTER: &str = "/os/submit";
-/// What the front door's own emission is stamped with, and therefore what the
-/// gate hands the broker as `subject`.
-const FRONT: &str = "/os/operator/submit";
+/// a literal, and the same one whichever door the submission came in at. Since
+/// GH #556 the submitter is an occupant of the front door rather than of the
+/// shell, so the literal on `./operator -> ./access` is `/os/operator/submit`.
+const REQUESTER: &str = "/os/operator/submit";
+/// What the front door's own identity cell stamps on its emission, and therefore
+/// what the gate hands the broker as `subject`. That cell is the one GH #556
+/// renamed from `submit` to `intake` — the name was needed for the submitter it
+/// now stands beside.
+const FRONT: &str = "/os/operator/intake";
 
 // ────────────────────────────────────────────────────────────── the shipped seed
 
@@ -494,9 +498,10 @@ fn the_shell_scope_is_refused_as_shipped_and_permitted_once_the_row_is_on() {
     }
 
     // The widening the row buys, named rather than papered over: switched on,
-    // `colony.mutate` reaches the broker's own address and the submitter's.
-    // This is why the row ships off.
-    for inside in ["/os/access", "/os/submit"] {
+    // `colony.mutate` reaches the broker's own address and the front door the
+    // submitter lives in. This is why the row ships off, and it is the pair the
+    // shipped note names by hand.
+    for inside in ["/os/access", "/os/operator"] {
         assert_eq!(verdict(&shipped, "colony.mutate", inside).0, "denied");
         assert_eq!(
             verdict(&on, "colony.mutate", inside).0,
@@ -573,7 +578,7 @@ fn submit(decls: &Value) -> Vec<Value> {
     emit_all(
         &shipped_script(GATE),
         &json!({
-            "target": "/os/submit",
+            "target": "/os/operator/submit",
             "reply_to": FRONT,
             "header": { "hop": { "route": "in_apply", "manifest_sha256": digest_of(decls),
                                  "tool_call_id": "op:c1" }, "context": {} },
@@ -589,7 +594,7 @@ fn verdict_back(capability: &str, status: &str, sha: &str) -> Vec<Value> {
     emit_all(
         &shipped_script(GATE),
         &json!({
-            "target": "/os/submit",
+            "target": "/os/operator/submit",
             "header": { "hop": { "route": "in_verdict" },
                         "context": { "sub_ask": "1", "sub_sha": sha } },
             "ttl": 64,
@@ -610,7 +615,7 @@ fn unpark(phase: &str, decls: &Value) -> Vec<Value> {
     emit_all(
         &shipped_script(GATE),
         &json!({
-            "target": "/os/submit",
+            "target": "/os/operator/submit",
             "header": {
                 "hop": { "operation": "select", "rows_affected": 1 },
                 "context": { "sub_origin": "gate", "sub_phase": phase,

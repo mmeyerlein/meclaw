@@ -48,7 +48,7 @@ organism/
 │   ├── colony.json            byte-identical to seed/colony.json
 │   └── main/
 │       ├── config.json        byte-identical to seed/main/config.json
-│       └── os/config.json     type: "ref", template: "meclaw-os@1.6.0"
+│       └── os/config.json     type: "ref", template: "meclaw-os@1.7.0"
 ├── grow-os.json               1. the shell.        1 node,  0 edges
 ├── grow-org.json              2. an organisation.  1 node, 18 edges
 ├── grow-member.json           3. a person.         1 node, 18 edges
@@ -66,8 +66,8 @@ principle of GH #26: a tree is grown, not checked in.
 ## What grows
 
 ```
-/os                                 meclaw-os@1.6.0   the shell
-├── access                            → access@2.4.2        the capability broker
+/os                                 meclaw-os@1.7.0   the shell
+├── access                            → access@2.4.3        the capability broker
 ├── argus                             → argus@1.0.0         the control loop
 └── orgs                              (empty container)
     └── acme                       org@1.3.0         a namespace and a boundary
@@ -79,10 +79,10 @@ principle of GH #26: a tree is grown, not checked in.
                 ├── channels          (empty container)
                 │   └── telegram      telegram-connector@2.0.1   how alex is reached
                 └── assistants        (empty container)
-                    └── scribe    assistant@2.2.0   one generation of an agent
-                        ├── surface   → talky@4.5.1         the conversation surface
-                        ├── cogny     → cogny@4.4.0         the reasoning core
-                        └── tools     → tools@1.2.0         the tool surface
+                    └── scribe    assistant@2.3.0   one generation of an agent
+                        ├── talky     → talky@4.5.1         the conversation surface
+                        ├── cogny     → cogny@4.5.0         the reasoning core
+                        └── tools     → tools@1.4.0         the tool surface
 ```
 
 Five `add_nodes` entries name five templates, and **seventeen** distinct templates end up stamped
@@ -113,7 +113,7 @@ is a separate act.
 
 ```json
 {"scope": "/",
- "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.6.0"}],
+ "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.7.0"}],
           "add_edges": []}}
 ```
 
@@ -192,7 +192,7 @@ memory hive's answer), `in_build_result` (the builder's answer) and — since GH
 transfer lanes `in_export` and `in_import`. Up are `answer`, `recall`, `extraction`, `write`,
 `turn_write`, `prune`, `error`, `build` and `dump` — the member consumes `answer`, `recall` and
 `extraction` itself, files `dump` in its `export-sink`, and passes the rest on.
-`assistant@2.2.0` emits a tenth lane, `pack_ack` (GH #458), and this walkthrough draws no edge
+`assistant@2.3.0` emits a tenth lane, `pack_ack` (GH #458), and this walkthrough draws no edge
 for it: nothing here pushes an identity into the generation, so nothing here produces the
 receipt. A colony that wires the push wires the receipt with it, and the member already declares
 the exit.
@@ -206,7 +206,7 @@ are not one document; the `dump` edge is deliberately **plain**, since every lev
 and the keeper pairs `in_export` with `dump` in `params.required_drains` and an edge that also
 tested `hop.dump_kind` would read as no drain at all.
 
-`answer` is where `assistant@2.2.0` differs from its predecessor (GH #454). The old level emitted
+`answer` is where `assistant@2.3.0` differs from its predecessor (GH #454). The old level emitted
 `turn`: its connector stood *inside* it, so the raw wire and the reply never crossed the level
 boundary. The connector now stands one level up, in the member's `channels`, so the raw wire
 never touches this level at all and the finished answer has to leave it. Removing an address and
@@ -230,8 +230,8 @@ The one token that is **not** an address key is `"agent:scribe"` inside `audienc
 an audience namespace — who was in the round — and it keeps its spelling.
 
 `ctx.model` feeds two brains since 2.0.0, because the conversation surface travels inside the
-level now: `<scribe>/surface/brain` and `<scribe>/cogny/brain` both read it. Give the surface a
-model of its own with `override_params` on `<assistant>/surface/brain` if the two should differ.
+level now: `<scribe>/talky/brain` and `<scribe>/cogny/brain` both read it. Give the surface a
+model of its own with `override_params` on `<assistant>/talky/brain` if the two should differ.
 
 ### 5. `grow-channel.json` — a Telegram channel of the person
 
@@ -239,7 +239,7 @@ model of its own with `override_params` on `<assistant>/surface/brain` if the tw
 channel belongs to the person, not to a generation, so this step is declared at the *member's*
 `channels` container and the node is `telegram`. The name is no label: it is the value
 `context.channel_node` carries, and it is what the answer is routed back by. Nothing stands beside it — the
-conversation surface travels inside `assistant@2.2.0` as `surface`.
+conversation surface travels inside `assistant@2.3.0` as `talky`.
 
 **It is born asleep.** The entry carries `"birth": "inactive"` (GH #437), so the node is
 registered, addressable and taskless: it exists in the topology before its upstream is real, and
@@ -318,7 +318,7 @@ Both are one instantiation with their own parameters, and neither re-runs anythi
 {"scope": "/os/orgs/acme/members/alex/assistants",
  "ctx": {"model": "${MODEL_CORE}", "model_fast": "${MODEL_CORE_FAST}",
          "model_surface": "${MODEL_SURFACE}"},
- "diff": {"add_nodes": [{"name": "aide", "template": "assistant@2.2.0",
+ "diff": {"add_nodes": [{"name": "aide", "template": "assistant@2.3.0",
                          "override_params": {"cogny/brain": {"temperature": 0.9}}}],
           "add_edges": []}}
 ```
@@ -468,7 +468,7 @@ nothing until an operator turns on exactly what they mean.
 shall stand.
 
 ```json
-{"cell": {"type": "ref", "template": "meclaw-os@1.6.0"}}
+{"cell": {"type": "ref", "template": "meclaw-os@1.7.0"}}
 ```
 
 That is a **declaration, not a cell**. The FIRST `meclaw --root ./examples/organism/seed-ref`
@@ -537,6 +537,6 @@ curl -s -X POST http://127.0.0.1:7777/colony/mutations \
 - **No slot.** The substrate's slot governs an address that does **not** exist, and every
   container in this tree does exist — so the declaration would be silent, and the
   `params.ports` it needs would have *sealed* the level that declared it.
-- **No second vault.** `access@2.4.2` carries its own interior one (ruling Q20).
+- **No second vault.** `access@2.4.3` carries its own interior one (ruling Q20).
 - **No live migration.** This folder is a walkthrough for a colony that is grown from nothing.
   Running any of it against a deployed tree is a separate, operator-owned act.

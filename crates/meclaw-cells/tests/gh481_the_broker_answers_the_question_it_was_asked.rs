@@ -238,7 +238,7 @@ fn main_config() -> Value {
         {"from": "./asker", "to": "./access",
          "condition": "has(hop.route) && hop.route == 'ask'",
          "modifier": {"set_hop": {"route": "'in_request'"},
-                      "set_context": {"requester": "'/os/submit'",
+                      "set_context": {"requester": "'/os/operator/submit'",
                                       "round": "hop.round"}}},
         {"from": "./access", "to": "./asker",
          "condition": "has(hop.route) && hop.route == 'grant'"},
@@ -249,7 +249,7 @@ fn main_config() -> Value {
         {"from": "./spender", "to": "./access",
          "condition": "has(hop.route) && hop.route == 'spend'",
          "modifier": {"set_hop": {"route": "'in_invoke'"},
-                      "set_context": {"requester": "'/os/submit'"}}},
+                      "set_context": {"requester": "'/os/operator/submit'"}}},
         {"from": "./access", "to": "/sink",
          "condition": "has(hop.route) && hop.route == 'ack'"},
         {"from": "./access", "to": "/sink",
@@ -428,7 +428,7 @@ async fn probe(h: &ColonyHandle, rx: &mut mpsc::Receiver<Message>, op: Value) ->
 /// instance decision, and this test asserts nothing about the seed.
 fn code_author_rule() -> Value {
     json!({"operation": "insert", "table": "policy", "row": {
-        "rule_id": "code.author.test", "requester": "/os/submit",
+        "rule_id": "code.author.test", "requester": "/os/operator/submit",
         "capability": "code.author", "subject": "*",
         "scope_match": {"scope_prefix": "/os/orgs", "actions": ["apply"]},
         "verdict": "allow", "max_ttl_ms": 900000, "constraints": {},

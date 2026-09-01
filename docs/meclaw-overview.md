@@ -1584,6 +1584,80 @@ The overview table (type · task · actor kind · emission mode · phase) is can
 - **Edge identity**: every edge has a UUID v7, assigned by colony on creation. Visible in the read API and in the mutation log. In the mutation surface (builder diff), however, edges are usually referenced via a **match pattern** over their properties (`from`, `to`, `condition`, `modifier`, `default`); the UUID is a fallback for disambiguation in the pathology case.
 - **Edge table**: edges live centrally in colony's edge table, indexed by `from` path for fast fan-out lookup. Cells do not know their edges; colony evaluates them after a cell emission.
 
+### v-lanes — the declared deep edge (GH #559)
+
+A **v-lane** is neither a new class of edge nor new routing; it is the ruled use
+of what `add_edges` has always accepted without a depth restriction: an edge in
+the graph of the **lowest common ancestor** of both endpoints, whose `from`/`to`
+are scope-relative and may point arbitrarily deep into that subtree. It replaces
+a pass-through chain — instead of N hops through N rims, **one** edge carries the
+traffic straight from rim to rim. Delivery itself is untouched: routing was
+always flat (an exact lookup, no boundary check on the way), and what was missing
+was the **declaration**.
+
+Two fields carry it, and both are a matter of contract (ruling 2026-08-31):
+
+- **`lane`** on the edge entry (`params.graph.edges[]`, `add_edges[]`; optional):
+  the name of the lane this edge runs. With the field absent the edge is an
+  ordinary one and behaves exactly as it does today. The lane is **named rather
+  than guessed** — a validator cannot read it reliably out of a CEL guard.
+- **`at`** on `accepts[]`/`emits[]` of the hive contract (a list of relative
+  paths; optional): **where** the lane connects at this hive. `"at": ["./talky"]`
+  says "this lane ends at my occupant `talky`"; `"at": ["."]` says "it ends at my
+  own rim, I distribute it myself".
+
+**`ports: []` stays literally true.** The v-lane is the one exception the target
+template pronounces **itself**: a connect point is a promise made by the
+contract, never a right taken by the caller.
+
+**Levels in between are transparent by default and a mandatory hop by
+declaration.** Whoever takes influence on a lane — stamping, filtering, guarding
+— declares it and may then not be skipped; whoever declares nothing is skipped.
+This is checked in mutation validation, at the very place `hive_port_boundary`
+sits — for **both** endpoints of an edge carrying `lane`, and for every level
+between the lowest common ancestor and the endpoint:
+
+| Crossed level between LCA and endpoint | What the contract says about the lane | Result |
+|---|---|---|
+| unsealed | nothing | transparent — skipped |
+| unsealed | lane declared (accepts/emits), without a matching `at` | `v_lane_mandatory_hop` — the skip is refused |
+| sealed (`params.ports` present) | `at` contains the relative path leading to the endpoint | allowed |
+| sealed | nothing, or `at` without a hit | today's `hive_port_boundary` stands |
+| the target hive itself | `at` does not name the endpoint for this lane | `v_lane_no_connect_point` |
+
+**An edge without the `lane` field keeps exactly today's behaviour** — nothing in
+the existing stock breaks, and an undeclared deep edge stays permitted exactly as
+far as it is today.
+
+The third code belongs to rebuilding: **`v_lane_unanchored`**. When a v-lane ends
+inside a subtree a `swap_nodes` replaces, it is **re-anchored** by its relative
+form (the new implementation has the same sub-path) — and if that path is missing,
+or the new form's contract does not name it as a connect point for this lane, the
+**whole** swap is refused by name. Never silently dropped. An affected edge is
+identified purely by the subtree membership of its endpoints; there is **no**
+owner field and no second bookkeeping beside the edge table. `move_nodes`
+re-addresses v-lanes by itself, because the edge table names paths — the known
+remaining gap is unchanged (path literals inside conditions and modifiers do not
+travel). `required_drains` hold unchanged: validation knows edges, not chains, and
+checks them path-neutrally. And drawing a v-lane is an ordinary mutation —
+`colony.mutate` over the scope is the guard, and there is deliberately no separate
+deep-edge capability.
+
+**What this changes about the union rule — deliberately.** A level declares the
+union of what its occupants accept and emit; a skipped level no longer declares
+the pass-through lane, and so the rim of a skipped level no longer describes all
+of its occupants' traffic — deliberately. That is the only sanctioned exception
+to the union rule, and it is written down as one in `development-rules.md` § 8b
+and in ADR-0020, so that the next audit reads it as a decision rather than as a
+gap.
+
+**And what it does not change about secrets.** A v-lane shortens a route; it is
+no vehicle for plaintext. A credential still travels as a **sealed box over
+ordinary edges**, pulled per request against an **ephemeral** recipient key and
+**never pushed** (`cell-types.md` § `vault`, sealed delivery). On a v-lane the
+same ciphertext rides one hop instead of N; the plaintext still exists only in
+the RAM of the requesting task.
+
 ---
 
 ## Message model

@@ -51,6 +51,11 @@ tracker carries the rest.
 
 Findings from running the thing.
 
+- [#543](https://github.com/mmeyerlein/meclaw/issues/543) — a member grows its
+  own screen. Everything in the level already assumes one — the screen belongs
+  to the person, not to a generation — and it is the one piece a second,
+  hand-written act still has to supply. The port stays a parameter of the wish,
+  because a port is an instance fact.
 - Re-measuring the builder's acceptance quota, once the acceptance cases stop
   moving under it. The last run measured four cases, one of them ordering a
   build no template could deliver; a quota read off that is a reading about the
@@ -66,8 +71,35 @@ Findings from running the thing.
   front raised it, so a rule that would open the shell to the operator and not
   to an agent cannot be written today — the shell-scoped rule ships switched
   off instead. *(register: policy-by-requester-origin)*
+- [#559](https://github.com/mmeyerlein/meclaw/issues/559) — the deep edge
+  becomes the declared form. A lane that exists only to bridge a composition
+  boundary restates the layer instead of carrying anything; the substrate
+  already routes deep edges, so the work is the rule: connect points are the
+  target contract's word, crossed levels are skipped unless their contract
+  claims the lane, and a v-lane names its lane outright.
+- [#560](https://github.com/mmeyerlein/meclaw/issues/560) — the member gets an
+  access of its own. The person's keys live with the person, the way their
+  memory already does; the shell's access keeps policy and the shell's own
+  keys. First v-lane consumer, on the proven sealed-credential path.
+- [#561](https://github.com/mmeyerlein/meclaw/issues/561) — the identity pack
+  rides a v-lane, and the assistant level stops declaring a lane it only
+  forwarded.
+- [#562](https://github.com/mmeyerlein/meclaw/issues/562) — recall rides a
+  v-lane and proves the other half of the rule: the member declares its stamps
+  and stays a hop; the pass-through level goes.
+- [#556](https://github.com/mmeyerlein/meclaw/issues/556) — the submitter moves
+  into the operator hive. One front door into the OS should be one place in the
+  graph; today a submission crosses two shell stations for one job. The
+  ADR-0015 guardrail survives as what it always was — the missing edge between
+  builder and submitter — and the move lands with the next instance build,
+  because the `mutate` lane lives in the birth topology.
+- [#555](https://github.com/mmeyerlein/meclaw/issues/555) — the file is a
+  first-class transfer form. The substrate produces export content and reads
+  seed files, but never writes them; that gap is why a hand-written sink cell
+  exists at the member level. Export learns a `to:` path, import learns a
+  `from:` path, the sink dissolves.
 
-## Later: memory, after the measurement
+## Later: memory after the measurement, and names for people
 
 The memory hive is public since 0.9.0. The one finding that orders this stream,
 from a 50-question LongMemEval run: **the bottleneck is the synthesis, not the
@@ -83,6 +115,19 @@ already delivered the gold session.
   waits until the memory chain — collector, recall, curator, memory hive —
   stops moving between builds; a measurement of a surface still in motion buys
   a number that is stale by the next build. *(register: memory-answer-half)*
+- Renaming, despite append-only. Nothing in the tree is ever deleted and a path
+  IS a cell's identity — that rigidity is deliberate, it is what makes the
+  record auditable. But giving a thing a name, and changing it later, is a human
+  act, and today the only answer is `move_nodes`: an identity-level operation
+  for what is a presentation problem. The likely shape is a description layer —
+  mutable display names held in a database, never an address, the tree untouched
+  underneath. It gets a design round before it gets an issue.
+  *(register: display-names)*
+- [#553](https://github.com/mmeyerlein/meclaw/issues/553) — polling stops. Two
+  shipped timers ask for state that only changes on a committed mutation: the
+  tool menu and the topology view. The mutation receipt becomes the event
+  source, first fills happen lazily, and the timers go. One design, two
+  subscribers; until it lands the timers are documented debt.
 
 ## Alongside: surfaces, docs, and the way it is operated
 
@@ -95,6 +140,19 @@ already delivered the gold session.
   the shipped templates and migrate to params one template at a time, defaults
   bit-identical. Order: `memory-hive`, then `builder-librarian`, then the long
   tail.
+- [#552](https://github.com/mmeyerlein/meclaw/issues/552) — the memory hive
+  answers tool calls itself. Today `memory_recall` is served by the collector
+  out of a special lane pair, under a hand-typed schema; the hive becomes a
+  classic tool answerer with a `schemas` cell of its own, and the collector's
+  special case goes. `thread_recall` stays with the collector — the slate is
+  its own database.
+- [#549](https://github.com/mmeyerlein/meclaw/issues/549) — the colony view
+  labels a hive frame with a directory name, so a person and their agent draw
+  two frames reading the same word. The level is derivable from the path
+  today; it is simply not read.
+- [#551](https://github.com/mmeyerlein/meclaw/issues/551) — the rest of that
+  sweep: five families of one role under two names, and the boundary the
+  instance-name rule needs before it reaches the examples.
 - Realtime voice — not a further channel but the way the thing is meant to be
   operated: spoken intent straight into structure in the tree. It gets a
   design round of its own before it gets an issue. Dictation (a voice note

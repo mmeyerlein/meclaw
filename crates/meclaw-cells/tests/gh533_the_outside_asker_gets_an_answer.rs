@@ -553,9 +553,9 @@ fn an_askers_bundle_inside_the_member_goes_exactly_where_it_always_went() {
     let t = shipped_table();
     for (token, target) in [
         ("cogny", format!("{GEN}/cogny")),
-        ("surface", format!("{GEN}/surface")),
-        ("", format!("{GEN}/surface")),
-        ("somebody-else", format!("{GEN}/surface")),
+        ("talky", format!("{GEN}/talky")),
+        ("", format!("{GEN}/talky")),
+        ("somebody-else", format!("{GEN}/talky")),
     ] {
         let (trace, home) = walk(
             &t,
@@ -583,8 +583,8 @@ fn a_refused_recall_reaches_the_asker_instead_of_its_idle_window() {
     let t = shipped_table();
     for (token, target) in [
         ("cogny", format!("{GEN}/cogny")),
-        ("surface", format!("{GEN}/surface")),
-        ("", format!("{GEN}/surface")),
+        ("talky", format!("{GEN}/talky")),
+        ("", format!("{GEN}/talky")),
     ] {
         let (trace, home) = walk(
             &t,

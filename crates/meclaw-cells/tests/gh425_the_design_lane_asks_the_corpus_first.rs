@@ -36,7 +36,7 @@ fn compose_leg(all: Vec<Value>) -> Value {
 
 const LIBRARIAN_REF: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../templates/builder/librarian/config.json"
+    "/../../templates/builder/builder-librarian/config.json"
 );
 
 fn run_brief(hop: Value, messages: Value) -> Value {

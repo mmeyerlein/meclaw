@@ -22,7 +22,7 @@
 //!    The seam had two lanes until 4.4.0 and the class was a second tool name;
 //!    both are gone, because a fast memory question belongs to the surface that
 //!    already holds the window. Pinned three ways: the composite is
-//!    `collector` + `dispatcher` + `brain` + `declare` and nothing else,
+//!    `collector` + `dispatcher` + `brain` + `schemas` and nothing else,
 //!    `ask_memory` / `escalate_to_deep` / `brain_fast` survive in no config of
 //!    the template, and an `in_schemas` request comes back on `tool_schemas`
 //!    carrying the `consult_cogny` schema with `question` and `context` both
@@ -86,7 +86,7 @@ const COGNY_FILES: &[&str] = &[
     "config.json",
     "brain/config.json",
     "collector/config.json",
-    "declare/config.json",
+    "schemas/config.json",
     "dispatcher/config.json",
 ];
 
@@ -306,7 +306,7 @@ fn main_config() -> Value {
                       "restore_ttl": true}},
         // ── port 3+4: the declaration pair (GH #528). It enters at the HIVE
         //    PATH, not at a cell: proving the door is half of what the pin is
-        //    for, because the composite is sealed and `./declare` is not an
+        //    for, because the composite is sealed and `./schemas` is not an
         //    address a caller may name.
         {"from": "./menu-asker", "to": "./cogny",
          "condition": "has(hop.route) && hop.route == 'ask'",
@@ -571,7 +571,7 @@ async fn a_consult_runs_the_cores_own_tool_round_and_answers_on_the_return_lane(
 }
 
 /// The core declares its OWN errand (GH #528). An `in_schemas` request enters
-/// at the HIVE PATH -- `./declare` is not an address a caller may name, the
+/// at the HIVE PATH -- `./schemas` is not an address a caller may name, the
 /// composite is sealed -- and the answer comes back on `tool_schemas` in the
 /// shape a tools hive answers in, so the asking collector can cut two menus
 /// together without knowing which answerer produced which half.

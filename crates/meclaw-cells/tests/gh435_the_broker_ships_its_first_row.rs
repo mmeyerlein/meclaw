@@ -17,9 +17,15 @@
 //! the EDGE and never out of a body — so the requester of a submission is the
 //! `submit` hive, not the person who wrote it. The person rides `subject`, the
 //! axis the broker already has for exactly this case. The rule therefore reads:
-//! *`/os/submit` may `colony.mutate` ON BEHALF OF anyone, under `/os/orgs`* —
-//! and the delegation stands visibly in a row instead of implicitly in a
-//! script.
+//! *`/os/operator/submit` may `colony.mutate` ON BEHALF OF anyone, under
+//! `/os/orgs`* — and the delegation stands visibly in a row instead of
+//! implicitly in a script.
+//!
+//! Since GH #556 the `submit` hive is an occupant of the `operator` hive rather
+//! than of the OS shell, so the path the shell's `./operator -> ./access` edge
+//! promotes — and therefore the path every shipped row names as its requester —
+//! is `/os/operator/submit`. The delegation itself is unchanged: what moved is
+//! where the submitter STANDS.
 //!
 //! **R2b guard (GH #49 form).** `access` is PRIVATE — it does not travel with
 //! the export, so in the public clone these tests skip.
@@ -163,10 +169,12 @@ fn the_submission_rule_delegates_by_subject() {
         meclaw_core::serde_json::json!("colony.mutate")
     );
     // R-AC-1 intact: the requester is the submit hive, promoted by the edge.
-    // The identity on whose behalf it asks travels as `subject`.
+    // The identity on whose behalf it asks travels as `subject`. Since GH #556
+    // that hive stands inside the front door, so the path the shell's
+    // `./operator -> ./access` edge promotes is `/os/operator/submit`.
     assert_eq!(
         row["requester"],
-        meclaw_core::serde_json::json!("/os/submit")
+        meclaw_core::serde_json::json!("/os/operator/submit")
     );
     assert_eq!(row["subject"], meclaw_core::serde_json::json!("*"));
     assert_eq!(

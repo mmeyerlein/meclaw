@@ -1,11 +1,11 @@
-# `assistant@2.2.0`
+# `assistant@2.3.0`
 
 One generation of one person's agent. **Three refs, no container at all,** and
 thirty-seven edges.
 
 | what | it is | why it is at THIS level |
 |---|---|---|
-| `surface` | a `ref` to [`talky`](../talky/README.md) — the conversation surface that keeps this generation's sessions, calls its brain, splits the answer and raises the extraction | one generation has **one** session store; two would have to be told apart before a sweep could decide which one a closed session belongs to |
+| `talky` | a `ref` to [`talky`](../talky/README.md) — the conversation surface that keeps this generation's sessions, calls its brain, splits the answer and raises the extraction | one generation has **one** session store; two would have to be told apart before a sweep could decide which one a closed session belongs to |
 | `cogny` | a `ref` to [`cogny`](../cogny/README.md) — the reasoning core | every channel that reaches this generation consults the same second opinion; two cores would be two opinions |
 | `tools` | a `ref` to [`tools`](../tools/README.md) — the tool surface, one node with one contract | every caller inside the generation calls the same tools; replacing all of them is one `swap_nodes` and no edge of this level moves |
 
@@ -17,8 +17,9 @@ names the version it was derived from.
 [#454](https://github.com/mmeyerlein/meclaw/issues/454) moved the **channels out
 of the generation and up to the person.** What used to be an open `channels`
 container — filled by one follow-up mutation per channel, each carrying a
-connector and a talky of its own — is now one shipped `surface`: the single
+connector and a talky of its own — is now one shipped occupant: the single
 talky of this generation, wired to its two siblings by edges of this template.
+It was called `surface` until 2.3.0; see *What `2.3.0` changed* below.
 
 Two lanes moved with it, and both fall out of the derivation rule rather than out
 of a decision:
@@ -38,7 +39,7 @@ is the first digit.
 [#303](https://github.com/mmeyerlein/meclaw/issues/303) is what #454 overtakes.
 #303 dissolved the four-segment channel path and made the eighteen edges around
 the container ship **once** instead of once per channel; #454 keeps that win and
-removes the container the win was measured on. They address `./surface` now (see
+removes the container the win was measured on. They address `./talky` now (see
 *the measured fan-in* below), and more have been drawn since — the win was never
 the number, it was that the number stopped multiplying by channel.
 
@@ -46,6 +47,42 @@ The pattern is the one **ADR 0013** states and
 [#122](https://github.com/mmeyerlein/meclaw/issues/122) settled for the memory:
 **a level owns what its siblings must share.** A channel is shared by every
 generation of one person, so it is the person's.
+
+## What `2.3.0` changed: the node is called after its template
+
+[#545](https://github.com/mmeyerlein/meclaw/issues/545). A `ref` onto template
+`X` is a directory called `X` — that is how nineteen of the library's
+twenty-two ref markers are spelled, `./cogny` and `./tools` on this very level
+among them. The conversation surface was the exception: a ref onto `talky`,
+named `surface` after the ROLE it plays. The tree said one thing and the address
+said another, and every reader had to learn the translation before they could
+follow an edge.
+
+The node is `./talky`. **Twenty-six of this level's thirty-seven edges carry the
+name**, and two stamped tokens are renamed with it, because a discriminator that
+outlives the node it is named after is a word that has to be read historically:
+
+- `context.recall_caller` now reads `'talky'` where it read `'surface'`
+  ([#532](https://github.com/mmeyerlein/meclaw/issues/532)). Nothing outside this
+  level compares against the value — `member`, `memory-hive` and `org` carry it
+  through and test only `== 'outside'` — so the token is this level's alone.
+- `context.tool_caller` likewise ([#464](https://github.com/mmeyerlein/meclaw/issues/464),
+  [#529](https://github.com/mmeyerlein/meclaw/issues/529)). The return edges test
+  `!= 'cogny'` and never resolve the other value against the tree.
+
+**`ctx.model_surface` is deliberately NOT renamed.** It names the ROLE the model
+plays for the level, which is exactly what a level's own ctx key should name; a
+`cogny` has a brain too, and `model_talky` would say nothing about why the key
+exists. It is also a public contract surface — `examples/organism/grow-assistant.json`,
+`grow.manifest.json`, the librarian corpus and the builder's own README all name
+it — and renaming a ref is no reason to move a key.
+
+**The migration, in one line:** an `override_params` path or a mutation that
+named `<assistant>/surface/...` names `<assistant>/talky/...` from 2.3.0 on.
+That is the level's own address space, which is why this is the second digit and
+not the third. A generation already grown from `2.2.0` keeps the node name it was
+born with: the template library is not on the runtime path of a booted colony,
+and a grown level is renamed, if at all, by a mutation.
 
 ## a level owns what its siblings must share
 
@@ -70,7 +107,7 @@ And since 2.0.0, a **channel, no**:
 ```
 assistant/
   config.json            the level: twenty lanes, five drain pairings, thirty-seven edges
-  surface/config.json    a ref to talky, at the version its because names
+  talky/config.json      a ref to talky, at the version its because names
   cogny/config.json      a ref to cogny, at the version its because names
   tools/config.json      a ref to tools, at the version its because names
 ```
@@ -93,14 +130,14 @@ Twenty, all at the assistant's own path.
 | in | what travels |
 |---|---|
 | `in_turn` | a **screened** turn, the one a channel of the MEMBER raised and the member's firewall passed back down. It arrives with `context.channel_node`, `context.channel`, `context.user_id`, `context.audience_set` and `context.assistant` already stamped — the member's container reads that last key, and nothing below it does |
-| `in_bundle` | the member's memory answer, carried down to the occupant that **asked**. Since [#532](https://github.com/mmeyerlein/meclaw/issues/532) there are two of them and `hop.recall_caller` tells them apart: `cogny` reaches the reasoning core through its own door, anything else takes the **default** door to `./surface`. This level keeps no copy |
+| `in_bundle` | the member's memory answer, carried down to the occupant that **asked**. Since [#532](https://github.com/mmeyerlein/meclaw/issues/532) there are two of them and `hop.recall_caller` tells them apart: `cogny` reaches the reasoning core through its own door, anything else takes the **default** door to `./talky`. This level keeps no copy |
 | `in_advice` | an advisor's answer arriving as its own turn. `./cogny` answers on this lane too; the lane stays outward-facing for the other case, a second agent that was asked something and answered late |
 | `in_sweep` | an operator-forced session sweep outside the night timer |
 | `in_prune` | a prune verdict for the context window, from a timer or an operator |
 | `in_round_sweep` | a round that ran out of iterations, swept by an operator |
 | `in_build_result` | the builder's answer on its way back to the tool round that asked — a draft manifest, or the receipt of one that was submitted. This level carries it down to the tool surface and reads nothing in it |
-| `in_pack` | a durable `system.*` slot for this generation's brains: `identity`, `persona`, `handover` or `instructions`, and nothing else (the charter joined the list in [#488](https://github.com/mmeyerlein/meclaw/issues/488), which measured that nothing else ever wrote it). The one door edge that is a deliberate **fan-out** — it goes to `./surface` AND `./cogny`, because one generation is one person's agent and its three `llm` cells must not disagree about who that is. **Paired**: see `pack_ack`. Since 2.1.0 (#458) |
-| `in_export` | a demand for the one store this generation holds that the member cannot recompute: the session ledger inside `./surface`. Pure transit, no modifier — the lane is named the same on both sides. **Paired**: see `dump`. Since 2.1.0 (#475) |
+| `in_pack` | a durable `system.*` slot for this generation's brains: `identity`, `persona`, `handover` or `instructions`, and nothing else (the charter joined the list in [#488](https://github.com/mmeyerlein/meclaw/issues/488), which measured that nothing else ever wrote it). The one door edge that is a deliberate **fan-out** — it goes to `./talky` AND `./cogny`, because one generation is one person's agent and its three `llm` cells must not disagree about who that is. **Paired**: see `pack_ack`. Since 2.1.0 (#458) |
+| `in_export` | a demand for the one store this generation holds that the member cannot recompute: the session ledger inside `./talky`. Pure transit, no modifier — the lane is named the same on both sides. **Paired**: see `dump`. Since 2.1.0 (#475) |
 | `in_import` | one part of such a document, for a generation that is already running. Same crossing, same pairing. WHICH generation a part belongs to is decided one level up, by the edge that addresses this assistant. Since 2.1.0 (#475) |
 
 | out | what travels |
@@ -159,11 +196,11 @@ The mechanism is a reply-to token that changes compartment on the way home.
 
 | where | what happens |
 |---|---|
-| `./surface -> .` and `./cogny -> .` on `recall` | the asker stamps `context.recall_caller` with its own name, `'surface'` or `'cogny'`. **Stamped, never defaulted** — the core's answer re-enters the surface on `in_advice` carrying the core's whole context, so a leg that only wrote the token when it was missing would post its own bundle through the core's door |
+| `./talky -> .` and `./cogny -> .` on `recall` | the asker stamps `context.recall_caller` with its own name, `'talky'` or `'cogny'`. **Stamped, never defaulted** — the core's answer re-enters the surface on `in_advice` carrying the core's whole context, so a leg that only wrote the token when it was missing would post its own bundle through the core's door |
 | the member, the `assistants` container, the memory hive | carry it untouched. Context is the only compartment that survives a hive: the `recall` cell forms its own hop (GH #411) |
 | `./recall -> .` on `bundle` and on `reject`, inside the hive | hand it back on `hop.recall_caller`, off the context the question came in with |
 | `. -> ./cogny` on `in_bundle` | the core's door, guarded on that **hop** key |
-| `. -> ./surface` on `in_bundle` | the **default**, so an absent, empty or unknown token lands where every bundle landed before |
+| `. -> ./talky` on `in_bundle` | the **default**, so an absent, empty or unknown token lands where every bundle landed before |
 
 Why it has to arrive on the hop rather than stay in context: the template gate
 probes a door with a bare `hop.route` and an **empty** context compartment, so a
@@ -200,7 +237,7 @@ back down. Until the knob was set, a whole generation remembered only when its
 model decided to ask, and the half whose job is to answer fast paid a second
 round trip for what a cheap leg puts in front of the first call.
 
-So the value stands on the ref marker in `surface/config.json`, as
+So the value stands on the ref marker in `talky/config.json`, as
 `override_params["collector/assemble"].memory_tier`, beside the two overrides
 that are there for the same reason and no other — the surface's model
 ([#516](https://github.com/mmeyerlein/meclaw/issues/516)) and its declared tool
@@ -226,8 +263,8 @@ an error, so the path is asserted rather than assumed
 ### Where the lanes come from
 
 *A level declares the union of the lanes its occupants ship, minus the lanes a
-sibling inside the level consumes itself.* Derived from `talky` in `./surface`,
-`cogny` and `tools`, each at the version its `because` names. **Three**
+sibling inside the level consumes itself.* Derived from the `talky` at `./talky`, the
+`cogny` at `./cogny` and the `tools` at `./tools`, each at the version its `because` names. **Three**
 subtractions since 2.0.0, every one of them a lane an occupant really ships:
 
 - **`tool`** — both the surface's and the core's, consumed by `./tools` through
@@ -258,19 +295,19 @@ half that admits no drift between this contract and the member's.
 ## Two edges to the tool surface, and neither names a tool
 
 ```json
-{"from": "./surface", "to": "./tools", "default": true,
+{"from": "./talky", "to": "./tools", "default": true,
  "condition": "has(hop.route) && hop.route == 'tool'",
  "modifier": {"set_hop": {"route": "'tool_call'"},
-              "set_context": {"tool_caller": "'surface'"}}}
+              "set_context": {"tool_caller": "'talky'"}}}
 ```
 
 and, since GH #464, one more that is a LANE rather than a tool:
 
 ```json
-{"from": "./surface", "to": "./tools",
+{"from": "./talky", "to": "./tools",
  "condition": "has(hop.route) && hop.route == 'schemas'",
  "modifier": {"set_hop": {"route": "'in_schemas'"},
-              "set_context": {"tool_caller": "'surface'"}}}
+              "set_context": {"tool_caller": "'talky'"}}}
 ```
 
 The first is the **#286 + #283 win, measured.** The exclusion this replaces named
@@ -298,13 +335,13 @@ answerers, and the menu that is their union*.
 
 The `tool_caller` value is a **token, not a path** — the return edge tests
 `context.tool_caller != 'cogny'` and never resolves the other value against the
-tree. It reads `'surface'` since 2.0.0, renamed with the node it names: a
-discriminator that still said `'channels'` after the container was gone would be
-the one word in this file that has to be read historically, and nothing else here
-does.
+tree. It is renamed with the node it names, every time: `'channels'` until
+2.0.0, `'surface'` until 2.3.0, `'talky'` now. A discriminator that outlives the
+node it is named after would be the one word in this file that has to be read
+historically, and nothing else here does.
 
-> **Suppression is per SENDER.** If *any* regular out-edge of `./surface` fires,
-> the default is silent. Every other edge out of `./surface` is conditioned on
+> **Suppression is per SENDER.** If *any* regular out-edge of `./talky` fires,
+> the default is silent. Every other edge out of `./talky` is conditioned on
 > something a `tool` message does not carry — the outward lanes, the one errand by
 > name, and the two `schemas` asks — and there is **no unconditional tee**. If this set ever
 > grows a logger, a tap or a mirror without its own route condition, the tool
@@ -331,7 +368,7 @@ turn, and a consult wired as a tool call strands the round. That is an env setti
 this assistant's instance, not an edge.
 
 **RETRACTED: the second errand, `ask_memory`** (GH #124 — retired in #530). Up to 2.1.0
-this level drew a second `./surface -> ./cogny` edge on that name, setting
+this level drew a second `./talky -> ./cogny` edge on that name, setting
 `context.consult_class` to `'lookup'` so the core would pick its fast brain. The edge is
 gone, the name is gone, and an instance whose charter still offers it offers a tool no
 edge carries. The reason is a thing only this level can see: at the time that edge was
@@ -359,7 +396,7 @@ every consult silently. The config's own `because` says so beside the edge.
 ### The two answerers, and the menu that is their union (#529)
 
 `consult_cogny` is **not a tool of any hive.** It is an errand this level routes, from
-`./surface` to `./cogny`, and the tool surface has never had anything under that name.
+`./talky` to `./cogny`, and the tool surface has never had anything under that name.
 Only the side that ANSWERS a name can declare it — which is why its schema used to be a
 hand-typed row in the surface's brain, and why #464 lost it: that issue replaced the
 hand-typed menu with an asked-for one, and the row went with the thing it replaced. The
@@ -369,17 +406,17 @@ So the surface's `schemas` tick now reaches **both** occupants, and this level d
 second pair:
 
 ```json
-{"from": "./surface", "to": "./cogny",
+{"from": "./talky", "to": "./cogny",
  "condition": "has(hop.route) && hop.route == 'schemas'",
  "modifier": {"set_hop": {"route": "'in_schemas'"},
-              "set_context": {"tool_caller": "'surface'"}}}
-{"from": "./cogny", "to": "./surface",
+              "set_context": {"tool_caller": "'talky'"}}}
+{"from": "./cogny", "to": "./talky",
  "condition": "has(hop.route) && hop.route == 'tool_schemas'",
  "modifier": {"set_hop": {"route": "'in_menu'"},
               "set_context": {"tool_answerer": "'cogny'"}}}
 ```
 
-Both `schemas` edges out of `./surface` are **ordinary** and both fire for one message:
+Both `schemas` edges out of `./talky` are **ordinary** and both fire for one message:
 the tick asks every answerer at once. `context.tool_answerer` is the mirror of the
 `context.tool_caller` the request already carries — the caller says who asked so the
 answer comes home to the right occupant, the answerer says who answered so the collector
@@ -396,7 +433,7 @@ it** — the hive has nothing under `consult_cogny`, the core has nothing under 
 tools, and neither of those is a defect.
 
 **The declared list is this level's, for the same reason the model is (#516).** It stands
-on `surface/config.json` as `override_params["collector/assemble"].tools` and reads
+on `talky/config.json` as `override_params["collector/assemble"].tools` and reads
 `["web_search", "web_fetch", "consult_cogny"]`. Standalone a `talky` declares its two
 search tools and is right to — there is no core beside it to consult, so the errand is not
 its to name. The list is written out in full rather than appended to, because an override
@@ -406,20 +443,20 @@ replaces a param and not the elements of a list.
 
 #303 counted **14** edges between the channel level and its siblings on the live
 tree — the reasoning core, four tool cells, the drain, the sink, and the
-assistant itself. This template draws **26** around `./surface` today, and #454
+assistant itself. This template draws **26** around `./talky` today, and #454
 moved none of them, only the node they are drawn around; what has moved the number
 since is a LANE each time, never a channel and never a tool:
 
 ```
-9  . -> ./surface           the entry lanes that reach the surface
-9  ./surface -> .           the exits it produces
-2  ./surface -> ./cogny     the ONE consult errand by name, and the schemas ask (#529)
-2  ./surface -> ./tools     the guarded default, and the schemas request (#464)
-2  ./cogny -> ./surface     the advice coming back, and the core's own menu half (#529)
-2  ./tools -> ./surface     the tool result, and the declarations (#464)
+9  . -> ./talky             the entry lanes that reach the surface
+9  ./talky -> .             the exits it produces
+2  ./talky -> ./cogny       the ONE consult errand by name, and the schemas ask (#529)
+2  ./talky -> ./tools       the guarded default, and the schemas request (#464)
+2  ./cogny -> ./talky       the advice coming back, and the core's own menu half (#529)
+2  ./tools -> ./talky       the tool result, and the declarations (#464)
 ```
 
-The `./surface -> ./cogny` pair is **not** two errands. It was, up to 2.1.0 —
+The `./talky -> ./cogny` pair is **not** two errands. It was, up to 2.1.0 —
 `consult_cogny` and `ask_memory` — and #530 retired the second name while #529 put a
 `schemas` ask in its place, so the count stood still while both of its halves changed.
 
@@ -434,7 +471,7 @@ belongs to the tool round that asked, so it is delivered to `./tools` directly.
 ### The sessions leave, and come back (#475)
 
 The one store this generation holds that the member cannot recompute is the session
-ledger inside `./surface` — the table that decides whether a conversation continues or
+ledger inside `./talky` — the table that decides whether a conversation continues or
 starts at zero. It has had a transfer lane since `session-keeper@2.1.0`, and for one
 release nothing above it forwarded one, so a member rebuilt from its own export greeted a
 person it had been talking to for a year as a stranger. Three edges of this level close
@@ -442,11 +479,11 @@ that, and all three are pure transit:
 
 ```json
 [
-  { "from": ".", "to": "./surface",
+  { "from": ".", "to": "./talky",
     "condition": "has(hop.route) && hop.route == 'in_export'" },
-  { "from": ".", "to": "./surface",
+  { "from": ".", "to": "./talky",
     "condition": "has(hop.route) && hop.route == 'in_import'" },
-  { "from": "./surface", "to": ".",
+  { "from": "./talky", "to": ".",
     "condition": "has(hop.route) && hop.route == 'dump'" }
 ]
 ```
@@ -485,7 +522,7 @@ comes afterwards.**
  "ctx": {"model": "<the reasoning core's model>",
          "model_surface": "<the conversation surface's model>"},
  "diff": {
-  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@2.2.0",
+  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@2.3.0",
                  "override_params": {"cogny/brain": {"temperature": 0.2}}}],
   "add_edges": [
     {"from": "./assistants", "to": "./assistants/scribe",
@@ -505,7 +542,7 @@ markers, not left to the occupants:
 | key | reaches | declared by |
 |---|---|---|
 | `model` | `cogny/brain`, the reasoning core | inherited from `cogny` |
-| `model_surface` | `surface/brain`, the conversation surface | **this level**, [#516](https://github.com/mmeyerlein/meclaw/issues/516) |
+| `model_surface` | `talky/brain`, the conversation surface | **this level**, [#516](https://github.com/mmeyerlein/meclaw/issues/516) |
 
 It was THREE up to 2.1.0. `model_fast` reached the core's fast brain, the lane the retired
 `ask_memory` errand chose; `cogny` dropped that brain with the errand, and an
@@ -516,7 +553,7 @@ brain and both are right to: standalone, each is THE agent of its instantiation.
 Composed into one level they meet ONE flat `ctx`, so both brains resolved the
 same key and the conversation surface ran the reasoning model — every turn paying
 core latency for the half whose whole job is to answer fast, with nothing in the
-tree saying so. The level draws the distinction on `surface/config.json`
+tree saying so. The level draws the distinction on `talky/config.json`
 (`override_params.brain.model`, the `override_params` a `ref` has carried since
 GH #277) and declares the key STRICT, so a mutation without it is refused rather
 than silently collapsing the split again. Neither occupant moved.
@@ -558,11 +595,11 @@ full recipe, both directions, is
 channel*.
 
 **Model and prompt come from `override_params`,** and they are aimed one level
-inside the surface — `surface/brain` for the model that answers, and
-`surface/collector` for the one that extracts. The keys are relative to the node
-being added, so a mutation scoped to the member writes them as `surface/brain`
-and `surface/collector`; addressed from outside the mutation they are
-`<assistant>/surface/brain` and `<assistant>/surface/collector`. Nothing else of
+inside the surface — `talky/brain` for the model that answers, and
+`talky/collector` for the one that extracts. The keys are relative to the node
+being added, so a mutation scoped to the member writes them as `talky/brain`
+and `talky/collector`; addressed from outside the mutation they are
+`<assistant>/talky/brain` and `<assistant>/talky/collector`. Nothing else of
 the generation is configured this way: everything below the surface is `talky`'s
 own.
 
@@ -625,7 +662,7 @@ count changes. `2.2.0` has not shipped, so it is extended rather than superseded
 (`docs/development-rules.md` § 4) — the same reading #464, #475 and #516 got
 inside this wave.
 
-The occupant pins in `surface/config.json`, `cogny/config.json` and
+The occupant pins in `talky/config.json`, `cogny/config.json` and
 `tools/config.json` are version-pinned on purpose — a bare name resolves to the
 highest version present, which is the drift `registry.template_chain` exists to
 make visible.

@@ -3,7 +3,7 @@
 //!
 //! Since GH #122 a person's memory belongs to the MEMBER, and since GH #302 one
 //! generation holds two askers side by side: the conversation surface
-//! (`./surface`) and the reasoning core (`./cogny`). One hive, two askers, and
+//! (`./talky`) and the reasoning core (`./cogny`). One hive, two askers, and
 //! the answer has to come back to the one that asked — always.
 //!
 //! The constraint that shaped the mechanism is real and is checked one file
@@ -253,7 +253,7 @@ fn edge<'a>(specs: &'a [EdgeSpec], from: &str, to: &str, needle: &str) -> &'a Ed
 #[test]
 fn each_asker_stamps_its_own_name_on_the_way_out() {
     let specs = hive_edges("templates/assistant/config.json");
-    for (from, expected) in [("./surface", "'surface'"), ("./cogny", "'cogny'")] {
+    for (from, expected) in [("./talky", "'talky'"), ("./cogny", "'cogny'")] {
         let e = edge(&specs, from, ".", "'recall'");
         let m = e
             .modifier
@@ -284,7 +284,7 @@ fn the_core_reads_a_hop_key_and_the_surface_is_the_default() {
     );
     assert!(!core.is_default, "the guarded door is the REGULAR one");
 
-    let surface = edge(&specs, ".", "./surface", "in_bundle");
+    let surface = edge(&specs, ".", "./talky", "in_bundle");
     assert!(
         surface.is_default,
         "the surface's door must be the DEFAULT, so a bundle with no token, an empty one or an \
@@ -392,9 +392,9 @@ fn two_simultaneous_recalls_come_home_to_the_two_askers() {
     // and neither knows about the other. Routing is per message, so "at the same
     // time" is exactly this: two chains, two contexts, one table.
     let (_, core_at_hive) = walk(&t, &format!("{GEN}/cogny"), recall_request("c-core"));
-    let (_, surface_at_hive) = walk(&t, &format!("{GEN}/surface"), recall_request("c-surface"));
+    let (_, surface_at_hive) = walk(&t, &format!("{GEN}/talky"), recall_request("c-surface"));
     assert_eq!(ctx_of(&core_at_hive, "recall_caller"), "cogny");
-    assert_eq!(ctx_of(&surface_at_hive, "recall_caller"), "surface");
+    assert_eq!(ctx_of(&surface_at_hive, "recall_caller"), "talky");
 
     // What the `recall` cell does when it answers: the substrate carries the
     // persistent context of the request into the emission and lets the cell form
@@ -427,7 +427,7 @@ fn two_simultaneous_recalls_come_home_to_the_two_askers() {
     );
     assert_eq!(
         surface_trace.last().map(String::as_str),
-        Some("/m/assistants/scribe/surface"),
+        Some("/m/assistants/scribe/talky"),
         "and the surface's must reach the surface: {surface_trace:?}"
     );
     assert_eq!(hop_of(&core_home, "route"), "in_bundle");
@@ -447,7 +447,7 @@ fn a_bundle_with_no_token_still_goes_where_every_bundle_went() {
     // rather than a second guard: an outside caller, an older instance, a lane
     // nobody stamped. None of them dead-letters at the generation's path.
     let t = shipped_table();
-    for token in ["", "surface", "somebody-else"] {
+    for token in ["", "talky", "somebody-else"] {
         let mut hop = vec![("route", "in_bundle"), ("turn_id", "S-42#7")];
         if !token.is_empty() {
             hop.push(("recall_caller", token));
@@ -459,7 +459,7 @@ fn a_bundle_with_no_token_still_goes_where_every_bundle_went() {
         );
         assert_eq!(
             trace.last().map(String::as_str),
-            Some("/m/assistants/scribe/surface"),
+            Some("/m/assistants/scribe/talky"),
             "token {token:?} must land on the surface: {trace:?}"
         );
     }

@@ -105,8 +105,8 @@ fn every_new_occupant_is_declared_in_the_reentrancy_block() {
         "web_fetch",
         "web_search",
         "unknown",
-        "build",
-        "apply",
+        "build-draft",
+        "build-apply",
     ] {
         let entry = reentrancy
             .get(occupant)
@@ -135,7 +135,7 @@ fn the_sandbox_union_counts_the_new_occupants_among_its_posts() {
         .as_str()
         .expect("sandbox_union.because");
     assert!(
-        because.contains("build") && because.contains("apply"),
+        because.contains("build-draft") && because.contains("build-apply"),
         "a union that leaves half its posts out of the calculation is the defect \
          this block exists to prevent"
     );
@@ -164,7 +164,7 @@ fn a_result_that_lost_its_class_marker_still_reaches_a_cell() {
     let fallback = fallback.expect("no default door for in_build_result");
     assert_eq!(
         fallback["to"],
-        json!("./build"),
+        json!("./build-draft"),
         "the fallback leads to the side that applies nothing"
     );
 }

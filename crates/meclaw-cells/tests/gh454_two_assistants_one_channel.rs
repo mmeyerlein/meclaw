@@ -400,7 +400,7 @@ fn build_tree(td: &tempfile::TempDir, member: &std::path::Path, assistant: &std:
         copy_cells(assistant, &dst);
         write(
             root,
-            &format!("main/person/assistants/{who}/surface/config.json"),
+            &format!("main/person/assistants/{who}/talky/config.json"),
             &double(
                 SURFACE,
                 json!({"who": who}),

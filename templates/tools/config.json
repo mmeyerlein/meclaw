@@ -149,16 +149,16 @@
         },
         {
           "from": ".",
-          "to": "./build",
+          "to": "./build-draft",
           "condition": "has(hop.route) && hop.route == 'tool_call' && has(hop.tool_name) && hop.tool_name == 'build_topology'"
         },
         {
           "from": ".",
-          "to": "./apply",
+          "to": "./build-apply",
           "condition": "has(hop.route) && hop.route == 'tool_call' && has(hop.tool_name) && hop.tool_name == 'apply_manifest'"
         },
         {
-          "from": "./build",
+          "from": "./build-draft",
           "to": ".",
           "condition": "has(hop.operation) && hop.operation == 'build_request'",
           "modifier": {
@@ -172,7 +172,7 @@
           }
         },
         {
-          "from": "./apply",
+          "from": "./build-apply",
           "to": ".",
           "condition": "has(hop.operation) && hop.operation == 'apply_request'",
           "modifier": {
@@ -187,22 +187,22 @@
         },
         {
           "from": ".",
-          "to": "./build",
+          "to": "./build-draft",
           "condition": "has(hop.route) && hop.route == 'in_build_result' && has(hop.build_op) && hop.build_op == 'draft'"
         },
         {
           "from": ".",
-          "to": "./apply",
+          "to": "./build-apply",
           "condition": "has(hop.route) && hop.route == 'in_build_result' && has(hop.build_op) && hop.build_op == 'apply'"
         },
         {
           "from": ".",
-          "to": "./build",
+          "to": "./build-draft",
           "default": true,
           "condition": "has(hop.route) && hop.route == 'in_build_result'"
         },
         {
-          "from": "./build",
+          "from": "./build-draft",
           "to": ".",
           "condition": "has(hop.operation) && hop.operation == 'build'",
           "modifier": {
@@ -212,7 +212,7 @@
           }
         },
         {
-          "from": "./apply",
+          "from": "./build-apply",
           "to": ".",
           "condition": "has(hop.operation) && hop.operation == 'apply'",
           "modifier": {

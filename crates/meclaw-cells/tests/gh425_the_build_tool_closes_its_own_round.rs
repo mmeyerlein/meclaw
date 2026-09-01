@@ -13,18 +13,18 @@ use meclaw_testing::{emit_one, shipped_script};
 
 const BUILD: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../templates/tools/build/config.json"
+    "/../../templates/tools/build-draft/config.json"
 );
 const APPLY: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../templates/tools/apply/config.json"
+    "/../../templates/tools/build-apply/config.json"
 );
 
 fn phase_a(script: &str, tool_name: &str, call_id: &str, args: &str) -> Value {
     emit_one(
         script,
         &json!({
-            "target": "/os/orgs/acme/members/alex/assistants/scribe/tools/build",
+            "target": "/os/orgs/acme/members/alex/assistants/scribe/tools/build-draft",
             "header": {"hop": {"route": "tool_call", "tool_name": tool_name,
                                "tool_call_id": call_id},
                        "context": {}},
@@ -37,7 +37,7 @@ fn phase_a(script: &str, tool_name: &str, call_id: &str, args: &str) -> Value {
 
 fn phase_b(script: &str, call_id: &str, hop: Value, body: Value) -> Value {
     let mut flat = json!({
-        "target": "/os/orgs/acme/members/alex/assistants/scribe/tools/build",
+        "target": "/os/orgs/acme/members/alex/assistants/scribe/tools/build-draft",
         "header": {"hop": hop, "context": {"build_call_id": call_id}},
         "ttl": 64,
     });

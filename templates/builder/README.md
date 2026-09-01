@@ -1,4 +1,4 @@
-# `builder@1.5.1`
+# `builder@1.5.2`
 
 The intake that turns a structural wish into a **manifest** — an ordered list of
 mutation declarations, ready to be submitted by whoever asked for it.
@@ -53,10 +53,10 @@ address them.
 |---|---|---|
 | `classify` | `code` | Reads the tool arguments and decides the CLASS: a named recipe whose parameters are complete, or everything else. Calls no model. |
 | `recipes` | `code` | The fast lane. Renders one of four predefined recipes straight into a manifest, deterministically — including the whole transit edge set of a composition level. |
-| `librarian` | `ref builder-librarian` | Retrieval over the corpus. Referenced, never copied (ADR-0011). |
+| `builder-librarian` | `ref builder-librarian` | Retrieval over the corpus. Referenced, never copied (ADR-0011). |
 | `brief` | `code` | Assembles the authoring prompt: the retrieved sections become instructions, the request stays a user turn. It emits twice — the prompt to the composer, and the same question and the same instruction tree into the round table, because round 1 onwards is briefed by the loop and not by this cell. |
 | `compose` | `llm` | The model call of the design lane — asked once per round, not once per build. |
-| `dispatch` | `ref dispatcher` | Which tools did that answer ask for, and is the bundle within budget? Fans one answer out into one call per tool, referenced rather than copied. |
+| `dispatcher` | `ref dispatcher` | Which tools did that answer ask for, and is the bundle within budget? Fans one answer out into one call per tool, referenced rather than copied. |
 | `lib` | `code` | What does the corpus say? Adapts `librarian_search` and `catalogue_lookup` onto the referenced librarian and its briefing back into a `tool_result`. |
 | `eyes` | `code` | What does the colony actually look like right now? Turns `graph_read` and `registry_read` into a `/colony` question and the answer back into a `tool_result`. |
 | `unknown` | `code` | A tool that is not one of the four — answered, by name, with `unknown_tool`, so a round never waits for a call that will never run. |
@@ -80,7 +80,7 @@ manifest — an empty manifest is a failure wearing the face of an honest answer
 ### `in_ingest` is a TRANSIT lane, and that is the whole of its design (GH #504)
 
 Since 1.5.0 the hive path takes a fourth lane that nothing in this template
-reads. It goes straight to `./librarian`, under the very name the librarian
+reads. It goes straight to `./builder-librarian`, under the very name the librarian
 accepts, and the reconciliation's report comes back out on `catalogue`. Two
 edges, no cell, no decision.
 
@@ -510,7 +510,7 @@ fitting all of them into one budget — about a dozen routing hops per round
 against a default `ttl` of 64 (`docs/store-backed-tool-loop.en.md` § *The TTL
 budget of one round*). That is why the four above have to carry. A TTL death
 would be silent: straight to the dead-letter queue, no `reply_to` cascade, and
-the `tool_call_id` waiting in `templates/tools/build` would never close.
+the `tool_call_id` waiting in `templates/tools/build-draft` would never close.
 
 Three of the four are `params` of `weave` rather than environment variables, so
 two builders in one colony are tuned apart and a mutation retunes one without
@@ -594,7 +594,7 @@ while it calls, so **every narrating round left a `no_route` dead letter** besid
 a round that otherwise worked: noise that hides real ones, and the one part of
 the answer that could have carried a manifest, dropped unread.
 
-`./dispatch → ./weave` now carries it, and `weave` writes it into the round table
+`./dispatcher → ./weave` now carries it, and `weave` writes it into the round table
 under the role `interim`. It is recorded and never replayed: an interim sentence
 and its own bundle are ONE provider message, and re-entering the thread as a
 second `assistant` turn would put it between a bundle and its results — a message
@@ -904,7 +904,7 @@ reads them:
 - `build_caller` and `build_auto_submit` — `meclaw-os` stamps them at its rim and
   its four `./builder -> X` edges decide the door on them.
 - `build_call_id` — `templates/tools` sets it on its own exit edge and
-  `tools/build` and `tools/apply` read it back off `context` when the answer
+  `tools/build-draft` and `tools/build-apply` read it back off `context` when the answer
   returns through their `in_build_result` door. Clearing it here would leave the
   assistant's build tool call open forever.
 

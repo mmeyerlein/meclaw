@@ -223,7 +223,7 @@ fn a_switched_off_rule_refuses_the_same_manifest_under_its_own_code() {
 /// Ruling R-Policy-Default (2026-08-28): an agent that cannot subscribe has no
 /// identity, so a default that refused would leave every shipped brain silent
 /// until somebody remembered an `UPDATE policy`. What keeps that honest is the
-/// shape of the row rather than the switch — requester `/os/submit`, action
+/// shape of the row rather than the switch — requester `/os/operator/submit`, action
 /// `apply`, scoped to `/os/orgs`, verdict `allow`, no `cred_ref` — and the fact
 /// that the gate, not this row, holds the edge to the requester's own hive.
 #[test]
@@ -244,7 +244,10 @@ fn the_broker_grants_the_capability_on_a_fresh_tree() {
          (R-Policy-Default); the bound is the row's SHAPE and the gate's form check, \
          not the switch"
     );
-    assert_eq!(row["requester"], "/os/submit", "edge-borne, R-AC-1");
+    assert_eq!(
+        row["requester"], "/os/operator/submit",
+        "edge-borne, R-AC-1"
+    );
     assert_eq!(row["subject"], "*");
     assert_eq!(row["scope_match"]["scope_prefix"], "/os/orgs");
     assert_eq!(row["scope_match"]["actions"], json!(["apply"]));

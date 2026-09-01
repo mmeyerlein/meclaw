@@ -18,7 +18,7 @@ const GATE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../templates/submit/gate/config.json"
 );
-const REQUESTER: &str = "/os/orgs/acme/members/alex/assistants/scribe/tools/apply";
+const REQUESTER: &str = "/os/orgs/acme/members/alex/assistants/scribe/tools/build-apply";
 
 fn read(path: &str) -> Value {
     meclaw_core::serde_json::from_str(&std::fs::read_to_string(path).expect(path)).expect(path)

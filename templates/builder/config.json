@@ -95,7 +95,7 @@
         },
         {
           "from": "./compose",
-          "to": "./dispatch",
+          "to": "./dispatcher",
           "condition": "has(hop.finish_reason) && hop.finish_reason == 'tool_calls'"
         },
         {
@@ -124,39 +124,39 @@
           }
         },
         {
-          "from": "./dispatch",
+          "from": "./dispatcher",
           "to": "./weave",
           "condition": "has(hop.route) && hop.route == 'calls'"
         },
         {
-          "from": "./dispatch",
+          "from": "./dispatcher",
           "to": "./weave",
           "condition": "has(hop.route) && hop.route == 'answer'"
         },
         {
-          "from": "./dispatch",
+          "from": "./dispatcher",
           "to": "./lib",
           "condition": "has(hop.tool_name) && (hop.tool_name == 'librarian_search' || hop.tool_name == 'catalogue_lookup')"
         },
         {
-          "from": "./dispatch",
+          "from": "./dispatcher",
           "to": "./eyes",
           "condition": "has(hop.tool_name) && (hop.tool_name == 'graph_read' || hop.tool_name == 'registry_read')"
         },
         {
-          "from": "./dispatch",
+          "from": "./dispatcher",
           "to": "./unknown",
           "default": true,
           "condition": "has(hop.route) && hop.route == 'tool'"
         },
         {
-          "from": "./dispatch",
+          "from": "./dispatcher",
           "to": "./weave",
           "condition": "has(hop.route) && hop.route == 'result'"
         },
         {
           "from": "./lib",
-          "to": "./librarian",
+          "to": "./builder-librarian",
           "condition": "has(hop.route) && hop.route == 'lsearch_out'",
           "modifier": {
             "set_hop": {
@@ -168,17 +168,17 @@
           }
         },
         {
-          "from": "./librarian",
+          "from": "./builder-librarian",
           "to": "./lib",
           "condition": "has(hop.route) && hop.route == 'brief'"
         },
         {
           "from": ".",
-          "to": "./librarian",
+          "to": "./builder-librarian",
           "condition": "has(hop.route) && hop.route == 'in_ingest'"
         },
         {
-          "from": "./librarian",
+          "from": "./builder-librarian",
           "to": ".",
           "condition": "has(hop.route) && hop.route == 'catalogue'",
           "modifier": {

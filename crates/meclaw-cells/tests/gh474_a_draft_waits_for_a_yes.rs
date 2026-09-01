@@ -21,8 +21,11 @@
 //! =================================
 //! Two halves, and neither is an absence.
 //!
-//! **The front door, on its own wire.** The shipped `operator/submit` script is
-//! run through `python3` exactly as the substrate would run it:
+//! **The front door, on its own wire.** The shipped `operator/intake` script is
+//! run through `python3` exactly as the substrate would run it — the cell that
+//! was called `operator/submit` through operator@1.0.0 and is named for what it
+//! does since GH #556, because the name `submit` now belongs to the submitter
+//! hive that moved in beside it:
 //!
 //! 1. `in_draft` with a manifest parks it and answers — a `dstore` insert whose
 //!    row carries the digest and the declarations, and a `receipt` marked
@@ -42,7 +45,7 @@
 //! 5. a wish at the rim with no `auto_submit` reaches the baumeister carrying
 //!    `context.build_caller == 'operator'` and NO `build_auto_submit`; a wish
 //!    with `auto_submit: true` carries both.
-//! 6. the draft of the first round lands at `/os/operator/submit` on `in_draft`
+//! 6. the draft of the first round lands at `/os/operator/intake` on `in_draft`
 //!    — and never on `in_submit`, which is the lane that would have applied it.
 //! 7. the draft of the second round lands on `in_submit`, the 1.5.0 road,
 //!    unchanged for the caller that asks for it.
@@ -70,9 +73,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 
-const SUBMIT: &str = concat!(
+const INTAKE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../templates/operator/submit/config.json"
+    "/../../templates/operator/intake/config.json"
 );
 const DRAFTS: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -87,8 +90,11 @@ const OS: &str = "/os";
 const BUILDER_ENTRY: &str = "/os/builder/classify";
 /// The cell that raises a recipe-drawn manifest.
 const BUILDER_RECIPES: &str = "/os/builder/recipes";
-/// The one submission front door (R-Zielfluss (a)).
-const FRONT_DOOR_SUBMIT: &str = "/os/operator/submit";
+/// The occupant of the one submission front door that takes a request in and
+/// gives it a sender (R-Zielfluss (a)). Since GH #556 the sibling
+/// `/os/operator/submit` is the SUBMITTER hive, and a draft never goes there:
+/// it reaches it, if at all, over the hive's own `./intake -> ./submit` edge.
+const FRONT_DOOR_INTAKE: &str = "/os/operator/intake";
 /// The marker the level's own door stamps on an operator-initiated round.
 const CALLER_KEY: &str = "build_caller";
 const CALLER_OPERATOR: &str = "operator";
@@ -129,14 +135,14 @@ fn a_manifest() -> Value {
     ])
 }
 
-/// One request at the front door's submission occupant.
+/// One request at the front door's `intake` occupant.
 fn front_door(hop: Value, body: Value, context: Value) -> Vec<Value> {
     let mut flat = body;
-    flat["target"] = json!(FRONT_DOOR_SUBMIT);
+    flat["target"] = json!(FRONT_DOOR_INTAKE);
     flat["header"] = json!({"hop": hop, "context": context});
     flat["ttl"] = json!(64);
     flat["params"] = json!({});
-    emit_all(&shipped_script(SUBMIT), &flat)
+    emit_all(&shipped_script(INTAKE), &flat)
 }
 
 /// The `tool_call` args of a store operation the front door emitted.
@@ -318,7 +324,7 @@ fn the_drafts_store_is_reachable_only_from_inside_the_hive() {
     assert_eq!(
         store["contract"]["write_surface"], "internal",
         "the front door declares `params.ports: []`, so the hive path is the only address \
-         and the only sender inside it is `./submit`"
+         and the only sender inside it is `./intake`"
     );
     assert!(
         store["params"]["schema"]["drafts"]["manifest_sha256"] == json!("text")
@@ -655,7 +661,7 @@ async fn lane_of_the_draft(auto: bool) -> Message {
         ))
         .await
         .expect("the outputs channel is the production emission path");
-    let got = arrival_at(&mut grown.arrivals, FRONT_DOOR_SUBMIT).await;
+    let got = arrival_at(&mut grown.arrivals, FRONT_DOOR_INTAKE).await;
     let dead = grown.handle.drain_dead_letters().await;
     assert!(
         dead.is_empty(),
