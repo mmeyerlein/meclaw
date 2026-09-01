@@ -4,7 +4,7 @@
 
 **Where agents build agents.**
 
-**An agentic build system for agentic systems. Ontology-grounded, audited, one Rust binary.**
+**An agentic build system for agentic systems. Ontology-grounded, auditable, one Rust binary.**
 
 [![ci](https://github.com/mmeyerlein/meclaw/actions/workflows/ci.yml/badge.svg)](https://github.com/mmeyerlein/meclaw/actions/workflows/ci.yml)
 [![tests](https://img.shields.io/badge/tests-6200%2B%20passing-brightgreen)](#)
@@ -48,7 +48,7 @@ curl -s '127.0.0.1:7777/colony/trace?limit=200' | jq -r \
 ```
 
 One binary, one key, four commands — and the last one already shows the point:
-the answer is not a return value, it is a message on an audited record.
+the answer is not a return value, it is a message on the record.
 
 ## What just happened
 

@@ -996,6 +996,23 @@ fn addressed_edges_and_cycle(
                     ));
                 }
             }
+            // GH #559: `lane` is the v-lane declaration, and it names a lane.
+            // Same discipline and same code as `default` above: absent is an
+            // ordinary edge, anything but a non-empty string is `edge_schema`.
+            // An empty string would be a lane nothing can ever declare, which
+            // is GH #196's silence in a new costume.
+            match e.get("lane") {
+                None => {}
+                Some(v) if v.as_str().is_some_and(|s| !s.is_empty()) => {}
+                Some(_) => {
+                    violations.push((
+                        MutationError::EdgeSchema(
+                            "add_edges[].lane must be a non-empty string".into(),
+                        ),
+                        Some(format!("add_edges[{i}]")),
+                    ));
+                }
+            }
             // GH #283 (ruling Q1 2026-08-21): one advisory per UNGUARDED
             // default, in the SAME words `bootstrap.rs` puts into
             // `BootstrapPlan::advisories` — the declaration paths must not
@@ -2129,6 +2146,78 @@ pub fn remove_edges_pattern_hits(
         return false;
     }
     true
+}
+
+/// GH #559 — the ids of the edges a diff's `remove_edges` would take away.
+///
+/// `existing` pairs each live edge's id with its F6 view. The patterns are read
+/// with [`remove_edges_pattern_hits`], the same predicate validate and apply
+/// already share, so this list is exactly the set the apply arm will remove.
+///
+/// It exists because "an identical edge already exists" has to mean "…and will
+/// still exist afterwards". Taking the blank edge away in the SAME diff is the
+/// documented way to migrate a hand-through lane onto a v-lane (R-V3), and a
+/// check that counted the doomed edge would refuse precisely the diff it is
+/// telling people to write.
+#[must_use]
+pub fn remove_edges_targets(
+    diff: &JsonValue,
+    scope: &str,
+    existing: &[(meclaw_core::Uuid, EdgeMatchView)],
+) -> std::collections::HashSet<meclaw_core::Uuid> {
+    let mut out = std::collections::HashSet::new();
+    let Some(removes) = diff.get("remove_edges").and_then(|v| v.as_array()) else {
+        return out;
+    };
+    for r in removes {
+        let m = r.get("match");
+        let (Some(from), Some(to)) = (
+            m.and_then(|v| v.get("from")).and_then(|v| v.as_str()),
+            m.and_then(|v| v.get("to")).and_then(|v| v.as_str()),
+        ) else {
+            continue; // a malformed pattern is `validate_remove_edges`' verdict
+        };
+        let from_abs = crate::mutation::resolve_scoped_path(scope, from);
+        let to_abs = crate::mutation::resolve_scoped_path(scope, to);
+        for (id, view) in existing {
+            if remove_edges_pattern_hits(
+                view,
+                from_abs.as_str(),
+                to_abs.as_str(),
+                m.and_then(|v| v.get("condition")).and_then(|v| v.as_str()),
+                m.and_then(|v| v.get("modifier")),
+                m.and_then(|v| v.get("default")).and_then(|v| v.as_bool()),
+            ) {
+                out.insert(*id);
+            }
+        }
+    }
+    out
+}
+
+/// GH #559 — the same F6 comparison with EVERY term constrained: the identity
+/// [`crate::edge_table::EdgeTable::contains_equal`] dedups on, expressed on the
+/// same source forms [`remove_edges_pattern_hits`] compares.
+///
+/// The two differ in exactly one word, and it is worth saying out loud: a
+/// `remove_edges` PATTERN may leave a term unconstrained (`None` = "any"), an
+/// IDENTITY may not (`None` = "this edge has no condition"). Reusing the
+/// pattern predicate here would have made an unconditional entry equal to every
+/// conditional edge between the same two nodes.
+#[must_use]
+pub fn edge_identity_equal(
+    edge: &EdgeMatchView,
+    from_path: &str,
+    to_path: &str,
+    condition: Option<&str>,
+    modifier: Option<&JsonValue>,
+    is_default: bool,
+) -> bool {
+    edge.from == from_path
+        && edge.to == to_path
+        && edge.condition_source.as_deref() == condition
+        && edge.modifier_source.as_ref() == modifier
+        && edge.is_default == is_default
 }
 
 /// Paket-5 T1/T2 (P10a / D-031) — validate-time reject for malformed or no-hit

@@ -484,6 +484,35 @@
     });
   }
 
+  /// A v-lane says out loud which lane made it legal (GH #559), and the picture
+  /// says it twice: dashed, so a declared deep edge is not read as one more
+  /// ordinary hop, and a `<title>` on the group, so pointing at it names the
+  /// lane. Both are drawn here and nowhere else -- `colony-view-edge` stays
+  /// `editable: []`, nothing is written back, and an edge that declares no lane
+  /// is left exactly as it was drawn before this existed.
+  ///
+  /// The dash is an inline style and not a class, deliberately: half a real
+  /// colony's edges carry a condition, the stylesheet already dashes those, and
+  /// a class would lose the argument to `.cond` on exactly the edges where the
+  /// lane matters most.
+  function markLane(p) {
+    const lane = p.getAttribute("data-vlane") || "";
+    const g = p.parentNode;
+    if (!g || !g.querySelector) return;
+    let t = g.querySelector("title");
+    if (!lane) {
+      p.style.strokeDasharray = "";
+      if (t) g.removeChild(t);
+      return;
+    }
+    p.style.strokeDasharray = "2 4";
+    if (!t) {
+      t = document.createElementNS("http://www.w3.org/2000/svg", "title");
+      g.insertBefore(t, g.firstChild);
+    }
+    t.textContent = "lane: " + lane;
+  }
+
   function drawEdges(el) {
     const nodes = boxMap(el, true);
     // The cells are the obstacles — a hive is a container, not something a line
@@ -502,6 +531,7 @@
       const lane = parseInt(p.getAttribute("data-lane") || "0", 10);
       const d = G.edgePath(a, b, NODE_W, NODE_H, lane, lanes);
       p.setAttribute("d", d);
+      markLane(p);
       // The fat invisible twin follows the same path — it is what a mouse hits.
       const hit = p.parentNode && p.parentNode.querySelector
         ? p.parentNode.querySelector("path.edge-hit") : null;

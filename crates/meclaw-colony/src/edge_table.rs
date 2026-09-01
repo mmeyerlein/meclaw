@@ -21,6 +21,19 @@ pub struct Edge {
     /// dead-letter as `no_route` from this sender; it is evaluated only when no
     /// regular out-edge of the same sender produced a decision.
     pub is_default: bool,
+    /// GH #559 — the lane this edge was DECLARED to carry, if it is a v-lane.
+    ///
+    /// `None` is an ordinary edge and the historical state of every edge that
+    /// exists today. `Some(lane)` is a deep edge whose crossing of the levels
+    /// between the two ends was checked against those levels' contracts at
+    /// mutation time (`mutation::port_boundary::v_lane_verdict`), and the value
+    /// is kept because the check has to be repeatable: a `swap_nodes` that
+    /// re-anchors this edge asks the NEW target's contract the same question.
+    ///
+    /// NOT part of edge identity (`contains_equal`) — identity is the five
+    /// routing terms, and the lane is a declaration ABOUT an edge rather than a
+    /// term the router reads.
+    pub lane: Option<String>,
 }
 
 /// Table of edges indexed by their source path for O(1) fan-out lookups.
@@ -242,6 +255,7 @@ mod tests {
             condition: None,
             modifier: None,
             is_default: false,
+            lane: None,
         });
         let found = table.edges_from(&Path::new("/a"));
         assert_eq!(found.len(), 1);
@@ -258,6 +272,7 @@ mod tests {
             condition: None,
             modifier: None,
             is_default: false,
+            lane: None,
         });
         table.insert(Edge {
             id: Uuid::now_v7(),
@@ -266,6 +281,7 @@ mod tests {
             condition: None,
             modifier: None,
             is_default: false,
+            lane: None,
         });
         let found = table.edges_from(&Path::new("/a"));
         assert_eq!(found.len(), 2);
@@ -289,6 +305,7 @@ mod tests {
             condition: None,
             modifier: None,
             is_default: false,
+            lane: None,
         });
         table.insert(Edge {
             id: Uuid::now_v7(),
@@ -297,6 +314,7 @@ mod tests {
             condition: None,
             modifier: None,
             is_default: false,
+            lane: None,
         });
         table.insert(Edge {
             id: Uuid::now_v7(),
@@ -305,6 +323,7 @@ mod tests {
             condition: None,
             modifier: None,
             is_default: false,
+            lane: None,
         });
         let into_c = table.edges_to(&Path::new("/c"));
         assert_eq!(into_c.len(), 2);
@@ -322,6 +341,7 @@ mod tests {
             condition: None,
             modifier: None,
             is_default: false,
+            lane: None,
         });
         assert!(table.edges_to(&Path::new("/x")).is_empty());
     }
@@ -345,6 +365,7 @@ mod tests {
             condition: Some(cond),
             modifier: Some(modif),
             is_default: false,
+            lane: None,
         };
         assert!(e.condition.is_some());
         assert!(e.modifier.is_some());
@@ -367,6 +388,7 @@ mod tests {
             condition: Some(crate::cel_eval::parse_condition("hop.x == 'y'").unwrap()),
             modifier: Some(crate::cel_eval::parse_modifier(&spec).unwrap()),
             is_default: false,
+            lane: None,
         };
         table.insert(base());
 
@@ -402,6 +424,7 @@ mod tests {
             condition: None,
             modifier: None,
             is_default: false,
+            lane: None,
         };
         assert!(
             !table.contains_equal(&identity),
@@ -424,9 +447,11 @@ mod tests {
             condition: None,
             modifier: None,
             is_default: false,
+            lane: None,
         };
         let default = || Edge {
             is_default: true,
+            lane: None,
             ..regular()
         };
 
@@ -479,6 +504,7 @@ mod tests {
             condition: None,
             modifier: Some(m),
             is_default: false,
+            lane: None,
         };
         let mut table = EdgeTable::new();
         table.insert(edge);
@@ -543,6 +569,7 @@ mod tests {
             condition: None,
             modifier: Some(m),
             is_default: false,
+            lane: None,
         };
         let mut table = EdgeTable::new();
         table.insert(edge);
@@ -610,6 +637,7 @@ mod hook_tests {
             condition: None,
             modifier: None,
             is_default: false,
+            lane: None,
         };
         let h = headers();
         let dec = evaluate_edge(&e, &h).unwrap();
@@ -634,6 +662,7 @@ mod hook_tests {
             condition: None,
             modifier: None,
             is_default: false,
+            lane: None,
         });
         let r = apply_edges(&table, &Path::new("/a"), &headers());
         assert_eq!(r.len(), 1);
@@ -650,6 +679,7 @@ mod hook_tests {
             condition: None,
             modifier: None,
             is_default: false,
+            lane: None,
         });
         table.insert(Edge {
             id: Uuid::now_v7(),
@@ -658,6 +688,7 @@ mod hook_tests {
             condition: None,
             modifier: None,
             is_default: false,
+            lane: None,
         });
         let r = apply_edges(&table, &Path::new("/a"), &headers());
         assert_eq!(r.len(), 2);
@@ -693,6 +724,7 @@ mod hook_tests {
             ),
             modifier: None,
             is_default: false,
+            lane: None,
         });
         table.insert(Edge {
             id: Uuid::now_v7(),
@@ -701,6 +733,7 @@ mod hook_tests {
             condition: None,
             modifier: None,
             is_default: false,
+            lane: None,
         });
 
         let matched = apply_edges(&table, &Path::new("/a"), &hop_tool_name("alpha"));
@@ -746,6 +779,7 @@ mod hook_tests {
             ),
             modifier: None,
             is_default: false,
+            lane: None,
         }
     }
 
@@ -759,6 +793,7 @@ mod hook_tests {
                 .map(|c| crate::cel_eval::parse_condition(c).expect("condition should parse")),
             modifier: None,
             is_default: true,
+            lane: None,
         }
     }
 
@@ -868,6 +903,7 @@ mod hook_tests {
             condition: None,
             modifier: None,
             is_default: false,
+            lane: None,
         });
         table.insert(Edge {
             id: Uuid::now_v7(),
@@ -876,6 +912,7 @@ mod hook_tests {
             condition: None,
             modifier: None,
             is_default: false,
+            lane: None,
         });
         table.insert(default_edge("/catchall", None));
 
@@ -904,6 +941,7 @@ mod hook_tests {
             condition: None,
             modifier: Some(crate::cel_eval::parse_modifier(&spec).expect("modifier should parse")),
             is_default: true,
+            lane: None,
         });
 
         let decisions = apply_edges(
@@ -951,6 +989,7 @@ mod hook_tests {
             condition: Some(cond),
             modifier: None,
             is_default: false,
+            lane: None,
         };
         let mut hop = meclaw_core::serde_json::Map::new();
         hop.insert(
@@ -975,6 +1014,7 @@ mod hook_tests {
             condition: Some(cond),
             modifier: None,
             is_default: false,
+            lane: None,
         };
         let mut hop = meclaw_core::serde_json::Map::new();
         hop.insert(
@@ -999,6 +1039,7 @@ mod hook_tests {
             condition: Some(cond),
             modifier: None,
             is_default: false,
+            lane: None,
         };
         let result = evaluate_edge(&edge, &Headers::new());
         assert!(
@@ -1025,6 +1066,7 @@ mod hook_tests {
             condition: None,
             modifier: Some(crate::cel_eval::parse_modifier(&spec).unwrap()),
             is_default: false,
+            lane: None,
         };
         let mut ctx = meclaw_core::serde_json::Map::new();
         ctx.insert("iter".into(), meclaw_core::serde_json::json!("0"));
@@ -1039,6 +1081,7 @@ mod hook_tests {
             condition: None,
             modifier: None,
             is_default: false,
+            lane: None,
         };
         assert!(
             !evaluate_edge(&plain, &h).expect("edge takes").restore_ttl,
@@ -1081,6 +1124,7 @@ mod hook_tests {
             condition: None,
             modifier: Some(m),
             is_default: false,
+            lane: None,
         };
         let mut table = EdgeTable::new();
         table.insert(edge);

@@ -277,6 +277,7 @@ pub fn post_state_edges(
             condition: None,
             modifier: None,
             is_default: false,
+            lane: None,
         });
     }
     view
@@ -296,6 +297,7 @@ mod tests {
             condition: None,
             modifier: None,
             is_default: false,
+            lane: None,
         }
     }
 

@@ -1781,6 +1781,7 @@ async fn run_shutdown_teardown(
                     condition: None,
                     modifier: None,
                     is_default: false,
+                    lane: None,
                 });
                 let _ = edge_ack.send(());
             }
@@ -2055,6 +2056,9 @@ async fn run_shutdown_teardown(
                             condition: e.condition.clone(),
                             modifier: e.modifier.clone(),
                             is_default: e.is_default,
+                            // GH #559: and the declared lane, for the same
+                            // reason as the phase beside it.
+                            lane: e.lane.clone(),
                         });
                     }
                     // Direct send via writer_tx (NOT &ColonyDb across .await,
@@ -2371,6 +2375,10 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                     // a second regular lane, i.e. double delivery one restart
                     // later. `read_edges` carries the persisted column.
                     is_default: e.is_default,
+                    // GH #559: the declared lane, rehydrated from the persisted
+                    // column beside it. A v-lane that comes back as an ordinary
+                    // deep edge could not be re-anchored by a later swap.
+                    lane: e.lane,
                 });
             }
             // Hard-fail (symmetric to read_edges above): a corrupt persisted
@@ -2722,7 +2730,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                         handle_register_dormant(&mut registry, &colony_db.writer_tx, &colony_db.queue_depth, path, sender, receiver, respawn, wake, restart_limit, cell_id, cell_type, active, failed, dormant, eager_on_reconnect, ack).await;
                     }
                     ColonyMsg::AddEdge { id, from, to, ack } => {
-                        edges.insert(Edge { id, from, to, condition: None, modifier: None, is_default: false });
+                        edges.insert(Edge { id, from, to, condition: None, modifier: None, is_default: false, lane: None });
                         let _ = ack.send(());
                     }
                     ColonyMsg::SetNodeContract { path, contract, ack } => {
@@ -2922,6 +2930,8 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                     condition: e.condition.clone(),
                                     modifier: e.modifier.clone(),
                                     is_default: e.is_default,
+                                    // GH #559: see the twin arm above.
+                                    lane: e.lane.clone(),
                                 });
                             }
                             // op-before-ack. Direct send via writer_tx (NOT &ColonyDb
@@ -5372,10 +5382,21 @@ pub(crate) async fn handle_mutation(
         //
         // `sealed_hives` was read above stage 5 (the slot half of the same
         // declaration is an endpoint question); this is the same list.
+        //
+        // GH #559: the hive contracts are read HERE rather than after the port
+        // boundary, because the boundary now consumes them. A v-lane is a deep
+        // edge that names its lane, and whether it may cross a level is a
+        // question about that level's CONTRACT — so the seal and the
+        // declaration have to be measured together or a level that opened for
+        // the lane still reports a breach. Same one FS pass, used twice, as
+        // `sealed_hives` above.
+        hive_contracts =
+            crate::mutation::hive_contract::collect_hive_contracts(root, hive_scopes.paths());
         crate::mutation::port_boundary::collect_hive_port_boundary(
             &diff_subst,
             guard_scope,
             &sealed_hives,
+            &hive_contracts,
             &mut rejection,
         );
 
@@ -5385,15 +5406,162 @@ pub(crate) async fn handle_mutation(
         // boundary says WHERE an edge may land; the contract says WHICH LANE it may
         // carry once it lands on the hive path. Opt-in: only hives that declared
         // `params.contract` contribute, and an edge whose route is computed rather
-        // than stated is left alone.
-        hive_contracts =
-            crate::mutation::hive_contract::collect_hive_contracts(root, hive_scopes.paths());
+        // than stated is left alone. (`hive_contracts` was read just above,
+        // with the port boundary — GH #559.)
         crate::mutation::hive_contract::collect_inbound_lanes(
             &diff_subst,
             guard_scope,
             &hive_contracts,
             &mut rejection,
         );
+
+        // GH #559: a v-lane the dedup would swallow.
+        //
+        // Edge identity is the five ROUTING terms (`EdgeTable::contains_equal`)
+        // and the lane is deliberately not among them — it is a declaration
+        // ABOUT an edge, not a term the router reads. The consequence is a trap
+        // at exactly one spot: an `add_edges[]` entry that declares a lane onto
+        // a pair the table already holds WITHOUT one is content-equal, so the
+        // apply arm would skip the insert and hand the caller `Committed` for a
+        // v-lane that does not exist and never will. The migration this feature
+        // is for (R-V3: replace a hand-through chain with one declared lane)
+        // walks straight into it.
+        //
+        // Refused here, pre-destructively, by name. The two honest ways out are
+        // in the message, because "identical" is not something a caller can see
+        // from the outside: take the blank edge away in the SAME diff, or leave
+        // the lane off.
+        if let Some(adds) = diff_subst.get("add_edges").and_then(|v| v.as_array()) {
+            // A `remove_edges` in the same diff is the documented way out, so an
+            // edge this diff is already taking away must not count as "already
+            // exists".
+            let live: Vec<(Uuid, crate::mutation::validate::EdgeMatchView)> = edges
+                .iter()
+                .map(|e| (e.id, crate::mutation::validate::EdgeMatchView::from(e)))
+                .collect();
+            let doomed =
+                crate::mutation::validate::remove_edges_targets(&diff_subst, guard_scope, &live);
+            for (i, e) in adds.iter().enumerate() {
+                let (Some(from), Some(to), Some(lane)) = (
+                    e.get("from").and_then(|v| v.as_str()),
+                    e.get("to").and_then(|v| v.as_str()),
+                    e.get("lane").and_then(|v| v.as_str()),
+                ) else {
+                    continue; // no lane, or a shape earlier stages refuse
+                };
+                let from_abs = crate::mutation::resolve_scoped_path(guard_scope, from);
+                let to_abs = crate::mutation::resolve_scoped_path(guard_scope, to);
+                let modifier_src = crate::mutation::modifier_spec_from_add_entry(e)
+                    .and_then(|spec| meclaw_core::serde_json::to_value(&spec).ok());
+                let is_default = e.get("default").and_then(|v| v.as_bool()).unwrap_or(false);
+                let swallowed = edges.iter().any(|old| {
+                    old.lane.is_none()
+                        && !doomed.contains(&old.id)
+                        && crate::mutation::validate::edge_identity_equal(
+                            &crate::mutation::validate::EdgeMatchView::from(old),
+                            from_abs.as_str(),
+                            to_abs.as_str(),
+                            e.get("condition").and_then(|v| v.as_str()),
+                            modifier_src.as_ref(),
+                            is_default,
+                        )
+                });
+                if swallowed {
+                    let err = crate::mutation::MutationError::EdgeSchema(format!(
+                        "add_edges[{i}] declares lane '{lane}' on '{from_abs}' -> '{to_abs}', but \
+                         an identical edge without a lane already exists; remove it in the same \
+                         diff or drop the lane. Edge identity is the five routing terms, so the \
+                         two are the same edge to the table and the declared one would be \
+                         silently dropped.",
+                        from_abs = from_abs.as_str(),
+                        to_abs = to_abs.as_str()
+                    ));
+                    rejection.push(crate::mutation::rejection::Violation::from_error(
+                        crate::mutation::rejection::Stage::ContractLocality,
+                        &err,
+                        Some(format!("add_edges[{i}]")),
+                    ));
+                }
+            }
+        }
+
+        // GH #559 (ruling R-V2): a `swap_nodes` that would strand a v-lane.
+        //
+        // A v-lane ends DEEP inside the unit it addresses, so it names neither
+        // `match.name` nor anything the exact-path swing sees. Identified the
+        // one way R-V2 allows — by subtree membership — it is re-anchored by
+        // relative form, and it may only be re-anchored where the SUCCESSOR
+        // says the lane docks. Where it does not, the whole swap is refused
+        // here, pre-destructively: nothing is staged, and the old lane stands.
+        //
+        // The successor's contract comes from the live hive when it already
+        // stands, and from the TEMPLATE when the same diff is growing it —
+        // which is the shape a generation change uses (GH #256: `add_nodes` +
+        // `swap_nodes` in one mutation). Both go through the ONE reader
+        // (`contract_from_cell_dir`), so a declaration cannot mean one thing at
+        // instantiation and another at the swap.
+        if let Some(swaps) = diff_subst.get("swap_nodes").and_then(|v| v.as_array()) {
+            for s in swaps {
+                let (Some(t2_name), Some(t3_name)) = (
+                    s.get("match")
+                        .and_then(|v| v.get("name"))
+                        .and_then(|v| v.as_str()),
+                    s.get("with")
+                        .and_then(|v| v.get("name"))
+                        .and_then(|v| v.as_str()),
+                ) else {
+                    continue; // shape is stage 4's verdict
+                };
+                let t2 = crate::mutation::resolve_scoped_path(guard_scope, t2_name);
+                let t3 = crate::mutation::resolve_scoped_path(guard_scope, t3_name);
+                let staged_template = s
+                    .get("with")
+                    .and_then(|v| v.get("template"))
+                    .and_then(|v| v.as_str())
+                    .or_else(|| {
+                        // Befund 6 / GH #179: `egon2` and `./egon2` are the SAME
+                        // node, and the two keys are written by two different
+                        // hands in the same diff. Comparing the raw spellings
+                        // made a mixed-spelling generation change lose its
+                        // successor's template and refuse a v-lane that had a
+                        // perfectly good home — so both sides resolve first,
+                        // exactly as every other reader on the mutation surface
+                        // does before deciding anything.
+                        diff_subst
+                            .get("add_nodes")
+                            .and_then(|v| v.as_array())?
+                            .iter()
+                            .find(|n| {
+                                n.get("name").and_then(|v| v.as_str()).is_some_and(|name| {
+                                    crate::mutation::resolve_scoped_path(guard_scope, name) == t3
+                                })
+                            })?
+                            .get("template")?
+                            .as_str()
+                    });
+                let from_template = staged_template
+                    .and_then(|r| templates.resolve(r).ok())
+                    .and_then(|tpl| {
+                        crate::mutation::hive_contract::contract_from_cell_dir(
+                            &tpl.filesystem_path,
+                            t3.as_str(),
+                        )
+                    });
+                let successor = hive_contracts
+                    .iter()
+                    .find(|c| c.hive_path == t3.as_str())
+                    .or(from_template.as_ref());
+                if let Err(err) =
+                    crate::mutation::swap::v_lane_reanchor_verdict(&t2, &t3, edges, successor)
+                {
+                    rejection.push(crate::mutation::rejection::Violation::from_error(
+                        crate::mutation::rejection::Stage::ContractLocality,
+                        &err,
+                        Some(t3.as_str().to_string()),
+                    ));
+                }
+            }
+        }
         if !rejection.is_empty() {
             break 'validate rejection;
         }
@@ -6078,6 +6246,9 @@ pub(crate) async fn handle_mutation(
                     condition: sw.condition,
                     modifier: sw.modifier,
                     is_default: sw.is_default,
+                    // GH #559: verbatim, like the phase above — a swing moves
+                    // endpoints and nothing else.
+                    lane: sw.lane.clone(),
                 });
                 inserted_edge_ids.push(edge_id);
                 write_buffer.push(crate::persist::writer::ColonyWriteOp::InsertEdge {
@@ -6092,6 +6263,9 @@ pub(crate) async fn handle_mutation(
                     // (`SwungEdge::is_default`), so the row and the RAM edge say
                     // the same thing side by side.
                     is_default: sw.is_default,
+                    // GH #559: verbatim, like the phase above — a swing moves
+                    // endpoints and nothing else.
+                    lane: sw.lane.clone(),
                 });
             }
             // THEN remove the old edges (fetch each removed Edge for rollback,
@@ -6144,6 +6318,8 @@ pub(crate) async fn handle_mutation(
                 condition: sw.condition,
                 modifier: sw.modifier,
                 is_default: sw.is_default,
+                // GH #559: verbatim, like the phase above.
+                lane: sw.lane.clone(),
             });
             inserted_edge_ids.push(edge_id);
             write_buffer.push(crate::persist::writer::ColonyWriteOp::InsertEdge {
@@ -6157,6 +6333,8 @@ pub(crate) async fn handle_mutation(
                 // was inserted with, kept beside the RAM insert. A move changes
                 // an address, never what an edge means.
                 is_default: sw.is_default,
+                // GH #559: verbatim, like the phase above.
+                lane: sw.lane.clone(),
             });
         }
         for old_id in plan.remove_ids {
@@ -6280,6 +6458,11 @@ pub(crate) async fn handle_mutation(
                 // dedup below distinguishes a default from an otherwise equal
                 // ordinary edge instead of swallowing it.
                 is_default: edge.is_default,
+                // GH #559: the lane the TEMPLATE declared, resolved onto this
+                // instance. Hard-coding `None` here made instantiation disagree
+                // with the boot, which carries the same key — one template, two
+                // doors, two meanings.
+                lane: edge.lane.clone(),
             };
             involved.push(edge.from.clone());
             involved.push(edge.to.clone());
@@ -6296,6 +6479,8 @@ pub(crate) async fn handle_mutation(
             // table, exactly like the two source strings above — the row and the
             // RAM edge then carry the same value by construction.
             let is_default = candidate.is_default;
+            // GH #559: and the declared lane, off the same candidate.
+            let internal_lane = candidate.lane.clone();
             edges.insert(candidate);
             inserted_edge_ids.push(edge_id);
             write_buffer.push(crate::persist::writer::ColonyWriteOp::InsertEdge {
@@ -6306,6 +6491,10 @@ pub(crate) async fn handle_mutation(
                 condition: cond_src,
                 modifier: mod_src,
                 is_default,
+                // GH #559: read off the candidate before the move, like the
+                // phase above, so the row and the RAM edge agree by
+                // construction.
+                lane: internal_lane,
             });
         }
     }
@@ -6450,46 +6639,13 @@ pub(crate) async fn handle_mutation(
                 crate::cel_eval::parse_condition(s)
                     .expect("validate guaranteed add_edges[].condition is valid CEL")
             });
-            let cel_modifier = e.get("modifier").and_then(|v| v.as_object()).map(|obj| {
-                let mut spec = crate::config::ModifierSpec::default();
-                let collect_set =
-                    |obj: &meclaw_core::serde_json::Map<_, _>,
-                     key: &str,
-                     dst: &mut std::collections::BTreeMap<String, String>| {
-                        if let Some(set_obj) = obj.get(key).and_then(|v| v.as_object()) {
-                            for (k, v) in set_obj {
-                                if let Some(expr) = v.as_str() {
-                                    dst.insert(k.clone(), expr.to_string());
-                                }
-                            }
-                        }
-                    };
-                let collect_delete =
-                    |obj: &meclaw_core::serde_json::Map<_, _>, key: &str, dst: &mut Vec<String>| {
-                        if let Some(del_arr) = obj.get(key).and_then(|v| v.as_array()) {
-                            for d in del_arr {
-                                if let Some(s) = d.as_str() {
-                                    dst.push(s.to_string());
-                                }
-                            }
-                        }
-                    };
-                collect_set(obj, "set_context", &mut spec.set_context);
-                collect_set(obj, "set_hop", &mut spec.set_hop);
-                collect_delete(obj, "delete_context", &mut spec.delete_context);
-                collect_delete(obj, "delete_hop", &mut spec.delete_hop);
-                // GH #82: the fifth field. This spec is rebuilt field by field
-                // rather than deserialised, so a new field that is not picked up
-                // HERE would validate and then silently do nothing -- the exact
-                // foot-gun the modifier key allow-list exists to prevent.
-                spec.restore_ttl = obj
-                    .get("restore_ttl")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                // GH #82: the fifth field. This spec is rebuilt field by field
-                // rather than deserialised, so a new field that is not picked up
-                // HERE would validate and then silently do nothing — the exact
-                // foot-gun the modifier key allow-list exists to prevent.
+            let cel_modifier = crate::mutation::modifier_spec_from_add_entry(e).map(|spec| {
+                // GH #82: the spec is rebuilt field by field rather than
+                // deserialised, so a new field that is not picked up in
+                // `modifier_spec_from_add_entry` would validate and then
+                // silently do nothing — the exact foot-gun the modifier key
+                // allow-list exists to prevent. GH #559 moved that assembly out
+                // so stage 6 compares against the same reading.
                 crate::cel_eval::parse_modifier(&spec)
                     .expect("validate guaranteed add_edges[].modifier.set_* is valid CEL")
             });
@@ -6519,6 +6675,14 @@ pub(crate) async fn handle_mutation(
                 // surviving non-bool cannot reach this point and `unwrap_or`
                 // is the same default the absent case takes.
                 is_default: e.get("default").and_then(|v| v.as_bool()).unwrap_or(false),
+                // GH #559: the lane the DIFF declared. Absent = an ordinary
+                // edge, which is what every edge was before this key existed.
+                // Validate has already refused every non-string, so a surviving
+                // non-string cannot reach this point.
+                lane: e
+                    .get("lane")
+                    .and_then(|v| v.as_str())
+                    .map(std::string::ToString::to_string),
             };
             involved.push(from_path.clone());
             involved.push(to_path.clone());
@@ -6534,6 +6698,10 @@ pub(crate) async fn handle_mutation(
                 .and_then(|m| meclaw_core::serde_json::to_string(&m.source).ok());
             // GH #283: the phase, read off before the same move.
             let is_default = candidate.is_default;
+            // GH #559: and the lane, for the same reason and off the same
+            // candidate — the row and the RAM edge then say the same thing by
+            // construction rather than by two readers agreeing.
+            let lane = candidate.lane.clone();
             edges.insert(candidate);
             inserted_edge_ids.push(edge_id);
             write_buffer.push(crate::persist::writer::ColonyWriteOp::InsertEdge {
@@ -6544,6 +6712,7 @@ pub(crate) async fn handle_mutation(
                 condition: cond_src,
                 modifier: mod_src,
                 is_default,
+                lane,
             });
         }
     }
@@ -10747,6 +10916,7 @@ mod tests {
                     condition: None,
                     modifier: None,
                     is_default: false,
+                    lane: None,
                 }],
                 hive_scopes: vec![],
                 ack: ia_ack_tx,
@@ -11754,6 +11924,7 @@ mod tests {
             condition: None,
             modifier: Some(crate::cel_eval::parse_modifier(&spec_a).unwrap()),
             is_default: false,
+            lane: None,
         };
         let edge_b = crate::bootstrap::PlannedEdge {
             id: Uuid::now_v7(),
@@ -11762,6 +11933,7 @@ mod tests {
             condition: None,
             modifier: Some(crate::cel_eval::parse_modifier(&spec_b).unwrap()),
             is_default: false,
+            lane: None,
         };
         let (ia_ack_tx, ia_ack_rx) = oneshot::channel();
         inbox_tx

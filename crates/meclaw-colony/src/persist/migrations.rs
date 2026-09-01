@@ -44,13 +44,20 @@
 //! ADDRESSES the node clears it. ALTER TABLE in-place; rows written before the
 //! marker existed read `0`, which is the honest answer for a node whose sleep
 //! nobody ever declared — it keeps behaving exactly as it did.
+//! v9 (GH #559 v-lanes): `edges` gains `lane` as a NULL-able TEXT column — the
+//! lane a v-lane was DECLARED to carry (`add_edges[].lane`, ruling R-V1). It is
+//! NULL-able rather than `NOT NULL DEFAULT ''` because absent and empty are not
+//! the same statement here: NULL is "this is an ordinary edge", which is what
+//! every row written before the column existed was and stays. The value is
+//! persisted because the declaration has to survive a reboot — a `swap_nodes`
+//! that re-anchors the edge asks the new target's contract about THIS lane.
 //!
 //! IMPORTANT: affects `colony.db` exclusively. `cell.db` stays at v1.
 
 use rusqlite::Connection;
 
 /// Target schema version for `colony.db` after this slice.
-pub(crate) const TARGET_SCHEMA_VERSION: u32 = 8;
+pub(crate) const TARGET_SCHEMA_VERSION: u32 = 9;
 
 /// Error during the `colony.db` schema migration.
 #[derive(Debug, thiserror::Error)]
@@ -78,7 +85,7 @@ pub(crate) fn migrate(conn: &Connection) -> Result<(), MigrationError> {
     let current = super::schema::read_schema_version(conn)?;
     match current {
         v if v == TARGET_SCHEMA_VERSION => Ok(()),
-        1..=7 => {
+        1..=8 => {
             let tx = conn.unchecked_transaction()?;
             // v1→v2: durable-edges CEL columns. `table_exists`-guarded like
             // v4→v5 below: since GH #90 this runs BEFORE the DDL batch, so a
@@ -188,6 +195,15 @@ pub(crate) fn migrate(conn: &Connection) -> Result<(), MigrationError> {
                     "ALTER TABLE registry ADD COLUMN dormant INTEGER NOT NULL DEFAULT 0",
                     [],
                 )?;
+            }
+            // v8→v9 (GH #559): the declared lane of a v-lane. NULL-able and
+            // additive — an existing row keeps every value it had and reads
+            // NULL for the new column, which is exactly what it was: an edge
+            // that declares no lane. Same two guards and the same rationale as
+            // the stages above.
+            if current <= 8 && table_exists(&tx, "edges")? && !column_exists(&tx, "edges", "lane")?
+            {
+                tx.execute("ALTER TABLE edges ADD COLUMN lane TEXT", [])?;
             }
             tx.execute(
                 "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",

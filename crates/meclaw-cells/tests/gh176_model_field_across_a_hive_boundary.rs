@@ -108,6 +108,7 @@ fn table_for(hp: &HiveParams) -> EdgeTable {
             condition,
             modifier,
             is_default: false,
+            lane: None,
         });
     }
     // The hive has to be wired from outside, or `check_lane_doors` skips it.
@@ -118,6 +119,7 @@ fn table_for(hp: &HiveParams) -> EdgeTable {
         condition: None,
         modifier: None,
         is_default: false,
+        lane: None,
     });
     t
 }
@@ -127,6 +129,7 @@ fn contract_of(hp: &HiveParams) -> HiveContract {
     let lane = |l: &meclaw_colony::config::LaneSpec| Lane {
         route: l.route.clone(),
         context: l.context.clone(),
+        at: Vec::new(),
         because: l.because.clone(),
     };
     HiveContract {

@@ -82,6 +82,7 @@ fn one_of_each_fixture() -> (std::collections::HashMap<Path, RegistryEntry>, Edg
         condition: None,
         modifier: None,
         is_default: false,
+        lane: None,
     });
     edges.insert(Edge {
         id: Uuid::now_v7(),
@@ -90,6 +91,7 @@ fn one_of_each_fixture() -> (std::collections::HashMap<Path, RegistryEntry>, Edg
         condition: None,
         modifier: None,
         is_default: true,
+        lane: None,
     });
     (registry, edges)
 }
@@ -235,6 +237,8 @@ fn dto(from: &str, to: &str, is_default: bool) -> GraphEdgeDto {
         condition: None,
         modifier: None,
         is_default,
+        // GH #559: no lane — this fixture is about the routing phase.
+        lane: None,
     }
 }
 
@@ -289,6 +293,7 @@ fn the_rebuilt_table_judges_the_topology_that_runs() {
         accepts: vec![Lane {
             route: "work".to_string(),
             context: Vec::new(),
+            at: Vec::new(),
             because: "the lane this hive promises".to_string(),
         }],
         emits: Vec::new(),

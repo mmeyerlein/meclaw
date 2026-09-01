@@ -591,6 +591,37 @@ async fn wait_for(p: &std::path::Path, what: &str, h: &ColonyHandle) {
     );
 }
 
+/// Poll the MEMBER-level marker until it names `want` holders.
+///
+/// A hive's own `seed/export_final.json` is not the signal that the member-level
+/// one is on disk: the sink writes the hive marker FIRST and rebuilds the
+/// member-level marker after it, in the same run. Waiting for the hive markers
+/// and then reading the member-level file reads it in the gap — as the empty
+/// file the rebuild has just truncated, or as the shorter list of the rebuild
+/// before it. The completeness of the LEVEL is what this file asserts, so the
+/// level's own document is what it waits for. `gh476` waits the same way.
+async fn wait_marker(p: &std::path::Path, want: usize, h: &ColonyHandle) -> Value {
+    let deadline = std::time::Instant::now() + RECV_TIMEOUT;
+    loop {
+        let named = std::fs::read_to_string(p)
+            .ok()
+            .and_then(|raw| from_str::<Value>(&raw).ok());
+        if let Some(v) = &named
+            && v["hives"].as_array().map(Vec::len).unwrap_or_default() >= want
+        {
+            return v.clone();
+        }
+        if std::time::Instant::now() >= deadline {
+            panic!(
+                "the member-level marker never named {want} holders (last: {named:?}) -- \
+                 dead letters: {:?}",
+                dead_letters(h).await
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 /// Poll one store's own `cell.db` until it holds what the run is waiting for.
 async fn wait_rows(
     db: &std::path::Path,
@@ -730,8 +761,7 @@ async fn an_export_that_names_a_generation_reaches_that_generations_session_keep
         )
         .await;
     }
-    let marker: Value =
-        from_str(&std::fs::read_to_string(export_dir.join("export_final.json")).unwrap()).unwrap();
+    let marker = wait_marker(&export_dir.join("export_final.json"), 3, &h).await;
     assert_eq!(
         marker["hives"],
         json!(["affinity", "firewall", "memory-hive"]),
@@ -790,8 +820,7 @@ async fn an_export_that_names_a_generation_reaches_that_generations_session_keep
     );
     assert_eq!(row["channel"], CHANNEL);
 
-    let marker: Value =
-        from_str(&std::fs::read_to_string(export_dir.join("export_final.json")).unwrap()).unwrap();
+    let marker = wait_marker(&export_dir.join("export_final.json"), 4, &h).await;
     assert_eq!(
         marker["hives"],
         json!(["affinity", "firewall", "memory-hive", "session-keeper"]),

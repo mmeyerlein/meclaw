@@ -308,6 +308,16 @@ pub struct PlannedEdge {
     /// [`crate::config::EdgeSpec::is_default`] and threaded into
     /// [`crate::edge_table::Edge::is_default`] by the `InitialApply` conversion.
     pub is_default: bool,
+    /// GH #559: the lane a v-lane declares
+    /// ([`crate::config::EdgeSpec::lane`]), carried into
+    /// [`crate::edge_table::Edge::lane`] by the `InitialApply` conversion.
+    ///
+    /// The BOOT does not enforce the v-lane rules, exactly as it does not
+    /// enforce the port boundary (ruling 2026-08-15): a birth topology is its
+    /// author's sovereign design. What boot does owe is the declaration — an
+    /// edge that arrives at runtime without its lane could not be re-anchored
+    /// by a later `swap_nodes`.
+    pub lane: Option<String>,
 }
 /// GH #424 — a `cell.type: "ref"` marker the FIRST boot will grow.
 ///
@@ -878,6 +888,8 @@ pub fn plan_bootstrap_with_env(
                     // that also restores is still a restoring edge and still
                     // owes its own bound, for exactly the same reason.
                     is_default: spec.is_default,
+                    // GH #559: the declared lane, carried as declared.
+                    lane: spec.lane.clone(),
                 });
             }
         } else {
@@ -1182,6 +1194,7 @@ pub fn plan_bootstrap_with_env(
                 condition: None,
                 modifier: None,
                 is_default: false,
+                lane: None,
             });
         }
         let mut hive_view = crate::hive_scope::HiveScopeTable::new();

@@ -174,6 +174,55 @@ pub fn build_error_reply(
 /// (the canonical mutation form per overview § Variable substitution) committed
 /// a dead edge. Validate mirrors this by stripping `./` before its short-name
 /// membership test.
+/// The [`crate::config::ModifierSpec`] an `add_edges[]` entry describes, or
+/// `None` when the entry carries no `modifier` object.
+///
+/// Rebuilt field by field rather than deserialised, which is GH #82's rule: a
+/// new field that is not picked up HERE would validate and then silently do
+/// nothing. What GH #559 adds is the second caller. The apply arm builds this
+/// spec to COMPILE the modifier; stage 6 builds it to compare an entry against
+/// the edges already in the table, and that comparison is only as trustworthy
+/// as the two sides agreeing on what the entry says. The stored source is
+/// `serde_json(ModifierSpec)`, not the raw diff object — `restore_ttl: false`
+/// serialises away, an empty `set_hop` serialises away — so comparing the raw
+/// object would have been right for the common shapes and quietly wrong for
+/// the rest. One reader, two callers.
+#[must_use]
+pub fn modifier_spec_from_add_entry(
+    entry: &meclaw_core::JsonValue,
+) -> Option<crate::config::ModifierSpec> {
+    let obj = entry.get("modifier").and_then(|v| v.as_object())?;
+    let mut spec = crate::config::ModifierSpec::default();
+    let collect_set = |key: &str, dst: &mut std::collections::BTreeMap<String, String>| {
+        if let Some(set_obj) = obj.get(key).and_then(|v| v.as_object()) {
+            for (k, v) in set_obj {
+                if let Some(expr) = v.as_str() {
+                    dst.insert(k.clone(), expr.to_string());
+                }
+            }
+        }
+    };
+    let collect_delete = |key: &str, dst: &mut Vec<String>| {
+        if let Some(del_arr) = obj.get(key).and_then(|v| v.as_array()) {
+            for d in del_arr {
+                if let Some(s) = d.as_str() {
+                    dst.push(s.to_string());
+                }
+            }
+        }
+    };
+    collect_set("set_context", &mut spec.set_context);
+    collect_set("set_hop", &mut spec.set_hop);
+    collect_delete("delete_context", &mut spec.delete_context);
+    collect_delete("delete_hop", &mut spec.delete_hop);
+    // GH #82: the fifth field.
+    spec.restore_ttl = obj
+        .get("restore_ttl")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    Some(spec)
+}
+
 pub fn resolve_scoped_path(scope: &str, name: &str) -> meclaw_core::Path {
     meclaw_core::Path::resolve(&meclaw_core::Path::new(scope), name)
 }
@@ -271,7 +320,7 @@ pub fn is_mutation_drawable_virtual_target(endpoint: &str) -> bool {
 }
 
 /// Errors that abort a mutation. Each variant maps to a spec `error_code` token
-/// (see `docs/meclaw-overview.md` § Mutation-Format → Validierung).
+/// (see `docs/meclaw-overview.md` § Mutation format → Validation).
 #[derive(Debug, Clone, PartialEq)]
 pub enum MutationError {
     Schema(String),
@@ -400,6 +449,28 @@ pub enum MutationError {
     /// shape the store never agreed to, so the declaration is refused rather
     /// than the table invented.
     SeedTableUndeclared(String),
+    /// GH #559 (ruling R-V1): an `add_edges` entry declares a `lane` and ends
+    /// deep inside a hive that names no connect point for that lane
+    /// (`params.contract.accepts[].at` / `.emits[].at`). A v-lane docks where
+    /// the TARGET says it docks — a caller that could pick its own docking
+    /// point is the port bypass the hive boundary exists to refuse, and this
+    /// refusal is what keeps `ports: []` literally true. Raised
+    /// pre-destructively, like the port boundary beside it. Carries the
+    /// constellation plus the hive's own reason string where it has one.
+    VLaneNoConnectPoint(String),
+    /// GH #559 (ruling R-V1): a v-lane would skip a level that DECLARES the
+    /// same lane in its own contract. Declaring a lane is the statement "I take
+    /// part in this" — a stamp, a filter, a guard — so bypassing that level
+    /// drops something nobody downstream would notice was missing. The level
+    /// waives the hop by naming the endpoint in that lane's `at`.
+    /// Pre-destructive.
+    VLaneMandatoryHop(String),
+    /// GH #559 (ruling R-V2): a `swap_nodes` would re-anchor a v-lane that ends
+    /// deep inside the subtree being replaced, and the replacement declares no
+    /// connect point at the translated path. The WHOLE swap is refused rather
+    /// than the lane silently left pointing at a node that is about to fall out
+    /// of the graph — "never dropped silently". Pre-destructive.
+    VLaneUnanchored(String),
 }
 
 impl MutationError {
@@ -435,6 +506,9 @@ impl MutationError {
             Self::TemplateNameTaken(_) => "template_name_taken",
             Self::SeedTargetNotAStore(_) => "seed_target_not_a_store",
             Self::SeedTableUndeclared(_) => "seed_table_undeclared",
+            Self::VLaneNoConnectPoint(_) => "v_lane_no_connect_point",
+            Self::VLaneMandatoryHop(_) => "v_lane_mandatory_hop",
+            Self::VLaneUnanchored(_) => "v_lane_unanchored",
         }
     }
 
@@ -472,6 +546,9 @@ impl MutationError {
             | Self::LiveTreeMutated(s)
             | Self::InvalidTemplateName(s)
             | Self::TemplateNameTaken(s)
+            | Self::VLaneNoConnectPoint(s)
+            | Self::VLaneMandatoryHop(s)
+            | Self::VLaneUnanchored(s)
             | Self::SeedTargetNotAStore(s)
             | Self::SeedTableUndeclared(s) => s.clone(),
             Self::ScopeOutOfBounds { path } => path.as_str().to_string(),
@@ -574,6 +651,9 @@ mod tests {
             MutationError::TemplateNameTaken("x".into()).error_code(),
             MutationError::SeedTargetNotAStore("x".into()).error_code(),
             MutationError::SeedTableUndeclared("x".into()).error_code(),
+            MutationError::VLaneNoConnectPoint("x".into()).error_code(),
+            MutationError::VLaneMandatoryHop("x".into()).error_code(),
+            MutationError::VLaneUnanchored("x".into()).error_code(),
         ];
 
         // The ones the lifecycle path emits, pinned individually in `colony.rs`.
@@ -621,6 +701,12 @@ mod tests {
             // GH #456: the two refusals `seed_rows` contributes.
             "seed_target_not_a_store",
             "seed_table_undeclared",
+            // GH #559: the three refusals a v-lane contributes — two at
+            // `add_edges` time (the rule table), one at `swap_nodes` time (the
+            // re-anchoring).
+            "v_lane_no_connect_point",
+            "v_lane_mandatory_hop",
+            "v_lane_unanchored",
         ]
         .into_iter()
         .collect();
@@ -640,7 +726,7 @@ mod tests {
              `error_code` is documented as an ENUM, so a caller matching on it \
              would meet a token the contract never named"
         );
-        assert_eq!(spec.len(), 28, "the documented enum is 28 tokens wide");
+        assert_eq!(spec.len(), 31, "the documented enum is 31 tokens wide");
     }
 
     #[test]

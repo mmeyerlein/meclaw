@@ -64,6 +64,19 @@ pub struct EdgeSpec {
     /// edge would be right in the template and an ordinary edge in every
     /// instance.
     pub is_default: bool,
+    /// GH #559: the lane a template's own edge declares (`lane`), read here for
+    /// exactly the reason `is_default` above is read here — this struct is the
+    /// only thing that survives the template walk, including the walk through a
+    /// `ref`'d sub-template.
+    ///
+    /// It closes a divergence rather than opening a door: the BOOT path already
+    /// carries the key (`config::EdgeSpec::lane` → `PlannedEdge::lane`), so
+    /// without this field the same template declared a v-lane when it was booted
+    /// and an ordinary edge when it was instantiated — the quieter half of the
+    /// GH #196 class. Subtree-internal edges are not judged by stage 6 in either
+    /// door (a template's statement about ITSELF, ruling 2026-08-15); what they
+    /// owe is to mean the same thing through both.
+    pub lane: Option<String>,
 }
 
 /// Parsed representation of a SUBTREE template directory.
@@ -660,6 +673,10 @@ fn edge_spec_from_config(spec: ConfigEdgeSpec) -> EdgeSpec {
         // GH #283: the `default` key of the config edge, carried like any other
         // edge property. `ConfigEdgeSpec` already type-checked it.
         is_default: spec.is_default,
+        // GH #559: and the `lane` key, same discipline. `ConfigEdgeSpec` is
+        // `deny_unknown_fields`, so a misspelling is already a boot error and
+        // this read cannot silently invent a lane.
+        lane: spec.lane,
     }
 }
 
@@ -1211,6 +1228,8 @@ fn resolve_internal_edges(
                 modifier: spec.modifier,
                 // GH #283: the phase travels with the edge, like its condition.
                 is_default: spec.is_default,
+                // GH #559: and so does the lane.
+                lane: spec.lane,
             });
         }
     }
@@ -1281,6 +1300,9 @@ pub struct ResolvedEdge {
     /// (`"default": true`). Resolution changes an edge's ENDPOINTS, never what
     /// it means.
     pub is_default: bool,
+    /// GH #559: the declared lane, kept verbatim for the same reason — an
+    /// instance of a template that declares a v-lane has to BE one.
+    pub lane: Option<String>,
 }
 
 /// Result of staging one SUBTREE template instance into `.staging`.

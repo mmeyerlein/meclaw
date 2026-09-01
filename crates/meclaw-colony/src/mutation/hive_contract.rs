@@ -114,6 +114,13 @@ pub struct Lane {
     /// says — `LaneSpec::context` is `#[serde(default)]`, so an absent list and
     /// an explicit `[]` are the same statement.
     pub context: Vec<String>,
+    /// GH #559 — the connect points this lane declares
+    /// ([`crate::config::LaneSpec::at`]): the relative paths below the hive a
+    /// v-lane on this lane may end on. Carried here for the same reason
+    /// `context` is — the v-lane verdict
+    /// ([`crate::mutation::port_boundary::v_lane_verdict`]) is handed the
+    /// declaration instead of reading `config.json` a second time.
+    pub at: Vec<String>,
     /// The hive's own sentence about the lane, quoted verbatim in a rejection.
     pub because: String,
 }
@@ -535,36 +542,46 @@ pub fn collect_hive_contracts<'a>(
             Some(i) => (&s[..i], &s[i + 1..]),
             None => continue,
         };
-        let cfg_path = crate::path_truth::resolve_cell_dir(root, scope, name).join("config.json");
-        let Ok(raw) = std::fs::read_to_string(&cfg_path) else {
-            continue;
-        };
-        let Ok(val) = meclaw_core::serde_json::from_str::<JsonValue>(&raw) else {
-            continue;
-        };
-        let params = val.get("params").cloned().unwrap_or(JsonValue::Null);
-        if params.is_null() {
-            continue;
+        let cell_dir = crate::path_truth::resolve_cell_dir(root, scope, name);
+        if let Some(c) = contract_from_cell_dir(&cell_dir, s) {
+            out.push(c);
         }
-        let Ok(hp) = meclaw_core::serde_json::from_value::<crate::config::HiveParams>(params)
-        else {
-            continue;
-        };
-        let Some(spec) = hp.contract else {
-            continue;
-        };
-        let lane = |l: &crate::config::LaneSpec| Lane {
-            route: l.route.clone(),
-            context: l.context.clone(),
-            because: l.because.clone(),
-        };
-        out.push(HiveContract {
-            hive_path: s.to_string(),
-            accepts: spec.accepts.iter().map(lane).collect(),
-            emits: spec.emits.iter().map(lane).collect(),
-        });
     }
     out
+}
+
+/// The contract ONE hive declares, read out of the `config.json` in `cell_dir`
+/// and labelled with the logical path `hive_path` it will stand at.
+///
+/// Split out of [`collect_hive_contracts`] for GH #559: a `swap_nodes` has to
+/// ask the SUCCESSOR's contract about a v-lane before the successor exists on
+/// disk, and the only place that declaration lives at that moment is the
+/// TEMPLATE directory. Two readers of one declaration would be free to
+/// disagree about what `params.contract` means; one reader cannot.
+///
+/// `None` when the config is missing, unreadable, unparseable, or simply
+/// declares no contract — the same conservatism the collector has always had.
+#[must_use]
+pub fn contract_from_cell_dir(cell_dir: &std::path::Path, hive_path: &str) -> Option<HiveContract> {
+    let raw = std::fs::read_to_string(cell_dir.join("config.json")).ok()?;
+    let val = meclaw_core::serde_json::from_str::<JsonValue>(&raw).ok()?;
+    let params = val.get("params").cloned().unwrap_or(JsonValue::Null);
+    if params.is_null() {
+        return None;
+    }
+    let hp = meclaw_core::serde_json::from_value::<crate::config::HiveParams>(params).ok()?;
+    let spec = hp.contract?;
+    let lane = |l: &crate::config::LaneSpec| Lane {
+        route: l.route.clone(),
+        context: l.context.clone(),
+        at: l.at.clone(),
+        because: l.because.clone(),
+    };
+    Some(HiveContract {
+        hive_path: hive_path.to_string(),
+        accepts: spec.accepts.iter().map(lane).collect(),
+        emits: spec.emits.iter().map(lane).collect(),
+    })
 }
 
 /// One edge as the boot check receives it from `/colony/graph`: endpoints, the
@@ -639,6 +656,7 @@ pub fn edge_table_from_boot_edges(edges: &[BootEdge]) -> EdgeTable {
             modifier,
             // GH #283: the phase as the caller read it off the running graph.
             is_default: *is_default,
+            lane: None,
         });
     }
     table
@@ -659,6 +677,7 @@ mod tests {
             condition: cond.map(|c| parse_condition(c).expect("condition parses")),
             modifier: None,
             is_default: false,
+            lane: None,
         }
     }
 
@@ -701,6 +720,7 @@ mod tests {
         Lane {
             route: route.into(),
             context: Vec::new(),
+            at: Vec::new(),
             because: format!("the {route} lane"),
         }
     }
@@ -924,11 +944,13 @@ mod tests {
                 Lane {
                     route: "in_quiet".into(),
                     context: vec!["k".into()],
+                    at: Vec::new(),
                     because: String::new(),
                 },
                 Lane {
                     route: "in_loud".into(),
                     context: vec!["k".into()],
+                    at: Vec::new(),
                     because: "because it matters".into(),
                 },
             ],
@@ -952,6 +974,7 @@ mod tests {
             emits: vec![Lane {
                 route: "episode".into(),
                 context: vec!["session_id".into()],
+                at: Vec::new(),
                 because: "one message per turn".into(),
             }],
         };

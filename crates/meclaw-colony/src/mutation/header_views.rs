@@ -630,6 +630,7 @@ mod tests {
             condition: condition.map(|c| crate::cel_eval::parse_condition(c).unwrap()),
             modifier: modifier.map(|m| crate::cel_eval::parse_modifier(&m).unwrap()),
             is_default: false,
+            lane: None,
         }
     }
 

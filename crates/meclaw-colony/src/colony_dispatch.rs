@@ -913,6 +913,11 @@ pub fn handle_read_graph(
             // so a reader of the graph — a boot probe, a builder, the UI — has
             // to be able to see it.
             is_default: e.is_default,
+            // GH #559: a v-lane's declared lane. `/colony/graph` is the only
+            // read of the topology anybody outside the colony gets, and the
+            // lane is what made a deep edge legal — an edge that shows its
+            // endpoints and hides its licence is unreviewable.
+            lane: e.lane.clone(),
         })
         .collect();
     crate::api_dto::ReadGraphReply {

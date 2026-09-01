@@ -652,6 +652,7 @@ fn table_for(hp: &HiveParams) -> EdgeTable {
             condition,
             modifier: None,
             is_default: spec.is_default,
+            lane: None,
         });
     }
     t
@@ -664,6 +665,7 @@ fn every_declared_lane_has_a_door_in_the_shells_own_graph() {
     let lane = |l: &meclaw_colony::config::LaneSpec| Lane {
         route: l.route.clone(),
         context: l.context.clone(),
+        at: Vec::new(),
         because: l.because.clone(),
     };
     let contract = HiveContract {

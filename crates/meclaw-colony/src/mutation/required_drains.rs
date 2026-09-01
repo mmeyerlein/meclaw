@@ -514,6 +514,7 @@ pub fn warn_on_missing_drains(
             // contract check reads (`BootEdge`) — the two halves judge one and
             // the same table.
             is_default: *is_default,
+            lane: None,
         });
     }
     for req in reqs {
@@ -579,6 +580,7 @@ mod tests {
                 .map(|c| crate::cel_eval::parse_condition(c).expect("test condition parses")),
             modifier: None,
             is_default: false,
+            lane: None,
         }
     }
 

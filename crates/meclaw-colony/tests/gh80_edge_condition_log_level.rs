@@ -87,6 +87,7 @@ fn edge(condition: &str) -> Edge {
         condition: Some(parse_condition(condition).expect("parse")),
         modifier: None,
         is_default: false,
+        lane: None,
     }
 }
 

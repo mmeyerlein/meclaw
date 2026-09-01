@@ -505,6 +505,7 @@ async fn a_default_edge_survives_a_reboot() {
             condition: e.condition.clone(),
             modifier: e.modifier.clone(),
             is_default: e.is_default,
+            lane: None,
         });
     }
     let matched = apply_edges(

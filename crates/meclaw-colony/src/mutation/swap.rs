@@ -32,6 +32,7 @@
 use crate::{
     cel_eval::{CompiledCondition, CompiledModifier},
     edge_table::EdgeTable,
+    mutation::MutationError,
 };
 use meclaw_core::{Path, Uuid};
 
@@ -73,6 +74,12 @@ pub(crate) struct SwungEdge {
     /// ordinary edge, which fires BESIDE the regular ones — double delivery on
     /// exactly the surface #283 reports.
     pub(crate) is_default: bool,
+    /// GH #559: the DECLARED lane of a v-lane, carried verbatim for the reason
+    /// every other field here is — a swing re-creates the edge, so what this
+    /// struct drops is gone. Dropping the lane would turn a v-lane, whose
+    /// legality rests on that declaration, into an ordinary deep edge nobody
+    /// could re-check.
+    pub(crate) lane: Option<String>,
 }
 
 /// The plan returned by [`plan_edge_swing`].
@@ -106,6 +113,93 @@ pub(crate) fn is_inside_subtree(endpoint: &str, root: &str) -> bool {
     endpoint.len() > root.len()
         && endpoint.starts_with(root)
         && endpoint.as_bytes().get(root.len()) == Some(&b'/')
+}
+
+/// Translate `p` from the subtree rooted at `t2` into the one rooted at `t3`,
+/// keeping the relative path below the root. `hit == false` leaves `p` alone.
+fn reanchor(p: &Path, t2: &Path, t3: &Path, hit: bool) -> Path {
+    if !hit {
+        return p.clone();
+    }
+    if p == t2 {
+        return t3.clone();
+    }
+    Path::new(&format!(
+        "{}{}",
+        t3.as_str(),
+        &p.as_str()[t2.as_str().len()..]
+    ))
+}
+
+/// GH #559 (ruling R-V2) — may this swap re-anchor the v-lanes that end inside
+/// `t2`, or must it refuse?
+///
+/// PURE, and pre-destructive by contract: the caller runs it during validation,
+/// so a refusal leaves the colony byte-identical. For every edge that declares
+/// a lane and ends STRICTLY inside `t2`'s subtree while its other end lies
+/// outside, the translated relative path (`/egon/talky` → `./talky`) must be a
+/// connect point the SUCCESSOR declares for that same lane. If it is not, the
+/// whole swap is refused — never the lane silently dropped, and never the swap
+/// applied with a lane left pointing into a generation that just left the
+/// graph.
+///
+/// `successor` is `t3`'s contract: the live one when `t3` already stands, the
+/// TEMPLATE's when the same diff is growing it. `None` (no contract at all) is
+/// a successor that invites no lane in, which is a refusal like any other.
+pub(crate) fn v_lane_reanchor_verdict(
+    t2: &Path,
+    t3: &Path,
+    edges: &EdgeTable,
+    successor: Option<&crate::mutation::hive_contract::HiveContract>,
+) -> Result<(), MutationError> {
+    for e in edges.iter() {
+        let Some(lane) = e.lane.as_deref() else {
+            continue;
+        };
+        for (endpoint, other) in [(&e.from, &e.to), (&e.to, &e.from)] {
+            if !is_inside_subtree(endpoint.as_str(), t2.as_str()) {
+                continue;
+            }
+            if other == t2 || is_inside_subtree(other.as_str(), t2.as_str()) {
+                continue; // the unit's own inside — it travels with the unit
+            }
+            let rel = format!("./{}", &endpoint.as_str()[t2.as_str().len() + 1..]);
+            let declared = successor.and_then(|c| {
+                c.accepts
+                    .iter()
+                    .chain(c.emits.iter())
+                    .find(|l| l.route == lane)
+            });
+            if declared.is_some_and(|l| l.at.contains(&rel)) {
+                continue;
+            }
+            return Err(MutationError::VLaneUnanchored(format!(
+                "swap_nodes[] would replace '{t2}' with '{t3}', but the v-lane \
+                 '{from}' -> '{to}' (lane '{lane}') ends at '{rel}' inside it and '{t3}' \
+                 declares no connect point there — {said}. A v-lane is re-anchored by \
+                 relative form or the swap is refused; it is never dropped. Add '{rel}' to \
+                 that lane's `at` in the successor's `params.contract`, or wire the lane \
+                 somewhere the successor invites it.",
+                t2 = t2.as_str(),
+                t3 = t3.as_str(),
+                from = e.from.as_str(),
+                to = e.to.as_str(),
+                said = declared.map_or_else(
+                    || format!("its contract does not mention '{lane}' at all"),
+                    |l| format!(
+                        "it declares '{lane}' ({because}) with connect points: {at}",
+                        because = l.because,
+                        at = if l.at.is_empty() {
+                            "none".to_string()
+                        } else {
+                            l.at.join(", ")
+                        }
+                    )
+                ),
+            )));
+        }
+    }
+    Ok(())
 }
 
 // ── Core function ─────────────────────────────────────────────────────────────
@@ -151,36 +245,65 @@ pub(crate) fn plan_edge_swing(t2: &Path, t3: &Path, edges: &EdgeTable) -> SwingP
     let incoming: Vec<&crate::edge_table::Edge> = edges.edges_to(t2);
 
     // Merge and deduplicate by id.
+    // GH #559: and the v-lanes. A v-lane names no endpoint exactly — it ends
+    // DEEP inside the unit — so the two indexed lookups above cannot see it,
+    // and R-V2 identifies it the only way it allows: by subtree membership.
+    // Only edges that DECLARE a lane are collected here, so an ordinary deep
+    // edge stays exactly as untouched as it has always been (GH #256).
+    let deep_v_lanes: Vec<&crate::edge_table::Edge> = edges
+        .iter()
+        .filter(|e| {
+            e.lane.is_some()
+                && (is_inside_subtree(e.from.as_str(), t2.as_str())
+                    || is_inside_subtree(e.to.as_str(), t2.as_str()))
+        })
+        .collect();
+
     let mut seen: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
     let mut all: Vec<&crate::edge_table::Edge> = Vec::new();
-    for e in outgoing.into_iter().chain(incoming) {
+    for e in outgoing.into_iter().chain(incoming).chain(deep_v_lanes) {
         if seen.insert(e.id) {
             all.push(e);
         }
     }
 
     for e in all {
+        // GH #559 — a v-lane ends DEEP in the unit (`/caller → /egon/talky`),
+        // so for it "external" is subtree MEMBERSHIP and not an exact path
+        // match (ruling R-V2: no owner field, no second bookkeeping). For every
+        // other edge the rule is byte-identical to what it was.
+        let member =
+            |p: &Path| p == t2 || (e.lane.is_some() && is_inside_subtree(p.as_str(), t2.as_str()));
+
         // GH #256 — subtree-internal edges are not this node's external edges.
         // The other endpoint decides: `t2 → t2/child` and `t2/child → t2` wire
         // the unit's own inside and belong to the unit, not to the swap. A
         // self-loop on t2 has t2 as its "other" endpoint, which is not strictly
         // inside, so it still falls through to the self-loop drop below.
         let other = if &e.from == t2 { &e.to } else { &e.from };
-        if is_inside_subtree(other.as_str(), t2.as_str()) {
+        if e.lane.is_none() && is_inside_subtree(other.as_str(), t2.as_str()) {
+            continue;
+        }
+        // The same statement for a v-lane: both ends inside the unit is the
+        // unit's own graph, and it travels with the unit.
+        //
+        // With ONE exception, and it is the case the lane-less rule reaches by
+        // accident rather than by intent: a self-loop ON `t2` is not the unit's
+        // inside, it is the degenerate edge the swing has always removed
+        // without re-inserting. `member` says `true` for both of its ends, so
+        // preserving "both ends inside" verbatim would leave a lane-carrying
+        // self-loop hanging on the retired node — neither swung nor dropped,
+        // which is the one outcome a swap must never produce.
+        let t2_self_loop = &e.from == t2 && &e.to == t2;
+        if e.lane.is_some() && !t2_self_loop && member(&e.from) && member(&e.to) {
             continue;
         }
 
-        // Swing: replace t2 endpoint(s) with t3.
-        let new_from = if &e.from == t2 {
-            t3.clone()
-        } else {
-            e.from.clone()
-        };
-        let new_to = if &e.to == t2 {
-            t3.clone()
-        } else {
-            e.to.clone()
-        };
+        // Swing: re-anchor the endpoint(s) that belong to t2's subtree onto t3,
+        // keeping whatever lies below (`/egon/talky` → `/egon2/talky`). For an
+        // exact `t2` endpoint that is the plain replacement it always was.
+        let new_from = reanchor(&e.from, t2, t3, member(&e.from));
+        let new_to = reanchor(&e.to, t2, t3, member(&e.to));
 
         // Always remove the old edge.
         plan.remove_ids.push(e.id);
@@ -207,6 +330,11 @@ pub(crate) fn plan_edge_swing(t2: &Path, t3: &Path, edges: &EdgeTable) -> SwingP
             // GH #283: verbatim, exactly like condition and modifier above —
             // a swing changes a swung edge's ENDPOINTS and nothing else.
             is_default: e.is_default,
+            // GH #559: verbatim too. The RE-ANCHORING of a deep v-lane is a
+            // separate question and is decided before the swing runs
+            // (`v_lane_reanchor_verdict`); by the time an edge reaches here its
+            // lane is settled and only its endpoints move.
+            lane: e.lane.clone(),
         });
     }
 
@@ -229,6 +357,7 @@ mod tests {
             condition: None,
             modifier: None,
             is_default: false,
+            lane: None,
         }
     }
 
@@ -299,6 +428,7 @@ mod tests {
             condition: Some(cond.clone()),
             modifier: Some(modif.clone()),
             is_default: false,
+            lane: None,
         };
         let tbl = table_with(vec![e]);
 
@@ -366,6 +496,55 @@ mod tests {
     }
 
     // ── T5: self-loop t2 → t2 ─────────────────────────────────────────────
+
+    /// GH #559 — a self-loop ON `t2` that declares a lane falls exactly like
+    /// the lane-less one beside it.
+    ///
+    /// The v-lane rule is "both ends inside the unit → the edge travels with
+    /// the unit", and `member` says `true` for both ends of a self-loop on the
+    /// unit's own root. Read verbatim that would have left a lane-carrying
+    /// self-loop hanging on the retired node — neither swung onto the successor
+    /// nor removed, which is the one outcome a swap must never produce. The
+    /// self-loop is not the unit's inside; it is the degenerate edge.
+    #[test]
+    fn a_lane_self_loop_on_t2_still_falls() {
+        let mut edge = make_edge("/main/t2", "/main/t2");
+        edge.lane = Some("recall".into());
+        let id = edge.id;
+        let plan = plan_edge_swing(
+            &Path::new("/main/t2"),
+            &Path::new("/main/t3"),
+            &table_with(vec![edge]),
+        );
+        assert_eq!(
+            plan.remove_ids,
+            vec![id],
+            "the degenerate edge is removed, lane or not"
+        );
+        assert!(
+            plan.inserts.is_empty(),
+            "and nothing is re-inserted: {:?}",
+            plan.inserts
+        );
+    }
+
+    /// The counterpart, so the fix above cannot be read as "lanes inside the
+    /// unit are fair game": a DEEP self-loop is interior wiring and travels
+    /// with the unit untouched, exactly like every other internal edge.
+    #[test]
+    fn a_deep_lane_self_loop_inside_the_unit_is_left_alone() {
+        let mut edge = make_edge("/main/t2/talky", "/main/t2/talky");
+        edge.lane = Some("recall".into());
+        let plan = plan_edge_swing(
+            &Path::new("/main/t2"),
+            &Path::new("/main/t3"),
+            &table_with(vec![edge]),
+        );
+        assert!(
+            plan.remove_ids.is_empty() && plan.inserts.is_empty(),
+            "the unit's own inside is not the swap's business: {plan:?}"
+        );
+    }
 
     #[test]
     fn self_loop_on_t2_drops_insert_but_still_removes() {

@@ -59,4 +59,4 @@ It is not "config over code" as a slogan. Code exists — `bash`, `code` and `ha
 cells run real programs, under a real kernel sandbox
 ([Why Rust, why Linux](rust-and-linux.md)). The point is narrower and harder: the
 *harness* — who talks to whom, what loops, what escalates — is data, changed through one
-audited door, readable by every tool you already have.
+recorded door, readable by every tool you already have.

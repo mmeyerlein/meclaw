@@ -370,7 +370,10 @@ fn two_port_boundary_breaches_in_one_diff_are_both_named() {
     ]});
 
     let mut rejection = MutationRejection::new();
-    collect_hive_port_boundary(&diff, "/", &sealed, &mut rejection);
+    // GH #559: the same call now also carries the hive contracts (the v-lane
+    // half of stage 6). Neither edge here declares a `lane`, so an empty slice
+    // is the whole of it and the seal verdict is the one it always was.
+    collect_hive_port_boundary(&diff, "/", &sealed, &[], &mut rejection);
 
     assert_eq!(
         rejection.entries().len(),

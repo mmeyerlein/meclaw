@@ -147,12 +147,33 @@ pub(crate) fn canonical_port_name(raw: &str) -> Option<&str> {
 /// GH #293 — this is the thin `Result` face of [`addressed_port_boundary`]: the
 /// FIRST breach the collecting core produces is, by construction, the one this
 /// function returned before, so every verdict it ever gave is byte-identical.
+///
+/// GH #559 — this face judges the SEAL and nothing else, and it is LANE-BLIND
+/// by construction: it is handed no contracts (`None` below), so the v-lane
+/// rule table does not run at all and an edge that declares a `lane` is
+/// measured exactly as an undeclared one would be.
+///
+/// That is deliberate, and it is what its callers need tomorrow as much as
+/// today. Every one of them is a template AUDIT (`gh203_documented_port_addresses`,
+/// `gh311_ports_slot_addresses`, `gh196_shipped_hive_ports`, `access_template`,
+/// `w13_memory_hive_is_sealed`): each synthesises an `{from, to}` edge out of a
+/// documented endpoint and asks ONE question — can an outsider reach in past
+/// the port. None of them synthesises a `lane`, and once R-V3 has migrated the
+/// shipped chains they still will not: the lane is a property of the mutation
+/// that draws the edge, not of the address the README documents. A function
+/// handed no contracts cannot honestly judge a contract rule, so it does not
+/// try — with an empty contract slice the target-level row would have fired
+/// `v_lane_no_connect_point` on every lane-carrying edge, which is a verdict
+/// about a declaration nobody showed it.
+///
+/// The v-lane rules ride on [`collect_hive_port_boundary`], which IS handed the
+/// contracts.
 pub fn validate_hive_port_boundary(
     diff: &JsonValue,
     guard_scope: &str,
     sealed: &[SealedHive],
 ) -> Result<(), MutationError> {
-    addressed_port_boundary(diff, guard_scope, sealed)
+    addressed_port_boundary(diff, guard_scope, sealed, None)
         .into_iter()
         .next()
         .map_or(Ok(()), |(error, _)| Err(error))
@@ -169,15 +190,26 @@ pub fn validate_hive_port_boundary(
 /// now the first-error face of the same core.
 ///
 /// [`Stage::ContractLocality`]: crate::mutation::rejection::Stage::ContractLocality
+///
+/// GH #559 — and the v-lane third of it, on the same pass. An `add_edges` entry
+/// that declares a `lane` is a v-lane, and the levels it crosses are judged by
+/// the rule table in [`v_lane_verdict`]: a level that declares the lane and
+/// permits this endpoint waives its seal for THIS edge, a level that declares
+/// the lane and permits nothing may not be skipped, and the target hive owes a
+/// connect point. `contracts` carries what every hive declared — an empty slice
+/// still RUNS the rule table (a colony where nobody declared a contract owes a
+/// v-lane a connect point just the same); it is the seal-only face above that
+/// skips it entirely.
 pub fn collect_hive_port_boundary(
     diff: &JsonValue,
     guard_scope: &str,
     sealed: &[SealedHive],
+    contracts: &[crate::mutation::hive_contract::HiveContract],
     into: &mut crate::mutation::rejection::MutationRejection,
 ) {
     use crate::mutation::rejection::{Stage, Violation};
 
-    for (error, address) in addressed_port_boundary(diff, guard_scope, sealed) {
+    for (error, address) in addressed_port_boundary(diff, guard_scope, sealed, Some(contracts)) {
         into.push(Violation::from_error(
             Stage::ContractLocality,
             &error,
@@ -192,15 +224,27 @@ pub fn collect_hive_port_boundary(
 /// The address is the resolved absolute path rather than the raw endpoint
 /// spelling, because that is the node the seal is about and two different
 /// spellings (`./aff/store`, `aff/store`) name the same breach.
+///
+/// GH #559: for an edge that declares a lane the v-lane verdict runs FIRST, and
+/// it produces two things — the violations of the rule table, and the set of
+/// (hive, endpoint) pairs whose seal that same table waived. The waiver is why
+/// the two checks cannot be two passes: a v-lane that a level opened for is not
+/// a port breach at that level, and a second pass judging the seal alone would
+/// report one.
+///
+/// `contracts` is an `Option` rather than a possibly-empty slice, because the
+/// two states are different questions and not a matter of degree: `None` means
+/// "do not judge lanes at all" (the seal-only face), `Some(&[])` means "judge
+/// them against a colony in which nobody declared anything". The waiver list is
+/// rebuilt PER EDGE — a level that opened for one edge's lane has said nothing
+/// about the next edge.
 fn addressed_port_boundary(
     diff: &JsonValue,
     guard_scope: &str,
     sealed: &[SealedHive],
+    contracts: Option<&[crate::mutation::hive_contract::HiveContract]>,
 ) -> Vec<(MutationError, String)> {
     let mut violations = Vec::new();
-    if sealed.is_empty() {
-        return violations;
-    }
     let Some(obj) = diff.as_object() else {
         // Shape errors are surfaced by schema validation; nothing to bound.
         return violations;
@@ -218,6 +262,26 @@ fn addressed_port_boundary(
         };
         let from_abs = crate::mutation::resolve_scoped_path(guard_scope, from);
         let to_abs = crate::mutation::resolve_scoped_path(guard_scope, to);
+
+        // GH #559: the declared lane, if this is a v-lane. Its verdict comes
+        // before the seal so that the waivers it grants are known when the seal
+        // is measured, and so that a refusal leads with the sentence that says
+        // what to do about it.
+        let mut waived: Vec<(String, String)> = Vec::new();
+        if let (Some(cs), Some(lane)) = (contracts, e.get("lane").and_then(|v| v.as_str())) {
+            for (endpoint_abs, other_abs) in [
+                (from_abs.as_str(), to_abs.as_str()),
+                (to_abs.as_str(), from_abs.as_str()),
+            ] {
+                let verdict = v_lane_verdict(lane, endpoint_abs, other_abs, sealed, cs);
+                waived.extend(verdict.waived);
+                violations.extend(verdict.violations);
+            }
+        }
+
+        if sealed.is_empty() {
+            continue;
+        }
         for hive in sealed {
             check_endpoint_pair(
                 hive,
@@ -225,6 +289,7 @@ fn addressed_port_boundary(
                 from_abs.as_str(),
                 to_abs.as_str(),
                 "from",
+                &waived,
                 &mut violations,
             );
             check_endpoint_pair(
@@ -233,6 +298,7 @@ fn addressed_port_boundary(
                 to_abs.as_str(),
                 from_abs.as_str(),
                 "to",
+                &waived,
                 &mut violations,
             );
         }
@@ -252,6 +318,7 @@ fn check_endpoint_pair(
     endpoint_abs: &str,
     other_abs: &str,
     side: &str,
+    waived: &[(String, String)],
     out: &mut Vec<(MutationError, String)>,
 ) {
     if !hive.is_interior(endpoint_abs) {
@@ -262,6 +329,16 @@ fn check_endpoint_pair(
     }
     if hive.contains(other_abs) {
         return; // both ends inside the hive (or the hive marker itself)
+    }
+    // GH #559: the fourth legal constellation. This hive declared the edge's
+    // lane and named THIS endpoint as a connect point for it — the one
+    // exception the template pronounces about itself, so it is not a breach of
+    // its own seal. `ports: []` stays literally true for every other lane.
+    if waived
+        .iter()
+        .any(|(h, ep)| h == &hive.path && ep == endpoint_abs)
+    {
+        return;
     }
     let ports = if hive.ports.is_empty() {
         "none (transit through the hive path only)".to_string()
@@ -278,6 +355,214 @@ fn check_endpoint_pair(
         )),
         endpoint_abs.to_string(),
     ));
+}
+
+/// GH #559 — what [`v_lane_verdict`] decided about ONE endpoint of a v-lane.
+#[derive(Debug, Default)]
+pub struct VLaneVerdict {
+    /// `(hive path, endpoint)` pairs whose seal this lane's declaration opened.
+    /// The port boundary treats such a pair as legal — see
+    /// [`check_endpoint_pair`].
+    pub waived: Vec<(String, String)>,
+    /// Rule-table refusals, each with the endpoint it concerns as its address.
+    pub violations: Vec<(MutationError, String)>,
+}
+
+/// The parent scope of `abs`, or `None` for the root itself.
+///
+/// A registered node's parent IS a hive scope: only a hive holds members
+/// (`docs/meclaw-overview.md` § The hive boundary), so "the hive an endpoint sits
+/// in" needs no registry lookup — it is one path operation. That is what lets
+/// this rule table stay pure.
+fn parent_scope(abs: &str) -> Option<&str> {
+    match abs.rfind('/') {
+        None | Some(0) if abs == "/" => None,
+        Some(0) => Some("/"),
+        Some(i) => Some(&abs[..i]),
+        None => None,
+    }
+}
+
+/// The deepest scope both paths lie in — the level whose graph an edge between
+/// them belongs to (design § 1: "an edge lives in the graph of the deepest
+/// common ancestor").
+fn lowest_common_scope(a: &str, b: &str) -> String {
+    let mut common = String::from("/");
+    let mut it_a = a.split('/').filter(|s| !s.is_empty());
+    let mut it_b = b.split('/').filter(|s| !s.is_empty());
+    // The LCA of the two ENDPOINTS is one level above their last shared
+    // segment when they differ, and the endpoint's own parent when one is an
+    // ancestor of the other. Walking the shared prefix and stopping at the
+    // first difference gives the first; the callers below only ever ask about
+    // levels STRICTLY between this and an endpoint, which gives the second.
+    loop {
+        match (it_a.next(), it_b.next()) {
+            (Some(x), Some(y)) if x == y => {
+                if common == "/" {
+                    common = format!("/{x}");
+                } else {
+                    common.push('/');
+                    common.push_str(x);
+                }
+            }
+            _ => break,
+        }
+    }
+    common
+}
+
+/// The relative path from `scope` down to `abs`, in the `./x` spelling a
+/// contract writes (`docs/config.md` § `params.contract`). `None` when `abs`
+/// does not lie below `scope`.
+fn relative_to(scope: &str, abs: &str) -> Option<String> {
+    let prefix = if scope == "/" {
+        "/".to_string()
+    } else {
+        format!("{scope}/")
+    };
+    abs.strip_prefix(&prefix)
+        .filter(|rest| !rest.is_empty())
+        .map(|rest| format!("./{rest}"))
+}
+
+/// GH #559 — THE rule table of a v-lane (ruling R-V1), for one endpoint.
+///
+/// A v-lane is a deep edge that names the lane it carries. `endpoint_abs` is
+/// the end under scrutiny, `other_abs` its partner; the levels judged are the
+/// hives strictly between the two ends' common scope and `endpoint_abs`, from
+/// the outermost inwards, with the endpoint's own parent as the TARGET hive.
+///
+/// | crossed level | what its contract says about the lane | verdict |
+/// |---|---|---|
+/// | unsealed | nothing | transparent — skipped |
+/// | unsealed | declared, no `at` naming this endpoint | `v_lane_mandatory_hop` |
+/// | sealed | `at` names this endpoint | allowed — the seal is waived |
+/// | sealed | nothing, or `at` without a hit | the existing `hive_port_boundary` stays |
+/// | the target hive | `at` does not name this endpoint | `v_lane_no_connect_point` |
+///
+/// The two halves are one rule read from two sides. A level that DECLARES a
+/// lane has said it takes part in it — it stamps, filters, guards — so skipping
+/// it drops something nobody would notice was missing (`v_lane_mandatory_hop`).
+/// A level that declares an `at` for the lane has said the opposite about that
+/// one target: pass. And the target owes the connect point, because `ports: []`
+/// has to stay literally true — the v-lane is the exception a template
+/// pronounces about ITSELF, never one a caller helps itself to.
+///
+/// PURE: paths and declarations, no FS and no registry. An endpoint that is a
+/// direct member of the common scope is not deep and is not judged at all,
+/// which is what keeps an ordinary edge that happens to carry a lane honest.
+#[must_use]
+pub fn v_lane_verdict(
+    lane: &str,
+    endpoint_abs: &str,
+    other_abs: &str,
+    sealed: &[SealedHive],
+    contracts: &[crate::mutation::hive_contract::HiveContract],
+) -> VLaneVerdict {
+    let mut out = VLaneVerdict::default();
+    let scope = lowest_common_scope(endpoint_abs, other_abs);
+    let Some(target) = parent_scope(endpoint_abs) else {
+        return out; // the root is nobody's deep endpoint
+    };
+    // Not deep on this side: the endpoint is a member of the very scope the
+    // edge lives in, so it crosses no level and there is nothing to declare.
+    if target == scope || relative_to(&scope, endpoint_abs).is_none() {
+        return out;
+    }
+
+    // The crossed levels, outermost first: every scope strictly below the
+    // common one and at or above the target hive.
+    let mut levels: Vec<&str> = Vec::new();
+    let mut cur = Some(target);
+    while let Some(level) = cur {
+        if level == scope || relative_to(&scope, level).is_none() {
+            break;
+        }
+        levels.push(level);
+        cur = parent_scope(level);
+    }
+    levels.reverse();
+
+    for level in levels {
+        let is_target = level == target;
+        // Every crossed level is an ancestor of the endpoint by construction —
+        // but this runs inside the colony task, where a wrong assumption is not
+        // a failed check, it is the whole colony gone (invariant: the colony
+        // hot path is panic-free). A level that cannot name the endpoint relatively can
+        // make no statement about it, so it is skipped, which is the same
+        // answer the transparent row gives.
+        let Some(rel) = relative_to(level, endpoint_abs) else {
+            continue;
+        };
+        let declared = contracts
+            .iter()
+            .find(|c| c.hive_path == level)
+            .and_then(|c| {
+                c.accepts
+                    .iter()
+                    .chain(c.emits.iter())
+                    .find(|l| l.route == lane)
+            });
+        let permits = declared.is_some_and(|l| l.at.contains(&rel));
+        let is_sealed = sealed.iter().any(|h| h.path == level);
+
+        if permits {
+            // Row 3: the level opened for this lane at this address. The waiver
+            // is only meaningful for a sealed level, but recording it
+            // unconditionally keeps the two halves independent.
+            out.waived
+                .push((level.to_string(), endpoint_abs.to_string()));
+            continue;
+        }
+        if is_target {
+            // Row 5: the target owes the connect point, and nothing else can
+            // supply it — a caller that could pick its own docking point is the
+            // port bypass this whole boundary exists to refuse.
+            let because = declared.map_or_else(
+                || format!("'{lane}' is not in its contract at all"),
+                |l| {
+                    format!(
+                        "it declares '{lane}' ({because}) but its connect points are: {at}",
+                        because = l.because,
+                        at = if l.at.is_empty() {
+                            "none".to_string()
+                        } else {
+                            l.at.join(", ")
+                        }
+                    )
+                },
+            );
+            out.violations.push((
+                MutationError::VLaneNoConnectPoint(format!(
+                    "add_edges[] declares lane '{lane}' onto '{endpoint_abs}', but the hive \
+                     '{level}' names no connect point for it — {because}. A v-lane docks where \
+                     the target says it docks: add '{rel}' to that lane's `at` in \
+                     '{level}'.params.contract."
+                )),
+                endpoint_abs.to_string(),
+            ));
+            continue;
+        }
+        if let Some(l) = declared.filter(|_| !is_sealed) {
+            // Row 2: an open level that speaks about this lane is a MANDATORY
+            // hop. It is open, so the seal has nothing to say — and skipping it
+            // would silently drop whatever it contributes to the lane.
+            out.violations.push((
+                MutationError::VLaneMandatoryHop(format!(
+                    "add_edges[] declares lane '{lane}' onto '{endpoint_abs}' and would skip the \
+                     hive '{level}', which declares that lane itself ({because}) — a level that \
+                     takes part in a lane may not be bypassed. Route through '{level}', or let it \
+                     waive the hop by adding '{rel}' to that lane's `at`.",
+                    because = l.because
+                )),
+                endpoint_abs.to_string(),
+            ));
+        }
+        // Rows 1 and 4 produce nothing here: an open level that says nothing is
+        // transparent, and a sealed level that says nothing keeps the
+        // `hive_port_boundary` the seal check is about to raise.
+    }
+    out
 }
 
 /// Call-site adapter (NOT pure — reads `config.json`): collect the hives that
@@ -618,6 +903,79 @@ mod tests {
                 slots: vec![],
             }],
             "only the entry that can match survives, and the hive stays sealed"
+        );
+    }
+
+    // ---- GH #559: the path arithmetic the rule table stands on ----
+
+    /// The three helpers are pure path arithmetic, and pure path arithmetic is
+    /// exactly where an off-by-one hides: every verdict of the rule table is a
+    /// statement about WHICH levels lie between two endpoints, so a wrong
+    /// answer here is a seal opened for the wrong hive.
+    #[test]
+    fn the_crossed_levels_are_derived_from_the_two_endpoints_alone() {
+        assert_eq!(parent_scope("/"), None, "the root has no parent");
+        assert_eq!(parent_scope("/caller"), Some("/"));
+        assert_eq!(parent_scope("/outer/inner/target"), Some("/outer/inner"));
+
+        // Two endpoints in different branches meet at their shared prefix.
+        assert_eq!(lowest_common_scope("/caller", "/outer/inner/target"), "/");
+        assert_eq!(lowest_common_scope("/a/b/x", "/a/b/y/z"), "/a/b");
+        // One endpoint an ancestor of the other: the shallower one IS the
+        // common scope, which is what makes `h -> h/child` not a v-lane.
+        assert_eq!(lowest_common_scope("/a/b", "/a/b/c"), "/a/b");
+
+        assert_eq!(relative_to("/", "/outer"), Some("./outer".to_string()));
+        assert_eq!(
+            relative_to("/outer", "/outer/inner/target"),
+            Some("./inner/target".to_string())
+        );
+        // Not below it, and not itself: a level that is not an ancestor names
+        // no relative path at all.
+        assert_eq!(relative_to("/outer", "/outer"), None);
+        assert_eq!(relative_to("/outer", "/other/x"), None);
+        // The suffix rule, not a prefix rule: `/outer-2` is a SIBLING.
+        assert_eq!(relative_to("/outer", "/outer-2/x"), None);
+    }
+
+    /// An edge that declares a lane but is not DEEP on either side is not a
+    /// v-lane at all — it crosses no level, so the rule table has nothing to
+    /// say and says nothing. Pinned because the opposite (judging every
+    /// lane-carrying edge) would refuse the ordinary rim-to-rim edge every
+    /// migrated chain still needs.
+    #[test]
+    fn a_lane_between_two_members_of_one_scope_is_not_judged() {
+        let v = v_lane_verdict("recall", "/a", "/b", &sealed(), &[]);
+        assert!(v.violations.is_empty(), "{:?}", v.violations);
+        assert!(v.waived.is_empty());
+    }
+
+    /// The seal-only face is LANE-BLIND, and that is a promise its callers
+    /// rely on rather than an accident of an empty slice.
+    ///
+    /// Every caller is a template audit synthesising `{from, to}` out of a
+    /// documented endpoint. Handed no contracts, this face cannot know whether
+    /// a lane has a connect point — so it does not ask: a lane-carrying edge
+    /// gets exactly the verdict the same edge without the key would get, in
+    /// both directions. (The collecting face, which IS handed the contracts,
+    /// asks; that is what the integration suite pins.)
+    #[test]
+    fn the_seal_only_face_does_not_judge_lanes() {
+        let lane_edge = |from: &str, to: &str| json!({"add_edges": [{"from": from, "to": to, "lane": "recall"}]});
+        // A deep endpoint under an UNSEALED hive: legal without the key, and
+        // legal with it — no `v_lane_no_connect_point` invented out of a
+        // declaration nobody showed this function.
+        assert!(
+            validate_hive_port_boundary(&lane_edge("./caller", "./open/deep"), "/", &sealed())
+                .is_ok(),
+            "a lane the seal has no opinion about must pass"
+        );
+        // And where the seal DID refuse, it still refuses, with its own code.
+        assert_eq!(
+            validate_hive_port_boundary(&lane_edge("./caller", "./aff/store"), "/", &sealed())
+                .expect_err("the seal is untouched by the key")
+                .error_code(),
+            "hive_port_boundary"
         );
     }
 

@@ -1021,6 +1021,7 @@ mod tests {
             condition: None,
             modifier: None,
             is_default: false,
+            lane: None,
         }
     }
 

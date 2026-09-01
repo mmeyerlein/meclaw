@@ -78,6 +78,13 @@ the display refuses a component whose name does not start with the view's own
 id, and says `component_prefix`. A display may hold views from several apps, so
 a name that did not carry its origin would be a name two apps could both claim.
 
+**A declared v-lane is drawn differently.** A mutation may name the lane that
+made a deep edge legal (GH #559), and `/colony/graph` reports it on the edge.
+The layout hands it down as the `vlane` prop and the browser half draws such an
+edge dashed, with the lane's name in its tooltip. It is a rendering and nothing
+more: the component keeps `editable: []`, nothing is written back, and an edge
+that declares no lane looks exactly as it did before.
+
 A new kind of thing on the canvas is therefore one more component and one more
 branch of the tree -- a template edit, never a release. The binary that serves
 it knows none of this.

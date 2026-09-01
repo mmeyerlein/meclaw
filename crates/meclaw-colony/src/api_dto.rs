@@ -363,6 +363,14 @@ pub struct GraphEdgeDto {
     /// what the boot probes were caught in before this key existed.
     #[serde(default, rename = "default")]
     pub is_default: bool,
+    /// GH #559: the lane this edge was declared to carry, if it is a v-lane.
+    ///
+    /// Optional like `condition` and `modifier` and for their reason: an absent
+    /// key IS the statement — this edge declares no lane and is the ordinary
+    /// edge the substrate has always had. Only a v-lane says a name here, and
+    /// it says it because the declaration is what made the edge legal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lane: Option<String>,
 }
 
 /// Reply for [`crate::ColonyMsg::ReadMutationsAudit`].

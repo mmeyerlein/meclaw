@@ -160,6 +160,7 @@ fn table_for(hp: &HiveParams) -> EdgeTable {
             // expression here reads keys a bare route probe does not carry.
             modifier: None,
             is_default: false,
+            lane: None,
         });
     }
     t
@@ -176,6 +177,7 @@ fn contract_of(hp: &HiveParams) -> Option<HiveContract> {
     let lane = |l: &meclaw_colony::config::LaneSpec| Lane {
         route: l.route.clone(),
         context: l.context.clone(),
+        at: Vec::new(),
         because: l.because.clone(),
     };
     Some(HiveContract {

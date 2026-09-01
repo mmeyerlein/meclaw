@@ -497,6 +497,33 @@ pub struct LaneSpec {
     /// Absent and `[]` are the same statement: this lane requires nothing.
     #[serde(default)]
     pub context: Vec<String>,
+    /// GH #559 (ruling R-V1) — the CONNECT POINTS of this lane: the relative
+    /// paths, below this hive, a v-lane carrying this lane may end on.
+    ///
+    /// This is the one exception a sealed hive pronounces ITSELF. `ports: []`
+    /// stays literally true — nobody outside may address an interior node —
+    /// and an `at` entry says: for THIS lane, and no other, an edge may end
+    /// here. `"./talky"` names a direct child, `"./inner/talky"` something
+    /// deeper.
+    ///
+    /// An entry is always a path BELOW the declaring hive, never `"."`. The
+    /// connect point is owed by the hive the endpoint sits IN, so a lane that
+    /// is meant to end on a hive's own rim is declared one level up, as that
+    /// parent's `"./<hive>"` — the parent is the level the edge crosses to get
+    /// there, and the rim is what it reaches. A lone `"."` matches no endpoint
+    /// and is therefore inert, which is the GH #196 shape: prefer the spelling
+    /// that names something.
+    ///
+    /// It has a second meaning on a level the lane merely CROSSES. Declaring a
+    /// lane at all is the statement "I take part in this lane" — I stamp, I
+    /// filter, I guard — so a v-lane may not skip that level (`
+    /// v_lane_mandatory_hop`). An `at` entry is how such a level waives that
+    /// claim for a given target.
+    ///
+    /// Absent and `[]` are the same statement: no connect point, and a v-lane
+    /// onto this hive's interior is refused `v_lane_no_connect_point`.
+    #[serde(default)]
+    pub at: Vec<String>,
     /// What this lane is for, in the hive's own words. Travels verbatim into a
     /// rejection — a refusal that cannot say what it protects is a refusal
     /// people route around (same reasoning as `required_drains[].because`).
@@ -675,6 +702,17 @@ pub struct EdgeSpec {
     /// — it earns a `BootstrapPlan::advisories` note, never a refusal.
     #[serde(rename = "default", default)]
     pub is_default: bool,
+    /// GH #559 (ruling R-V1 2026-08-31): declared lane of a v-lane (deep edge).
+    /// `None` = ordinary edge, today's semantics untouched. Serialised into the
+    /// edge table and exposed on `/colony/graph`.
+    ///
+    /// The lane has to be SAID, not inferred: a CEL guard that stamps
+    /// `hop.route` cannot be read back reliably (it may compute the value), so
+    /// the one check that decides whether a deep edge may cross a level — does
+    /// this level take part in this lane — would have nothing to compare
+    /// against. See [`crate::mutation::port_boundary::v_lane_verdict`].
+    #[serde(default)]
+    pub lane: Option<String>,
 }
 
 #[cfg(test)]
