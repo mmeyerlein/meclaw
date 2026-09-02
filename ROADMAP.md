@@ -31,18 +31,16 @@ Release detail is in [CHANGELOG.md](CHANGELOG.md) and the
 
 ## Now: the wave that shipped, and what it left standing
 
-The organism wave is **released as v0.28.0**. A colony grown from a seed into a
-personal operating system — the four composition levels ship as templates, and
-[`examples/meclaw-os`](examples/meclaw-os/) proves the claim end to end: an
-empty seed, one declaration, a whole shell. What the wave did is the
-[`[0.28.0]`](CHANGELOG.md) section of the changelog: a way in for the organism,
-surfaces of its own, a boundary, an authoring loop that still knows what it was
-asked for and who to answer after it has looked something up, a broker that
-answers the question it was asked rather than the one before it, and containers
-whose children are addresses rather than a broadcast. The measurement that
-opened the wave closed with it: the fast lookup lane is gone, a conversation
-surface asks its own memory in the round it is already running, and the
-reasoning core is consulted for thinking alone.
+The clean-up wave is **released as v0.29.0**. Everything the organism wave left
+standing in the tracker is either built or ruled: the submitter lives in the
+front door, the deep edge is the declared form (v-lanes, ADR-0020) and the three
+lanes that only bridged a level ride it now, a member carries its own broker and
+its brains ask it over a sealed lane, a newborn's contracts are read below the
+template root, and a generation grows with its credential road in one act. What
+the wave did is the [`[0.29.0]`](CHANGELOG.md) section of the changelog. The
+substrate flanks it opened — a lane cannot vanish inside one diff, a capped round
+is a named partial answer, a key collision is a refusal, a citation marker never
+reaches a person — closed with it.
 
 Nothing is open under this horizon. The streams below carry what comes next; the
 tracker carries the rest.
@@ -144,6 +142,8 @@ a requirement, not a convention.
 One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- **v0.29.0** — the tracker is clean: the front door is one place, the deep edge
+  is the declared form, and a generation grows with its keys in one act.
 - **v0.28.0** — the organism grows its own surfaces: four composition levels from
   one catalogue, a builder that submits through one front, a core with one brain
   that declares its own errand, and one memory hive for several askers.

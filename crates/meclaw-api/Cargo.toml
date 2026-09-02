@@ -27,8 +27,8 @@ serde_json = "1"
 tokio = { version = "1", features = ["sync", "macros", "time"] }
 tracing = "0.1"
 anyhow = "1"
-meclaw-core = { path = "../meclaw-core", version = "0.28.0" }
-meclaw-colony = { path = "../meclaw-colony", version = "0.28.0" }
+meclaw-core = { path = "../meclaw-core", version = "0.29.0" }
+meclaw-colony = { path = "../meclaw-colony", version = "0.29.0" }
 # GH #383: `meclaw-surface` is gone from here. GH #381 moved the LiveView
 # machinery out of this crate so the `web` cell could speak the protocol without
 # depending on the HTTP API; #383 removed this crate's last consumer of it (the

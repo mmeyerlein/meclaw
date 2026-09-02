@@ -234,7 +234,7 @@ case ":${PATH}:" in
         say ""
         "${INSTALL_DIR}/${BIN_NAME}" --version
         say ""
-        say "Next: https://github.com/${REPO}#quickstart"
+        say "Next: https://github.com/${REPO}#start-an-assistant"
         ;;
     *)
         say ""

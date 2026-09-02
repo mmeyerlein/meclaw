@@ -7,7 +7,7 @@
 **An agentic build system for agentic systems. Ontology-grounded, auditable, one Rust binary.**
 
 [![ci](https://github.com/mmeyerlein/meclaw/actions/workflows/ci.yml/badge.svg)](https://github.com/mmeyerlein/meclaw/actions/workflows/ci.yml)
-[![tests](https://img.shields.io/badge/tests-6200%2B%20passing-brightgreen)](#)
+[![tests](https://img.shields.io/badge/tests-6500%2B%20passing-brightgreen)](#)
 [![rust](https://img.shields.io/badge/rust-edition%202024-orange)](#)
 [![license](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](#license)
 
@@ -163,14 +163,14 @@ macOS build. Authentication is the reverse proxy's job, as for every Linux daemo
 
 `code` cells run `python3`, nothing else. One screen, one app; voice is roadmap, not a
 feature. Not for unsupervised production yet. Running costs, measured on one production
-colony: 0.32 EUR per day in conversation, 0.024 EUR idle
-([`docs/costs.md`](docs/costs.md)).
+colony: 0.32 EUR per day in conversation, method and pinned window in
+[`docs/costs.md`](docs/costs.md).
 
 ## Under heavy development
 
 meclaw is not finished, and it is open source so it does not have to be finished alone.
 Good first contributions: example colonies, template cells, docs drift-fixes — see
-[CONTRIBUTING.md](CONTRIBUTING.md) and the `good first issue` label. **6200+ tests,
+[CONTRIBUTING.md](CONTRIBUTING.md) and the `good first issue` label. **6500+ tests,
 0 fail**; release truth lives in [CHANGELOG.md](CHANGELOG.md).
 
 ## Stability

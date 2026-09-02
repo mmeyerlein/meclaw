@@ -9,9 +9,17 @@ documented `error_code` strings (README § Stability). Anything that breaks one 
 them is listed under **Breaking** in its release, with the migration named. The
 Rust crates are internals and move without notice.
 
-## [Unreleased]
+## [0.29.0] — 2026-09-02
 
 ### Changed
+
+#### README: the quickstart is the path a stranger actually walks
+
+The README quickstart is now the path a stranger actually walks (PATH, tag-pinned
+clone, key hint, a jq step that reports an error hop); the retracted idle-cost
+figure is gone. Five steps, and the fourth already shows the point: the answer is
+not a return value, it is a message on the record. The retraction itself is in
+`docs/costs` § *Retraction* (`memory-hive@3.0.0`).
 
 #### `colony-view@1.0.2`: a frame says which level it is (GH #549)
 
