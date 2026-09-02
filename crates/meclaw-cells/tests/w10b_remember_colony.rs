@@ -275,7 +275,7 @@ fn main_config() -> Value {
         // THE PER-TURN LANE, and since ruling Q11 (GH #298) the whole write
         // path: ONE edge from the talky's `turn_write` route into the hive's
         // writer port, with nothing between them -- the shape `w9a` measures
-        // and the shape `member@1.4.0` ships (GH #527).
+        // and the shape `member@1.5.0` ships (GH #527).
         //
         // **It used to run through `memory-drain` and that is retracted (GH
         // #523).** The adapter turns ONE CLOSED SESSION into N episodes and its

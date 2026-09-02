@@ -221,6 +221,27 @@ ends at. Two subscribers are two edges. There is no fan-out form and there is no
 add inside the hive -- the subscriber list lives in the store, the delivery list lives in
 the graph, and the push only travels where both agree.
 
+**When the subscriber is a COMPOSITION and not a cell** (GH #561). A generation is one
+agent with two brains behind two sealed rims, and since the `assistant` level stopped
+carrying the pack the push ends at those rims instead of at the generation's own path.
+That is a **v-lane** -- a deep edge that names its lane -- and it costs one edge per rim,
+plus one back for each receipt:
+
+```json
+{"from": "<affinity>", "to": "<generation>/talky", "lane": "in_pack",
+ "condition": "has(hop.route) && hop.route == 'answer' && hop.subscriber == '<generation>'",
+ "modifier": {"set_hop": {"route": "'in_pack'"}}},
+{"from": "<generation>/talky", "to": "<the container>", "lane": "pack_ack",
+ "condition": "has(hop.route) && hop.route == 'pack_ack'"}
+```
+
+The row is still ONE row and it still names the GENERATION: a subscription is a statement
+about an agent, and the fan-out is the edges. The `lane` field is what makes the edge legal
+-- the level it skips declares the two rims as connect points (`"at": ["./talky",
+"./cogny"]`), and an edge that ended anywhere else is refused `v_lane_no_connect_point`
+(GH #559). The rule of the paragraph above is unchanged and only reads one level deeper:
+the guard names what the row names, and every rim that is to receive the pack is an edge.
+
 **The second edge is not optional.** An edge conditioned on `hop.route == 'answer'` alone
 matches *every* answer this hive speaks, so a brief edge written without
 `hop.subscriber == ''` also collects every push: the asking cell gets slot writes meant for
@@ -247,9 +268,10 @@ A subscription becomes live through **one act with two halves**, and
 [#458](https://github.com/mmeyerlein/meclaw/issues/458) fixes their order:
 
 **The edge is drawn first, the row is stamped second.** A mutation adds the push edge --
-from `<member>/affinity` to the subscriber's own hive path, guarded on
-`hop.subscriber == '<that same path>'` and re-stamped onto the subscriber's `in_pack` lane
--- and only then does a `subscribe` op reach `./gate`, which writes the row `active`.
+from `<member>/affinity` to the subscriber's own hive path (or, for a generation, one
+v-lane to each of its brain rims -- see above), guarded on `hop.subscriber` naming what the
+row will name and re-stamped onto the subscriber's `in_pack` lane -- and only then does a
+`subscribe` op reach `./gate`, which writes the row `active`.
 
 **Why that order and not the other.** An edge with no active row behind it carries
 **nothing**: `push` selects on `status = 'active'`, never sees the subscriber, and emits no

@@ -35,6 +35,13 @@
           "route": "in_schemas",
           "context": [],
           "because": "somebody asking this core what its OWN errand looks like, by name -- `{\"tools\": [\"consult_cogny\"]}`, or `[\"*\"]` for everything it declares ([#528](https://github.com/mmeyerlein/meclaw/issues/528)). Whoever is reached declares themselves: this core is not a tool cell, so no tools hive has the `consult_cogny` schema, and when #464 replaced typed menus with asked-for ones the declaration lost its last owner and every caller came up with a menu that did not contain the one tool the core exists for. It is not a tool round and carries no `tool_name`. The lane, the body and the answer are the tools hive's own, byte for byte (`templates/tools/README.md` § Asking for the declarations), so a collector can ask two answerers the same question and cut the two menus together without knowing which of them was a hive of tools. PAIRED with `tool_schemas` in `params.required_drains`"
+        },
+        {
+          "route": "in_sealed",
+          "at": [
+            "./brain"
+          ],
+          "because": "the answer half of the same lane (GH #560): the broker's `ack` for `vault.deliver` carrying the sealed box, renamed at the boundary to the name this rim knows it by. It lands on `./brain` and on nothing else -- the box is sealed against the ephemeral key of the cell that asked, so a delivery anywhere else is a box nobody can open plus a receipt the asker never gets. Address the edge with `hop.grant_id`, which the broker stamps: one grant per consumer, or two brains are handed each other's rounds"
         }
       ],
       "emits": [
@@ -65,6 +72,13 @@
         {
           "route": "tool_schemas",
           "because": "this core's OWN declarations, one `{name, description, parameters}` per name that was asked for and exists -- which is the single errand `consult_cogny` -- plus in `unknown[]` the asked names it does not serve ([#528](https://github.com/mmeyerlein/meclaw/issues/528)). Provider-neutral on purpose, exactly like the tools hive's answer: wrapping the envelope is the caller's job, because the caller is the one that knows which provider it talks to. `hop.operation` is `schemas`, `hop.schema_count` and `hop.unknown_count` count the two lists, and `hop.error_code` is `tool_unknown` or `tools_missing`. PAIRED with `in_schemas`"
+        },
+        {
+          "route": "credential_request",
+          "at": [
+            "./brain"
+          ],
+          "because": "the ask half of the credential lane (GH #421/#452/#560): the brain that spends a grant holds no bearer of its own, mints an ephemeral X25519 recipient key per ask and sends the grant handle out with it. This is a V-LANE (GH #559) and `at` is what makes it one: `params.ports` stays literally `[]`, and `./brain` is the one address this sealed rim opens for this one lane -- an opening the template pronounces about ITSELF, never one a caller helps itself to. Whoever draws the edge points it at the access hive that owns the person's keys and stamps `context.requester` on it, because the requester comes from the EDGE and never from the body (R-AC-1)"
         }
       ]
     },

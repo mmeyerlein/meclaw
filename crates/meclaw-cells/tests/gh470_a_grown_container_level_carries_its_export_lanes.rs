@@ -180,7 +180,7 @@ fn the_recipe_and_the_import_tool_render_the_same_member_edges() {
 fn the_two_container_levels_are_still_the_same_shape_one_level_apart() {
     // `_container_level` renders `org` and `member` from ONE table. That is a
     // claim about the two contracts, not a convenience: org@1.3.0 and
-    // member@1.4.0 declare the same seven accepts and the same eleven emits,
+    // member@1.5.0 declare the same seven accepts and the same eleven emits,
     // and each one's parent carries every one of those lanes into the container
     // the child is grown into. The day they diverge, the renderers split — so
     // the claim is asserted rather than assumed.

@@ -176,7 +176,7 @@ fn a_one_shot_apply_exits_zero_and_shuts_down() {
     let (ok, stdout, stderr) = run(td.path(), &osargs(&["--apply", m.to_str().unwrap()]), None);
     assert!(ok, "exit 0 on a committed manifest; stderr: {stderr}");
     assert!(
-        stdout.contains("applied 5 of 5"),
+        stdout.contains("applied 6 of 6"),
         "the receipt is on stdout: {stdout:?} / {stderr:?}"
     );
 }
@@ -217,7 +217,7 @@ fn an_apply_from_stdin_reads_the_manifest() {
     let raw = std::fs::read_to_string(repo("examples/organism/grow.manifest.json")).unwrap();
     let (ok, stdout, stderr) = run(td.path(), &osargs(&["--apply", "-"]), Some(&raw));
     assert!(ok, "exit 0; stderr: {stderr}");
-    assert!(stdout.contains("applied 5 of 5"), "{stdout:?} / {stderr:?}");
+    assert!(stdout.contains("applied 6 of 6"), "{stdout:?} / {stderr:?}");
 }
 
 /// A `--apply` naming a file that is not there refuses by name, before booting

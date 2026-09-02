@@ -137,15 +137,24 @@ fn every_level_declares_itself_at_the_container_it_grows_into() {
         // Every endpoint is one of exactly two spellings: the scope root, or a
         // direct child of it. Anything else would reach outside the container
         // the declaration stands in.
+        //
+        // GH #562 — with one exception, and it is a DECLARED one: an edge that
+        // names a `lane` is a v-lane (ADR-0020), whose whole point is to end
+        // INSIDE the child on an occupant the child's own contract names under
+        // `at`. It still ends inside the container, so the scope root is
+        // unaffected; what it does not do is stop at the child's rim. An edge
+        // without `lane` is judged exactly as before.
         let child = format!("./{name}");
         for edge in decl["diff"]["add_edges"].as_array().expect("add_edges") {
+            let v_lane = edge.get("lane").and_then(|l| l.as_str());
             for side in ["from", "to"] {
                 let raw = edge[side].as_str().expect("an endpoint");
+                let deep = v_lane.is_some() && raw.starts_with(&format!("{child}/"));
                 assert!(
-                    raw == "." || raw == child,
+                    raw == "." || raw == child || deep,
                     "{level}: the endpoint {raw:?} is neither `.` (the \
-                     container) nor {child:?} (the child) — a level draws \
-                     nothing else"
+                     container) nor {child:?} (the child) nor an occupant of \
+                     the child on a declared lane — a level draws nothing else"
                 );
             }
         }
@@ -169,11 +178,24 @@ fn the_absolute_edges_are_the_ones_the_wide_form_drew() {
         );
 
         for edge in decl["diff"]["add_edges"].as_array().expect("add_edges") {
+            // A v-lane's deep end is measured the same way, against the wide
+            // form's own spelling of it: what must not move is the ABSOLUTE
+            // path, and a v-lane's is `<container>/<name>/<occupant>` read from
+            // either storey (GH #562).
+            let v_lane = edge.get("lane").and_then(|l| l.as_str());
             for side in ["from", "to"] {
                 let raw = edge[side].as_str().expect("an endpoint");
                 let got = Path::resolve(&Path::new(&narrow_scope), raw);
+                let deep = v_lane.is_some()
+                    && got
+                        .as_str()
+                        .starts_with(&format!("{}/", want_child.as_str()))
+                    && Path::resolve(
+                        &wide,
+                        raw.replacen("./", &format!("./{container}/"), 1).as_str(),
+                    ) == got;
                 assert!(
-                    got == want_container || got == want_child,
+                    got == want_container || got == want_child || deep,
                     "{level}: {raw:?} resolves to {} — the wide form drew {} \
                      and {}, and the absolute edges must not move",
                     got.as_str(),
@@ -250,8 +272,9 @@ fn the_identity_door_keeps_the_wide_declaration_and_says_so() {
     );
 
     // The gate's rule, mirrored: the `in_pack` edge ends at a node this very
-    // declaration creates. That is what makes the wide form submittable and the
-    // split one not.
+    // declaration creates -- or, since GH #561, inside one, because the pack
+    // rides a v-lane to a brain RIM of the generation. That is what makes the
+    // wide form submittable and the split one not.
     let scope = Path::new(decl["scope"].as_str().expect("a scope"));
     let creates: Vec<String> = decl["diff"]["add_nodes"]
         .as_array()
@@ -278,10 +301,13 @@ fn the_identity_door_keeps_the_wide_declaration_and_says_so() {
         .as_str()
         .to_string();
     assert!(
-        creates.contains(&target),
-        "the `in_pack` edge ends at {target}, which this declaration does not \
-         create — `templates/submit/gate` refuses that with \
-         `subscribe_target_not_self`, and no version of this recipe may render it"
+        creates
+            .iter()
+            .any(|c| &target == c || target.starts_with(&format!("{c}/"))),
+        "the `in_pack` edge ends at {target}, which is neither a node this \
+         declaration creates nor anything inside one — `templates/submit/gate` \
+         refuses that with `subscribe_target_not_self`, and no version of this \
+         recipe may render it"
     );
 }
 

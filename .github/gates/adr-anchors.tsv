@@ -84,3 +84,4 @@ adr	status	anchor_home	target
 0019-one-hive-several-askers-the-reply-to-token.md	accepted	self	test:a_bundle_with_no_token_still_goes_where_every_bundle_went
 0019-one-hive-several-askers-the-reply-to-token.md	accepted	self	file:templates/assistant/README.md#One hive, two askers
 0020-v-lanes-contract-declared-corridors.md	accepted	self	file:scripts/check_tree_rules.py
+0020-v-lanes-contract-declared-corridors.md	accepted	self	file:crates/meclaw-colony/tests/gh559_a_v_lane_is_a_declared_deep_edge.rs

@@ -114,16 +114,46 @@ fn hive_params(dir: &std::path::Path) -> HiveParams {
         .unwrap_or_else(|e| panic!("{}: params: {e}", dir.display()))
 }
 
-/// The lane routes of one contract, in declaration order.
+/// The lanes of this level's RIM, in declaration order: every declared lane
+/// except the ones that name connect points.
+///
+/// GH #559 / #562 (ADR-0020): an entry carrying `at` says where a v-lane DOCKS,
+/// and the address it names is never the hive path. `recall` and `in_bundle` are
+/// the two — they dock on `./talky` and `./cogny`, one edge per asker drawn by
+/// the mutation that instantiates the generation — so a count of what stands at
+/// the assistant's own path must not include them, and the prose that says
+/// "all at the assistant's own path" must stay true of every lane it counts.
 fn lanes(hp: &HiveParams) -> (Vec<String>, Vec<String>) {
     let c = hp
         .contract
         .as_ref()
         .expect("a level a caller addresses by path and lane owes a contract");
-    (
-        c.accepts.iter().map(|l| l.route.clone()).collect(),
-        c.emits.iter().map(|l| l.route.clone()).collect(),
-    )
+    let rim = |ls: &[meclaw_colony::config::LaneSpec]| -> Vec<String> {
+        ls.iter()
+            .filter(|l| l.at.is_empty())
+            .map(|l| l.route.clone())
+            .collect()
+    };
+    (rim(&c.accepts), rim(&c.emits))
+}
+
+/// Every lane a level DECLARES, rim and corridor alike.
+///
+/// The counterpart of [`lanes`], for the question "does this level take part in
+/// this lane at all". A v-lane's connect points are still this level's
+/// declaration — the traffic crosses its boundary, it just does not touch its
+/// path — so a neighbour that sends the lane at this level is talking to a lane
+/// that is declared, and the boundary check below must read it that way or it
+/// would report the migration of GH #562 as a lane that dies as `no_route`.
+fn declared_lanes(hp: &HiveParams) -> (Vec<String>, Vec<String>) {
+    let c = hp
+        .contract
+        .as_ref()
+        .expect("a level a caller addresses by path and lane owes a contract");
+    let all = |ls: &[meclaw_colony::config::LaneSpec]| -> Vec<String> {
+        ls.iter().map(|l| l.route.clone()).collect()
+    };
+    (all(&c.accepts), all(&c.emits))
 }
 
 /// The single `hop.route` literal a condition names, if it names exactly one.
@@ -665,7 +695,7 @@ fn the_boundary_matches_the_member_this_level_is_instantiated_into() {
         return;
     }
 
-    let (accepts, emits) = lanes(&hive_params(&root));
+    let (accepts, emits) = declared_lanes(&hive_params(&root));
     let mhp = hive_params(&member);
 
     let sends_down: BTreeSet<String> = mhp

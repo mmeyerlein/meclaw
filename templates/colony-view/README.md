@@ -1,4 +1,4 @@
-# `colony-view@1.0.0`
+# `colony-view@1.0.1`
 
 The colony, drawn. A timer takes a topology snapshot, a `code` cell turns it
 into one view, and a display holds it and serves the page. The browser owns two
@@ -69,9 +69,9 @@ Four components, handed over with the view and stored by the display as rows:
 | Component | What it draws | `editable` |
 |---|---|---|
 | `colony-view-shell` | the frame: the SVG, the arrow markers, the detail panel, the legend -- and the browser half in a `<style>` and a `<script>` | -- |
-| `colony-view-hive` | one dashed, tinted rectangle per hive, one tint per depth | -- |
+| `colony-view-hive` | one dashed, tinted rectangle per hive, one tint per depth | `x`, `y`, `w`, `h` |
 | `colony-view-edge` | one line per edge, plus the fat invisible twin a mouse can hit | -- |
-| `colony-view-node` | one box per cell, coloured by cell type | `x`, `y` |
+| `colony-view-node` | one box per cell, coloured by cell type | `hand`, `pinned` |
 
 Every name begins with `colony-view-`, and that is a rule rather than a habit:
 the display refuses a component whose name does not start with the view's own
@@ -89,50 +89,154 @@ A new kind of thing on the canvas is therefore one more component and one more
 branch of the tree -- a template edit, never a release. The binary that serves
 it knows none of this.
 
-**`colony-view-node` declares `editable: ["x","y"]`, and that declaration is the
-whole authorisation model.** The display checks it against the **component**,
+**`colony-view-node` declares `editable: ["hand","pinned"]`, and that
+declaration is the whole authorisation model.** The display checks it against the **component**,
 never against the message: a browser says what it wants changed, and the
 component says what may be. A prop that is not on the list is refused with
 `not_editable` and nothing is written.
 
-## `keep`, and why there is no pin
+## The flow's half and the hand's half
 
-A drag is a **local write** inside the display: pointer down, move, up, then two
-writes -- one for `x`, one for `y` -- landing in the display's own database and
-diffed to every open browser without a single message entering the colony
-router. Dragging a node is not a conversation with anybody.
+A box carries **two** translates, and the split is the whole of how an
+arrangement and a growing colony live together:
 
-What makes it **survive** is one word in the tree. Each node's entry declares:
+```
+transform="translate(x, y) translate(hand)"
+             ^ the flow's       ^ the hand's, ONE prop: "dx,dy"
+```
+
+`x`/`y` are this cell's, recomputed and rewritten on **every** tick. `hand` is a
+hand's, written by a drag and never by this cell -- an offset against the
+cell's own spot, so it travels with its hive instead of being left behind when
+the next arriving cell re-ranks the columns. SVG composes a transform list left
+to right, so the pair needs no arithmetic anywhere, which matters: the component
+language has none.
+
+A drag is a **local write** inside the display: pointer down, move, up, then one
+write -- `hand` -- plus a second the first time a box is moved at all, landing in
+the display's own database and diffed to every open browser without a single
+message entering the colony router. Dragging a node is not a conversation with
+anybody.
+
+**One write, because a prop at a time is a picture at a time.** The offset was
+two props first, and a browser writes a prop at a time while the display diffs a
+prop at a time -- so one drag reached the page as two pictures, and the frames,
+derived from where the boxes are, were derived once from the half-moved one.
+Measured in a browser, sampling what was actually PAINTED per animation frame:
+three rectangles for a single drag, the middle one 971 wide and still 92 high.
+And what this browser wrote now stands until a diff says it
+(`colony-view.js:reconcile`) -- the first diff after a drag can still carry the
+value from before it, which puts the box back where it started for a beat and
+draws the frame around that. Both together: one painted rectangle per drag.
+
+What makes it **survive** a tick is one word in the tree. Each node's entry
+declares:
 
 ```json
-{"component": "colony-view-node", "props": {"x": 120, "y": 40}, "keep": ["x", "y"]}
+{"component": "colony-view-node", "props": {"x": 120, "y": 40, "hand": "0,0", "pinned": ""},
+ "key": "n.os~builder~compose", "keep": ["hand", "pinned"]}
 ```
 
 On an object the display already holds, the props named in `keep` are left out
 of the update; an update merges per key, so the value the browser wrote stays.
-On a create every prop is written, which is how a box nobody has touched still
-gets the spot the layout computed for it.
+`x` and `y` are deliberately **not** among them.
 
-**This is the deliberate difference from `canvy`, and it is a removal.** There
-the coordinate could not say who put it there, so a separate `pinned` marker
-said it: a drag set the marker, the layout read every node object back off the
-display each tick, kept the marked coordinates, computed the rest around them,
-and the detail panel offered a *release to the layout* button to clear the
-marker again. All of that is gone -- the marker, the read-back, the anchoring of
-unpinned siblings to pinned clusters, the eviction of pin-free blocks out of
-foreign frames, and the button. **They are not replaced by anything.** The
-display keeps the browser's coordinates because the tree told it to, and this
-cell simply never learns them.
+## The pin is a marker, and the marker is the whole of it
 
-The cost is stated plainly: a box a hand has moved is never rearranged again by
-the layout, and the flow is only ever consulted for boxes nobody has touched. An
-arrangement and a growing colony are reconciled by the hand that made the
-arrangement.
+`pinned` says a hand was here. A coordinate says nothing -- and reading one as a
+pin is the defect of 1.0.0, measured on a running colony of 104 cells in
+[#544](https://github.com/mmeyerlein/meclaw/issues/544): every box froze at
+whatever the flow had computed on the tick its object happened to be created, so
+the picture became a collage of a dozen incompatible layouts. 208 of 215
+unrelated hive pairs had overlapping frames, one frame ran 299x the area of the
+three cells inside it, and 1133 (hive, foreign cell) pairs intersected. Nobody
+had dragged anything; nobody could, because `data-oid` named an object one tree
+level away from the one the display mints, so every drag wrote to an id that
+does not exist.
+
+`canvy` had already learnt that a pin needs a marker of its own (2.1.8), and the
+re-cut of [#455](https://github.com/mmeyerlein/meclaw/issues/455) lost it. This
+is that lesson, kept, plus two things `canvy` did not have:
+
+- **A box is named by its cell, not by its slot.** The node's tree entry carries
+  a `key` (`display`, since 1.0.1) -- `n.<path with ~ for />` for a cell, `h.…`
+  for a hive -- so the object id is `<parent>/<key>` rather than
+  `<parent>/<index>`. An index is a slot: the picture writes hives, then
+  edges, then cells, so one edge more shifts every box's index by one and hands
+  the kept props to whichever cell inherits the slot. That is how 103 of 104
+  boxes came to wear a position computed for somebody else.
+- **The flow owns where a box sits, and it says so every tick.** `x`/`y` are
+  recomputed and rewritten on every snapshot, so a box nobody has touched stands
+  where the flow put it -- and the flow is disjoint, nested, and 1.08x-1.43x the
+  boxes it holds. A hand adds an offset beside that, never in place of it.
+
+**The offset is NOT bounded, and that was measured rather than assumed.** 1.0.1
+first shipped a bound: an offset was trimmed to its own hive's frame, which made
+the four target points of #544 hold by construction. On a real screen, at the
+zoom a whole colony is looked at, a shrink-wrapped frame left a box **85 x 15
+screen pixels** of travel before it hit a wall. The gesture read as broken, and a
+constraint a person experiences as a broken gesture is not a constraint, it is a
+bug. So the bound is gone: a hand may put a box anywhere, and the frames follow
+the boxes rather than fencing them.
+
+What is therefore no longer promised is written down rather than hoped away: **an
+arrangement can put two frames over each other**, because a hand asked for it.
+The durable answer is for the app to REMEMBER the arrangement -- a store in the
+app hive and an event lane back from the screen, so the flow can pack around what
+a hand did instead of being blind to it. That is a build, not a repair, and it is
+filed as its own issue. The sentence is kept beside the code in
+`layout.py:hive_of_cell_frames`.
+
+**An outermost frame is not a grab handle.** A frame with no parent frame in
+the picture is not a frame around anything -- it is the canvas, and on a real
+colony it is 96 % empty space, so almost every press that misses a box lands
+inside it and inside nothing else. Measured on a live colony of 108 cells: ONE
+press on that emptiness dragged every cell and marked every one of them
+hand-placed -- the whole picture leaving the layout in a single gesture. A root
+frame therefore pans; the group drag is offered for the frames that are
+actually groups. And a group drag that did not move anything writes nothing: one
+delta is applied to every member, so a delta that rounds to nothing leaves every
+box where it was, marks nobody hand-placed and reaches the display not at all.
+
+The detail panel says which of the two placed a box, and offers the way back:
+*by hand -- release* clears the marker and both halves of the offset, and the
+next tick puts the box where the layout wants it.
+
+What is still gone from `canvy`, and is not coming back: the read-back of the
+display's objects into this cell, the anchoring of unpinned siblings to pinned
+clusters, and the eviction of pin-free blocks out of foreign frames. This cell
+never learns a position, and it no longer needs to: it owns `x`/`y` outright and
+says them again on every tick, and the hand's offset rides on top of whatever it
+last said.
 
 The hive frames stay derived on both sides -- the client recomputes them from
 the same constants the layout used, read off the markup rather than kept as a
-second copy -- so a cell dragged out of a hive grows that hive, and every hive
-above it, while the cursor is still down.
+second copy -- so a hive re-shapes itself around its members while the cursor is
+still down instead of waiting a minute for the next tick. A frame FOLLOWS its
+cells: a box is inside its own hive by construction however far it was dragged,
+and what the browser derives it also writes back, so the store says what the
+screen shows.
+
+## Unwired cells are hidden by default
+
+A cell that takes part in no edge at all is `unwired`, and since 1.0.1 **the
+default picture does not draw it**: the shell ships `class="hide-unwired"` and
+the legend carries a `<n> unwired` button that brings them back. In this
+substrate an unwired cell is almost always a leftover, because `remove_nodes`
+and `swap_nodes` DISCONNECT and never delete (`docs/rewiring.en.md`: getting rid
+of a registry row is an operator action with the colony stopped), so a live
+colony accumulates them -- 31 of 123 cells on the one this was built against, 13
+of them in a single hive. They are part of the truth and they are not part of
+what the colony DOES, which is exactly what a toggle is for.
+
+Hidden cells shape nothing: the layout computes the hive frames and the `viewBox`
+over the cells the picture shows, and flipping the toggle re-derives the FRAMES in
+the browser, from whatever is left visible -- a frame drawn around boxes nobody is
+looking at is a frame around nothing. The `viewBox` is deliberately not re-derived
+with them: a session keeps the frame it mounted with (§ *The camera is yours*), so
+a toggle never re-centres the picture. The toggle is a class on the container and
+nothing else: no round trip, no stored preference, the same kind of local fact as
+where you are looking.
 
 ## The camera is yours
 
@@ -140,6 +244,13 @@ Pan and zoom are local state. Nothing is sent and nothing is stored. A fresh
 load starts from the picture's own `viewBox`, which frames the whole drawing
 before any script runs, so the canvas is legible even if the client never loads
 at all.
+
+That first fit is also the only one a session takes. The server re-fits the
+`viewBox` over the content's bounding box on every layout tick, and a diff
+carrying a new fit would jump the whole picture to re-centre it -- which reads as
+"the page reloaded" to whoever is looking at it. So the frame the page mounted
+with is recorded once and pinned across every later morph, and across the unwired
+toggle: a session's view moves only by its own hand.
 
 ## The browser half is a file
 

@@ -287,14 +287,32 @@ fn resolved(edge: &Value, scope: &str) -> Value {
     out
 }
 
-/// The rendered edges re-spelled relative to the MEMBER, which is the storey
-/// the colony this file writes stands on. Since GH #503 a plain level declares
-/// itself one storey lower, at `<member>/assistants`, and spells its child
-/// `./<name>`; resolving and rebasing changes the address an edge is written
-/// at and nothing about the edge.
+/// The rendered set, re-spelled for the colony this file BOOTS — which stands
+/// in a `talky` for the generation, not a whole `assistant`.
+///
+/// Re-spelled relative to the MEMBER, which is the storey that colony stands
+/// on: since GH #503 a plain level declares itself one storey lower, at
+/// `<member>/assistants`, and spells its child `./<name>`. Resolving and
+/// rebasing changes the address an edge is written at and nothing about the
+/// edge.
+///
+/// GH #562 put four MEMORY v-lanes in the assistant's set, and a v-lane ends on
+/// an occupant of the generation (`./scribe/talky`, `./scribe/cogny`). The
+/// stand-in has neither, so those four endpoints would dangle at boot — a fact
+/// about the FIXTURE and not about the render. They are dropped here, and only
+/// here: `rendered_edges` (what the recipe produced) is untouched, and the
+/// identity door this file is actually about — whose own v-lanes end on the
+/// BRAIN of each rim (GH #561) and are wired by `build_tree` — is kept, because
+/// that is the thing under test.
 fn member_relative_edges(subscribe: bool) -> Vec<Value> {
     resolved_edges(subscribe)
         .into_iter()
+        .filter(|e| {
+            !matches!(
+                e.get("lane").and_then(|l| l.as_str()),
+                Some("recall" | "in_bundle")
+            )
+        })
         .map(|mut e| {
             for side in ["from", "to"] {
                 let abs = e[side].as_str().expect("an endpoint").to_string();
@@ -335,16 +353,27 @@ fn identity_door() -> Vec<Value> {
         .collect();
     assert_eq!(
         door.len(),
-        2,
-        "`subscribe` must add exactly the two edges of the door — a lane and \
-         its receipt drain are ONE decision (GH #458): {door:?}"
+        4,
+        "`subscribe` must add exactly the four v-lanes of the door — one push \
+         per brain rim and one receipt drain per rim, because a lane and its \
+         receipt are ONE decision (GH #458) and since GH #561 the pack ends at \
+         the rims rather than at the generation's own path: {door:?}"
     );
     door
 }
 
-/// One rendered edge, picked by the route its condition names. The two door
-/// edges share neither endpoint pair nor route with anything else in the level,
-/// so the route is a key.
+/// One rendered edge, picked by the route its condition names.
+///
+/// The route is a key against the REST of the level — no other edge here
+/// conditions on `answer` or `pack_ack` — but since GH #561 it is no longer a
+/// key inside the door itself: there are FOUR edges, one per brain rim per
+/// direction, so `answer` matches TWO of them and this returns whichever comes
+/// first. That is sound for what the helper is asked, and only for that: the
+/// two push edges differ in their TARGET rim and are identical in the guard
+/// this file reads out of them (`hop.subscriber` names the generation, because
+/// a subscription is one row about one agent — the fan-out is the two edges).
+/// A claim about one particular rim reads `identity_door()` and filters on
+/// `to`.
 fn door_edge(route: &str) -> Value {
     identity_door()
         .into_iter()
@@ -672,10 +701,11 @@ async fn the_rendered_identity_door_reaches_the_colonys_own_graph() {
 
 // ═══════════════════════════ (b) the door carries the member's own record
 
-/// Fixed schedule ids. `${uuid7:…}` is an INSTANTIATION-side substitution, so a
-/// tree written straight to disk carries a literal.
+/// A fixed schedule id for the affinity's push clock, the one timer in this
+/// colony that has to tick. `${uuid7:…}` is an INSTANTIATION-side substitution,
+/// so a tree written straight to disk carries a literal; the generation's own
+/// timers get theirs from `quiesce`, which also stops them.
 const CLOCK_ID: &str = "01916f00-0000-7000-8000-000000000473";
-const KEEPER_ID: &str = "0190a3f2-0000-7000-8000-000000000473";
 /// Never during a test run: the shipped default is the real night.
 const NEVER: &str = "0 0 0 1 1 *";
 
@@ -842,30 +872,56 @@ fn build_tree(
     patch(root, "main/affinity/clock/config.json", |v| {
         v["params"]["schedules"][0]["schedule_id"] = json!(CLOCK_ID);
     });
-    patch(
-        root,
-        &format!("{rel}/session-keeper/night/config.json"),
-        |v| {
-            v["params"]["schedules"][0]["schedule_id"] = json!(KEEPER_ID);
-            v["params"]["schedules"][0]["cron"] = json!(NEVER);
-        },
-    );
-    // GH #464 — the second timer of a shipped composite, quiesced for the same
-    // two reasons: `${uuid7:*}` is an instantiation substitution, and a menu
-    // tick would ask a tools hive this colony has not got.
-    patch(
-        root,
-        &format!("{rel}/collector/menu-clock/config.json"),
-        |v| {
-            v["params"]["schedules"][0]["schedule_id"] = json!(KEEPER_ID);
-            v["params"]["schedules"][0]["cron"] = json!(NEVER);
-        },
-    );
-    patch(root, &format!("{rel}/brain/config.json"), |v| {
-        v["params"]["base_url"] = json!(base_url);
-        v["params"]["model"] = json!("gpt-4o-mock");
-    });
+    // Every timer and every brain of the generation, WALKED rather than listed
+    // (GH #561 — a generation has three timers and two brains, and a list here
+    // would be a copy of the composite's tree that rots on the next occupant).
+    // The two reasons are the shipped ones: `${uuid7:*}` is an instantiation
+    // substitution, so a tree written straight to disk carries the literal, and
+    // a keeper or menu tick during a run would ask for a hive this colony has
+    // not got.
+    quiesce(&root.join(&rel), &mut 0, base_url);
     rel
+}
+
+/// One walk of the grown generation: a fixed schedule id and a cron that never
+/// fires for every timer, and the mock provider for every brain.
+fn quiesce(dir: &std::path::Path, counter: &mut u32, base_url: &str) {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut entries: Vec<_> = rd.flatten().map(|e| e.path()).collect();
+    entries.sort();
+    for p in entries {
+        if p.is_dir() {
+            quiesce(&p, counter, base_url);
+            continue;
+        }
+        if p.file_name().and_then(|n| n.to_str()) != Some("config.json") {
+            continue;
+        }
+        let mut v = read_json(&p);
+        match v["cell"]["type"].as_str().unwrap_or_default() {
+            "timer" => {
+                let Some(schedules) = v["params"]["schedules"].as_array_mut() else {
+                    continue;
+                };
+                for sched in schedules.iter_mut() {
+                    *counter += 1;
+                    sched["schedule_id"] = json!(format!(
+                        "0190a3f2-0000-7000-8000-{:012}",
+                        473_000 + *counter
+                    ));
+                    sched["cron"] = json!(NEVER);
+                }
+            }
+            "llm" => {
+                v["params"]["base_url"] = json!(base_url);
+                v["params"]["model"] = json!("gpt-4o-mock");
+            }
+            _ => continue,
+        }
+        std::fs::write(&p, meclaw_core::serde_json::to_string_pretty(&v).unwrap()).unwrap();
+    }
 }
 
 async fn boot_colony(
@@ -876,7 +932,7 @@ async fn boot_colony(
     mpsc::Receiver<Message>,
 ) {
     let factories = || -> Vec<(String, Arc<dyn CellFactory>)> {
-        vec![
+        let mut fs: Vec<(String, Arc<dyn CellFactory>)> = vec![
             (
                 "code".to_string(),
                 Arc::new(CodeCellFactory) as Arc<dyn CellFactory>,
@@ -884,7 +940,15 @@ async fn boot_colony(
             ("store".to_string(), Arc::new(StoreCellFactory)),
             ("timer".to_string(), Arc::new(TimerCellFactory)),
             ("llm".to_string(), Arc::new(LlmCellFactory)),
-        ]
+        ];
+        // The tool surface of a real generation, and every one of these would
+        // reach outward the moment it was spawned for real. No pack and no turn
+        // of this file touches one; they are registered rather than deleted so
+        // the tree that boots is the tree that ships (GH #561).
+        for tool in ["bash", "edit", "file", "web_fetch", "web_search"] {
+            fs.push((tool.to_string(), Arc::new(InertCellFactory)));
+        }
+        fs
     };
     let h = ColonyHandle::new_with_factories_at(td, factories());
     let (sink_tx, sink_rx) = mpsc::channel::<Message>(64);
@@ -946,7 +1010,7 @@ async fn recv_route(rx: &mut mpsc::Receiver<Message>, route: &str) -> Message {
 /// `cell.db`. Nothing else in this colony can write a row into it, and it is
 /// what the next system prompt is concatenated from.
 fn brain_slots(td: &tempfile::TempDir, rel: &str) -> Vec<(String, String)> {
-    let p = td.path().join(rel).join("brain/cell.db");
+    let p = td.path().join(rel).join("talky/brain/cell.db");
     if !p.exists() {
         return Vec::new();
     }
@@ -1041,7 +1105,15 @@ async fn await_identity(td: &tempfile::TempDir, rel: &str) -> String {
 fn shipped_pair() -> Option<(std::path::PathBuf, std::path::PathBuf)> {
     Some((
         shipped("affinity", AFFINITY_FILES)?,
-        shipped("talky", &["config.json", "brain/config.json"])?,
+        // GH #561 — the generation itself, and it has to be the real one: the
+        // pack ends at `<generation>/talky` and `<generation>/cogny` now, so a
+        // bare surface standing at the grown address would leave both door
+        // edges pointing at nothing and the measurement would be about the
+        // fixture rather than about the lane.
+        shipped(
+            "assistant",
+            &["config.json", "talky/config.json", "cogny/config.json"],
+        )?,
     ))
 }
 

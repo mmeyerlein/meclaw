@@ -33,6 +33,15 @@
 //!
 //! No colony, no model, no store: the templates are read off the tree and the
 //! router is asked what it would do.
+//!
+//! GH #562 moved WHERE the two file facts live and nothing about WHAT they say.
+//! The recall road is a v-lane since then: the generation vouches for its askers
+//! (`at: ["./talky", "./cogny"]`) instead of forwarding the lane, and the four
+//! edges that carry it — the two stamps out, the two doors back — are drawn once
+//! by the mutation that instantiates the generation. So the two file facts read
+//! the container's recipe where they used to read the generation's own graph.
+//! The routing half is untouched, deliberately: it asks where a message ENDS UP,
+//! and the answer has to be the same one hop shorter.
 
 use meclaw_colony::config::{EdgeSpec, HiveParams};
 use meclaw_colony::edge_table::{Edge, EdgeTable, apply_edges};
@@ -251,10 +260,16 @@ fn edge<'a>(specs: &'a [EdgeSpec], from: &str, to: &str, needle: &str) -> &'a Ed
     hits[0]
 }
 
+/// GH #562 moved the two edges this reads, and moved nothing else about them.
+/// The recall lane is a v-lane now: it leaves the ASKER and ends on the
+/// `assistants` container in one hop, so the stamp that used to sit on the
+/// generation's own rim sits on the container's recipe edge instead. What is
+/// asserted is what was always asserted — each asker's own name, written
+/// unconditionally.
 #[test]
 fn each_asker_stamps_its_own_name_on_the_way_out() {
-    let specs = hive_edges("templates/assistant/config.json");
-    for (from, expected) in [("./talky", "'talky'"), ("./cogny", "'cogny'")] {
+    let specs = recipe_edges("examples/organism/grow-assistant.json");
+    for (from, expected) in [("./scribe/talky", "'talky'"), ("./scribe/cogny", "'cogny'")] {
         let e = edge(&specs, from, ".", "'recall'");
         let m = e
             .modifier
@@ -269,10 +284,14 @@ fn each_asker_stamps_its_own_name_on_the_way_out() {
     }
 }
 
+/// The same move in the other direction (GH #562): the two doors that tell the
+/// askers apart are drawn by the container now, one hop deeper, and the RULE
+/// they encode is untouched — the core's door reads the token off the hop, the
+/// surface's is the default that catches everything else.
 #[test]
 fn the_core_reads_a_hop_key_and_the_surface_is_the_default() {
-    let specs = hive_edges("templates/assistant/config.json");
-    let core = edge(&specs, ".", "./cogny", "in_bundle");
+    let specs = recipe_edges("examples/organism/grow-assistant.json");
+    let core = edge(&specs, ".", "./scribe/cogny", "in_bundle");
     let cond = core.condition.as_deref().expect("guarded");
     assert!(
         cond.contains("hop.recall_caller"),
@@ -280,12 +299,15 @@ fn the_core_reads_a_hop_key_and_the_surface_is_the_default() {
          fire under the gate's probe (gh173, every_lane_the_graph_opens_is_declared) — got {cond:?}"
     );
     assert!(
-        !cond.contains("context."),
-        "and it must not fall back to context, which would make the door untestable — got {cond:?}"
+        !cond.contains("context.recall_caller"),
+        "and the TOKEN must not be read out of context, which would make the door untestable — \
+         the `context.assistant` in this condition is the container's addressing guard and has \
+         been there since GH #454; what must not appear is a second reading of the reply-to \
+         token — got {cond:?}"
     );
     assert!(!core.is_default, "the guarded door is the REGULAR one");
 
-    let surface = edge(&specs, ".", "./talky", "in_bundle");
+    let surface = edge(&specs, ".", "./scribe/talky", "in_bundle");
     assert!(
         surface.is_default,
         "the surface's door must be the DEFAULT, so a bundle with no token, an empty one or an \

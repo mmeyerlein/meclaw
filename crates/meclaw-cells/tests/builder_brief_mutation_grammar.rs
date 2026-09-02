@@ -515,9 +515,13 @@ fn the_briefing_carries_the_address_rule_and_an_example_two_segments_deep() {
     let edges = grown["diff"]["add_edges"].as_array().expect("add_edges");
     assert!(
         edges.iter().all(|e| {
-            let from = e["from"].as_str().unwrap_or_default();
-            let to = e["to"].as_str().unwrap_or_default();
-            (from == "." || from == "./scribe") && (to == "." || to == "./scribe")
+            // GH #562: a v-lane names its lane and ends on an occupant of the
+            // child (`./scribe/talky`, `./scribe/cogny`) — still spelled from
+            // inside the container, one segment deeper, and permitted by the
+            // child template's own `at` rather than by this spelling.
+            let deep = e.get("lane").and_then(|l| l.as_str()).is_some();
+            let ok = |p: &str| p == "." || p == "./scribe" || (deep && p.starts_with("./scribe/"));
+            ok(e["from"].as_str().unwrap_or_default()) && ok(e["to"].as_str().unwrap_or_default())
         }),
         "an endpoint in the shipped example is not spelled from inside the \
          container"

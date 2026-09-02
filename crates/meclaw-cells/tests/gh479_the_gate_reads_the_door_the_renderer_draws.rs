@@ -201,11 +201,23 @@ fn the_rendered_target_is_the_node_the_same_declaration_creates() {
         "an absolute `add_edges` endpoint is refused by the door with \
          `scope_out_of_bounds`, so the renderer cannot spell it that way: {to}"
     );
-    assert_eq!(
-        meclaw_colony::mutation::resolve_scoped_path(scope, to).as_str(),
-        meclaw_colony::mutation::resolve_scoped_path(scope, created).as_str(),
-        "resolved as the DOOR resolves them, the door's target and the node this \
-         declaration brings into the world are the same path"
+    // GH #561 — the door ends at a brain RIM of the generation now, one segment
+    // below the node the declaration creates: the identity pack rides a v-lane
+    // and the level it used to stop at declares the two rims as its connect
+    // points instead of carrying the lane. The rule the gate applies is
+    // unchanged in what it protects — the addressee came into the world in THIS
+    // mutation — and the comparison is segment-wise for the same reason it
+    // always was: `/os/…/scribe` must not cover `/os/…/scribe-of-somebody`.
+    let to_abs = meclaw_colony::mutation::resolve_scoped_path(scope, to);
+    let created_abs = meclaw_colony::mutation::resolve_scoped_path(scope, created);
+    assert!(
+        to_abs.as_str() == created_abs.as_str()
+            || to_abs
+                .as_str()
+                .starts_with(&format!("{}/", created_abs.as_str())),
+        "resolved as the DOOR resolves them, the door's target must be the node \
+         this declaration brings into the world, or something inside it: \
+         {to_abs:?} vs {created_abs:?}"
     );
 }
 

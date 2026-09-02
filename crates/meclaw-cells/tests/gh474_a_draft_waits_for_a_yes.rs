@@ -131,7 +131,7 @@ fn shipped() -> bool {
 fn a_manifest() -> Value {
     json!([
         {"scope": "/os/orgs/acme", "ctx": {},
-         "diff": {"add_nodes": [{"name": "scribe", "template": "member@1.4.0"}]}}
+         "diff": {"add_nodes": [{"name": "scribe", "template": "member@1.5.0"}]}}
     ])
 }
 
@@ -581,7 +581,7 @@ fn wish(auto: Option<bool>) -> Message {
         .ttl(16)
         .body(Body::Inline(json!({"messages": [{
             "origin": "user", "type": "text", "id": "",
-            "text": "{\"request\":\"grow a member named scribe from member@1.4.0 \
+            "text": "{\"request\":\"grow a member named scribe from member@1.5.0 \
                      under /os/orgs/acme\",\"scope\":\"/os/orgs/acme\"}"
         }]})))
         .build()

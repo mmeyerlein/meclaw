@@ -283,7 +283,7 @@ of the hive appears anywhere — which is what makes the inside free to change.
 | `emits[]` | Lanes the hive sends back **out** through its own path. |
 | `…[].route` | The `hop.route` value that **is** the lane. Never a cell name — the whole abstraction rests on this. |
 | `…[].context` | `context` keys a caller must have promoted beforehand. **A requirement, checked** (see below). |
-| `…[].at` | A list of scope-relative paths: **where** this lane connects at this hive — the connect point of a v-lane (GH #559). Optional; `"."` is the hive's own rim. |
+| `…[].at` | A list of scope-relative paths: **where** this lane connects at this hive — the connect point of a v-lane (GH #559). Optional; always a `./…` path strictly below the declaring hive — `"."` matches nothing. |
 | `…[].because` | What the lane is for, in the hive's own words. Travels verbatim into a rejection. |
 
 **`at` — the connect point of a v-lane** (GH #559). A v-lane is an edge that
@@ -294,6 +294,18 @@ for that lane — a v-lane onto it is refused with `v_lane_no_connect_point`, an
 sealed level in between refuses as before with `hive_port_boundary`. A crossed
 level that declares the lane **without** a matching `at` is a mandatory hop and
 may not be skipped (`v_lane_mandatory_hop`).
+
+**A lane with `at` is not a lane of the rim** (GH #562). It docks below the hive
+path by declaration, so two rules that are about rim traffic step aside for it:
+the hive owes it **no door** out of `.` and no exit back into it — its door is
+the connect point, and the lane-door check (`hive_contract::check_lane_doors`)
+skips an entry that names one; the obligation is REPLACED rather than dropped,
+because an `add_edges` entry that states the lane INTO the hive path is refused
+`hive_contract` and told which connect point to end on instead — and a **parent
+does not carry it** in the union of its occupants' lanes
+(`development-rules.md` § 8b). Everything else is
+unchanged: the connect points are policed per edge at mutation time, and a lane
+without `at` is judged exactly as it always was.
 
 ```json
 "contract": {

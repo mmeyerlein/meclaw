@@ -44,7 +44,7 @@
 //!    nothing can ever bind to — a defect that looks exactly like this one from
 //!    the outside.
 //! 2. **The lane arrives**, on a booted colony carrying the shipped
-//!    `member@1.4.0`: one turn on `turn_write` out of the member's own
+//!    `member@1.5.0`: one turn on `turn_write` out of the member's own
 //!    `./assistants` becomes one `episodes` row in the member's own
 //!    `memory-hive/store`, with the collector's `turn_id` on it, the caller's
 //!    `happened_at` as the event time and TODAY as `recorded_at` — the
@@ -554,7 +554,7 @@ async fn one_turn(wired: bool) -> Run {
         json!({"manifest": [{
             "scope": "/members",
             "diff": {
-                "add_nodes": [{"name": MEMBER, "template": "member@1.4.0"}],
+                "add_nodes": [{"name": MEMBER, "template": "member@1.5.0"}],
                 "add_edges": container_edges(),
             }
         }]}),

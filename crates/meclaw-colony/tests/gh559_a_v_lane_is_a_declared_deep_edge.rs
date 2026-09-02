@@ -475,6 +475,145 @@ async fn a_lane_is_never_swallowed_by_an_identical_blank_edge() {
     h.shutdown().await;
 }
 
+/// A colony whose v-lane `/caller -> /outer/inner/target` on lane `lane` is
+/// already drawn. The starting point of the two renaming cases below.
+async fn colony_holding_a_v_lane(td: &tempfile::TempDir, lane: &str) -> ColonyHandle {
+    // The target invites BOTH lanes in. That isolates what these cases are
+    // about: with only `recall` declared, a rename to `bundle` would be refused
+    // twice over — once for having no connect point, once for the disagreement
+    // — and the second refusal, the one under test, would hide behind the
+    // first.
+    plant(
+        td.path(),
+        r#"{}"#,
+        r#"{"contract":{"accepts":[
+            {"route":"recall","at":["./target"],"because":"the lane it starts on"},
+            {"route":"bundle","at":["./target"],"because":"the lane it would move to"}
+        ]}}"#,
+    );
+    let h = boot(td.path()).await;
+    let drawn = send_mutation(
+        &h,
+        json!({"scope":"/","diff":{"add_edges":[
+            {"from":"./caller","to":"./outer/inner/target","lane":lane}
+        ]}}),
+    )
+    .await;
+    assert!(
+        matches!(drawn, MutationOutcome::Committed { .. }),
+        "the standing v-lane is the pre-state: {drawn:?}"
+    );
+    h
+}
+
+/// The trap has three faces, not one, and the other two are just as reachable
+/// from R-V3 as the first: RENAMING a lane, and DROPPING one.
+///
+/// Here the table holds `recall` and the entry says `bundle`. Five terms equal,
+/// so the dedup skips the insert — `Committed`, and the edge still carries
+/// `recall`. A rename that reports success and renames nothing is worse than a
+/// rename that fails.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn renaming_a_lane_on_a_standing_edge_is_refused() {
+    let td = tempfile::TempDir::new().unwrap();
+    let h = colony_holding_a_v_lane(&td, "recall").await;
+
+    let outcome = send_mutation(
+        &h,
+        json!({"scope":"/","diff":{"add_edges":[
+            {"from":"./caller","to":"./outer/inner/target","lane":"bundle"}
+        ]}}),
+    )
+    .await;
+    assert_eq!(
+        refusal_code(&outcome),
+        "edge_schema",
+        "a lane the table would not take is refused, not committed: {outcome:?}"
+    );
+    let MutationOutcome::Rejected { details, .. } = &outcome else {
+        unreachable!("checked above")
+    };
+    assert!(
+        details.contains("with lane 'recall' already exists") && details.contains("match its lane"),
+        "the refusal names the standing lane and the way out: {details}"
+    );
+    assert_eq!(
+        deep_edge(&h)
+            .await
+            .expect("the edge stands")
+            .lane
+            .as_deref(),
+        Some("recall"),
+        "and the pre-state is untouched"
+    );
+
+    h.shutdown().await;
+}
+
+/// The third face: the entry declares NO lane while the table holds one. The
+/// old guard let this through entirely — it only ever asked about entries that
+/// carried a lane — so dropping a lane reported `Committed` and left the lane
+/// exactly where it was.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dropping_a_lane_from_a_standing_edge_is_refused() {
+    let td = tempfile::TempDir::new().unwrap();
+    let h = colony_holding_a_v_lane(&td, "recall").await;
+
+    let outcome = send_mutation(
+        &h,
+        json!({"scope":"/","diff":{"add_edges":[
+            {"from":"./caller","to":"./outer/inner/target"}
+        ]}}),
+    )
+    .await;
+    assert_eq!(
+        refusal_code(&outcome),
+        "edge_schema",
+        "silently keeping the lane is not a commit: {outcome:?}"
+    );
+    let MutationOutcome::Rejected { details, .. } = &outcome else {
+        unreachable!("checked above")
+    };
+    assert!(
+        details.contains("declares no lane") && details.contains("with lane 'recall'"),
+        "the refusal names both sides of the disagreement: {details}"
+    );
+
+    h.shutdown().await;
+}
+
+/// The other side of the rule, and the one that keeps the dedup a dedup: two
+/// entries that AGREE about the lane are not a disagreement. A re-applied
+/// complete diff (the Phase-15 builder re-sends everything it knows) has to
+/// stay idempotent — the edge the caller asked for really is there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn re_declaring_the_same_lane_stays_idempotent() {
+    let td = tempfile::TempDir::new().unwrap();
+    let h = colony_holding_a_v_lane(&td, "recall").await;
+
+    let again = send_mutation(
+        &h,
+        json!({"scope":"/","diff":{"add_edges":[
+            {"from":"./caller","to":"./outer/inner/target","lane":"recall"}
+        ]}}),
+    )
+    .await;
+    assert!(
+        matches!(again, MutationOutcome::Committed { .. }),
+        "the same declaration twice is the same edge: {again:?}"
+    );
+
+    let edges = read_graph(&h)
+        .await
+        .edges
+        .into_iter()
+        .filter(|e| e.from == "/caller" && e.to == "/outer/inner/target")
+        .collect::<Vec<_>>();
+    assert_eq!(edges.len(), 1, "and no twin was laid beside it: {edges:?}");
+
+    h.shutdown().await;
+}
+
 /// The way out the refusal names, taken: the blank edge leaves in the SAME
 /// diff, and the v-lane lands. This is the migration shape R-V3 asks for, and
 /// it has to stay possible — a check that counted the doomed edge would refuse
@@ -635,4 +774,92 @@ fn the_graph_reply_names_the_lane_an_edge_carries() {
         "an ordinary edge carries no lane key at all: {}",
         wire_edge(&reply, "/plain")
     );
+}
+
+// ── The reboot door: a lane that does not survive the disk is not a lane ─────
+
+/// GH #559, the durability half (review 2026-09-01, T1).
+///
+/// `lane` is the one term of a v-lane that the ROUTER never reads. Nothing in
+/// delivery would notice if it were dropped on the way to `colony.db` or lost
+/// on the way back — routing is a flat lookup over the five routing terms, and
+/// all five would still be there. What WOULD notice is the next `swap_nodes`:
+/// `v_lane_reanchor_verdict` asks the successor's contract about THIS lane, so
+/// an edge that comes back from a reboot lane-less is silently re-anchorable
+/// onto a hive that never vouched for it. The declaration outliving the process
+/// is therefore load-bearing, and it is checked here at the DB door rather than
+/// through a whole colony: one write, one fresh connection, one read.
+///
+/// The ordinary edge in the same table is the discriminator — a rehydration
+/// that handed every edge the same lane would pass a one-row test.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_persisted_lane_survives_the_rehydration() {
+    use meclaw_colony::persist::colony_db::ColonyDb;
+    use meclaw_colony::persist::writer::ColonyWriteOp;
+
+    let td = tempfile::TempDir::new().unwrap();
+    let db_path = td.path().join("colony.db");
+
+    let declared = Uuid::now_v7();
+    let ordinary = Uuid::now_v7();
+    {
+        let db = ColonyDb::open(&db_path).expect("open colony.db");
+        db.send_op(ColonyWriteOp::InsertEdge {
+            id: declared.to_string(),
+            from: "/caller".to_string(),
+            to: "/member/assistants/scribe/talky".to_string(),
+            created_at: 1_700_000_000,
+            condition: None,
+            modifier: None,
+            is_default: false,
+            lane: Some("in_pack".to_string()),
+        })
+        .await;
+        db.send_op(ColonyWriteOp::InsertEdge {
+            id: ordinary.to_string(),
+            from: "/caller".to_string(),
+            to: "/sink".to_string(),
+            created_at: 1_700_000_001,
+            condition: None,
+            modifier: None,
+            is_default: false,
+            lane: None,
+        })
+        .await;
+        db.shutdown_async().await;
+    }
+
+    // A fresh handle over the same file: the process boundary a reboot crosses.
+    let reopened = ColonyDb::open(&db_path).expect("re-open colony.db");
+    let edges = reopened.read_edges().expect("the edge table rehydrates");
+
+    let back = edges
+        .iter()
+        .find(|e| e.id == declared)
+        .expect("the v-lane row comes back");
+    assert_eq!(
+        back.lane.as_deref(),
+        Some("in_pack"),
+        "the declared lane must survive the disk — without it the next \
+         swap_nodes re-anchors the edge with nothing to check against"
+    );
+    assert_eq!(
+        back.to.as_str(),
+        "/member/assistants/scribe/talky",
+        "the rehydrated row is the deep edge that was written"
+    );
+
+    let plain = edges
+        .iter()
+        .find(|e| e.id == ordinary)
+        .expect("the ordinary row comes back too");
+    assert_eq!(
+        plain.lane, None,
+        "an ordinary edge stays lane-less: absence is the statement, and a \
+         rehydration that invented a lane here would pass a one-row test"
+    );
+
+    // `shutdown_async` rather than `shutdown`: the sync one blocks on the
+    // writer's join and would block the very runtime driving this test.
+    reopened.shutdown_async().await;
 }

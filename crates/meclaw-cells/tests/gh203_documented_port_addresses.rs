@@ -89,8 +89,12 @@
 //! the cap is a handful rather than one.
 
 use meclaw_colony::config::HiveParams;
-use meclaw_colony::mutation::port_boundary::validate_hive_port_boundary;
+use meclaw_colony::mutation::hive_contract::contract_from_cell_dir;
 use meclaw_colony::mutation::port_boundary::{SealedHive, collect_sealed_hives};
+use meclaw_colony::mutation::port_boundary::{
+    collect_hive_port_boundary, validate_hive_port_boundary,
+};
+use meclaw_colony::mutation::rejection::MutationRejection;
 use meclaw_core::serde_json::{Value, json};
 use std::collections::HashMap;
 
@@ -291,6 +295,57 @@ fn seal_the_substrate_reads(config: &std::path::Path) -> SealedHive {
 fn boundary_admits(seal: &SealedHive, child: &str) -> bool {
     let diff = json!({"add_edges": [{"from": CALLER, "to": format!("{HIVE}/{child}")}]});
     validate_hive_port_boundary(&diff, "/", std::slice::from_ref(seal)).is_ok()
+}
+
+/// GH #559/#560 — the second address a sealed template can admit: a **connect
+/// point**.
+///
+/// A template may pronounce, about ITSELF, that one named lane docks at one
+/// address inside it (`params.contract.…[].at`), and Stage 6 then waives the
+/// seal for an edge that declares that lane. A document writing such an
+/// endpoint is writing a v-lane, not a port bypass, and this gate would
+/// otherwise refuse the one edge shape the substrate now sanctions.
+///
+/// **The lanes come from the file, the VERDICT comes from the substrate.** The
+/// declared `at` list says which lanes are worth asking about; whether the
+/// address is admitted is answered by the same `collect_hive_port_boundary`
+/// the mutation door runs. What is deliberately NOT asked is which lane the
+/// document's own edge carries — a `lane` key sits on a different line of the
+/// same JSON object and reading it would be prose-parsing. So the granularity
+/// is the address: an address the template opened for SOME declared lane is an
+/// address the template opened.
+fn boundary_admits_a_connect_point(
+    config: &std::path::Path,
+    seal: &SealedHive,
+    child: &str,
+) -> bool {
+    let Some(dir) = config.parent() else {
+        return false;
+    };
+    let Some(contract) = contract_from_cell_dir(dir, HIVE) else {
+        return false;
+    };
+    let want = format!("./{child}");
+    let lanes: Vec<String> = contract
+        .accepts
+        .iter()
+        .chain(contract.emits.iter())
+        .filter(|l| l.at.iter().any(|a| a == &want))
+        .map(|l| l.route.clone())
+        .collect();
+    lanes.iter().any(|lane| {
+        let diff = json!({"add_edges": [
+            {"from": CALLER, "to": format!("{HIVE}/{child}"), "lane": lane}]});
+        let mut rej = MutationRejection::new();
+        collect_hive_port_boundary(
+            &diff,
+            "/",
+            std::slice::from_ref(seal),
+            std::slice::from_ref(&contract),
+            &mut rej,
+        );
+        rej.is_empty()
+    })
 }
 
 // ─────────────────────────────────────── what the shipped docs write down
@@ -543,7 +598,9 @@ fn findings(docs: &[(String, String)], scanned: &mut usize) -> Vec<String> {
                 let seal = seals
                     .entry(t.rel.clone())
                     .or_insert_with(|| seal_the_substrate_reads(&t.config));
-                if boundary_admits(seal, child) {
+                if boundary_admits(seal, child)
+                    || boundary_admits_a_connect_point(&t.config, seal, child)
+                {
                     continue;
                 }
                 if let Some(k) = guarded {

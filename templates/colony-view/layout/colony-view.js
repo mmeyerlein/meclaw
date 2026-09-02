@@ -436,11 +436,56 @@
   const G = root.TopoGeom;
   const NODE_W = 150, NODE_H = 38;
 
-  function boxOf(g) {
-    const m = /translate\((-?[\d.]+),\s*(-?[\d.]+)\)/.exec(
-      g.getAttribute("transform") || "");
-    return m ? {x: +m[1], y: +m[2]} : {x: 0, y: 0};
+  /// Every translate on a group, in order. A node carries TWO since 1.0.1: the
+  /// flow's spot, which the layout cell rewrites every tick, and the hand's
+  /// offset beside it (`hand`, one prop, `"dx,dy"`), which only a drag writes.
+  function translatesOf(g) {
+    const out = [];
+    const re = /translate\((-?[\d.]+)[,\s]\s*(-?[\d.]+)\)/g;
+    const t = g.getAttribute("transform") || "";
+    let m;
+    while ((m = re.exec(t))) out.push({x: +m[1], y: +m[2]});
+    return out;
   }
+
+  /// Where the FLOW put a box: the first translate, and the constraint a hand's
+  /// offset is measured against.
+  function flowOf(g) {
+    const t = translatesOf(g);
+    return t.length ? t[0] : {x: 0, y: 0};
+  }
+
+  /// What a hand added to it: the second translate, zero where there is none.
+  function offsetOf(g) {
+    const t = translatesOf(g);
+    return t.length > 1 ? t[1] : {x: 0, y: 0};
+  }
+
+  /// Where a box actually IS: the flow's spot plus the hand's offset. Every
+  /// piece of geometry in this file goes through here, which is why a drag can
+  /// replace the whole transform with one provisional translate and nothing
+  /// downstream notices.
+  function boxOf(g) {
+    const t = translatesOf(g);
+    let x = 0, y = 0;
+    t.forEach(function (p) { x += p.x; y += p.y; });
+    return {x: x, y: y};
+  }
+
+  /// The rectangle the browser most recently derived for a hive, so a write
+  /// back to the store only happens when it actually says something new.
+  const lastFrame = {};
+
+  /// What this browser has written and the screen has not confirmed yet.
+  ///
+  /// A prop write is answered by a diff, and a diff re-renders the box from the
+  /// props the display holds AT THAT MOMENT -- which, for the first diff after a
+  /// drag, can still be the value from before it. The box then jumps back to
+  /// where it started, the frames are derived from that, and the picture
+  /// corrects itself a beat later. Measured under GH #544 as a frame drawn at
+  /// its old size once before settling. So what this browser wrote stands here
+  /// until a diff actually says it, and every re-render puts it back.
+  const pending = {};
 
   function centre(box) {
     return {x: box.x + NODE_W / 2, y: box.y + NODE_H / 2};
@@ -582,7 +627,13 @@
   /// a frame that lies for as long as you are looking at it.
   function frameMap(el, geom) {
     const own = {}, kids = {}, seen = {};
+    // A box nobody can see does not shape a frame. With the toggle off -- the
+    // default -- the unwired leftovers of every past rewiring are hidden, and a
+    // frame drawn around them would be a frame around nothing anybody is
+    // looking at.
+    const hiding = el.classList && el.classList.contains("hide-unwired");
     el.querySelectorAll("[data-node]").forEach(function (g) {
+      if (hiding && g.classList && g.classList.contains("unwired")) return;
       const id = g.getAttribute("data-node") || "";
       const cut = id.lastIndexOf("/");
       const h = cut < 0 ? "" : id.slice(0, cut);
@@ -625,8 +676,49 @@
     return out;
   }
 
+  /// Put a box back into the two-translate form the layout writes.
+  ///
+  /// A drag replaces the whole transform with ONE provisional translate, and the
+  /// server diff normally puts the pair back. When a drag writes nothing --
+  /// a press that moved nothing, a gesture that ended where it started -- no
+  /// diff comes, and the box was left with a single translate. From then on
+  /// `flowOf` read the absolute position as the flow's and `offsetOf` read
+  /// zero, so the next drag measured against a base that does not exist and the
+  /// box would not move at all. Measured in a browser under GH #544: one
+  /// blocked drag was enough to make a box permanently unmovable.
+  function restore(g, flow, off) {
+    g.setAttribute("transform",
+      "translate(" + Math.round(flow.x) + "," + Math.round(flow.y) + ") " +
+      "translate(" + Math.round(off.x) + "," + Math.round(off.y) + ")");
+  }
+
+  /// Put every unconfirmed write back after a morph, and forget the confirmed.
+  function reconcile(el) {
+    const ids = Object.keys(pending);
+    if (!ids.length) return;
+    el.querySelectorAll("[data-node]").forEach(function (g) {
+      const oid = g.getAttribute("data-oid");
+      const want = pending[oid];
+      if (!want) return;
+      const have = offsetOf(g);
+      if (Math.round(have.x) === want.x && Math.round(have.y) === want.y) {
+        delete pending[oid];             // the screen agrees; nothing to hold
+        return;
+      }
+      restore(g, flowOf(g), want);
+    });
+  }
+
   /// Redraw every hive rectangle from the current cell positions.
-  function applyFrames(el, geom) {
+  ///
+  /// With `hook`, the derived rectangle is also written BACK to the hive's
+  /// object. The layout cell cannot do this: a hand's offset lives in the
+  /// display and never reaches it, so the rectangle it computes is the flow's.
+  /// Before GH #544 that third geometry was what a screenshot or an export got
+  /// -- 96 of 104 cells lay outside the frame the store held, while the browser
+  /// looked correct because it re-derived. The browser is the only half that
+  /// knows, so the browser says it.
+  function applyFrames(el, geom, hook) {
     const map = frameMap(el, geom);
     el.querySelectorAll("[data-hive]").forEach(function (g) {
       const r = map[g.getAttribute("data-hive")];
@@ -642,6 +734,19 @@
         p.text.setAttribute("x", Math.round(r.x) + 8);
         p.text.setAttribute("y", Math.round(r.y) + 18);
       }
+      if (!hook) return;
+      const id = g.getAttribute("data-hive");
+      const now = [Math.round(r.x), Math.round(r.y),
+                   Math.round(r.w), Math.round(r.h)];
+      const was = lastFrame[id];
+      if (was && was[0] === now[0] && was[1] === now[1] &&
+          was[2] === now[2] && was[3] === now[3]) return;
+      lastFrame[id] = now;
+      const oid = g.getAttribute("data-oid");
+      if (!oid) return;
+      ["x", "y", "w", "h"].forEach(function (k, i) {
+        hook.setProp(oid, k, now[i]);
+      });
     });
   }
 
@@ -789,17 +894,46 @@
         esc(other(e)) + (e.cond ? ' <span class="chip">if</span>' : "") + "</div>").join("");
     };
     const ins = mine.filter(e => e.to === id), outs = mine.filter(e => e.from === id);
-    // No pin state, and no button to hand a box back to the layout. A move
-    // survives because the node's tree entry declares `keep`, so there is
-    // nothing here a person could have to release.
+    // The pin, and the way back out of it. A box a hand moved carries the
+    // `pinned` marker and an offset against the flow's spot; a box nobody has
+    // touched carries neither and simply follows the layout. Releasing is
+    // therefore two writes — the marker and the offset, one prop each — and the
+    // next tick puts the box back where the flow wants it.
+    //
+    // The button exists because the alternative is a picture a person can
+    // arrange and never un-arrange: `canvy@2.1.8` learnt that, and the re-cut
+    // of #455 shipped without it (GH #544).
+    const pinned = !!cellG.getAttribute("data-pinned");
+    // How far this box is from where the layout wanted it -- which is exactly
+    // what releasing it undoes. Saying "outside its hive" would never fire:
+    // since 1.0.1 the frame FOLLOWS its cells, so a box is inside its own hive
+    // by construction however far it was dragged. The offset is the honest
+    // number, and it is the one a person can act on.
+    const off = offsetOf(cellG);
     detail.innerHTML =
       '<dl class="kv"><dt>cell</dt><dd>' + esc(id) + "</dd></dl>" +
       '<dl class="kv"><dt>type</dt><dd>' + esc(ty ? ty.textContent : "") + "</dd></dl>" +
+      '<dl class="kv"><dt>placed</dt><dd>' + (pinned
+        ? '<button class="release" type="button">by hand — release</button>' +
+          '<div class="warn">' + Math.round(off.x) + ", " + Math.round(off.y) +
+          ' px from where the layout put it — release puts it back, and the' +
+          ' frame follows</div>'
+        : '<span class="chip">by the layout</span>') + "</dd></dl>" +
       '<dl class="kv"><dt>in (' + ins.length + ")</dt><dd>" + row(ins, e => e.from) + "</dd></dl>" +
       '<dl class="kv"><dt>out (' + outs.length + ")</dt><dd>" + row(outs, e => e.to) + "</dd></dl>";
     detail.querySelectorAll(".rel").forEach(function (n) {
       n.addEventListener("click", function () { select(el, n.getAttribute("data-rel"), hook); });
     });
+    const release = detail.querySelector(".release");
+    if (release && hook && hook.setProp) {
+      release.addEventListener("click", function () {
+        const oid = cellG.getAttribute("data-oid");
+        cellG.removeAttribute("data-pinned");
+        pending[oid] = {x: 0, y: 0};
+        hook.setProp(oid, "pinned", "");
+        hook.setProp(oid, "hand", "0,0");
+      });
+    }
   }
 
   const ColonyView = {
@@ -819,9 +953,15 @@
       // very line reads it), but a session's view moves only by its own hand.
       const svg = this.el.querySelector("svg.stage");
       this.vb = svg && svg.getAttribute ? svg.getAttribute("viewBox") : null;
+      // Which browser half this picture was written by, at the moment this tab
+      // started running. A `<script>` inside a LiveView morph is not executed,
+      // so this hook keeps running for the life of the tab while the server may
+      // move on. Comparing the two is the only way a stale tab can know.
+      this.clientId = this.el.getAttribute("data-client") || "";
+      this.hiding = true;              // the server's own default, mirrored
       this.wire();
       applyCamera(this.el, this.cam);
-      applyFrames(this.el, this.geom);
+      applyFrames(this.el, this.geom, this);
       drawEdges(this.el);
     },
     // A diff re-renders the slot it changed, so the edges of the boxes it moved
@@ -845,9 +985,25 @@
       // first tick after any drag — see mounted() for the full story.
       const svg = this.el.querySelector("svg.stage");
       if (svg && this.vb) svg.setAttribute("viewBox", this.vb);
+      // Anything this browser wrote and the screen has not confirmed goes back
+      // on BEFORE the frames are derived -- a frame derived from a box the diff
+      // just put back where it started is a frame drawn at the wrong size.
+      reconcile(this.el);
+      // The morph writes the server's container class back, and whether you are
+      // looking at the leftovers is a fact about this browser, not about the
+      // colony. So it is restored here, beside the camera and the viewBox.
+      this.el.classList.toggle("hide-unwired", this.hiding);
       applyCamera(this.el, this.cam);
-      applyFrames(this.el, this.geom);
+      applyFrames(this.el, this.geom, this);
       drawEdges(this.el);
+      // A tab that has been open across a template change runs the client it
+      // loaded with, and every gesture it makes speaks a vocabulary the screen
+      // may no longer accept -- silently, because a refused prop write is a
+      // receipt to the app and nothing to the browser. So the tab says it.
+      const now = this.el.getAttribute("data-client") || "";
+      if (this.clientId && now && now !== this.clientId) {
+        this.el.classList.add("stale");
+      }
       if (this.sel) select(this.el, this.sel, this); else clearSelection(this.el);
     },
     destroyed() { this.unwire(); },
@@ -929,13 +1085,33 @@
           // everything and won every grab; now the grab is the box you are
           // visually inside of. The camera pans on true background — outside
           // every frame — and on ctrl-drag anywhere (handled above).
+          //
+          // An OUTERMOST frame is never grabbed, and that is GH #544's second
+          // half. A frame with no parent frame in the picture is not a frame
+          // around anything -- it is the canvas: on a real colony it holds 96 %
+          // empty space, so almost every press that misses a box lands inside
+          // it and inside nothing else. Measured on a live colony: one press on
+          // that emptiness dragged all 108 cells and marked every one of them
+          // hand-placed, which is the whole picture leaving the layout in a
+          // single gesture. So a root frame pans, and the group drag is offered
+          // for the frames that are actually groups.
+          const roots = {};
+          el.querySelectorAll("[data-hive]").forEach(function (g) {
+            roots[g.getAttribute("data-hive") || ""] = true;
+          });
+          const isRoot = function (path) {
+            const cut = path.lastIndexOf("/");
+            return cut < 0 || !roots[path.slice(0, cut)];
+          };
           let hg = ev.target.closest ? ev.target.closest("[data-hive]") : null;
+          if (hg && isRoot(hg.getAttribute("data-hive") || "")) hg = null;
           if (ev.clientX !== undefined) {
             const OUT = 4;
             let best = null;
             el.querySelectorAll("[data-hive]").forEach(function (g) {
               const r = g.querySelector && g.querySelector("rect");
               if (!(r && r.getBoundingClientRect)) return;
+              if (isRoot(g.getAttribute("data-hive") || "")) return;
               const b = r.getBoundingClientRect();
               if (ev.clientX >= b.left - OUT && ev.clientX <= b.right + OUT &&
                   ev.clientY >= b.top - OUT && ev.clientY <= b.bottom + OUT) {
@@ -953,6 +1129,7 @@
               id: id,
               g: hg,
               members: members.map(m => ({g: m, at: boxOf(m),
+                                          flow: flowOf(m), off: offsetOf(m),
                                           oid: m.getAttribute("data-oid")})),
               from: userPoint(el, ev),
               delta: {x: 0, y: 0},
@@ -979,6 +1156,8 @@
         // it moves, and an edge that ends on such a frame has to move with it.
         const attached = edgesFor(el, [id]);
         drag = {id: id, oid: g.getAttribute("data-oid"), g: g, origin: boxOf(g),
+                flow: flowOf(g), off: offsetOf(g),
+                pinned: !!g.getAttribute("data-pinned"),
                 from: userPoint(el, ev), at: boxOf(g), edges: attached};
         g.setPointerCapture && g.setPointerCapture(ev.pointerId);
         ev.preventDefault();
@@ -1019,8 +1198,9 @@
         }
         if (!drag) return;
         const now = userPoint(el, ev);
-        drag.at = {x: drag.origin.x + (now.x - drag.from.x),
-                   y: drag.origin.y + (now.y - drag.from.y)};
+        drag.offAt = {x: drag.off.x + (now.x - drag.from.x),
+                      y: drag.off.y + (now.y - drag.from.y)};
+        drag.at = {x: drag.flow.x + drag.offAt.x, y: drag.flow.y + drag.offAt.y};
         if (frame) return;                       // coalesce to one frame
         frame = requestAnimationFrame(function () {
           frame = null;
@@ -1045,14 +1225,25 @@
           hive = null;
           done.g.classList && done.g.classList.remove("dragging");
           const dx = Math.round(done.delta.x), dy = Math.round(done.delta.y);
+          done.members.forEach(function (m) {
+            restore(m.g, m.flow, {x: Math.round(m.off.x) + dx,
+                                  y: Math.round(m.off.y) + dy});
+          });
           if (dx || dy) {
-            // One patch pair per member. There is no group row to write: the
-            // members' own positions ARE the record, so the group's move is
-            // exactly the sum of its members' moves and nothing has to be
-            // reconciled afterwards.
+            // One patch per member and per prop. There is no group row to
+            // write: the members' own offsets ARE the record, so the group's
+            // move is exactly the sum of its members' moves and nothing has to
+            // be reconciled afterwards. The OFFSET is what is written -- where
+            // the flow puts each member is the layout cell's word, and it says
+            // it again on the next tick.
             done.members.forEach(function (m) {
-              hook.setProp(m.oid, "x", m.at.x + dx);
-              hook.setProp(m.oid, "y", m.at.y + dy);
+              const nx = Math.round(m.off.x) + dx, ny = Math.round(m.off.y) + dy;
+              pending[m.oid] = {x: nx, y: ny};
+              hook.setProp(m.oid, "hand", nx + "," + ny);
+              if (!m.g.getAttribute("data-pinned")) {
+                m.g.setAttribute("data-pinned", "1");
+                hook.setProp(m.oid, "pinned", "1");
+              }
             });
             hook.dragged = true;        // the click that follows is the drag's tail
           }
@@ -1070,15 +1261,32 @@
         const done = drag;
         drag = null;
         done.g.releasePointerCapture && done.g.releasePointerCapture(ev.pointerId);
-        // Two events for the whole drag, one per editable prop. The provisional
-        // DOM stays as it is — the diff replaces it, and the cell decides what
-        // the object now says. A press that never moved is a CLICK: it writes
-        // nothing (two no-op writes per selection click, before this guard) and
-        // it must not swallow the selection that follows.
-        const nx = Math.round(done.at.x), ny = Math.round(done.at.y);
-        if (nx !== Math.round(done.origin.x) || ny !== Math.round(done.origin.y)) {
-          hook.setProp(done.oid, "x", nx);
-          hook.setProp(done.oid, "y", ny);
+        // Two events for the move and a third the first time a box is moved at
+        // all. The provisional DOM stays as it is — the diff replaces it, and
+        // the cell decides what the object now says. A press that never moved
+        // is a CLICK: it writes nothing (two no-op writes per selection click,
+        // before this guard) and it must not swallow the selection that
+        // follows.
+        const off = done.offAt || done.off;
+        const nx = Math.round(off.x), ny = Math.round(off.y);
+        // Whatever happens next, the box goes back into the two-translate form.
+        // A gesture that writes nothing gets no diff, and a box left with one
+        // translate has lost the line between where the flow put it and where a
+        // hand did -- after which it cannot be moved again at all.
+        restore(done.g, done.flow, {x: nx, y: ny});
+        if (nx !== Math.round(done.off.x) || ny !== Math.round(done.off.y)) {
+          // ONE prop, and that is the whole of why a drag no longer flickers.
+          // A browser writes a prop at a time and the display diffs a prop at a
+          // time; an offset spelled as two props reached the page as two
+          // pictures, and the frames -- derived from where the boxes are -- were
+          // derived once from the half-moved one. Measured: three rectangles
+          // painted for one drag, the middle 971 wide and still 92 high.
+          pending[done.oid] = {x: nx, y: ny};
+          hook.setProp(done.oid, "hand", nx + "," + ny);
+          if (!done.pinned) {
+            done.g.setAttribute("data-pinned", "1");
+            hook.setProp(done.oid, "pinned", "1");
+          }
           hook.dragged = true;          // so the click that follows does not select
         }
       };
@@ -1091,6 +1299,21 @@
         clearSelection(el);
       };
 
+      // The toggle. It is a CLASS on the container and nothing else -- no
+      // server round trip, no stored preference: which cells you are looking at
+      // is the same kind of local fact as where you are looking, and both stay
+      // in this browser.
+      this.onToggle = function (ev) {
+        const b = ev.target.closest ? ev.target.closest(".unwired-toggle") : null;
+        if (!b) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        hook.hiding = !hook.hiding;
+        el.classList.toggle("hide-unwired", hook.hiding);
+        applyFrames(el, hook.geom, hook);
+        drawEdges(el);
+      };
+      el.addEventListener("click", this.onToggle, true);
       el.addEventListener("pointerdown", this.onDown);
       el.addEventListener("pointermove", this.onMove);
       el.addEventListener("pointerup", this.onUp);
@@ -1102,6 +1325,7 @@
     },
 
     unwire() {
+      this.el.removeEventListener("click", this.onToggle, true);
       this.el.removeEventListener("pointerdown", this.onDown);
       this.el.removeEventListener("pointermove", this.onMove);
       this.el.removeEventListener("pointerup", this.onUp);

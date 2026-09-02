@@ -273,6 +273,45 @@ fn esc(s: &str) -> String {
     out
 }
 
+/// The one default style the shell ships: the runtime's own connection states.
+///
+/// **This is not the cell deciding what a display looks like.** That rule holds
+/// (`templates/web/README.md`, "The stylesheet link rides on `stack`"): the
+/// shell links no stylesheet and says nothing about the page inside it. What it
+/// does say something about is the *container it writes itself* — the
+/// `data-phx-main` div — in the states the *client it ships* puts on it.
+/// `setContainerClasses` in the vendored bundle writes `phx-loading`,
+/// `phx-error`, `phx-client-error` and `phx-server-error` there, after a short
+/// delay so a blink does not flash anything. Shipping a runtime that publishes
+/// a state and no way to see it is the half-delivery this closes: a page whose
+/// socket is gone otherwise keeps drawing its last picture, indefinitely, with
+/// nothing on screen to say so.
+///
+/// **A page overrides it by saying the same thing later.** The block sits in
+/// `<head>`; a page's own rules arrive in the body and win the cascade at equal
+/// specificity on document order. `templates/colony-view` already carries such
+/// rules, and every property declared here is one it declares too — so on that
+/// page the banner is entirely its own, and there is exactly one, because
+/// `::after` is one box per element.
+///
+/// **No dim.** Dimming is deliberately left to the page. `opacity` on the
+/// container would fade the banner with it, and `opacity` on the container's
+/// children MULTIPLIES with a dim the page already applies further down
+/// (colony-view's `.colony-view` is a grandchild, so 0.5 × 0.5 = 0.25 — a
+/// picture the operator cannot read any more). The banner is the signal; how
+/// far a page fades behind it is that page's judgement.
+const CONNECTION_STATE_CSS: &str = concat!(
+    "[data-phx-main].phx-loading::after,",
+    "[data-phx-main].phx-error::after,",
+    "[data-phx-main].phx-client-error::after,",
+    "[data-phx-main].phx-server-error::after{",
+    "content:\"connection lost — this page may be out of date\";",
+    "position:fixed;z-index:9;left:50%;top:0;transform:translateX(-50%);",
+    "padding:5px 14px 6px;background:#ffffff;color:#b3261e;",
+    "border:1px solid #b3261e;border-radius:0 0 8px 8px;",
+    "font:11.5px/1.4 ui-sans-serif,system-ui,sans-serif;pointer-events:none;}",
+);
+
 /// The dead render this cell serves, origin-relative.
 ///
 /// `body` is the materialised page, already rendered — so this is a string
@@ -289,6 +328,7 @@ pub(crate) fn shell(cell_path: &str, title: &str, body: &str) -> String {
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
          <meta name=\"csrf-token\" content=\"{token}\">\n\
          <title>{title}</title>\n\
+         <style>{states}</style>\n\
          </head>\n<body>\n\
          <div id=\"{container}\" data-phx-main data-phx-session=\"{token}\" data-phx-static=\"\">\n\
          {body}\n\
@@ -310,6 +350,9 @@ pub(crate) fn shell(cell_path: &str, title: &str, body: &str) -> String {
         token = esc(&token),
         title = esc(title),
         container = esc(&container),
+        // A compile-time constant with no `<` in it: nothing here comes from a
+        // `config.json`, so there is nothing to escape.
+        states = CONNECTION_STATE_CSS,
         // Already-rendered HTML: escaped per prop when it was built, by the
         // renderer that knows which props were declared as markup.
         body = body,
@@ -981,5 +1024,38 @@ mod tests {
 
         drop(push_tx);
         let _ = job.await;
+    }
+
+    /// Every page a display serves says so when the socket is gone.
+    ///
+    /// Until this, the LiveView connection classes were styled in exactly one
+    /// place — `templates/colony-view`'s own stylesheet, which travels inside
+    /// that view's markup. Every other page of every other display drew the
+    /// last picture it had for as long as the tab stayed open, with nothing on
+    /// screen to say the picture had stopped moving.
+    #[test]
+    fn the_shell_styles_the_runtimes_own_connection_states() {
+        let html = shell("/web", "Home", "<h1>hello</h1>");
+
+        let head = html.split("</head>").next().expect("the shell has a head");
+        assert!(
+            head.contains("<style>"),
+            "the default belongs in the head, before the body it dims; shell was:\n{html}"
+        );
+        for state in [
+            "phx-loading",
+            "phx-error",
+            "phx-client-error",
+            "phx-server-error",
+        ] {
+            assert!(
+                head.contains(&format!("[data-phx-main].{state}::after")),
+                "the shell must style the {state} state the runtime it ships sets; shell was:\n{html}"
+            );
+        }
+        assert!(
+            head.contains("connection lost"),
+            "the hint has to be readable prose, not a colour change alone"
+        );
     }
 }

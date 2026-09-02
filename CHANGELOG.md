@@ -13,6 +13,76 @@ Rust crates are internals and move without notice.
 
 ### Changed
 
+#### `operator@1.1.0` / `meclaw-os@1.7.0` / `access@2.4.3`: the submitter moves into the front door (GH #556)
+
+**One front, one place a submission lives.** `submit` stops being a hive of the
+OS shell and becomes an occupant of `operator` — `/os/operator/submit`, gate and
+store. Until now a submission crossed two shell stations, `./operator` and then
+`./submit`, for what is one job, and the road was only readable by reading two
+templates.
+
+**ADR-0015's guardrail is precised rather than broken**, and the amendment of
+2026-08-31 says which half of it was ever load-bearing: the protection is the
+edge that is *missing between the drafter and the submitter*, and a missing edge
+is missing at every address. After the move the two are not even siblings, and
+the one edge they ever shared — the `registers_class` nudge of #504 — now runs
+`./operator -> ./builder`, so builder and submitter share no edge in either
+direction. `mutate` still reaches `/colony/mutations` over one edge that lives in
+the birth topology and cannot be drawn by any mutation at any scope.
+
+- **`operator@1.1.0`** — the `submit` ref moves in beside the cell that lends a
+  submission its sender, which is called `intake` now (a ref inside a template is
+  named after the template it references, `docs/development-rules.md` § 8a, R1).
+  `apply` and `in_receipt` stop being rim lanes and become the interior edges
+  `./intake -> ./submit` and `./submit -> ./intake`. Four lanes cross the rim in
+  their place, and none of them is the front door's own: `ask` out and
+  `in_verdict` back to the broker beside it, `mutate` out, and `sub_receipt` —
+  the submitter's own receipt, let out only when it carries `hop.error_code` or
+  `hop.registers_class`, because a submission answered twice on `receipt` is a
+  submission whose caller cannot tell which answer is the outcome.
+- **`meclaw-os@1.7.0`** — four refs where there were five, and 47 edges where
+  there were 49. The ask, the grant, the mutate and both corpus nudges are drawn
+  from `./operator` with the same guards; the two edges that carried a manifest
+  out to `./submit` and a receipt back are gone from this level entirely. What
+  the shell *declares* is unchanged — thirteen lanes in, fifteen out — because
+  the union rule cancels exactly what moved inside.
+- **`access@2.4.3`** — the four rows the submitter asks over name
+  `/os/operator/submit` where they named `/os/submit`. R-AC-1 rules the node
+  whose reach the rule is about: a row naming `/os/operator` would grant an
+  export cell and a lifecycle composer the same thing. Re-pointing a shipped row
+  at the node that moved grants nothing new, so it is the third digit.
+- **`submit@2.3.0` is unchanged** — it is re-homed, not rewritten.
+- **A running colony cannot adopt this by mutation.** The `mutate` lane lives in
+  the birth topology, so it lands with the next instance build; running instances
+  keep their grown form (no-delete).
+
+#### `tools@1.4.0`: the build pair is named as a pair (GH #554)
+
+The two occupants that carry a build were called `build` and `apply`, and the
+tree said nothing about the fact that they are two halves of ONE round: one
+fetches a draft, the other submits it. A reader of the graph had to know the
+story before the two names looked related at all, and alphabetically they sat
+apart, one between `bash` and `edit` and the other beside it by accident.
+
+They are `build-draft/` and `build-apply/` now. **`draft` names what the first
+half delivers** — the sentence *"This is a DRAFT"* is verbatim in its
+`tool_result` — and the shared `build-` prefix is what makes the pair visible
+where a reader actually meets it: in the nine edges of `params.graph` and in a
+colony's registry listing, both of which now sort the two neighbours together.
+
+**The tool names the model sees did not move**, and that is the whole boundary
+of this change: `build_topology` and `apply_manifest` are the contract surface a
+brain's `system.tools` names and a door dispatches on (`hop.tool_name`), and a
+cell name is not a tool name. The `schemas` occupant's table, the two doors'
+conditions and every caller's prompt are byte-identical across this version.
+
+What moved is the hive's own address space, which is why it is the second digit:
+a mutation or an `override_params` path that named `<assistant>/tools/build`
+names `<assistant>/tools/build-draft` from 1.4.0 on. A generation already grown
+from 1.3.0 keeps the names it was grown under — the template library is not on
+the running path of a booted colony — and the pair lands with the next instance
+built.
+
 #### `tools@1.3.0`: a cell type is not a tool (GH #547)
 
 `templates/tools` shipped eleven occupants and two of them were reachable from
@@ -90,7 +160,117 @@ Both bumps carry their pins: `templates/assistant`'s two ref markers and the
 derivation notes of its lane contract name the new versions, and
 `templates/README.md`'s catalogue rows move with them.
 
+#### `builder@1.5.2` + `meclaw-os@1.6.1`: a ref is named after its template (GH #545)
+
+An instance is named after the template it is an instance of, and a `ref` onto
+template `X` is a directory called `X`. Two occupants of the baumeister were
+named after the ROLE they play instead: `dispatch`, a ref on `dispatcher@1.1.2`,
+and `librarian`, a ref on `builder-librarian@2.1.1`. Nineteen of the library's
+twenty-two ref markers already carried their template's name --
+`templates/cogny/dispatcher/` and `templates/talky/dispatcher/` among them --
+which made `dispatch` a lone second spelling of a word that is spelled correctly
+twice elsewhere. Where the two names differ, the tree says one thing and the
+address says another, and every reader has to learn the translation before they
+can follow an edge.
+
+**`builder@1.5.2`** -- the two directories are `dispatcher` and
+`builder-librarian`, and the eleven edges that named them move with them. No
+lane, no guard, no cell and no prose about behaviour changed: this is the tree
+spelling what the address already spells. A mutation that named
+`<builder>/dispatch` or `<builder>/librarian` in an `override_params` path stops
+resolving, and that is the whole of the migration -- the level's own address
+space is what moved, which is why a rename is a version event at all.
+
+**`meclaw-os@1.6.1`** -- the baumeister ref re-pinned to `builder@1.5.2`.
+Nothing else at that level moved.
+
+The third and expensive one, the assistant's conversation surface, is the same
+rule on a level whose name travels through twenty test files; it lands
+separately.
+
+#### `assistant@2.4.0`: the identity pack rides a v-lane (GH #561)
+
+`in_pack` no longer travels as a per-level chain. The push leaves a member's own `affinity`
+and ends directly at the two brain rims of the generation it is meant for --
+`<generation>/talky` and `<generation>/cogny` -- as two v-lanes carrying `"lane": "in_pack"`,
+and each receipt rides one back on `"lane": "pack_ack"`. `assistant@2.4.0` stops carrying the
+lane and starts vouching for it: the four pass-through edges are gone (thirty-seven edges
+become thirty-three) and what remains in the contract is the connect point,
+`"at": ["./talky", "./cogny"]`, on both lanes. A level that declares a lane has said it takes
+part in it, and this one stamped nothing, filtered nothing and guarded nothing (GH #559 rule 2,
+ADR-0020). The fan-out is unchanged in everything that matters -- one subscription row naming
+the generation, one pack, two durable writes, two receipts -- it is simply two edges the sender
+draws rather than two the level draws, and the pairing that obliges the receipt is now read at
+the rim, where `talky` and `cogny` declare it themselves. `grow_level`'s opt-in identity door
+renders those four edges, and the submitter's form check accepts a door that ends inside a node
+the same declaration creates, not only at the node itself. Bumping the level is the second digit
+because an address moved: a caller that wired `in_pack` at the level's own path redraws the edge
+at the two rims the corridor names.
+
+#### `assistant@2.4.0` / `member@1.5.0`: the recall road rides a v-lane, and the member still stamps (GH #562)
+
+A brain's `memory_recall` used to cross three levels to reach the person's memory: the
+generation's own rim, the `assistants` container, and then the member's door — and only the
+last of the three did anything, turning `recall` into `in_query` and stamping `recall_as_of`,
+`audience_now` and `channel`, the keys the hive refuses a question without. The first two are
+what ADR-0020 built the v-lane for. The assistant stops forwarding the lane and starts
+**vouching** for it: `recall` and `in_bundle` keep their contract entries and gain
+`at: ["./talky", "./cogny"]`, the four pass-through edges are struck, and the level goes from
+thirty-three edges to twenty-nine — the same subtraction GH #561 made one lane earlier, on the
+same two occupants. What delivers instead is one deep edge per asker per direction, drawn by
+the mutation that instantiates the generation and naming the lane it carries; the reply-to
+token, the core's guarded door and the surface's default all move up one level unchanged. The
+member declares the same two lanes with `at: ["./assistants"]` and no connect point below it:
+under ADR-0020 that makes the person's level a **mandatory hop**, so a v-lane that would carry
+a generation's recall past the door that stamps the round is refused with
+`v_lane_mandatory_hop` at mutation time instead of arriving as `missing_audience` at runtime.
+The member's stamping edges themselves are untouched, and the road is one hop shorter in both
+directions. Both templates carry the change in their unreleased number, the same reading
+`docs/development-rules.md` § 4 gave #454, #459 and #471.
+
+Three substrate rules follow the declaration, all three the same sentence read from a
+different side. A lane that names connect points docks BELOW the rim, so its hive owes it no
+door out of its own path (`hive_contract::check_lane_doors` skips it) and the level above does
+not carry it in the union of its occupants' lanes. The rim is **closed** for that lane in the
+other direction too: an `add_edges` entry that delivers it AT the hive path is refused
+`hive_contract` and told which connect point to end on — without that half the declaration
+would wave through exactly the edge whose door the migration struck, and the delivery would
+become a dead letter nobody is told about. And a v-lane may now end on a hive the same
+mutation gives birth to — every grow recipe draws a generation's edges beside its `add_nodes`,
+and the target's contract is read from the template directory until the node is staged,
+exactly as a `swap_nodes` reads its successor's.
+
 ### Added
+
+#### The hand-typed `memory_recall` schema is pinned to the hive's contract (GH #552, interim)
+
+`memory_recall` is served by the collector out of its own recall port (GH #512),
+and the schema the model sees is typed by hand in `self_tool_menu()` — a manual
+projection of `memory-hive`'s `in_query` contract, with nothing holding the two
+together. That missing pin is the drift GH #464 was opened for.
+
+`crates/meclaw-cells/tests/gh552_the_recall_schema_is_pinned_to_the_contract.rs`
+is that pin until the rebuild lands. It carries the mapping table in its own
+header and measures both halves rather than asserting them: the three parameters
+the MODEL fills (`query`, `window_from`, `window_to`) must reach the recall port
+as `hop.recall_query` / `hop.recall_window_from` / `hop.recall_window_to`, driven
+through the shipped assembler on a real `in_memory_call`; the four the model is
+deliberately NOT asked for must be filled beside it — `memory_tier` off the
+collector's own `memory_call_tier` knob, and `recall_as_of`, `audience_now` and
+`channel` off every `in_query` edge the `member` template draws. A key that is
+neither is a recall arriving empty, and on `audience_now` / `channel` empty is a
+refusal (`missing_audience`, `missing_channel`), not a wider answer. The second
+hand-typed copy is pinned too: `talky`'s brain seed row, what a fresh agent's
+`system.tools` holds before the first menu tick, is compared against the same
+declaration.
+
+**No version digit.** The schema itself is unchanged — no parameter the recall
+path evaluates is missing from it — and the collector gains one doc comment. One
+thing the pin records rather than repairs: the two window bounds are declared as
+independently optional while the recall cell refuses a half-open window
+(`half_open_window`), so a model that names one bound buys a refusal it cannot
+see coming. The sentence belongs in the hive that enforces it, and GH #552 is
+where it will be written once.
 
 #### `scripts/check_tree_rules.py`: the tree's naming and wiring rules are a gate (GH #550)
 
@@ -132,35 +312,290 @@ right now stand in a dated `TRANSITIONAL` table with their issue numbers, and
 the gate names a row that no longer matches anything rather than letting the
 exemption silt up.
 
-### Changed
+#### v-lanes: an edge may declare the lane it carries (GH #559)
 
-#### `builder@1.5.2` + `meclaw-os@1.6.1`: a ref is named after its template (GH #545)
+- **A deep edge may name its lane.** A deep edge — one that ends inside a hive
+  rather than on its rim — can now name its lane (`add_edges[].lane`), and a hive
+  can name where that lane docks (`params.contract.accepts[].at` /
+  `.emits[].at`). Stage 6 of the mutation validation reads the two together: a
+  crossed level that declares the lane and permits the endpoint waives its port
+  boundary for that one edge, a level that declares the lane and permits nothing
+  may not be skipped (`v_lane_mandatory_hop`), and the target hive owes a connect
+  point (`v_lane_no_connect_point`). A `swap_nodes` re-anchors a v-lane that ends
+  inside the subtree it replaces onto the successor by relative form, or refuses
+  the whole swap (`v_lane_unanchored`) — it is never silently dropped. An edge
+  without `lane` behaves exactly as before, and the bootstrap enforces none of
+  this, as it enforces no port boundary. `/colony/graph` reports an edge's lane;
+  `colony.db` schema v9 adds the nullable `edges.lane` column.
+- **Tree gate: R5, a v-lane is a declared deep edge.**
+  `scripts/check_tree_rules.py` now runs the static half of the v-lane rule
+  table: an edge whose endpoint is more than one segment deep must name its
+  `lane`, and one level between the ancestor and the endpoint must declare the
+  connect point with `at`. A skipped level that declares the lane without a
+  matching `at` is a `v_lane_mandatory_hop`, an unopened seal keeps its
+  `hive_port_boundary`, and a walk that reaches the endpoint without a
+  declaration is a `v_lane_no_connect_point` — all failures, not warnings. `ref`
+  levels are resolved into `templates/<name>/`; a level this tree does not hold
+  is a note and left to Stage 6.
+- **A v-lane is visible where the topology is read.** `/colony/graph` answers with
+  the lane an edge was declared on — the reply body itself, not only the
+  DTO behind it, now carries `lane` on a declared v-lane and omits the key
+  entirely on an ordinary edge, so "this edge declares no lane" and "this server
+  does not report lanes" stay distinguishable. `colony-view` draws it: the layout
+  hands the lane down to `colony-view-edge` as the `vlane` prop, and the browser
+  half renders such an edge dashed with the lane's name in its tooltip. Rendering
+  only — the component keeps `editable: []`, nothing is written back, and an edge
+  without a lane looks exactly as it did before.
 
-An instance is named after the template it is an instance of, and a `ref` onto
-template `X` is a directory called `X`. Two occupants of the baumeister were
-named after the ROLE they play instead: `dispatch`, a ref on `dispatcher@1.1.2`,
-and `librarian`, a ref on `builder-librarian@2.1.1`. Nineteen of the library's
-twenty-two ref markers already carried their template's name --
-`templates/cogny/dispatcher/` and `templates/talky/dispatcher/` among them --
-which made `dispatch` a lone second spelling of a word that is spelled correctly
-twice elsewhere. Where the two names differ, the tree says one thing and the
-address says another, and every reader has to learn the translation before they
-can follow an edge.
+#### v-lanes: the rule set, and ADR-0020 (GH #559)
 
-**`builder@1.5.2`** -- the two directories are `dispatcher` and
-`builder-librarian`, and the eleven edges that named them move with them. No
-lane, no guard, no cell and no prose about behaviour changed: this is the tree
-spelling what the address already spells. A mutation that named
-`<builder>/dispatch` or `<builder>/librarian` in an `override_params` path stops
-resolving, and that is the whole of the migration -- the level's own address
-space is what moved, which is why a rename is a version event at all.
+- **The spec describes a v-lane now.** `docs/meclaw-overview.md` § *v-lanes*
+  (both language versions) defines it as what it is — an ordinary deep edge in
+  the graph of the two endpoints' lowest common ancestor, which names its lane
+  — and not as a new kind of routing: delivery was always flat, and what was
+  missing was the declaration. The section carries the validation rule table
+  in full, names the three contract-surface error codes
+  `v_lane_no_connect_point`, `v_lane_mandatory_hop` and `v_lane_unanchored`,
+  and states that an edge without a `lane` field keeps exactly today's
+  behaviour. Two sentences are there to stop a wrong reading: the rim of a
+  skipped level no longer describes all of its occupants' traffic — deliberately
+  — and a v-lane changes nothing about secrets, which still travel as a sealed
+  box over ordinary edges, pulled per request against an ephemeral recipient key
+  and never pushed.
+- **`docs/config.md`** documents both halves of the declaration: `lane` beside
+  `condition`/`modifier`/`default` on an edge, and `at` beside
+  `route`/`context`/`because` on a hive contract's `accepts`/`emits`, with a
+  worked example — a contract that opens `in_pack` at `./talky` and `./cogny`
+  and at nothing else. `ports: []` stays literally true: the one exception is
+  pronounced by the target template, never taken by the caller.
+- **`docs/development-rules.md` § 8b** records the one sanctioned exception to
+  the union rule, and the duty that comes with it: per lane migrated to a
+  v-lane, the chain **and** its pass-through declarations are struck in the same
+  change, because a declaration that merely forwarded traffic would now read as
+  a claim to influence it and refuse the very edge replacing it.
+- **ADR-0020 — *a v-lane is a contract-declared corridor, not a new kind of
+  edge*.** It records the three rejected alternatives with their reasons: a deep
+  port (a port with a path in it is an interior cell name in a different field),
+  an LCA override (the level that grants the reach is not the level that knows
+  what is inside, and the grant would be invisible in the target's contract),
+  and an owner field on the edge (a second bookkeeping of what the edge table
+  already carries in its paths).
 
-**`meclaw-os@1.6.1`** -- the baumeister ref re-pinned to `builder@1.5.2`.
-Nothing else at that level moved.
+#### `member@1.5.0` / `talky@4.6.0` / `cogny@4.6.0` / `assistant@2.4.0`: a member carries its own broker, and its brains ask it over a v-lane (GH #560)
 
-The third and expensive one, the assistant's conversation surface, is the same
-rule on a level whose name travels through twenty test files; it lands
-separately.
+Authorisation and key ownership stopped sharing one hive. `member@1.5.0` grows an
+`access` occupant of its own — the shell's broker keeps answering the submitter's
+policy questions and keeps its vault for OS-level keys, while the provider
+credentials a person's agents burn now live with the person, which is the same
+argument that put the memory hive at that level. The two edges that carry a
+credential are **v-lanes** (GH #559), drawn by the manifest that grows a
+generation: from the brain that spends the grant straight to `./access`, past
+three levels, one of which is sealed. `talky@4.6.0` and `cogny@4.6.0` are what
+make that legal — they declare both halves of the lane in their own contract and
+name `./brain` as its connect point (`emits.credential_request` and
+`accepts.in_sealed`, both carrying `at`), so `params.ports: []` stays literally
+true and the opening is one the template pronounces about itself. The two levels
+in between declare nothing about the lane and are therefore transparent.
+`assistant@2.4.0` carries the two pins. Both brain templates ship
+`params.credential_grant_id` resolving to the empty string, which is no grant at
+all: a generation nobody wires this way behaves exactly as before and spends its
+`api_key`. `examples/organism/grow-credentials.json` is the runnable form — a
+sixth declaration that instantiates nothing, draws four v-lanes and seeds two
+grants through the mutation door — and `templates/member/README.md` § *The
+credential v-lanes* is the recipe, including the two gestures that are not
+topology (the vault's passphrase at birth, and the credential itself from stdin
+with no colony running). Measured end to end in
+`crates/meclaw-cells/tests/gh560_a_members_brain_gets_its_sealed_key.rs`: one
+turn, answered, with the bearer the member's vault held — the message log
+carries the ciphertext and never the value.
+
+#### `builder@1.6.0`: a generation can be grown with no key of its own (GH #560)
+
+The credential v-lanes stopped being something a person writes by hand. `grow_level`
+takes a `credential` block on an assistant — the second opt-in of that level after the
+identity door — and renders the form `templates/member/README.md` § *The credential
+v-lanes* publishes: two edges per brain, each naming the lane it carries, from the rim
+that spends the key straight to the member's own `access`; the grants that answer them,
+through `seed_rows` and therefore through the mutation door that keeps a row; and, on
+both brains, a grant handle **and** an empty `api_key`, which is the switch and not
+tidiness — a brain asks for a credential only while it holds none, and both params are
+immutable, so both are set where the generation is grown or the repair is a new
+generation. The four rendered edges are compared byte for byte against
+`examples/organism/grow-credentials.json`, the same discipline the six level edge sets
+run under.
+
+**It renders a SECOND declaration, and that is a substrate fact rather than a
+preference.** The lane ends on `<generation>/talky/brain`, two levels inside the node
+the first declaration gives birth to, and the connect point that makes it legal is
+declared by `talky`/`cogny` rather than by the generation — while a mutation reads the
+contract of a hive it gives birth to from the template ROOT only (GH #562). Drawn in one
+breath the same four edges are refused `v_lane_no_connect_point`; drawn one declaration
+later the level stands and its contracts are read off the disk. Order is semantics, as
+everywhere else: a refusal on the second declaration leaves a generation whose brains
+hold an empty key and name a grant nobody wired, and that fails LOUDLY — the first turn
+emits `credential_request` onto no edge and dead letters — which is what makes two acts
+acceptable where seeding the grants first would leave permission rows for a generation
+that may never exist. Measured end to end in
+`workshop/evals/builder-scenarios/cases/I5-a-generation-grows-with-no-key-of-its-own.json`:
+a wish with no model reachable at all comes back as a two-declaration draft, is quoted
+back verbatim through the front door, and the four deep edges are read out of the graph
+the colony itself publishes.
+
+**The second digit, and not the third** (ruling of 2026-09-01). The recipe draws a
+credential lane a caller could not draw before, which is one capability more at the
+composer's front door rather than a repair of one that was there — the same reading
+`member@1.5.0` and `talky@4.6.0`/`cogny@4.6.0` got in this very wave. A caller that
+names no `credential` block gets byte-identical output from 1.6.0, so nothing has to
+move for the bump; what moved is what may be asked for.
+
+One comment repair rides in the same number (GH #558, second half): the cell a grown
+door is attributed to is `/os/operator/intake` since the submitter moved into the front
+door (#556), where the recipe still said `/os/operator/submit`.
+
+
+### Fixed
+
+#### The `web` shell says when the socket is gone — on every page (no template change)
+
+The vendored LiveView client has always published its connection state as
+classes on the `data-phx-main` container the shell writes: `phx-loading`,
+`phx-error`, `phx-client-error`, `phx-server-error`, set after a short delay so
+a blink flashes nothing. Exactly one place in the tree ever read them —
+`templates/colony-view`'s own stylesheet, which travels inside that view's
+markup. Every other page of every display therefore kept drawing its last
+picture for as long as the tab stayed open, and a picture drawn a minute ago and
+a live one are pixel-identical.
+
+The shell's `<head>` now carries a handful of CSS lines for those four states:
+one fixed banner, *connection lost — this page may be out of date*, on the
+container the shell emits itself. This does not retract "the cell type does not
+decide what a display looks like" (`templates/web/README.md`, § The Vision token
+sheet): the shell still links no stylesheet and still says nothing about the
+page inside the container. What it styles is its own element in the states of
+the runtime it itself ships — a runtime that publishes a state nothing can see
+is half delivered.
+
+A page overrides the default by declaring the same rules. The block is in
+`<head>`, a page's own `<style>` arrives in the body, and at equal specificity
+the later rule wins; `colony-view` keeps its own banner, and there is never a
+second one, because `::after` is one box per element. The default deliberately
+does **not** dim: `opacity` on the container would fade the banner with it, and
+`opacity` on the container's children multiplies with a dim the page already
+applies further down (`colony-view` halves its picture's opacity — half of a
+half is unreadable). No template changed, so no template version moved.
+
+#### `member@1.4.0` (docs only): a screen costs two edges, not three
+
+The member README and the template's own description both described a third
+instantiating edge for a display channel — `./channels/display-<s> ->
+./channels` on `has(hop.error_code)`, re-stamped to `error` — by analogy with a
+chat channel. A connector earns that edge because it emits a failure of its own;
+a display does not. Its contract declares exactly two emissions, `event` and
+`receipt`, its graph carries exactly two edges out of the hive, and a receipt's
+`error_code` travels in the body rather than on the hop, so nothing a screen
+puts on the wire could ever match such an edge. No shipped wiring changed — the
+description did. The third edge in `gh459_a_screen_is_a_member_channel.rs` stays
+as the test double's witness lane and is now marked as such.
+
+#### `colony-view@1.0.1` + `display@1.0.1`: the picture is the layout's again, and a pin is a marker (GH #544)
+
+`colony-view@1.0.0` drew one rectangle per hive and, on any colony that had been
+running for a while, those rectangles stopped being frames: they covered each
+other, they covered cells belonging to other hives, and they ran two orders of
+magnitude larger than the boxes they held. Measured on a live colony of 104
+cells over 26 hives, read out of the display's own object store:
+
+```text
+overlapping unrelated hive pairs   208 / 215
+worst frame / cell area            299x   (a hive of three cells)
+(hive, foreign cell) intersections 1133
+boxes standing where the flow put them  1 / 104
+```
+
+The picture called those 103 boxes *hand placed*. Nobody had touched them — and
+nobody could have, because the `data-oid` every box carried named an object one
+tree level away from the one the display mints, so a drag wrote to an id that
+does not exist. Two things were wrong under it, and both are identity:
+
+- **`keep` was attached to a slot.** An object id was the child index chain, and
+  a picture writes its hives, then its edges, then its cells — so one edge more
+  shifted every box's index by one, and the props the view had asked to keep
+  were handed to whichever cell inherited the slot. Three cells held two objects
+  each. Every box therefore wore the coordinate the flow had computed, at some
+  earlier tick, for somebody else: a collage of a dozen incompatible layouts.
+- **A coordinate was read as a pin.** `canvy@2.1.8` had already replaced that
+  with a marker of its own; the re-cut of GH #455 lost the marker and kept
+  `x`/`y` instead, so a box froze at the tick its object happened to be created
+  and the layout was consulted for nothing that already existed.
+
+**`display@1.0.1`** — a component-tree node may declare its own `key`, and the
+object is then named `<parent>/<key>` rather than `<parent>/<index>` while `ord`
+still comes from the index. An index is a slot; a `keep` prop has to follow the
+thing. A view that names no keys is unchanged, and both shipped view kinds name
+none.
+
+**`colony-view@1.0.1`** — the flow owns `x`/`y` and rewrites them on every tick,
+so the flow's guarantees are what a viewer sees. A hand owns `hand` — one prop,
+spelled `"dx,dy"` — and a `pinned` marker beside it, and those two are what `keep`
+covers. One prop because a browser writes a prop at a time and the display diffs
+a prop at a time: as two props, one drag reached the page as two pictures and the
+frames were derived once from the half-moved one — three rectangles painted for a
+single drag, the middle 971 wide and still 92 high. What the browser wrote also
+stands until a diff says it, because the first diff after a drag can still carry
+the value from before it. The offset
+is against the cell's **own** spot, so it travels with its hive instead of being
+left behind by the next re-rank — which is what GH #170 removed, and why this is
+not that: the delta is per box, never against a hive anchor. Each box carries
+the frame it grows: a hive's rectangle is derived from the boxes it holds, and
+the browser — the only half that can see where a hand put them — writes the
+derived rectangle back, so the store says what the screen shows instead of the
+third, wrong geometry the issue measured. The detail panel says which of the two
+placed a box, how far it is from where the layout wanted it, and offers the way
+back.
+
+A bound was tried first and withdrawn: trimming an offset to its own hive's
+frame made every count hold for any arrangement, and measured on a real screen
+as 85 x 15 pixels of travel before a wall, which reads as a broken gesture. What
+is no longer promised is written down rather than hoped away — an arrangement
+can put two frames over each other, because somebody asked for it; the durable
+answer is the app remembering the arrangement so the flow can pack around it,
+which is a build and not a repair.
+
+Two defects found in a browser while proving it, both shipped fixed. A drag that
+wrote nothing left the box with the single provisional translate, after which the
+client read the absolute position as the flow's and the offset as zero — one
+blocked drag made a box permanently unmovable. And a tab open across a template
+change keeps running the browser half it loaded with, because a `<script>`
+arriving inside a LiveView morph is not executed; the shell now carries a digest
+of the client that wrote the picture, and a stale tab says so instead of quietly
+refusing every gesture.
+
+Two gestures were wrong under the same heading and go with it. A frame with no
+parent frame is the canvas, not a group: on a colony that is 96 % empty space
+almost every press that misses a box lands inside the outermost frame and inside
+nothing else, and one such press dragged all 108 cells of a live colony and
+marked every one of them hand-placed. A root frame now pans. And a group drag no
+longer writes for a group that did not move: one delta is applied to every
+member, and when that delta rounds to nothing nobody is marked hand-placed and
+nothing is written at all.
+
+**The default picture also stops drawing the cells that take part in no edge at
+all.** `remove_nodes` and `swap_nodes` disconnect and never delete, so a live
+colony collects leftovers -- 31 of 123 cells on the one this was built against,
+13 of them in a single hive -- and a frame drawn around boxes nobody is looking
+at is a frame around nothing. They are hidden by default and the legend carries
+a `<n> unwired` button that brings them back; the hive frames and the `viewBox`
+are computed over the cells the picture shows, and flipping the toggle re-derives
+the FRAMES in the browser, from whatever is left visible. The `viewBox` is
+deliberately not re-derived with them: a session keeps the frame it mounted with,
+so revealing the leftovers never re-centres the picture under the person looking
+at it. The toggle is a class on the container: no round
+trip, no stored preference, the same local fact as where you are looking.
+
+Pinned by `crates/meclaw-cells/tests/gh544_the_flow_reaches_the_screen.rs`, which
+runs the five counts of the issue over a colony nested five levels deep, once
+untouched and once with every box arranged hard against a corner of the canvas,
+and mints the ids with the display's own `add_tree` rather than a copy of it.
 
 #### `assistant@2.3.0`: the conversation surface is called after its template (GH #545)
 
@@ -204,6 +639,64 @@ at all, by a mutation.
 `templates/cogny/template.json` carries one corrected sentence with it: its
 DECLARATION PORT paragraph described the pair as `./surface -> ./cogny`. Prose
 about the caller, no version event of its own.
+
+#### Documentation debts of the v-lanes wave (GH #564)
+
+- **`lane` is not an identity term, and a lane deviation is still refused.**
+  `docs/meclaw-overview.md` and its English twin now say both halves where edge identity
+  is defined: two edges differing only in the lane name are one edge as far as
+  deduplication goes, which is exactly why a second `add_edges` entry with the same
+  `from`/`to`/`condition`/`modifier`/`default` and a different `lane` is refused rather
+  than swallowed.
+- **The rule table reads `accepts` and `emits` undirected**, deliberately: a level that
+  carries the lane in its contract takes part in it, and direction is a statement about
+  traffic rather than about jurisdiction. The price — a level cannot be a mandatory hop
+  in only one direction — is named in the overview and in ADR-0020.
+- **The mandatory hop does not protect INSIDE the level that draws.** The levels judged
+  are the ones strictly between the two endpoints' lowest common ancestor and the
+  endpoint, so an edge a level draws in its own graph passes every gate even where that
+  level declares the lane. That is the level's sovereignty and not a hole, and it is now
+  written down as a consequence rather than discovered by the next reader.
+- **The rim closure is asymmetric**, because the danger is: an edge delivering an `at`
+  lane at the hive path is refused, while an `at` lane out of the rim has no sender there
+  and never fires.
+- `assistant@2.4.0`'s contract prose counts its ten inbound and ten outbound lanes and
+  tells rim lanes from corridor lanes, where it still said seven and eight.
+- The three v-lane error codes are pinned in the spec-claims registry.
+
+#### An `at` entry is always a path below the declaring hive (GH #567)
+
+`at: ["."]` was documented as *"the lane ends at my own rim"* and matches nothing.
+Stage 6 compares an `at` entry against the endpoint's path relative to the level, and
+that form is always `./…` and never `.` — the connect point is owed by the endpoint's
+PARENT hive, one level lower than the spelling suggested. A contract written the
+documented way therefore bought the opposite of what it asked for: a
+`v_lane_no_connect_point` for the lane, plus a raised claim to a rim door
+(`docks_below_the_rim` reads only "some `at` is declared"), which is a refused rim
+delivery with no corridor to take its place. Five places say the rule now — both
+language versions of `docs/meclaw-overview.md` and `docs/config.md`, and ADR-0020: an
+`at` entry is a `./…` path genuinely below the declaring hive, and a lane meant to end
+at some hive's rim is declared one level HIGHER, as `./<hive>`.
+
+The gate stopped normalising the mistake away. `scripts/check_tree_rules.py` no longer
+folds `"."` and bare names into a valid relative path; either spelling is an R5 finding
+that names the offending entry, in a new edge-independent half (`malformed_connect_points`)
+— a contract can be wrong on its own, without an edge to prove it. With the endpoint's
+`wanted = "."` gone, R5 also stops treating anchoring as walk-global: exactly one level
+owes the connect point, the endpoint's parent, which is what Stage 6 always meant.
+`--selftest` grows four fixtures for it, and `templates/` holds at zero R5 findings —
+no shipped template ever used `"."` or a bare name.
+
+Two smaller repairs ride along. The newborn contracts an `add_nodes` stages are no longer
+appended to `hive_contracts` for every reader: they travel in a list of their own, handed
+to the one call that is about the port boundary, because the other three readers
+(`collect_inbound_lanes`, `lane_requirements`, `collect_lane_doors`) judge what STANDS
+rather than what the diff draws — and `collect_lane_doors`'s own comment, *"a hive added by
+THIS diff has no contract to break yet"*, had quietly become false. What is deliberately
+NOT repaired is filed instead:
+[#567](https://github.com/mmeyerlein/meclaw/issues/567) records that a newborn hive's
+contract is read at the template ROOT only — not in a nested occupant hive, and not on
+`swap_nodes.with`.
 
 ## [0.28.0] — 2026-08-30
 

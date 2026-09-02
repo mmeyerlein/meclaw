@@ -44,13 +44,18 @@ fn repo(rel: &str) -> std::path::PathBuf {
         .join(rel)
 }
 
-/// The five declarations, in the order the manifest bundles them.
-const DECLARATIONS: [&str; 5] = [
+/// The six declarations, in the order the manifest bundles them.
+///
+/// The sixth is GH #560: the two credential v-lanes per surface plus the
+/// grants they spend. It is not a LEVEL — no node is grown by it — which is
+/// why it stands apart from the five the `grow_level` recipe renders.
+const DECLARATIONS: [&str; 6] = [
     "examples/organism/grow-os.json",
     "examples/organism/grow-org.json",
     "examples/organism/grow-member.json",
     "examples/organism/grow-assistant.json",
     "examples/organism/grow-channel.json",
+    "examples/organism/grow-credentials.json",
 ];
 
 const MANIFEST: &str = "examples/organism/grow.manifest.json";
@@ -373,8 +378,8 @@ async fn harvest(td: tempfile::TempDir, h: ColonyHandle, receipt: Value) -> Grow
     }
 }
 
-/// Boot and apply the five declarations, one mutation each.
-async fn grow_with_five_declarations() -> Grown {
+/// Boot and apply the six declarations, one mutation each.
+async fn grow_with_the_declarations() -> Grown {
     let td = tempfile::TempDir::new().unwrap();
     build_root(td.path());
     let h = boot(&td).await;
@@ -408,14 +413,14 @@ fn manifest_body() -> Value {
 // the four measurements
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// One body builds the tree five bodies build.
+/// One body builds the tree six bodies build.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_manifest_grows_the_same_stack_as_the_five_declarations() {
+async fn a_manifest_grows_the_same_stack_as_the_six_declarations() {
     if !shipped() || !library_is_complete() {
         eprintln!("skipped: examples/organism or the template library did not ship (GH #49)");
         return;
     }
-    let by_five = grow_with_five_declarations().await;
+    let by_five = grow_with_the_declarations().await;
     let by_manifest = grow_with_a_manifest(manifest_body()).await;
 
     assert_eq!(
@@ -425,8 +430,8 @@ async fn a_manifest_grows_the_same_stack_as_the_five_declarations() {
     assert_eq!(by_five.edges, by_manifest.edges, "same edge set");
     assert_eq!(by_five.hives, by_manifest.hives, "same hive scopes");
     assert_eq!(
-        by_manifest.receipt["applied"], 5,
-        "the receipt counts all five entries: {}",
+        by_manifest.receipt["applied"], 6,
+        "the receipt counts all six entries: {}",
         by_manifest.receipt
     );
     assert_eq!(by_manifest.receipt["outcome"], "committed");
@@ -439,12 +444,12 @@ async fn a_manifest_grows_the_same_stack_as_the_five_declarations() {
     );
 }
 
-/// The manifest file is the five declarations, verbatim and in order.
+/// The manifest file is the six declarations, verbatim and in order.
 ///
 /// Without this the bundle could drift away from what it bundles and every
 /// other assertion here would still pass.
 #[test]
-fn the_manifest_file_is_the_five_declarations_verbatim() {
+fn the_manifest_file_is_the_six_declarations_verbatim() {
     if !shipped() {
         eprintln!("skipped: examples/organism did not ship (GH #49)");
         return;
@@ -453,7 +458,7 @@ fn the_manifest_file_is_the_five_declarations_verbatim() {
     let entries = manifest["manifest"]
         .as_array()
         .expect("`manifest` is an array");
-    assert_eq!(entries.len(), 5, "one entry per declaration");
+    assert_eq!(entries.len(), 6, "one entry per declaration");
     for (i, file) in DECLARATIONS.iter().enumerate() {
         assert_eq!(
             entries[i],
@@ -485,7 +490,7 @@ async fn a_manifest_that_fails_at_step_three_leaves_the_first_two_standing() {
     assert_eq!(broken.receipt["outcome"], "rejected", "{}", broken.receipt);
     assert_eq!(broken.receipt["applied"], 2);
     assert_eq!(broken.receipt["failed_at"], 3);
-    assert_eq!(broken.receipt["remaining"], 2, "4 and 5 were never seen");
+    assert_eq!(broken.receipt["remaining"], 3, "4, 5 and 6 were never seen");
     assert_eq!(broken.receipt["error_code"], "template_missing");
 
     let paths = broken.paths();
@@ -507,7 +512,7 @@ async fn a_manifest_that_fails_at_step_three_leaves_the_first_two_standing() {
 
 /// The manifest is resumable from where it stopped.
 ///
-/// Apply the first two, then a manifest holding only entries 3–5, and arrive at
+/// Apply the first two, then a manifest holding only entries 3–6, and arrive at
 /// exactly the tree the whole manifest builds. "Resumable" is measured, not
 /// promised.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -532,7 +537,7 @@ async fn the_manifest_is_resumable_from_where_it_stopped() {
     let receipt = meclaw_colony::mutation_door_reply(&rest);
     let resumed = harvest(td, h, receipt["manifest"].clone()).await;
 
-    assert_eq!(resumed.receipt["applied"], 3, "{}", resumed.receipt);
+    assert_eq!(resumed.receipt["applied"], 4, "{}", resumed.receipt);
     assert_eq!(
         whole.rows, resumed.rows,
         "two halves arrive where one whole does"

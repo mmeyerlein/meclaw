@@ -577,7 +577,7 @@ const REFERENCED_SUB_UNITS: [&str; 3] = ["collector", "dispatcher", "session-kee
 /// authority here, because this constant moved twice in one wave.
 /// `collector@3.3.0` brings ONE internal edge (`./menu-clock -> ./assemble`,
 /// the tick) and three of the instantiated composites carry a collector;
-/// `talky@4.5.1` draws two more (`./collector -> ./brain` on `menu`,
+/// `talky@4.6.0` draws two more (`./collector -> ./brain` on `menu`,
 /// `./collector -> .` on `schemas`) and two of the five grow a talky;
 /// `cogny@4.3.0` draws three, because the menu reaches BOTH brains, and exactly
 /// one of the five grows a cogny. The `in_menu` door term is folded into an
@@ -592,7 +592,7 @@ const REFERENCED_SUB_UNITS: [&str; 3] = ["collector", "dispatcher", "session-kee
 /// 3 x 6 = 18, and RE-MEASURED with [`print_the_measurement`] rather than only
 /// added up.
 ///
-/// Moved 181 -> 187 with GH #475, and this sum is exact too: `talky@4.5.1`
+/// Moved 181 -> 187 with GH #475, and this sum is exact too: `talky@4.6.0`
 /// forwards the keeper's two transfer lanes and carries its `dump` back out --
 /// three edges, all of them pure transit -- and two of the five declarations
 /// grow a talky. 2 x 3 = 6. No `assistant` and no `member` is among the five, so

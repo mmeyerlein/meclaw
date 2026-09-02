@@ -17,7 +17,7 @@
 //!
 //! Two colonies, both real, sharing nothing but a directory of files:
 //!
-//! * **A** grows a shipped `member@1.4.0`, gets one distinctive row written
+//! * **A** grows a shipped `member@1.5.0`, gets one distinctive row written
 //!   into each of its three holders, and is told `in_export` ONCE. Three walks
 //!   run, the sink files three documents, one per holder, and the member-level
 //!   marker names all three.
@@ -432,7 +432,7 @@ fn member_manifest(export_dir: Option<&std::path::Path>) -> Value {
         // member is named bare, and the path it lands at is unchanged.
         "scope": "/members",
         "diff": {
-            "add_nodes": [{"name": MEMBER, "template": "member@1.4.0",
+            "add_nodes": [{"name": MEMBER, "template": "member@1.5.0",
                            "override_params": over}],
             "add_edges": container_edges(),
         }

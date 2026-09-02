@@ -14,7 +14,7 @@
 //! message, in the shape the memory hive's `in_episode` door reads, and the
 //! adapter has nothing left to adapt. `templates/memory-drain/README.md` says so
 //! ("No per-turn cadence"), `w9a_per_turn_colony.rs` measures the replacement,
-//! and `member@1.4.0` ships it (GH #527). Two private tests still drew the
+//! and `member@1.5.0` ships it (GH #527). Two private tests still drew the
 //! retracted edge, and this file is what keeps a third from being written.
 //!
 //! Why the retracted edge cannot work, stated as the mechanism rather than as a
@@ -278,7 +278,7 @@ fn no_topology_hands_the_per_turn_route_to_the_batch_adapter() {
          so two per-turn deliveries of one session overwrite each other between \
          park and probe -- the same turn leaves twice and the other never leaves. \
          Wire `turn_write` at the memory hive's `in_episode` door instead, the way \
-         `member@1.4.0` and `w9a_per_turn_colony.rs` do. Found: {found:#?}"
+         `member@1.5.0` and `w9a_per_turn_colony.rs` do. Found: {found:#?}"
     );
 }
 

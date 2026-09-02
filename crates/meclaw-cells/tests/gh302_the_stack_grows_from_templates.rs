@@ -3,7 +3,7 @@
 //! WHAT THIS FILE IS
 //! =================
 //! `examples/organism/` is a colony with **zero cells checked in**: a
-//! `colony.json`, one empty root hive, and five declarations. Applied in order
+//! `colony.json`, one empty root hive, and six declarations. Applied in order
 //! they instantiate the four composition levels of this wave and one channel
 //! into the THIRD of them — a shell, an organisation, a person, one Telegram
 //! channel of that person, and one generation of that person's agent.
@@ -72,16 +72,18 @@ fn repo(rel: &str) -> std::path::PathBuf {
         .join(rel)
 }
 
-/// The five declarations, in the order an operator applies them: shell, then
-/// organisation, then member, then assistant, then channel. Each one carries its
-/// own absolute `scope`, so unlike the five of GH #277 they are applied verbatim,
-/// scope included — the example is ONE tree, not five side by side.
-const DECLARATIONS: [&str; 5] = [
+/// The six declarations, in the order an operator applies them: shell, then
+/// organisation, then member, then assistant, then channel, then the credential
+/// v-lanes (GH #560). Each one carries its own absolute `scope`, so unlike the
+/// five of GH #277 they are applied verbatim, scope included — the example is ONE
+/// tree, not six side by side.
+const DECLARATIONS: [&str; 6] = [
     "examples/organism/grow-os.json",
     "examples/organism/grow-org.json",
     "examples/organism/grow-member.json",
     "examples/organism/grow-assistant.json",
     "examples/organism/grow-channel.json",
+    "examples/organism/grow-credentials.json",
 ];
 
 const ASSISTANT: &str = "/os/orgs/acme/members/alex/assistants/scribe";
@@ -579,7 +581,7 @@ const SECOND_CHANNEL_NODE: &str = "telegram-2";
 /// hand-writing edges.*
 ///
 /// The measurement is on the FILES, and it is sharper than "few edges": every
-/// endpoint of every `add_edges` entry in the five declarations resolves either
+/// endpoint of every `add_edges` entry in the six declarations resolves either
 /// to the root path of a node the SAME diff instantiates, or to the **open
 /// container** that node is instantiated into — the address the level above
 /// ships for precisely this purpose (`orgs`, `members`, `assistants`,
@@ -601,10 +603,30 @@ fn a_the_declarations_hand_write_no_edge_that_reaches_inside_a_template() {
             .iter()
             .filter_map(|n| n["name"].as_str().map(str::to_string))
             .collect();
-        assert!(
-            !born.is_empty(),
-            "{file}: a declaration that instantiates nothing"
-        );
+        if born.is_empty() {
+            // GH #559/#560: a V-LANE declaration instantiates nothing and
+            // reaches into an interior ON PURPOSE — that is the whole of what a
+            // v-lane is, and the rule above would refuse the one edge form the
+            // substrate now sanctions. It is not unchecked: the connect point is
+            // the TARGET template's own `at`, judged by Stage 6 at the mutation
+            // door and statically by `scripts/check_tree_rules.py` R5, and the
+            // refusal is measured in
+            // `gh560_a_members_brain_gets_its_sealed_key.rs`. What this file
+            // still asserts about such a declaration is that it declares itself
+            // as one: every edge in it names its lane.
+            let named = arr(&decl["diff"]["add_edges"]);
+            assert!(
+                !named.is_empty()
+                    && named
+                        .iter()
+                        .all(|e| e["lane"].as_str().is_some_and(|l| !l.is_empty())),
+                "{file}: a declaration that instantiates nothing and is not a \
+                 v-lane declaration either — an edge that names no lane may not \
+                 reach into another template's interior"
+            );
+            edges_seen += named.len();
+            continue;
+        }
 
         // The two addresses a level's own instantiation is allowed to name: the
         // node it creates, and the OPEN CONTAINER the level above ships for
@@ -620,25 +642,41 @@ fn a_the_declarations_hand_write_no_edge_that_reaches_inside_a_template() {
 
         for edge in arr(&decl["diff"]["add_edges"]) {
             edges_seen += 1;
+            // GH #562 — the one endpoint that may go deeper, and it says so on
+            // itself: an edge naming a `lane` is a v-lane (ADR-0020), and a
+            // v-lane ends on an occupant of the node being born, at an address
+            // that node's OWN contract named under `at`. So the permission
+            // still comes from the template rather than from the hand that
+            // writes the declaration — which is the whole of what this test is
+            // about — it is just pronounced in the contract instead of implied
+            // by the shape of the endpoint. An edge with no `lane` is judged
+            // exactly as before.
+            let v_lane = edge.get("lane").and_then(|l| l.as_str()).is_some();
             for side in ["from", "to"] {
                 let raw = edge[side]
                     .as_str()
                     .unwrap_or_else(|| panic!("{file}: an edge without a {side}"));
                 let resolved = Path::resolve(&Path::new(&scope), raw).as_str().to_string();
+                let inside_a_born_node = v_lane
+                    && born.iter().any(|n| {
+                        let p = Path::resolve(&Path::new(&scope), n);
+                        resolved.starts_with(&format!("{}/", p.as_str()))
+                    });
                 assert!(
-                    allowed.contains(&resolved),
+                    allowed.contains(&resolved) || inside_a_born_node,
                     "{file}: the edge endpoint {raw:?} resolves to {resolved}, which is \
                      neither a node this diff instantiates nor the open container it is \
                      instantiated into. An endpoint anywhere else reaches into an interior \
                      that belongs to another template — and every internal edge of these \
-                     levels came WITH its template. Allowed here: {allowed:?}"
+                     levels came WITH its template, or the edge names the `lane` that makes \
+                     it a v-lane. Allowed here: {allowed:?}"
                 );
             }
         }
     }
     assert!(
         edges_seen > 0,
-        "the five declarations draw no edge at all — the assertion would be vacuous"
+        "the six declarations draw no edge at all — the assertion would be vacuous"
     );
 }
 

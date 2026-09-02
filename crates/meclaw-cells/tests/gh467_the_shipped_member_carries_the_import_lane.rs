@@ -3,7 +3,7 @@
 //! `memory-hive` has accepted `in_import` since 2.2.0, and for one release the
 //! only way through the member was a patch: `examples/memory-import/` rewrote
 //! the level's `config.json` on its way out, so a member grown the ordinary way
-//! had no second step at all. The lane now ships (`member@1.4.0`), and the
+//! had no second step at all. The lane now ships (`member@1.5.0`), and the
 //! example copies it like every other line of the level.
 //!
 //! This file is the drift lock that ruling owes (`docs/development-rules.md`
@@ -34,13 +34,24 @@ fn shipped(rel: &str) -> Option<Value> {
     Some(from_str(&text).expect("a shipped config is json"))
 }
 
-/// The routes a contract list declares, in file order.
+/// The lanes of a level's RIM, in the order the contract list declares them.
+///
+/// GH #559 / #562 (ADR-0020): an entry that carries `at` names connect points
+/// BELOW the hive path, so it is not a lane addressed at the level's own path
+/// and is not counted where the prose says it is. `member@1.5.0` declares two
+/// such — `recall` and `in_bundle`, both ends of that road inside the level —
+/// and they exist to make this level a mandatory hop, not to be sent here.
 fn routes(contract: &Value, side: &str) -> Vec<String> {
     contract[side]
         .as_array()
         .map(|lanes| {
             lanes
                 .iter()
+                .filter(|l| {
+                    l.get("at")
+                        .and_then(|a| a.as_array())
+                        .is_none_or(|a| a.is_empty())
+                })
                 .filter_map(|l| l["route"].as_str().map(str::to_string))
                 .collect()
         })

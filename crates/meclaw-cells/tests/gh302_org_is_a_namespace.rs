@@ -211,16 +211,29 @@ fn hive_params(dir: &std::path::Path) -> HiveParams {
         .unwrap_or_else(|e| panic!("{}: params: {e}", dir.display()))
 }
 
-/// The lane routes of one contract, in declaration order.
+/// The lanes of a level's RIM, in declaration order — every declared lane
+/// except the ones that name connect points.
+///
+/// GH #559 / ADR-0020: an entry carrying `at` is not traffic at the hive path.
+/// It says where a v-lane docks BELOW the rim, and it is the one sanctioned
+/// exception to the union rule (`docs/development-rules.md` § 8b): a level that
+/// declares such a lane is saying *this corridor runs through me*, not *send me
+/// this at my path*. `member@1.5.0` declares two — `recall` and `in_bundle`,
+/// the road between a generation's askers and the person's memory, both ends of
+/// it inside the member — and a namespace above it that declared them would
+/// promise a lane no caller can send it and no member ever emits.
 fn lanes(hp: &HiveParams) -> (Vec<String>, Vec<String>) {
     let c = hp
         .contract
         .as_ref()
         .expect("a level a caller addresses by path and lane owes a contract");
-    (
-        c.accepts.iter().map(|l| l.route.clone()).collect(),
-        c.emits.iter().map(|l| l.route.clone()).collect(),
-    )
+    let rim = |ls: &[meclaw_colony::config::LaneSpec]| -> Vec<String> {
+        ls.iter()
+            .filter(|l| l.at.is_empty())
+            .map(|l| l.route.clone())
+            .collect()
+    };
+    (rim(&c.accepts), rim(&c.emits))
 }
 
 #[test]

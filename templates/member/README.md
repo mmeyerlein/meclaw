@@ -1,13 +1,14 @@
-# `member@1.4.0`
+# `member@1.5.0`
 
-One person, as a level. **Three holders, three open containers and one cell of
-its own** — seven nodes and fifty-one edges.
+One person, as a level. **Four holders, three open containers and one cell of
+its own** — eight nodes and fifty-two edges.
 
 | holder | what it holds |
 |---|---|
 | [`affinity`](../affinity/README.md) | **identity and meaning** — the curated record of who this person is and who their people are to them. Curated, fail-closed, quotable: it answers *who is X to me* and it is the only thing that answers it. |
 | [`memory-hive`](../memory-hive/README.md) | **observations**, tagged with the participant set they were learned in. Raw, allowed to be wrong, carrying a confidence — this is what was said, not what it means. |
 | [`firewall`](../firewall/README.md) | **the screen**. Every inbound turn is measured before it reaches anything of this person's, and the verdict is a comparison or a clock, never a model. |
+| [`access`](../access/README.md) | **the keys** — since 1.5.0 (GH #560). The provider credentials this person's agents authenticate with, held by the person rather than by the OS. Nothing in this level's graph reaches it but the drain for its `error` lane; a brain asks it over a v-lane. |
 
 Beside them stand `assistants` and — since 1.3.0 — `channels` and `apps`, three
 real, empty, open containers, and `export-sink`, the one `code` cell this level
@@ -90,8 +91,11 @@ The `assistant` level emits **nine** lanes since `assistant@2.2.0`, and this
 level places every one of them. The one lane it ACCEPTS that this member does not
 carry, beside the four operator lanes, is `in_pack` (GH #458): its producer is
 inside this level rather than above it — `<member>/affinity` is the record two
-assistants of one person read — so the push edge goes from one sibling to another
-and addresses `<member>/assistants/<agent>` at its own path. A lane at the
+assistants of one person read — so the push edge goes from one sibling to another.
+Since GH #561 it goes there as a **v-lane** and ends two storeys down, at
+`<member>/assistants/<agent>/talky` and `<member>/assistants/<agent>/cogny`: the
+generation declares those two rims as the connect points of the lane
+(`"at": ["./talky", "./cogny"]`) and no longer carries the pack itself. A lane at the
 member's own door would be an interface promising something nothing outside ever
 sends.
 
@@ -103,7 +107,7 @@ sends.
 | `write` | **both**: fanned onto the memory's `in_close_pass` *and* out on `write` |
 | `turn_write` | **both** (since #527): fanned onto the memory's `in_episode` *and* out on `turn_write` |
 | `prune`, `error`, `build` | out, untranslated. Nothing here consumes them |
-| `pack_ack` | **out**, untranslated (GH #458). Nothing here consumes it: affinity's own record of a delivery is the `sent_at` it writes itself, and the hive has no lane that takes a receipt — so a receipt is evidence for whoever operates the colony. Two travel per pack, one per occupant of the generation |
+| `pack_ack` | **out**, untranslated (GH #458). Nothing here consumes it: affinity's own record of a delivery is the `sent_at` it writes itself, and the hive has no lane that takes a receipt — so a receipt is evidence for whoever operates the colony. Two travel per pack, one per occupant of the generation. Since GH #561 each one leaves its RIM on a v-lane and stops at `./assistants`; this level's own `./assistants -> .` edge is what takes it the rest of the way out, exactly as it does for `write`, `prune` and `error` — a boundary exit rather than a hop of the identity chain, and it stands whether or not any generation subscribed |
 
 A level that declared a lane without the edge, or carried the edge without
 declaring the lane, would be lying in one of the two directions; the pin is
@@ -588,7 +592,7 @@ behaves like, and it is a channel **of the person** — which is precisely why t
 of their agents may hold views on it at the same time. A screen owned by a
 generation would go dark on a swap and could not be shared at all.
 
-Since GH #459 the cell that stands there is real: [`display@1.0.0`](../display/).
+Since GH #459 the cell that stands there is real: [`display@1.0.1`](../display/).
 **Two** edges instantiate one — one fewer than a chat channel costs — and the
 second of them says the only thing a chat channel's edges do not:
 
@@ -769,16 +773,16 @@ The whole arrangement, as three mutations. The member first:
 
 ```json
 {"scope": "<org>/members", "diff": {
-  "add_nodes": [{"name": "alex", "template": "member@1.4.0"}]
+  "add_nodes": [{"name": "alex", "template": "member@1.5.0"}]
 }}
 ```
 
-then one mutation per assistant — the addressing edge plus the thirteen transit
+then one mutation per assistant — the addressing edge plus the fifteen transit
 lanes (`../assistant/README.md` § *Instantiating* writes them out):
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@2.3.0"}],
+  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@2.4.0"}],
   "add_edges": [
     {"from": "./assistants", "to": "./assistants/scribe",
      "condition": "has(hop.route) && hop.route == 'in_turn' && has(context.assistant) && context.assistant == 'scribe'"},
@@ -800,6 +804,143 @@ is copied and nothing is synchronised, because there was only ever one of each.
 That is what #454 bought, and
 `crates/meclaw-cells/tests/gh454_two_assistants_one_channel.rs` is what measures
 it.
+
+## The credential v-lanes
+
+Since `member@1.5.0` the level carries an **`access` of its own** — the shipped
+broker, as an occupant beside the memory and the record (GH #560). The pin lives
+in `access/config.json`, where a ref marker's pin belongs.
+Authorisation and key ownership are two different jobs that used to share one
+hive: the shell's `access` answers the submitter's policy questions and keeps
+doing that, but the provider keys a person's brains burn belong to the **person**.
+That is the same argument that puts the memory hive here (ADR-0013), and it is
+why the broker stands at this level rather than one up.
+
+Nothing in this template's graph reaches it except one edge:
+
+```json
+{"from": "./access", "to": ".", "condition": "has(hop.route) && hop.route == 'error'"}
+```
+
+the drain the broker's own README says its parent **must** wire. Everything else
+about the credential lane is drawn by the manifest that grows a generation,
+because a lane has two ends and the second one does not exist until then.
+
+### The form
+
+Per generation and per surface — `talky` and `cogny` — **two edges**, both
+carrying a `lane` (GH #559). They are drawn at the **member's own scope**,
+because an edge lives in the graph of the lowest common ancestor of its two
+endpoints, and that is this level:
+
+```json
+{"scope": "/os/orgs/acme/members/alex",
+ "diff": {
+   "add_edges": [
+     {"from": "./assistants/scribe/talky/brain",
+      "to": "./access",
+      "lane": "credential_request",
+      "condition": "has(hop.route) && hop.route == 'credential_request'",
+      "modifier": {"set_hop": {"route": "'in_invoke'"},
+                   "set_context": {"requester": "'agent:scribe/talky'"}}},
+     {"from": "./access",
+      "to": "./assistants/scribe/talky/brain",
+      "lane": "in_sealed",
+      "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:example-provider-primary@member-alex/talky'",
+      "modifier": {"set_hop": {"route": "'in_sealed'"}}}
+   ]}}
+```
+
+and the same pair again with `cogny` in place of `talky`. The runnable version of
+this declaration is `examples/organism/grow-credentials.json`, which is the sixth
+entry of `examples/organism/grow.manifest.json`; the whole round is measured in
+`crates/meclaw-cells/tests/gh560_a_members_brain_gets_its_sealed_key.rs`.
+
+Four things about that shape are load-bearing.
+
+**It is a v-lane, and the target is what permits it.** Between the brain and the
+broker lie three levels — `./assistants`, the generation, and `talky` — and the
+innermost is **sealed** (`params.ports: []`). The edge lands on a cell inside it
+anyway, and it is not a bypass: `talky` and `cogny` declare both
+halves of this lane in their own contract with `"at": ["./brain"]`, which is the
+one opening a template pronounces about **itself**. Take the `at` away and the
+mutation is refused by name with `v_lane_no_connect_point`, and the refusal says
+which string to add. The two levels in between declare nothing about the lane and
+are therefore transparent — that is the sanctioned exception to the union rule
+(`docs/development-rules.md` § 8b).
+
+**The requester comes from the edge.** `set_context.requester` is what the broker
+issues the grant to (R-AC-1); a body claiming a requester changes nothing. One
+`requester` per consumer, and therefore **one grant per consumer**: the answer
+edge is addressed by `hop.grant_id`, and two brains sharing one handle would both
+be handed every sealed box — a box a cell never asked for costs the *other*
+cell's parked turns their receipt.
+
+**The lane is an ASK, never a subscription.** The brain mints an ephemeral X25519
+recipient key per request and the box is sealed against it; forward secrecy is
+exactly that fact. Nothing pushes a credential, and a woken brain asks again —
+the value lives in one task's RAM and is written nowhere (`docs/cell-types.md`
+§ *Sealed credential delivery*).
+
+**A v-lane changes nothing about the secret.** The same ciphertext rides one hop
+instead of four. What is journalled in `message_log` is the box — `epk`, `nonce`,
+`ciphertext` — and the plaintext exists in no message at all.
+
+### The two gestures that are not topology
+
+A manifest cannot mint a grant into a store it has not grown, and it cannot put a
+secret anywhere. So two acts stay with the operator, in this order:
+
+1. **The vault's passphrase**, at birth, because there is no params-update
+   operation: the `add_nodes` that grows this member carries
+   `"override_params": {"access/vault": {"unlock_env": "<NAME OF A VARIABLE>"}}`.
+   A vault inside a sealed hive cannot be unlocked over the user channel — it
+   opens itself from the environment or not at all, and the param names a
+   **variable**, never a value.
+2. **The credential itself**, from stdin, with no colony running:
+   `meclaw --root <root> --vault /main/…/members/alex/access/vault --vault-add cred:example-provider:primary`.
+   A credential never becomes a message. `examples/vault-pilot/README.md`
+   § *Running it* is the whole gesture in order, and
+   `templates/access/README.md` § *A member's own broker* is the member-shaped
+   version of it.
+
+The grants themselves **are** topology-adjacent and travel in the manifest, as
+`seed_rows` into `./access/store` — the door that writes them keeps a
+`mutation_log` row, which is what a permission row deserves. One caveat worth
+knowing: `seed_rows` creates the store's `cell.db` if the store has never woken,
+and a store seed (`seed/<table>.jsonl`) only lands on a **fresh** database. A
+member's `access/store` that took its grants through the door therefore does not
+carry the seven shipped `policy` rows — which for a member's broker is the right
+outcome and not a loss: those rows are about `colony.mutate`, and a person's
+broker has no business granting that. Seed the `policy` row you *do* want
+(the one that lets an expired grant be minted again) in the same declaration.
+
+Finally, the brains have to name their grant — and **give up the key they
+have**. `credential_grant_id` is **immutable**, and so is `api_key`, so both are
+set where the generation is grown and neither can be repaired by a message
+afterwards:
+
+```json
+"override_params": {
+  "talky/brain": {"api_key": "",
+                  "credential_grant_id": "grant:example-provider-primary@member-alex/talky"},
+  "cogny/brain": {"api_key": "",
+                  "credential_grant_id": "grant:example-provider-primary@member-alex/cogny"}
+}
+```
+
+**The empty `api_key` is not tidiness, it is the switch.** A brain asks for a
+credential only while it holds none, and the key in its config counts as one: set
+a grant beside a non-empty `api_key` and the cell keeps spending the environment
+key, never asks, and the four v-lanes carry nothing — quietly, because a model
+that answers looks exactly like a model that answers. Both brain templates ship
+`api_key: "${OPENROUTER_API_KEY}"`, so a generation grown without this line is a
+generation whose credential lane is inert, and `api_key` being immutable means
+the repair is a new generation rather than a message.
+
+Both templates ship `credential_grant_id` resolving to the empty string, and an
+empty string is no grant (GH #271): a generation nobody wires this way behaves
+exactly as it did before and spends its `api_key`.
 
 ## The containers
 
@@ -879,7 +1020,7 @@ sits **outside** the level and addresses **through** it. These four do not:
 | `in_sweep` | an operator. The assistant's own `because` says it *"enters at the assistant path rather than being produced by a sibling"*. |
 | `in_prune` | a timer or an operator — paired with the `prune` report the member *does* carry outward. |
 | `in_round_sweep` | the same owner as `in_sweep`, entering the same way. |
-| `in_pack` | `<member>/affinity`, a **sibling** of the container (GH #458). Producer and consumer are both inside this member, so the push edge is drawn from one to the other and addresses `<member>/assistants/<agent>` at its own path. A lane at this level's own door would promise something nothing outside ever sends. |
+| `in_pack` | `<member>/affinity`, a **sibling** of the container (GH #458). Producer and consumer are both inside this member, so the push edge is drawn from one to the other — and since GH #561 it is a **v-lane** that ends at the generation's two brain rims, `<member>/assistants/<agent>/talky` and `…/cogny`, because the assistant level declares them as the lane's connect points and stopped carrying the pack itself. A lane at this level's own door would promise something nothing outside ever sends. |
 
 They reach the assistant at its own address, `<member>/assistants/<agent>`, and
 they may: neither this level nor the assistant declares `params.ports`, so both
@@ -952,6 +1093,36 @@ at it.
   has to fill it.
 
 ## Versioning
+
+`1.5.0` carries a second addition that is no traffic at all: two SENTENCES, and
+they ride in the same unreleased number as the `access` occupant above them for
+the reason `docs/development-rules.md` § 4 gives — a version is a shipped fact,
+and a `1.6.0` cut for the second half of one wave would invent a version nobody
+could ever have wired against. `recall` and `in_bundle` are declared here now
+([#562](https://github.com/mmeyerlein/meclaw/issues/562), ADR-0020), with
+`at: ["./assistants"]` on both. Neither is a lane of this rim — both ends of that
+road are inside this level, `./assistants` on one side and `./memory-hive` on the
+other — and `at` says so, which is why a namespace above this one does not
+declare them and why the door check does not ask this level for a rim door it
+must not have. What the declaration buys is the mandatory hop: under ADR-0020 a
+level that declares a lane takes part in it and may not be skipped, and taking
+part is exactly what the edge `./assistants -> ./memory-hive` does — it turns
+`recall` into `in_query` and stamps `audience_now`, `channel` and `recall_as_of`,
+the three keys the hive refuses a question without. A v-lane drawn from a
+generation's asker to any memory outside this member is now refused with
+`v_lane_mandatory_hop` at mutation time instead of arriving as `missing_audience`
+at runtime. **The stamping edges themselves did not move**, and that is the point
+of the version: a parent sees the same seven inbound and twelve outbound lanes
+across the boundary, and the level it wires them to has stopped being skippable.
+
+`1.5.0` takes the **second** digit, and for the plain reason: a caller can now do
+something that was never promised before. The level holds an `access` of its own
+(GH #560), so a person's own provider keys can live with the person and a brain
+four levels down can be wired to them in one edge per direction. The lane lists
+at the boundary do **not** move — a credential v-lane is a deep edge into this
+level's subtree, not a rim lane — so a parent wired at `1.4.0` is still wired
+correctly; what it does not have is a broker of its own. See *The credential
+v-lanes* above.
 
 `1.4.0` takes the **second** digit too, and for the plain reason: a caller can now
 do two things that were never promised before. `pack_ack` leaves the level

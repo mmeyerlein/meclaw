@@ -63,6 +63,13 @@
           "route": "in_import",
           "because": "one part of such a document, for a keeper that is already RUNNING. It is the other half of `in_export` and the return leg of the same document: `sessions/seed` was read once, when the keeper's `cell.db` was created, and is inert for ever after -- so a ledger walked out after that moment has no way back except a message. It crosses to `./session-keeper` unchanged (session-keeper@2.1.0). The body is ONE export part, and applying the same part twice leaves the same state, which is what makes a partial transfer repairable by repeating it (GH #475)",
           "context": []
+        },
+        {
+          "route": "in_sealed",
+          "at": [
+            "./brain"
+          ],
+          "because": "the answer half of the same lane (GH #560): the broker's `ack` for `vault.deliver` carrying the sealed box, renamed at the boundary to the name this rim knows it by. It lands on `./brain` and on nothing else -- the box is sealed against the ephemeral key of the cell that asked, so a delivery anywhere else is a box nobody can open plus a receipt the asker never gets. Address the edge with `hop.grant_id`, which the broker stamps: one grant per consumer, or two brains are handed each other's rounds"
         }
       ],
       "emits": [
@@ -109,6 +116,13 @@
         {
           "route": "dump",
           "because": "what the two transfer lanes produce, raised by `./session-keeper` and carried out of this composite unchanged: `hop.dump_kind == 'export_part'` is one part of the session document (`hop.port_hive` names the hive it came out of, `hop.export_final` marks the last one), `hop.dump_kind == 'import_receipt'` says what one applied part wrote. Drain it with a PLAIN `hop.route == 'dump'` edge -- an edge that also tested `dump_kind` reads as no drain under the required_drains probe, and undrained an export walks the whole ledger and reaches nobody (session-keeper@2.1.0, GH #475). A REFUSAL does not travel here: the porter refuses on the keeper's `reject` lane, which this composite already drains into `./errors` and re-emits as one normalised `error` beside every other failure of the unit"
+        },
+        {
+          "route": "credential_request",
+          "at": [
+            "./brain"
+          ],
+          "because": "the ask half of the credential lane (GH #421/#452/#560): the brain that spends a grant holds no bearer of its own, mints an ephemeral X25519 recipient key per ask and sends the grant handle out with it. This is a V-LANE (GH #559) and `at` is what makes it one: `params.ports` stays literally `[]`, and `./brain` is the one address this sealed rim opens for this one lane -- an opening the template pronounces about ITSELF, never one a caller helps itself to. Whoever draws the edge points it at the access hive that owns the person's keys and stamps `context.requester` on it, because the requester comes from the EDGE and never from the body (R-AC-1)"
         }
       ]
     },

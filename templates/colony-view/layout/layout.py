@@ -33,11 +33,33 @@ never read out of a database, and never fetched inside a browser's request (a
 reply from that endpoint arrives on a fresh envelope with no context, so it
 could not be correlated back to whoever asked).
 
-It is also NOT the owner of a position, and it never learns one. Every node's
-tree entry declares `keep: ["x", "y"]`: on an update to an object the display
-already holds, those two prop keys are left out, and since an update merges per
-key the browser's value stands. So a drag survives every tick without this cell
-hearing about it, and there is nothing to read back.
+It IS the owner of where a cell sits, and since 1.0.1 it says so on every tick:
+each node's `x`/`y` is the flow's, rewritten every time, so the flow's own
+guarantees -- disjoint hives, nested frames, a frame 1.08x-1.43x the boxes it
+holds -- are what a viewer actually sees.
+
+What it is NOT the owner of is what a HAND did. That travels beside the flow's
+position as `hand` (`"dx,dy"`, one prop on purpose) plus a `pinned` marker, and
+those two the tree entry
+declares `keep`: on an update to an object the display already holds they are
+left out, and since an update merges per key the browser's value stands. So an
+arrangement survives every tick without this cell hearing about it, and there is
+nothing to read back.
+
+Until 1.0.1 the kept props were `x` and `y` themselves, and that is
+[#544](https://github.com/mmeyerlein/meclaw/issues/544): a position frozen at
+the tick its object was created, on a colony that grows a cell an hour, is a
+collage of a dozen incompatible layouts. Measured on a running colony: 1 of 104
+boxes stood where the current flow put it, 208 of 215 unrelated hive pairs
+overlapped and one frame ran 299x the area of the three cells inside it. Nobody
+had dragged anything -- nobody could, because `data-oid` named an object one
+tree level away from the one the display had minted. The pin was the mere
+presence of a coordinate, which `canvy@2.1.8` had already replaced with a marker
+of its own; the re-cut of #455 lost that, and this brings it back. The marker is
+the whole of it: a hand's offset is NOT bounded, because a bound was tried and
+withdrawn (`hive_of_cell_frames` carries the measurement). What keeps the picture
+honest is that nothing moves that a hand did not move, every box that moved says
+so, and the detail panel hands it back to the layout.
 
 # One pass
 
@@ -53,6 +75,7 @@ on a full mailbox inside twenty seconds
 rather than a patch, so nothing here answers this cell and no such loop can
 form.
 """
+import hashlib
 import json
 import sys
 
@@ -501,11 +524,56 @@ CLIENT_JS = r"""// colony-view's browser half: edge routing, drag, camera.
   const G = root.TopoGeom;
   const NODE_W = 150, NODE_H = 38;
 
-  function boxOf(g) {
-    const m = /translate\((-?[\d.]+),\s*(-?[\d.]+)\)/.exec(
-      g.getAttribute("transform") || "");
-    return m ? {x: +m[1], y: +m[2]} : {x: 0, y: 0};
+  /// Every translate on a group, in order. A node carries TWO since 1.0.1: the
+  /// flow's spot, which the layout cell rewrites every tick, and the hand's
+  /// offset beside it (`hand`, one prop, `"dx,dy"`), which only a drag writes.
+  function translatesOf(g) {
+    const out = [];
+    const re = /translate\((-?[\d.]+)[,\s]\s*(-?[\d.]+)\)/g;
+    const t = g.getAttribute("transform") || "";
+    let m;
+    while ((m = re.exec(t))) out.push({x: +m[1], y: +m[2]});
+    return out;
   }
+
+  /// Where the FLOW put a box: the first translate, and the constraint a hand's
+  /// offset is measured against.
+  function flowOf(g) {
+    const t = translatesOf(g);
+    return t.length ? t[0] : {x: 0, y: 0};
+  }
+
+  /// What a hand added to it: the second translate, zero where there is none.
+  function offsetOf(g) {
+    const t = translatesOf(g);
+    return t.length > 1 ? t[1] : {x: 0, y: 0};
+  }
+
+  /// Where a box actually IS: the flow's spot plus the hand's offset. Every
+  /// piece of geometry in this file goes through here, which is why a drag can
+  /// replace the whole transform with one provisional translate and nothing
+  /// downstream notices.
+  function boxOf(g) {
+    const t = translatesOf(g);
+    let x = 0, y = 0;
+    t.forEach(function (p) { x += p.x; y += p.y; });
+    return {x: x, y: y};
+  }
+
+  /// The rectangle the browser most recently derived for a hive, so a write
+  /// back to the store only happens when it actually says something new.
+  const lastFrame = {};
+
+  /// What this browser has written and the screen has not confirmed yet.
+  ///
+  /// A prop write is answered by a diff, and a diff re-renders the box from the
+  /// props the display holds AT THAT MOMENT -- which, for the first diff after a
+  /// drag, can still be the value from before it. The box then jumps back to
+  /// where it started, the frames are derived from that, and the picture
+  /// corrects itself a beat later. Measured under GH #544 as a frame drawn at
+  /// its old size once before settling. So what this browser wrote stands here
+  /// until a diff actually says it, and every re-render puts it back.
+  const pending = {};
 
   function centre(box) {
     return {x: box.x + NODE_W / 2, y: box.y + NODE_H / 2};
@@ -647,7 +715,13 @@ CLIENT_JS = r"""// colony-view's browser half: edge routing, drag, camera.
   /// a frame that lies for as long as you are looking at it.
   function frameMap(el, geom) {
     const own = {}, kids = {}, seen = {};
+    // A box nobody can see does not shape a frame. With the toggle off -- the
+    // default -- the unwired leftovers of every past rewiring are hidden, and a
+    // frame drawn around them would be a frame around nothing anybody is
+    // looking at.
+    const hiding = el.classList && el.classList.contains("hide-unwired");
     el.querySelectorAll("[data-node]").forEach(function (g) {
+      if (hiding && g.classList && g.classList.contains("unwired")) return;
       const id = g.getAttribute("data-node") || "";
       const cut = id.lastIndexOf("/");
       const h = cut < 0 ? "" : id.slice(0, cut);
@@ -690,8 +764,49 @@ CLIENT_JS = r"""// colony-view's browser half: edge routing, drag, camera.
     return out;
   }
 
+  /// Put a box back into the two-translate form the layout writes.
+  ///
+  /// A drag replaces the whole transform with ONE provisional translate, and the
+  /// server diff normally puts the pair back. When a drag writes nothing --
+  /// a press that moved nothing, a gesture that ended where it started -- no
+  /// diff comes, and the box was left with a single translate. From then on
+  /// `flowOf` read the absolute position as the flow's and `offsetOf` read
+  /// zero, so the next drag measured against a base that does not exist and the
+  /// box would not move at all. Measured in a browser under GH #544: one
+  /// blocked drag was enough to make a box permanently unmovable.
+  function restore(g, flow, off) {
+    g.setAttribute("transform",
+      "translate(" + Math.round(flow.x) + "," + Math.round(flow.y) + ") " +
+      "translate(" + Math.round(off.x) + "," + Math.round(off.y) + ")");
+  }
+
+  /// Put every unconfirmed write back after a morph, and forget the confirmed.
+  function reconcile(el) {
+    const ids = Object.keys(pending);
+    if (!ids.length) return;
+    el.querySelectorAll("[data-node]").forEach(function (g) {
+      const oid = g.getAttribute("data-oid");
+      const want = pending[oid];
+      if (!want) return;
+      const have = offsetOf(g);
+      if (Math.round(have.x) === want.x && Math.round(have.y) === want.y) {
+        delete pending[oid];             // the screen agrees; nothing to hold
+        return;
+      }
+      restore(g, flowOf(g), want);
+    });
+  }
+
   /// Redraw every hive rectangle from the current cell positions.
-  function applyFrames(el, geom) {
+  ///
+  /// With `hook`, the derived rectangle is also written BACK to the hive's
+  /// object. The layout cell cannot do this: a hand's offset lives in the
+  /// display and never reaches it, so the rectangle it computes is the flow's.
+  /// Before GH #544 that third geometry was what a screenshot or an export got
+  /// -- 96 of 104 cells lay outside the frame the store held, while the browser
+  /// looked correct because it re-derived. The browser is the only half that
+  /// knows, so the browser says it.
+  function applyFrames(el, geom, hook) {
     const map = frameMap(el, geom);
     el.querySelectorAll("[data-hive]").forEach(function (g) {
       const r = map[g.getAttribute("data-hive")];
@@ -707,6 +822,19 @@ CLIENT_JS = r"""// colony-view's browser half: edge routing, drag, camera.
         p.text.setAttribute("x", Math.round(r.x) + 8);
         p.text.setAttribute("y", Math.round(r.y) + 18);
       }
+      if (!hook) return;
+      const id = g.getAttribute("data-hive");
+      const now = [Math.round(r.x), Math.round(r.y),
+                   Math.round(r.w), Math.round(r.h)];
+      const was = lastFrame[id];
+      if (was && was[0] === now[0] && was[1] === now[1] &&
+          was[2] === now[2] && was[3] === now[3]) return;
+      lastFrame[id] = now;
+      const oid = g.getAttribute("data-oid");
+      if (!oid) return;
+      ["x", "y", "w", "h"].forEach(function (k, i) {
+        hook.setProp(oid, k, now[i]);
+      });
     });
   }
 
@@ -854,17 +982,46 @@ CLIENT_JS = r"""// colony-view's browser half: edge routing, drag, camera.
         esc(other(e)) + (e.cond ? ' <span class="chip">if</span>' : "") + "</div>").join("");
     };
     const ins = mine.filter(e => e.to === id), outs = mine.filter(e => e.from === id);
-    // No pin state, and no button to hand a box back to the layout. A move
-    // survives because the node's tree entry declares `keep`, so there is
-    // nothing here a person could have to release.
+    // The pin, and the way back out of it. A box a hand moved carries the
+    // `pinned` marker and an offset against the flow's spot; a box nobody has
+    // touched carries neither and simply follows the layout. Releasing is
+    // therefore two writes — the marker and the offset, one prop each — and the
+    // next tick puts the box back where the flow wants it.
+    //
+    // The button exists because the alternative is a picture a person can
+    // arrange and never un-arrange: `canvy@2.1.8` learnt that, and the re-cut
+    // of #455 shipped without it (GH #544).
+    const pinned = !!cellG.getAttribute("data-pinned");
+    // How far this box is from where the layout wanted it -- which is exactly
+    // what releasing it undoes. Saying "outside its hive" would never fire:
+    // since 1.0.1 the frame FOLLOWS its cells, so a box is inside its own hive
+    // by construction however far it was dragged. The offset is the honest
+    // number, and it is the one a person can act on.
+    const off = offsetOf(cellG);
     detail.innerHTML =
       '<dl class="kv"><dt>cell</dt><dd>' + esc(id) + "</dd></dl>" +
       '<dl class="kv"><dt>type</dt><dd>' + esc(ty ? ty.textContent : "") + "</dd></dl>" +
+      '<dl class="kv"><dt>placed</dt><dd>' + (pinned
+        ? '<button class="release" type="button">by hand — release</button>' +
+          '<div class="warn">' + Math.round(off.x) + ", " + Math.round(off.y) +
+          ' px from where the layout put it — release puts it back, and the' +
+          ' frame follows</div>'
+        : '<span class="chip">by the layout</span>') + "</dd></dl>" +
       '<dl class="kv"><dt>in (' + ins.length + ")</dt><dd>" + row(ins, e => e.from) + "</dd></dl>" +
       '<dl class="kv"><dt>out (' + outs.length + ")</dt><dd>" + row(outs, e => e.to) + "</dd></dl>";
     detail.querySelectorAll(".rel").forEach(function (n) {
       n.addEventListener("click", function () { select(el, n.getAttribute("data-rel"), hook); });
     });
+    const release = detail.querySelector(".release");
+    if (release && hook && hook.setProp) {
+      release.addEventListener("click", function () {
+        const oid = cellG.getAttribute("data-oid");
+        cellG.removeAttribute("data-pinned");
+        pending[oid] = {x: 0, y: 0};
+        hook.setProp(oid, "pinned", "");
+        hook.setProp(oid, "hand", "0,0");
+      });
+    }
   }
 
   const ColonyView = {
@@ -884,9 +1041,15 @@ CLIENT_JS = r"""// colony-view's browser half: edge routing, drag, camera.
       // very line reads it), but a session's view moves only by its own hand.
       const svg = this.el.querySelector("svg.stage");
       this.vb = svg && svg.getAttribute ? svg.getAttribute("viewBox") : null;
+      // Which browser half this picture was written by, at the moment this tab
+      // started running. A `<script>` inside a LiveView morph is not executed,
+      // so this hook keeps running for the life of the tab while the server may
+      // move on. Comparing the two is the only way a stale tab can know.
+      this.clientId = this.el.getAttribute("data-client") || "";
+      this.hiding = true;              // the server's own default, mirrored
       this.wire();
       applyCamera(this.el, this.cam);
-      applyFrames(this.el, this.geom);
+      applyFrames(this.el, this.geom, this);
       drawEdges(this.el);
     },
     // A diff re-renders the slot it changed, so the edges of the boxes it moved
@@ -910,9 +1073,25 @@ CLIENT_JS = r"""// colony-view's browser half: edge routing, drag, camera.
       // first tick after any drag — see mounted() for the full story.
       const svg = this.el.querySelector("svg.stage");
       if (svg && this.vb) svg.setAttribute("viewBox", this.vb);
+      // Anything this browser wrote and the screen has not confirmed goes back
+      // on BEFORE the frames are derived -- a frame derived from a box the diff
+      // just put back where it started is a frame drawn at the wrong size.
+      reconcile(this.el);
+      // The morph writes the server's container class back, and whether you are
+      // looking at the leftovers is a fact about this browser, not about the
+      // colony. So it is restored here, beside the camera and the viewBox.
+      this.el.classList.toggle("hide-unwired", this.hiding);
       applyCamera(this.el, this.cam);
-      applyFrames(this.el, this.geom);
+      applyFrames(this.el, this.geom, this);
       drawEdges(this.el);
+      // A tab that has been open across a template change runs the client it
+      // loaded with, and every gesture it makes speaks a vocabulary the screen
+      // may no longer accept -- silently, because a refused prop write is a
+      // receipt to the app and nothing to the browser. So the tab says it.
+      const now = this.el.getAttribute("data-client") || "";
+      if (this.clientId && now && now !== this.clientId) {
+        this.el.classList.add("stale");
+      }
       if (this.sel) select(this.el, this.sel, this); else clearSelection(this.el);
     },
     destroyed() { this.unwire(); },
@@ -994,13 +1173,33 @@ CLIENT_JS = r"""// colony-view's browser half: edge routing, drag, camera.
           // everything and won every grab; now the grab is the box you are
           // visually inside of. The camera pans on true background — outside
           // every frame — and on ctrl-drag anywhere (handled above).
+          //
+          // An OUTERMOST frame is never grabbed, and that is GH #544's second
+          // half. A frame with no parent frame in the picture is not a frame
+          // around anything -- it is the canvas: on a real colony it holds 96 %
+          // empty space, so almost every press that misses a box lands inside
+          // it and inside nothing else. Measured on a live colony: one press on
+          // that emptiness dragged all 108 cells and marked every one of them
+          // hand-placed, which is the whole picture leaving the layout in a
+          // single gesture. So a root frame pans, and the group drag is offered
+          // for the frames that are actually groups.
+          const roots = {};
+          el.querySelectorAll("[data-hive]").forEach(function (g) {
+            roots[g.getAttribute("data-hive") || ""] = true;
+          });
+          const isRoot = function (path) {
+            const cut = path.lastIndexOf("/");
+            return cut < 0 || !roots[path.slice(0, cut)];
+          };
           let hg = ev.target.closest ? ev.target.closest("[data-hive]") : null;
+          if (hg && isRoot(hg.getAttribute("data-hive") || "")) hg = null;
           if (ev.clientX !== undefined) {
             const OUT = 4;
             let best = null;
             el.querySelectorAll("[data-hive]").forEach(function (g) {
               const r = g.querySelector && g.querySelector("rect");
               if (!(r && r.getBoundingClientRect)) return;
+              if (isRoot(g.getAttribute("data-hive") || "")) return;
               const b = r.getBoundingClientRect();
               if (ev.clientX >= b.left - OUT && ev.clientX <= b.right + OUT &&
                   ev.clientY >= b.top - OUT && ev.clientY <= b.bottom + OUT) {
@@ -1018,6 +1217,7 @@ CLIENT_JS = r"""// colony-view's browser half: edge routing, drag, camera.
               id: id,
               g: hg,
               members: members.map(m => ({g: m, at: boxOf(m),
+                                          flow: flowOf(m), off: offsetOf(m),
                                           oid: m.getAttribute("data-oid")})),
               from: userPoint(el, ev),
               delta: {x: 0, y: 0},
@@ -1044,6 +1244,8 @@ CLIENT_JS = r"""// colony-view's browser half: edge routing, drag, camera.
         // it moves, and an edge that ends on such a frame has to move with it.
         const attached = edgesFor(el, [id]);
         drag = {id: id, oid: g.getAttribute("data-oid"), g: g, origin: boxOf(g),
+                flow: flowOf(g), off: offsetOf(g),
+                pinned: !!g.getAttribute("data-pinned"),
                 from: userPoint(el, ev), at: boxOf(g), edges: attached};
         g.setPointerCapture && g.setPointerCapture(ev.pointerId);
         ev.preventDefault();
@@ -1084,8 +1286,9 @@ CLIENT_JS = r"""// colony-view's browser half: edge routing, drag, camera.
         }
         if (!drag) return;
         const now = userPoint(el, ev);
-        drag.at = {x: drag.origin.x + (now.x - drag.from.x),
-                   y: drag.origin.y + (now.y - drag.from.y)};
+        drag.offAt = {x: drag.off.x + (now.x - drag.from.x),
+                      y: drag.off.y + (now.y - drag.from.y)};
+        drag.at = {x: drag.flow.x + drag.offAt.x, y: drag.flow.y + drag.offAt.y};
         if (frame) return;                       // coalesce to one frame
         frame = requestAnimationFrame(function () {
           frame = null;
@@ -1110,14 +1313,25 @@ CLIENT_JS = r"""// colony-view's browser half: edge routing, drag, camera.
           hive = null;
           done.g.classList && done.g.classList.remove("dragging");
           const dx = Math.round(done.delta.x), dy = Math.round(done.delta.y);
+          done.members.forEach(function (m) {
+            restore(m.g, m.flow, {x: Math.round(m.off.x) + dx,
+                                  y: Math.round(m.off.y) + dy});
+          });
           if (dx || dy) {
-            // One patch pair per member. There is no group row to write: the
-            // members' own positions ARE the record, so the group's move is
-            // exactly the sum of its members' moves and nothing has to be
-            // reconciled afterwards.
+            // One patch per member and per prop. There is no group row to
+            // write: the members' own offsets ARE the record, so the group's
+            // move is exactly the sum of its members' moves and nothing has to
+            // be reconciled afterwards. The OFFSET is what is written -- where
+            // the flow puts each member is the layout cell's word, and it says
+            // it again on the next tick.
             done.members.forEach(function (m) {
-              hook.setProp(m.oid, "x", m.at.x + dx);
-              hook.setProp(m.oid, "y", m.at.y + dy);
+              const nx = Math.round(m.off.x) + dx, ny = Math.round(m.off.y) + dy;
+              pending[m.oid] = {x: nx, y: ny};
+              hook.setProp(m.oid, "hand", nx + "," + ny);
+              if (!m.g.getAttribute("data-pinned")) {
+                m.g.setAttribute("data-pinned", "1");
+                hook.setProp(m.oid, "pinned", "1");
+              }
             });
             hook.dragged = true;        // the click that follows is the drag's tail
           }
@@ -1135,15 +1349,32 @@ CLIENT_JS = r"""// colony-view's browser half: edge routing, drag, camera.
         const done = drag;
         drag = null;
         done.g.releasePointerCapture && done.g.releasePointerCapture(ev.pointerId);
-        // Two events for the whole drag, one per editable prop. The provisional
-        // DOM stays as it is — the diff replaces it, and the cell decides what
-        // the object now says. A press that never moved is a CLICK: it writes
-        // nothing (two no-op writes per selection click, before this guard) and
-        // it must not swallow the selection that follows.
-        const nx = Math.round(done.at.x), ny = Math.round(done.at.y);
-        if (nx !== Math.round(done.origin.x) || ny !== Math.round(done.origin.y)) {
-          hook.setProp(done.oid, "x", nx);
-          hook.setProp(done.oid, "y", ny);
+        // Two events for the move and a third the first time a box is moved at
+        // all. The provisional DOM stays as it is — the diff replaces it, and
+        // the cell decides what the object now says. A press that never moved
+        // is a CLICK: it writes nothing (two no-op writes per selection click,
+        // before this guard) and it must not swallow the selection that
+        // follows.
+        const off = done.offAt || done.off;
+        const nx = Math.round(off.x), ny = Math.round(off.y);
+        // Whatever happens next, the box goes back into the two-translate form.
+        // A gesture that writes nothing gets no diff, and a box left with one
+        // translate has lost the line between where the flow put it and where a
+        // hand did -- after which it cannot be moved again at all.
+        restore(done.g, done.flow, {x: nx, y: ny});
+        if (nx !== Math.round(done.off.x) || ny !== Math.round(done.off.y)) {
+          // ONE prop, and that is the whole of why a drag no longer flickers.
+          // A browser writes a prop at a time and the display diffs a prop at a
+          // time; an offset spelled as two props reached the page as two
+          // pictures, and the frames -- derived from where the boxes are -- were
+          // derived once from the half-moved one. Measured: three rectangles
+          // painted for one drag, the middle 971 wide and still 92 high.
+          pending[done.oid] = {x: nx, y: ny};
+          hook.setProp(done.oid, "hand", nx + "," + ny);
+          if (!done.pinned) {
+            done.g.setAttribute("data-pinned", "1");
+            hook.setProp(done.oid, "pinned", "1");
+          }
           hook.dragged = true;          // so the click that follows does not select
         }
       };
@@ -1156,6 +1387,21 @@ CLIENT_JS = r"""// colony-view's browser half: edge routing, drag, camera.
         clearSelection(el);
       };
 
+      // The toggle. It is a CLASS on the container and nothing else -- no
+      // server round trip, no stored preference: which cells you are looking at
+      // is the same kind of local fact as where you are looking, and both stay
+      // in this browser.
+      this.onToggle = function (ev) {
+        const b = ev.target.closest ? ev.target.closest(".unwired-toggle") : null;
+        if (!b) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        hook.hiding = !hook.hiding;
+        el.classList.toggle("hide-unwired", hook.hiding);
+        applyFrames(el, hook.geom, hook);
+        drawEdges(el);
+      };
+      el.addEventListener("click", this.onToggle, true);
       el.addEventListener("pointerdown", this.onDown);
       el.addEventListener("pointermove", this.onMove);
       el.addEventListener("pointerup", this.onUp);
@@ -1167,6 +1413,7 @@ CLIENT_JS = r"""// colony-view's browser half: edge routing, drag, camera.
     },
 
     unwire() {
+      this.el.removeEventListener("click", this.onToggle, true);
       this.el.removeEventListener("pointerdown", this.onDown);
       this.el.removeEventListener("pointermove", this.onMove);
       this.el.removeEventListener("pointerup", this.onUp);
@@ -1250,6 +1497,11 @@ html,body{ margin:0; height:100%; background:#fbfbfa; }
   cursor:grab; }            /* the empty canvas pans */
 .colony-view.panning{ cursor:grabbing; }
 .colony-view svg.stage{ width:100%; height:100%; display:block; touch-action:none; }
+/* A drag over a picture is never a text selection. Without this the pointer
+   sequence on a trackpad can turn into a native selection mid-gesture and the
+   `pointerup` never reaches the hook -- the box then hangs on the cursor. */
+.colony-view{ user-select:none; -webkit-user-select:none; }
+.colony-view .detail{ user-select:text; -webkit-user-select:text; }
 
 .colony-view .node{ cursor:grab; }
 .colony-view .node:active{ cursor:grabbing; }
@@ -1317,7 +1569,43 @@ html,body{ margin:0; height:100%; background:#fbfbfa; }
 .colony-view .detail .rel:hover{ color:var(--accent); text-decoration:underline; }
 .colony-view .detail .chip{ display:inline-block; padding:1px 7px; border-radius:99px;
   font-size:10px; border:1px solid var(--line); color:var(--muted); }
+/* Handing a box back to the layout. Styled as a chip rather than as a form
+   control, because it stands where the chip that says "by the layout" stands
+   and the two must read as one row of the same panel. */
+.colony-view .detail .release{ display:inline-block; padding:1px 7px; border-radius:99px;
+  font:inherit; font-size:10px; cursor:pointer; background:none;
+  border:1px solid var(--accent); color:var(--accent); }
+.colony-view .detail .release:hover{ background:var(--accent); color:var(--bg); }
+.colony-view .detail .warn{ margin-top:4px; color:var(--edge-hot); font-size:10.5px;
+  font-family:ui-sans-serif,system-ui,sans-serif; white-space:normal; }
 @media (max-width:860px){ .colony-view .detail{ display:none; } }
+
+/* Unwired cells: hidden by default, and a button in the legend to bring them
+   back. `remove_nodes` and `swap_nodes` disconnect and never delete, so a live
+   colony collects disconnected leftovers -- 31 of 123 on the colony this was
+   built against. They are part of the truth and they are not part of the flow,
+   which is exactly what a toggle is for. */
+.colony-view.hide-unwired .node.unwired{ display:none; }
+.colony-view .legend .unwired-toggle{ font:inherit; cursor:pointer; padding:0 6px;
+  margin-right:6px; border-radius:99px; background:none;
+  border:1px solid var(--line); color:var(--muted); }
+.colony-view .legend .unwired-toggle:hover{ border-color:var(--accent); color:var(--accent); }
+.colony-view:not(.hide-unwired) .legend .unwired-toggle{
+  border-color:var(--accent); color:var(--accent); }
+
+/* An OLD TAB. A `<script>` that arrives inside a LiveView morph is not run, so
+   a tab open across a template change keeps the browser half it loaded with --
+   and every gesture it makes may speak a vocabulary the screen no longer
+   accepts. A refused prop write is a receipt to the application and nothing at
+   all to the browser, so without this the tab just stops working, silently. */
+.colony-view.stale::before{
+  content:"this tab is running an older canvas \2014 reload the page";
+  position:fixed; z-index:10; left:50%; top:0; transform:translateX(-50%);
+  padding:5px 14px 6px; background:#ffffff; color:#b3261e;
+  border:1px solid #b3261e; border-top:none; border-radius:0 0 8px 8px;
+  font:11.5px/1.4 ui-sans-serif,system-ui,sans-serif; letter-spacing:.02em;
+  pointer-events:none;
+}
 
 /* Disconnected, and therefore possibly out of date.
 
@@ -1407,6 +1695,10 @@ TYPE_COLOR = {
 }
 DEFAULT_COLOR = ("#ffffff", "#999999")
 
+CLIENT_ID = hashlib.sha1(
+    (CLIENT_JS + CLIENT_CSS).encode("utf-8")).hexdigest()[:12]
+
+
 # ---------------------------------------------------------------------------
 # The component library. Data, not code: a display's `component.define` takes a
 # template written in the closed four-form language (a prop, a raw prop, the
@@ -1421,8 +1713,9 @@ DEFAULT_COLOR = ("#ffffff", "#999999")
 # and a name carrying a script tag must not be able to close one.
 
 SHELL_TEMPLATE = (
-    '<div class="colony-view" id="colony-view" phx-hook="ColonyView"'
+    '<div class="colony-view hide-unwired" id="colony-view" phx-hook="ColonyView"'
     ' data-title="{{title}}"'
+    ' data-client="{{client}}"'
     ' data-nw="{{nw}}" data-nh="{{nh}}" data-pad-side="{{pad_side}}"'
     ' data-pad-top="{{pad_top}}" data-pad-bot="{{pad_bot}}" data-nest="{{nest}}">'
     "<style>{{&client_css}}</style>"
@@ -1451,7 +1744,17 @@ SHELL_TEMPLATE = (
     # read. The panel is filled by the client -- this cell renders the frame, not
     # the answer, because what is selected is a client-side fact.
     '<aside class="detail"><p class="empty">Click a cell or an edge.</p></aside>'
-    '<div class="legend">{{cells}} cells, {{hives}} hives, {{edges}} edges</div>'
+    # The toggle, and the count that makes it worth reaching for. UNWIRED means
+    # a cell that takes part in no edge at all -- in this substrate almost
+    # always a cell a rewiring left standing, because `remove_nodes` and
+    # `swap_nodes` DISCONNECT and never delete (`docs/rewiring.en.md`: getting
+    # rid of a registry row is an operator action with the colony stopped). A
+    # live colony therefore accumulates them: 31 of 123 cells on the one this
+    # was built against, 13 of them in a single hive. Hidden by default, because
+    # the picture is for looking at what the colony DOES.
+    '<div class="legend"><button class="unwired-toggle" type="button">'
+    '{{unwired}} unwired</button> {{cells}} cells, {{hives}} hives,'
+    ' {{edges}} edges</div>'
     "</div>"
 )
 
@@ -1459,7 +1762,7 @@ HIVE_TEMPLATE = (
     # `depth-N` is what the stylesheet tints. Clamped, because a tree deeper than
     # the palette should keep the deepest colour rather than fall back to none --
     # a hive with no tint would read as "not a hive".
-    '<g class="hive depth-{{depth}}" data-hive="{{path}}">'
+    '<g class="hive depth-{{depth}}" data-hive="{{path}}" data-oid="{{oid}}">'
     '<rect x="{{x}}" y="{{y}}" width="{{w}}" height="{{h}}" rx="10"/>'
     '<text x="{{tx}}" y="{{ty}}">{{name}}</text>'
     "</g>"
@@ -1490,6 +1793,25 @@ NODE_TEMPLATE = (
     # drag writes to. Keeping them apart is what lets a hive frame and a cell of
     # the same path both exist as objects.
     #
+    # TWO translates, and the split is the whole of GH #544. The first is the
+    # FLOW's, rewritten on every tick, and the second is the HAND's, written by
+    # a drag and never by this cell. SVG composes a transform list left to
+    # right, so the pair needs no arithmetic anywhere -- which matters, because
+    # the component language has none: it substitutes props and nothing else.
+    #
+    # A hand's offset is therefore relative to wherever the flow currently puts
+    # the cell, so it travels with its hive instead of being left behind by the
+    # next re-rank. That is what [#170](https://github.com/mmeyerlein/meclaw/issues/170)
+    # removed -- an anchor measured against a layout that every arriving cell
+    # re-derives -- put back the one way that does not walk off: the delta is
+    # against the cell's OWN spot, not against a hive anchor.
+    #
+    # `data-pinned` is the marker, in the markup, because the client has to know
+    # whether there is anything to release before it draws the detail panel.
+    # The MARKER is what says a hand was here; a coordinate says nothing, and
+    # reading one as a pin is what put 103 of 104 boxes on a stranger's spot
+    # (#544). `canvy@2.1.8` learnt this first.
+    #
     # `unwired` says the cell takes part in no edge at all. In this substrate that
     # is almost always a DISCONNECTED cell -- removing a node drops every edge and
     # keeps the node (no-delete), so a rewiring leaves its predecessor standing in
@@ -1498,7 +1820,8 @@ NODE_TEMPLATE = (
     # rather than hides: a cell instantiated a second ago and not yet wired looks
     # the same, and that is a state worth seeing too.
     '<g class="node{{#if unwired}} unwired{{/if}}" data-node="{{path}}"'
-    ' data-oid="{{oid}}" transform="translate({{x}},{{y}})">'
+    ' data-oid="{{oid}}" data-pinned="{{pinned}}"'
+    ' transform="translate({{x}},{{y}}) translate({{hand}})">'
     '<rect width="{{w}}" height="{{h}}" rx="6" fill="{{fill}}" stroke="{{stroke}}"/>'
     '<text class="nm" x="8" y="16">{{name}}</text>'
     '<text class="ty" x="8" y="30">{{type}}</text>'
@@ -1520,10 +1843,12 @@ def components():
             "template": SHELL_TEMPLATE,
             "prop_schema": {
                 "title": "text",
+                "client": "text",
                 "viewbox": "text",
                 "cells": "int",
                 "hives": "int",
                 "edges": "int",
+                "unwired": "int",
                 "nw": "int",
                 "nh": "int",
                 "pad_side": "int",
@@ -1541,6 +1866,7 @@ def components():
             "template": HIVE_TEMPLATE,
             "prop_schema": {
                 "path": "text",
+                "oid": "text",
                 "name": "text",
                 "depth": "int",
                 "x": "int",
@@ -1550,10 +1876,18 @@ def components():
                 "tx": "int",
                 "ty": "int",
             },
-            # A frame is DERIVED from the cells it holds, so there is nothing for a
-            # browser to write here: dragging a hive moves its members, and the
-            # frame follows from where they end up.
-            "editable": [],
+            # A frame is DERIVED from the cells it holds -- and since 1.0.1 the
+            # browser is the only half that can see where they ended up, because
+            # a hand's offset lives in the display and this cell never learns it.
+            # So the browser writes the derived rectangle back, and the store
+            # says what the screen shows instead of a third, wrong geometry
+            # (GH #544 measured 96 of 104 cells outside the frame the store
+            # held). NOT kept: the flow says the rectangle again on every tick,
+            # and the browser corrects it again in the same tick if a hand has
+            # moved something. With no browser open, the flow's frame stands,
+            # which is the right answer for a reader that is not looking at an
+            # arrangement.
+            "editable": ["x", "y", "w", "h"],
             "layer": "content",
         },
         {
@@ -1581,6 +1915,18 @@ def components():
                 "type": "text",
                 "x": "int",
                 "y": "int",
+                # The hand's half: ONE prop, and that is not cosmetic. A
+                # browser writes a prop at a time and the display diffs a prop
+                # at a time, so an offset spelled as two props reaches the page
+                # as two pictures -- and the frames, derived from where the
+                # boxes are, are derived once from the half-moved one. Measured
+                # in a browser under GH #544: three different rectangles were
+                # painted for one drag, the middle one 971 wide and still 92
+                # high. `"dx,dy"` is one write, one diff, one picture. SVG
+                # composes a transform list, so `translate({{hand}})` needs no
+                # arithmetic and no parsing on the way in.
+                "hand": "text",
+                "pinned": "text",
                 "w": "int",
                 "h": "int",
                 "fill": "text",
@@ -1594,9 +1940,13 @@ def components():
             # the list is refused with `not_editable` and nothing is written.
             #
             # `keep` is the other half and it lives on the tree entry, not here:
-            # `editable` says who may write these two props, `keep` says this cell
+            # `editable` says who may write these props, `keep` says this cell
             # stops overwriting them once the object exists.
-            "editable": ["x", "y"],
+            #
+            # `x`/`y` are NOT on this list any more and are not kept either: the
+            # flow owns them, and it owns them on every tick, which is the whole
+            # repair of GH #544. What a hand writes is `hand` and the marker.
+            "editable": ["hand", "pinned"],
             "layer": "content",
         },
     ]
@@ -1991,6 +2341,56 @@ def hive_frames(pos):
     return out
 
 
+def hive_of_cell_frames(pos):
+    """Kept as the one sentence GH #544 ended on, so the next reader finds it.
+
+    1.0.1 shipped a bound: a hand's offset was trimmed to its own hive's frame,
+    which made the four target points of #544 hold by construction. It was measured on a
+    real screen and it was unusable -- a hive's frame is shrink-wrapped around
+    its cells, so at the zoom a whole colony is looked at, a box had 85 x 15
+    screen pixels of travel before it hit a wall. The gesture read as broken,
+    and a constraint a person experiences as a broken gesture is not a
+    constraint, it is a bug.
+
+    So the bound is gone. A hand may put a box anywhere, the frames follow the
+    boxes (the browser re-derives them on every drag frame and on every tick,
+    and writes the result back), and what keeps the picture honest is the
+    MARKER, not a wall: nothing moves that a hand did not move, every box that
+    moved says so, and the detail panel hands it back to the layout.
+
+    What is therefore NOT guaranteed any more, and is written down rather than
+    hoped away: an arrangement can put two frames over each other, because a
+    hand asked for it. The durable answer is for the app to REMEMBER the
+    arrangement -- a store in the app hive and an event lane back from the
+    screen, so the flow can pack around what a hand did instead of being blind
+    to it. That is a build, not a repair, and it is filed as its own issue.
+    """
+    return hive_frames(pos)
+
+
+def hive_key(path):
+    """The object key of a hive's rectangle. Same reasoning as `node_key`."""
+    return "h." + path.replace("/", "~")
+
+
+def node_key(path):
+    """The object key of a cell's box: its colony path, and never its slot.
+
+    An object id is minted by the display from the tree entry's `key` where
+    there is one and from the child INDEX where there is not, and an index is a
+    slot: the picture writes its hives, then its edges, then its cells, so one
+    edge more moves every cell's index by one. Under GH #544 that is what turned
+    `keep` into a lie -- the kept prop stayed with the slot while the cell that
+    had asked for it moved on, and 103 of 104 boxes ended up wearing a position
+    computed for somebody else. A key that is the path makes a kept prop follow
+    the cell, which is the only thing `keep` can usefully mean.
+
+    The `n.` prefix keeps the key out of the index's language: a cell whose path
+    is `5` must not be able to name the object of the sixth child.
+    """
+    return "n." + path.replace("/", "~")
+
+
 def hive_boxes(pos):
     """The hive rectangles, ready to become components."""
     frames = hive_frames(pos)
@@ -2075,9 +2475,19 @@ def wrapper_id(owner):
     return "view." + owner.replace("/", "~") + "." + VIEW_ID
 
 
-def child_id(wrapper, index):
-    """The id of the `index`-th child of the view root. Empty without a wrapper."""
-    return (wrapper + "/" + str(index)) if wrapper else ""
+def child_id(wrapper, key):
+    """The object id the display will mint for a keyed child of this view.
+
+    A view's tree is handed to the display's `add_tree` at the WRAPPER, and the
+    root of that tree is this cell's shell -- so the shell is `<wrapper>/0` and
+    everything this cell calls a child of the shell is one level below that.
+    Until 1.0.1 this function said `<wrapper>/<index>` and skipped the shell's
+    level entirely, so every `data-oid` in the picture named an object that does
+    not exist: a drag wrote nowhere, and nothing on this screen could be moved
+    at all. `gh544_the_flow_reaches_the_screen` mints the ids with the display's
+    own `add_tree` and compares, so the two cannot drift apart again.
+    """
+    return (wrapper + "/0/" + key) if wrapper else ""
 
 
 def picture(graph):
@@ -2126,8 +2536,15 @@ def content(graph, owner):
     pos = flow_layout(nodes, [{"from": e["from"], "to": e["to"]} for e in edges])
     for n in nodes:
         n["x"], n["y"] = pos.get(n["id"], (0, 0))
-    hives = hive_boxes(pos)
-    box = frame(nodes, hives)
+    # The frames -- and the viewBox with them -- are computed over the cells the
+    # picture SHOWS, which by default is the wired ones. A hive whose members
+    # are all disconnected leftovers would otherwise spread its rectangle over
+    # a part of the canvas nobody is looking at. Turning the toggle on re-derives
+    # both in the browser, which is where the toggle lives.
+    shown = {i: p for i, p in pos.items()
+             if i not in {n["id"] for n in nodes if n["unwired"]}} or pos
+    hives = hive_boxes(shown)
+    box = frame([n for n in nodes if not n["unwired"]] or nodes, hives)
     wrapper = wrapper_id(owner)
 
     children = []
@@ -2136,6 +2553,7 @@ def content(graph, owner):
             "component": "colony-view-hive",
             "props": {
                 "path": h["id"],
+                "oid": child_id(wrapper, hive_key(h["id"])),
                 "name": h["name"],
                 "depth": max(1, min(HIVE_DEPTH_TINTS, h["depth"])),
                 "x": h["x"],
@@ -2145,6 +2563,7 @@ def content(graph, owner):
                 "tx": h["x"] + 8,
                 "ty": h["y"] + 18,
             },
+            "key": hive_key(h["id"]),
         })
     for e in edges:
         children.append({
@@ -2165,11 +2584,16 @@ def content(graph, owner):
             "component": "colony-view-node",
             "props": {
                 "path": n["id"],
-                "oid": child_id(wrapper, len(children)),
+                "oid": child_id(wrapper, node_key(n["id"])),
                 "name": n["name"],
                 "type": n["type"],
                 "x": n["x"],
                 "y": n["y"],
+                # Written on a create and never again -- but written as the
+                # NEUTRAL value, so a picture nobody has arranged is exactly the
+                # flow's picture and nothing else.
+                "hand": "0,0",
+                "pinned": "",
                 "w": NODE_W,
                 "h": NODE_H,
                 "fill": fill,
@@ -2178,12 +2602,18 @@ def content(graph, owner):
                 # and the empty string is how this template language spells that.
                 "unwired": "1" if n["unwired"] else "",
             },
-            # The two props a hand owns. On an object the display already holds
-            # they are left out of the update, and an update merges per key, so
-            # the browser's value stands and a move survives every tick. On the
-            # first create they are written like any other prop, which is how a
-            # box nobody has touched still gets the spot the flow computed.
-            "keep": ["x", "y"],
+            # The identity of this box, and it is the CELL rather than the slot
+            # it happens to occupy in `children`. Everything below depends on
+            # it: an id that moves when an edge is added hands the kept props to
+            # whichever cell inherits the slot (GH #544).
+            "key": node_key(n["id"]),
+            # The two props a hand owns. On an object the display already
+            # holds they are left out of the update, and an update merges per
+            # key, so the browser's value stands and an arrangement survives
+            # every tick. `x` and `y` are deliberately NOT among them: the flow
+            # owns where a cell is, on every tick, and what a hand contributes
+            # is the offset beside it.
+            "keep": ["hand", "pinned"],
         })
 
     return {
@@ -2194,12 +2624,22 @@ def content(graph, owner):
             "cells": len(nodes),
             "hives": len(hives),
             "edges": len(edges),
+            "unwired": sum(1 for n in nodes if n["unwired"]),
             "nw": NODE_W,
             "nh": NODE_H,
             "pad_side": PAD_SIDE,
             "pad_top": PAD_TOP,
             "pad_bot": PAD_BOT,
             "nest": NEST,
+            # Which browser half this picture was written by. A `<script>` that
+            # arrives inside a LiveView morph is NOT executed, so a tab that has
+            # been open across a template change keeps running the client it
+            # loaded with -- silently, and for as long as the tab is open
+            # (measured: the hook object is identical after a tick, and a marker
+            # set in the page survives). The running client compares the id it
+            # mounted with against the one arriving; a difference means the tab
+            # is old, and it says so instead of quietly refusing every drag.
+            "client": CLIENT_ID,
             "client_css": CLIENT_CSS,
             "client_js": CLIENT_JS,
         },

@@ -121,7 +121,7 @@
         "add_nodes": [
           {
             "name": "alex",
-            "template": "member@1.4.0"
+            "template": "member@1.5.0"
           }
         ],
         "add_edges": [
@@ -229,7 +229,7 @@
         "add_nodes": [
           {
             "name": "scribe",
-            "template": "assistant@2.3.0",
+            "template": "assistant@2.4.0",
             "override_params": {
               "cogny/brain": {
                 "temperature": 0.2
@@ -245,7 +245,15 @@
           },
           {
             "from": ".",
-            "to": "./scribe",
+            "to": "./scribe/cogny",
+            "lane": "in_bundle",
+            "condition": "has(hop.route) && hop.route == 'in_bundle' && has(context.assistant) && context.assistant == 'scribe' && has(hop.recall_caller) && hop.recall_caller == 'cogny'"
+          },
+          {
+            "from": ".",
+            "to": "./scribe/talky",
+            "lane": "in_bundle",
+            "default": true,
             "condition": "has(hop.route) && hop.route == 'in_bundle' && has(context.assistant) && context.assistant == 'scribe'"
           },
           {
@@ -254,9 +262,37 @@
             "condition": "has(hop.route) && hop.route == 'answer'"
           },
           {
-            "from": "./scribe",
+            "from": "./scribe/talky",
             "to": ".",
-            "condition": "has(hop.route) && hop.route == 'recall'"
+            "lane": "recall",
+            "condition": "has(hop.route) && hop.route == 'recall'",
+            "modifier": {
+              "set_context": {
+                "recall_caller": "'talky'"
+              },
+              "delete_context": [
+                "col_phase",
+                "consult_class",
+                "consult_id",
+                "tool_answerer"
+              ]
+            }
+          },
+          {
+            "from": "./scribe/cogny",
+            "to": ".",
+            "lane": "recall",
+            "condition": "has(hop.route) && hop.route == 'recall'",
+            "modifier": {
+              "set_context": {
+                "recall_caller": "'cogny'"
+              },
+              "delete_context": [
+                "col_phase",
+                "consult_class",
+                "tool_answerer"
+              ]
+            }
           },
           {
             "from": "./scribe",
@@ -362,6 +398,137 @@
             "from": ".",
             "to": "./telegram",
             "condition": "has(hop.route) && hop.route == 'answer' && has(context.channel_node) && context.channel_node == 'telegram'"
+          }
+        ]
+      }
+    },
+    {
+      "scope": "/os/orgs/acme/members/alex",
+      "diff": {
+        "add_edges": [
+          {
+            "from": "./assistants/scribe/talky/brain",
+            "to": "./access",
+            "lane": "credential_request",
+            "condition": "has(hop.route) && hop.route == 'credential_request'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_invoke'"
+              },
+              "set_context": {
+                "requester": "'agent:scribe/talky'"
+              }
+            }
+          },
+          {
+            "from": "./access",
+            "to": "./assistants/scribe/talky/brain",
+            "lane": "in_sealed",
+            "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:example-provider-primary@member-alex/talky'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_sealed'"
+              }
+            }
+          },
+          {
+            "from": "./assistants/scribe/cogny/brain",
+            "to": "./access",
+            "lane": "credential_request",
+            "condition": "has(hop.route) && hop.route == 'credential_request'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_invoke'"
+              },
+              "set_context": {
+                "requester": "'agent:scribe/cogny'"
+              }
+            }
+          },
+          {
+            "from": "./access",
+            "to": "./assistants/scribe/cogny/brain",
+            "lane": "in_sealed",
+            "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:example-provider-primary@member-alex/cogny'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_sealed'"
+              }
+            }
+          }
+        ],
+        "seed_rows": [
+          {
+            "target": "./access/store",
+            "table": "grants",
+            "rows": [
+              {
+                "grant_id": "grant:example-provider-primary@member-alex/talky",
+                "requester": "agent:scribe/talky",
+                "capability": "credential.read",
+                "subject": "member:alex",
+                "scope": {
+                  "actions": [
+                    "vault.deliver"
+                  ]
+                },
+                "cred_ref": "cred:example-provider:primary",
+                "purpose": "authenticate scribe's talky brain against the provider",
+                "issued_at": "2026-01-01T00:00:00.000000Z",
+                "expires_at": "2099-01-01T00:00:00.000000Z",
+                "rule_id": "alex-credential-read",
+                "constraints": {
+                  "rate_per_min": 60
+                }
+              },
+              {
+                "grant_id": "grant:example-provider-primary@member-alex/cogny",
+                "requester": "agent:scribe/cogny",
+                "capability": "credential.read",
+                "subject": "member:alex",
+                "scope": {
+                  "actions": [
+                    "vault.deliver"
+                  ]
+                },
+                "cred_ref": "cred:example-provider:primary",
+                "purpose": "authenticate scribe's cogny brain against the provider",
+                "issued_at": "2026-01-01T00:00:00.000000Z",
+                "expires_at": "2099-01-01T00:00:00.000000Z",
+                "rule_id": "alex-credential-read",
+                "constraints": {
+                  "rate_per_min": 60
+                }
+              }
+            ]
+          },
+          {
+            "target": "./access/store",
+            "table": "grant_events",
+            "rows": [
+              {
+                "id": "ev-organism-0000000001",
+                "grant_id": "grant:example-provider-primary@member-alex/talky",
+                "event": "granted",
+                "at": "2026-01-01T00:00:00.000000Z",
+                "actor": "operator",
+                "reason_code": "",
+                "detail": {
+                  "why": "seeded with the level: credential_grant_id is immutable, so the grant has to exist before the brain that names it ever asks"
+                }
+              },
+              {
+                "id": "ev-organism-0000000002",
+                "grant_id": "grant:example-provider-primary@member-alex/cogny",
+                "event": "granted",
+                "at": "2026-01-01T00:00:00.000000Z",
+                "actor": "operator",
+                "reason_code": "",
+                "detail": {
+                  "why": "seeded with the level: credential_grant_id is immutable, so the grant has to exist before the brain that names it ever asks"
+                }
+              }
+            ]
           }
         ]
       }

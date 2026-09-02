@@ -1,4 +1,4 @@
-# `display@1.0.0`
+# `display@1.0.1`
 
 One screen, on a port of its own, that many agents and applications write onto
 at the same time. A **view** is a named, owned, optionally expiring piece of
@@ -150,7 +150,7 @@ while the rewrite's diffs re-render it where it was.
 
 ## `keep`: how a drag survives a tick
 
-A node of a component tree may declare `"keep": ["x", "y"]`. On an
+A node of a component tree may declare `"keep": ["hand", "pinned"]`. On an
 `object.update` against an object the display **already holds**, those prop keys
 are left out of the call. `object.update` merges per key, so the value the
 browser wrote stands. On an `object.create` everything is written, because there
@@ -158,9 +158,50 @@ is nothing to preserve yet.
 
 That makes `keep` the exact counterpart of the component's own `editable`
 declaration: the component says what a browser **may** write, and `keep` says
-that the next tick will not write over it. A hand-set position survives every
-tick that does not mean to move it, and the authorisation model stays where the
+that the next tick will not write over it. A hand-set value survives every tick
+that does not mean to move it, and the authorisation model stays where the
 display enforces it.
+
+## `key`: what a kept prop is kept ON
+
+An object id is minted from the tree: `view.<owner-slug>.<view_id>` for the
+wrapper, then the child index chain below it. That is a function of the tree
+alone, which is what makes the same tree sent twice patch the same objects --
+and it is an identity only as long as the tree's shape does not move.
+
+It moves. A node of a tree may therefore declare its own `key`, and the object
+is then named `<parent>/<key>` instead of `<parent>/<index>`, while `ord` -- the
+drawing order -- still comes from the index. A key is any non-empty string of at
+most 512 characters without a `/` -- the separator the index chain is written
+with, and the only character `parse_object_id` splits on. 512 rather than the
+64 an id segment gets elsewhere, because the keys that matter are paths: a cell
+path with its slashes written as tildes is already 120 characters deep on a real
+colony.
+
+**Two things the sender owns, because the display does not check them.** A key
+must be unique among its **siblings**: two siblings naming the same key mint the
+same id, and the second silently replaces the first in the tree the display
+builds -- one node of the view disappears with no refusal and no receipt. And a
+key that is a plain number collides with the index language it stands in: a node
+keyed `"3"` names the same object as the unkeyed fourth child beside it. Give a
+key a prefix that an index cannot have (`colony-view` uses `n.` and `h.`) and
+derive it from something already unique, and neither can happen. That the
+display swallows the collision rather than naming it is filed as
+[#568](https://github.com/mmeyerlein/meclaw/issues/568).
+
+The difference is what `keep` is worth. An index is a **slot**: insert one
+sibling ahead of a node and every id behind it now belongs to a different thing,
+so the props the sender asked to keep are handed to the new occupant of the
+slot. Measured on a running colony under
+[#544](https://github.com/mmeyerlein/meclaw/issues/544): a picture whose edge
+count had grown by three had 103 of 104 boxes standing at a position that had
+been computed for some **other** cell, and three cells held two objects each. A
+key that says what the node **is** -- a cell path, a row id -- makes the kept
+prop follow the thing, which is the only reading under which `keep` means
+anything at all.
+
+A view that names no keys is unchanged, and both shipped view kinds do exactly
+that.
 
 ## The components this scope defines
 

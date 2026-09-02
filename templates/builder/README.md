@@ -1,4 +1,4 @@
-# `builder@1.5.2`
+# `builder@1.6.0`
 
 The intake that turns a structural wish into a **manifest** — an ordered list of
 mutation declarations, ready to be submitted by whoever asked for it.
@@ -230,7 +230,7 @@ repairs, and a refusal a human cannot read is one they cannot answer.
 
 Growing a child into a composition level was, until `1.2.0`, a paragraph a model
 rewrote from scratch on every build: an organisation gets **18** transit edges, a
-member **18**, an assistant **14**, a channel **3**, a screen **2**, an app
+member **18**, an assistant **16**, a channel **3**, a screen **2**, an app
 **2** — and they are the same edges every time, with the child's name
 substituted in. `examples/organism` writes all six out by hand, which is what
 made them measurable.
@@ -330,7 +330,51 @@ on a `channel` (§ *A round is provenance*).
 | `ctx` | optional, **`member_person` required for `channel`** | the declaration's own `ctx` block, mutation-wide. The recipe reads exactly one key out of it — `member_person`, the identity of the person a channel speaks with — and a channel wish without it renders nothing and asks instead, as `wish_incomplete` (§ *A round is provenance*) |
 | `override_params` | optional | addressed per cell of the template (`{"cogny/brain": {"temperature": 0.2}}`) |
 | `birth` | optional | `active` or `inactive` — the door's own vocabulary, written top-level on the `add_nodes` entry. A name the door does not know is refused here as `birth_unknown`, one hop from the wish that made it, rather than at the door one hop from the manifest. The default is the door's (`active`) for every level except `channel`, which is born **asleep** |
-| `subscribe` | optional, `assistant` | draw the identity door as well — the push edge from the member's own `./affinity` and the `pack_ack` drain beside it. It is not part of the level and is not counted in the table above; see § *The identity door is opt-in* |
+| `subscribe` | optional, `assistant` | draw the identity door as well — since #561 four v-lanes: one push from the member's own `./affinity` into each brain rim of the generation, and one `pack_ack` drain back from each. It is not part of the level and is not counted in the table above; see § *The identity door is opt-in* |
+| `credential` | optional, `assistant` | grow the generation with **no key of its own** — four more v-lanes to the member's own broker, the grants that answer them, and both credential params on both brains. `{"cred_ref": …, "subject": …, "expires_at": …}` are required inside it, `rule_id` and `rate_per_min` optional. It renders a SECOND declaration and is not counted in the table above; see § *The credential lanes are opt-in too* |
+
+### The credential lanes are opt-in too, and they are a second declaration
+
+Since `1.6.0` a generation can be grown that spends a key it does not hold: the
+provider credential lives in the member's own `access`, and each brain **asks**
+for it over a v-lane
+([#560](https://github.com/mmeyerlein/meclaw/issues/560)). `credential` renders
+the form `templates/member/README.md` § *The credential v-lanes* publishes and
+`examples/organism/grow-credentials.json` carries — two edges per brain, both
+naming the lane they carry, drawn at the member's own scope because that is
+where the lowest common ancestor of a brain and the broker is.
+
+**It is a second declaration, and that is a substrate fact rather than a
+preference.** The lane ends on `<generation>/talky/brain`, two levels *inside*
+the node the first declaration gives birth to, and the connect point that makes
+it legal is declared by `talky`/`cogny` — not by the generation. A mutation
+reads the contract of a hive it gives birth to from the template **root** only
+(`colony.rs`, [#562](https://github.com/mmeyerlein/meclaw/issues/562)), so the
+same four edges drawn beside the `add_nodes` that creates their target's
+grandparent are refused `v_lane_no_connect_point`. One declaration later the
+level stands and its contracts are read off the disk.
+
+Order is therefore semantics here as everywhere else: a manifest rolls forward
+with no rollback, so a refusal on the second declaration leaves a generation
+whose brains hold an empty `api_key` and name a grant nobody wired. That failure
+is **loud** — the first turn emits `credential_request` onto no edge and dead
+letters `no_route` — which is what makes two acts acceptable. Seeding the grants
+first would leave permission rows for a generation that may never exist.
+
+The grant **handle** is built rather than asked for:
+`grant:<cred tail>@<subject>/<consumer>`, one per consumer, because the answer
+edge is addressed by `hop.grant_id` and two brains sharing a handle would each
+be handed the other's sealed box. That is not the derivation
+[#517](https://github.com/mmeyerlein/meclaw/issues/517) forbade — the renderer
+writes the same string into the seed row *and* into the brain's own
+`credential_grant_id`, so the two ends cannot disagree. What it is built from is
+quoted from the wish. `expires_at` is asked for rather than invented: a horizon
+is a security decision and a recipe has no business picking one.
+
+And the empty `api_key` on both brains is **the switch, not tidiness**. A brain
+asks for a credential only while it holds none, and the key in its config counts
+as one; both params are immutable, so both are set where the generation is grown
+or the repair is a new generation.
 
 ### A round is provenance, and provenance is not derived
 
@@ -438,17 +482,25 @@ argument beats both — a key a caller filled in is a decision, a sentence is a 
 A grown assistant reaches its brain with an **empty** `system` tree: nothing in a grown topology
 writes a durable slot, and the one lane that can — `in_pack`, GH #458 — needs an edge from the
 member's own record ([#473](https://github.com/mmeyerlein/meclaw/issues/473)). `subscribe: true`
-renders it: `./affinity → ./assistants/<name>` on `hop.route == 'answer' && hop.subscriber ==
-'./assistants/<name>'`, re-stamped onto `in_pack`, plus the `pack_ack` drain back into
-`./assistants` — because `in_pack` and `pack_ack` are one decision and the door refuses the first
-without the second.
+renders it, and since [#561](https://github.com/mmeyerlein/meclaw/issues/561) it renders **four
+v-lanes** rather than two plain edges: `./affinity → ./assistants/<name>/talky` and
+`./affinity → ./assistants/<name>/cogny`, each carrying `"lane": "in_pack"`, guarded on
+`hop.route == 'answer' && hop.subscriber == './assistants/<name>'` and re-stamped onto `in_pack`,
+plus one `pack_ack` v-lane back from each rim into `./assistants` — because `in_pack` and
+`pack_ack` are one decision and the door refuses the first without the second. The pack ends at
+the two BRAIN RIMS because the assistant level no longer carries the lane: it declares a connect
+point for it (`"at": ["./talky", "./cogny"]`) and vouches for the corridor instead of hopping on
+it ([#559](https://github.com/mmeyerlein/meclaw/issues/559)). The guard still names the
+**generation** and not a rim — a subscription is one row about one agent, and the fan-out is the
+two edges.
 
 **This one declaration keeps the wide form**, and the reason is measured rather than chosen.
 `./affinity` is a *sibling* of `./assistants`: from a declaration standing in the container the
 only spellings that could reach it are `../affinity` and an absolute path, and the mutation door
 refuses both in an edge endpoint outright. Splitting the door off into a second declaration at the
 member does not survive either — `templates/submit/gate` accepts an `in_pack` edge only when its
-target is under the requester or is created by *that same* declaration, and a declaration that
+target is under the requester or is created by *that same* declaration (or lies inside something
+it creates — #561, which is how a rim two storeys down is accepted), and a declaration that
 only draws edges creates nothing (measured: `subscribe_target_not_self`). So a `subscribe` wish
 renders scope `<member>` and node `assistants/<name>`, exactly as it did before
 [#503](https://github.com/mmeyerlein/meclaw/issues/503). It costs nothing that matters: an
@@ -475,10 +527,14 @@ reason is worth writing down so nobody re-derives the disappointment:
   its `accepts` and `emits` are both empty, and its two upward edges condition on
   `has(hop.error_code)` — on a failure key, not on a lane.
 - **Lane count is not edge count**, in either direction. `assistant` declares
-  twenty lanes and gets fourteen edges: four of them are addressed at the path
+  eighteen lanes and gets sixteen edges: four of them are addressed at the path
   directly (ruling W7-R5), `in_pack` and `pack_ack` are the opt-in identity door
-  and no part of the level, and `display` folds `event`+`receipt` into **one**
-  edge one level further out.
+  and no part of the level, `display` folds `event`+`receipt` into **one**
+  edge one level further out — and since [#562](https://github.com/mmeyerlein/meclaw/issues/562)
+  the memory road costs FOUR edges for two lanes, because `recall` and
+  `in_bundle` are v-lanes and a v-lane is drawn once per asker
+  (`./<name>/talky`, `./<name>/cogny`), which no lane count could have told
+  anybody.
 - **Guards, modifiers and literals live in no contract.** `context.assistant ==
   '<name>'`, the `audience_set` literal, `hop.owner.contains(…)`, the
   `set_hop.route = 'in_view'` restamp. Addressing is a property of the parent,

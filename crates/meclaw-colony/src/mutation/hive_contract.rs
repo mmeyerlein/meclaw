@@ -39,7 +39,10 @@
 //! somewhere inside it; every emitted lane must be routable from somewhere
 //! inside back out through the hive path. This is the half that keeps the
 //! declaration from rotting into decoration: rearranging the inside is free,
-//! but rearranging it so a declared lane loses its door is not.
+//! but rearranging it so a declared lane loses its door is not. One kind of
+//! lane is exempt, and says so itself: a lane that names connect points (`at`,
+//! GH #559) docks BELOW the rim by declaration, so its door is that address and
+//! not an edge out of the hive path — see [`docks_below_the_rim`].
 //!
 //! # Why it asks the router instead of reading the text
 //!
@@ -299,6 +302,29 @@ pub fn collect_lane_doors(
     }
 }
 
+/// GH #559 / ADR-0020 — true iff this lane docks BELOW the rim by declaration.
+///
+/// A lane that names connect points (`at`) says where in the hive it lands, and
+/// that address is never the hive path: `at` is a list of paths strictly below
+/// it, and the v-lane rule table refuses a lane-carrying edge that ends anywhere
+/// else ([`crate::mutation::port_boundary::v_lane_verdict`], rows 3 and 5). So
+/// the door of such a lane is the connect point, not an edge out of `.`, and
+/// demanding a rim door for it would refuse exactly the migration ADR-0020
+/// describes: the level whose pass-through hop was replaced by one deep edge no
+/// longer has — and must no longer have — a rim edge for the lane it vouches
+/// for.
+///
+/// Only the DOOR obligation lifts, and it is REPLACED rather than dropped:
+/// [`addressed_inbound_lanes`] refuses an edge that delivers such a lane AT the
+/// hive path, because the door it would arrive at is precisely the one the
+/// migration struck. Everything else about the lane stays where it was: the
+/// connect points are still policed per edge at mutation time, the declaration
+/// still makes the level a mandatory hop for every address it does NOT name,
+/// and a lane with no `at` is judged exactly as it always was.
+fn docks_below_the_rim(lane: &Lane) -> bool {
+    !lane.at.is_empty()
+}
+
 /// The collecting core: every lane without a door, with the hive path it
 /// concerns and the hive's own sentence about that lane.
 fn addressed_lane_doors(
@@ -311,7 +337,7 @@ fn addressed_lane_doors(
             continue;
         }
         for lane in &c.accepts {
-            if door_exists(c, &lane.route, edges) {
+            if docks_below_the_rim(lane) || door_exists(c, &lane.route, edges) {
                 continue;
             }
             violations.push((
@@ -329,7 +355,7 @@ fn addressed_lane_doors(
             ));
         }
         for lane in &c.emits {
-            if exit_exists(c, &lane.route, edges) {
+            if docks_below_the_rim(lane) || exit_exists(c, &lane.route, edges) {
                 continue;
             }
             violations.push((
@@ -461,7 +487,40 @@ fn addressed_inbound_lanes(
         let Some(route) = stated_route(e) else {
             continue; // the lane is only knowable at runtime — not this check's business
         };
-        if c.accepts.iter().any(|l| l.route == route) {
+        if let Some(lane) = c.accepts.iter().find(|l| l.route == route) {
+            if !docks_below_the_rim(lane) {
+                continue;
+            }
+            // GH #562 — the other half of a connect point, and the reason the
+            // door check may lift its obligation at all (`docks_below_the_rim`).
+            // The lane IS declared, so the check above would wave this edge
+            // through on the name alone; but `at` says it docks below the rim,
+            // the rim door was struck with the pass-through it belonged to, and
+            // nothing inside routes the lane arriving here any more. That is a
+            // silent dead letter at runtime, which is the class GH #173 exists
+            // to refuse — *a lane a caller cannot receive is not part of an
+            // interface* — and it is a REDIRECTION rather than a wall: the same
+            // delivery, ended on one of the connect points and naming its lane,
+            // is the edge the contract asks for.
+            //
+            // `hive_contract` and not a fourth `v_lane_*` code, deliberately:
+            // the three v-lane codes judge a DEEP edge against the rule table,
+            // and this edge is not deep at all. What it gets wrong is which
+            // address a declared lane arrives at — the question this check has
+            // always answered.
+            violations.push((
+                MutationError::HiveContract(format!(
+                    "add_edges[].to='{to}' sends hop.route='{route}' into hive '{hive}', which \
+                     declares that lane with CONNECT POINTS ({because}) — so it does not arrive \
+                     at '{hive}' at all. A lane with `at` docks below the rim: end the edge on \
+                     one of {at} and name it with \"lane\": \"{route}\", which is the v-lane \
+                     the connect point permits (ADR-0020).",
+                    hive = c.hive_path,
+                    because = lane.because,
+                    at = lane.at.join(", "),
+                )),
+                c.hive_path.clone(),
+            ));
             continue;
         }
         let offered = if c.accepts.is_empty() {
@@ -770,6 +829,84 @@ mod tests {
         t.insert(edge("/mem/glue", "/mem", None));
         let err = check_lane_doors(&drain_contract(), &t).expect_err("no door for in_batch");
         assert!(format!("{err:?}").contains("in_batch"), "{err:?}");
+    }
+
+    /// GH #559 / #562 — a lane that names connect points owes no rim door.
+    ///
+    /// This is the shape a migrated level has: the pass-through hop is gone, one
+    /// deep edge delivers, and the contract entry that used to describe the hop
+    /// now says where the lane docks instead. Demanding a door out of `.` here
+    /// would refuse the migration itself.
+    #[test]
+    fn a_lane_that_names_its_connect_points_needs_no_door_at_the_rim() {
+        let vouching = |route: &str| Lane {
+            at: vec!["./glue".into()],
+            ..lane(route)
+        };
+        let c = vec![HiveContract {
+            hive_path: "/mem".into(),
+            accepts: vec![vouching("in_batch")],
+            emits: vec![vouching("episode")],
+        }];
+        let mut t = EdgeTable::new();
+        // The rim is wired for some OTHER lane, so the contract is not dormant.
+        t.insert(edge(
+            "/mem",
+            "/mem/glue",
+            Some("has(hop.route) && hop.route == 'in_other'"),
+        ));
+        assert!(
+            check_lane_doors(&c, &t).is_ok(),
+            "{:?}",
+            check_lane_doors(&c, &t)
+        );
+
+        // And the exemption is the `at` and nothing else: the same two lanes
+        // without connect points are the refusal they always were.
+        assert!(check_lane_doors(&drain_contract(), &t).is_err());
+    }
+
+    /// GH #562 — the connect point CLOSES the rim for its lane.
+    ///
+    /// The mirror of the test above: the door obligation is not dropped, it is
+    /// replaced. An edge that states the lane at the hive path is refused by
+    /// name, and the same delivery at the connect point is not.
+    #[test]
+    fn an_edge_that_states_a_docked_lane_at_the_rim_is_refused() {
+        let c = vec![HiveContract {
+            hive_path: "/mem".into(),
+            accepts: vec![Lane {
+                at: vec!["./glue".into()],
+                ..lane("in_batch")
+            }],
+            emits: Vec::new(),
+        }];
+        let at_the_rim = json!({"add_edges": [
+            {"from": "/outside", "to": "/mem",
+             "modifier": {"set_hop": {"route": "'in_batch'"}}}
+        ]});
+        let err = check_inbound_lanes(&at_the_rim, "/", &c)
+            .expect_err("the lane docks below the rim, so it does not arrive here");
+        let msg = format!("{err:?}");
+        assert!(msg.contains("CONNECT POINTS"), "{msg}");
+        assert!(
+            msg.contains("./glue"),
+            "the refusal must name where it DOES dock: {msg}"
+        );
+
+        // The same lane at the connect point, and an ordinary lane at the rim:
+        // both untouched.
+        let at_the_point = json!({"add_edges": [
+            {"from": "/outside", "to": "/mem/glue", "lane": "in_batch",
+             "modifier": {"set_hop": {"route": "'in_batch'"}}}
+        ]});
+        assert!(check_inbound_lanes(&at_the_point, "/", &c).is_ok());
+        let plain = vec![HiveContract {
+            hive_path: "/mem".into(),
+            accepts: vec![lane("in_batch")],
+            emits: Vec::new(),
+        }];
+        assert!(check_inbound_lanes(&at_the_rim, "/", &plain).is_ok());
     }
 
     #[test]

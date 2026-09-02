@@ -1,8 +1,8 @@
 //! GH #476 — a generation grown from a WISH receives the transfer lane, not
 //! only one instantiated by hand out of the README.
 //!
-//! GH #475 opened the lane: `assistant@2.3.0` accepts `in_export` and
-//! `in_import` and emits `dump`, and `member@1.4.0` carries an export into
+//! GH #475 opened the lane: `assistant@2.4.0` accepts `in_export` and
+//! `in_import` and emits `dump`, and `member@1.5.0` carries an export into
 //! `./assistants` when the caller names a generation on `context.assistant`.
 //! Reaching a generation therefore costs FOURTEEN edges in the member's
 //! container, not eleven — and the builder's `grow_level` recipe still rendered
@@ -143,7 +143,7 @@ fn grow_level(params: Value) -> Value {
 fn rendered_transfer_edges(name: &str) -> Vec<Value> {
     let decl = grow_level(json!({
         "scope": format!("/members/{MEMBER}"), "level": "assistant", "name": name,
-        "template": "assistant@2.3.0"}));
+        "template": "assistant@2.4.0"}));
     decl["diff"]["add_edges"]
         .as_array()
         .expect("add_edges")
@@ -512,7 +512,7 @@ fn member_manifest(export_dir: &std::path::Path) -> Value {
         // member is named bare, and the path it lands at is unchanged.
         "scope": "/members",
         "diff": {
-            "add_nodes": [{"name": MEMBER, "template": "member@1.4.0",
+            "add_nodes": [{"name": MEMBER, "template": "member@1.5.0",
                            "override_params": over}],
             "add_edges": container_edges(),
         }
@@ -525,7 +525,7 @@ fn member_manifest(export_dir: &std::path::Path) -> Value {
 fn grown_generation(name: &str) -> Value {
     let decl = grow_level(json!({
         "scope": format!("/members/{MEMBER}"), "level": "assistant", "name": name,
-        "template": "assistant@2.3.0",
+        "template": "assistant@2.4.0",
         // The three brains of a generation are the doubles named in the header,
         // and a `ctx` key is still required: the model is a RESOLVED literal in
         // the template's `requires`, and the mutation refuses a generation whose

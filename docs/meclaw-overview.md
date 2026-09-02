@@ -682,7 +682,7 @@ Error message to `reply_to` (if set) with:
 }
 ```
 
-`error_code` is an enum: `schema` | `match_no_hit` | `naming_collision` | `cycle` | `edge_schema` | `template_missing` | `env_var_missing` | `unsupported_substitution` | `ctx_key_missing` | `scope_out_of_bounds` | `unknown_cell_type` | `stop_wiring_unavailable` | `term_timeout` | `resume_requires_stopped_cell` | `subtree_resume_unsupported` | `resume_type_mismatch` | `contract_incomplete` | `invalid_params` | `hive_port_boundary` | `hive_contract` | `required_drain_missing` | `template_ref_cycle` | `requirement_missing` | `invalid_template_name` | `template_name_taken` | `shutdown_draining` | `seed_target_not_a_store` | `seed_table_undeclared`.
+`error_code` is an enum: `schema` | `match_no_hit` | `naming_collision` | `cycle` | `edge_schema` | `template_missing` | `env_var_missing` | `unsupported_substitution` | `ctx_key_missing` | `scope_out_of_bounds` | `unknown_cell_type` | `stop_wiring_unavailable` | `term_timeout` | `resume_requires_stopped_cell` | `subtree_resume_unsupported` | `resume_type_mismatch` | `contract_incomplete` | `invalid_params` | `hive_port_boundary` | `hive_contract` | `required_drain_missing` | `template_ref_cycle` | `requirement_missing` | `invalid_template_name` | `template_name_taken` | `shutdown_draining` | `seed_target_not_a_store` | `seed_table_undeclared` | `v_lane_no_connect_point` | `v_lane_mandatory_hop` | `v_lane_unanchored`.
 
 These strings are part of the stable mutation API contract, with the same promise the dead-letter codes carry (§ "Canonical `error_code` strings"): new reject reasons **extend** the list, existing ones never change their string form. A condition may therefore match on a code, but it must not assume the list is complete — an unknown code is a future code, not a bug. Notes on the substrate codes:
 
@@ -706,6 +706,9 @@ These strings are part of the stable mutation API contract, with the same promis
 - `requirement_missing` (GH #292): an instantiation names a template that declares a key (`requires.ctx` / `requires.env`, see § `requires`) the mutation does not supply — a `ctx` key missing from the mutation's `ctx` block, or an environment variable the loaded `.env` does not hold. The set spans the named template **and**, through its `ref`s, every referenced one: what a part needs, the composite needs. Pre-destructive, emitted by `validate_requires` (`mutation/validate.rs`) before scope containment and therefore before any staging; the message names the template, the class, the key and the template's own `because` verbatim. A template without a `requires` block never produces this code. **Both instantiating operations are covered** (GH #347): an `add_nodes` entry **and** the instantiate form of `swap_nodes[].with` — the one that names a `template` and therefore performs the same copy including the `${ctx.X}` substitution. The existing-node form of `swap_nodes[].with` (no `template`) references a cell that is already there, stages nothing and owes nothing here. **A resume does not repeat the contract:** an `add_nodes` at an already existing path is a Reconnect/Resume (§ Authority model, “Instantiation and cell_id stability”) that stages nothing, resolves no `${ctx.X}` and rewrites no `config.json` — so it never consumes the declared keys and is not refused for them. The requirement belongs to the instantiation, not to the address; the exemption therefore belongs to `add_nodes` and not to the swap, which always stages. **The exemption is per node, not per entry** (GH #347): for a partially existing composite subtree (the root stands, individual children are missing) the merge path stages the missing children — and the contract holds for those. Exempt are exactly the nodes the merge skips; a `ref` belongs to the node it hangs under, so a resume is asked for a referenced template's keys only when it actually creates that node. The named template's own declaration is not attributable to a single node — it is made for the whole tree — and is therefore owed as soon as the entry stages anything at all. Which nodes those are is answered by the same classification the merge itself asks (`subtree::classify_subtree_nodes`): one derivation, not a second opinion about what a resume is. A resume over a fully existing subtree stages nothing and stays entirely exempt.
 - `invalid_template_name` (GH #440): an `add_templates[]` entry names something that cannot become a directory under the local template root (outside `^[a-z][a-z0-9-]{1,63}$`), or a file path that climbs out of the template directory. Pre-destructive, emitted by `mutation::register::parse_entry`. The colony **builds** the target path and takes none from the body — hence a refusal rather than a sanitisation.
 - `template_name_taken` (GH #440): an `add_templates[]` entry names a template the registry already answers to. Refused **at its position**: the entries before it stay applied, the ones after it are never looked at. The alternative is what happened before — write it, and let the **next** `scan_templates_dir` abort on the duplicate (§ Resolution `name@version`), after the fact and for everybody. The same code carries the second case: a directory that already lies under `local/<name>/` without a registry row naming it (residue of an aborted run, or placed by hand) — it is refused by name rather than overwritten (No-Delete). And a third since GH #443: two entries of the **same** `add_templates` array naming one template. Nothing is registered yet and nothing has moved into the library yet, so the collision is checked against what this mutation has itself staged — both entries would become the same directory, so one of them is a name nobody could resolve.
+- `v_lane_no_connect_point` (GH #559): a v-lane ends inside a hive whose contract does not name the endpoint for that lane in an `at` (see § v-lanes — the declared deep edge). The opening is pronounced by the target itself, never taken by the caller; a contract without an `at` never produces this code, because without one no v-lane may land there at all.
+- `v_lane_mandatory_hop` (GH #559): a v-lane wants to skip a level in between that carries the lane in its contract (`accepts`/`emits`) without an `at` that reaches the endpoint (see § v-lanes). Whoever declares a lane takes influence on it — stamping, filtering, guarding — and may not be passed by.
+- `v_lane_unanchored` (GH #559): a `swap_nodes` replaces a subtree a v-lane ends in, and the new form has no such relative path or does not name it for this lane (see § v-lanes). The **whole** swap is refused: a silently dropped edge is the failure mode this rule forbids.
 
 `uuid_provider_exhausted` is **not** live code: the enum variant `MutationError::UuidProviderExhausted` was dead code (`Uuid::now_v7()` is infallible, never constructed; additionally mapped as the string `"uuid_provider"` instead of `"uuid_provider_exhausted"`) and **was removed with paket 7** (D-034; verified 2026-06-10: 0 code hits). The note remains as re-discovery protection.
 
@@ -1603,8 +1606,10 @@ Two fields carry it, and both are a matter of contract (ruling 2026-08-31):
   than guessed** — a validator cannot read it reliably out of a CEL guard.
 - **`at`** on `accepts[]`/`emits[]` of the hive contract (a list of relative
   paths; optional): **where** the lane connects at this hive. `"at": ["./talky"]`
-  says "this lane ends at my occupant `talky`"; `"at": ["."]` says "it ends at my
-  own rim, I distribute it myself".
+  says "this lane ends at my occupant `talky`". An entry is always a `./…` path
+  **strictly below** the declaring hive — a lane meant to end on a hive's own rim
+  is declared one level UP, as `./<hive>` in the parent's contract; `"."` names no
+  connect point and matches nothing.
 
 **`ports: []` stays literally true.** The v-lane is the one exception the target
 template pronounces **itself**: a connect point is a promise made by the
@@ -1628,6 +1633,46 @@ between the lowest common ancestor and the endpoint:
 **An edge without the `lane` field keeps exactly today's behaviour** — nothing in
 the existing stock breaks, and an undeclared deep edge stays permitted exactly as
 far as it is today.
+
+**The rule table reads `accepts` and `emits` undirected — deliberately.**
+Whether a crossed level carries the lane as inbound or as outbound does not
+decide whether it may be skipped: a level that has a lane in its contract takes
+part in it, and the direction is a statement about traffic, not about
+jurisdiction. A level that only emits `recall` is no more skippable by a v-lane
+carrying `recall` inwards. The price is named and accepted: a level that would
+like to carry a lane in exactly **one** direction cannot say so in its contract
+and becomes a mandatory hop in both.
+
+**The mandatory hop does not protect INSIDE the level that draws.** The levels
+judged are the ones **strictly between** the lowest common ancestor and the
+endpoint — the LCA itself is never a crossed level, and a direct child of the LCA
+is not deep at all. An edge `<gen>/talky -> <member>/memory-hive`, drawn in the
+member's own graph, therefore passes every gate even where the member declares
+`recall` as a mandatory hop — and delivers `missing_audience` at runtime,
+because it lacks the stamps the member's own door would have written. That is
+not a hole but the level's sovereignty: in its **own** graph a level may draw
+what it likes, and it could draw the same edge without a `lane` at all. The
+mandatory hop bites where it has to — the moment a v-lane crosses the declaring
+level's boundary.
+
+**A connect point CLOSES the rim for its lane (GH #562).** The `at` is two
+statements, not one: the lane docks *there*, and it therefore does **not** arrive
+at the hive path. Both halves are enforced. The hive owes the lane no door out of
+its own path — the lane-door check skips an entry that names connect points, which
+is what lets a migrated level strike the pass-through edge it no longer needs — and
+an `add_edges` entry that states the lane INTO the hive path is refused
+`hive_contract`, naming the connect points it should have ended on instead. That
+second half is what protects the caller who was addressing the rim before the
+migration: their edge used to work, the door behind it is gone, and without the
+refusal the delivery would become a dead letter nobody sees until the log is read.
+A lane with no `at` is judged exactly as before.
+
+**The refusal is asymmetric, because the danger is.** It holds in the `accepts`
+direction: an edge that delivers the lane AT the hive path finds no door behind
+it any more and would end silently in the dead-letter queue. In the `emits`
+direction there is nothing to refuse — an `at` lane that wanted to fire out of
+the rim has no sender there, so it never fires and therefore claims nothing
+false either.
 
 The third code belongs to rebuilding: **`v_lane_unanchored`**. When a v-lane ends
 inside a subtree a `swap_nodes` replaces, it is **re-anchored** by its relative
@@ -2866,8 +2911,8 @@ Colony answers in the universal body format with a top-level slot `graph`. Consu
 - **Slot wrapper** (`graph`): groups the related fields under a named top-level slot, consistent with the universal-body discipline "cells may create their own top-level slots".
 - **`graph_version`** is **constant `0`** today; the counter growing monotonically per scope (counts up on every successful mutation for this scope, helps with polling diff) is **planned from phase 14**.
 - **Granularity: shallow only**, one level per read. Sub-scopes are read via separate graph queries with their path as scope.
-- **The edge object**: `id`, `from`, `to`, `condition`, `modifier`, `default`. `condition` and `modifier` are **optional and absent when the edge has none** (a missing key *is* the statement "this edge has no condition"). **`default`** (boolean, since **v0.18.0**, GH #367) is there **always, on both values** — it names the edge's routing phase (`true` = a default edge, see "Edge model"), and a phase is never absent: every edge runs in exactly one of the two. Omitting the key on `false` would leave a reader unable to tell "this edge is regular" from "this server does not report phases", which is exactly the ambiguity the boot checks sat in, since they rebuild their edge table out of this answer.
-- **Edge UUIDs visible**: the query emits them. Using them for disambiguation in `remove_edges` (`remove_edges` with the `id` field) is *(specified, not built — see GH #254)*: `validate_remove_edges` (`crates/meclaw-colony/src/mutation/validate.rs`) requires `match.from` **and** `match.to`, an `id` key is read on neither path — validation nor apply — and an `id`-only match is rejected as `schema`, not as "no such edge". Edge identity today is `from`+`to`+`condition`+`modifier`+`default` (the routing phase joined with GH #283), as § Mutation format describes it.
+- **The edge object**: `id`, `from`, `to`, `condition`, `modifier`, `default`, `lane`. `condition`, `modifier` and `lane` are **optional and absent when the edge has none** (a missing key *is* the statement "this edge has no condition"). **`lane`** (string, GH #559) carries the lane name a v-lane declared (see "v-lanes — the declared deep edge"); an ordinary edge carries the key **not at all**, because that is precisely the statement: this edge declares no lane and is the edge the substrate has always had. **`default`** (boolean, since **v0.18.0**, GH #367) is there **always, on both values** — it names the edge's routing phase (`true` = a default edge, see "Edge model"), and a phase is never absent: every edge runs in exactly one of the two. Omitting the key on `false` would leave a reader unable to tell "this edge is regular" from "this server does not report phases", which is exactly the ambiguity the boot checks sat in, since they rebuild their edge table out of this answer.
+- **Edge UUIDs visible**: the query emits them. Using them for disambiguation in `remove_edges` (`remove_edges` with the `id` field) is *(specified, not built — see GH #254)*: `validate_remove_edges` (`crates/meclaw-colony/src/mutation/validate.rs`) requires `match.from` **and** `match.to`, an `id` key is read on neither path — validation nor apply — and an `id`-only match is rejected as `schema`, not as "no such edge". Edge identity today is `from`+`to`+`condition`+`modifier`+`default` (the routing phase joined with GH #283), as § Mutation format describes it. **`lane` is NOT an identity term** (GH #564) — two edges that differ only in the lane name are one edge as far as deduplication is concerned. Which is exactly why any **lane deviation on an identical edge is refused** rather than quietly swallowed: a second `add_edges` entry with the same `from`/`to`/`condition`/`modifier`/`default` and a different `lane` is either a typo or an intent to change an existing edge's declaration — and the latter is a remove and a draw, not a second write of the same line.
 
 **Push vs. pull**: pull (`GET /colony/registry?path_prefix=...` with a `graph_version` comparison for cache invalidation) from phase 12; push (`GET /colony/events`, WebSocket subscribe) from **phase 14**, reason: the event broadcast would have to be fired from the routing loop, `handle_cell_died`, and `handle_mutation`, that touches the await-free `handle_cell_died` corridor (the byte-identical gate) and needs its own design pass (broadcast mechanics, a slow-consumer drop policy, an event schema). Pull is available from phase 12, because the web UI itself does not need it (no JS, no auto-refresh), but external clients (observability tools, a live graph viewer) benefit from it. Cell-to-cell subscriptions as a pattern are possible later, but not a core feature.
 

@@ -177,60 +177,83 @@ fn subscribe_draws_the_push_edge_and_its_receipt_drain_and_nothing_else() {
     let extra: Vec<Value> = assistant_edges(true)[plain.len()..].to_vec();
     assert_eq!(
         extra.len(),
-        2,
-        "the identity door is a push edge and its receipt drain — nothing more, \
-         and never one of the two: {extra:?}"
+        4,
+        "the identity door is two V-LANES and their two receipt drains — \
+         nothing more, and never a half of it. Since GH #561 the pack ends at \
+         the two BRAIN RIMS of the generation rather than at its rim, because \
+         the level that used to fan it out inside no longer carries the lane: \
+         {extra:?}"
     );
 
     let target = format!("./assistants/{NAME}");
-    let push = &extra[0];
-    assert_eq!(
-        push["from"],
-        json!("./affinity"),
-        "the push leaves the affinity HIVE. `affinity`'s `params.ports` is \
-         empty, so an edge naming a cell inside it is refused at the door with \
-         `hive_port_boundary` — the hive path is the only endpoint there is"
-    );
-    assert_eq!(
-        push["to"],
-        json!(target),
-        "and it ends at the new assistant"
-    );
-    assert_eq!(
-        restamp(push).as_deref(),
-        Some("in_pack"),
-        "the push leaves affinity on `answer` like every other emission of that \
-         hive; what makes it an identity write is the re-stamp onto the \
-         subscriber's own lane: {push}"
-    );
-    let guard = push["condition"].as_str().unwrap_or_default();
-    assert!(
-        guard.contains(&format!("hop.subscriber == '{target}'")),
-        "the guard must name the very path the edge ends at. `./brief` sets \
-         `subscriber` on EVERY answer it speaks — empty string for the tool \
-         lane — so an edge without that comparison also collects every brief \
-         meant for somebody else: {guard}"
-    );
+    for (i, rim) in ["talky", "cogny"].iter().enumerate() {
+        let push = &extra[i];
+        assert_eq!(
+            push["from"],
+            json!("./affinity"),
+            "the push leaves the affinity HIVE. `affinity`'s `params.ports` is \
+             empty, so an edge naming a cell inside it is refused at the door \
+             with `hive_port_boundary` — the hive path is the only endpoint \
+             there is"
+        );
+        assert_eq!(
+            push["to"],
+            json!(format!("{target}/{rim}")),
+            "and it ends at the generation's `{rim}` rim, which is what the \
+             assistant's own contract names as the connect point for this lane"
+        );
+        assert_eq!(
+            push["lane"],
+            json!("in_pack"),
+            "an edge that skips a level has to NAME the lane it carries — no \
+             validation reads a lane out of a CEL guard, and without the field \
+             this is an ordinary deep edge nobody vouched for: {push}"
+        );
+        assert_eq!(
+            restamp(push).as_deref(),
+            Some("in_pack"),
+            "the push leaves affinity on `answer` like every other emission of \
+             that hive; what makes it an identity write is the re-stamp onto \
+             the subscriber's own lane: {push}"
+        );
+        let guard = push["condition"].as_str().unwrap_or_default();
+        assert!(
+            guard.contains(&format!("hop.subscriber == '{target}'")),
+            "the guard must name the SUBSCRIBER, which is the generation and \
+             not one of its rims: a subscription is one row about one agent, \
+             and the fan-out is the two edges. `./brief` sets `subscriber` on \
+             EVERY answer it speaks — empty string for the tool lane — so an \
+             edge without that comparison also collects every brief meant for \
+             somebody else: {guard}"
+        );
 
-    let drain = &extra[1];
-    assert_eq!(
-        drain["from"],
-        json!(target),
-        "the receipt leaves the assistant"
-    );
-    assert_eq!(
-        drain["to"],
-        json!("./assistants"),
-        "and it leaves the way every other emission of the level does"
-    );
-    assert!(
-        drain["condition"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("hop.route == 'pack_ack'"),
-        "the drain is a plain route match — the substrate's own pairing check \
-         reads it and nothing else: {drain}"
-    );
+        let drain = &extra[2 + i];
+        assert_eq!(
+            drain["from"],
+            json!(format!("{target}/{rim}")),
+            "the receipt leaves the rim that answered it"
+        );
+        assert_eq!(
+            drain["to"],
+            json!("./assistants"),
+            "and it stops at the container, where the member's own boundary \
+             edge for `pack_ack` takes it the rest of the way out"
+        );
+        assert_eq!(
+            drain["lane"],
+            json!("pack_ack"),
+            "the way back skips the same level and is declared the same way: \
+             a v-lane is judged at BOTH of its endpoints: {drain}"
+        );
+        assert!(
+            drain["condition"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("hop.route == 'pack_ack'"),
+            "the drain is a plain route match — the substrate's own pairing \
+             check reads it and nothing else: {drain}"
+        );
+    }
 }
 
 /// § 2d, the second opinion. The two routes the recipe draws are not this file's
@@ -269,7 +292,7 @@ fn the_two_routes_are_the_pairing_the_assistant_template_declares() {
         "the push edge re-stamps onto the lane the template accepts"
     );
     assert!(
-        extra[1]["condition"]
+        extra[2]["condition"]
             .as_str()
             .unwrap_or_default()
             .contains(&format!(
@@ -277,6 +300,49 @@ fn the_two_routes_are_the_pairing_the_assistant_template_declares() {
                 pairing["emits"].as_str().unwrap_or_default()
             )),
         "and the drain takes the lane the template emits"
+    );
+
+    // GH #561 — and the SECOND thing the template now declares about the pair:
+    // where a v-lane on it may dock. The renderer must not invent a connect
+    // point, so the two ends it draws are read out of the `at` list, not typed.
+    let raw = std::fs::read_to_string(repo("templates/assistant/config.json"))
+        .expect("the assistant template travels with the library");
+    let tpl: Value = meclaw_core::serde_json::from_str(&raw).expect("json");
+    for (side, route) in [
+        ("accepts", pairing["accepts"].as_str().unwrap_or_default()),
+        ("emits", pairing["emits"].as_str().unwrap_or_default()),
+    ] {
+        let at = tpl["params"]["contract"][side]
+            .as_array()
+            .expect("a contract side")
+            .iter()
+            .find(|l| l["route"] == json!(route))
+            .unwrap_or_else(|| panic!("the assistant declares `{route}`"))["at"]
+            .clone();
+        assert_eq!(
+            at,
+            json!(["./talky", "./cogny"]),
+            "the connect points of `{route}` are what the door ends at; a \
+             renderer drawing anywhere else is refused `v_lane_no_connect_point`"
+        );
+    }
+    let drawn: Vec<String> = extra
+        .iter()
+        .take(2)
+        .map(|e| {
+            e["to"]
+                .as_str()
+                .unwrap_or_default()
+                .rsplit('/')
+                .next()
+                .unwrap_or_default()
+                .to_string()
+        })
+        .collect();
+    assert_eq!(
+        drawn,
+        vec!["talky".to_string(), "cogny".to_string()],
+        "and the two edges end at exactly those two rims, in that order: {extra:?}"
     );
 }
 
@@ -317,7 +383,7 @@ fn both_surfaces_say_the_door_is_asked_for_and_the_row_is_not_a_mutation() {
          extra in it reaches a model that has to invent them"
     );
     assert!(
-        text.contains("Draw both or neither"),
+        text.contains("Draw all four or none"),
         "the briefing must name the pairing: a push edge without its drain is \
          refused with `required_drain_missing` and nothing is applied"
     );
@@ -325,8 +391,8 @@ fn both_surfaces_say_the_door_is_asked_for_and_the_row_is_not_a_mutation() {
     // The mechanism: both sentences are true of the table.
     assert_eq!(
         assistant_edges(true).len() - assistant_edges(false).len(),
-        2,
-        "the surfaces describe a door of two edges that is drawn on request; \
+        4,
+        "the surfaces describe a door of four v-lanes that is drawn on request; \
          the renderer must agree with them"
     );
 }

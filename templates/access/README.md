@@ -374,7 +374,8 @@ any shape, and `*` only asserts presence. That half is checked by
 [`submit`](../submit/)'s gate, which is the only place the manifest is readable at all —
 `access` never sees it, because a broker answer replaces the body it travelled in. The
 gate refuses `subscribe_target_not_self` when the edge ends neither at the requester's
-own hive nor at a node the same declaration creates (GH #479), and
+own hive nor at a node the same declaration creates or anything inside one (GH #479,
+#561), and
 `subscribe_source_not_affinity` when it does not start at an affinity hive,
 **before** this broker is asked; this row's `denied` is `subscribe_not_permitted`. That
 sentence — *the gate secures the form, the broker answers the capability* — is the
@@ -648,6 +649,45 @@ The names in this table are written as bare identifiers on purpose. A literal
 `${EXAMPLE_CHAT_TOKEN}` in a seed row would be **resolved at bootstrap** and would write the
 actual secret into `cell.db` -- the precise opposite of what a catalogue is for. `rotated_at`
 is bookkeeping: the rotation itself happens in `.env` plus a restart of the connector cell.
+
+## A member's own broker (GH #560)
+
+Since `member@1.5.0` this template is an occupant of the **member** level as well
+as of the shell, and the two have different jobs. The shell's `access` answers the
+submitter's policy questions — may this manifest be applied, may this identity
+open its own push lane — and keeps its vault for the keys the OS itself burns (the
+builder's brain is an OS-level `llm` cell). A member's `access` answers exactly
+one question and holds exactly one kind of thing: the **provider credentials this
+person's agents authenticate with**. Both end up with real work, and neither one's
+grant table is the other's.
+
+Three things are different about the member-level instance, and all three are
+consequences of where it stands:
+
+- **It is reached by v-lanes, not by rim lanes.** The brains that spend its grants
+  stand three levels deeper, and the innermost of those levels is sealed. So the
+  two edges are drawn at the member's own scope, they name their lane, and the
+  surface templates name `./brain` as the connect point (GH #559,
+  `templates/member/README.md` § *The credential v-lanes*). The hive path is still
+  the address: `in_invoke` in, `ack` out, exactly as here.
+- **The parent still owes the `error` drain.** Since `member@1.5.0` the member ships it —
+  `./access → .` on `hop.route == 'error'` — and it is the only edge in the
+  member's own graph that touches this hive.
+- **Its `store` normally takes its grants through the mutation door.** A
+  `seed_rows` declaration writes the `grants` and `grant_events` rows the brains
+  name (`examples/organism/grow-credentials.json` is the shipped form). Note what
+  that does to the shipped seed: `seed_rows` creates the `cell.db` if the store has
+  never woken, and a `seed/<table>.jsonl` lands only on a **fresh** database — so
+  such a store carries the rows the manifest wrote and not the seven `policy` rows
+  this template ships. For a person's broker that is the right outcome: every one
+  of those rows is about `colony.mutate`, and a member's broker has no business
+  granting that. Seed the `credential.read` rule you *do* want in the same
+  declaration.
+
+The vault half is unchanged and stays two operator gestures — `unlock_env` at
+birth (there is no params-update operation) and `--vault-add` from stdin with no
+colony running. `examples/vault-pilot/README.md` § *Running it* is the whole
+sequence in order.
 
 ## The honest limit
 

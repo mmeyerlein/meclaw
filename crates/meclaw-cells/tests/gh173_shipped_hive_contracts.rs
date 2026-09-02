@@ -174,10 +174,16 @@ fn probe(route: &str) -> Headers {
 
 fn contract_of(hp: &HiveParams) -> Option<HiveContract> {
     let spec = hp.contract.as_ref()?;
+    // GH #559 — `at` travels. A reconstruction that dropped it would ask the
+    // substrate a question about a contract the tree does not ship: a lane that
+    // names connect points docks below the rim and owes no door there
+    // (`hive_contract::docks_below_the_rim`), and a template that migrated its
+    // pass-through hop into a v-lane would be reported as having lost a door it
+    // deliberately gave up.
     let lane = |l: &meclaw_colony::config::LaneSpec| Lane {
         route: l.route.clone(),
         context: l.context.clone(),
-        at: Vec::new(),
+        at: l.at.clone(),
         because: l.because.clone(),
     };
     Some(HiveContract {
@@ -350,6 +356,15 @@ fn every_declared_lane_has_a_door_in_the_templates_own_graph() {
         // satisfy a condition written about the hive's insides. Everything else
         // goes through the real check unchanged.
         c.emits.retain(|l| !an_exit_names_lane(&hp, &l.route));
+        // GH #559/#560: a lane with a CONNECT POINT has no door, and must not
+        // have one. `at` says the lane docks at a named cell INSIDE this hive,
+        // reached by a v-lane that skips the rim entirely — so there is no
+        // message arriving at the hive path for the router to be asked about,
+        // and a door edge would be a second, undeclared way in. The declaration
+        // is judged where it is spent: Stage 6 at the mutation door, and
+        // statically by `scripts/check_tree_rules.py` R5.
+        c.accepts.retain(|l| l.at.is_empty());
+        c.emits.retain(|l| l.at.is_empty());
         check_lane_doors(std::slice::from_ref(&c), &table_for(&hp))
             .unwrap_or_else(|e| panic!("{name}: {e:?}"));
         checked += 1;

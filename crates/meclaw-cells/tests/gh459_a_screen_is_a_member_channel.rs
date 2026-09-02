@@ -546,7 +546,10 @@ fn build_tree(td: &tempfile::TempDir, member: &std::path::Path, assistant: &std:
     );
 
     copy_cells(member, &root.join("main/person"));
-    for holder in ["affinity", "memory-hive", "export-sink"] {
+    // `access` joined them with member@1.5.0 (GH #560): a REF, and this tree
+    // has no registry to resolve one, so it is doubled like the holders this
+    // round never reaches.
+    for holder in ["access", "affinity", "memory-hive", "export-sink"] {
         write(
             root,
             &format!("main/person/{holder}/config.json"),

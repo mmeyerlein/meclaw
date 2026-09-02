@@ -292,10 +292,16 @@ hold, and the check is made here:
   - *A parent draws the door of the child it is growing.* The first branch can never
     hold there — when a level is grown the requester is the parent or the operator,
     and the brain whose door it is does not exist yet — so the edge may also end at a
-    node **this same declaration** brings into the world. There is no “somebody
-    else” whose prompt is opened when the requester created the addressee in the
-    same mutation. A creation in a *different* declaration does not count, and an
-    address that merely exists does not count.
+    node **this same declaration** brings into the world, or **inside** one. There is
+    no “somebody else” whose prompt is opened when the requester created the addressee
+    in the same mutation. The *inside* half is
+    [#561](https://github.com/mmeyerlein/meclaw/issues/561): the identity pack rides a
+    v-lane now and the door ends at a brain RIM two storeys down
+    (`<generation>/talky`), which came into the world in the same act as the
+    generation — the same addressee spelled more precisely, never a second one. The
+    comparison stays segment-wise, so a created `<…>/scribe` does not cover
+    `<…>/scribe-of-somebody`. A creation in a *different* declaration does not count,
+    and an address that merely exists does not count.
 
   Violation → `subscribe_target_not_self`.
 - **the source is an affinity hive** — the last path segment of `from` is
@@ -403,7 +409,7 @@ would be a colony with no way back.
 | `requester_not_permitted` | the broker refused this submission — the same string this template has always used, so a caller that greps for it keeps working |
 | `submission_check_failed` | the broker did not answer a readable verdict, or the parked manifest was gone when the verdict arrived. Nothing was submitted, and that is said rather than guessed |
 | `code_author_denied` | the broker refused this manifest the authoring of code — no enabled rule grants `code.author` |
-| `subscribe_target_not_self` | an `in_pack` edge whose resolved `to` is neither the requester's own hive nor a node the same declaration creates. A **form** refusal: decided here, and the broker is never asked |
+| `subscribe_target_not_self` | an `in_pack` edge whose resolved `to` is neither the requester's own hive nor a node the same declaration creates (nor anything inside one — #561). A **form** refusal: decided here, and the broker is never asked |
 | `subscribe_source_not_affinity` | an `in_pack` edge whose `from` is not an affinity hive. Likewise a form refusal, likewise unasked |
 | `subscribe_not_permitted` | the broker refused this identity its own push lane — no enabled rule grants `affinity.subscribe` |
 

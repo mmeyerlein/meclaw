@@ -176,6 +176,26 @@ The leading slash is load-bearing: an asset answers on the path its row names,
 and there is no path normalisation anywhere in this cell. `/vision.css` is the
 file; `vision.css` would be a link to nothing.
 
+**The one exception, and why it is not one.** The shell's `<head>` carries a
+handful of inline CSS lines for the LiveView *connection states* --
+`phx-loading`, `phx-error`, `phx-client-error`, `phx-server-error`, the classes
+the vendored client writes on the `data-phx-main` container the shell itself
+emits. They turn a dead socket into a fixed banner, *connection lost -- this
+page may be out of date*. That is not the cell type deciding what a display
+looks like: it is the runtime this shell ships being visible in its own states,
+on the shell's own element. A runtime that publishes a state nothing can see is
+half delivered -- and before this, only `templates/colony-view` styled those
+classes, so every other page of every display drew a frozen picture with nothing
+on screen to say it had stopped moving.
+
+A page overrides the default by declaring the same rules: the block is in
+`<head>`, a page's own `<style>` arrives in the body, and at equal specificity
+the later rule wins. There is never a second banner, because `::after` is one
+box per element. The default deliberately does **not** dim the page: `opacity`
+on the container would fade the banner too, and `opacity` on its children
+multiplies with whatever the page already dims further down. Full contract:
+`docs/cell-types.en.md` § `web`.
+
 ## The nine components
 
 `seed/components.jsonl` ships the Vision set. Nine rows, no more -- a set small

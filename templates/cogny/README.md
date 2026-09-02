@@ -1,4 +1,4 @@
-# `cogny@4.5.0`
+# `cogny@4.6.0`
 
 The agent core as one template. Four units under one hive:
 [`collector`](../collector/) and [`dispatcher`](../dispatcher/) -- each carrying its
@@ -122,7 +122,7 @@ declaration for either.
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`cogny@4.5.0` above it in its provenance chain.
+`cogny@4.6.0` above it in its provenance chain.
 
 **The library has to carry both.** A reference resolves against the colony's template
 registry, so `collector` and `dispatcher` have to sit in the same `templates/` directory
@@ -549,7 +549,7 @@ Now the knob is set where it belongs, and the sub-unit stays a reference to the 
 `collector`:
 
 ```json
-{"op": "instantiate", "template": "cogny@4.5.0", "at": "/cores/deep",
+{"op": "instantiate", "template": "cogny@4.6.0", "at": "/cores/deep",
  "override_params": {"collector/assemble": {"context_window": 200000,
                                             "recoverability": "lookup:repeatable,write:env"}}}
 ```
@@ -700,6 +700,48 @@ knowledge ends.
 - **Not in the turn hot path.** A consultation is not a second seam inside a chat turn
   (R-CG-1, explicitly not v1). Reasoning-upgrading a single turn is an `override_params`
   on the talky's brain, not a cogny job.
+
+## The credential connect point (GH #560)
+
+Since `cogny@4.6.0` the rim declares both halves of the **credential lane** and names
+`./brain` as their connect point:
+
+```json
+"emits":  [{"route": "credential_request", "at": ["./brain"], "because": "…"}]
+"accepts":[{"route": "in_sealed",          "at": ["./brain"], "because": "…"}]
+```
+
+`params.ports` stays literally `[]`. `at` is not a second kind of port: it is the
+one opening this template pronounces about **itself**, for **one** named lane and
+**one** address inside it (`docs/meclaw-overview.md` § *v-lanes*). What it buys is
+that a member can wire this brain to the person's own `access` in **one** edge per
+direction instead of a pass-through chain through three rims — and that neither
+this level nor the generation above has to declare, forward or guard a lane it
+takes no part in.
+
+The brain accordingly ships `params.credential_grant_id` resolving to the empty
+string, which is no grant at all (GH #271): standalone this composite behaves
+exactly as it did before and spends its `api_key`. Switching it over takes **two**
+`override_params` keys and not one, because a cell asks for a credential only
+while it holds none — and `params.api_key` counts as one:
+
+```json
+"override_params": {
+  "brain": {"api_key": "", "credential_grant_id": "grant:…"}
+}
+```
+
+Set the grant and leave the shipped `api_key: "${OPENROUTER_API_KEY}"` standing
+and the cell never asks: it keeps spending the environment key and the lane
+carries nothing, silently, because a model that answers looks like a model that
+answers. With both keys set the model runs with **no credential in its config** —
+the value arrives sealed against an ephemeral key it mints per ask, is opened in
+its own task and is written nowhere. Both keys are **immutable** (`docs/cell-types.md`
+§ `llm`), so this is a birth act: a generation grown without the empty `api_key`
+is repaired by growing another one, not by a message. The recipe, both edges and
+the two operator gestures that go with them are in `templates/member/README.md`
+§ *The credential v-lanes*; `examples/vault-pilot/` is the small runnable version
+of the same round.
 
 ## Pins
 

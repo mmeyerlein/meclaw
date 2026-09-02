@@ -191,7 +191,7 @@ original's README claims things about itself that are no longer true of it.
 
 **It does not add `in_import` — the shipped level already carries it.** The hive
 has accepted the lane since 2.2.0, and the door through the member was the piece
-that was missing; `member@1.4.0` ships it, so the derived template inherits it
+that was missing; `member@1.5.0` ships it, so the derived template inherits it
 along with everything else this tool copies. That is step 2 above, and it is now
 one lane on the shipped level rather than a per-derivation patch, which is what
 makes the second step available to a member that was grown the ordinary way.

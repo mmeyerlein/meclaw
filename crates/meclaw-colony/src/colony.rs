@@ -5392,11 +5392,86 @@ pub(crate) async fn handle_mutation(
         // `sealed_hives` above.
         hive_contracts =
             crate::mutation::hive_contract::collect_hive_contracts(root, hive_scopes.paths());
+        // GH #562: and the contract of every hive this diff gives BIRTH to.
+        // A v-lane ends on a level the same mutation instantiates — that is
+        // what a grow recipe is, one `add_nodes` and the level's edges beside
+        // it — and the rule table asks the target for a connect point. Until
+        // the node is staged that declaration lives only in the template
+        // directory, which is exactly the read `contract_from_cell_dir` was
+        // split out for. Appended, never substituted: a path that already
+        // stands keeps the contract it was born with, so a diff cannot talk a
+        // live hive into a connect point by naming a template.
+        //
+        // `add_nodes` ONLY, and the limit is deliberate rather than forgotten:
+        // a `swap_nodes` successor is read for its own re-anchor verdict a few
+        // lines down (`v_lane_reanchor_verdict`, which is handed
+        // `from_template` for exactly this case), but it does not reach THIS
+        // list — so a v-lane drawn in the same diff onto a connect point of a
+        // node the diff SWAPS in still earns `v_lane_no_connect_point`. Two
+        // readers of one declaration would be worse than one narrow one; the
+        // shape has no caller in the shipped tree (a generation change swaps
+        // and rewires in separate declarations), and closing it belongs with
+        // the deeper gap beside it — the contract of a hive INSIDE a newborn
+        // subtree, which a naive directory walk gets wrong because a `ref`
+        // marker holds no contract of its own. Both halves are GH #567.
+        //
+        // Review 2026-09-01 (M1): the newborn declarations reach the PORT
+        // BOUNDARY and nothing else. They used to be appended to
+        // `hive_contracts` itself, which quietly handed them to three further
+        // readers further down — `collect_inbound_lanes`, `lane_requirements`
+        // and `collect_lane_doors` — none of which the paragraph above argues
+        // for. A hive that does not exist yet owes no door, breaks no standing
+        // lane and has no wiring to promote context into: those three judge
+        // what STANDS, and the boundary judges what the diff DRAWS. Keeping the
+        // wider surface would also have made the comment at
+        // `collect_lane_doors` ("a hive added by THIS diff has no contract to
+        // break yet") false. So the birth contracts live in their own list and
+        // are joined for exactly one call.
+        let mut newborn_contracts: Vec<crate::mutation::hive_contract::HiveContract> = Vec::new();
+        if let Some(adds) = diff_subst.get("add_nodes").and_then(|v| v.as_array()) {
+            for n in adds {
+                let (Some(name), Some(tpl_ref)) = (
+                    n.get("name").and_then(|v| v.as_str()),
+                    n.get("template").and_then(|v| v.as_str()),
+                ) else {
+                    continue; // schema validation reports the missing field
+                };
+                let Ok(tpl) = templates.resolve(tpl_ref) else {
+                    continue; // `template_missing` is reported above
+                };
+                let born = crate::mutation::resolve_scoped_path(guard_scope, name);
+                let born = born.as_str();
+                if hive_contracts.iter().any(|c| c.hive_path == born)
+                    || newborn_contracts.iter().any(|c| c.hive_path == born)
+                {
+                    continue;
+                }
+                if let Some(c) = crate::mutation::hive_contract::contract_from_cell_dir(
+                    &tpl.filesystem_path,
+                    born,
+                ) {
+                    newborn_contracts.push(c);
+                }
+            }
+        }
+        // Borrowed in the overwhelmingly common case (no `add_nodes`, or none
+        // that declares a contract): the join costs a clone only when there is
+        // something to join.
+        let boundary_contracts: std::borrow::Cow<
+            '_,
+            [crate::mutation::hive_contract::HiveContract],
+        > = if newborn_contracts.is_empty() {
+            std::borrow::Cow::Borrowed(&hive_contracts)
+        } else {
+            let mut joined = hive_contracts.clone();
+            joined.append(&mut newborn_contracts);
+            std::borrow::Cow::Owned(joined)
+        };
         crate::mutation::port_boundary::collect_hive_port_boundary(
             &diff_subst,
             guard_scope,
             &sealed_hives,
-            &hive_contracts,
+            &boundary_contracts,
             &mut rejection,
         );
 
@@ -5415,22 +5490,34 @@ pub(crate) async fn handle_mutation(
             &mut rejection,
         );
 
-        // GH #559: a v-lane the dedup would swallow.
+        // GH #559: a lane the dedup would swallow.
         //
         // Edge identity is the five ROUTING terms (`EdgeTable::contains_equal`)
         // and the lane is deliberately not among them — it is a declaration
-        // ABOUT an edge, not a term the router reads. The consequence is a trap
-        // at exactly one spot: an `add_edges[]` entry that declares a lane onto
-        // a pair the table already holds WITHOUT one is content-equal, so the
-        // apply arm would skip the insert and hand the caller `Committed` for a
-        // v-lane that does not exist and never will. The migration this feature
-        // is for (R-V3: replace a hand-through chain with one declared lane)
-        // walks straight into it.
+        // ABOUT an edge, not a term the router reads. That leaves a trap with
+        // one shape and three faces: an `add_edges[]` entry whose five terms
+        // match an edge already in the table is content-equal, so the apply arm
+        // skips the insert — and the caller is handed `Committed` for a
+        // declaration the table does not carry and never will.
+        //
+        //   * the entry declares a lane, the standing edge has none — the
+        //     R-V3 migration written naively (replace a hand-through chain with
+        //     one declared lane), and the lane simply never appears;
+        //   * both declare a lane, but not the SAME one — renaming or moving a
+        //     lane, also squarely in R-V3's path, and the old name survives;
+        //   * the entry declares none and the standing edge does — dropping a
+        //     lane, which reports success and changes nothing.
+        //
+        // So the rule is not "a lane meets a blank edge", it is any DISAGREEMENT
+        // about the lane on an otherwise identical edge. Two entries that agree
+        // stay silent: the edge the caller asked for really is there, which is
+        // the whole point of the dedup (a re-applied complete diff must stay
+        // idempotent).
         //
         // Refused here, pre-destructively, by name. The two honest ways out are
         // in the message, because "identical" is not something a caller can see
-        // from the outside: take the blank edge away in the SAME diff, or leave
-        // the lane off.
+        // from the outside: take the standing edge away in the SAME diff, or say
+        // what it says.
         if let Some(adds) = diff_subst.get("add_edges").and_then(|v| v.as_array()) {
             // A `remove_edges` in the same diff is the documented way out, so an
             // edge this diff is already taking away must not count as "already
@@ -5442,23 +5529,23 @@ pub(crate) async fn handle_mutation(
             let doomed =
                 crate::mutation::validate::remove_edges_targets(&diff_subst, guard_scope, &live);
             for (i, e) in adds.iter().enumerate() {
-                let (Some(from), Some(to), Some(lane)) = (
+                let (Some(from), Some(to)) = (
                     e.get("from").and_then(|v| v.as_str()),
                     e.get("to").and_then(|v| v.as_str()),
-                    e.get("lane").and_then(|v| v.as_str()),
                 ) else {
-                    continue; // no lane, or a shape earlier stages refuse
+                    continue; // a shape earlier stages refuse
                 };
+                let entry_lane = e.get("lane").and_then(|v| v.as_str());
                 let from_abs = crate::mutation::resolve_scoped_path(guard_scope, from);
                 let to_abs = crate::mutation::resolve_scoped_path(guard_scope, to);
                 let modifier_src = crate::mutation::modifier_spec_from_add_entry(e)
                     .and_then(|spec| meclaw_core::serde_json::to_value(&spec).ok());
                 let is_default = e.get("default").and_then(|v| v.as_bool()).unwrap_or(false);
-                let swallowed = edges.iter().any(|old| {
-                    old.lane.is_none()
+                let disagreeing = edges.iter().find(|old| {
+                    old.lane.as_deref() != entry_lane
                         && !doomed.contains(&old.id)
                         && crate::mutation::validate::edge_identity_equal(
-                            &crate::mutation::validate::EdgeMatchView::from(old),
+                            &crate::mutation::validate::EdgeMatchView::from(*old),
                             from_abs.as_str(),
                             to_abs.as_str(),
                             e.get("condition").and_then(|v| v.as_str()),
@@ -5466,13 +5553,31 @@ pub(crate) async fn handle_mutation(
                             is_default,
                         )
                 });
-                if swallowed {
+                if let Some(old) = disagreeing {
+                    // Both halves of the sentence name what they see, because
+                    // the caller can see neither: the entry's declaration and
+                    // the standing edge's.
+                    let says = entry_lane.map_or_else(
+                        || "declares no lane".to_string(),
+                        |l| format!("declares lane '{l}'"),
+                    );
+                    let standing = old.lane.as_deref().map_or_else(
+                        || {
+                            "an identical edge without a lane already exists; remove it in the \
+                            same diff or drop the lane"
+                                .to_string()
+                        },
+                        |l| {
+                            format!(
+                                "an identical edge with lane '{l}' already exists; remove it in \
+                                 the same diff or match its lane"
+                            )
+                        },
+                    );
                     let err = crate::mutation::MutationError::EdgeSchema(format!(
-                        "add_edges[{i}] declares lane '{lane}' on '{from_abs}' -> '{to_abs}', but \
-                         an identical edge without a lane already exists; remove it in the same \
-                         diff or drop the lane. Edge identity is the five routing terms, so the \
-                         two are the same edge to the table and the declared one would be \
-                         silently dropped.",
+                        "add_edges[{i}] {says} on '{from_abs}' -> '{to_abs}', but {standing}. \
+                         Edge identity is the five routing terms, so the two are the same edge to \
+                         the table and this entry would be silently dropped.",
                         from_abs = from_abs.as_str(),
                         to_abs = to_abs.as_str()
                     ));
@@ -6447,6 +6552,16 @@ pub(crate) async fn handle_mutation(
             // from+to+condition+modifier+is_default (spec Z.265 plus GH #283,
             // T4): the phase is a full term, so an edge that differs only in it
             // is a different edge and lands beside its twin.
+            //
+            // GH #559: the lane-disagreement trap the `add_edges` path is
+            // guarded against exists here in theory and is unreachable in
+            // practice, so there is no guard — an instantiation lays edges onto
+            // paths that did not exist a moment ago (`add_nodes` under a FRESH
+            // name; an occupied one is stage 4's `naming_collision`), so there
+            // is no standing edge for a template's internal edge to disagree
+            // with. If a resume path ever lets a subtree land on paths that
+            // already carry edges, this is the second door and it needs the
+            // same check.
             let candidate = crate::edge_table::Edge {
                 id: Uuid::now_v7(),
                 from: edge.from.clone(),

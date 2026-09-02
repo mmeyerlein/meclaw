@@ -665,7 +665,7 @@ async fn a_fresh_colony_answers_out_of_a_memory_it_never_saw_written() {
         "the export did not land under the hive's own seed directory"
     );
     // The derived level inherits the `in_import` door from the shipped one
-    // (member@1.4.0 accepts the lane and carries the edge onto `./memory-hive`);
+    // (member@1.5.0 accepts the lane and carries the edge onto `./memory-hive`);
     // the tool copies it rather than patching it in, and the second claim below
     // drives it. The lock on the shipped surface itself is
     // `gh467_the_shipped_member_carries_the_import_lane.rs`.

@@ -7,6 +7,8 @@
     "provider": "openai",
     "model": "${ctx.model}",
     "api_key": "${OPENROUTER_API_KEY}",
+    "credential_grant_id": "${COGNY_CREDENTIAL_GRANT_ID:-}",
+    "credential_wait_ms": 30000,
     "base_url": "https://openrouter.ai/api/v1",
     "temperature": 0.3,
     "max_tokens": 4096,
@@ -31,6 +33,18 @@
         "secret": true,
         "default": "${OPENROUTER_API_KEY}",
         "description": "Provider API key"
+      },
+      "credential_grant_id": {
+        "type": "string",
+        "secret": false,
+        "default": "${COGNY_CREDENTIAL_GRANT_ID:-}",
+        "description": "GH #560: the grant this brain presents to get its bearer credential SEALED from an access hive, instead of carrying it in `api_key`. Unset it resolves to the empty string, which is no grant at all -- the cell then behaves exactly as it did before and spends `api_key`. Set it (normally through `override_params` of the manifest that grows the generation) and the member's own broker answers: the credential arrives over the credential v-lane, is opened in this task's RAM and is written nowhere. WHICH credential is named by the grant and never here, so a cell cannot ask for a secret it was not granted (R-AC-2)."
+      },
+      "credential_wait_ms": {
+        "type": "number",
+        "secret": false,
+        "default": 30000,
+        "description": "GH #457: how long one sealed credential round may take before every parked turn gets its `credential_pending` receipt. The substrate default is 10 s, which was measured against a broker standing beside the consumer; a member's broker is three python cells and two store round trips away from a brain four levels down, so this template ships the longer one. It bounds nothing but the WAIT -- no provider is called and nothing is billed while it runs."
       }
     },
     "emits": {
@@ -45,6 +59,17 @@
         }
       },
       "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "credential_request"
+          ],
+          "required": false
+        },
+        "grant_id": {
+          "type": "string",
+          "required": false
+        },
         "finish_reason": {
           "type": "string",
           "values": [
@@ -54,7 +79,7 @@
             "content_filter",
             "error"
           ],
-          "required": true
+          "required": false
         },
         "tokens_prompt": {
           "type": "number",
@@ -77,6 +102,10 @@
           "required": false
         },
         "system": {
+          "type": "object",
+          "required": false
+        },
+        "sealed": {
           "type": "object",
           "required": false
         }

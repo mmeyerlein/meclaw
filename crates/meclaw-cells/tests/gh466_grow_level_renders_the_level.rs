@@ -401,7 +401,7 @@ fn a_named_grow_level_missing_its_per_level_parameter_is_refused_not_downgraded(
 #[test]
 fn the_grow_sentence_takes_the_fast_lane_and_a_half_sentence_does_not() {
     let full = run_classify(json!({
-        "request": "grow an assistant named scribe from assistant@2.3.0 under \
+        "request": "grow an assistant named scribe from assistant@2.4.0 under \
                     /os/orgs/acme/members/alex",
         "ctx": {"model": "m", "model_fast": "f", "model_surface": "s"}}));
     assert_eq!(full["header"]["route"], json!("recipe"));
@@ -464,5 +464,153 @@ fn the_composer_budget_in_the_readme_is_the_one_the_cell_declares() {
         backstop > timeout,
         "B generous, A precise — the substrate backstop must outlast the call it \
          is backing (docs/meclaw-overview.md § Timeouts)"
+    );
+}
+
+// ---------------------------------------------- the credential lanes (GH #560)
+
+/// The wish that grows a generation with no key of its own. The three values
+/// inside `credential` are the ones `examples/organism/grow-credentials.json`
+/// carries, so the rendered edges and the shipped example can be compared byte
+/// for byte — the same discipline the six levels above run under.
+fn credentialled_wish() -> Value {
+    json!({"scope": "/os/orgs/acme/members/alex", "level": "assistant",
+           "name": "scribe", "template": "assistant@2.4.0",
+           "ctx": {"model": "${MODEL_CORE}", "model_fast": "${MODEL_CORE_FAST}",
+                   "model_surface": "${MODEL_SURFACE}"},
+           "override_params": {"cogny/brain": {"temperature": 0.2}},
+           "credential": {"cred_ref": "cred:example-provider:primary",
+                          "subject": "member:alex",
+                          "expires_at": "2099-01-01T00:00:00.000000Z",
+                          "rule_id": "alex-credential-read"}})
+}
+
+fn grown_with_credential() -> Vec<Value> {
+    let out = run_recipes(json!({"recipe": "grow_level", "request": "…",
+                                 "params": credentialled_wish()}));
+    out["manifest"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no manifest: {out}"))
+        .clone()
+}
+
+#[test]
+fn the_credential_lanes_are_the_ones_the_example_carries() {
+    let Some(want) = examples("grow-credentials.json") else {
+        return; // a tree without the examples cannot make this assertion
+    };
+    let decls = grown_with_credential();
+    assert_eq!(
+        decls.len(),
+        2,
+        "the credential form is TWO declarations: the lane ends two levels \
+         INSIDE the node the first one gives birth to, and a mutation reads a \
+         newborn's contract from the template root only (GH #562) — drawn in \
+         one breath it is refused `v_lane_no_connect_point`"
+    );
+    // The generation itself is untouched by the option: same node name, same
+    // template, and the transit edges of the level are the level's.
+    assert_eq!(decls[0]["diff"]["add_nodes"][0]["name"], json!("scribe"));
+
+    let got = &decls[1];
+    assert_eq!(
+        got["scope"], want[0]["scope"],
+        "the credential declaration stands at the MEMBER — an edge lives in the \
+         graph of the lowest common ancestor of its two endpoints, and a brain \
+         and the member's broker share only that one"
+    );
+    assert_eq!(
+        got["diff"]["add_edges"], want[0]["diff"]["add_edges"],
+        "the rendered credential v-lanes are not the ones \
+         examples/organism/grow-credentials.json carries"
+    );
+}
+
+#[test]
+fn both_brains_give_up_the_key_they_have_and_name_a_grant() {
+    let decls = grown_with_credential();
+    let overrides = &decls[0]["diff"]["add_nodes"][0]["override_params"];
+    for (asker, handle) in [
+        ("talky", "grant:example-provider-primary@member-alex/talky"),
+        ("cogny", "grant:example-provider-primary@member-alex/cogny"),
+    ] {
+        let slot = &overrides[format!("{asker}/brain")];
+        // The empty key is the SWITCH: a brain asks for a credential only while
+        // it holds none, and both brain templates ship a non-empty
+        // `api_key`. Set the grant beside one and the four v-lanes carry
+        // nothing — quietly, because a model that answers looks like a model
+        // that answers.
+        assert_eq!(
+            slot["api_key"],
+            json!(""),
+            "{asker}: the grant without the empty key is an inert lane"
+        );
+        assert_eq!(slot["credential_grant_id"], json!(handle));
+    }
+    // and what the wish itself set is still there
+    assert_eq!(overrides["cogny/brain"]["temperature"], json!(0.2));
+}
+
+#[test]
+fn the_grants_travel_in_the_same_declaration_as_the_lanes() {
+    let decls = grown_with_credential();
+    let rows = decls[1]["diff"]["seed_rows"]
+        .as_array()
+        .expect("the credential declaration seeds the grants");
+    let tables: Vec<&str> = rows
+        .iter()
+        .map(|r| r["table"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(
+        tables,
+        vec!["grants", "grant_events"],
+        "a grant and the event that says it was granted are one act"
+    );
+    for row in rows {
+        assert_eq!(row["target"], json!("./access/store"));
+        assert_eq!(
+            row["rows"].as_array().expect("rows").len(),
+            2,
+            "ONE grant per consumer: the answer edge is addressed by \
+             `hop.grant_id`, and two brains sharing a handle would each be \
+             handed the other's sealed box"
+        );
+    }
+    // The handle in the row and the handle on the edge are the same string —
+    // written once by the renderer, which is what makes building it rather than
+    // asking for it honest.
+    let first = &rows[0]["rows"][0];
+    assert_eq!(
+        first["grant_id"],
+        json!("grant:example-provider-primary@member-alex/talky")
+    );
+    assert_eq!(first["cred_ref"], json!("cred:example-provider:primary"));
+    assert_eq!(first["subject"], json!("member:alex"));
+    assert_eq!(first["requester"], json!("agent:scribe/talky"));
+    // The horizon is the wish's, never the renderer's.
+    assert_eq!(first["expires_at"], json!("2099-01-01T00:00:00.000000Z"));
+}
+
+#[test]
+fn a_generation_grown_without_the_block_is_the_one_the_level_always_grew() {
+    let mut plain = credentialled_wish();
+    plain["credential"] = Value::Null;
+    let out = run_recipes(json!({"recipe": "grow_level", "request": "…", "params": plain}));
+    let decls = out["manifest"].as_array().expect("manifest");
+    assert_eq!(
+        decls.len(),
+        1,
+        "the credential lanes are OPT-IN: writing a person's provider key into \
+         an agent's reach is not something a level does to every generation \
+         grown from it without being asked"
+    );
+    assert!(
+        decls[0]["diff"]["seed_rows"].is_null(),
+        "nothing is seeded for a generation nobody wired that way"
+    );
+    let overrides = &decls[0]["diff"]["add_nodes"][0]["override_params"];
+    assert!(
+        overrides["talky/brain"].is_null(),
+        "no key is taken away from a generation that was not asked about"
     );
 }

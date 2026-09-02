@@ -171,6 +171,13 @@ async fn a_web_cell_serves_its_shell_on_its_own_port() {
         body.contains("data-phx-main"),
         "the shell must mark its main container for the LiveView client"
     );
+    // And it must say so when that client loses the socket. The states are the
+    // ones the shipped bundle writes on the very container above; a page may
+    // override the look, but no page has to remember to add one.
+    assert!(
+        body.contains("[data-phx-main].phx-error::after"),
+        "the served shell must carry the default connection-state style"
+    );
 
     join.abort();
 }

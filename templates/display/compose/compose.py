@@ -129,6 +129,9 @@ PAGE_TITLE = "display"
 # regex so this script needs nothing but the three standard modules.
 ID_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789-")
 ID_MAX = 64
+# A node key is an identity, not a name a person types: a cell path with its
+# slashes written as tildes is already 120 characters deep in a real colony.
+KEY_MAX = 512
 
 # `ord` is a sort key, not a list index: gaps leave room to insert without
 # renumbering anything the display already holds.
@@ -336,6 +339,23 @@ def is_view_id(value):
     )
 
 
+def is_node_key(value):
+    """Whether a component-tree node may name its own identity with this.
+
+    A key stands where the child index would stand, so it must not carry the
+    separator the index chain is written with, and it must not be empty -- an
+    id with an empty segment is two different ids depending on who splits it.
+    Everything else a path can hold is allowed, because the keys that matter
+    are paths: `parse_object_id` only ever reads the FIRST segment of an id, so
+    a `~` or a `.` further along is already in the language.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= KEY_MAX
+        and "/" not in value
+    )
+
+
 def check_node(node, depth):
     """A component-tree node, or the reason it is not one."""
     if depth > MAX_DEPTH:
@@ -350,6 +370,9 @@ def check_node(node, depth):
     keep = node.get("keep", [])
     if not isinstance(keep, list) or not all(isinstance(k, str) for k in keep):
         return '"keep" is not a list of prop names'
+    key = node.get("key")
+    if key is not None and not is_node_key(key):
+        return '"key" is not a usable object key'
     kids = node.get("children", [])
     if not isinstance(kids, list):
         return '"children" is not a list'
@@ -754,8 +777,21 @@ def add_tree(want, parent, node, index):
     The id is the index chain in `children` order, which makes it a function of
     the tree alone: the same tree sent twice patches the same objects, and a
     node that moved is an update rather than a delete plus a create.
+
+    Unless the node names its own `key`, and then the id is that instead of the
+    index -- while `ord`, the drawing order, still comes from the index. The
+    difference is what a `keep` prop is worth. An index is a SLOT: insert one
+    sibling ahead of a node and every id behind it now belongs to a different
+    thing, so the props the sender asked to keep are handed to the new occupant
+    of the slot. Measured on a running colony under GH #544: a picture whose
+    edge count had grown by three had 103 of 104 boxes standing at a position
+    that had been computed for some OTHER cell, and three cells held two objects
+    each. A key that says WHAT the node is -- a cell path, a row id -- makes the
+    kept prop follow the thing, which is the only reading under which `keep`
+    means anything at all.
     """
-    oid = "%s/%d" % (parent, index)
+    key = node.get("key")
+    oid = "%s/%s" % (parent, key if is_node_key(key) else index)
     want[oid] = {
         "component": str(node.get("component") or ""),
         "parent": parent,

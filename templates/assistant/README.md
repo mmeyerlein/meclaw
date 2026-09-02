@@ -1,7 +1,7 @@
-# `assistant@2.3.0`
+# `assistant@2.4.0`
 
 One generation of one person's agent. **Three refs, no container at all,** and
-thirty-seven edges.
+twenty-nine edges.
 
 | what | it is | why it is at THIS level |
 |---|---|---|
@@ -58,7 +58,7 @@ named `surface` after the ROLE it plays. The tree said one thing and the address
 said another, and every reader had to learn the translation before they could
 follow an edge.
 
-The node is `./talky`. **Twenty-six of this level's thirty-seven edges carry the
+The node is `./talky`. **Twenty-two of this level's twenty-nine edges carry the
 name**, and two stamped tokens are renamed with it, because a discriminator that
 outlives the node it is named after is a word that has to be read historically:
 
@@ -106,7 +106,7 @@ And since 2.0.0, a **channel, no**:
 
 ```
 assistant/
-  config.json            the level: twenty lanes, five drain pairings, thirty-seven edges
+  config.json            the level: sixteen lanes, five drain pairings, twenty-nine edges
   talky/config.json      a ref to talky, at the version its because names
   cogny/config.json      a ref to cogny, at the version its because names
   tools/config.json      a ref to tools, at the version its because names
@@ -125,7 +125,14 @@ to reason about.
 
 ## Lanes
 
-Twenty, all at the assistant's own path.
+Sixteen, all at the assistant's own path — plus **four that are not**: `in_pack`
+and `pack_ack` ([#561](https://github.com/mmeyerlein/meclaw/issues/561)) and
+`recall` and `in_bundle` ([#562](https://github.com/mmeyerlein/meclaw/issues/562))
+name connect points (`at: ["./talky", "./cogny"]`) and dock on the two occupants
+rather than on this rim. They are declared here all the same, because the
+declaration is the permission: a deep edge may end on an occupant of this level
+only where this level says it may, and an edge that tries to deliver one of them
+AT this path is refused by name.
 
 | in | what travels |
 |---|---|
@@ -136,7 +143,7 @@ Twenty, all at the assistant's own path.
 | `in_prune` | a prune verdict for the context window, from a timer or an operator |
 | `in_round_sweep` | a round that ran out of iterations, swept by an operator |
 | `in_build_result` | the builder's answer on its way back to the tool round that asked — a draft manifest, or the receipt of one that was submitted. This level carries it down to the tool surface and reads nothing in it |
-| `in_pack` | a durable `system.*` slot for this generation's brains: `identity`, `persona`, `handover` or `instructions`, and nothing else (the charter joined the list in [#488](https://github.com/mmeyerlein/meclaw/issues/488), which measured that nothing else ever wrote it). The one door edge that is a deliberate **fan-out** — it goes to `./talky` AND `./cogny`, because one generation is one person's agent and its three `llm` cells must not disagree about who that is. **Paired**: see `pack_ack`. Since 2.1.0 (#458) |
+| `in_pack` | a durable `system.*` slot for this generation's brains: `identity`, `persona`, `handover` or `instructions`, and nothing else (the charter joined the list in [#488](https://github.com/mmeyerlein/meclaw/issues/488), which measured that nothing else ever wrote it). Since 2.4.0 this level does **not carry** the lane: it declares a **connect point** for it, `"at": ["./talky", "./cogny"]`, and the sender draws one **v-lane** per rim straight from its own `affinity` ([#559](https://github.com/mmeyerlein/meclaw/issues/559), [#561](https://github.com/mmeyerlein/meclaw/issues/561)). The fan-out is still a fan-out and still for the same reason — one generation is one person's agent, and its brains must not disagree about who that is — it is simply two edges the sender draws rather than two this level draws. **Paired**: see `pack_ack`. Since 2.1.0 (#458) |
 | `in_export` | a demand for the one store this generation holds that the member cannot recompute: the session ledger inside `./talky`. Pure transit, no modifier — the lane is named the same on both sides. **Paired**: see `dump`. Since 2.1.0 (#475) |
 | `in_import` | one part of such a document, for a generation that is already running. Same crossing, same pairing. WHICH generation a part belongs to is decided one level up, by the edge that addresses this assistant. Since 2.1.0 (#475) |
 
@@ -150,7 +157,7 @@ Twenty, all at the assistant's own path.
 | `prune` | the report of a window prune: one message per cut session, or a single zero report |
 | `error` | a normalised failure from anything inside this generation — the surface or the reasoning core. A **channel's** failure is no longer among them: since #454 the connector stands in the member's `channels` container and its failures leave beside this lane, one level up |
 | `build` | a structural wish leaving this generation, or a manifest being submitted by whoever drafted it. The one lane on which a tool of this assistant reaches OUT of the assistant — declared rather than hidden, for the same reason `sandbox_union` exists one level down (GH #425) |
-| `pack_ack` | the receipt one `in_pack` answers with — **twice** per pack, once per occupant, and that is the fan-out's arithmetic rather than a defect (`./cogny` answers once for both of its brains). A caller here counts occupants, not packs; the sender reads its own delivery off `hop.pack_owner` and `hop.error_code`, which every receipt carries. Joining the two would need a cell at this level to hold them, and this level holds no state of any kind. Since 2.1.0 (#458) |
+| `pack_ack` | the receipt one `in_pack` answers with — **twice** per pack, once per occupant, and that is the fan-out's arithmetic rather than a defect (`./cogny` answers once for both of its brains). A caller here counts occupants, not packs; the sender reads its own delivery off `hop.pack_owner` and `hop.error_code`, which every receipt carries. Joining the two would need a cell at this level to hold them, and this level holds no state of any kind. Since 2.4.0 it rides the road it came in on: the same `"at"` connect points, one v-lane per rim, back out to whoever drew the corridor — a v-lane is judged at BOTH ends, so the level that vouches for the push vouches for the receipt too (#561). Since 2.1.0 (#458) |
 | `dump` | what the two transfer lanes produce: an export part (`hop.dump_kind == 'export_part'`) or the receipt of an applied one (`'import_receipt'`). **Drain it with a PLAIN `hop.route == 'dump'` test** — an edge that also tested `dump_kind` reads as no drain under the `required_drains` probe. The member does exactly that, into the same export sink its own three holders write to. A refusal never travels here: the surface normalises a porter refusal into `error` before it reaches this level. Since 2.1.0 (#475) |
 
 **GH #464 moved no lane at all.** `talky` and `cogny` each grew `schemas` out and
@@ -443,13 +450,13 @@ replaces a param and not the elements of a list.
 
 #303 counted **14** edges between the channel level and its siblings on the live
 tree — the reasoning core, four tool cells, the drain, the sink, and the
-assistant itself. This template draws **26** around `./talky` today, and #454
+assistant itself. This template draws **22** around `./talky` today, and #454
 moved none of them, only the node they are drawn around; what has moved the number
 since is a LANE each time, never a channel and never a tool:
 
 ```
-9  . -> ./talky             the entry lanes that reach the surface
-9  ./talky -> .             the exits it produces
+7  . -> ./talky             the entry lanes that reach the surface
+7  ./talky -> .             the exits it produces
 2  ./talky -> ./cogny       the ONE consult errand by name, and the schemas ask (#529)
 2  ./talky -> ./tools       the guarded default, and the schemas request (#464)
 2  ./cogny -> ./talky       the advice coming back, and the core's own menu half (#529)
@@ -460,11 +467,10 @@ The `./talky -> ./cogny` pair is **not** two errands. It was, up to 2.1.0 —
 `consult_cogny` and `ask_memory` — and #530 retired the second name while #529 put a
 `schemas` ask in its place, so the count stood still while both of its halves changed.
 
-Eleven more edges do not touch the surface at all — `./cogny -> ./tools` twice and
+Seven more edges do not touch the surface at all — `./cogny -> ./tools` twice and
 `./tools -> ./cogny` twice (the same two lane pairs, drawn for the core), `./cogny -> .`
-on `error`, on `pack_ack` and on `recall`, `./tools -> .` on `build`, `. -> ./cogny` on
-`in_pack` and on `in_bundle`, and `. -> ./tools` on `in_build_result` — which makes
-**thirty-seven** for the level.
+on `error`, `./tools -> .` on `build`, and `. -> ./tools` on `in_build_result` — which
+makes **twenty-nine** for the level.
 `in_build_result` is the only entry lane that does *not* reach the surface: it
 belongs to the tool round that asked, so it is delivered to `./tools` directly.
 
@@ -522,7 +528,7 @@ comes afterwards.**
  "ctx": {"model": "<the reasoning core's model>",
          "model_surface": "<the conversation surface's model>"},
  "diff": {
-  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@2.3.0",
+  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@2.4.0",
                  "override_params": {"cogny/brain": {"temperature": 0.2}}}],
   "add_edges": [
     {"from": "./assistants", "to": "./assistants/scribe",
@@ -570,14 +576,29 @@ explicitly.
 carries both, and is the copy to read before writing one by hand.
 
 Those two are the **addressing** pair and the mutation needs the rest of the
-lanes as well: one edge down for `in_bundle` and `in_build_result` (both guarded
-the same way, on `context.assistant`), and one edge up for each of `write`,
-`turn_write`, `extraction`, `recall`, `prune`, `error`, `build` and `dump` — the
-eight outward lanes that are not `answer`. Plus the two transfer lanes downward
-(`in_export` and `in_import`, both guarded on `context.assistant` for the same
-reason `in_bundle` is: a member with two generations has two session ledgers, and
-they are not one document). Fourteen edges for a generation, and none of them is
-per **channel**.
+lanes as well: one edge down for `in_build_result`, and one edge up for each of
+`write`, `turn_write`, `extraction`, `prune`, `error`, `build` and `dump` — the
+outward lanes that are not `answer` and not `recall`. Plus the two transfer lanes
+downward (`in_export` and `in_import`, both guarded on `context.assistant`: a
+member with two generations has two session ledgers, and they are not one
+document).
+
+**`recall` and `in_bundle` are drawn differently since 2.4.0, and that is the
+whole of what changed for whoever writes this mutation
+([#562](https://github.com/mmeyerlein/meclaw/issues/562), ADR-0020).** They are
+**v-lanes**, exactly like the identity door's pair one section down: one edge per
+asker per direction, ending on `./assistants/scribe/talky` and
+`./assistants/scribe/cogny` rather than on the generation's path, each naming its
+lane with `"lane": "recall"` / `"lane": "in_bundle"`. The recall edges carry the
+`recall_caller` stamp this level's own rim used to write, and the two doors back
+keep the shape GH #532 gave them — `hop.recall_caller == 'cogny'` guarded, the
+surface's the `default`. The permission is this level's `at` and nothing else: an
+edge that ends anywhere else on the lane is refused with
+`v_lane_no_connect_point`, one that tries to deliver the lane AT this path is
+refused with `hive_contract`, and a level in between that declares the lane and
+names no connect point may not be skipped at all (`v_lane_mandatory_hop` — which
+is what keeps the member's stamping door in the road). Sixteen edges for a
+generation, and none of them is per **channel**.
 
 The mutation is scoped to the **member**, not to the container: a node is
 addressed by its `name` plus the scope, the name carries the `/`, and endpoints
@@ -637,6 +658,22 @@ channels container*.
   have is a store to point it at: the memory belongs to the member, and a second
   one here would be a second person.
 
+## The credential lane crosses this level and this level says nothing (GH #560)
+
+Both surfaces name `./brain` as the connect point of the credential lane
+(`talky` and `cogny`). The edge that spends a grant is drawn one level
+UP — at the member, the lowest common ancestor of a brain in here and the
+person's own `access` — and it passes straight through this level as a **v-lane**
+(GH #559).
+
+This level declares **nothing** about that lane, and that is the decision rather
+than an omission. A generation takes no influence on a credential: it does not
+stamp it, filter it or guard it, and a level that declares a lane it merely
+forwards would read as a claim to influence it and would make itself a mandatory
+hop (`v_lane_mandatory_hop`) on the very edge it was replaced by. Transparent is
+the correct row of that rule table, and the exception it makes to the union rule
+is written down as one in `docs/development-rules.md` § 8b.
+
 ## Versioning
 
 `1.0.0` is the first shipped version; `2.0.0` is the first breaking one. This
@@ -661,6 +698,47 @@ on a ref marker this level already writes two of, so no lane, no address and no
 count changes. `2.2.0` has not shipped, so it is extended rather than superseded
 (`docs/development-rules.md` § 4) — the same reading #464, #475 and #516 got
 inside this wave.
+
+`2.4.0` carries a SECOND subtraction of the same shape
+([#562](https://github.com/mmeyerlein/meclaw/issues/562)), and it rides in the
+same unreleased number for the reason `docs/development-rules.md` § 4 gives: a
+version is a shipped fact, and cutting a `2.5.0` for the second half of one wave
+would invent a version nobody could ever have wired against. The memory road
+stops crossing this level. `recall` and `in_bundle` were the other pair this
+level neither produced nor consumed — an asker emitted, this rim forwarded, the
+container above forwarded again, and only the member did anything to the message.
+Both entries stay in the contract and gain `at: ["./talky", "./cogny"]`; the four
+pass-through edges are struck, and thirty-three edges become **twenty-nine**.
+What delivers instead is one v-lane per asker per direction, drawn by the
+mutation that instantiates the generation. The reply-to token, the core's guarded
+door and the surface default are unchanged and moved one level up with the edges
+that carry them (`crates/meclaw-cells/tests/gh532_two_askers_one_hive.rs` keeps
+measuring them there). What is NOT the same as #561 is the level above: the
+member declares the very same two lanes and names no connect point below
+`./assistants`, so it stays a **mandatory hop** — a v-lane that would carry a
+generation's recall past the door that stamps the round is refused with
+`v_lane_mandatory_hop`. Vouching and influence are the two halves of one rule,
+and this level is on the vouching side of it.
+
+`2.4.0` is the second digit again, and it is a **subtraction of edges without a
+subtraction of lanes** ([#561](https://github.com/mmeyerlein/meclaw/issues/561),
+under the v-lane ruling of [#559](https://github.com/mmeyerlein/meclaw/issues/559)).
+The identity pack used to travel as a per-level chain — the member's rim, the
+`assistants` container, this level, the two brains — with this level declaring
+`in_pack` / `pack_ack` purely as a **pass-through**. Under #559 rule 2 that reads
+as an influence claim: a level that declares a lane has said it takes part in it,
+and this one stamped nothing, filtered nothing and guarded nothing. So the four
+pass-through edges are gone — thirty-seven edges become **thirty-three** — and
+what is left in the contract is the connect point, `"at": ["./talky", "./cogny"]`
+on both lanes. The sender now draws one v-lane per rim (`lane: "in_pack"`) and
+one back (`lane: "pack_ack"`), straight from the member's own `./affinity`. It is
+the second digit because an **address** moved: a caller that wired `in_pack` at
+this level's own path has to redraw the edge at the two rims the corridor names.
+Nothing else about the lane changed — same slots, same fan-out, same two receipts
+per pack — and the pairing that obliges the receipt is now read at the rim, where
+`talky` and `cogny` declare it themselves. This level's own
+`required_drains` entry stays, because the statement stays true of it: whoever is
+given the corridor is given both halves of it.
 
 The occupant pins in `talky/config.json`, `cogny/config.json` and
 `tools/config.json` are version-pinned on purpose — a bare name resolves to the

@@ -423,7 +423,7 @@ level up, for a lane no occupant serves at all: `unknown_route`, naming the lane
 Everything above grows a colony **by hand**: five declarations, each written by a person who
 knew which four edges to draw. That is the right way to *learn* the substrate, and the wrong way
 to build a real one, because the fourth or fifth of those files is where a human stops being
-better than a machine at drawing thirteen transit edges the same way every time.
+better than a machine at drawing fifteen transit edges the same way every time.
 
 A built colony arrives in two stages instead.
 

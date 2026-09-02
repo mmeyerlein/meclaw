@@ -91,6 +91,14 @@ Two halves, both from the same ruling (R-V1):
     down to the endpoint the lane may land on. `ports: []` stays literally true:
     a v-lane is the one opening the template itself pronounces.
 
+An `at` entry is ALWAYS of the form `./…` and always strictly below the
+declaring hive. Stage 6 compares it against the endpoint's path relative to the
+level (`relative_to`, which yields `./…` and never `.`), so `"."` and a bare
+`talky` match nothing at all -- an entry in either spelling is a finding here,
+because the tree would otherwise carry a declaration that reads like a
+permission and grants none. A lane meant to end on a hive's own RIM is declared
+one level UP, as `./<hive>` in the parent's contract.
+
 Walking one deep endpoint, level by level from the ancestor down (the rule table
 of the wave brief, which is also the table Stage 6 runs -- this gate is its
 static half):
@@ -104,7 +112,7 @@ static half):
                                 path to the endpoint
     sealed                      nothing, or `at` without  the existing
                                 a hit                     `hive_port_boundary`
-    the whole way down          no `at` names the         `v_lane_no_connect_point`
+    the endpoint's PARENT       no `at` naming the        `v_lane_no_connect_point`
                                 endpoint
 
 The walk never ends early on a hit: an `at` legitimates the level that declares
@@ -113,6 +121,13 @@ it and nothing else, so a sealed level BELOW a vouching one keeps its own seal
 no-connect-point finding says out loud). The endpoint itself is not a level the
 lane traverses INTO: a v-lane lands on a rim, and a rim is an address, so seal
 and mandatory-hop are asked only of the levels strictly above it.
+
+The connect point is owed by ONE level: the endpoint's PARENT, the TARGET hive
+of Stage 6. A vouching ancestor waives its own hop and its own seal and nothing
+more -- it may not supply the connect point for a level further down, and the
+endpoint may not supply it for itself (there is no `at` spelling that would say
+so). The static half asks the same one level, so that a tree this gate passes is
+a tree Stage 6 passes.
 
 The gate is the STATIC half and says so: it resolves a `ref` level into
 `templates/<name>/` (a tree read, not a registry read) and stops with a note
@@ -274,16 +289,29 @@ def contract_entries(cfg: dict) -> list[dict]:
     return entries
 
 
-def norm_rel(path: str) -> str:
-    """`talky`, `./talky` and `./talky/` are the same connect point; `.` is the rim."""
-    path = path.strip().rstrip("/")
-    if path in ("", "."):
-        return "."
-    return "./" + (path[2:] if path.startswith("./") else path)
+def norm_rel(path: str) -> str | None:
+    """The connect point an `at` entry names, or None if it names none.
+
+    `./talky` and `./talky/` are the same point. Everything else is NOT a
+    connect point and is not silently repaired into one: Stage 6 compares `at`
+    against the endpoint's path relative to the level, which is always `./…`, so
+    a bare `talky`, a `"."` and an absolute path can never match. Normalising
+    them away would hide exactly the declaration that reads like a permission
+    and grants none -- the caller turns a None into an R5 finding instead.
+    """
+    stripped = path.strip().rstrip("/")
+    if not stripped.startswith("./") or len(stripped) < 3:
+        return None
+    return stripped
 
 
 def lane_declaration(cfg: dict, lane: str) -> tuple[bool, set[str]]:
-    """Does this node's contract speak about `lane`, and where does it dock?"""
+    """Does this node's contract speak about `lane`, and where does it dock?
+
+    Only well-formed `at` entries become docks; a malformed one is reported once
+    per node by `malformed_connect_points`, independently of whether any edge
+    happens to walk through this level.
+    """
     declared = False
     docks: set[str] = set()
     for entry in contract_entries(cfg):
@@ -291,9 +319,25 @@ def lane_declaration(cfg: dict, lane: str) -> tuple[bool, set[str]]:
             continue
         declared = True
         for at in entry.get("at") or []:
-            if isinstance(at, str):
-                docks.add(norm_rel(at))
+            if isinstance(at, str) and (rel := norm_rel(at)) is not None:
+                docks.add(rel)
     return declared, docks
+
+
+def malformed_connect_points(cfg: dict) -> list[tuple[str, str]]:
+    """Every `at` entry of this node that names no connect point at all.
+
+    Returns `(route, raw entry)` pairs. This is the half of R5 that needs no
+    edge: a contract may carry `"at": ["."]` for a lane nobody draws yet, and it
+    is just as wrong there -- `"."` is not the rim in this field, it is nothing.
+    """
+    bad: list[tuple[str, str]] = []
+    for entry in contract_entries(cfg):
+        route = entry.get("route")
+        for at in entry.get("at") or []:
+            if not isinstance(at, str) or norm_rel(at) is None:
+                bad.append((str(route), repr(at)))
+    return bad
 
 
 def is_sealed(cfg: dict) -> bool:
@@ -335,8 +379,6 @@ def v_lane_walk(
     segments = target[2:].split("/")
     findings: list[Finding] = []
     here = cfg_dir
-    node = cfg_dir
-    anchored = False
     for i, segment in enumerate(segments):
         node = follow_ref(here / segment, templates)
         if node is None:
@@ -346,53 +388,63 @@ def v_lane_walk(
                 f"inside this tree -- the level refs a template that is not here, so "
                 f"the connect point of lane `{lane}` is left to Stage 6."
             ]
-        cfg = load(node / "config.json")
+        here = node
         rest = segments[i + 1:]
-        wanted = "." if not rest else "./" + "/".join(rest)
+        if not rest:
+            # The endpoint itself is not a level the lane traverses INTO: its
+            # rim is the address, and Stage 6 judges the levels from its PARENT
+            # upwards. It is walked only to prove the path exists in this tree.
+            break
+        cfg = load(node / "config.json")
+        # The path from THIS level down to the endpoint -- the exact string
+        # Stage 6 builds with `relative_to(level, endpoint)`, which is why it is
+        # always `./…` and never `.`.
+        wanted = "./" + "/".join(rest)
+        # This level is the TARGET hive: the endpoint's parent, and the only
+        # level that can owe a connect point.
+        is_target = len(rest) == 1
         declared, docks = lane_declaration(cfg, lane)
         rel_node = node.relative_to(repo_root).as_posix()
 
-        # An `at` hit legitimates THIS level and nothing else. The walk carries
-        # on to the endpoint: an ancestor may not open a subtree from outside,
-        # so a sealed level below a vouching one still keeps its own seal.
+        # Row 3. An `at` hit legitimates THIS level and nothing else. The walk
+        # carries on to the endpoint: an ancestor may not open a subtree from
+        # outside, so a sealed level below a vouching one still keeps its seal.
         if wanted in docks:
-            anchored = True
-        elif rest:
-            # `rest` is empty at the endpoint itself, and the endpoint is not a
-            # level the lane is traversing INTO: its rim is the address. Only a
-            # level strictly above it can seal the way or claim a hop.
-            if is_sealed(cfg):
-                findings.append(Finding(
-                    "R5", rel_node,
-                    f"`{root.name}` draws the v-lane `{lane}` onto `{target}`, but "
-                    f"this sealed level declares no `at` reaching `{wanted}`. A "
-                    f"sealed rim refuses it as `hive_port_boundary` -- the one "
-                    f"opening a seal accepts is the `at` the template itself "
-                    f"pronounces, and an ancestor that already vouched does not "
-                    f"pronounce it for this level.",
-                ))
-                return findings, []
-            if declared:
-                findings.append(Finding(
-                    "R5", rel_node,
-                    f"`{root.name}` draws the v-lane `{lane}` onto `{target}` past "
-                    f"this level, which declares `{lane}` in its own contract "
-                    f"without an `at` reaching `{wanted}` -- `v_lane_mandatory_hop`. "
-                    f"A level that takes influence on a lane may not be skipped: "
-                    f"give it the `at`, or drop the pass-through declaration in the "
-                    f"same commit that migrates the lane.",
-                ))
-        here = node
+            continue
+        if is_target:
+            findings.append(Finding(
+                "R5", rel_node,
+                f"`{root.name}` draws the v-lane `{lane}` onto `{target}`, and the "
+                f"hive this endpoint sits in declares no `at` reaching `{wanted}` -- "
+                f"`v_lane_no_connect_point`. The connect point is owed by the "
+                f"endpoint's PARENT and by nobody else: put `\"at\": [\"{wanted}\"]` "
+                f"on this level's `{lane}` entry. An ancestor that vouched further "
+                f"up does not pronounce it here, the endpoint cannot pronounce it "
+                f"for itself, and `\".\"` is not a spelling that says so.",
+            ))
+            continue
+        if is_sealed(cfg):
+            findings.append(Finding(
+                "R5", rel_node,
+                f"`{root.name}` draws the v-lane `{lane}` onto `{target}`, but "
+                f"this sealed level declares no `at` reaching `{wanted}`. A "
+                f"sealed rim refuses it as `hive_port_boundary` -- the one "
+                f"opening a seal accepts is the `at` the template itself "
+                f"pronounces, and an ancestor that already vouched does not "
+                f"pronounce it for this level.",
+            ))
+            return findings, []
+        if declared:
+            findings.append(Finding(
+                "R5", rel_node,
+                f"`{root.name}` draws the v-lane `{lane}` onto `{target}` past "
+                f"this level, which declares `{lane}` in its own contract "
+                f"without an `at` reaching `{wanted}` -- `v_lane_mandatory_hop`. "
+                f"A level that takes influence on a lane may not be skipped: "
+                f"give it the `at`, or drop the pass-through declaration in the "
+                f"same commit that migrates the lane.",
+            ))
 
-    if not anchored:
-        findings.append(Finding(
-            "R5", node.relative_to(repo_root).as_posix(),
-            f"`{root.name}` draws the v-lane `{lane}` onto `{target}`, and no level "
-            f"on the way declares an `at` that names this endpoint -- "
-            f"`v_lane_no_connect_point`. The target says where a lane docks "
-            f"(`\"at\": [\"./talky\"]` in its accepts/emits entry, or `\".\"` for its "
-            f"own rim); an ancestor may not open a subtree from outside.",
-        ))
     return findings, []
 
 
@@ -461,6 +513,24 @@ def check_template(root: Path, repo_root: Path) -> tuple[list[Finding], list[str
                     f"`{expected}`. One lane, one cell name -- a caller should "
                     f"not have to know which word this hive chose.",
                 ))
+
+        # --- R5, the declaration half: an `at` that names no connect point ---
+        # Independent of any edge. `at` is compared against the endpoint's path
+        # relative to the declaring level, which is always `./…`, so `"."` and a
+        # bare name match nothing -- a lane declared that way reads like a
+        # permission and grants none, and the lane's rim-door duty is lifted
+        # (`docks_below_the_rim`) for a connect point that does not exist.
+        for route, raw in malformed_connect_points(cfg):
+            findings.append(Finding(
+                "R5", rel,
+                f"the `{route}` entry of this contract carries the connect point "
+                f"{raw}, which is not of the form `./…`. An `at` names a path "
+                f"STRICTLY BELOW the declaring hive and is matched literally "
+                f"against it -- `\".\"` and a bare name never match, so the lane "
+                f"has no connect point at all. A lane meant to end on this hive's "
+                f"own rim is declared one level UP, as `./{d.name}` in the "
+                f"parent's contract.",
+            ))
 
         # --- R5 -------------------------------------------------------------
         for edge in edges:
@@ -672,6 +742,14 @@ SELFTEST_TREE = {
             {"from": ".", "to": "./anchor/inner", "lane": "in_recall"},
             {"from": ".", "to": "./member"},
             {"from": ".", "to": "./member/talky", "lane": "in_recall"},
+            {"from": ".", "to": "./dotty"},
+            {"from": ".", "to": "./dotty/inner", "lane": "in_recall"},
+            {"from": ".", "to": "./barename"},
+            {"from": ".", "to": "./barename/inner", "lane": "in_recall"},
+            {"from": ".", "to": "./farvouch"},
+            {"from": ".", "to": "./farvouch/mid/leaf", "lane": "in_recall"},
+            {"from": ".", "to": "./sealedmid"},
+            {"from": ".", "to": "./sealedmid/mid/leaf", "lane": "in_recall"},
         ]}},
     },
     # (a) a deep edge with no lane at all.
@@ -696,13 +774,16 @@ SELFTEST_TREE = {
         ]}},
     },
     "templates/vlane/gate/deep/inner/config.json": {"cell": {"type": "echo"}},
-    # (d) a sealed level the lane is not declared through.
+    # (d) a sealed level the lane is not declared through -- and it is the
+    #     endpoint's parent, so the table answers it as row 5 (the seal check is
+    #     a stage of its own); the genuine seal row is fixture (i) below.
     "templates/vlane/sealed/config.json": {
         "cell": {"type": "hive"}, "params": {"ports": []}
     },
     "templates/vlane/sealed/inner/config.json": {"cell": {"type": "echo"}},
-    # (e) an ancestor vouches for the whole way down -- and may not: the sealed
-    #     level under it keeps its own `hive_port_boundary` (review 2026-09-01).
+    # (e) an ancestor vouches for the whole way down -- and may not: the level
+    #     under it is the endpoint's parent and owes its own connect point
+    #     (review 2026-09-01). Its seal is a second reason, not the reason.
     "templates/vlane/vouched/config.json": {
         "cell": {"type": "hive"},
         "params": {
@@ -725,6 +806,56 @@ SELFTEST_TREE = {
         },
     },
     "templates/vlane/anchor/inner/config.json": {"cell": {"type": "echo"}},
+    # (f) the endpoint declares `at: ["."]` -- the spelling the docs called "my
+    #     own rim" until the review of 2026-09-01. It matches nothing: Stage 6
+    #     compares `at` against `./…`, so the endpoint anchors nothing and the
+    #     PARENT still owes the connect point. Two findings, and both are the
+    #     point -- the malformed entry, and the consequence.
+    "templates/vlane/dotty/config.json": {"cell": {"type": "hive"}},
+    "templates/vlane/dotty/inner/config.json": {
+        "cell": {"type": "hive"},
+        "params": {"contract": {"accepts": [
+            {"route": "in_recall", "at": ["."],
+             "because": "I would distribute it myself -- except this says nothing"}
+        ]}},
+    },
+    # (g) the same in the other bad spelling: a bare name where a `./…` belongs.
+    "templates/vlane/barename/config.json": {
+        "cell": {"type": "hive"},
+        "params": {"contract": {"accepts": [
+            {"route": "in_recall", "at": ["inner"]}
+        ]}},
+    },
+    "templates/vlane/barename/inner/config.json": {"cell": {"type": "echo"}},
+    # (h) an UNSEALED ancestor vouches for the whole way down and the endpoint's
+    #     parent says nothing. Silent until the review of 2026-09-01, because
+    #     the walk carried one `anchored` flag for the whole way; Stage 6 asks
+    #     the parent alone (row 5, `is_target`), and now so does this half.
+    "templates/vlane/farvouch/config.json": {
+        "cell": {"type": "hive"},
+        "params": {
+            "contract": {"accepts": [
+                {"route": "in_recall", "at": ["./mid/leaf"]}
+            ]},
+            "graph": {"edges": [{"from": ".", "to": "./mid"}]},
+        },
+    },
+    "templates/vlane/farvouch/mid/config.json": {"cell": {"type": "hive"}},
+    "templates/vlane/farvouch/mid/leaf/config.json": {"cell": {"type": "echo"}},
+    # (i) a SEALED level that is a genuine intermediate rather than the target:
+    #     the seal row of the table, which the two fixtures above it can no
+    #     longer show now that a sealed TARGET is answered as row 5 instead.
+    "templates/vlane/sealedmid/config.json": {
+        "cell": {"type": "hive"},
+        "params": {"ports": [], "graph": {"edges": [{"from": ".", "to": "./mid"}]}},
+    },
+    "templates/vlane/sealedmid/mid/config.json": {
+        "cell": {"type": "hive"},
+        "params": {"contract": {"accepts": [
+            {"route": "in_recall", "at": ["./leaf"]}
+        ]}},
+    },
+    "templates/vlane/sealedmid/mid/leaf/config.json": {"cell": {"type": "echo"}},
     # The second silence: the same, one `ref` hop away -- the walk reads the
     # referenced template's contract, which is where a v-lane meets it in the
     # real tree.
@@ -760,10 +891,18 @@ def selftest() -> int:
             ("R4", "templates/fixture/declare"),
             # R5, one per failing row of the rule table.
             ("R5", "templates/vlane"),                  # no lane on a deep edge
-            ("R5", "templates/vlane/unlisted/inner"),   # v_lane_no_connect_point
+            ("R5", "templates/vlane/unlisted"),         # v_lane_no_connect_point
             ("R5", "templates/vlane/gate"),             # v_lane_mandatory_hop
-            ("R5", "templates/vlane/sealed"),           # hive_port_boundary
+            ("R5", "templates/vlane/sealedmid"),        # hive_port_boundary
+            ("R5", "templates/vlane/sealed"),           # ... a sealed TARGET: row 5
             ("R5", "templates/vlane/vouched/inside"),   # ... below a vouching level
+            # R5, the two spellings that name no connect point (review 2026-09-01).
+            ("R5", "templates/vlane/dotty/inner"),      # the `at: ["."]` entry
+            ("R5", "templates/vlane/dotty"),            # and its consequence
+            ("R5", "templates/vlane/barename"),         # the bare-name entry
+            ("R5", "templates/vlane/barename"),         # and its consequence
+            # R5, a vouching ANCESTOR is not the endpoint's parent.
+            ("R5", "templates/vlane/farvouch/mid"),
         ])
         if got != want:
             print("selftest FAILED", file=sys.stderr)
@@ -781,8 +920,10 @@ def selftest() -> int:
                 return 1
 
     print("tree rules selftest OK: R1, R3, R4 fire exactly once and R5 once per "
-          "failing row of its table; a declared island, a clean template and a "
-          "declared v-lane (also across a ref) stay silent.")
+          "failing row of its table -- including an `at` of `\".\"` or a bare "
+          "name, and an ancestor that vouched but is not the endpoint's parent; "
+          "a declared island, a clean template and a declared v-lane (also "
+          "across a ref) stay silent.")
     return 0
 
 

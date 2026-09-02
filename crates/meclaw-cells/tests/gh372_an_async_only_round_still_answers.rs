@@ -238,7 +238,7 @@ fn main_config() -> Value {
         // cadence hands it two batches of one session at once -- the probe then
         // reads the LAST parked batch and the user turn is lost. Ruling Q11 (GH
         // #298) retracted the edge; `w9a_per_turn_colony.rs` and
-        // `member@1.4.0` draw the one below.
+        // `member@1.5.0` draw the one below.
         {"from": "./talky", "to": "./memory/writer",
          "condition": "has(hop.route) && hop.route == 'turn_write'",
          "modifier": {"set_context": {"session_id": "hop.session_id",

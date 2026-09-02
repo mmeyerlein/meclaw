@@ -25,7 +25,7 @@
 //!
 //! What runs here is one colony, booted from the shipped library, with the
 //! member grown through the mutation door and TWO generations of
-//! `assistant@2.3.0` grown into its container the way
+//! `assistant@2.4.0` grown into its container the way
 //! `templates/member/README.md` § *Addressing an assistant through a channel*
 //! and `templates/assistant/README.md` § *Instantiating* prescribe — including
 //! the two transfer edges #475 added to that recipe.
@@ -500,7 +500,7 @@ fn member_manifest(export_dir: &std::path::Path) -> Value {
         // member is named bare, and the path it lands at is unchanged.
         "scope": "/members",
         "diff": {
-            "add_nodes": [{"name": MEMBER, "template": "member@1.4.0",
+            "add_nodes": [{"name": MEMBER, "template": "member@1.5.0",
                            "override_params": over}],
             "add_edges": container_edges(),
         }
@@ -518,9 +518,41 @@ fn assistant_manifest(name: &str) -> Value {
                "condition": format!(
                    "has(hop.route) && ({routes}) && has(context.assistant) && context.assistant == '{name}'")})
     };
+    // GH #562 — the memory road is a v-lane and does not end on the
+    // generation's path any more: `recall` leaves the asker, `in_bundle` goes
+    // back down to it, and the generation's contract names both askers under
+    // `at`. This manifest draws the same four edges the shipped recipe renders,
+    // for the plainest reason there is: without them a `recall` raised inside
+    // this generation has no exit at all and dead-letters at the surface's own
+    // path, which is what a member-level export walk then trips over.
+    let v_lane = |asker: &str, down: bool| {
+        let deep = format!("./assistants/{name}/{asker}");
+        if down {
+            let mut e = json!({"from": "./assistants", "to": deep,
+                               "lane": "in_bundle",
+                               "condition": format!(
+                                   "has(hop.route) && hop.route == 'in_bundle' && has(context.assistant) && context.assistant == '{name}'")});
+            if asker == "cogny" {
+                e["condition"] = json!(format!(
+                    "{} && has(hop.recall_caller) && hop.recall_caller == 'cogny'",
+                    e["condition"].as_str().expect("just built")
+                ));
+            } else {
+                e["default"] = json!(true);
+            }
+            e
+        } else {
+            json!({"from": deep, "to": "./assistants", "lane": "recall",
+                   "condition": "has(hop.route) && hop.route == 'recall'",
+                   "modifier": {"set_context": {"recall_caller": format!("'{asker}'")}}})
+        }
+    };
     let mut add_edges = vec![
         guarded("hop.route == 'in_turn'"),
-        guarded("hop.route == 'in_bundle'"),
+        v_lane("cogny", true),
+        v_lane("talky", true),
+        v_lane("talky", false),
+        v_lane("cogny", false),
         guarded("hop.route == 'in_build_result'"),
         // #475: the transfer lanes are addressed with the same key and the same
         // shape as a turn.
@@ -531,7 +563,6 @@ fn assistant_manifest(name: &str) -> Value {
         "write",
         "turn_write",
         "extraction",
-        "recall",
         "prune",
         "error",
         "build",
@@ -556,7 +587,7 @@ fn assistant_manifest(name: &str) -> Value {
         "ctx": {"model": "double/no-network", "model_fast": "double/no-network",
                 "model_surface": "double/no-network"},
         "diff": {
-            "add_nodes": [{"name": format!("assistants/{name}"), "template": "assistant@2.3.0"}],
+            "add_nodes": [{"name": format!("assistants/{name}"), "template": "assistant@2.4.0"}],
             "add_edges": add_edges,
         }
     }]})

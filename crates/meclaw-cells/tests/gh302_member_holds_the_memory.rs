@@ -169,10 +169,10 @@ fn stamped_lane(e: &meclaw_colony::config::EdgeSpec) -> Option<&str> {
         .and_then(|s| constant(s.as_str()))
 }
 
-// ─────────────────────────── (a) six children: three refs, two containers, one cell
+// ────────────────── (a) eight children: four refs, three containers, one cell
 
 #[test]
-fn the_level_carries_three_refs_and_three_containers() {
+fn the_level_carries_four_refs_and_three_containers() {
     let Some(member) = shipped() else { return };
 
     let mut children: Vec<String> = std::fs::read_dir(&member)
@@ -187,6 +187,7 @@ fn the_level_carries_three_refs_and_three_containers() {
     assert_eq!(
         children,
         vec![
+            "access".to_string(),
             "affinity".to_string(),
             "apps".to_string(),
             "assistants".to_string(),
@@ -195,11 +196,12 @@ fn the_level_carries_three_refs_and_three_containers() {
             "firewall".to_string(),
             "memory-hive".to_string(),
         ],
-        "the member owns exactly three holders, THREE containers — `assistants`, and since \
-         1.3.0 `channels` (GH #454) and `apps` (GH #459) — and the one cell of its own that \
-         lands a memory export on disk (GH #447, since 1.2.0). A fourth HOLDER is something \
-         the siblings did not have to share; a missing one is something an assistant would \
-         have to hold itself. `export-sink` is neither: it holds nothing and is read by \
+        "the member owns exactly four holders — the memory, the record, the screen and, \
+         since 1.5.0, the `access` that holds this person's own provider credentials \
+         (GH #560) — THREE containers — `assistants`, and since 1.3.0 `channels` (GH #454) \
+         and `apps` (GH #459) — and the one cell of its own that lands a memory export on \
+         disk (GH #447, since 1.2.0). A FIFTH holder is something the siblings did not have \
+         to share; a missing one is something an assistant would have to hold itself. `export-sink` is neither: it holds nothing and is read by \
          nobody, it is the destination of one lane whose whole point is a file. `apps` is a \
          container and not a holder for the same reason `channels` is not: what stands in it \
          is instantiated per person, and an app writes VIEWS onto this member's screen \
@@ -383,6 +385,14 @@ fn neither_container_declares_a_contract_because_the_level_wires_them() {
         .as_ref()
         .expect("the member declares a contract");
     for lane in &c.accepts {
+        if !lane.at.is_empty() {
+            // GH #559 / #562 — a lane that names connect points docks BELOW this
+            // rim by declaration, so its door is that address rather than an
+            // edge out of `.`. The substrate reads it the same way
+            // (`hive_contract::docks_below_the_rim`), and the connect points
+            // themselves are policed per edge by the v-lane rule table.
+            continue;
+        }
         let doored = hp
             .graph
             .edges
@@ -396,6 +406,9 @@ fn neither_container_declares_a_contract_because_the_level_wires_them() {
         );
     }
     for lane in &c.emits {
+        if !lane.at.is_empty() {
+            continue; // the same rule, one direction over
+        }
         let exits = hp.graph.edges.iter().any(|e| {
             e.to == "."
                 && (condition_names(e, &lane.route) || stamped_lane(e) == Some(lane.route.as_str()))
@@ -1267,13 +1280,17 @@ fn the_member_declares_the_lanes_that_cross_its_boundary() {
     assert_eq!(
         senders_of("error"),
         vec![
+            "./access",
             "./affinity",
             "./apps",
             "./assistants",
             "./channels",
             "./export-sink"
         ],
-        "every failure that is not a refusal leaves on one lane. Since GH #454 a CHANNEL is \
+        "every failure that is not a refusal leaves on one lane. Since GH #560 the member's \
+         own `access` is one of them, and its drain is the ONLY edge of this graph that \
+         touches that hive — everything else the broker carries is a v-lane the manifest \
+         draws (GH #559). Since GH #454 a CHANNEL is \
          one of the things that can fail — a connector's own error is the member's, not an \
          assistant's, because the connector is the member's — and since GH #459 an APP is \
          another, for exactly the same reason: an app is the person's, it outlives a \

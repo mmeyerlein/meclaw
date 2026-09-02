@@ -9,7 +9,7 @@
     "add_nodes": [
       {
         "name": "scribe",
-        "template": "assistant@2.3.0",
+        "template": "assistant@2.4.0",
         "override_params": {
           "cogny/brain": {
             "temperature": 0.2
@@ -25,7 +25,15 @@
       },
       {
         "from": ".",
-        "to": "./scribe",
+        "to": "./scribe/cogny",
+        "lane": "in_bundle",
+        "condition": "has(hop.route) && hop.route == 'in_bundle' && has(context.assistant) && context.assistant == 'scribe' && has(hop.recall_caller) && hop.recall_caller == 'cogny'"
+      },
+      {
+        "from": ".",
+        "to": "./scribe/talky",
+        "lane": "in_bundle",
+        "default": true,
         "condition": "has(hop.route) && hop.route == 'in_bundle' && has(context.assistant) && context.assistant == 'scribe'"
       },
       {
@@ -34,9 +42,37 @@
         "condition": "has(hop.route) && hop.route == 'answer'"
       },
       {
-        "from": "./scribe",
+        "from": "./scribe/talky",
         "to": ".",
-        "condition": "has(hop.route) && hop.route == 'recall'"
+        "lane": "recall",
+        "condition": "has(hop.route) && hop.route == 'recall'",
+        "modifier": {
+          "set_context": {
+            "recall_caller": "'talky'"
+          },
+          "delete_context": [
+            "col_phase",
+            "consult_class",
+            "consult_id",
+            "tool_answerer"
+          ]
+        }
+      },
+      {
+        "from": "./scribe/cogny",
+        "to": ".",
+        "lane": "recall",
+        "condition": "has(hop.route) && hop.route == 'recall'",
+        "modifier": {
+          "set_context": {
+            "recall_caller": "'cogny'"
+          },
+          "delete_context": [
+            "col_phase",
+            "consult_class",
+            "tool_answerer"
+          ]
+        }
       },
       {
         "from": "./scribe",
