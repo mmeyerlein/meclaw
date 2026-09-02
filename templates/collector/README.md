@@ -1,4 +1,4 @@
-# `collector@3.4.0`
+# `collector@3.5.0`
 
 Context assembly as a hive of existing cell types -- no new cell type, no Rust. Three cells:
 `assemble` (a `code` cell, the state machine), `window` (a `store` cell, the state) and,
@@ -44,7 +44,8 @@ the window and what leaves it**, in one place, and hands the result to the brain
   and what left is reported on the hop rather than silently gone.
 - **A bound on the round itself.** A model that keeps asking for tools is stopped by the
   seam that started the round (`max_iter`) -- not by a TTL that dies silently,
-  and not by an edge that has to know about iterations.
+  and not by an edge that has to know about iterations. Since `3.5.0` it is stopped
+  with a SENTENCE: what leaves is a named partial answer, not the raw end of the round.
 - **A deterministic exit for a round that cannot complete.** A result lost in flight used
   to park the fan-in forever (GH #103). Now a round whose last progress lies behind
   `round_idle_ms` is closed at the next occasion: the missing calls get
@@ -106,7 +107,7 @@ Exits leave **from the hive path** on `hop.route`:
 | route | to | notes |
 |---|---|---|
 | `brain` | the agent LLM | THE seam. Promote `hop.turn_id`, `hop.session_id` and `hop.iter` to context on this edge. `system.consult.open` carries the correlation ids of the advice turns still in the window -- **always**, empty included (`collector@2.0.3`): the `llm` cell upserts `system.*` per slot path, so a path that is not sent is a path that is not touched, and a slot that is only ever set keeps naming a consultation that closed long ago. `system.memory` follows the same rule and, since `collector@2.1.0`, carries nothing but that rule: the bundle itself is no longer anywhere in that subtree (GH #278) -- it travels as the `memory_recall` tool result at the end of `messages[]`. What the collector still sends there on every turn is the revocation, unconditionally and no longer tied to `memory_form`: an empty `text` on the FIXED path `system.memory.recall`, which clears a bundle an older collector may have left standing and contributes nothing to the system prompt, plus the `"$replace": true` marker on the whole `system.memory` node (`collector@2.0.4`, GH #264), which is what lets it revoke the `json` form's keys -- named by the memory hive per bundle, and therefore nameable by no fixed path. **Consequence for an `llm` cell with a `system_writable` allowlist, unchanged by the move**: the allowlist must carry `memory` as a prefix -- the replace ROOT is checked too, and `memory.recall` alone does not suffice. Since wave 11 it also reports what the curator did: `hop.tokens_window`, `hop.tokens_projected`, `hop.tokens_estimated`, `hop.curate_mark`, `hop.curate_stage`, `hop.curate_elided`, `hop.curate_saved`. |
-| `answer` | the reply sink | the brain's final turn, after it is in the window -- **or** a turn that reached `max_iter`, marked `hop.round_capped=1` -- **or**, since `collector@2.1.1`, a turn that could not be assembled because the store refused, marked `hop.degraded=1` with `hop.store_error` and `hop.store_operation` beside it (see "When the store says no") |
+| `answer` | the reply sink | the brain's final turn, after it is in the window -- **or** a turn that reached `max_iter`, marked `hop.round_capped=1` **and**, since `collector@3.5.0`, `hop.partial=1`, whose last turn is a named PARTIAL ANSWER rather than the raw end of the tool round (see "A capped round is a partial answer") -- **or**, since `collector@2.1.1`, a turn that could not be assembled because the store refused, marked `hop.degraded=1` with `hop.store_error` and `hop.store_operation` beside it (see "When the store says no") |
 | `recall` | the memory hive's recall port | the per-turn leg (only when `memory_tier` is set) **and** every `memory_recall` call; promote `recall_query`, `memory_tier`, `memory_call_id`, `recall_window_from`, `recall_window_to`, `session_id`, `turn_id`, `iter` |
 | `write` | wherever a closed session belongs | one batch per close: `messages[]` the whole conversation, the raw round rows in the top-level slot `rounds`. `messages[]` is what a PARTICIPANT said and nothing else (GH #282) -- interim answers, `advice` rows and any other role stay in the window; `origin` comes from an explicit `user`/`assistant` mapping, never from a fallback. See "Per-turn episodes" below. |
 | `turn_write` | a memory hive's episode lane | **one message per turn, never a batch** (GH #298): after every stored turn and every stored answer, every turn of the session that has not been written yet leaves as its own message -- one `user`/`assistant` turn in `messages[]`, `hop.turn_id` = `<session_id>#<index>`, `hop.turn_index` and `hop.happened_at` beside it. Filtered and attributed by the same rule as `write`, but **not the same document**: `write` is a closed day with its `rounds`, this is a turn. On by default. See "Per-turn episodes" below. |
@@ -217,7 +218,7 @@ for how to retune one, and for what `override_params` can and cannot do).
 | `tool_chars` | `4000` | per-item character cap on tool **result** texts before they enter the seam. |
 | `round_bytes` | `16000` | byte cap over the whole tool round, counted from the newest iteration backwards. What does not fit falls as a whole **iteration**. |
 | `memory_chars` | `8000` | character cap on the memory bundle **where the bundle travels**: the synthetic `memory_recall` tool result. ONE cap over the whole result text, so under `memory_form: both` it bounds the readable block and the machine-readable form *together* rather than each of them separately. `hop.memory_capped` is measured on that result. |
-| `max_iter` | `8` | how often a turn may re-enter the brain with a tool round. At the cap the seam leaves on `answer` instead. The count belongs to ONE round, and a turn opens one: since [#541](https://github.com/mmeyerlein/meclaw/issues/541) the two turn-opening lanes (`in_turn`, `in_advice`) start at zero whatever `iter` the arrival carried. `in_advice` is the answer lane of another hive's round and carries ITS count -- a core that spent nine iterations used to hand the surface a turn that was over before it began, and the seam left on `answer` with the raw assembled round where the answer belonged, no brain call at all. |
+| `max_iter` | `8` | how often a turn may re-enter the brain with a tool round. At the cap the seam leaves on `answer` instead, with `hop.partial=1` and a named partial answer as its last turn (`collector@3.5.0`, GH #570). The count belongs to ONE round, and a turn opens one: since [#541](https://github.com/mmeyerlein/meclaw/issues/541) the two turn-opening lanes (`in_turn`, `in_advice`) start at zero whatever `iter` the arrival carried. `in_advice` is the answer lane of another hive's round and carries ITS count -- a core that spent nine iterations used to hand the surface a turn that was over before it began, and the seam left on `answer` with the raw assembled round where the answer belonged, no brain call at all. |
 | `round_idle_ms` | `120000` | idle window of one tool round (two minutes). A round whose last progress is older **and** whose fan-in is incomplete is closed at the next occasion with synthetic error results and fires with `hop.round_stale=1`. |
 | `memory_tier` | `""` | empty = no memory leg at all, and the assembly waits for the window leg alone. `"0"` / `"1"` / `"2"` request that recall tier once per turn, and **the ambient leg arrives as a synthetic `memory_recall` result** at the end of the round -- never as durable system state (`collector@2.1.0`, GH #278). |
 | `memory_form` | `"readable"` | which form of the bundle reaches the brain **in that tool result**: `readable` (the rendered block a model reads), `json` (the machine-readable bundle), `both` (the two joined by a newline, under one call id and one cap). Applies to the ambient leg and to a model's own `memory_recall` call alike. Whatever the form, `system.memory` carries only the revocation -- the empty leaf on the fixed path `recall` plus the `$replace` marker on the node above it (see the `brain` lane, `collector@2.0.4`) -- and both halves are sent unconditionally, no longer chosen by this knob: an instance retuned from `readable` to `json` would otherwise carry its last leaf, or its last keys, for the rest of its life. |
@@ -346,7 +347,7 @@ caller that may use it, and no caller can offer a model anything nobody typed.
 own template says it uses -- and the schemas behind those names are **asked for**:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "collector@3.4.0",
+{"add_nodes": [{"name": "scribe", "template": "collector@3.5.0",
                 "override_params": {"assemble": {"tools": ["web_search", "web_fetch"]}}}]}
 ```
 
@@ -812,7 +813,44 @@ Every cap in this hive is a **read-time cut**. The full tool result stays in the
 table, the full conversation stays in `turns`, and no cap ever removes anything -- a capped
 value is a bounded preview of something the environment still holds, which is why the cut
 is reported (`hop.round_dropped`, `hop.round_capped`, `hop.memory_capped`, next to the
-existing `hop.window_*`) instead of happening quietly.
+existing `hop.window_*`) instead of happening quietly. **`hop.round_capped` is not the
+iteration cap alone**: it is raised by `round_bytes` and by `tool_chars` too, on a round
+that is still going. The exit is told apart by `hop.partial` (`collector@3.5.0`).
+
+### A capped round is a partial answer (GH #570, since `collector@3.5.0`)
+
+A round that spends its iteration budget leaves on `answer` with everything it collected.
+Until `3.5.0` that was the whole of it, and the last turn of the assembly was whatever the
+last tool happened to return. **The last turn is exactly what a consumer reads** -- the
+shipped surfaces take the last text of an answer and put it in front of a person -- so a
+core that capped mid-search handed its surface a raw `web_search` payload, and the surface
+wrote it into the conversation as the reply. The better the errand was going, the more
+certainly a tool got quoted at the reader.
+
+Since `3.5.0` the seam appends one turn of its own on that branch and only on it:
+
+```json
+{"origin": "assistant", "type": "text",
+ "text": "The round hit its iteration cap (max_iter=8) before an answer was written. Collected so far: 5 tool call(s) -- web_search, fetch_url. The last result began: ..."}
+```
+
+It is assembled here and never asked of a model: a round that could not finish is the one
+moment another provider call is the wrong answer, and a sentence that changes with the
+weather is not a marker a reader can learn. The tool names come from the `tool_call` turns
+of the round in call order, deduplicated; the head of the last result is whitespace-collapsed
+and cut to 200 characters. **Nothing is lost**: the raw round stays in the `round` table and
+`thread_recall` still reaches it -- what changed is the last *word*.
+
+**`hop.partial` is the marker `round_capped` could never be.** That key means two things at
+once -- the round ended early, or `round_bytes`/`tool_chars` trimmed some bytes off a round
+that is still going -- and only the first is an answer somebody is looking at. `partial` is
+the first alone. Like every key **this message** carries it is always present (`"1"` /
+`"0"`), because a CEL modifier that reads a missing key fails and a failed modifier skips
+the edge. The byte caps are untouched and stamp `partial=0` on the `brain` lane.
+
+Both keys belong to the SEAM and to nothing else: a real answer arrives on `in_answer` and
+leaves on `answer` carrying neither, so a reply edge still tells a real answer from a
+capped round with `!has(hop.round_capped)` -- which is what the shipped composites wire.
 
 ### Pruning: evidence first (GH #76)
 
@@ -1246,7 +1284,8 @@ in_bundle (with a memory_call_id)
           -> insert round(tool)          phase round-w      <- back in the regular fan-in
 round-check-> complete: ROUTE brain (iter + 1)              <- the same seam
              + update round set fired=1  phase round-done   <- per ITERATION
-          -> ROUTE answer (round_capped) <- at max_iter, instead of the brain
+          -> ROUTE answer (round_capped,   <- at max_iter, instead of the brain,
+                          partial)             ending on a named partial answer
           -> incomplete + idle: insert
              round(tool, 'tool result
              lost') per missing call     phase round-check  <- GH #103, back into
@@ -1354,8 +1393,9 @@ does not wait at all:
    call-only iterations common. So the acknowledgement completes the fan-in, the regular
    guard fires, and the seam re-enters the brain for the iteration the model has not spent.
    Nothing new stops it -- `params.max_iter` bounds this round like any other, and a spent
-   budget leaves the same seam on route `answer` with `hop.round_capped=1`. **A round
-   always ends in an answer**: a real one, `round_capped`, or `degraded` (GH #343).
+   budget leaves the same seam on route `answer` with `hop.round_capped=1` and
+   `hop.partial=1`. **A round always ends in an answer**: a real one, a partial one
+   (`partial`), or `degraded` (GH #343).
 
    The classification itself is *not* this cell's: which of the two classes a tool belongs
    to is tool semantics, and it is declared once, at the dispatcher, which is the only cell
@@ -1465,7 +1505,11 @@ It is revoked with the ids, by the same empty rendering, for the same reason.
   correlation id, the frame without one, the person's word and the agent's own voice left
   unframed beside it, and the rule under the open ids. Since GH #541 the round budget of a
   turn-opening lane -- an `in_advice` arrival carrying `iter=9` opens its round at zero, and
-  the counter-pin that a tool result still carries the round it belongs to.
+  the counter-pin that a tool result still carries the round it belongs to. Since 3.5.0 the
+  NAMED end of a capped round (GH #570): the last text of the answer is the digest and not
+  the raw payload, the last `messages[]` entry is an assistant text turn, `hop.partial` is
+  `"1"` -- and, the counter-pin, the byte cap raises `round_capped` with `partial == "0"`
+  and appends nothing.
 - `crates/meclaw-cells/tests/gh278_the_ambient_recall_is_a_tool_result.rs` -- the channel
   itself, since 2.1.0: the ambient bundle leaves the seam as the last `tool_call` /
   `tool_result` pair of `messages[]`, the call id is derived and therefore stable across a

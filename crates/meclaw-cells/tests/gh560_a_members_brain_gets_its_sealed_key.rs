@@ -24,7 +24,7 @@
 //! broker would measure `examples/vault-pilot` a second time
 //! (`gh452_the_vault_pilot_grows_a_granted_credential.rs` already does, end to
 //! end). What is new here is that the sealed box crosses `assistants`, the
-//! generation and the sealed `talky` rim in ONE hop, because `talky@4.6.0`
+//! generation and the sealed `talky` rim in ONE hop, because `talky@4.6.1`
 //! declares `./brain` as the connect point of that lane and Stage 6 checks it.
 //! So the member and the generation are grown from the shipped library through
 //! the mutation door, exactly the way `templates/member/README.md` §
@@ -418,7 +418,7 @@ fn member_manifest() -> Value {
     json!({"manifest": [{
         "scope": "/members",
         "diff": {
-            "add_nodes": [{"name": MEMBER, "template": "member@1.5.0",
+            "add_nodes": [{"name": MEMBER, "template": "member@1.5.1",
                            "override_params": {
                                "export-sink": {"sandbox": {"trust": "trusted"}},
                                "access/vault": {"unlock_env": UNLOCK_ENV}}}],
@@ -499,7 +499,7 @@ fn assistant_manifest(base_url: &str) -> Value {
                 "model_surface": "gpt-4o-mini"},
         "diff": {
             "add_nodes": [{"name": format!("assistants/{AGENT}"),
-                           "template": "assistant@2.4.0",
+                           "template": "assistant@2.4.1",
                            "override_params": {
                                // The brain under test: no bearer of its own
                                // (an empty string is not a bearer, GH #271), a
@@ -759,8 +759,8 @@ async fn a_the_members_brain_gets_its_sealed_key() {
         "growing the generation must commit; got {outcome:?}"
     );
     // THE mutation: four deep edges that skip three levels and land on a rim
-    // inside a sealed hive. It commits only because `talky@4.6.0` and
-    // `cogny@4.6.0` name `./brain` as the connect point of both lanes — Stage 6
+    // inside a sealed hive. It commits only because `talky@4.6.1` and
+    // `cogny@4.6.1` name `./brain` as the connect point of both lanes — Stage 6
     // refuses it by name otherwise, which is what test (b) measures.
     let outcome = apply(&h, v_lane_manifest()).await;
     assert!(

@@ -68,7 +68,7 @@ fn the_picture_holds_the_five_counts_arranged_and_untouched() {
     );
     // The suite must actually have run something -- an empty file "passes" too.
     assert!(
-        stdout.matches("  ok  ").count() >= 15,
+        stdout.matches("  ok  ").count() >= 20,
         "too few checks ran; did the suite lose its cases?\n{stdout}"
     );
 }

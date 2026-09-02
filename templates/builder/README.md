@@ -1,4 +1,4 @@
-# `builder@1.6.0`
+# `builder@1.6.1`
 
 The intake that turns a structural wish into a **manifest** — an ordered list of
 mutation declarations, ready to be submitted by whoever asked for it.
@@ -289,8 +289,14 @@ the prefix and never noticed
 
 The recipe **parameter** `scope` is unchanged: it is still the parent the wish
 talks about ("grow an org named acme under `/os`"). Only the rendered
-declaration moves down into the container. One level keeps the wide form, and it
-is a reachability fact rather than a taste — see § *The identity door is opt-in*.
+declaration moves down into the container. One level keeps the wide form on
+either of its two switches, and it is a reachability fact rather than a taste:
+the identity door reaches `./affinity` and the credential road reaches
+`./access`, both **siblings** of `./assistants` that no declaration standing
+inside the container can name, and the lowest common ancestor of a brain and
+either of them is the member. See § *The identity door is opt-in* and
+§ *The credential lanes are opt-in too, and they ride in the level's own
+declaration*.
 
 An **assistant** level costs the two turn doors (`in_turn`, `in_bundle`, both
 guarded on `context.assistant`), `in_build_result`, the eight exits `answer`,
@@ -331,9 +337,9 @@ on a `channel` (§ *A round is provenance*).
 | `override_params` | optional | addressed per cell of the template (`{"cogny/brain": {"temperature": 0.2}}`) |
 | `birth` | optional | `active` or `inactive` — the door's own vocabulary, written top-level on the `add_nodes` entry. A name the door does not know is refused here as `birth_unknown`, one hop from the wish that made it, rather than at the door one hop from the manifest. The default is the door's (`active`) for every level except `channel`, which is born **asleep** |
 | `subscribe` | optional, `assistant` | draw the identity door as well — since #561 four v-lanes: one push from the member's own `./affinity` into each brain rim of the generation, and one `pack_ack` drain back from each. It is not part of the level and is not counted in the table above; see § *The identity door is opt-in* |
-| `credential` | optional, `assistant` | grow the generation with **no key of its own** — four more v-lanes to the member's own broker, the grants that answer them, and both credential params on both brains. `{"cred_ref": …, "subject": …, "expires_at": …}` are required inside it, `rule_id` and `rate_per_min` optional. It renders a SECOND declaration and is not counted in the table above; see § *The credential lanes are opt-in too* |
+| `credential` | optional, `assistant` | grow the generation with **no key of its own** — four more v-lanes to the member's own broker, the grants that answer them, and both credential params on both brains. `{"cred_ref": …, "subject": …, "expires_at": …}` are required inside it, `rule_id` and `rate_per_min` optional. Since `1.6.1` it is drawn in the SAME declaration as the generation, which stands at the member for it; the four edges are not counted in the table above; see § *The credential lanes are opt-in too, and they ride in the level's own declaration* |
 
-### The credential lanes are opt-in too, and they are a second declaration
+### The credential lanes are opt-in too, and they ride in the level's own declaration
 
 Since `1.6.0` a generation can be grown that spends a key it does not hold: the
 provider credential lives in the member's own `access`, and each brain **asks**
@@ -344,22 +350,37 @@ the form `templates/member/README.md` § *The credential v-lanes* publishes and
 naming the lane they carry, drawn at the member's own scope because that is
 where the lowest common ancestor of a brain and the broker is.
 
-**It is a second declaration, and that is a substrate fact rather than a
-preference.** The lane ends on `<generation>/talky/brain`, two levels *inside*
-the node the first declaration gives birth to, and the connect point that makes
-it legal is declared by `talky`/`cogny` — not by the generation. A mutation
-reads the contract of a hive it gives birth to from the template **root** only
-(`colony.rs`, [#562](https://github.com/mmeyerlein/meclaw/issues/562)), so the
+**Since `1.6.1` they are drawn in the same declaration that grows the
+generation.** The lane ends on `<generation>/talky/brain`, two levels *inside*
+the node that declaration gives birth to, and the connect point that makes it
+legal is declared by `talky`/`cogny` — not by the generation. Until
+[#567](https://github.com/mmeyerlein/meclaw/issues/567) a mutation read the
+contract of a hive it gives birth to from the template **root** only, so the
 same four edges drawn beside the `add_nodes` that creates their target's
-grandparent are refused `v_lane_no_connect_point`. One declaration later the
-level stands and its contracts are read off the disk.
+grandparent were refused `v_lane_no_connect_point` and had to travel one
+declaration later. Stage 6 now reads the whole **staged subtree** with `ref`
+markers resolved, so the connect point is found in the act that creates it.
 
-Order is therefore semantics here as everywhere else: a manifest rolls forward
-with no rollback, so a refusal on the second declaration leaves a generation
-whose brains hold an empty `api_key` and name a grant nobody wired. That failure
-is **loud** — the first turn emits `credential_request` onto no edge and dead
-letters `no_route` — which is what makes two acts acceptable. Seeding the grants
-first would leave permission rows for a generation that may never exist.
+That retires the order argument this section used to carry. A manifest rolls
+forward with no rollback, so two acts meant a refusal on the second could leave
+a generation whose brains hold an empty `api_key` and name a grant nobody wired
+— loudly, because the first turn emits `credential_request` onto no edge and
+dead letters `no_route`, but standing all the same. There is no roll-forward
+between two acts any more: node, edges and grants are judged together and land
+together or not at all.
+
+The declaration therefore stands at the **member**, one storey above the
+container an assistant otherwise declares itself in
+([#503](https://github.com/mmeyerlein/meclaw/issues/503)) — the wide form
+`subscribe` already takes for the identity door, for the same reason: an edge
+lives in the graph of the lowest common ancestor of its endpoints. Ask for both
+switches at once and it is still **one** declaration: one node named
+`assistants/<generation>`, one scope, and every edge of both roads behind the
+level's own.
+
+`examples/organism/grow-credentials.json` stays what it always was and is still
+the byte truth of these four edges — applied on its own it wires a generation
+that already **stands**, which is a legitimate operation of its own.
 
 The grant **handle** is built rather than asked for:
 `grant:<cred tail>@<subject>/<consumer>`, one per consumer, because the answer

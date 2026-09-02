@@ -5397,23 +5397,51 @@ pub(crate) async fn handle_mutation(
         // what a grow recipe is, one `add_nodes` and the level's edges beside
         // it — and the rule table asks the target for a connect point. Until
         // the node is staged that declaration lives only in the template
-        // directory, which is exactly the read `contract_from_cell_dir` was
-        // split out for. Appended, never substituted: a path that already
-        // stands keeps the contract it was born with, so a diff cannot talk a
-        // live hive into a connect point by naming a template.
+        // directory. Appended, never substituted: a path that already stands
+        // keeps the contract it was born with, so a diff cannot talk a live
+        // hive into a connect point by naming a template.
         //
-        // `add_nodes` ONLY, and the limit is deliberate rather than forgotten:
-        // a `swap_nodes` successor is read for its own re-anchor verdict a few
-        // lines down (`v_lane_reanchor_verdict`, which is handed
-        // `from_template` for exactly this case), but it does not reach THIS
-        // list — so a v-lane drawn in the same diff onto a connect point of a
-        // node the diff SWAPS in still earns `v_lane_no_connect_point`. Two
-        // readers of one declaration would be worse than one narrow one; the
-        // shape has no caller in the shipped tree (a generation change swaps
-        // and rewires in separate declarations), and closing it belongs with
-        // the deeper gap beside it — the contract of a hive INSIDE a newborn
-        // subtree, which a naive directory walk gets wrong because a `ref`
-        // marker holds no contract of its own. Both halves are GH #567.
+        // GH #567: the WHOLE staged subtree, and both doors that stage one.
+        //
+        // The read used to be one file, `contract_from_cell_dir` on the
+        // template ROOT, and for a composite template that is the wrong file:
+        // the rim that declares the connect point is an occupant reached
+        // through a `ref` marker (`talky` inside an `assistant`), and a marker
+        // directory holds no contract of its own — the declaration lives in a
+        // different template altogether. So the connect point of a newborn's
+        // nested rim was invisible, and a grow recipe that drew the lane in the
+        // same breath earned `v_lane_no_connect_point` for a connect point that
+        // was declared all along. It is now the ref-aware walk the staging
+        // itself uses (`contracts_from_template_subtree`), and the root case is
+        // its first element rather than a case beside it.
+        //
+        // The second door is `swap_nodes[].with`. Its contract WAS read a few
+        // hundred lines down, for the re-anchor verdict
+        // (`v_lane_reanchor_verdict`) — and thrown away, so one declaration
+        // answered two questions through two readers that were free to
+        // disagree: one saw the template ROOT file, this one sees the
+        // ref-resolved subtree. The read is hoisted here, feeds this list, and
+        // is handed on to the swap block, so there is exactly ONE.
+        //
+        // In the spelling a generation change actually uses (GH #256:
+        // `add_nodes` grows the successor, `swap_nodes[].with` NAMES it) the
+        // append dedup makes the contribution a no-op — and that is the point:
+        // the two doors cannot disagree about what the successor declares. The
+        // INSTANTIATE form (`with.template`) reaches the same list, but it
+        // cannot stage a HIVE at all today: apply spawns the staged node as a
+        // cell and reports `spawn: factory missing for hive` (measured
+        // 2026-09-02). For a hive successor the contribution is therefore
+        // structural rather than observable.
+        //
+        // Cost, said plainly: in the generation-change spelling the successor's
+        // template is WALKED twice per mutation — once here, once in the
+        // `add_nodes` loop above — because the two loops are keyed on different
+        // diff entries. What is not duplicated is the READER: both walks end in
+        // `contracts_from_template_subtree`, so there is one interpretation of
+        // `params.contract` and one dedup deciding what reaches the boundary.
+        // One reader, two walks; the walk is the same one staging performs
+        // anyway, and de-duplicating it would mean caching by template path
+        // across two unrelated diff arrays for no verdict change.
         //
         // Review 2026-09-01 (M1): the newborn declarations reach the PORT
         // BOUNDARY and nothing else. They used to be appended to
@@ -5428,6 +5456,37 @@ pub(crate) async fn handle_mutation(
         // break yet") false. So the birth contracts live in their own list and
         // are joined for exactly one call.
         let mut newborn_contracts: Vec<crate::mutation::hive_contract::HiveContract> = Vec::new();
+        // Review 2026-09-02 (fix round 1): the guard asks what STANDS, not what
+        // DECLARED. `collect_hive_contracts` only emits a hive that declared a
+        // contract, so `hive_contracts` cannot answer "is this path occupied" —
+        // a standing hive that declares nothing is invisible in it. That gap is
+        // not academic: an `add_nodes` at an occupied path whose cells are
+        // stopped is a legal RESUME (subtracted from the stage-4 collision
+        // check), and a resume stages nothing and rewrites no `config.json`. So
+        // a resume that names a template with connect points would have handed
+        // this list declarations for paths that stand with different ones — or
+        // with none — and the port boundary would have permitted a v-lane onto
+        // a connect point that exists nowhere on disk. GH #562 shipped the
+        // root-level half of that; reading the whole subtree widened it.
+        //
+        // `hive_scopes` is the colony's own answer to "which paths are hives",
+        // the same table `collect_hive_contracts` was just handed, and it is
+        // taken as a snapshot so the borrow ends here. A cheaper but coarser
+        // handle exists (`resume_entry_names`, the `add_nodes` entries step 1a
+        // classified as resumes) — this one is preferred because it is exact
+        // for the PARTIAL subtree resume too: a nested hive the resume really
+        // does stage still contributes its birth contract, and only the paths
+        // that already stand keep what they were born with.
+        let standing_hive_paths: Vec<String> = hive_scopes
+            .paths()
+            .map(|p| p.as_str().to_string())
+            .collect();
+        let already_spoken_for =
+            |path: &str, newborn: &[crate::mutation::hive_contract::HiveContract]| -> bool {
+                standing_hive_paths.iter().any(|h| h == path)
+                    || hive_contracts.iter().any(|c| c.hive_path == path)
+                    || newborn.iter().any(|c| c.hive_path == path)
+            };
         if let Some(adds) = diff_subst.get("add_nodes").and_then(|v| v.as_array()) {
             for n in adds {
                 let (Some(name), Some(tpl_ref)) = (
@@ -5441,17 +5500,91 @@ pub(crate) async fn handle_mutation(
                 };
                 let born = crate::mutation::resolve_scoped_path(guard_scope, name);
                 let born = born.as_str();
-                if hive_contracts.iter().any(|c| c.hive_path == born)
-                    || newborn_contracts.iter().any(|c| c.hive_path == born)
-                {
-                    continue;
-                }
-                if let Some(c) = crate::mutation::hive_contract::contract_from_cell_dir(
+                for c in crate::mutation::hive_contract::contracts_from_template_subtree(
                     &tpl.filesystem_path,
                     born,
+                    &templates,
                 ) {
+                    // Appended, never substituted — per PATH, root included:
+                    // a hive that stands keeps the contract it was born with,
+                    // and an earlier entry of this diff keeps what it said.
+                    if already_spoken_for(&c.hive_path, &newborn_contracts) {
+                        continue;
+                    }
                     newborn_contracts.push(c);
                 }
+            }
+        }
+        // GH #567, the second door: a `swap_nodes` successor is staged by this
+        // same diff, so its contracts are birth contracts like any other.
+        //
+        // Resolved HERE rather than in the swap block below, because the port
+        // boundary is built in the next statement and the swap block runs after
+        // it — and because the successor's own re-anchor verdict must be
+        // measured against the same read. `(t2, t3, root contract)` travels to
+        // that block; the whole subtree travels into the list.
+        let mut swap_successors: Vec<(
+            meclaw_core::Path,
+            meclaw_core::Path,
+            Option<crate::mutation::hive_contract::HiveContract>,
+        )> = Vec::new();
+        if let Some(swaps) = diff_subst.get("swap_nodes").and_then(|v| v.as_array()) {
+            for s in swaps {
+                let (Some(t2_name), Some(t3_name)) = (
+                    s.get("match")
+                        .and_then(|v| v.get("name"))
+                        .and_then(|v| v.as_str()),
+                    s.get("with")
+                        .and_then(|v| v.get("name"))
+                        .and_then(|v| v.as_str()),
+                ) else {
+                    continue; // shape is stage 4's verdict
+                };
+                let t2 = crate::mutation::resolve_scoped_path(guard_scope, t2_name);
+                let t3 = crate::mutation::resolve_scoped_path(guard_scope, t3_name);
+                let staged_template = s
+                    .get("with")
+                    .and_then(|v| v.get("template"))
+                    .and_then(|v| v.as_str())
+                    .or_else(|| {
+                        // Befund 6 / GH #179: `egon2` and `./egon2` are the SAME
+                        // node, and the two keys are written by two different
+                        // hands in the same diff. Comparing the raw spellings
+                        // made a mixed-spelling generation change lose its
+                        // successor's template and refuse a v-lane that had a
+                        // perfectly good home — so both sides resolve first,
+                        // exactly as every other reader on the mutation surface
+                        // does before deciding anything.
+                        diff_subst
+                            .get("add_nodes")
+                            .and_then(|v| v.as_array())?
+                            .iter()
+                            .find(|n| {
+                                n.get("name").and_then(|v| v.as_str()).is_some_and(|name| {
+                                    crate::mutation::resolve_scoped_path(guard_scope, name) == t3
+                                })
+                            })?
+                            .get("template")?
+                            .as_str()
+                    });
+                let staged = staged_template
+                    .and_then(|r| templates.resolve(r).ok())
+                    .map(|tpl| {
+                        crate::mutation::hive_contract::contracts_from_template_subtree(
+                            &tpl.filesystem_path,
+                            t3.as_str(),
+                            &templates,
+                        )
+                    })
+                    .unwrap_or_default();
+                let from_template = staged.iter().find(|c| c.hive_path == t3.as_str()).cloned();
+                for c in staged {
+                    if already_spoken_for(&c.hive_path, &newborn_contracts) {
+                        continue;
+                    }
+                    newborn_contracts.push(c);
+                }
+                swap_successors.push((t2, t3, from_template));
             }
         }
         // Borrowed in the overwhelmingly common case (no `add_nodes`, or none
@@ -5588,6 +5721,99 @@ pub(crate) async fn handle_mutation(
                     ));
                 }
             }
+
+            // GH #564 (face 1): the same trap turned INWARD — two entries of
+            // THIS diff.
+            //
+            // The loop above asks every entry about the PRE-STATE, and two
+            // entries of one diff never meet there. The apply arm does meet
+            // them: it dedups each candidate against the GROWING table, so the
+            // first entry is inserted, the second is found content-equal on
+            // the five terms and is skipped without a word — and the caller is
+            // handed `Committed` for a lane that was never laid. Same outcome
+            // as the standing case, one door further in.
+            //
+            // Ruling (2026-09-02, on #564): `lane` does NOT become a sixth
+            // identity term. Two edges differing only in the lane would both
+            // be routed, and a double delivery is a worse answer than a
+            // refusal. So this face gets its own pre-destructive check that
+            // MIRRORS the one above — same reading of the five terms, same
+            // `edge_schema`, same stage — rather than a third ad-hoc guard
+            // somewhere down the apply path.
+            //
+            // Two entries that AGREE stay silent for the reason they do above:
+            // a generator that lists the same edge twice asked for one edge
+            // and gets one. `remove_edges` is no way out here — it takes
+            // standing edges away, and both halves of this collision are being
+            // drawn by this very diff.
+            let lane_says = |l: Option<&str>| {
+                l.map_or_else(
+                    || "declares no lane".to_string(),
+                    |l| format!("declares lane '{l}'"),
+                )
+            };
+            let mut seen: Vec<(
+                usize,
+                crate::mutation::validate::EdgeMatchView,
+                Option<&str>,
+            )> = Vec::new();
+            for (j, e) in adds.iter().enumerate() {
+                let (Some(from), Some(to)) = (
+                    e.get("from").and_then(|v| v.as_str()),
+                    e.get("to").and_then(|v| v.as_str()),
+                ) else {
+                    continue; // a shape earlier stages refuse
+                };
+                let lane = e.get("lane").and_then(|v| v.as_str());
+                let view = crate::mutation::validate::EdgeMatchView {
+                    from: crate::mutation::resolve_scoped_path(guard_scope, from)
+                        .as_str()
+                        .to_string(),
+                    to: crate::mutation::resolve_scoped_path(guard_scope, to)
+                        .as_str()
+                        .to_string(),
+                    condition_source: e
+                        .get("condition")
+                        .and_then(|v| v.as_str())
+                        .map(std::string::ToString::to_string),
+                    modifier_source: crate::mutation::modifier_spec_from_add_entry(e)
+                        .and_then(|spec| meclaw_core::serde_json::to_value(&spec).ok()),
+                    is_default: e.get("default").and_then(|v| v.as_bool()).unwrap_or(false),
+                };
+                if let Some((i, _, earlier_lane)) =
+                    seen.iter().find(|(_, earlier, earlier_lane)| {
+                        *earlier_lane != lane
+                            && crate::mutation::validate::edge_identity_equal(
+                                earlier,
+                                view.from.as_str(),
+                                view.to.as_str(),
+                                view.condition_source.as_deref(),
+                                view.modifier_source.as_ref(),
+                                view.is_default,
+                            )
+                    })
+                {
+                    // Both indices and both lanes, because the caller cannot
+                    // see from the outside which two of their lines collapsed
+                    // into one.
+                    let err = crate::mutation::MutationError::EdgeSchema(format!(
+                        "add_edges[{i}] {a} and add_edges[{j}] {b} on '{from_abs}' -> \
+                         '{to_abs}', but the five routing terms are equal. Edge identity is \
+                         the five terms, so the second entry would be silently dropped by the \
+                         apply arm; keep one lane, or draw two different edges.",
+                        a = lane_says(*earlier_lane),
+                        b = lane_says(lane),
+                        from_abs = view.from.as_str(),
+                        to_abs = view.to.as_str()
+                    ));
+                    rejection.push(crate::mutation::rejection::Violation::from_error(
+                        crate::mutation::rejection::Stage::ContractLocality,
+                        &err,
+                        Some(format!("add_edges[{j}]")),
+                    ));
+                }
+                seen.push((j, view, lane));
+            }
         }
 
         // GH #559 (ruling R-V2): a `swap_nodes` that would strand a v-lane.
@@ -5602,69 +5828,23 @@ pub(crate) async fn handle_mutation(
         // The successor's contract comes from the live hive when it already
         // stands, and from the TEMPLATE when the same diff is growing it —
         // which is the shape a generation change uses (GH #256: `add_nodes` +
-        // `swap_nodes` in one mutation). Both go through the ONE reader
-        // (`contract_from_cell_dir`), so a declaration cannot mean one thing at
-        // instantiation and another at the swap.
-        if let Some(swaps) = diff_subst.get("swap_nodes").and_then(|v| v.as_array()) {
-            for s in swaps {
-                let (Some(t2_name), Some(t3_name)) = (
-                    s.get("match")
-                        .and_then(|v| v.get("name"))
-                        .and_then(|v| v.as_str()),
-                    s.get("with")
-                        .and_then(|v| v.get("name"))
-                        .and_then(|v| v.as_str()),
-                ) else {
-                    continue; // shape is stage 4's verdict
-                };
-                let t2 = crate::mutation::resolve_scoped_path(guard_scope, t2_name);
-                let t3 = crate::mutation::resolve_scoped_path(guard_scope, t3_name);
-                let staged_template = s
-                    .get("with")
-                    .and_then(|v| v.get("template"))
-                    .and_then(|v| v.as_str())
-                    .or_else(|| {
-                        // Befund 6 / GH #179: `egon2` and `./egon2` are the SAME
-                        // node, and the two keys are written by two different
-                        // hands in the same diff. Comparing the raw spellings
-                        // made a mixed-spelling generation change lose its
-                        // successor's template and refuse a v-lane that had a
-                        // perfectly good home — so both sides resolve first,
-                        // exactly as every other reader on the mutation surface
-                        // does before deciding anything.
-                        diff_subst
-                            .get("add_nodes")
-                            .and_then(|v| v.as_array())?
-                            .iter()
-                            .find(|n| {
-                                n.get("name").and_then(|v| v.as_str()).is_some_and(|name| {
-                                    crate::mutation::resolve_scoped_path(guard_scope, name) == t3
-                                })
-                            })?
-                            .get("template")?
-                            .as_str()
-                    });
-                let from_template = staged_template
-                    .and_then(|r| templates.resolve(r).ok())
-                    .and_then(|tpl| {
-                        crate::mutation::hive_contract::contract_from_cell_dir(
-                            &tpl.filesystem_path,
-                            t3.as_str(),
-                        )
-                    });
-                let successor = hive_contracts
-                    .iter()
-                    .find(|c| c.hive_path == t3.as_str())
-                    .or(from_template.as_ref());
-                if let Err(err) =
-                    crate::mutation::swap::v_lane_reanchor_verdict(&t2, &t3, edges, successor)
-                {
-                    rejection.push(crate::mutation::rejection::Violation::from_error(
-                        crate::mutation::rejection::Stage::ContractLocality,
-                        &err,
-                        Some(t3.as_str().to_string()),
-                    ));
-                }
+        // `swap_nodes` in one mutation). Both go through the ONE reader, so a
+        // declaration cannot mean one thing at instantiation and another at the
+        // swap — and since GH #567 that read happens once, up at the birth
+        // contracts (`swap_successors`), where the port boundary needs it too.
+        for (t2, t3, from_template) in &swap_successors {
+            let successor = hive_contracts
+                .iter()
+                .find(|c| c.hive_path == t3.as_str())
+                .or(from_template.as_ref());
+            if let Err(err) =
+                crate::mutation::swap::v_lane_reanchor_verdict(t2, t3, edges, successor)
+            {
+                rejection.push(crate::mutation::rejection::Violation::from_error(
+                    crate::mutation::rejection::Stage::ContractLocality,
+                    &err,
+                    Some(t3.as_str().to_string()),
+                ));
             }
         }
         if !rejection.is_empty() {
@@ -6562,6 +6742,15 @@ pub(crate) async fn handle_mutation(
             // with. If a resume path ever lets a subtree land on paths that
             // already carry edges, this is the second door and it needs the
             // same check.
+            //
+            // GH #564 named the two doors and ruled on them: this is FACE 2,
+            // and it stays a comment because it is unreachable. FACE 1 — two
+            // entries of ONE diff, five terms equal, lanes different — is
+            // reachable and is checked in stage 6 (search `GH #564 (face 1)`
+            // in `handle_mutation`), pre-destructively and by name.
+            // The ruling both faces rest on: `lane` is NOT a sixth identity
+            // term, because two edges differing only in the lane would both
+            // route.
             let candidate = crate::edge_table::Edge {
                 id: Uuid::now_v7(),
                 from: edge.from.clone(),

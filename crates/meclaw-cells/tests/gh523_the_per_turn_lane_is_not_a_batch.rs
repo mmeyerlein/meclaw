@@ -278,7 +278,7 @@ fn no_topology_hands_the_per_turn_route_to_the_batch_adapter() {
          so two per-turn deliveries of one session overwrite each other between \
          park and probe -- the same turn leaves twice and the other never leaves. \
          Wire `turn_write` at the memory hive's `in_episode` door instead, the way \
-         `member@1.5.0` and `w9a_per_turn_colony.rs` do. Found: {found:#?}"
+         `member@1.5.1` and `w9a_per_turn_colony.rs` do. Found: {found:#?}"
     );
 }
 

@@ -93,6 +93,29 @@ fn grown_assistant(subscribe: bool) -> Value {
     out["manifest"].clone()
 }
 
+/// The same manifest with BOTH opt-ins of the level asked for at once — the
+/// identity door and the credential road (GH #560, GH #567).
+fn grown_assistant_with_both_switches() -> Value {
+    let params = json!({"scope": MEMBER, "level": "assistant", "name": NAME,
+                        "template": "a-template@1.0.0", "subscribe": true,
+                        "credential": {"cred_ref": "cred:example-provider:primary",
+                                       "subject": "member:alex",
+                                       "expires_at": "2099-01-01T00:00:00.000000Z"}});
+    let wish = json!({"recipe": "grow_level", "request": "grow an assistant",
+                      "params": params})
+    .to_string();
+    let out = emit_one(
+        &shipped_script(RECIPES),
+        &json!({
+            "target": "/os/builder/recipes",
+            "header": {"hop": {"route": "recipe"}, "context": {}},
+            "ttl": 64,
+            "messages": [{"origin": "tool", "type": "tool_result", "id": "", "text": wish}],
+        }),
+    );
+    out["manifest"].clone()
+}
+
 /// The store's answer to an un-parking `select`, with the requester the
 /// substrate stamped on the submission.
 fn unpark(phase: &str, decls: &Value, requester: &str) -> Vec<Value> {
@@ -167,6 +190,42 @@ fn the_manifest_grow_level_renders_survives_the_form_check() {
     assert_eq!(
         args["subject"], OPERATOR,
         "R-AC-1: the identity the substrate stamped, unchanged"
+    );
+}
+
+/// Both opt-ins at once are still ONE declaration, and the gate still reads it.
+///
+/// Since `builder@1.6.1` the credential road is drawn beside the level instead
+/// of one declaration later (GH #567), and both switches move the declaration to
+/// the MEMBER — the same wide form, for the same reason: an edge lives in the
+/// graph of the lowest common ancestor of its endpoints. What matters here is
+/// that the created-node branch of the form check still finds its addressee:
+/// the `in_pack` edge ends inside a node named `assistants/<name>` in the very
+/// same diff, and four v-lanes now stand between it and the end of the list.
+#[test]
+fn both_switches_at_once_are_one_declaration_the_gate_still_reads() {
+    let decls = grown_assistant_with_both_switches();
+    let list = decls.as_array().expect("a manifest");
+    assert_eq!(
+        list.len(),
+        1,
+        "the generation, its door and its credential road are one act: {decls:?}"
+    );
+    assert_eq!(
+        list[0]["diff"]["add_nodes"][0]["name"],
+        json!("assistants/scribe"),
+        "the wide form names its child through the container"
+    );
+    assert!(
+        list[0]["diff"]["seed_rows"].is_array(),
+        "the grants ride in the same diff: {decls:?}"
+    );
+    let out = unpark("parked", &decls, OPERATOR);
+    assert_eq!(
+        refused(&out),
+        None,
+        "the manifest the shipped renderer emits for both switches was refused \
+         by the shipped gate: {out:?}"
     );
 }
 
@@ -300,6 +359,76 @@ fn a_target_the_declaration_does_not_create_is_still_refused() {
     );
 }
 
+/// GH #566: the created-node branch trusts a name only when the SAME
+/// declaration can actually bring it into the world — under its own scope,
+/// with a template. A name that escapes the scope or carries no template is
+/// not "a node this declaration creates", so the edge is refused by form.
+#[test]
+fn an_anchor_that_escapes_the_scope_is_not_a_created_node() {
+    let decls = json!([{ "scope": MEMBER, "ctx": {},
+        "diff": { "add_nodes": [{ "name": "../dana/assistants/scribe",
+                                  "template": "a-template@1.0.0" }],
+                  "add_edges": [{ "from": "./affinity",
+                                  "to": "../dana/assistants/scribe/talky",
+                                  "modifier": { "set_hop": { "route": "'in_pack'" } } }] } }]);
+    let out = unpark("parked", &decls, OPERATOR);
+    assert_eq!(
+        refused(&out).as_deref(),
+        Some("subscribe_target_not_self"),
+        "a node outside the declaration's own scope anchors nothing: {out:?}"
+    );
+    assert!(
+        out.iter().all(|m| m["header"]["route"] != json!("ask")),
+        "a form refusal never reaches the broker"
+    );
+}
+
+/// The other half of GH #566: an `add_nodes` entry that instantiates nothing —
+/// neither a `template` nor an `adopt` block — brings no addressee into the
+/// world, so the name it carries cannot anchor a door.
+#[test]
+fn an_anchor_without_a_template_is_not_a_created_node() {
+    let decls = json!([{ "scope": MEMBER, "ctx": {},
+        "diff": { "add_nodes": [{ "name": "assistants/scribe" }],
+                  "add_edges": [{ "from": "./affinity", "to": "./assistants/scribe/talky",
+                                  "modifier": { "set_hop": { "route": "'in_pack'" } } }] } }]);
+    let out = unpark("parked", &decls, OPERATOR);
+    assert_eq!(
+        refused(&out).as_deref(),
+        Some("subscribe_target_not_self"),
+        "an entry that instantiates nothing anchors nothing: {out:?}"
+    );
+    assert!(
+        out.iter().all(|m| m["header"]["route"] != json!("ask")),
+        "a form refusal never reaches the broker"
+    );
+}
+
+/// The other direction of GH #566: `adopt` is the SECOND way a declaration
+/// brings a node into the world — an instantiation from an existing on-disk
+/// cell, with a fresh cell id — and the door's own grammar makes `adopt` and
+/// `template` mutually exclusive. So an adopted node anchors the created-node
+/// branch exactly like an instantiated one, and a check that demanded a
+/// `template` would refuse a door the declaration really does create.
+#[test]
+fn an_adopted_node_is_a_created_node() {
+    let decls = json!([{ "scope": MEMBER, "ctx": {},
+        "diff": { "add_nodes": [{ "name": "assistants/scribe",
+                                  "adopt": { "type": "echo", "version": "0.1.0" } }],
+                  "add_edges": [{ "from": "./affinity", "to": "./assistants/scribe/talky",
+                                  "modifier": { "set_hop": { "route": "'in_pack'" } } }] } }]);
+    let out = unpark("parked", &decls, OPERATOR);
+    assert_eq!(
+        refused(&out),
+        None,
+        "an adopt entry instantiates, so the addressee is this declaration's own: {out:?}"
+    );
+    assert!(
+        out.iter().any(|m| m["header"]["route"] == json!("ask")),
+        "and the form having held, the broker is asked for the permission"
+    );
+}
+
 /// A foreign, existing path stays foreign — in both spellings, and even when the
 /// same declaration creates something else entirely.
 #[test]
@@ -357,6 +486,18 @@ fn the_readme_publishes_both_branches_of_the_target_rule() {
         flat.contains("a node the same declaration creates with `add_nodes`"),
         "the README must publish the second branch of the target rule"
     );
+    // GH #566: the branch is only as narrow as its anchor, so the two
+    // properties the anchor must have are published beside the branch itself.
+    assert!(
+        flat.contains("under the declaration's own scope"),
+        "the README must say that a created name only anchors a door when it \
+         lies under the declaration's own scope"
+    );
+    assert!(
+        flat.contains("a `template`, or an `adopt` block"),
+        "the README must publish BOTH instantiating shapes as anchors — a reader \
+         told only about `template` would believe an adopted node cannot have a door"
+    );
 
     // The other public surface says the same thing, or a model reading the
     // catalogue learns a rule the gate no longer has.
@@ -376,6 +517,21 @@ fn the_readme_publishes_both_branches_of_the_target_rule() {
     assert!(
         purpose.contains("RESOLVED against that declaration's scope"),
         "and it must say that the endpoints are resolved before they are compared"
+    );
+    // The refusal's own words are the surface a caller repairs from, and #566
+    // widened them rather than minting a second code — so the detail is pinned
+    // where the code is decided, in the shipped script itself. The anchor is a
+    // fragment of ONE source literal: the script's own `"a" "b"` concatenation
+    // is a runtime join, and a phrase spanning two literals is not in the file.
+    assert!(
+        shipped_script(GATE).contains("entry that instantiates nothing -- no template"),
+        "the `subscribe_target_not_self` detail must name the anchor case too, \
+         or a caller told only the class repairs blind"
+    );
+    assert!(
+        purpose.contains("verifies its own anchor"),
+        "and the catalogue must publish the anchor check of GH #566 too — a model \
+         reading only the description would otherwise learn the wider rule"
     );
 
     // The mechanism, both halves: the resolution and the creation branch.

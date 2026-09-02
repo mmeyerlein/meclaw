@@ -143,7 +143,7 @@ fn grow_level(params: Value) -> Value {
 fn rendered_transfer_edges(name: &str) -> Vec<Value> {
     let decl = grow_level(json!({
         "scope": format!("/members/{MEMBER}"), "level": "assistant", "name": name,
-        "template": "assistant@2.4.0"}));
+        "template": "assistant@2.4.1"}));
     decl["diff"]["add_edges"]
         .as_array()
         .expect("add_edges")
@@ -512,7 +512,7 @@ fn member_manifest(export_dir: &std::path::Path) -> Value {
         // member is named bare, and the path it lands at is unchanged.
         "scope": "/members",
         "diff": {
-            "add_nodes": [{"name": MEMBER, "template": "member@1.5.0",
+            "add_nodes": [{"name": MEMBER, "template": "member@1.5.1",
                            "override_params": over}],
             "add_edges": container_edges(),
         }
@@ -525,7 +525,7 @@ fn member_manifest(export_dir: &std::path::Path) -> Value {
 fn grown_generation(name: &str) -> Value {
     let decl = grow_level(json!({
         "scope": format!("/members/{MEMBER}"), "level": "assistant", "name": name,
-        "template": "assistant@2.4.0",
+        "template": "assistant@2.4.1",
         // The three brains of a generation are the doubles named in the header,
         // and a `ctx` key is still required: the model is a RESOLVED literal in
         // the template's `requires`, and the mutation refuses a generation whose

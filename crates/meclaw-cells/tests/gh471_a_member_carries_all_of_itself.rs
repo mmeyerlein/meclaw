@@ -126,9 +126,17 @@ fn shipped_config(rel: &str) -> Value {
 }
 
 fn rows(db: &std::path::Path, sql: &str) -> Vec<Vec<String>> {
-    assert!(db.is_file(), "no cell.db at {}", db.display());
+    if !db.is_file() {
+        return Vec::new();
+    }
     let conn = rusqlite::Connection::open(db).expect("open cell.db");
-    let mut st = conn.prepare(sql).expect("prepare");
+    let mut st = match conn.prepare(sql) {
+        Ok(st) => st,
+        // The store creates its tables when it first wakes; a keeper nobody has
+        // spoken to yet has a file and no schema, and that is an empty ledger
+        // rather than a defect (GH #565).
+        Err(_) => return Vec::new(),
+    };
     let n = st.column_count();
     st.query_map([], |r| {
         Ok((0..n)
@@ -432,7 +440,7 @@ fn member_manifest(export_dir: Option<&std::path::Path>) -> Value {
         // member is named bare, and the path it lands at is unchanged.
         "scope": "/members",
         "diff": {
-            "add_nodes": [{"name": MEMBER, "template": "member@1.5.0",
+            "add_nodes": [{"name": MEMBER, "template": "member@1.5.1",
                            "override_params": over}],
             "add_edges": container_edges(),
         }

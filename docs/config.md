@@ -305,7 +305,10 @@ because an `add_edges` entry that states the lane INTO the hive path is refused
 does not carry it** in the union of its occupants' lanes
 (`development-rules.md` § 8b). Everything else is
 unchanged: the connect points are policed per edge at mutation time, and a lane
-without `at` is judged exactly as it always was.
+without `at` is judged exactly as it always was. A connect point counts from instantiation
+on: when the same mutation brings the hive into existence, its contract is read
+out of the template's staged subtree — `ref` markers resolved, so it is found in
+an occupant that comes from a different template too (GH #567).
 
 ```json
 "contract": {
@@ -390,8 +393,11 @@ constant, the sentence above applies again: unplaceable is not rejectable.
   validator can see whether a name was chosen functionally or structurally. The
   requirement binds regardless — it rests on a reader, not on a check.
 - **A caller's subscription condition.** The shipped topologies tell some lanes
-  apart by a **second** hop key (`hop.round_capped`) that a route-only probe does
-  not carry — that check would refuse correct wirings, so it does not exist.
+  apart by a **second** hop key (`hop.round_capped`, and since `collector@3.5.0`
+  `hop.partial` beside it — the first is raised by either cap, the byte one and
+  the iteration one alike; the second only by the iteration cap that ended the
+  round) that a route-only probe does not carry — that check would refuse
+  correct wirings, so it does not exist.
 
 **Relation to `params.ports`.** A port is the name of a lane, not the address of
 a cell (`meclaw-overview.en.md` § The hive boundary). `ports: []` **and** a

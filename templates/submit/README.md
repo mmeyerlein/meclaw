@@ -1,4 +1,4 @@
-# `submit@2.3.0`
+# `submit@2.3.1`
 
 Two occupants behind one door, and the only reach onto the mutation door in the
 whole tree. It asks who may submit — and, when the diff itself asks for it, whether
@@ -303,6 +303,22 @@ hold, and the check is made here:
     `<…>/scribe-of-somebody`. A creation in a *different* declaration does not count,
     and an address that merely exists does not count.
 
+    The **anchor itself is checked before it is trusted**
+    ([#566](https://github.com/mmeyerlein/meclaw/issues/566)): a name in `add_nodes`
+    enters the set of created nodes only when the entry is one that **instantiates** —
+    a `template`, or an `adopt` block — and only when the name lies **under the
+    declaration's own scope**, segment-wise, the same comparison as everywhere else on
+    this page. The two instantiating shapes are the door's own grammar and are mutually
+    exclusive: `template` builds the node from the library, `adopt` builds it from a
+    cell already on disk, minting a fresh cell id — an instantiation, not a relocation.
+    Both bring an addressee into the world; an entry that carries neither brings none,
+    and a name that escapes the scope addresses somebody else's tree. Neither anchors a
+    door, so the edge is refused here rather than read permissively. The out-of-scope
+    endpoint would also be refused a stage later at the mutation door
+    (`scope_out_of_bounds`) — and that is exactly why the check is made here too: this
+    branch is a **security default**, and a security default that leans on a later
+    stage for the shape of its own anchor is one refactor away from being wrong.
+
   Violation → `subscribe_target_not_self`.
 - **the source is an affinity hive** — the last path segment of `from` is
   `affinity`. The hive PATH, and deliberately not `<…>/affinity/push`: `affinity`'s
@@ -409,7 +425,7 @@ would be a colony with no way back.
 | `requester_not_permitted` | the broker refused this submission — the same string this template has always used, so a caller that greps for it keeps working |
 | `submission_check_failed` | the broker did not answer a readable verdict, or the parked manifest was gone when the verdict arrived. Nothing was submitted, and that is said rather than guessed |
 | `code_author_denied` | the broker refused this manifest the authoring of code — no enabled rule grants `code.author` |
-| `subscribe_target_not_self` | an `in_pack` edge whose resolved `to` is neither the requester's own hive nor a node the same declaration creates (nor anything inside one — #561). A **form** refusal: decided here, and the broker is never asked |
+| `subscribe_target_not_self` | an `in_pack` edge whose resolved `to` is neither the requester's own hive nor a node the same declaration creates (nor anything inside one — #561) — or an anchor the declaration does not create: outside its own scope, or an `add_nodes` entry that instantiates nothing (no `template`, no `adopt` — #566). A **form** refusal: decided here, and the broker is never asked |
 | `subscribe_source_not_affinity` | an `in_pack` edge whose `from` is not an affinity hive. Likewise a form refusal, likewise unasked |
 | `subscribe_not_permitted` | the broker refused this identity its own push lane — no enabled rule grants `affinity.subscribe` |
 

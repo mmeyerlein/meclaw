@@ -554,7 +554,7 @@ async fn one_turn(wired: bool) -> Run {
         json!({"manifest": [{
             "scope": "/members",
             "diff": {
-                "add_nodes": [{"name": MEMBER, "template": "member@1.5.0"}],
+                "add_nodes": [{"name": MEMBER, "template": "member@1.5.1"}],
                 "add_edges": container_edges(),
             }
         }]}),

@@ -25,7 +25,7 @@
 //!
 //! What runs here is one colony, booted from the shipped library, with the
 //! member grown through the mutation door and TWO generations of
-//! `assistant@2.4.0` grown into its container the way
+//! `assistant@2.4.1` grown into its container the way
 //! `templates/member/README.md` § *Addressing an assistant through a channel*
 //! and `templates/assistant/README.md` § *Instantiating* prescribe — including
 //! the two transfer edges #475 added to that recipe.
@@ -500,7 +500,7 @@ fn member_manifest(export_dir: &std::path::Path) -> Value {
         // member is named bare, and the path it lands at is unchanged.
         "scope": "/members",
         "diff": {
-            "add_nodes": [{"name": MEMBER, "template": "member@1.5.0",
+            "add_nodes": [{"name": MEMBER, "template": "member@1.5.1",
                            "override_params": over}],
             "add_edges": container_edges(),
         }
@@ -587,7 +587,7 @@ fn assistant_manifest(name: &str) -> Value {
         "ctx": {"model": "double/no-network", "model_fast": "double/no-network",
                 "model_surface": "double/no-network"},
         "diff": {
-            "add_nodes": [{"name": format!("assistants/{name}"), "template": "assistant@2.4.0"}],
+            "add_nodes": [{"name": format!("assistants/{name}"), "template": "assistant@2.4.1"}],
             "add_edges": add_edges,
         }
     }]})

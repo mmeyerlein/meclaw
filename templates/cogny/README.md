@@ -1,4 +1,4 @@
-# `cogny@4.6.0`
+# `cogny@4.6.1`
 
 The agent core as one template. Four units under one hive:
 [`collector`](../collector/) and [`dispatcher`](../dispatcher/) -- each carrying its
@@ -87,7 +87,7 @@ The two sub-units are **references**, not copies. Each of the two directories ho
 `config.json` and nothing else:
 
 ```json
-{"cell": {"type": "ref", "template": "collector@3.4.0"},
+{"cell": {"type": "ref", "template": "collector@3.5.0"},
  "override_params": {"assemble": {"context_window": 128000,
                                   "memory_call_tier": "1",
                                   "curate_soft": 0.5,
@@ -122,7 +122,7 @@ declaration for either.
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`cogny@4.6.0` above it in its provenance chain.
+`cogny@4.6.1` above it in its provenance chain.
 
 **The library has to carry both.** A reference resolves against the colony's template
 registry, so `collector` and `dispatcher` have to sit in the same `templates/` directory
@@ -478,14 +478,23 @@ registered verbatim and fail to parse as CEL -- so raising it is a mutation:
 `8` -- the collector's own, and generous for a question that takes two or three lookups.
 A core told to research something in depth spends an iteration per search, and one that
 reaches the bound does not fail: the seam leaves on `answer` with
-`hop.round_capped == "1"`, carrying the raw end of the round -- the turn as it was
-assembled, with whatever the tools had just returned -- instead of an answer written to
-the question. On the advice lane that is what the asking voice receives, so the reply
-changes shape on exactly the errands that were going best. Nothing is lost and nothing is
-silent, but an operator who runs this core on research-sized work raises the knob per
-instance (`override_params` on the `./collector` copy) rather than living with the cap.
-The default stays `8`: a colony that has not measured its own rounds is better served by
-a bound that ends a runaway early than by one that pays for it.
+`hop.round_capped == "1"` and, since `collector@3.5.0`, `hop.partial == "1"` beside it,
+**carrying a named partial answer as its last turn** -- one sentence saying which bound it
+hit, how many calls it made, which tools it called and the head of the last result
+([#570](https://github.com/mmeyerlein/meclaw/issues/570)).
+
+Until `cogny@4.6.1` it carried the raw end of the round instead -- the turn as it was
+assembled, with whatever the tools had just returned. On the advice lane that is what the
+asking voice receives, and a surface reads the LAST text of an answer, so the reply changed
+shape on exactly the errands that were going best: a core that capped mid-search handed its
+surface a raw `web_search` payload and the person was shown a search dump. Nothing was ever
+lost -- the raw round is in the `round` table and `thread_recall` reaches it -- but what
+reached a reader was not a sentence. Now it is.
+
+An operator who runs this core on research-sized work still raises the knob per instance
+(`override_params` on the `./collector` copy) rather than living with the cap. The default
+stays `8`: a colony that has not measured its own rounds is better served by a bound that
+ends a runaway early than by one that pays for it.
 
 **`restore_ttl` sits on the seam, once per round.** `iter` counts brain answers, and a
 bundle of fifteen calls is one answer, one iteration, one restore.
@@ -507,7 +516,7 @@ once. Its fourth, `interim`, is a param like the collector's, and this template 
 | `tool_chars` | param | `4000` | collector -- per-item cap on tool results |
 | `round_bytes` | param | `16000` | collector -- byte cap over the whole tool round |
 | `memory_chars` | param | `8000` | collector -- cap on the memory bundle |
-| `max_iter` | param | `8` | collector -- **the loop bound**; at the cap the seam leaves on `answer` with `hop.round_capped == "1"` and the raw round end as its text. Raise it per instance for research-sized errands -- see above |
+| `max_iter` | param | `8` | collector -- **the loop bound**; at the cap the seam leaves on `answer` with `hop.round_capped == "1"`, `hop.partial == "1"` and a named partial answer as its last turn ([#570](https://github.com/mmeyerlein/meclaw/issues/570)). Raise it per instance for research-sized errands -- see above |
 | `round_idle_ms` | param | `120000` | collector -- idle window of one tool round |
 | `memory_tier` | param | `""` | collector -- the AMBIENT memory leg, and it stays **empty** at this template since 4.4.0: a problem solver asks on purpose. Setting it gives the core a bundle before it has read the question, and pays for it every consult |
 | `memory_call_tier` | param | `"1"` | collector -- tier of the `memory_recall` TOOL, and the knob that also decides whether the tool is DECLARED (`collector@3.3.1`). **Set at this template since 4.4.0** ([#528](https://github.com/mmeyerlein/meclaw/issues/528)), together with the `./dispatcher -> ./collector` edge that keeps the call inside. Empty = tool off, which is what `4.3.1` shipped and why |
@@ -549,7 +558,7 @@ Now the knob is set where it belongs, and the sub-unit stays a reference to the 
 `collector`:
 
 ```json
-{"op": "instantiate", "template": "cogny@4.6.0", "at": "/cores/deep",
+{"op": "instantiate", "template": "cogny@4.6.1", "at": "/cores/deep",
  "override_params": {"collector/assemble": {"context_window": 200000,
                                             "recoverability": "lookup:repeatable,write:env"}}}
 ```
@@ -778,7 +787,7 @@ rides on `hop.route`.
 | `in_turn` | in | an errand for this core -- ONE class since 4.4.0: synthesis, a development over time, multi-step work, research. The body is the `consult_cogny` tool_call turn, `question` and `context` both required. The lane's `accepts[].context` names **`session_id`**, and the ingress edge has to promote it: the core's memory tool asks about sessions ([#528](https://github.com/mmeyerlein/meclaw/issues/528)) |
 | `in_tool` | in | one tool result, coming back from a tool cell the parent wired |
 | `in_bundle` | in | a memory bundle, coming back from whatever keeps this agent's memory |
-| `answer` | out | the core's answer, for whoever asked. Since `collector@2.1.1` a **third** sort travels here -- beside a real answer and a round that hit `max_iter` (`hop.round_capped`) -- and it is marked `hop.degraded == "1"`: a turn that could not be assembled at all because the store refused a read or a write, with `hop.store_error` (the store's `error_code`) and `hop.store_operation` beside it ([#343](https://github.com/mmeyerlein/meclaw/issues/343)). It carries no `round_capped`, so an asker that renders an advice must branch on `degraded` -- without it a failure reads as a real answer |
+| `answer` | out | the core's answer, for whoever asked. Since `collector@2.1.1` a **third** sort travels here -- beside a real answer and a round that hit `max_iter` (`hop.round_capped`, and since `collector@3.5.0` `hop.partial == "1"` with a named partial answer as its last turn, #570) -- and it is marked `hop.degraded == "1"`: a turn that could not be assembled at all because the store refused a read or a write, with `hop.store_error` (the store's `error_code`) and `hop.store_operation` beside it ([#343](https://github.com/mmeyerlein/meclaw/issues/343)). It carries no `round_capped`, so an asker that renders an advice must branch on `degraded` -- without it a failure reads as a real answer |
 | `tool` | out | a tool call for a cell the parent wired; `hop.tool_name` says which one |
 | `recall` | out | a memory read the brain ASKED for, since 4.4.0: `hop.memory_call_id` names the tool call it belongs to and must come back on `in_bundle`, or the answer is filed as a turn's memory leg and the round waits for a result that never comes |
 | `error` | out | a failed inference on the brain. **Wire it** -- unwired it dead-letters, loudly |

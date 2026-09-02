@@ -4,6 +4,7 @@
 //! T6: `build_openai_request` — UBF -> OpenAI request JSON.
 //! T7: `parse_openai_response` — OpenAI response JSON -> UBF turn(s) + meta.
 
+use crate::llm::sanitize::strip_provider_annotations;
 use meclaw_core::serde_json::Value;
 
 /// Phase-8 Translate-error enum. T8 will add WireError mapping.
@@ -498,12 +499,13 @@ pub(crate) fn parse_openai_response(json: &Value) -> Result<TranslatedResponse, 
             }));
         }
     }
-    // Then text content (if present and non-null).
+    // Then text content (if present and non-null). Provider-internal citation
+    // markers are stripped here — they never enter UBF (GH #569).
     if let Some(content) = message.get("content").and_then(|v| v.as_str()) {
         assistant_turn.push(json!({
             "origin": "assistant",
             "type": "text",
-            "text": content,
+            "text": strip_provider_annotations(content),
         }));
     }
 
@@ -1135,6 +1137,25 @@ mod tests {
         assert_eq!(t.tokens_completion, Some(2));
         assert_eq!(t.model, "gpt-4o-2026-01-01");
         assert_eq!(t.response_id, "chatcmpl-abc");
+    }
+
+    #[test]
+    fn parse_response_strips_pua_citation_marker_from_text() {
+        // GH #569: the provider's inline citation marker (PUA-wrapped
+        // `cite…turn0search0`) must not enter the UBF turn.
+        let resp = json!({
+            "id": "chatcmpl-abc",
+            "model": "gpt-4o-2026-01-01",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "It may rain this evening. \u{E200}cite\u{E202}turn0search0\u{E201}"
+                },
+                "finish_reason": "stop"
+            }]
+        });
+        let t = parse_openai_response(&resp).unwrap();
+        assert_eq!(t.assistant_turn[0]["text"], "It may rain this evening. ");
     }
 
     #[test]

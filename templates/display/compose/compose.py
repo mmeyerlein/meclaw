@@ -376,10 +376,29 @@ def check_node(node, depth):
     kids = node.get("children", [])
     if not isinstance(kids, list):
         return '"children" is not a list'
+    # A key stands where the index would stand, so two siblings naming the same
+    # one mint the same object id and the second would simply overwrite the
+    # first -- an accepted view with a node missing from the screen and nothing
+    # in the receipt to act on (GH #568). A key that is a plain number is the
+    # same collision one door along: `"3"` names exactly what the unkeyed
+    # fourth child beside it names. Both are refused here, where the sender is
+    # still being told why.
+    seen = set()
     for kid in kids:
         why = check_node(kid, depth + 1)
         if why:
             return why
+        kid_key = kid.get("key") if isinstance(kid, dict) else None
+        if not is_node_key(kid_key):
+            continue
+        if kid_key.isdigit():
+            return (
+                '"key" %r is a number and would collide with the index language'
+                % (kid_key,)
+            )
+        if kid_key in seen:
+            return '"key" %r collides with a sibling under %s' % (kid_key, name)
+        seen.add(kid_key)
     return None
 
 

@@ -77,7 +77,7 @@ anything runs.
 
 ## Running it
 
-Four gestures, in this order. The third one is the awkward step, and it is
+Five gestures, in this order. The third one is the awkward step, and it is
 awkward for a reason worth knowing.
 
 **1. Grow the colony.**
@@ -117,6 +117,31 @@ it from there. A payload cannot ask for a credential it was not granted.
 (`/main/access/vault`), because this mode talks to a directory rather than to a
 running colony — the same cell is `/access/vault` to a message.
 
+**Unattended** (the credential is on stdin, so the passphrase cannot be). With
+`--vault-key-source auto` — the default — and neither a terminal nor a
+`$CREDENTIALS_DIRECTORY`, the CLI refuses and names the two flags that replace
+the prompt:
+
+```bash
+KEYFILE="${XDG_RUNTIME_DIR:-/tmp}/vault-pilot.key"
+(umask 077; printf '%s' "$VAULT_PILOT_PASSPHRASE" > "$KEYFILE")
+printf '%s' "$PROVIDER_KEY" \
+  | ./target/release/meclaw --root ./examples/vault-pilot/seed \
+                            --vault /main/access/vault \
+                            --vault-key-source plainfile --vault-key-file "$KEYFILE" \
+                            --vault-add cred:example-provider:primary
+```
+
+The key file has to be `0600` and non-empty: readable by group or others is
+refused, the same answer ssh gives for a loose private key. The `umask` is doing
+that work, and a `chmod` afterwards would not — a redirect creates the file under
+the caller's umask, so the passphrase is already inside it, world-readable, by the
+time the second command runs. The path is outside the checkout for the same
+reason it is `0600`: a plaintext passphrase should not be sitting untracked in a
+working tree. Under systemd there is a third source and no file of your own —
+`--vault-key-source systemd-cred` reads `vault_key` out of
+`$CREDENTIALS_DIRECTORY`.
+
 **4. Start it for real.**
 
 ```bash
@@ -129,6 +154,26 @@ has to: a vault inside a sealed hive cannot be unlocked over the user channel �
 user channel is a source message, a source message reaches no hive-internal cell,
 and everything that can reach one is an edge. So it opens itself from the
 environment or not at all. The param names a **variable**, never a value.
+
+**5. Say something.** That call blocks the terminal, so this one is a second
+shell:
+
+```bash
+curl -s -X POST http://127.0.0.1:7788/messages \
+     -H 'Content-Type: application/json' \
+     -d '{"target": "/brain",
+          "body": {"messages": [{"origin": "user", "type": "text", "text": "hello"}]}}'
+```
+
+A turn is a UBF turn object: `origin` and `type` are what it is required to
+carry, `text` holds the line, and `role` is not a key this substrate knows. A
+body in the `{"role": "user"}` shape — the one most readers try first — is
+refused at the HTTP boundary with `422` and `{"error": "invalid_ubf_body"}`,
+before it reaches any cell.
+
+`/brain` is the `llm` cell under its message address: the seed's `main/` is the
+root cell directory and is stripped, which is the same reason `/main/access/vault`
+on disk is `/access/vault` to a message.
 
 ## What happens on the first message
 

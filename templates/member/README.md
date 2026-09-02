@@ -1,4 +1,4 @@
-# `member@1.5.0`
+# `member@1.5.1`
 
 One person, as a level. **Four holders, three open containers and one cell of
 its own** — eight nodes and fifty-two edges.
@@ -346,6 +346,27 @@ those are two different statements. The last part of a hive also writes
 export**, in whatever order the walks finish in — **four** when a generation was
 named and its keeper walked its ledger out beside them.
 
+**Every file the sink writes lands whole, and what it cannot read it names.**
+A part and both markers are written into a neighbour file and renamed over the
+name a reader watches: `open(path, "w")` truncates before it fills, and a
+reader of the member-level marker measurably got zero bytes in that gap
+([#563](https://github.com/mmeyerlein/meclaw/issues/563)). That buys a
+concurrent *reader*, not durability — there is no `fsync` here, so a power loss
+is a different question.
+
+**Exactly one thing means "that hive has not finished": the marker is not
+there.** The hives of a member walk on their own clock, and an absent marker is
+that ordinary state. Every other answer is a marker the cell could not read and
+says nothing about whether the hive finished — a directory standing where the
+marker belongs, a permission the export process does not have, an I/O error, or
+a file that is there and is not a JSON object (which, after the rename, can no
+longer be a write caught halfway). All of those are **named**, not dropped:
+they appear in an `unreadable` array on the member-level marker, the cell says
+so on `stderr`, and `hives` stays the list of the readable ones. Answering
+*"that hive has not finished"* for a marker the cell simply could not read
+would make this document claim an incompleteness the directory does not have,
+which is the one thing it must never do.
+
 **The fourth target is guarded, and the guard is the point.** The edge reads
 `hop.route == 'in_export' && has(context.assistant) && context.assistant != ''`.
 Two measurable reasons, neither of them taste. A member with two generations
@@ -592,7 +613,7 @@ behaves like, and it is a channel **of the person** — which is precisely why t
 of their agents may hold views on it at the same time. A screen owned by a
 generation would go dark on a swap and could not be shared at all.
 
-Since GH #459 the cell that stands there is real: [`display@1.0.1`](../display/).
+Since GH #459 the cell that stands there is real: [`display@1.0.2`](../display/).
 **Two** edges instantiate one — one fewer than a chat channel costs — and the
 second of them says the only thing a chat channel's edges do not:
 
@@ -773,7 +794,7 @@ The whole arrangement, as three mutations. The member first:
 
 ```json
 {"scope": "<org>/members", "diff": {
-  "add_nodes": [{"name": "alex", "template": "member@1.5.0"}]
+  "add_nodes": [{"name": "alex", "template": "member@1.5.1"}]
 }}
 ```
 
@@ -782,7 +803,7 @@ lanes (`../assistant/README.md` § *Instantiating* writes them out):
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@2.4.0"}],
+  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@2.4.1"}],
   "add_edges": [
     {"from": "./assistants", "to": "./assistants/scribe",
      "condition": "has(hop.route) && hop.route == 'in_turn' && has(context.assistant) && context.assistant == 'scribe'"},

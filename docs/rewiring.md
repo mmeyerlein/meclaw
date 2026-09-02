@@ -445,7 +445,7 @@ Scope is `channels`, the hive that already exists.
     "add_nodes": [
       {"name": "telegram", "template": "telegram-connector@2.0.1",
        "override_params": {"bot_token": "${TELEGRAM_BOT_TOKEN}"}},
-      {"name": "talky", "template": "talky@4.6.0"}
+      {"name": "talky", "template": "talky@4.6.1"}
     ]
   }
 }
@@ -489,7 +489,9 @@ hive used to carry outward.
     "condition": "has(hop.error_code)",
     "modifier": {"set_hop": {"route": "'error'"}}},
 
-   // the pair inside: the finished answer back into the chat
+   // the pair inside: the finished answer back into the chat. A REAL answer
+   // carries neither `round_capped` nor (since `collector@3.5.0`) `partial`:
+   // both keys are written by the seam, and a real answer does not leave it
    {"from": "./talky", "to": "./telegram",
     "condition": "has(hop.route) && hop.route == 'answer' && !has(hop.round_capped) && !has(hop.degraded)"},
 
@@ -509,7 +511,9 @@ hive used to carry outward.
    …
 
    // a round that ran out of iterations, and a turn the store could not
-   // assemble, are not answers
+   // assemble, are not answers. Since `collector@3.5.0` the first sort carries a
+   // named PARTIAL ANSWER as its last turn and `hop.partial == '1'` beside it --
+   // that is the key to test if you would rather let it through than drain it
    {"from": "./talky", "to": ".",
     "condition": "has(hop.route) && hop.route == 'answer' && (has(hop.round_capped) || has(hop.degraded))",
     "modifier": {"set_hop": {"route": "'error'"}}}

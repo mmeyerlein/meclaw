@@ -401,7 +401,7 @@ fn a_named_grow_level_missing_its_per_level_parameter_is_refused_not_downgraded(
 #[test]
 fn the_grow_sentence_takes_the_fast_lane_and_a_half_sentence_does_not() {
     let full = run_classify(json!({
-        "request": "grow an assistant named scribe from assistant@2.4.0 under \
+        "request": "grow an assistant named scribe from assistant@2.4.1 under \
                     /os/orgs/acme/members/alex",
         "ctx": {"model": "m", "model_fast": "f", "model_surface": "s"}}));
     assert_eq!(full["header"]["route"], json!("recipe"));
@@ -475,7 +475,7 @@ fn the_composer_budget_in_the_readme_is_the_one_the_cell_declares() {
 /// for byte — the same discipline the six levels above run under.
 fn credentialled_wish() -> Value {
     json!({"scope": "/os/orgs/acme/members/alex", "level": "assistant",
-           "name": "scribe", "template": "assistant@2.4.0",
+           "name": "scribe", "template": "assistant@2.4.1",
            "ctx": {"model": "${MODEL_CORE}", "model_fast": "${MODEL_CORE_FAST}",
                    "model_surface": "${MODEL_SURFACE}"},
            "override_params": {"cogny/brain": {"temperature": 0.2}},
@@ -494,6 +494,32 @@ fn grown_with_credential() -> Vec<Value> {
         .clone()
 }
 
+/// The rows of a `seed_rows` block with the three fields a renderer cannot
+/// reproduce from a shipped file replaced by a sentinel.
+///
+/// Everything else — target, table, order, every column of every grant — is
+/// compared verbatim. What is blanked is exactly what is generated at render
+/// time or numbered by hand: `issued_at` and `at` are the moment the manifest
+/// was drawn, and the event `id` is a sequence number in the shipped file and
+/// the consumer's own name in the renderer.
+fn without_the_stamps(v: &Value) -> Value {
+    match v {
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(k, val)| {
+                    let val = match k.as_str() {
+                        "issued_at" | "at" | "id" => json!("<stamped at render time>"),
+                        _ => without_the_stamps(val),
+                    };
+                    (k.clone(), val)
+                })
+                .collect(),
+        ),
+        Value::Array(items) => Value::Array(items.iter().map(without_the_stamps).collect()),
+        other => other.clone(),
+    }
+}
+
 #[test]
 fn the_credential_lanes_are_the_ones_the_example_carries() {
     let Some(want) = examples("grow-credentials.json") else {
@@ -502,26 +528,52 @@ fn the_credential_lanes_are_the_ones_the_example_carries() {
     let decls = grown_with_credential();
     assert_eq!(
         decls.len(),
-        2,
-        "the credential form is TWO declarations: the lane ends two levels \
-         INSIDE the node the first one gives birth to, and a mutation reads a \
-         newborn's contract from the template root only (GH #562) — drawn in \
-         one breath it is refused `v_lane_no_connect_point`"
+        1,
+        "since `builder@1.6.1` the credential form is ONE declaration: stage 6 \
+         reads a newborn's contracts out of the whole staged subtree (GH #567), \
+         so the connect point `talky`/`cogny` declare is found in the same act \
+         that gives birth to their generation"
     );
-    // The generation itself is untouched by the option: same node name, same
-    // template, and the transit edges of the level are the level's.
-    assert_eq!(decls[0]["diff"]["add_nodes"][0]["name"], json!("scribe"));
-
-    let got = &decls[1];
+    let got = &decls[0];
     assert_eq!(
         got["scope"], want[0]["scope"],
-        "the credential declaration stands at the MEMBER — an edge lives in the \
-         graph of the lowest common ancestor of its two endpoints, and a brain \
-         and the member's broker share only that one"
+        "the credentialled declaration stands at the MEMBER — an edge lives in \
+         the graph of the lowest common ancestor of its two endpoints, and a \
+         brain and the member's broker share only that one"
+    );
+    // At the member the child is named through its container, exactly as the
+    // `subscribe` form names it: the declaration stands one storey higher, so
+    // the node name and every endpoint carry the container.
+    assert_eq!(
+        got["diff"]["add_nodes"][0]["name"],
+        json!("assistants/scribe")
+    );
+
+    // The four v-lanes are the LAST four edges of the one declaration: the
+    // level's own transit edges are drawn first and the credential road behind
+    // them, and order is semantics here as everywhere else.
+    let edges = got["diff"]["add_edges"].as_array().expect("add_edges");
+    let want_edges = want[0]["diff"]["add_edges"]
+        .as_array()
+        .expect("the example's credential edges");
+    assert!(
+        edges.len() > want_edges.len(),
+        "the one declaration carries the level's transit edges as well as the \
+         credential road — it has {} edges",
+        edges.len()
     );
     assert_eq!(
-        got["diff"]["add_edges"], want[0]["diff"]["add_edges"],
+        &edges[edges.len() - want_edges.len()..],
+        want_edges.as_slice(),
         "the rendered credential v-lanes are not the ones \
+         examples/organism/grow-credentials.json carries"
+    );
+    // And the grants travel in the same breath, byte for byte but for the
+    // stamps: the example stays the byte truth of this road.
+    assert_eq!(
+        without_the_stamps(&got["diff"]["seed_rows"]),
+        without_the_stamps(&want[0]["diff"]["seed_rows"]),
+        "the rendered grants are not the ones \
          examples/organism/grow-credentials.json carries"
     );
 }
@@ -554,7 +606,7 @@ fn both_brains_give_up_the_key_they_have_and_name_a_grant() {
 #[test]
 fn the_grants_travel_in_the_same_declaration_as_the_lanes() {
     let decls = grown_with_credential();
-    let rows = decls[1]["diff"]["seed_rows"]
+    let rows = decls[0]["diff"]["seed_rows"]
         .as_array()
         .expect("the credential declaration seeds the grants");
     let tables: Vec<&str> = rows

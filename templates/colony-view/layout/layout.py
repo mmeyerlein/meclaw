@@ -1762,9 +1762,19 @@ HIVE_TEMPLATE = (
     # `depth-N` is what the stylesheet tints. Clamped, because a tree deeper than
     # the palette should keep the deepest colour rather than fall back to none --
     # a hive with no tint would read as "not a hive".
+    #
+    # The label carries the LEVEL beside the directory name, because a member is
+    # a person and an assistant is a generation of that person's agent, so the
+    # obvious name for the first generation is the person's own: `members/alex`
+    # around `assistants/alex` drew two nested frames reading one word, and the
+    # only way to tell them apart was to count rectangles (GH #549). ONE `<text>`
+    # and no second element: the browser half places the label by taking the
+    # FIRST text of a frame (`hiveParts`), so a second one would be positioned by
+    # nothing -- and it never writes the content, which is why the sentence is
+    # decided here and nowhere else.
     '<g class="hive depth-{{depth}}" data-hive="{{path}}" data-oid="{{oid}}">'
     '<rect x="{{x}}" y="{{y}}" width="{{w}}" height="{{h}}" rx="10"/>'
-    '<text x="{{tx}}" y="{{ty}}">{{name}}</text>'
+    '<text x="{{tx}}" y="{{ty}}">{{name}} \u00b7 {{level}}</text>'
     "</g>"
 )
 
@@ -1868,6 +1878,7 @@ def components():
                 "path": "text",
                 "oid": "text",
                 "name": "text",
+                "level": "text",
                 "depth": "int",
                 "x": "int",
                 "y": "int",
@@ -2391,6 +2402,34 @@ def node_key(path):
     return "n." + path.replace("/", "~")
 
 
+LEVEL_OF_CONTAINER = {
+    "orgs": "org",
+    "members": "member",
+    "assistants": "assistant",
+    "channels": "channel",
+    "apps": "app",
+}
+
+
+def hive_level(h):
+    """What KIND of thing a hive is, read off the segment above it.
+
+    The composition levels address their children through fixed containers --
+    `orgs/<x>`, `members/<x>`, `assistants/<x>`, `channels/<x>`, `apps/<x>` --
+    so the level a frame stands for is already in the path, one segment up.
+    Anything else is a plain `hive`, which is the honest answer for a tree that
+    does not use the composition levels rather than a guess at one.
+
+    It is read HERE and not taken off the wire on purpose (GH #549):
+    `/colony/graph` carries no kind and no template provenance, and it does not
+    carry hives at all -- they exist only as prefixes of cell paths. Putting a
+    level on that wire is a public API round (README § Stability) for a single
+    consumer, and this is five string comparisons that cost no contract.
+    """
+    parts = h.split("/")
+    return LEVEL_OF_CONTAINER.get(parts[-2], "hive") if len(parts) > 1 else "hive"
+
+
 def hive_boxes(pos):
     """The hive rectangles, ready to become components."""
     frames = hive_frames(pos)
@@ -2401,6 +2440,7 @@ def hive_boxes(pos):
             {
                 "id": h,
                 "name": h.rsplit("/", 1)[-1],
+                "level": hive_level(h),
                 "depth": h.count("/") + 1,
                 "x": x,
                 "y": y,
@@ -2555,6 +2595,7 @@ def content(graph, owner):
                 "path": h["id"],
                 "oid": child_id(wrapper, hive_key(h["id"])),
                 "name": h["name"],
+                "level": h["level"],
                 "depth": max(1, min(HIVE_DEPTH_TINTS, h["depth"])),
                 "x": h["x"],
                 "y": h["y"],

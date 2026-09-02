@@ -73,16 +73,16 @@ principle of GH #26: a tree is grown, not checked in.
 └── orgs                              (empty container)
     └── acme                       org@1.3.0         a namespace and a boundary
         └── members                  (empty container)
-            └── alex               member@1.5.0      one person
+            └── alex               member@1.5.1      one person
                 ├── affinity          → affinity@3.2.0      identity and meaning
                 ├── firewall          → firewall@2.2.0      the screen
                 ├── memory-hive       → memory-hive@3.1.0   what was said to them
                 ├── channels          (empty container)
                 │   └── telegram      telegram-connector@2.0.1   how alex is reached
                 └── assistants        (empty container)
-                    └── scribe    assistant@2.4.0   one generation of an agent
-                        ├── talky     → talky@4.6.0         the conversation surface
-                        ├── cogny     → cogny@4.6.0         the reasoning core
+                    └── scribe    assistant@2.4.1   one generation of an agent
+                        ├── talky     → talky@4.6.1         the conversation surface
+                        ├── cogny     → cogny@4.6.1         the reasoning core
                         └── tools     → tools@1.4.0         the tool surface
 ```
 
@@ -207,7 +207,7 @@ WITHOUT a connect point below `./assistants`, so it stays a mandatory hop — it
 `audience_now`, `channel` and `recall_as_of`, and an author who tried to draw a v-lane straight
 from a brain to the memory is refused with `v_lane_mandatory_hop` rather than debugging a
 `missing_audience` in the log.
-`assistant@2.4.0` emits a tenth lane, `pack_ack` (GH #458), and this walkthrough draws no edge
+`assistant@2.4.1` emits a tenth lane, `pack_ack` (GH #458), and this walkthrough draws no edge
 for it: nothing here pushes an identity into the generation, so nothing here produces the
 receipt. A colony that wires the push wires the receipt with it, and the member already declares
 the exit. Since GH #561 both halves are **v-lanes** and neither ends at this level: the push
@@ -224,7 +224,7 @@ are not one document; the `dump` edge is deliberately **plain**, since every lev
 and the keeper pairs `in_export` with `dump` in `params.required_drains` and an edge that also
 tested `hop.dump_kind` would read as no drain at all.
 
-`answer` is where `assistant@2.4.0` differs from its predecessor (GH #454). The old level emitted
+`answer` is where `assistant@2.4.1` differs from its predecessor (GH #454). The old level emitted
 `turn`: its connector stood *inside* it, so the raw wire and the reply never crossed the level
 boundary. The connector now stands one level up, in the member's `channels`, so the raw wire
 never touches this level at all and the finished answer has to leave it. Removing an address and
@@ -257,7 +257,7 @@ model of its own with `override_params` on `<assistant>/talky/brain` if the two 
 channel belongs to the person, not to a generation, so this step is declared at the *member's*
 `channels` container and the node is `telegram`. The name is no label: it is the value
 `context.channel_node` carries, and it is what the answer is routed back by. Nothing stands beside it — the
-conversation surface travels inside `assistant@2.4.0` as `talky`.
+conversation surface travels inside `assistant@2.4.1` as `talky`.
 
 **It is born asleep.** The entry carries `"birth": "inactive"` (GH #437), so the node is
 registered, addressable and taskless: it exists in the topology before its upstream is real, and
@@ -300,7 +300,7 @@ Three edges, and there is no fourth:
   The `chat_id` the first edge promoted is what the reply has to go to.
 
 **The nine edges between `channels` and its siblings are not among them** — they belong to
-`member@1.5.0` and were drawn once, when step 3 ran: `./channels → ./firewall` turns the raw
+`member@1.5.1` and were drawn once, when step 3 ran: `./channels → ./firewall` turns the raw
 `turn` into `in_turn`, `./assistants → ./channels` carries a finished answer back to the channel
 that asked, `./apps → ./channels` carries an app's `view` the same way, `./channels → .` lets a
 connector's own failure leave the level, and five more place a screen's `event` and `receipt` —
@@ -351,8 +351,8 @@ its provider credential out of it, **sealed**, on an ordinary broker invocation.
 
 They are **v-lanes** (GH #559). Three levels lie between a brain and the broker —
 `./assistants`, the generation, `talky` — and the innermost is sealed, so the edge
-lands on a cell inside a sealed hive and is legal anyway: `talky@4.6.0` and
-`cogny@4.6.0` name `./brain` as this lane's connect point in their own contract
+lands on a cell inside a sealed hive and is legal anyway: `talky@4.6.1` and
+`cogny@4.6.1` name `./brain` as this lane's connect point in their own contract
 (`"at": ["./brain"]`), which is the one opening a template pronounces about
 itself. The two levels in between declare nothing about the lane and are
 therefore transparent. Take the `at` away and the mutation is refused by name,
@@ -360,6 +360,11 @@ therefore transparent. Take the `at` away and the mutation is refused by name,
 
 The declaration stands at the **member's** scope because that is the lowest common
 ancestor of its two endpoints, and an edge lives in the graph of that level.
+
+The builder draws these in the same declaration that grows the generation since
+`builder@1.6.1` (GH #567); applied on their own, as here, they wire a generation
+that already **stands** — which is a legitimate operation of its own, and the
+reason this file keeps its place among the six.
 
 **What this file does not do**, and deliberately: it does not switch the lane on.
 Two acts stay with the operator and neither is topology — the vault's passphrase
@@ -384,7 +389,7 @@ Both are one instantiation with their own parameters, and neither re-runs anythi
 {"scope": "/os/orgs/acme/members/alex/assistants",
  "ctx": {"model": "${MODEL_CORE}", "model_fast": "${MODEL_CORE_FAST}",
          "model_surface": "${MODEL_SURFACE}"},
- "diff": {"add_nodes": [{"name": "aide", "template": "assistant@2.4.0",
+ "diff": {"add_nodes": [{"name": "aide", "template": "assistant@2.4.1",
                          "override_params": {"cogny/brain": {"temperature": 0.9}}}],
           "add_edges": []}}
 ```
@@ -417,10 +422,10 @@ declarations**, and the third is the extra route into the generation the example
 ```json
 {"manifest": [
   {"scope": "/os/orgs/acme/members/alex/channels",
-   "diff": {"add_nodes": [{"name": "display-desk", "template": "display@1.0.1",
+   "diff": {"add_nodes": [{"name": "display-desk", "template": "display@1.0.2",
                            "override_params": {"web": {"port": 7902}}}], "…": "…"}},
   {"scope": "/os/orgs/acme/members/alex/apps",
-   "diff": {"add_nodes": [{"name": "colony-view", "template": "colony-view@1.0.1"}], "…": "…"}},
+   "diff": {"add_nodes": [{"name": "colony-view", "template": "colony-view@1.0.2"}], "…": "…"}},
   {"scope": "/os/orgs/acme/members/alex/assistants",
    "diff": {"add_edges": ["…"]}}]}
 ```
@@ -437,7 +442,7 @@ display's own `in_view`:
 ```
 
 That is why **the smallest view needs no app**. An agent's ordinary `answer`, carried back by
-the `./assistants → ./channels` edge `member@1.5.0` already ships, *is* a view once the channel
+the `./assistants → ./channels` edge `member@1.5.1` already ships, *is* a view once the channel
 on the other end is a screen. An agent that only wants to show a paragraph does not have to
 become an application first.
 

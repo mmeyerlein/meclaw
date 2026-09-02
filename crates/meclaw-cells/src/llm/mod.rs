@@ -9,6 +9,7 @@ pub mod factory;
 pub(crate) mod latency;
 pub(crate) mod output;
 pub mod params;
+pub(crate) mod sanitize;
 pub(crate) mod seed;
 pub(crate) mod state;
 pub(crate) mod system_gate;

@@ -6,7 +6,7 @@
         "add_nodes": [
           {
             "name": "display",
-            "template": "display@1.0.1",
+            "template": "display@1.0.2",
             "override_params": {
               "web": {
                 "port": 7899
@@ -15,7 +15,7 @@
           },
           {
             "name": "colony-view",
-            "template": "colony-view@1.0.1"
+            "template": "colony-view@1.0.2"
           },
           {
             "name": "sink",

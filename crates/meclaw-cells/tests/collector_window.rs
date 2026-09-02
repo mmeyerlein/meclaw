@@ -1314,6 +1314,25 @@ fn round_pair(iter: i64, id: &str, result: &str) -> Vec<serde_json::Value> {
     ]
 }
 
+/// The same pair with a tool NAME on the call, in the shape a provider writes
+/// one: the `function` object IS the text of a `tool_call` turn, so the name is
+/// read out of it and nowhere else.
+fn named_round_pair(iter: i64, id: &str, name: &str, result: &str) -> Vec<serde_json::Value> {
+    let call = serde_json::json!([
+        {"origin": "assistant", "type": "tool_call", "id": id,
+         "text": serde_json::json!({"name": name, "arguments": "{}"}).to_string()}
+    ]);
+    let res = serde_json::json!(
+        {"origin": "tool", "type": "tool_result", "id": id, "text": result}
+    );
+    vec![
+        serde_json::json!({"turn_id": "t1", "iter": iter, "role": "assistant",
+                           "turn": call.to_string(), "fired": 0}),
+        serde_json::json!({"turn_id": "t1", "iter": iter, "role": "tool",
+                           "turn": res.to_string(), "fired": 0}),
+    ]
+}
+
 #[test]
 fn a_huge_tool_result_reaches_the_seam_capped_and_stays_whole_in_the_store() {
     // The environment keeps the value, the context window gets a bounded
@@ -1459,8 +1478,118 @@ fn the_iteration_cap_ends_the_round_at_the_seam_and_not_at_the_dispatcher() {
     );
     assert_eq!(
         texts.len(),
-        5,
-        "window turn + both iterations of the round so far: {texts:?}"
+        6,
+        "window turn + both iterations of the round so far + the partial \
+         answer that closes it (GH #570): {texts:?}"
+    );
+}
+
+/// GH #570: a capped round ends on a NAMED partial answer, not on the raw end
+/// of the tool round -- and says so with a hop key of its own.
+///
+/// Measured on e18: `cogny` capped at its bound and its `answer` body ended
+/// with a raw `web_search` `tool_result`; the surface in front of it takes the
+/// LAST text (`any_text`) and writes it into the conversation, so the person
+/// was shown a search payload. Nothing is lost by fixing it here -- the raw
+/// round stays in the `round` table, reachable by `thread_recall`. What changes
+/// is the last WORD of the projection, because that is the one a consumer
+/// reads.
+///
+/// THE ZERO-CALL SHAPE IS NOT PINNED HERE, and that is a finding rather than a
+/// gap: a spent round whose thread is empty cannot be reached through any
+/// shipped lane. `round-check` is the only phase that assembles the seam, it
+/// only fires on a round it read rows for, and with no round rows the fan-in
+/// PARKS and emits nothing at all (measured against the shipped script: an
+/// `iter=2`/`max_iter=2` reply carrying only the window row emits zero
+/// messages). The byte cap cannot empty a non-empty thread either -- it keeps
+/// the newest group unconditionally. The script still answers the shape
+/// honestly (`PARTIAL_ANSWER_EMPTY`, "No tool call was made.", no invented
+/// "last result") rather than printing three empty clauses, because an
+/// unreachable branch is exactly the one nobody will read again.
+#[test]
+fn the_capped_round_ends_on_a_partial_answer_not_on_a_raw_tool_result() {
+    let mut rows = vec![leg_window_row(
+        serde_json::json!([{"role": "user", "text": "look it up"}]),
+        0,
+        0,
+    )];
+    rows.extend(named_round_pair(1, "c1", "web_search", "found"));
+    rows.extend(named_round_pair(
+        2,
+        "c2",
+        "web_search",
+        "{\"results\": [\"raw json the person must not see\"]}",
+    ));
+    let out = emit_with(
+        &[("max_iter", "2")],
+        reply_at(
+            "round-check",
+            "bundle",
+            4,
+            serde_json::Value::Array(rows),
+            2,
+        ),
+    );
+    assert_eq!(emitted(&out), 1);
+    assert_eq!(out[0]["header"]["route"], "answer");
+    assert_eq!(out[0]["header"]["round_capped"], "1");
+    assert_eq!(
+        out[0]["header"]["partial"], "1",
+        "the round ended early, and a guard can tell that from trimmed bytes"
+    );
+
+    let texts = texts_of(&out[0]);
+    let last = texts.last().expect("a last turn");
+    assert!(
+        last.contains("iteration cap") && last.contains("max_iter=2"),
+        "the partial answer names its own bound: {last}"
+    );
+    assert!(
+        !last.starts_with("{\"results\""),
+        "the raw tool result is not the last word: {last}"
+    );
+    assert!(
+        last.contains("web_search"),
+        "the digest names what the round called: {last}"
+    );
+    assert!(
+        last.contains("2 tool call(s) -- web_search"),
+        "how many times it called, and the SEPARATOR: the digest is 7-bit ASCII \
+         like the rest of this script, so the dash is `--` and not an em dash \
+         a surface might render its own way: {last}"
+    );
+    let msgs = out[0]["messages"].as_array().expect("messages");
+    let closing = msgs.last().expect("a last message");
+    assert_eq!(closing["origin"], "assistant");
+    assert_eq!(closing["type"], "text");
+}
+
+/// GH #570: the byte cap is NOT the iteration cap, and the two must stay
+/// tellable apart. `round_bytes` trims whole iterations off an otherwise
+/// healthy round and keeps asking the brain, so it stamps `round_capped` and
+/// `partial == "0"` -- present, like every hop key this seam writes, so a CEL
+/// modifier reading it never fails and skips the edge.
+#[test]
+fn the_byte_cap_is_not_a_partial_answer() {
+    let mut rows = vec![leg_window_row(serde_json::json!([]), 0, 0)];
+    for i in 0..3 {
+        rows.extend(round_pair(i, &format!("c{i}"), "bbbbbbbbbb"));
+    }
+    let out = emit_with(
+        &[("round_bytes", "25")],
+        reply_doc("round-check", "bundle", 7, serde_json::Value::Array(rows)),
+    );
+    assert_eq!(out[0]["header"]["route"], "brain", "the round goes on");
+    assert_eq!(out[0]["header"]["round_capped"], "1");
+    assert_eq!(
+        out[0]["header"]["partial"], "0",
+        "trimmed bytes are not a partial answer: {out:?}"
+    );
+    let texts = texts_of(&out[0]);
+    assert_eq!(
+        texts.len(),
+        4,
+        "two whole iterations, and nothing appended: {texts:?}"
     );
 }
 

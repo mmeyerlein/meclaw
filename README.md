@@ -25,10 +25,16 @@ JSON file, not a deployment. Install once, grow everything else.
 ## Start an assistant
 
 ```bash
-# 1 — install meclaw: one static Linux binary
+# 1 — install meclaw: one static Linux binary (lands in ~/.local/bin)
 curl -fsSL https://meclaw.ai/install.sh | sh
-git clone https://github.com/mmeyerlein/meclaw && cd meclaw
+export PATH="$HOME/.local/bin:$PATH"
+# the templates must match the binary: clone the tag the installer just gave you
+git clone --depth 1 --branch "v$(meclaw --version | cut -d' ' -f2)" \
+    https://github.com/mmeyerlein/meclaw && cd meclaw
+# one key — replace sk-... with a real one (https://openrouter.ai/keys), or step 3 ends in code=auth
 printf 'OPENROUTER_API_KEY=sk-...\nMODEL_BRAIN=openai/gpt-4o-mini\n' > examples/meclaw-os/seed/.env
+# 7777 is an arbitrary free port: if it is taken, change it in every line below as well.
+# The very first start reads a 25 MB binary from cold disk and can stay silent for ~40 s; every later start takes well under a second.
 meclaw --root examples/meclaw-os/seed --templates ./templates --daemon --api 127.0.0.1:7777
 
 # 2 — install the OS into the running colony: one POST, nothing restarts
@@ -41,13 +47,16 @@ curl -s -X POST 127.0.0.1:7777/messages -H 'Content-Type: application/json' \
           "body": {"messages": [{"origin": "user", "type": "text",
                                  "text": "Say hello in one short sentence."}]}}'
 
-# 4 — read the answer: nothing is hidden, the reply is a hop on the record
+# 4 — read the answer: nothing is hidden, the reply is a hop on the record (needs jq)
 curl -s '127.0.0.1:7777/colony/trace?limit=200' | jq -r \
-  '[.trace[] | select((.headers_json | fromjson | .hop.route) == "answer")]
-   | last | .body_payload | fromjson | .messages[0].text'
+  '[.trace[] | select((.headers_json | fromjson | .hop.route) as $r | $r == "answer" or $r == "error")]
+   | last | if . == null then "no answer yet — the colony is still working; watch it at http://127.0.0.1:7777/ui/"
+            else .body_payload | fromjson | .messages[0].text end'
+
+# 5 — watch the colony in the browser: http://127.0.0.1:7777/ui/
 ```
 
-One binary, one key, four commands — and the last one already shows the point:
+One binary, one key, five steps — and the fourth already shows the point:
 the answer is not a return value, it is a message on the record.
 
 ## What just happened

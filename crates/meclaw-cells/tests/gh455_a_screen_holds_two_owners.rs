@@ -560,6 +560,111 @@ fn a_component_without_the_prefix_is_refused() {
     assert_eq!(out["receipt"]["error_code"], "component_prefix");
 }
 
+/// GH #568: two siblings naming the same `key` mint the same object id. The
+/// tree is refused as a whole rather than losing the first node silently.
+#[test]
+fn two_siblings_naming_the_same_key_are_refused() {
+    let Some(root) = display() else { return };
+    if !have_python() {
+        return;
+    }
+    let body = json!({
+        "messages": [],
+        "view_id": "keyed",
+        "kind": "component",
+        "content": {
+            "component": "display-card",
+            "props": {},
+            "children": [
+                {"component": "display-text", "key": "dup", "props": {}},
+                {"component": "display-text", "key": "dup", "props": {}},
+            ],
+        },
+    });
+    let out = only(run_shipped(
+        &root,
+        "compose",
+        stdin_doc(body, json!({"route": "in_view"}), json!({}), Some(ALICE)),
+    ));
+    assert_eq!(out["header"]["route"], "receipt");
+    assert_eq!(out["receipt"]["error_code"], "invalid_view");
+    let detail = out["receipt"]["detail"]
+        .as_str()
+        .expect("a refusal says why");
+    assert!(
+        detail.contains("dup"),
+        "the refusal names the key that collided: {detail}"
+    );
+}
+
+/// GH #568: a numeric key lands in the index's own language -- a node keyed
+/// `"3"` names exactly the object the unkeyed fourth child beside it names.
+#[test]
+fn a_numeric_key_is_refused() {
+    let Some(root) = display() else { return };
+    if !have_python() {
+        return;
+    }
+    let body = json!({
+        "messages": [],
+        "view_id": "keyed",
+        "kind": "component",
+        "content": {
+            "component": "display-card",
+            "props": {},
+            "children": [{"component": "display-text", "key": "3", "props": {}}],
+        },
+    });
+    let out = only(run_shipped(
+        &root,
+        "compose",
+        stdin_doc(body, json!({"route": "in_view"}), json!({}), Some(ALICE)),
+    ));
+    assert_eq!(out["header"]["route"], "receipt");
+    assert_eq!(out["receipt"]["error_code"], "invalid_view");
+    let detail = out["receipt"]["detail"]
+        .as_str()
+        .expect("a refusal says why");
+    assert!(
+        detail.contains("number"),
+        "the refusal says a key may not be a number: {detail}"
+    );
+}
+
+/// The collision is per parent, not per tree: the same key under two different
+/// parents mints two different ids and is taken.
+#[test]
+fn distinct_keys_across_different_parents_are_fine() {
+    let Some(root) = display() else { return };
+    if !have_python() {
+        return;
+    }
+    let body = json!({
+        "messages": [],
+        "view_id": "keyed",
+        "kind": "component",
+        "content": {
+            "component": "display-card",
+            "props": {},
+            "children": [
+                {"component": "display-card", "key": "left", "props": {},
+                 "children": [{"component": "display-text", "key": "row", "props": {}}]},
+                {"component": "display-card", "key": "right", "props": {},
+                 "children": [{"component": "display-text", "key": "row", "props": {}}]},
+            ],
+        },
+    });
+    let out = only(run_shipped(
+        &root,
+        "compose",
+        stdin_doc(body, json!({"route": "in_view"}), json!({}), Some(ALICE)),
+    ));
+    assert_eq!(
+        out["header"]["route"], "views",
+        "the same key under two parents is two ids: {out:#?}"
+    );
+}
+
 // ──────────────────────────────────────────────── (e) it reaches a real page
 
 struct Live {

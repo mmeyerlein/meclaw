@@ -475,14 +475,12 @@ async fn a_lane_is_never_swallowed_by_an_identical_blank_edge() {
     h.shutdown().await;
 }
 
-/// A colony whose v-lane `/caller -> /outer/inner/target` on lane `lane` is
-/// already drawn. The starting point of the two renaming cases below.
-async fn colony_holding_a_v_lane(td: &tempfile::TempDir, lane: &str) -> ColonyHandle {
-    // The target invites BOTH lanes in. That isolates what these cases are
-    // about: with only `recall` declared, a rename to `bundle` would be refused
-    // twice over — once for having no connect point, once for the disagreement
-    // — and the second refusal, the one under test, would hide behind the
-    // first.
+/// A colony whose target invites BOTH lanes in. That isolates what the cases
+/// below are about: with only `recall` declared, a rename to `bundle` would be
+/// refused twice over — once for having no connect point, once for the
+/// disagreement — and the second refusal, the one under test, would hide
+/// behind the first.
+async fn colony_accepting_both_lanes(td: &tempfile::TempDir) -> ColonyHandle {
     plant(
         td.path(),
         r#"{}"#,
@@ -491,7 +489,13 @@ async fn colony_holding_a_v_lane(td: &tempfile::TempDir, lane: &str) -> ColonyHa
             {"route":"bundle","at":["./target"],"because":"the lane it would move to"}
         ]}}"#,
     );
-    let h = boot(td.path()).await;
+    boot(td.path()).await
+}
+
+/// A colony whose v-lane `/caller -> /outer/inner/target` on lane `lane` is
+/// already drawn. The starting point of the two renaming cases below.
+async fn colony_holding_a_v_lane(td: &tempfile::TempDir, lane: &str) -> ColonyHandle {
+    let h = colony_accepting_both_lanes(td).await;
     let drawn = send_mutation(
         &h,
         json!({"scope":"/","diff":{"add_edges":[
@@ -650,6 +654,95 @@ async fn removing_the_blank_edge_in_the_same_diff_lets_the_lane_land() {
         edge.lane.as_deref(),
         Some("recall"),
         "and it is the DECLARED one that stands, not the blank one it replaced"
+    );
+
+    h.shutdown().await;
+}
+
+/// GH #564, face 1: the same trap turned INWARD. Both entries live in ONE
+/// diff, so there is no standing edge to disagree with — stage 6's neighbour
+/// check compares each entry against the pre-state only, and the pre-state is
+/// blank. The apply arm then dedups against the GROWING table: it inserts
+/// `recall`, finds the second entry content-equal on the five routing terms
+/// and swallows `bundle`, and the caller is handed `Committed` for a lane that
+/// was never laid.
+///
+/// Ruling (2026-09-02): `lane` does NOT become a sixth identity term — two
+/// edges differing only in the lane would both route, which is a double
+/// delivery. The intra-diff face gets its own pre-destructive check instead,
+/// mirroring the standing one: same code, same stage, and the text names both
+/// entries and both lanes, because the caller cannot see from the outside
+/// which two of their lines collapsed into one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_lanes_on_one_edge_inside_one_diff_are_refused() {
+    let td = tempfile::TempDir::new().unwrap();
+    let h = colony_accepting_both_lanes(&td).await;
+
+    let outcome = send_mutation(
+        &h,
+        json!({"scope":"/","diff":{"add_edges":[
+            {"from":"./caller","to":"./outer/inner/target","lane":"recall"},
+            {"from":"./caller","to":"./outer/inner/target","lane":"bundle"}
+        ]}}),
+    )
+    .await;
+    assert_eq!(
+        refusal_code(&outcome),
+        "edge_schema",
+        "the second lane would be swallowed by the growing table: {outcome:?}"
+    );
+    let MutationOutcome::Rejected { details, .. } = &outcome else {
+        unreachable!("checked above")
+    };
+    assert!(
+        details.contains("add_edges[0]")
+            && details.contains("add_edges[1]")
+            && details.contains("'recall'")
+            && details.contains("'bundle'"),
+        "the refusal names both entries and both lanes: {details}"
+    );
+    assert!(
+        deep_edge(&h).await.is_none(),
+        "and nothing was applied — the check is pre-destructive"
+    );
+
+    h.shutdown().await;
+}
+
+/// The other side of the intra-diff rule, and the one that keeps a re-applied
+/// diff a no-op: two entries of one diff that AGREE about the lane are not a
+/// disagreement. A generator that lists the same edge twice (the Phase-15
+/// builder re-sends everything it knows) still commits, and lays exactly one
+/// edge — the dedup doing its job, not swallowing a declaration.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_same_lane_twice_inside_one_diff_stays_idempotent() {
+    let td = tempfile::TempDir::new().unwrap();
+    let h = colony_accepting_both_lanes(&td).await;
+
+    let outcome = send_mutation(
+        &h,
+        json!({"scope":"/","diff":{"add_edges":[
+            {"from":"./caller","to":"./outer/inner/target","lane":"recall"},
+            {"from":"./caller","to":"./outer/inner/target","lane":"recall"}
+        ]}}),
+    )
+    .await;
+    assert!(
+        matches!(outcome, MutationOutcome::Committed { .. }),
+        "the same declaration twice in one diff is the same edge: {outcome:?}"
+    );
+
+    let edges = read_graph(&h)
+        .await
+        .edges
+        .into_iter()
+        .filter(|e| e.from == "/caller" && e.to == "/outer/inner/target")
+        .collect::<Vec<_>>();
+    assert_eq!(edges.len(), 1, "and no twin was laid beside it: {edges:?}");
+    assert_eq!(
+        edges[0].lane.as_deref(),
+        Some("recall"),
+        "carrying the lane both entries named"
     );
 
     h.shutdown().await;

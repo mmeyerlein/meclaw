@@ -624,7 +624,24 @@ pub fn collect_hive_contracts<'a>(
 pub fn contract_from_cell_dir(cell_dir: &std::path::Path, hive_path: &str) -> Option<HiveContract> {
     let raw = std::fs::read_to_string(cell_dir.join("config.json")).ok()?;
     let val = meclaw_core::serde_json::from_str::<JsonValue>(&raw).ok()?;
-    let params = val.get("params").cloned().unwrap_or(JsonValue::Null);
+    contract_from_config(&val, hive_path)
+}
+
+/// The same read, one step later: a `config.json` that has already been parsed
+/// into JSON, labelled with the logical path its hive will stand at.
+///
+/// Split out of [`contract_from_cell_dir`] for GH #567, and for the same reason
+/// that function was split out of [`collect_hive_contracts`]: the subtree walk
+/// ([`crate::mutation::subtree::parse_subtree`]) has the config in hand already,
+/// having followed the `ref` markers to find it, and a second reader of
+/// `params.contract` would be free to disagree with the first about what it
+/// means.
+///
+/// `None` when the config carries no `params`, cannot be read as
+/// [`crate::config::HiveParams`], or simply declares no contract — the same
+/// conservatism the collector has always had.
+fn contract_from_config(config: &JsonValue, hive_path: &str) -> Option<HiveContract> {
+    let params = config.get("params").cloned().unwrap_or(JsonValue::Null);
     if params.is_null() {
         return None;
     }
@@ -641,6 +658,71 @@ pub fn contract_from_cell_dir(cell_dir: &std::path::Path, hive_path: &str) -> Op
         accepts: spec.accepts.iter().map(lane).collect(),
         emits: spec.emits.iter().map(lane).collect(),
     })
+}
+
+/// Every contract declared ANYWHERE in the subtree `template_root` stages,
+/// labelled with the logical path each hive will stand at once the instance is
+/// born at `born`.
+///
+/// GH #567. [`contract_from_cell_dir`] reads ONE file, and for a composite
+/// template that is the wrong file: the rim that declares a connect point is
+/// typically an occupant reached through a `ref` marker (`talky@4.6.1` inside an
+/// `assistant`), and a marker directory holds no contract of its own — the
+/// declaration lives in a completely different template. A v-lane drawn onto
+/// such a rim in the same breath that instantiates it therefore asked a list the
+/// contract was never in, and earned `v_lane_no_connect_point` for a connect
+/// point that was declared all along.
+///
+/// So the read is the ref-aware walk the staging itself uses
+/// ([`crate::mutation::subtree::parse_subtree`]): every hive node of the staged
+/// subtree contributes, addressed at `born` joined with its path relative to the
+/// template root. The root (`rel_path == ""`) is `born` itself, which is
+/// [`contract_from_cell_dir`]'s answer — the old behaviour is the first element
+/// of the new one, not a case beside it.
+///
+/// Conservative like every reader here: a template whose subtree does not parse
+/// falls back to the single-file read, so a malformed nested cell cannot turn a
+/// verdict that used to be reached into one taken over nothing (its own refusal
+/// comes from staging, which is where template shape is judged).
+///
+/// **Overrides are NOT layered in.** Neither a `ref`'s `override_params` nor an
+/// `add_nodes[].override_params` is applied before the declaration is read, so
+/// the verdict judges the template's PRE-OVERRIDE contract. That was already
+/// true of the root-level read this widens ([`contract_from_cell_dir`] is handed
+/// a template directory, not a staged instance); it is now true of the nested
+/// hives too. An override that rewrote `params.contract` would therefore be
+/// invisible here — no shipped template does, and closing it means staging
+/// before validating, which is the order this whole stage exists to avoid.
+#[must_use]
+pub fn contracts_from_template_subtree(
+    template_root: &std::path::Path,
+    born: &str,
+    templates: &crate::templates::TemplatesRegistry,
+) -> Vec<HiveContract> {
+    let Ok(parsed) = crate::mutation::subtree::parse_subtree(template_root, templates) else {
+        return contract_from_cell_dir(template_root, born)
+            .into_iter()
+            .collect();
+    };
+    let mut out = Vec::new();
+    for cell in &parsed.cells {
+        if !parsed.hives.contains(&cell.rel_path) {
+            continue;
+        }
+        if let Some(c) = contract_from_config(&cell.config, &join_below(born, &cell.rel_path)) {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// `born` plus a template-relative path, as ONE logical path (`/gen` + `talky`
+/// → `/gen/talky`). An empty `rel` is `born` itself — the template root.
+fn join_below(born: &str, rel: &str) -> String {
+    if rel.is_empty() {
+        return born.to_string();
+    }
+    format!("{}/{rel}", born.strip_suffix('/').unwrap_or(born))
 }
 
 /// One edge as the boot check receives it from `/colony/graph`: endpoints, the

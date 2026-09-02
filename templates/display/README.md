@@ -1,4 +1,4 @@
-# `display@1.0.1`
+# `display@1.0.2`
 
 One screen, on a port of its own, that many agents and applications write onto
 at the same time. A **view** is a named, owned, optionally expiring piece of
@@ -116,7 +116,7 @@ leaving the table untouched:
 |---|---|
 | `owner_unknown` | the message carries no `envelope.reply_to` |
 | `not_owner` | the body claims an owner that is not the sender |
-| `invalid_view` | a missing or wrongly typed field, an unknown `kind`, an unknown `region` |
+| `invalid_view` | a missing or wrongly typed field, an unknown `kind`, an unknown `region`, or a component tree whose form does not hold -- two children of one node naming the same `key`, or a child `key` that is a plain number |
 | `component_prefix` | a component name that does not start with `<view_id>-` |
 | `store_failed` | a leg of the store bundle came back with an `error_code` |
 
@@ -178,16 +178,19 @@ with, and the only character `parse_object_id` splits on. 512 rather than the
 path with its slashes written as tildes is already 120 characters deep on a real
 colony.
 
-**Two things the sender owns, because the display does not check them.** A key
-must be unique among its **siblings**: two siblings naming the same key mint the
-same id, and the second silently replaces the first in the tree the display
-builds -- one node of the view disappears with no refusal and no receipt. And a
-key that is a plain number collides with the index language it stands in: a node
-keyed `"3"` names the same object as the unkeyed fourth child beside it. Give a
-key a prefix that an index cannot have (`colony-view` uses `n.` and `h.`) and
-derive it from something already unique, and neither can happen. That the
-display swallows the collision rather than naming it is filed as
-[#568](https://github.com/mmeyerlein/meclaw/issues/568).
+**Two rules the door enforces on every CHILD of a node, since 1.0.2.** A key
+must be unique among its **siblings**, and it must not be a plain number. Two
+siblings naming the same key mint the same id, and a key like `"3"` names
+exactly what the unkeyed fourth child beside it names -- either way one node of
+the view would be overwritten by another and disappear from the screen with
+nothing in the receipt to act on. So the tree is refused as a whole, the way a
+bad `keep` list already is: the receipt carries `invalid_view` and a `detail`
+naming the key and the parent it collided under, and nothing is written
+([#568](https://github.com/mmeyerlein/meclaw/issues/568)). Give a key a prefix
+that an index cannot have (`colony-view` uses `n.` and `h.`) and derive it from
+something already unique, and neither refusal is reachable. The root of a
+view's tree is exempt from both: it is an only child under a wrapper named for
+its owner and its `view_id`, so there is nothing for its key to collide with.
 
 The difference is what `keep` is worth. An index is a **slot**: insert one
 sibling ahead of a node and every id behind it now belongs to a different thing,
@@ -200,8 +203,13 @@ key that says what the node **is** -- a cell path, a row id -- makes the kept
 prop follow the thing, which is the only reading under which `keep` means
 anything at all.
 
-A view that names no keys is unchanged, and both shipped view kinds do exactly
-that.
+A view that names no keys is unchanged -- and a view **kind** names none by
+nature: `prose` and `component` say what a view is, not what the nodes of its
+tree are called. Keys live in the tree a sender draws, and the one shipped
+sender that draws any is `colony-view`, on its hive and cell rectangles: it
+derives every key from a colony path behind an `n.`/`h.` prefix, so its keys are
+unique by construction and none of them can be a plain number. No shipped view
+can trip either refusal.
 
 ## The components this scope defines
 

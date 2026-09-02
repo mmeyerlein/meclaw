@@ -274,6 +274,56 @@ def main():
     ok("the picture says which browser half wrote it",
        len(fresh["props"].get("client") or "") >= 8)
 
+    # ---- 5. a frame says WHICH LEVEL it is, not only its directory name
+    #
+    # GH #549. A member is a person and an assistant is a generation of that
+    # person's agent, so the obvious name for the first generation is the
+    # person's own name: `members/alex` holding `assistants/alex` draws two
+    # nested frames carrying one word, and the only way to tell the person from
+    # the agent is to count rectangles. The composition levels address their
+    # children through fixed containers (`orgs/`, `members/`, `assistants/`,
+    # `channels/`, `apps/`), so the parent segment IS the level -- readable off
+    # today's `/colony/graph`, with no new field on the wire and no second
+    # consumer waiting for one. A hive that is not addressed through one of the
+    # five is a plain `hive`, which is the honest answer rather than a guess.
+    collision = {"scope": "/", "edges": [], "nodes": [
+        {"path": "/" + h + "/c0", "cell_type": "code"} for h in (
+            "os/builder",
+            "os/orgs/acme",
+            "os/orgs/acme/members/alex",
+            "os/orgs/acme/members/alex/assistants/alex",
+            "os/orgs/acme/members/alex/channels/telegram",
+            "os/orgs/acme/members/alex/apps/colony-view",
+        )]}
+    labelled = layout.main.__globals__["content"](collision, owner)
+    seen = {c["props"]["path"]: (c["props"]["name"], c["props"].get("level"))
+            for c in labelled["children"]
+            if c["component"] == "colony-view-hive"}
+    want_level = {
+        "os/builder": ("builder", "hive"),
+        "os/orgs/acme": ("acme", "org"),
+        "os/orgs/acme/members/alex": ("alex", "member"),
+        "os/orgs/acme/members/alex/assistants/alex": ("alex", "assistant"),
+        "os/orgs/acme/members/alex/channels/telegram": ("telegram", "channel"),
+        "os/orgs/acme/members/alex/apps/colony-view": ("colony-view", "app"),
+    }
+    ok("every frame carries its level beside its directory name",
+       all(seen.get(h) == w for h, w in want_level.items()),
+       {h: (seen.get(h), w) for h, w in want_level.items() if seen.get(h) != w})
+    ok("the two frames that share the word `alex` no longer read alike",
+       (seen.get("os/orgs/acme/members/alex")
+        != seen.get("os/orgs/acme/members/alex/assistants/alex")))
+    hive_component = [c for c in layout.components()
+                      if c["name"] == "colony-view-hive"][0]
+    ok("the hive component declares `level` as a prop",
+       hive_component["prop_schema"].get("level") == "text")
+    # ONE `<text>`: the browser's `hiveParts` grabs the first one it finds to
+    # place the label, so a second element would be positioned by nothing.
+    ok("the frame renders `<name> · <level>` out of a single text element",
+       "{{name}} \u00b7 {{level}}" in layout.HIVE_TEMPLATE
+       and layout.HIVE_TEMPLATE.count("<text") == 1,
+       layout.HIVE_TEMPLATE)
+
     print("\n%d checks, %d failed" % (COUNT[0], len(FAIL)))
     if FAIL:
         return 1

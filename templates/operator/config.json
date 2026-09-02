@@ -29,7 +29,7 @@
         {
           "route": "in_verdict",
           "context": [],
-          "because": "the broker's answer to the ONE question a submission asks, on its way back to the `submit` occupant inside this hive (GH #556). It is a lane of the FRONT DOOR since the submitter moved in here: the broker stands one level up, beside this hive and not inside it, so the question leaves on `ask` and the answer has to be let back in. This hive reads neither -- it draws two edges and touches nothing. Derived from submit@2.3.0"
+          "because": "the broker's answer to the ONE question a submission asks, on its way back to the `submit` occupant inside this hive (GH #556). It is a lane of the FRONT DOOR since the submitter moved in here: the broker stands one level up, beside this hive and not inside it, so the question leaves on `ask` and the answer has to be let back in. This hive reads neither -- it draws two edges and touches nothing. Derived from submit@2.3.1"
         },
         {
           "route": "export_done",
@@ -48,15 +48,15 @@
         },
         {
           "route": "ask",
-          "because": "may this identity have a manifest applied under this scope root -- the ONE capability question a submission asks, raised by the `submit` occupant and let out of the front door because the broker is this hive's SIBLING and not its occupant (GH #556). It has exactly one sender in here, which is what lets the level above stamp the requester on the edge that receives it (R-AC-1): the identity the broker rules is `<this hive>/submit`, the node whose reach the rule is about, and never this hive as a whole. Derived from submit@2.3.0"
+          "because": "may this identity have a manifest applied under this scope root -- the ONE capability question a submission asks, raised by the `submit` occupant and let out of the front door because the broker is this hive's SIBLING and not its occupant (GH #556). It has exactly one sender in here, which is what lets the level above stamp the requester on the edge that receives it (R-AC-1): the identity the broker rules is `<this hive>/submit`, the node whose reach the rule is about, and never this hive as a whole. Derived from submit@2.3.1"
         },
         {
           "route": "mutate",
-          "because": "the manifest, checked and attributed, on its way to the mutation door. It crosses this rim since GH #556 and NOTHING about it is this hive's: no cell of the front door raises it, no cell of the front door may, and the edge that finally carries it to `/colony/mutations` lives in the birth topology of the colony's root -- `/colony/mutations` is not an endpoint a mutation may draw at any scope, so the reach cannot be acquired later by anything that happens in here. What moved is where the submitter STANDS, not what it is allowed to do (ADR-0015 § Amendment 2026-08-31). Derived from submit@2.3.0"
+          "because": "the manifest, checked and attributed, on its way to the mutation door. It crosses this rim since GH #556 and NOTHING about it is this hive's: no cell of the front door raises it, no cell of the front door may, and the edge that finally carries it to `/colony/mutations` lives in the birth topology of the colony's root -- `/colony/mutations` is not an endpoint a mutation may draw at any scope, so the reach cannot be acquired later by anything that happens in here. What moved is where the submitter STANDS, not what it is allowed to do (ADR-0015 § Amendment 2026-08-31). Derived from submit@2.3.1"
         },
         {
           "route": "sub_receipt",
-          "because": "the SUBMITTER's own receipt, in its own words, for the level above -- and only in the two shapes this hive cannot answer for: one carrying `hop.error_code`, and one whose committed diff registered a template class (`hop.registers_class`). The ordinary committed receipt is rendered for the caller by the occupant that asked and stays inside; letting a copy of it out as well would be one submission with two answers on two lanes. It is a lane of its own rather than a second sender on `receipt` for exactly that reason, and what the level does with it -- GH #504's nudge into the baumeister's corpus, the refusal that closes a drafted round -- is the level's business and not this hive's. Derived from submit@2.3.0"
+          "because": "the SUBMITTER's own receipt, in its own words, for the level above -- and only in the two shapes this hive cannot answer for: one carrying `hop.error_code`, and one whose committed diff registered a template class (`hop.registers_class`). The ordinary committed receipt is rendered for the caller by the occupant that asked and stays inside; letting a copy of it out as well would be one submission with two answers on two lanes. It is a lane of its own rather than a second sender on `receipt` for exactly that reason, and what the level does with it -- GH #504's nudge into the baumeister's corpus, the refusal that closes a drafted round -- is the level's business and not this hive's. Derived from submit@2.3.1"
         }
       ]
     },

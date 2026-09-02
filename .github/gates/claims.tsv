@@ -44,6 +44,8 @@ PIN-hive-port-boundary	docs/meclaw-overview.md	deklarierten Port vorbei ins Inne
 PIN-v-lane-no-connect-point	docs/meclaw-overview.md	eine v-lane endet in einem Hive, dessen Vertrag den Endpunkt für diese Lane nicht per `at` benennt	pinned	an_undeclared_connect_point_is_refused_by_name
 PIN-v-lane-mandatory-hop	docs/meclaw-overview.md	eine v-lane will eine Zwischenebene überspringen, die die Lane in ihrem Vertrag führt	pinned	a_declaring_level_may_not_be_skipped
 PIN-v-lane-unanchored	docs/meclaw-overview.md	und die neue Form trägt den Relativpfad nicht oder benennt ihn für diese Lane nicht	pinned	a_missing_connect_point_refuses_the_swap
+PIN-v-lane-newborn-subtree-de	docs/meclaw-overview.md	und zwar im **ganzen gestagten Teilbaum** mit aufgelösten `ref`-Markern	pinned	a_v_lane_onto_a_nested_occupant_of_a_newborn_commits
+PIN-v-lane-newborn-subtree-en	docs/meclaw-overview.en.md	it reads the **whole staged subtree** with `ref` markers resolved	pinned	a_v_lane_onto_a_nested_occupant_of_a_newborn_commits
 PIN-remove-before-add	docs/meclaw-overview.md	**Wird vor `add_edges` angewandt**	pinned	one_mutation_replaces_an_edge_instead_of_deleting_it
 PIN-dot-is-the-scope-root-de	docs/meclaw-overview.md	die Regel erweitert das Vokabular, sie erfindet keinen Knoten	pinned	a_dot_endpoint_resolves_to_the_scope_root
 PIN-dot-is-the-scope-root-en	docs/meclaw-overview.en.md	the rule widens the vocabulary, it invents no node	pinned	a_dot_endpoint_resolves_to_the_scope_root

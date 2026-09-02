@@ -1667,6 +1667,24 @@ migration: their edge used to work, the door behind it is gone, and without the
 refusal the delivery would become a dead letter nobody sees until the log is read.
 A lane with no `at` is judged exactly as before.
 
+**A v-lane may end on a hive the same mutation creates (GH #562, GH #567).**
+That is exactly what a grow recipe is: one `add_nodes` and the level's edges
+beside it, in one breath. Until the node is staged its declaration lives only in
+the template — so validation reads it there, and
+it reads the **whole staged subtree** with `ref` markers resolved.
+For a composite the rim that pronounces
+the connect point is typically an occupant behind a `ref` (`talky` inside an
+`assistant`), and a marker directory carries no contract of its own — a read
+that looks only at the template root never finds it. Both doors that stage a
+subtree feed the same list: `add_nodes`, and a `swap_nodes` successor — a
+generation change is ONE mutation (`add_nodes` grows the successor,
+`swap_nodes` swings the edges, the level's own wiring stands beside both), and
+the successor's contract previously fed the re-anchor verdict alone. **Appended, never substituted**: a path that already stands
+keeps the contract it was born with, so a diff cannot talk a live hive into a
+connect point by naming a template. And the birth contracts reach exactly one
+check, the port boundary: a hive that does not exist yet owes no door, breaks no
+standing lane, and has no wiring for context to be promoted into.
+
 **The refusal is asymmetric, because the danger is.** It holds in the `accepts`
 direction: an edge that delivers the lane AT the hive path finds no door behind
 it any more and would end silently in the dead-letter queue. In the `emits`
@@ -2912,7 +2930,7 @@ Colony answers in the universal body format with a top-level slot `graph`. Consu
 - **`graph_version`** is **constant `0`** today; the counter growing monotonically per scope (counts up on every successful mutation for this scope, helps with polling diff) is **planned from phase 14**.
 - **Granularity: shallow only**, one level per read. Sub-scopes are read via separate graph queries with their path as scope.
 - **The edge object**: `id`, `from`, `to`, `condition`, `modifier`, `default`, `lane`. `condition`, `modifier` and `lane` are **optional and absent when the edge has none** (a missing key *is* the statement "this edge has no condition"). **`lane`** (string, GH #559) carries the lane name a v-lane declared (see "v-lanes — the declared deep edge"); an ordinary edge carries the key **not at all**, because that is precisely the statement: this edge declares no lane and is the edge the substrate has always had. **`default`** (boolean, since **v0.18.0**, GH #367) is there **always, on both values** — it names the edge's routing phase (`true` = a default edge, see "Edge model"), and a phase is never absent: every edge runs in exactly one of the two. Omitting the key on `false` would leave a reader unable to tell "this edge is regular" from "this server does not report phases", which is exactly the ambiguity the boot checks sat in, since they rebuild their edge table out of this answer.
-- **Edge UUIDs visible**: the query emits them. Using them for disambiguation in `remove_edges` (`remove_edges` with the `id` field) is *(specified, not built — see GH #254)*: `validate_remove_edges` (`crates/meclaw-colony/src/mutation/validate.rs`) requires `match.from` **and** `match.to`, an `id` key is read on neither path — validation nor apply — and an `id`-only match is rejected as `schema`, not as "no such edge". Edge identity today is `from`+`to`+`condition`+`modifier`+`default` (the routing phase joined with GH #283), as § Mutation format describes it. **`lane` is NOT an identity term** (GH #564) — two edges that differ only in the lane name are one edge as far as deduplication is concerned. Which is exactly why any **lane deviation on an identical edge is refused** rather than quietly swallowed: a second `add_edges` entry with the same `from`/`to`/`condition`/`modifier`/`default` and a different `lane` is either a typo or an intent to change an existing edge's declaration — and the latter is a remove and a draw, not a second write of the same line.
+- **Edge UUIDs visible**: the query emits them. Using them for disambiguation in `remove_edges` (`remove_edges` with the `id` field) is *(specified, not built — see GH #254)*: `validate_remove_edges` (`crates/meclaw-colony/src/mutation/validate.rs`) requires `match.from` **and** `match.to`, an `id` key is read on neither path — validation nor apply — and an `id`-only match is rejected as `schema`, not as "no such edge". Edge identity today is `from`+`to`+`condition`+`modifier`+`default` (the routing phase joined with GH #283), as § Mutation format describes it. **`lane` is NOT an identity term** (GH #564) — two edges that differ only in the lane name are one edge as far as deduplication is concerned. Which is exactly why any **lane deviation on an identical edge is refused** rather than quietly swallowed: a second `add_edges` entry with the same `from`/`to`/`condition`/`modifier`/`default` and a different `lane` is either a typo or an intent to change an existing edge's declaration — and the latter is a remove and a draw, not a second write of the same line. **This holds for two entries of the SAME diff as well** (GH #564, face 1): the entries are compared against each other before anything is applied, because the apply arm dedups against the growing edge table and would otherwise insert the first lane and silently drop the second. The refusal names both entry indices and both lanes; two entries that declare the SAME lane remain idempotent, as a re-applied complete diff must be.
 
 **Push vs. pull**: pull (`GET /colony/registry?path_prefix=...` with a `graph_version` comparison for cache invalidation) from phase 12; push (`GET /colony/events`, WebSocket subscribe) from **phase 14**, reason: the event broadcast would have to be fired from the routing loop, `handle_cell_died`, and `handle_mutation`, that touches the await-free `handle_cell_died` corridor (the byte-identical gate) and needs its own design pass (broadcast mechanics, a slow-consumer drop policy, an event schema). Pull is available from phase 12, because the web UI itself does not need it (no JS, no auto-refresh), but external clients (observability tools, a live graph viewer) benefit from it. Cell-to-cell subscriptions as a pattern are possible later, but not a core feature.
 

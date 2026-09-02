@@ -1,7 +1,7 @@
 {
   "cell": {
     "type": "ref",
-    "template": "collector@3.4.0"
+    "template": "collector@3.5.0"
   },
   "override_params": {
     "assemble": {

@@ -18,6 +18,7 @@
 //! deltas are dropped and the full body is folded into ONE assistant turn.
 
 use crate::llm::params::{AuthMode, LlmParams};
+use crate::llm::sanitize::strip_provider_annotations;
 use crate::llm::translate::{TranslateError, TranslatedResponse, usage_cost, usage_tokens_cached};
 use serde_json::Value;
 
@@ -472,8 +473,11 @@ fn build_translated(
 
     let mut assistant_turn = tool_turns.clone();
     if !text_parts.is_empty() {
+        // Strip after the join, never per part: a marker split across two
+        // `output_text` parts only exists in the joined text (GH #569).
         assistant_turn.push(json!({
-            "origin": "assistant", "type": "text", "text": text_parts.join(""),
+            "origin": "assistant", "type": "text",
+            "text": strip_provider_annotations(&text_parts.join("")),
         }));
     }
 
@@ -771,6 +775,25 @@ mod tests {
         );
         assert_eq!(t.finish_reason, "stop");
         assert_eq!(t.tokens_prompt, Some(7));
+    }
+
+    #[test]
+    fn sse_strips_a_pua_citation_marker_split_across_two_parts() {
+        // GH #569: the marker arrives split over two `output_text` parts, so
+        // stripping must happen after the join — the sanitation sees the whole
+        // span, and nothing of it reaches the UBF turn.
+        let body = sse(&[
+            json!({"type":"response.created","response":{"id":"resp_c","model":"gpt-5-sse"}}),
+            json!({"type":"response.output_item.done","item":{
+                "type":"message","role":"assistant",
+                "content":[{"type":"output_text","text":"It may rain this evening. \u{E200}cite\u{E202}tu"},
+                           {"type":"output_text","text":"rn0search0\u{E201}"}]}}),
+            json!({"type":"response.completed","response":{
+                "id":"resp_c","model":"gpt-5-sse"}}),
+        ]);
+        let t = parse_responses_sse(&body).unwrap();
+        assert_eq!(t.assistant_turn.len(), 1);
+        assert_eq!(t.assistant_turn[0]["text"], "It may rain this evening. ");
     }
 
     #[test]

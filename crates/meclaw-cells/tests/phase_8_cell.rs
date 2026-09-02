@@ -340,6 +340,77 @@ async fn llm_cell_handle_with_messages_hits_mock_openai() {
     );
 }
 
+// ───── GH #569: provider citation markers never reach the emission ─────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn llm_cell_handle_strips_provider_citation_marker_from_emission() {
+    // GH #569: the provider answers with an inline citation marker
+    // (PUA-wrapped `cite…turn0search0`, byte shape EE 88 80 / EE 88 82 /
+    // EE 88 81 verified from the reported live turn). Nothing of it may reach
+    // the emitted UBF turn — the translate boundary strips it.
+    use meclaw_cells::llm::LlmCell;
+    use meclaw_cells::llm::params::LlmParams;
+    use meclaw_colony::DbConn;
+    use meclaw_colony::stateful_cell::StatefulCell;
+    use meclaw_core::serde_json::json;
+    use meclaw_core::{Body, MessageBuilder, OutputSink, Path, Uuid};
+    use tempfile::TempDir;
+    use tokio::sync::mpsc;
+
+    let mock = MockOpenAI::start(vec![canned_chat_completion(
+        "It may rain this evening. \u{E200}cite\u{E202}turn0search0\u{E201}",
+        "stop",
+    )])
+    .await;
+    let raw = json!({
+        "provider": "openai",
+        "model": "gpt-4o",
+        "api_key": "test-key-gh569",
+        "base_url": format!("{}/v1", mock.base_url),
+    });
+    let params = LlmParams::parse(&raw).unwrap();
+    let http = reqwest::Client::builder().build().unwrap();
+    let mut cell = LlmCell::new(params, http);
+
+    let td = TempDir::new().unwrap();
+    let raw_conn =
+        meclaw_colony::persist::open_or_create_cell_db(&td.path().join("cell.db")).unwrap();
+    let mut conn = DbConn::wrap(raw_conn, None);
+    let (tx, mut rx) = mpsc::channel::<meclaw_core::CellEmission>(8);
+    let sink = OutputSink::new(
+        tx,
+        Path::new("/llm"),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        32,
+        meclaw_core::Headers::new(),
+        None,
+    );
+
+    let msg = MessageBuilder::new(Path::new("/llm"))
+        .reply_to(Path::new("/observer"))
+        .body(Body::Inline(json!({
+            "system": {"identity": {"soul": {"text": "P"}}},
+            "messages": [{"origin":"user","type":"text","text":"How will the weather be?"}]
+        })))
+        .build();
+    cell.handle(msg, &sink, &mut conn).await;
+
+    let em = rx.recv().await.expect("cell must emit assistant-turn");
+    let text = em.content["messages"][0]["text"]
+        .as_str()
+        .expect("emitted turn carries text");
+    assert_eq!(text, "It may rain this evening. ");
+    assert!(
+        !text.chars().any(|c| ('\u{E000}'..='\u{F8FF}').contains(&c)),
+        "no Private-Use-Area codepoint may survive: {text:?}"
+    );
+    assert!(
+        !text.contains("turn0search0"),
+        "the marker's own token may not survive: {text:?}"
+    );
+}
+
 // ───── T21: tool_call response → UBF tool_call turn ─────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -26,9 +26,12 @@
 //!     wide form resolved to, so nothing in a grown topology differs;
 //!   * the first organisation's scope root now lies under the prefix the
 //!     shipped policy row grants, and the old one did not;
-//!   * the ONE exception, `subscribe`, still renders the wide form, because the
-//!     identity door reaches a SIBLING of the container that no declaration
-//!     standing inside it can name;
+//!   * the exception is ONE LEVEL and TWO SWITCHES: an assistant grown with
+//!     `subscribe` (the identity door) or with `credential` (the credential
+//!     road, GH #560) still renders the wide form, because both reach a SIBLING
+//!     of the container — `./affinity` and `./access` — that no declaration
+//!     standing inside it can name, and an edge lives in the graph of the
+//!     lowest common ancestor of its endpoints;
 //!   * and the README sentence that promises all of this (development rules
 //!     § 2d: the drift lock greps the sentence AND asserts the mechanism).
 
@@ -245,14 +248,23 @@ fn the_first_organisation_now_asks_for_a_scope_root_the_shipped_policy_grants() 
 
 #[test]
 fn the_identity_door_keeps_the_wide_declaration_and_says_so() {
-    // The one exception, and it is a reachability fact. `./affinity` is a
-    // SIBLING of `./assistants`: from a declaration standing in the container
-    // the only spellings that reach it are `../affinity` and an absolute path,
-    // and `mutation::validate` refuses both in an edge endpoint. Splitting the
-    // door into a second declaration does not survive `templates/submit/gate`
-    // either — its form check accepts an `in_pack` edge only when the target is
-    // under the requester or is created by THAT SAME declaration (GH #479), and
-    // a declaration that only draws edges creates nothing.
+    // The first of the two switches that keep the wide form, and it is a
+    // reachability fact. `./affinity` is a SIBLING of `./assistants`: from a
+    // declaration standing in the container the only spellings that reach it
+    // are `../affinity` and an absolute path, and `mutation::validate` refuses
+    // both in an edge endpoint. Splitting the door into a second declaration
+    // does not survive `templates/submit/gate` either — its form check accepts
+    // an `in_pack` edge only when the target is under the requester or is
+    // created by THAT SAME declaration (GH #479), and a declaration that only
+    // draws edges creates nothing.
+    //
+    // The second switch is `credential` (GH #560), and since `builder@1.6.1`
+    // it takes the wide form for the same reason: the road ends inside the
+    // newborn generation and its other end is the member's own `./access`, a
+    // sibling of `./assistants` — so the member is the lowest common ancestor,
+    // and an edge lives in the graph of that level. Pinned in
+    // `gh466_grow_level_renders_the_level.rs` and, at the mutation door, in
+    // `gh567_the_credentialled_wish_is_one_act.rs` (GH #567).
     let mut params = json!({"scope": MEMBER, "level": "assistant", "name": "scribe",
                             "template": "a-template@1.0.0"});
     params["subscribe"] = json!(true);
@@ -342,7 +354,8 @@ fn the_readme_publishes_the_form_the_renderer_writes() {
     }
     assert!(
         flat.contains("keeps the wide form"),
-        "the README does not name the one exception (the identity door), so a \
-         reader meeting it would read it as drift"
+        "the README does not name the exception (the identity door and, since \
+         `builder@1.6.1`, the credential road), so a reader meeting either \
+         would read it as drift"
     );
 }

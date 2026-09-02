@@ -13,6 +13,260 @@ Rust crates are internals and move without notice.
 
 ### Changed
 
+#### `colony-view@1.0.2`: a frame says which level it is (GH #549)
+
+A hive frame was labelled with its directory name alone, and that word is not
+unique in a grown tree. A member is a person and an assistant is a generation of
+that person's agent, so the obvious name for the first generation is the
+person's own name: `members/alex` holding `assistants/alex` drew two nested
+frames reading one word, and the only way to tell the person from the agent was
+to count rectangles. A frame now reads `alex · member` and `alex · assistant`.
+
+**The level is read off the path, and nothing new travels for it.** The
+composition levels address their children through fixed containers, so a frame
+whose parent segment is `orgs`, `members`, `assistants`, `channels` or `apps` is
+an `org`, a `member`, an `assistant`, a `channel` or an `app`; anything else is
+a plain `hive`. `/colony/graph` is unchanged and carries no kind: its `nodes[]`
+entries have exactly two keys, and hives are not nodes at all — they exist only
+as prefixes of cell paths, which is why the view derives every frame in the
+first place. Putting a level on that wire would be a public API round
+(README § *Stability*) for a single consumer; five string comparisons in the
+layout cost no contract, and a tree that does not use the composition levels
+reads `hive` everywhere, which is the honest answer rather than a guess.
+
+The label is single-sourced in the layout. The browser half places it — it takes
+the FIRST `<text>` of a frame and moves it with the rectangle — and never writes
+its content, so the component keeps exactly one text element and the new `level`
+prop decides what it says beside the existing `name`.
+
+#### `display@1.0.2`: a key collision is refused by name (GH #568)
+
+A component-tree node may name its own `key`, and the object it becomes is named
+`<parent>/<key>` instead of `<parent>/<index>` (`display@1.0.1`, GH #544). Two
+siblings naming the SAME key minted the same id, and the second overwrote the
+first in the tree the compose cell builds: the view was accepted, the receipt
+said nothing, and one node was simply not on the screen. The published contract
+— *a key is any non-empty string without a `/`* — promised more than it
+delivered.
+
+**It is a refusal now, and the tree is rejected as a whole**, the way a bad
+`keep` list or an over-long `view_id` already is. `check_node` collects the keys
+minted per parent and returns `invalid_view` with a `detail` naming the key and
+the parent it collided under, so the refusal travels the `receipt` lane every
+other validation failure uses.
+
+**A numeric key is refused with it.** `ord` still comes from the index, so keyed
+and unkeyed siblings coexist by design — and a key like `"3"` names exactly the
+object the unkeyed fourth child beside it names. Refusing it is the smaller
+contract, and no shipped view needs it: a view **kind** — `prose` or `component`
+— names no keys at all, because keys live in the tree a sender draws; and the one
+shipped sender that draws any, `colony-view@1.0.2`, derives every key from a
+colony path behind an `n.`/`h.` prefix, unique by construction and never able to
+look like an index. Both rules are read on the CHILDREN of a node: the root of a
+view's tree is an only child under a wrapper named for its owner and its
+`view_id`, so its own key can collide with nothing.
+Third digit: the contract already promised what the door now enforces.
+
+#### `submit@2.3.1`: the gate checks its own anchor, and two comments learn the new address (GH #558, GH #566)
+
+**The created-node branch verifies the name it trusts.** `submit`'s form check
+accepts an `in_pack` edge on two branches, and the second one — the parent
+drawing the door of the child it is growing — is only ever as narrow as the set
+of names it reads out of `add_nodes`. That set was taken as written. It is now
+taken only from entries that this declaration can actually bring into the world:
+the entry must **instantiate** — a `template`, or an `adopt` block — and the name
+must resolve **under the declaration's own scope**, segment-wise and never as a
+string prefix. The two instantiating shapes are the mutation door's own grammar
+and are mutually exclusive: `template` builds the node from the library, `adopt`
+builds it from a cell already on disk and mints a fresh cell id, which is an
+instantiation and not a relocation. An entry carrying neither brings no addressee
+into the world; a name that escapes the scope addresses somebody else's tree.
+Neither anchors a door, so the edge is refused on the spot with
+`subscribe_target_not_self` — the same form refusal as before, earlier and named
+in the receipt's `detail`, and the broker is still never asked.
+
+**No new `error_code`, and no new permission.** The contract already promised
+that the target is the requester's own hive *or a node the same declaration
+creates*; a node outside the scope, or one no entry instantiates, was never
+created by that declaration, so the refusal it earns is the one that was always
+its. No hole is closed here: the out-of-scope endpoint is refused at the mutation
+door a stage later (`scope_out_of_bounds`), and every submission is still put to
+the broker with the requester's identity. But this branch is a **security
+default**, and a security default that leans on a later stage for the shape of
+its own anchor is one refactor away from being wrong.
+
+**And the two comments that still named the old road** (#558): the gate's script
+said in two places that "the edge says `/os/submit`". Since #556 the submitter is
+an occupant of the front door and the edge says `/os/operator/submit`; the README
+had the corrected sentence, the script did not. Comment-only, and the old address
+stays visible as the since-half of the sentence.
+
+Third digit on both counts: the promise is unchanged, the check is the one being
+repaired, and a comment repairs nothing but a reader.
+
+#### `collector@3.5.0` (+ `talky@4.6.1` / `cogny@4.6.1` / `assistant@2.4.1` pins): a capped round is a named partial answer (GH #570)
+
+**A round that spends its iteration budget now ends on a sentence, not on a
+payload.** Until `3.4.0` the seam left on the `answer` lane with the assembled
+projection exactly as it stood — window turns, then the tool round — and the last
+turn was whatever the last tool had returned. **The last turn is what a consumer
+reads**: the shipped surfaces take the last text of an answer and put it in front
+of a person. Measured on the e18 rebuild (finding K-2): a `cogny` capped
+mid-search, its `answer` body ended with a raw `web_search` `tool_result`, the
+`assistant` level relabelled that message to `in_advice` with no guard on it, and
+the surface wrote the search JSON into the conversation as the advice turn. The
+better the errand was going, the more certainly a tool got quoted at the reader.
+
+On the `spent` branch and only there, `brain_message` now appends one turn of its
+own:
+
+```json
+{"origin": "assistant", "type": "text",
+ "text": "The round hit its iteration cap (max_iter=8) before an answer was written. Collected so far: 5 tool call(s) -- web_search, fetch_url. The last result began: …"}
+```
+
+It is assembled in the cell and never asked of a model — a round that could not
+finish is the one moment another provider call is the wrong answer, and a
+sentence that changes with the weather is not a marker a reader can learn. Tool
+names come from the round's `tool_call` turns in call order, deduplicated; the
+head of the last result is whitespace-collapsed and cut to 200 characters.
+**Nothing is lost**: the raw round stays in the `round` table and `thread_recall`
+still reaches it. What changed is the last *word*.
+
+**`hop.partial` is the marker `round_capped` could never be.** That key means two
+things at once — the round ended early, or `round_bytes` / `tool_chars` trimmed
+some bytes off a round that is still going and still on the `brain` lane — and
+only the first is an answer somebody is looking at. `partial` is the first alone.
+Like every key this seam writes it is **always present** (`"1"` / `"0"`), because
+a CEL modifier that reads a missing key fails and a failed modifier skips the
+edge. `round_capped` is untouched, and so are the byte caps: they stamp
+`partial=0`.
+
+No consumer had to move. `any_text` — the rule every asker on the advice lane
+reads its turn with — picks up the digest by construction, because it takes the
+last turn that carries text at all.
+
+- **`talky@4.6.1`, `cogny@4.6.1`** — the `collector` ref pin only; no lane, no
+  port, no param of either composite moved.
+- **`assistant@2.4.1`** — both occupant ref pins only.
+- Docs: `templates/collector/README.md` gains § *A capped round is a partial
+  answer*; `templates/cogny/README.md` § `max_iter` and `templates/talky/README.md`
+  § *The reply lane carries three sorts* say what the exit now carries;
+  `docs/config.md` / `.en.md` name the second hop key beside `round_capped`, and
+  the two reply-edge examples in `docs/rewiring.md` / `.en.md` get **comments**
+  naming it — their conditions are unchanged and were already right.
+- **One repair beside the feature, in `templates/talky/README.md`.** From
+  `talky@4.5.1` up to `4.6.0` that README recommended guarding the reply edge with
+  `has(hop.round_capped) && hop.round_capped == '0' && !has(hop.degraded)`, on
+  the stated ground that the assembler stamps `round_capped` on every answer. It
+  does not. Both keys are written by the **seam**, and a real answer never comes
+  through the seam: it arrives on `in_answer` and leaves carrying **neither**
+  `round_capped` nor `partial`. So the recommended guard matched nothing, while
+  the `!has(hop.round_capped) && !has(hop.degraded)` that the shipped composites
+  actually wire — `crates/meclaw-cells/tests/talky_composite.rs`,
+  `gh273_a_swept_close_reaches_the_memory.rs`, and both `docs/rewiring` versions
+  — is the correct test. The README now states the measured truth and recommends
+  that form (the released `[0.28.0]` entry below still shows the guard it took
+  over from; that entry is the one this paragraph retracts).
+
+#### A newborn's contracts are read below the root, and a successor's too (GH #567)
+
+**A v-lane may end on a hive the same mutation instantiates** — that is what a grow
+recipe is, one `add_nodes` and the level's edges beside it — and until the node is
+staged the declaration it needs lives only in the template. GH #562 taught stage 6 to
+read it there, out of ONE file: the template root's `config.json`. For a composite that
+is the wrong file. The rim that pronounces the connect point is an occupant reached
+through a `ref` marker — `talky@4.6.1` declares `credential_request` at `./brain`, the
+`assistant` that holds it declares nothing — and a marker directory carries no contract
+of its own, because the declaration lives in a different template altogether. So the
+connect point of a newborn's nested rim was invisible, and a recipe that drew the lane
+in the same breath earned `v_lane_no_connect_point` for a connect point that had been
+declared all along.
+
+The read is now the ref-aware walk the staging itself uses
+(`hive_contract::contracts_from_template_subtree`, built on `subtree::parse_subtree`):
+every hive of the staged subtree contributes, addressed at the newborn's path joined
+with its path relative to the template root. The old single-file answer is the first
+element of the new list rather than a case beside it.
+
+**And a `swap_nodes` successor now reaches the same list.** A generation change is ONE
+mutation (GH #256): `add_nodes` grows the successor, `swap_nodes` swings the old node's
+edges onto it, and the level's own wiring — the v-lane included — is drawn beside both.
+That wiring was refused for the same root-only reason, because a successor is a composite
+too. The successor's contract WAS read a second time further down, for the re-anchor
+verdict (`v_lane_reanchor_verdict`), and thrown away: two readers of one declaration, free
+to disagree about it. That read is hoisted to where the birth contracts are built, feeds
+them, and is handed on to the swap block — one reader for both questions.
+
+What is deliberately unchanged: the birth contracts are **appended, never substituted**
+— a path that already stands keeps the contract it was born with, so a diff cannot talk
+a live hive into a connect point by naming a template — and they still reach the port
+boundary and nothing else, which is the scoping the M1 review of #567's first half put
+in place.
+
+That invariant now asks the right question. It used to be enforced against the CONTRACT
+list, and `collect_hive_contracts` only emits a hive that declared one — so a standing
+hive declaring nothing was invisible to the guard. An `add_nodes` at an occupied path
+whose cells are stopped is a legal **resume**: it passes the naming check, stages nothing
+and rewrites no `config.json`. Naming a template with connect points on such a resume
+therefore handed the port boundary a declaration for a path that stands without it, and
+the v-lane onto a connect point that exists nowhere on disk **committed**. The guard is
+now the colony's own hive table — what STANDS, not what declared — which is also exact
+for a partial subtree resume: a nested hive the resume really does stage still brings its
+birth contract. Pinned by `a_resume_cannot_re_declare_a_standing_hives_connect_point`.
+
+Both language versions of `docs/meclaw-overview.md` and `docs/config.md` say
+where a newborn's contract is read; ADR-0020 carries it as a consequence.
+
+#### `builder@1.6.1`: a generation and its credential road are one act (GH #567)
+
+The `grow_level` recipe rendered a wish carrying a `credential` block as **two**
+declarations, and said so in its own comment: the level first, the four v-lanes
+and their grants one declaration later. That was not a preference. The lane ends
+on `<generation>/talky/brain`, two levels inside the node the first declaration
+gives birth to, and the connect point that makes it legal is declared by
+`talky`/`cogny` — so while a mutation read a newborn's contract from the template
+**root** alone, the same four edges drawn beside the `add_nodes` that creates
+their target's grandparent earned `v_lane_no_connect_point`.
+
+Stage 6 reads the whole staged subtree now (see *A newborn's contracts are read
+below the root* above), so the recipe renders **one** declaration: the node, the
+level's own transit edges, the four credential v-lanes behind them, and the
+grants in `seed_rows` of the same diff. One digest, one gate decision, one
+`mutation_log` row for what the author always thought of as one act.
+
+**It stands at the member**, one storey above the container an assistant
+otherwise declares itself in (GH #503) — the wide form `subscribe` already takes
+for the identity door, and for the same reason: an edge lives in the graph of the
+lowest common ancestor of its endpoints, and a brain and the member's broker
+share only that one. The child is therefore named `assistants/<generation>`. Ask
+for both switches at once and it is still one declaration, one node, one scope,
+with every edge of both roads behind the level's own.
+
+The order argument the old comment carried retires with it. Two acts meant a
+refusal on the second could leave a generation whose brains hold an empty
+`api_key` and name a grant nobody wired — loudly, but standing. There is no
+roll-forward between two acts any more.
+
+`examples/organism/grow-credentials.json` is unchanged and stays the byte truth
+of these four edges: applied on its own it wires a generation that already
+**stands**, which is a legitimate operation of its own, and the six shipped
+declarations of `grow.manifest.json` keep their order. The pin test compares the
+rendered declaration's last four edges against that file byte for byte, and its
+grants too — save the two timestamps the renderer stamps as it draws and the
+event id, which the shipped file numbers the way a hand-written file does
+(`gh466_grow_level_renders_the_level.rs`). One word of a grant event moved with
+that comparison: the seeded reason now reads *seeded with the level*, which is
+also what it is.
+
+`gh567_the_credentialled_wish_is_one_act.rs` is the second opinion the rendered
+string needs: the same declaration handed to a real mutation door on a colony
+grown from the shipped templates comes back `Committed`, with the four v-lanes
+carrying their lane names in the graph the colony itself publishes. The builder
+scenario `I5` says the same over HTTP, end to end, and counts one mutation row
+where it counted two. Third digit: the recipe repairs its own promise of *one
+declaration, not two*.
+
 #### `operator@1.1.0` / `meclaw-os@1.7.0` / `access@2.4.3`: the submitter moves into the front door (GH #556)
 
 **One front, one place a submission lives.** `submit` stops being a hive of the
@@ -425,8 +679,11 @@ generation. The four rendered edges are compared byte for byte against
 run under.
 
 **It renders a SECOND declaration, and that is a substrate fact rather than a
-preference.** The lane ends on `<generation>/talky/brain`, two levels inside the node
-the first declaration gives birth to, and the connect point that makes it legal is
+preference.** *(Superseded later in this same unreleased wave: since
+`builder@1.6.1` and GH #567 the credential road rides in the level's own
+declaration — see that paragraph.)* The lane ends on
+`<generation>/talky/brain`, two levels inside the node the first declaration
+gives birth to, and the connect point that makes it legal is
 declared by `talky`/`cogny` rather than by the generation — while a mutation reads the
 contract of a hive it gives birth to from the template ROOT only (GH #562). Drawn in one
 breath the same four edges are refused `v_lane_no_connect_point`; drawn one declaration
@@ -437,9 +694,10 @@ emits `credential_request` onto no edge and dead letters — which is what makes
 acceptable where seeding the grants first would leave permission rows for a generation
 that may never exist. Measured end to end in
 `workshop/evals/builder-scenarios/cases/I5-a-generation-grows-with-no-key-of-its-own.json`:
-a wish with no model reachable at all comes back as a two-declaration draft, is quoted
-back verbatim through the front door, and the four deep edges are read out of the graph
-the colony itself publishes.
+a wish with no model reachable at all comes back as a draft — two declarations at
+this version; the case file reads ONE since `builder@1.6.1` — is quoted back
+verbatim through the front door, and the four deep edges are read out of the
+graph the colony itself publishes.
 
 **The second digit, and not the third** (ruling of 2026-09-01). The recipe draws a
 credential lane a caller could not draw before, which is one capability more at the
@@ -454,6 +712,64 @@ door (#556), where the recipe still said `/os/operator/submit`.
 
 
 ### Fixed
+
+#### `llm`: provider citation markers never reach a person (GH #569)
+
+A live turn ended in `… Am Abend kann es regnen. citeturn0search0` — an
+OpenAI-style inline citation marker: the Private-Use-Area codepoints `U+E200`,
+`U+E202` and `U+E201` wrapping `cite` and `turn0search0`, a reference to the
+provider's own tool-round numbering. The `llm` cell passed the answer text
+through verbatim, so a chat surface showed the PUA characters as boxes or
+nothing and the enclosed tokens as literal junk.
+
+The response translation now strips these spans before the text enters the
+assistant turn, in **both** wire dialects: a span from `U+E200` up to and
+including the next `U+E201` falls with its content, a `U+E200` whose closing
+codepoint never arrives (a truncated response) takes the rest of the text with
+it — behind an opened marker there is marker content only — and any other
+Private-Use-Area codepoint falls on its own. Everything outside a marker is
+returned byte-identical: no trimming, no whitespace normalisation, so the space
+in front of a dropped marker stays. In the Responses dialect the stripping runs
+**after** the `output_text` parts are joined, so a marker split across two parts
+falls as well. Crate-internal change, no template and no wire-request change.
+
+#### `member@1.5.1`: the export markers land whole (GH #563)
+
+`templates/member/export-sink` has filed every table part through a neighbour
+file and a rename since it was written, and wrote both of its completeness
+markers — `<hive>/seed/export_final.json` and the member-level
+`export_final.json` — with a plain `open(path, "w")`. That truncates the name a
+reader watches to zero bytes before it is filled, so a reader arriving in the
+gap gets an empty file where a JSON document is promised. **Measured rather
+than suspected:** with a sleep inserted between the truncate and the write, a
+reader of the member-level marker got `EOF while parsing a value, line 1,
+column 0` every time — the panic that turned CI run 33494173120 red. Both
+markers now go through the same `write_whole()` helper the parts use, and so do
+the parts: one rule, one place in the script to read it.
+
+**The quieter half is the marker's own honesty.** `hive_marker()` swallowed
+`ValueError` alongside `OSError` and answered `None` for both, so a peer hive's
+marker caught mid-write dropped out of `hives[]` without a word and the
+member-level document claimed an incompleteness the directory did not have.
+They are different facts and are told apart now, and the line is drawn where it
+belongs: **exactly one thing means "that hive has not finished" — the marker is
+not there** (`FileNotFoundError`). The hives of a member walk on their own
+clock, and an absent marker is that ordinary state.
+
+Everything else is a marker the cell could not read, and none of it says
+anything about whether the hive finished: a directory standing where the marker
+belongs, a permission the export process does not have, an I/O error on the
+block, or a file that is there and is not a JSON object (which, after the
+rename, can no longer be a write caught halfway). Each of those names its
+directory in a new `unreadable` array on the member-level marker, beside a line
+on `stderr`; `hives[]` stays the readable ones. No new `error_code`: the sink is
+a transitional cell that GH #555 dissolves, and a refusal that belongs to one
+document is named *in* that document.
+
+The bump is the third digit because both halves repair a promise the marker
+already made — *"the list is the honest answer at every point in between"*, in
+the script's own words. The shipped contract, the lanes and the sandbox
+boundary are unchanged.
 
 #### The `web` shell says when the socket is gone — on every page (no template change)
 
@@ -496,6 +812,24 @@ a display does not. Its contract declares exactly two emissions, `event` and
 puts on the wire could ever match such an edge. No shipped wiring changed — the
 description did. The third edge in `gh459_a_screen_is_a_member_channel.rs` stays
 as the test double's witness lane and is now marked as such.
+
+#### `examples/vault-pilot` (docs only): the pilot is scriptable as written (GH #557)
+
+Two gaps found by running the example end to end. **Step 3 could not be scripted
+as printed**: the credential goes in on stdin, so the passphrase cannot, and with
+the default `--vault-key-source auto` and no terminal the CLI asks for a prompt it
+has nowhere to put. The step now carries the unattended form beside the
+interactive one — `--vault-key-source plainfile --vault-key-file <PATH>`, with the
+`0600`-and-non-empty rule the reader will otherwise meet as a refusal, and
+`systemd-cred` named as the third source.
+
+**And the README never showed a turn on the wire.** It draws `you → /brain` in the
+flow picture and left the reader to guess the body, and the shape most readers try
+first — `{"role": "user"}` — is refused with `422 invalid_ubf_body` at the HTTP
+boundary, before any cell sees it. A fifth gesture now prints the `curl`, in the
+UBF turn form the substrate actually validates (`origin` and `type` required,
+`role` unknown), and says why `/brain` is the address on the wire for a cell that
+lives at `main/brain` on disk. No behaviour changed; nothing shipped moved.
 
 #### `colony-view@1.0.1` + `display@1.0.1`: the picture is the layout's again, and a pin is a marker (GH #544)
 
@@ -640,6 +974,27 @@ at all, by a mutation.
 DECLARATION PORT paragraph described the pair as `./surface -> ./cogny`. Prose
 about the caller, no version event of its own.
 
+#### A lane cannot vanish inside one diff either (GH #564)
+
+Stage 6 refused a lane disagreement between an `add_edges` entry and a **standing**
+edge, and that check compares against the pre-state only — so two entries of the
+**same** diff never met. The apply arm did meet them: it deduplicates each candidate
+against the **growing** edge table, so `add_edges: [{…, "lane": "a"}, {…, "lane": "b"}]`
+with five equal routing terms inserted `a`, found `b` content-equal, skipped it, and
+reported `Committed` for a lane that was never laid.
+
+Both entries are now compared against each other, pre-destructively, before anything
+is applied: same `edge_schema`, same stage, and the refusal names **both** entry
+indices and **both** lanes, because a caller cannot see from the outside which two of
+their lines collapsed into one. Two entries declaring the **same** lane stay idempotent
+— a re-applied complete diff must remain a no-op.
+
+**The ruling behind it:** `lane` does **not** become a sixth identity term. Two edges
+differing only in the lane name would both be routed, and a double delivery is a worse
+answer than a refusal. The second face named in the issue — a template-internal edge at
+instantiation — stays a documented comment at the site: an instantiation lays edges onto
+paths that did not exist a moment ago, so there is no standing edge to disagree with.
+
 #### Documentation debts of the v-lanes wave (GH #564)
 
 - **`lane` is not an identity term, and a lane deviation is still refused.**
@@ -697,6 +1052,34 @@ NOT repaired is filed instead:
 [#567](https://github.com/mmeyerlein/meclaw/issues/567) records that a newborn hive's
 contract is read at the template ROOT only — not in a nested occupant hive, and not on
 `swap_nodes.with`.
+
+#### Three ledger readers stop reading a keeper before it has its tables (GH #565)
+
+`gh471_a_keeper_carries_its_sessions` went red once under load with
+`no such table: sessions`. The window is test-side, not product-side: a store is
+`Dormant` until the routing pre-send wakes it, and that wake runs synchronously
+inside the colony task — it opens `cell.db`, applies the schema DDL and only then
+spawns the cell task, so no message is ever answered before the tables exist. The
+three test helpers that read a `cell.db` from outside were gated on `is_file()`
+alone, and the file exists from `Connection::open` on, a moment before
+`CREATE TABLE "sessions"` commits; a poll loop that hit that moment panicked in
+`prepare` instead of looping once more. `gh471_a_keeper_carries_its_sessions`,
+`gh471_a_member_carries_all_of_itself` and `gh467_a_member_is_born_with_its_history`
+now carry the same hardened `rows()` the three sibling files already had: a missing
+file or a table that is not there yet is an empty ledger, not a defect.
+
+That the store really does pass through "file, no table" was measured, not assumed:
+instrumenting the wake shows the keeper's `cell.db` going from `exists=false` to
+`exists=true` at the store's own `Connection::open`, ahead of its DDL — the run that
+produced that edge held the DDL back with an injected sleep to make the ordering
+readable, but the file is the store's own and its open genuinely precedes the schema.
+The repair is proven by pre-creating an empty `cell.db` before the keeper's first
+wake — the precise state the poll loop can meet — and reading it through the helper:
+the unhardened reader panics with the issue's own
+`prepare: … Some("no such table: sessions")`, the hardened one reads an empty ledger
+and the test goes on. Delaying the DDL with a sleep does not reproduce it, because
+the blocking wake also stalls the runtime's timers and the test cannot look into the
+window it opens.
 
 ## [0.28.0] — 2026-08-30
 

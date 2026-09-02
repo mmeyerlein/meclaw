@@ -1,4 +1,4 @@
-# `colony-view@1.0.1`
+# `colony-view@1.0.2`
 
 The colony, drawn. A timer takes a topology snapshot, a `code` cell turns it
 into one view, and a display holds it and serves the page. The browser owns two
@@ -69,7 +69,7 @@ Four components, handed over with the view and stored by the display as rows:
 | Component | What it draws | `editable` |
 |---|---|---|
 | `colony-view-shell` | the frame: the SVG, the arrow markers, the detail panel, the legend -- and the browser half in a `<style>` and a `<script>` | -- |
-| `colony-view-hive` | one dashed, tinted rectangle per hive, one tint per depth | `x`, `y`, `w`, `h` |
+| `colony-view-hive` | one dashed, tinted rectangle per hive, one tint per depth, labelled `<name> · <level>` | `x`, `y`, `w`, `h` |
 | `colony-view-edge` | one line per edge, plus the fat invisible twin a mouse can hit | -- |
 | `colony-view-node` | one box per cell, coloured by cell type | `hand`, `pinned` |
 
@@ -216,6 +216,32 @@ still down instead of waiting a minute for the next tick. A frame FOLLOWS its
 cells: a box is inside its own hive by construction however far it was dragged,
 and what the browser derives it also writes back, so the store says what the
 screen shows.
+
+## A frame says which level it is
+
+Since 1.0.2 a hive frame is labelled `<name> · <level>` rather than with its
+directory name alone: `alex · member` around the person, `alex · assistant`
+around the agent inside them. A member is a person and an assistant is a
+generation of that person's agent, so the obvious name for the first generation
+is the person's own name -- and two nested frames carrying one word left the
+reader counting rectangles to tell them apart
+([#549](https://github.com/mmeyerlein/meclaw/issues/549)).
+
+The level is READ OFF THE PATH and nothing new travels for it. The composition
+levels address their children through fixed containers, so a frame whose parent
+segment is `orgs`, `members`, `assistants`, `channels` or `apps` is an `org`, a
+`member`, an `assistant`, a `channel` or an `app`; anything else is a plain
+`hive`. `/colony/graph` carries no `kind` and no template provenance -- its
+`nodes[]` entries have exactly two keys and hives are not nodes at all, they
+exist only as prefixes -- and putting a level on that wire would be a public API
+round for one consumer. Five string comparisons in the layout cost no contract,
+and a tree that does not use the composition levels reads `hive` everywhere,
+which is the honest answer rather than a guess.
+
+The label is single-sourced here. The browser half places it -- `hiveParts`
+takes the FIRST `<text>` of a frame and moves it with the rectangle -- and never
+writes its content, so the component keeps exactly one text element and the
+layout decides what it says.
 
 ## Unwired cells are hidden by default
 

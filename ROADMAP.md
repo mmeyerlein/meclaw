@@ -71,28 +71,6 @@ Findings from running the thing.
   front raised it, so a rule that would open the shell to the operator and not
   to an agent cannot be written today — the shell-scoped rule ships switched
   off instead. *(register: policy-by-requester-origin)*
-- [#559](https://github.com/mmeyerlein/meclaw/issues/559) — the deep edge
-  becomes the declared form. A lane that exists only to bridge a composition
-  boundary restates the layer instead of carrying anything; the substrate
-  already routes deep edges, so the work is the rule: connect points are the
-  target contract's word, crossed levels are skipped unless their contract
-  claims the lane, and a v-lane names its lane outright.
-- [#560](https://github.com/mmeyerlein/meclaw/issues/560) — the member gets an
-  access of its own. The person's keys live with the person, the way their
-  memory already does; the shell's access keeps policy and the shell's own
-  keys. First v-lane consumer, on the proven sealed-credential path.
-- [#561](https://github.com/mmeyerlein/meclaw/issues/561) — the identity pack
-  rides a v-lane, and the assistant level stops declaring a lane it only
-  forwarded.
-- [#562](https://github.com/mmeyerlein/meclaw/issues/562) — recall rides a
-  v-lane and proves the other half of the rule: the member declares its stamps
-  and stays a hop; the pass-through level goes.
-- [#556](https://github.com/mmeyerlein/meclaw/issues/556) — the submitter moves
-  into the operator hive. One front door into the OS should be one place in the
-  graph; today a submission crosses two shell stations for one job. The
-  ADR-0015 guardrail survives as what it always was — the missing edge between
-  builder and submitter — and the move lands with the next instance build,
-  because the `mutate` lane lives in the birth topology.
 - [#555](https://github.com/mmeyerlein/meclaw/issues/555) — the file is a
   first-class transfer form. The substrate produces export content and reads
   seed files, but never writes them; that gap is why a hand-written sink cell
@@ -146,10 +124,6 @@ already delivered the gold session.
   classic tool answerer with a `schemas` cell of its own, and the collector's
   special case goes. `thread_recall` stays with the collector — the slate is
   its own database.
-- [#549](https://github.com/mmeyerlein/meclaw/issues/549) — the colony view
-  labels a hive frame with a directory name, so a person and their agent draw
-  two frames reading the same word. The level is derivable from the path
-  today; it is simply not read.
 - [#551](https://github.com/mmeyerlein/meclaw/issues/551) — the rest of that
   sweep: five families of one role under two names, and the boundary the
   instance-name rule needs before it reaches the examples.

@@ -1,4 +1,4 @@
-# `talky@4.6.0`
+# `talky@4.6.1`
 
 A whole conversational agent as one template. Three referenced units under one hive:
 [`session-keeper`](../session-keeper/), [`collector`](../collector/) and
@@ -60,13 +60,13 @@ The three sub-units are **references**, not copies. Each of the three directorie
 one `config.json` and nothing else:
 
 ```json
-{"cell": {"type": "ref", "template": "collector@3.4.0"}}
+{"cell": {"type": "ref", "template": "collector@3.5.0"}}
 ```
 
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`talky@4.6.0` above it in its provenance chain.
+`talky@4.6.1` above it in its provenance chain.
 
 **The library has to carry the three.** A reference resolves against the colony's template
 registry, so `collector`, `session-keeper` and `dispatcher` have to sit in
@@ -96,7 +96,7 @@ spawns.
 | lane | direction | what travels |
 |---|---|---|
 | `in_turn` | in | the surface turn. The edge MUST promote the channel identity to `context.channel`, and the round to `context.audience_set` if closed sessions are to reach a memory |
-| `answer` | out | the finished turn. **Three** sorts since `collector@2.1.1`: a real answer, a round that hit `max_iter` (`hop.round_capped`), and a turn the store refused to let be assembled (`hop.degraded`, which carries no `round_capped`) |
+| `answer` | out | the finished turn. **Three** sorts since `collector@2.1.1`: a real answer, a round that hit `max_iter` (`hop.round_capped`, and since `collector@3.5.0` `hop.partial == "1"` with a named partial answer as its last turn, #570), and a turn the store refused to let be assembled (`hop.degraded`, which carries no `round_capped`) |
 | `write` | out | the closed session as one batch |
 | `error` | out | a normalised failure report. **MUST** be wired |
 
@@ -203,7 +203,7 @@ Plus, per instance, the two **advisor lanes** to an agent core -- see below.
               "set_context": {"channel": "hop.chat_id",
                               "audience_set": "'[\"member:alex\",\"agent:scribe\"]'"}}},
 {"from": "./talky", "to": "<reply sink>",
- "condition": "has(hop.route) && hop.route == 'answer' && has(hop.round_capped) && hop.round_capped == '0' && !has(hop.degraded)"},
+ "condition": "has(hop.route) && hop.route == 'answer' && !has(hop.round_capped) && !has(hop.degraded)"},
 {"from": "./talky", "to": "<day archive or memory>",
  "condition": "has(hop.route) && hop.route == 'write'",
  "modifier": {"set_hop": {"route": "'in_batch'"}}},
@@ -230,24 +230,37 @@ them as `uint`, and a bare `hop.user_id == 12345` is silently **false** -- no er
 log line. Every numeric condition on the ingress edge carries the cast.
 
 **The reply lane carries three sorts.** A real answer; a round that hit
-`max_iter`, marked `hop.round_capped == "1"`; and -- since `collector@2.1.1` -- a turn
-that could not be assembled at all because the store refused a read or a write, marked
-`hop.degraded == "1"` with `hop.store_error` and `hop.store_operation` beside it
+`max_iter`, marked `hop.round_capped == "1"` and -- since `collector@3.5.0` --
+`hop.partial == "1"`, whose last turn is a **named partial answer** rather than the raw
+end of the tool round ([#570](https://github.com/mmeyerlein/meclaw/issues/570)); and
+-- since `collector@2.1.1` -- a turn that could not be assembled at all because the store
+refused a read or a write, marked `hop.degraded == "1"` with `hop.store_error` and
+`hop.store_operation` beside it
 ([#343](https://github.com/mmeyerlein/meclaw/issues/343)). The third sort carries **no**
 `round_capped`, so a guard written against that key alone lets a failure through as a
 real reply -- which is why the example edge above tests both.
 
-**`hop.round_capped` is always present on a real answer, and `!has()` is the wrong
-test for it.** The assembler stamps the key on every turn that leaves for the brain or
-the reply sink -- `"1"` when the round hit its bound, `"0"` when it did not -- so a
-condition written as `!has(hop.round_capped)` never matches a real answer and the reply
-edge stays silent. Only the degraded sort omits the key, which is the one thing `!has()`
-would have caught.
+**A real answer carries NEITHER key, and `!has()` is therefore the right test.**
+`round_capped` and `partial` are written by the **seam** -- the message the assembler
+builds for the brain, and the capped exit that leaves on `answer` instead of asking again.
+A real answer does not come through the seam at all: it arrives on `in_answer` and leaves
+on `answer` with nothing but the routing keys. So on the reply lane the three sorts read
+as: a real answer has neither key, a capped round has `round_capped == "1"` **and**
+`partial == "1"`, and a degraded turn has `degraded == "1"` and neither of the other two.
+
+A paragraph here claimed the opposite from `talky@4.5.1` up to `4.6.0` -- that the
+assembler stamps `round_capped` on every answer, so the guard had to read
+`has(hop.round_capped) && hop.round_capped == '0'`. It does not, and that guard matches
+nothing: measured against the shipped script, and against the two composite tests that
+deliver a reply through this edge
+(`talky_composite.rs`, `gh273_a_swept_close_reaches_the_memory.rs`), both of which use
+`!has(hop.round_capped)`. Repaired with #570.
 
 The composite does not decide which of the three a user sees: guard the reply edge with
-`has(hop.round_capped) && hop.round_capped == '0' && !has(hop.degraded)` and give each of
-the other two its own edge (the error drain is the usual target for both) -- or let them
-through deliberately.
+`!has(hop.round_capped) && !has(hop.degraded)` and give each of the other two its own
+edge (the error drain is the usual target for both) -- or let them through deliberately.
+`hop.partial` is what tells the capped sort apart from a degraded one if you want to
+render it rather than drain it: since `collector@3.5.0` it carries a readable sentence.
 
 ### Per-instance lanes (not lanes of this template)
 
@@ -615,7 +628,7 @@ tools this agent uses -- shipped as `["web_search", "web_fetch"]`, `["*"]` for e
 tools hive has -- and the schemas behind those names are asked for:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "talky@4.6.0",
+{"add_nodes": [{"name": "scribe", "template": "talky@4.6.1",
                 "override_params": {"collector/assemble": {"tools": ["web_search", "bash"]}}}]}
 ```
 
