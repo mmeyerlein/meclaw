@@ -372,7 +372,7 @@ def render(rows: list[tuple[str, str, str, str]]) -> str:
     head = (
         "# Derived from plans/adr/ by scripts/check_adr_anchors.py --write.\n"
         "# plans/ never travels with an export (rule R2), so this copy is what the\n"
-        "# public `gates` job reads. Do not hand-edit: regenerate it in the same\n"
+        "# public `gate` job reads. Do not hand-edit: regenerate it in the same\n"
         "# commit as the ADR change. The private tree fails if the two diverge.\n"
     )
     body = "\t".join(COLUMNS) + "\n"

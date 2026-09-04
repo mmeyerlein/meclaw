@@ -110,7 +110,7 @@ teeth, durability hardening), open an issue first so we can talk shape before yo
 - A PR that settles an architectural question says so, and the decision gets an ADR in the
   maintainers' `plans/adr/` (kept out of this clone) carrying a `Pinned-by:` line naming the
   test or symbol that embodies it. The anchors themselves do travel, as
-  `.github/gates/adr-anchors.tsv`, and the `gates` job resolves every one of them: deleting the
+  `.github/gates/adr-anchors.tsv`, and the `gate` job resolves every one of them: deleting the
   code that pins an accepted decision is a red run until the ADR is superseded.
 - Match the surrounding voice in any prose. Confident, credible, no hype. And no spaced
   em-dashes, they read as machine-written.

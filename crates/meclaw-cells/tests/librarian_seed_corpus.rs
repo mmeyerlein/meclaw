@@ -91,8 +91,11 @@ fn the_seed_corpus_matches_a_fresh_regeneration() {
         .output()
     {
         Ok(out) => out,
-        // No interpreter on this machine. CI's `gates` job has one and runs the
-        // same command unguarded, so skipping here loses coverage nowhere.
+        // No interpreter on this machine. The `corpus` station of
+        // `scripts/gate.sh` has one and runs the same command unguarded in
+        // every strand, the integration pass and the release, so skipping here
+        // loses coverage nowhere. (Not the public CI: the generator lives
+        // under `workshop/`, which does not travel — GH #234.)
         Err(_) => return,
     };
 

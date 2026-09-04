@@ -298,10 +298,11 @@ Two different drifts wear the same face, and only one of them is what this secti
 about:
 
 * **The committed corpus vs. the tree.** That is a build-product gate and it already
-  stands: `--check` regenerates and byte-compares, run from
-  `plans/meclaw-os/a2-pre-push-gates.sh` block 1, from
-  `crates/meclaw-cells/tests/librarian_seed_corpus.rs`, and from the release export's
-  rule R11. It is deliberately **not** in `.github/workflows/ci.yml`
+  stands: `--check` regenerates and byte-compares, run from the `corpus` station of
+  `scripts/gate.sh` (every strand, the integration pass and the release; the export
+  reads that station's verdict out of the release receipt as R11) and from
+  `crates/meclaw-cells/tests/librarian_seed_corpus.rs`. It is deliberately **not** in
+  `.github/workflows/ci.yml`
   ([#234](https://github.com/mmeyerlein/meclaw/issues/234)): the generator lives under
   `workshop/`, which does not travel, so the step failed on a missing file and said
   nothing about drift.

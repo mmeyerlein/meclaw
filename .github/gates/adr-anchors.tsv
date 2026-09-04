@@ -1,6 +1,6 @@
 # Derived from plans/adr/ by scripts/check_adr_anchors.py --write.
 # plans/ never travels with an export (rule R2), so this copy is what the
-# public `gates` job reads. Do not hand-edit: regenerate it in the same
+# public `gate` job reads. Do not hand-edit: regenerate it in the same
 # commit as the ADR change. The private tree fails if the two diverge.
 adr	status	anchor_home	target
 0001-header-model-lifetime-and-contract-interface.md	accepted	self	code:pub struct Headers

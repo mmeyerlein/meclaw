@@ -1,2 +1,23 @@
 [build]
 rustflags = ["--cfg", "tokio_unstable"]
+
+# Test binaries carried up to 200 MB each, 130 GB for all of them, with line
+# tables; a one-line change in a low crate re-links hundreds of them, and that
+# write volume -- not CPU -- is what starves a colony sharing the disk (GH #571)
+# and what made a strand gate take tens of minutes. Panic locations come from
+# `Location::caller`, not from debuginfo, so a red test still names its file
+# and line. CI has built with `debug = 0` since 2026-08-15 because of the same
+# debuginfo bulk (there it was runner disk space).
+# Both profiles are set explicitly: `test` inherits `dev`, but an explicit
+# `profile.test` key in a user-level config would otherwise win the merge.
+# Measured 2026-09-04 in the shared target: an integration-test binary
+# 26.8 MB -> 2.2 MB, the lib unit-test binary 53.0 MB -> 19.1 MB; build time
+# unchanged (~10 s either way -- the gain is write volume, not CPU).
+# Anyone who needs full debuginfo for a debugger session overrides the file per
+# invocation: `CARGO_PROFILE_DEV_DEBUG=2 cargo test ...` (environment beats
+# every config file).
+[profile.dev]
+debug = 0
+
+[profile.test]
+debug = 0

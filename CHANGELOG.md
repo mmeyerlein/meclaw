@@ -9,6 +9,31 @@ documented `error_code` strings (README § Stability). Anything that breaks one 
 them is listed under **Breaking** in its release, with the migration named. The
 Rust crates are internals and move without notice.
 
+## [Unreleased]
+
+### Changed
+
+#### One gate chain, and it reads the diff (GH #577)
+
+There used to be three gate chains — a strand gate, a pre-push gate and the CI
+workflow — each with its own hard-coded list of steps, and each paying for work
+the diff had not asked for: a Python-only change still compiled the workspace.
+There is one entry point now, `scripts/gate.sh`, which asks one resolver,
+`scripts/gate_plan.py`, which stations a diff needs, runs each of them once, and
+reports every station on a single `GATE …` line plus a receipt under
+`target/gate/<tree>/` — namespaced by the worktree it ran in, so several
+worktrees sharing one `target/` at the same revision cannot overwrite each
+other's receipt and station logs. CI runs the repository's own
+gate scripts (`scripts/gate.sh ci`, `scripts/test-tier.sh t2`) rather than a
+second copy of the steps, so a push that changes only documentation no test
+reads skips the Rust test shards; the dev and test profiles build with
+`debug = 0`,
+which takes a test binary from up to 200 MB to a mean of 33 MB. Measured on the
+v0.28.0 → v0.29.0 diff, the old chain ran the suite three times and the anchor
+gates four; the stations and their triggers live in the resolver's docstring
+and nowhere else. See
+[#577](https://github.com/mmeyerlein/meclaw/issues/577).
+
 ## [0.29.0] — 2026-09-02
 
 ### Changed

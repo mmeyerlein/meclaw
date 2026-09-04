@@ -17,6 +17,10 @@ on:
   # once looks settled. The first scheduled run ever found a repair from the
   # night before that had swapped one race for a subtler one. Keep it whole;
   # narrowing this to the `deny` job would save minutes and lose that.
+  #
+  # This is also why the `test` job's condition below asks for the event name:
+  # only a push may skip the shards. A scheduled or dispatched run tests
+  # everything, whatever the diff of the day happens to look like.
   schedule:
     - cron: "17 5 * * 1"
   # A red scheduled run needs a second opinion, and asking for one should not
@@ -27,31 +31,95 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  # The public test suite compiles 400+ test binaries; with debuginfo the
-  # target tree outgrows the 14 GB a hosted runner has free (W13: the run
-  # died on ENOSPC in the middle of the build). Tests do not need line info.
-  CARGO_PROFILE_DEV_DEBUG: 0
-  CARGO_PROFILE_TEST_DEBUG: 0
   # Incremental compilation pays for itself when the same target directory is
   # compiled twice. A runner compiles it once and throws it away, so all the
-  # scheme does here is write incremental state nobody reads -- and that state
-  # is large enough to matter for the ENOSPC ceiling above.
+  # scheme does here is write incremental state nobody reads -- and this
+  # workspace has a disk ceiling to respect: the public test suite compiles
+  # 400+ test binaries, and with debuginfo the target tree outgrew the 14 GB a
+  # hosted runner has free (the run died on ENOSPC in the middle of the
+  # build). The debuginfo half of that is no longer set here:
+  # `.cargo/config.toml` builds dev and test with `debug = 0` for every
+  # tree, this one included.
   CARGO_INCREMENTAL: 0
 
 jobs:
   # ---------------------------------------------------------------------
-  # Fast fail. fmt + clippy used to sit in front of the test step in one
-  # long job, so a formatting slip cost the full suite before it was
-  # reported (measured 2026-08-27: fmt 3s, clippy 47s, test 10m43s -- the
-  # 50s verdict arrived eleven minutes late).
+  # Which stations does this diff need? The same question the maintainer's
+  # local gate asks, answered by the same resolver -- `scripts/gate_plan.py`,
+  # via `scripts/gate.sh`. Nothing in this file decides what a change is
+  # worth testing; a trigger hard-coded here is exactly the drift the single
+  # resolver exists to end.
+  #
+  # The one output is `tests=true|false`: whether this diff can reach a Rust
+  # test at all. A push that only moves documentation cannot, and then the
+  # three shards below do not start.
+  #
+  # `fetch-depth: 0` because the base of the diff is the push event's
+  # `before`, and a shallow clone does not have that commit. An unknown or
+  # all-zero base (a branch's first push, a force-push) makes the resolver
+  # fall back to the full tree, which is the safe direction.
+  # ---------------------------------------------------------------------
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      tests: ${{ steps.plan.outputs.tests }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: plan
+        # `shell: bash` for the pipefail it brings: without it a resolver that
+        # refuses the diff would leave the output empty, and an empty output
+        # reads as "no tests needed" -- the whole suite skipped in silence.
+        shell: bash
+        run: |
+          scripts/gate.sh ci --plan-only --base "${{ github.event.before }}" \
+            | tee /dev/stderr \
+            | grep '^tests=' >> "$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------------------
+  # Everything that is not the test suite: fmt, clippy, the unwrap/expect
+  # budget, the frozen corridor bodies, the anchor and claim gates, the
+  # shell lint, the resolver's own self-test. One script decides which of
+  # them this diff needs and runs them; each reports a `GATE <name> ...`
+  # line. What a station is and when it fires is documented where it is
+  # decided, in `scripts/gate_plan.py` -- not here, and not twice.
+  #
+  # Fast fail is the point. fmt and clippy used to sit in front of the test
+  # step in one long job, so a formatting slip cost the full suite before it
+  # was reported (measured 2026-08-27: fmt 3s, clippy 47s, test 10m43s --
+  # the 50s verdict arrived eleven minutes late).
   #
   # It is deliberately NOT a `needs:` of the test job. Chaining would put
-  # those 50s in front of every shard's build and lengthen the critical
-  # path to save runner minutes we are not paying for. Parallel means the
-  # lint verdict lands about a minute in, while the suite keeps running --
-  # and a red lint is visible on the run long before the tests finish.
+  # those 50s in front of every shard's build and lengthen the critical path
+  # to save runner minutes we are not paying for. Parallel means the verdict
+  # lands about a minute in, while the suite keeps running.
+  #
+  # ONE NOTE ON THE PUBLIC TREE, because a green run here says less than it
+  # looks like it does. Three of these gates keep their corpus in a tree that
+  # does not travel, so a copy travels instead: the spec-claims registry as
+  # .github/gates/claims.tsv, the ADR anchors as a derived
+  # .github/gates/adr-anchors.tsv (one row per anchor, resolved against
+  # crates/ -- which is where the deletion the gate exists against would be
+  # visible), and the roadmap's register half, which is absent here and
+  # counted as a named skip. The published documents also carry the English
+  # text under the plain name, so the German half of every claim row is
+  # skipped here too. The strict runs -- both languages, and the copies
+  # against their originals -- live in the maintainer's tree and ride the
+  # suite as drift-lock tests.
+  #
+  # For the same reason a gate that USED to stand here does not (GH #234):
+  # `build_librarian_seed.py --check`, guarding a committed tree that is
+  # generated. Do not put it back -- and do not teach the resolver to plan
+  # its station for this mode either. The generator lives under workshop/,
+  # which is not part of this tree and is not meant to be, so the step could
+  # not pass here -- it failed on a missing file, which says nothing about
+  # whether the artifact drifted. It runs where its sources are: in the
+  # maintainer's strand and release gates, and as a test in the suite that
+  # ships (that twin skips when no generator is present, which here is
+  # always).
   # ---------------------------------------------------------------------
-  lint:
+  gate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -60,12 +128,11 @@ jobs:
           # Its own key: clippy builds dependencies as `check` artifacts
           # (.rmeta), the test job needs them as real rlibs. Sharing one key
           # would hand the test shards a cache "hit" that still forces a full
-          # dependency rebuild.
+          # dependency rebuild. The predecessor of this job ran without a
+          # cache at all, on the grounds that its steps were bash and python
+          # over text -- no longer true, the unwrap budget rides clippy.
           shared-key: lint
-      - name: fmt
-        run: cargo fmt --check
-      - name: clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: scripts/gate.sh ci
 
   # ---------------------------------------------------------------------
   # The suite, cut into shards. Two changes over the old single `cargo test`
@@ -90,6 +157,14 @@ jobs:
   # ---------------------------------------------------------------------
   test:
     runs-on: ubuntu-latest
+    needs: plan
+    # A push whose diff cannot reach a Rust test does not build one. Every
+    # other event runs the whole suite regardless of the diff: a pull request
+    # is judged as a whole, and the weekly run above is the flake catcher and
+    # would be worthless if it inherited a push's narrowing.
+    # Only an explicit `false` skips: an empty output (a resolver that refused
+    # the diff, a step that died before the grep) must run the suite, not hide it.
+    if: needs.plan.outputs.tests != 'false' || github.event_name != 'push'
     strategy:
       # Same reasoning as `--no-fail-fast` below, one level up: if shard 2
       # fails, shards 1 and 3 must still report. A cancelled shard hides
@@ -107,6 +182,13 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
+      # t2 is the whole suite in the vocabulary of scripts/test-tier.sh, which
+      # is also what the maintainer runs before a tag -- one definition of the
+      # tiers, in one file, invoked the same way from both sides. The script
+      # normally wraps a run in the nice/ionice/flock/TMPDIR hygiene that a
+      # shared build machine needs; it drops all of it when `CI` is set, which
+      # Actions sets for every step. Extra arguments go through to nextest.
+      #
       # `--no-fail-fast` because the default stops at the first failing test,
       # and this suite has 650+ binaries. A red run then reports one defect
       # and hides every other -- W3's export CI showed exactly one of two
@@ -115,18 +197,11 @@ jobs:
       # should cost one round, not one defect. (The `ci` profile in
       # .config/nextest.toml sets `fail-fast = false` as well; the flag is
       # repeated here so that the property survives a profile edit.)
-      #
-      # No `-E` filterset: this is tier t2 in the vocabulary of
-      # scripts/test-tier.sh -- the whole suite. The tiers exist to make a
-      # human's pre-commit loop cheap; CI has no reason to skip anything.
-      # nextest is invoked directly rather than through that script because
-      # the script wraps every run in the nice/ionice/flock hygiene that
-      # belongs to the shared build machine, not to a dedicated runner.
       - name: test (shard ${{ matrix.shard }}/3)
+        env:
+          MECLAW_TIER_PROFILE: ci
         run: >
-          cargo nextest run
-          --workspace
-          --profile ci
+          scripts/test-tier.sh t2
           --no-fail-fast
           --partition count:${{ matrix.shard }}/3
       # nextest does not run doctests -- it has no way to, they are rustdoc's.
@@ -154,92 +229,6 @@ jobs:
       - name: check
         run: cargo check --workspace
 
-  # The rules that used to live only in a document and in somebody's memory.
-  gates:
-    runs-on: ubuntu-latest
-    # No rust-cache here on purpose: every step below is bash or python over
-    # text. The job used to restore a Rust cache it never read.
-    steps:
-      - uses: actions/checkout@v4
-      # Two frozen function bodies in crates/meclaw-colony/src/colony.rs,
-      # byte-compared against their reference under .github/fixtures/.
-      - name: corridor byte gates
-        run: .github/gates/corridor_byte_gates.sh
-      # CONTRIBUTING bans unwrap()/expect() outside tests. The clippy lints for
-      # it are allow-by-default, so `-D warnings` in the lint job never saw
-      # them. This pins the existing count per package and fails when it grows.
-      - name: unwrap/expect budget
-        run: python3 .github/gates/unwrap_budget.py
-      # docs/development-rules.md § 2a (GH #254). A review compares code
-      # against spec, so a spec that runs ahead of the code passes every review
-      # by construction. This runs the other direction: every behavioural claim
-      # in the trias is classified, a `pinned` row names a test that must
-      # exist, a `specified-not-built` row's paragraph must still carry its
-      # visible marker in both language versions, and no row's anchor may be
-      # rewritten out from under it.
-      #
-      # The registry's canonical home is plans/spec-claims/claims.tsv, which
-      # does not travel (export rule R2). The copy at .github/gates/claims.tsv
-      # is what this step reads -- same arrangement as the corridor fixtures.
-      #
-      # This run checks the travelling copy against the PUBLISHED documents:
-      # the export ships docs/X.en.md under the plain name docs/X.md, so the
-      # English half of every row is checked here and the German half is
-      # skipped with a counted, named notice (its document does not travel).
-      # The strict both-languages run, including the canonical-vs-copy
-      # divergence, is a private-tree matter and rides the suite via
-      # crates/meclaw-colony/tests/a3_spec_claims_gate_drift.rs.
-      - name: spec-claims registry
-        run: python3 scripts/check_claims.py --check
-      # docs/development-rules.md § 2b (GH #319). An accepted ADR with nothing
-      # in the tree holding it up is a wish: legacy ADR 0011 kept reading
-      # `Akzeptiert` for three months after its capability had vanished, and the
-      # spec kept promising it, because nothing connected the decision to a line
-      # of code that could disappear. Every accepted ADR now names a test or a
-      # symbol, and this step resolves each one.
-      #
-      # Same two-tree arrangement as the spec-claims gate above and for the same
-      # reason: the corpus lives in plans/adr/, which does not travel (export
-      # rule R2), so a DERIVED registry travels as .github/gates/adr-anchors.tsv
-      # -- one row per anchor. This run resolves those rows against crates/,
-      # which does travel, and crates/ is exactly where the deletion this gate
-      # exists to catch would be visible. The private half -- the ADR texts
-      # themselves, the missing-Pinned-by check, and the byte-exactness of the
-      # derived copy -- rides the suite via
-      # crates/meclaw-colony/tests/a4_adr_anchor_gate_drift.rs.
-      - name: ADR anchors
-        run: python3 scripts/check_adr_anchors.py --check
-      # docs/development-rules.md § 5b (2026-08-28 ruling). A roadmap ages
-      # without anybody touching it: the tracker moves, the file does not, and
-      # a stream still naming work that shipped two releases ago reads as
-      # current. Every stream bullet therefore names an OPEN issue or a
-      # (register: <id>) row, and this step resolves both. The register does
-      # not travel, so here only the tracker half is load-bearing -- the
-      # register anchors are skipped and counted. An unreachable GitHub API is
-      # a counted notice and exit 0, never a red build for somebody else's
-      # outage.
-      - name: roadmap anchors
-        run: python3 scripts/check_roadmap_anchors.py --check
-      # GH #234 -- a gate USED to stand here: `build_librarian_seed.py --check`
-      # (GH #205), guarding a committed tree that is generated. Do not put it
-      # back. The generator lives under workshop/, which is not part of this
-      # tree and is not meant to be, so the step could not pass here -- it
-      # failed on a missing file, which says nothing about whether the artifact
-      # drifted. (A second such step, `build_builder_hive.py --check` (GH #217),
-      # stood beside it; that generator was retired with its tree, GH #434.)
-      #
-      # It now runs where its sources are, in the tree that has workshop/, and
-      # since GH #466 in three places rather than two -- because the two it had
-      # were a release gate and a test tier that the pre-push rule does not run,
-      # so between a commit and a release the drift was invisible:
-      #   1. plans/meclaw-os/a2-pre-push-gates.sh, block 1 -- every push
-      #   2. R11 of the release gate (plans/export-fixtures/make_export.py)
-      #   3. crates/meclaw-cells/tests/librarian_seed_corpus.rs, in tier t1
-      # The shipped Rust twin (3) covers this clone and skips when no generator
-      # is present -- which here is always, so a green run of its own asserts
-      # nothing about the corpus. That is intentional: the assertion belongs to
-      # the tree that can make it.
-
   deny:
     runs-on: ubuntu-latest
     steps:
@@ -255,6 +244,13 @@ jobs:
       # verdict on the pull request. It is deliberately not blocking; the
       # advisories standing open today are tracked in GH #127 (GH #115 is
       # where the split was decided).
+      #
+      # It stays a job of its own rather than a station of the gate above:
+      # cargo-deny is not on the runner image, and the action that installs it
+      # also caches its advisory database. The resolver never plans `deny` or
+      # `deny-advisories` in ci mode at all -- both are in its `CI_EXCLUDED`
+      # set for exactly this reason -- so this job is the only place either
+      # check runs for a push.
       - name: advisories (reporting only)
         continue-on-error: true
         uses: EmbarkStudios/cargo-deny-action@v2

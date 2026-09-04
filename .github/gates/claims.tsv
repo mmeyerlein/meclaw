@@ -20,7 +20,7 @@
 #                  specified-not-built: `GH #N`, the same N the marker names.
 #                  built-unpinned: the issue that would produce the pin.
 #
-# Enforced by `scripts/check_claims.py`, run in CI (job `gates`). A commit that
+# Enforced by `scripts/check_claims.py`, run in CI (job `gate`). A commit that
 # adds a behavioural promise to the trias adds its row in the same commit.
 #
 # Not in this file: statements of design intent ("hives are scope markers, not

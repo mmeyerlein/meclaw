@@ -8,8 +8,12 @@
 #   ci       -- the machine runner. Same test set, but it reports slow tests
 #               and flakes explicitly and writes a JUnit file for the summary.
 #
-# Neither profile decides WHICH tests run -- that is the tier filterset, see
-# scripts/test-tier.sh and the [test-groups]/filterset notes further down.
+# Neither profile decides WHICH tests run. A tier decides it by filterset
+# (`scripts/test-tier.sh t0|t1|t2`); a gate run decides it from the diff --
+# `scripts/gate.sh <mode>` asks `scripts/gate_plan.py` which binaries the change
+# needs and hands the expression over as `scripts/test-tier.sh filter '<expr>'`.
+# The stations and their triggers live in that resolver's docstring, the process
+# around them in docs/development-rules.md § 7.
 #
 # Timeout budget: the repo convention is that a test's own failure-marker
 # timeouts are generous (30s, so that cargo-parallel load does not fake a

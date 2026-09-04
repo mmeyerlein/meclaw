@@ -42,8 +42,19 @@ substrate flanks it opened — a lane cannot vanish inside one diff, a capped ro
 is a named partial answer, a key collision is a refusal, a citation marker never
 reaches a person — closed with it.
 
-Nothing is open under this horizon. The streams below carry what comes next; the
-tracker carries the rest.
+One thing is open under this horizon, and it is about how the next wave is
+built rather than about what it builds:
+
+- [#577](https://github.com/mmeyerlein/meclaw/issues/577) — the gate process
+  gets one entry point, and its scope comes from the diff. Three chains — a
+  strand gate, a pre-push gate and the CI workflow — each carried its own
+  hard-coded list of steps, so they drifted apart and each of them paid for work
+  the change had not asked for: a Python-only edit still compiled the workspace.
+  One runner asks one resolver which stations a diff needs, runs each of them
+  once, and leaves a receipt the release gate can read instead of running the
+  same four checks again.
+
+The streams below carry what comes next; the tracker carries the rest.
 
 ## Next: substrate flanks
 
