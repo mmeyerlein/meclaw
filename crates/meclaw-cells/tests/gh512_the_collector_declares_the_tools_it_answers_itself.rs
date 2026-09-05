@@ -1,43 +1,47 @@
-//! GH #512 — the derived menu keeps the two tools the collector serves ITSELF.
+//! GH #512 — the derived menu keeps the tool the collector serves ITSELF.
 //!
 //! Since GH #464 a collector's tool menu is asked for rather than typed:
 //! `params.tools` names what the agent uses, the tools hive answers with the
 //! declarations, and the collector writes them into the brain's own
 //! `system.tools` — with `$replace`, so the subtree becomes exactly the answer.
 //!
-//! Two names on that menu are not the parent's. `memory_recall` is answered by
-//! the collector out of its own recall port and `thread_recall` out of its own
-//! slate (GH #55, GH #451); the composite routes both here by name, and no tools
-//! hive has — or could have — a declaration for either. They shipped as SEED
-//! rows in the brain's `cell.db`, which is written once at birth, so the first
-//! tick deleted both of them. Measured on three grown colonies: the brain held
+//! One name on that menu is not the parent's. `thread_recall` is answered by the
+//! collector out of its own slate (GH #451) — the round table in its own
+//! `cell.db`, which no other cell may read — so the composite routes it here by
+//! name and no tools hive has, or could have, a declaration for it. It shipped as
+//! a SEED row in the brain's `cell.db`, which is written once at birth, so the
+//! first tick deleted it. Measured on three grown colonies: the brain held
 //! `web_search` and `web_fetch` and nothing else, the whole recall chain below
 //! it was wired and idle, and the agent answered questions about its own past
 //! with "my memory is not reachable" — true, and never asked.
+//!
+//! `memory_recall` was the second name until GH #552 and is one of the parent's
+//! now: the member's own memory hive declares it and answers it, which is why the
+//! menu below carries three leaves and not four. The rule this file states did
+//! not change — a cell declares what it answers — it is the answerer that moved.
 //!
 //! What this file pins:
 //!
 //! 1. **The declarations are the collector's.** A menu written on `in_menu`
 //!    carries the hive's answer AND the names this cell answers itself, named on
 //!    the message in `hop.menu_self`.
-//! 2. **The switches decide, and there is no new one.** `memory_call_tier` and
-//!    `thread_recall` already decide whether the lane is answered at all instead
-//!    of refused with a typed error; empty means the tool is off, and off means
-//!    undeclared.
+//! 2. **The switch decides, and there is no new one.** `thread_recall` already
+//!    decides whether the lane is answered at all instead of refused with a typed
+//!    error; empty means the tool is off, and off means undeclared.
 //! 3. **The guard still comes first.** An answer with nothing usable writes
 //!    nothing at all — the self-served names are not evidence that the hive
 //!    answered, and a menu carrying only them would still be the revocation
 //!    `$replace` makes of an empty write.
-//! 4. **The hive wins a collision.** A parent that wired a real cell behind one
-//!    of the two names has overridden this collector, and no menu declares one
-//!    tool twice.
-//! 5. **The shipped composites match their own graphs.** `talky` and, since
-//!    `cogny@4.4.0` (GH #528), `cogny` route both names into their collector and
-//!    leave both switches on. The rule is the agreement, not the answer: until
-//!    4.4.0 the core routed neither `memory_recall` edge nor declared the tool,
-//!    and that was the same rule read the other way round.
+//! 4. **The hive wins a collision.** A parent that wired a real cell behind the
+//!    name has overridden this collector, and no menu declares one tool twice.
+//! 5. **The shipped composites match their own graphs.** `talky` and `cogny`
+//!    route `thread_recall` into their collector and leave the switch on. The rule
+//!    is the agreement, not the answer: a composite that routed a name it switched
+//!    off, or switched on a name it does not route, is the same defect from two
+//!    sides — which is exactly why `memory_recall` had to leave BOTH halves at
+//!    once when the hive took the name over (GH #552).
 //! 6. **End to end on a booted colony.** The shipped `talky` beside the shipped
-//!    `tools`, with no seed anywhere: the tick fires by itself and all four
+//!    `tools`, with no seed anywhere: the tick fires by itself and all three
 //!    declarations land in the brain's own `cell.db`.
 
 #[path = "mock_openai.rs"]
@@ -143,7 +147,6 @@ fn patch(root: &std::path::Path, rel: &str, f: impl FnOnce(&mut Value)) {
 
 const SCHEDULE_ID: &str = "0190a3f2-0000-7000-8000-000000000512";
 const NEVER: &str = "0 0 0 1 1 *";
-const EVERY_SECOND: &str = "* * * * * *";
 
 // ═══════════════════════════════ 1.-4. the menu, over the shipped assembler
 
@@ -257,72 +260,55 @@ fn want(names: &[&str]) -> BTreeSet<String> {
 /// Claim 1. The two names the collector answers itself are on the menu it
 /// writes, and the message says which ones they were.
 #[test]
-fn the_menu_carries_the_two_tools_this_cell_answers_itself() {
+fn the_menu_carries_the_tool_this_cell_answers_itself() {
     let out = menu_of(&json!(["web_search", "web_fetch"]), &[]);
     assert_eq!(out.len(), 1, "one menu message: {out:#?}");
     let msg = &out[0];
     assert_eq!(
         leaves(msg),
-        want(&["web_fetch", "web_search", MEM, THREAD]),
+        want(&["web_fetch", "web_search", THREAD]),
         "a tool the composite IMPLEMENTS is topology, and its declaration belongs to \
          the cell that answers the call — not to a seed row written once at birth and \
          replaced by the first tick: {msg:#?}"
     );
     assert_eq!(
-        msg["header"]["menu_count"], "4",
+        msg["header"]["menu_count"], "3",
         "the receipt counts what was WRITTEN"
     );
     assert_eq!(
-        msg["header"]["menu_self"],
-        format!("{MEM},{THREAD}"),
-        "and names the ones no hive answered for: {msg:#?}"
+        msg["header"]["menu_self"], THREAD,
+        "and names the one no hive answered for: {msg:#?}"
     );
-    for name in [MEM, THREAD] {
-        let raw = msg["system"]["tools"][name]["text"]
-            .as_str()
-            .unwrap_or_else(|| panic!("`{name}` must be a `text` leaf: {msg:#?}"));
-        let decl: Value = meclaw_core::serde_json::from_str(raw).expect("a leaf holds json");
-        assert_eq!(decl["type"], "function");
-        assert_eq!(decl["function"]["name"], name);
-        assert!(
-            decl["function"]["parameters"]["properties"].is_object(),
-            "a declaration without arguments is one the model cannot use: {decl:#?}"
-        );
-    }
+    let raw = msg["system"]["tools"][THREAD]["text"]
+        .as_str()
+        .unwrap_or_else(|| panic!("`{THREAD}` must be a `text` leaf: {msg:#?}"));
+    let decl: Value = meclaw_core::serde_json::from_str(raw).expect("a leaf holds json");
+    assert_eq!(decl["type"], "function");
+    assert_eq!(decl["function"]["name"], THREAD);
+    assert!(
+        decl["function"]["parameters"]["properties"].is_object(),
+        "a declaration without arguments is one the model cannot use: {decl:#?}"
+    );
 }
 
-/// Claim 2. No new switch: the two that already decide whether the lane is
-/// ANSWERED decide whether it is DECLARED. A collector that declares a tool it
+/// Claim 2. No new switch: the one that already decides whether the lane is
+/// ANSWERED decides whether it is DECLARED. A collector that declares a tool it
 /// would refuse and one that refuses a tool it declared are the same defect.
 #[test]
 fn a_switched_off_lane_is_an_undeclared_tool() {
-    let both_off = menu_of(
-        &json!(["web_search"]),
-        &[
-            ("memory_call_tier", json!("")),
-            ("thread_recall", json!("")),
-        ],
-    );
+    let off = menu_of(&json!(["web_search"]), &[("thread_recall", json!(""))]);
     assert_eq!(
-        leaves(&both_off[0]),
+        leaves(&off[0]),
         want(&["web_search"]),
-        "with both lanes off the menu is the hive's answer and nothing else: {both_off:#?}"
+        "with the lane off the menu is the hive's answer and nothing else: {off:#?}"
     );
-    assert_eq!(both_off[0]["header"]["menu_self"], "");
+    assert_eq!(off[0]["header"]["menu_self"], "");
 
-    let no_memory = menu_of(&json!(["web_search"]), &[("memory_call_tier", json!(""))]);
+    let on = menu_of(&json!(["web_search"]), &[]);
     assert_eq!(
-        leaves(&no_memory[0]),
+        leaves(&on[0]),
         want(&["web_search", THREAD]),
-        "`memory_call_tier` empty answers every memory call with a typed error, so the \
-         tool must not be on the menu: {no_memory:#?}"
-    );
-
-    let no_thread = menu_of(&json!(["web_search"]), &[("thread_recall", json!(""))]);
-    assert_eq!(
-        leaves(&no_thread[0]),
-        want(&["web_search", MEM]),
-        "and the same holds one lane over: {no_thread:#?}"
+        "and with it on, the one name this cell answers stands beside the hive's: {on:#?}"
     );
 }
 
@@ -345,11 +331,11 @@ fn a_declaration_the_hive_answered_wins_over_this_cells_own() {
     let answer = ask_the_hive(&json!(["web_search"]));
     let mut schemas = answer["schemas"].as_array().cloned().expect("an array");
     schemas.push(json!({
-        "name": MEM,
-        "description": "a memory cell the parent wired itself",
+        "name": THREAD,
+        "description": "a thread cell the parent wired itself",
         "parameters": {"type": "object", "properties": {"q": {"type": "string"}}}
     }));
-    let declared = json!(["web_search", MEM]);
+    let declared = json!(["web_search", THREAD]);
     let recorded = run_assembler(&code_stdin(&json!({
         "target": "/main/collector",
         "header": {"hop": {"route": "in_menu"}, "context": {}},
@@ -363,21 +349,21 @@ fn a_declaration_the_hive_answered_wins_over_this_cells_own() {
     let msg = &out[0];
     assert_eq!(
         leaves(msg),
-        want(&["web_search", MEM, THREAD]),
+        want(&["web_search", THREAD]),
         "one leaf per name, and the parent's is the one that survives: {msg:#?}"
     );
     assert_eq!(
-        msg["header"]["menu_self"], THREAD,
-        "only the name nobody else answered is this cell's own: {msg:#?}"
+        msg["header"]["menu_self"], "",
+        "a name somebody else answered is not this cell's own any more: {msg:#?}"
     );
     let decl: Value = meclaw_core::serde_json::from_str(
-        msg["system"]["tools"][MEM]["text"]
+        msg["system"]["tools"][THREAD]["text"]
             .as_str()
             .expect("a leaf"),
     )
     .expect("json");
     assert_eq!(
-        decl["function"]["description"], "a memory cell the parent wired itself",
+        decl["function"]["description"], "a thread cell the parent wired itself",
         "the hive's declaration, verbatim: {decl:#?}"
     );
 }
@@ -417,46 +403,33 @@ fn collector_override(composite: &str, key: &str) -> Option<Value> {
 /// never heard of it.
 #[test]
 fn the_shipped_composites_declare_exactly_the_lanes_they_route() {
-    if shipped("talky").is_some() {
+    for composite in ["talky", "cogny"] {
+        if shipped(composite).is_none() {
+            continue;
+        }
         assert!(
-            routes_into_the_collector("talky", MEM) && routes_into_the_collector("talky", THREAD),
-            "talky routes both names into its collector (GH #55)"
+            routes_into_the_collector(composite, THREAD),
+            "{composite} routes the thread lane into its collector (GH #451)"
         );
         assert_ne!(
-            collector_override("talky", "memory_call_tier"),
+            collector_override(composite, "thread_recall"),
             Some(json!("")),
-            "so it must not switch the memory lane off"
+            "{composite} must not switch the lane it routes off"
         );
-        assert_ne!(
-            collector_override("talky", "thread_recall"),
-            Some(json!("")),
-            "nor the thread lane"
-        );
-    }
-    if shipped("cogny").is_some() {
-        // Since `cogny@4.4.0` (GH #528) the core routes BOTH names. `4.3.1`
-        // routed neither `memory_recall` edge nor declared the tool, and the two
-        // halves agreed then exactly as they agree now: the rule is that the
-        // declaration and the edge are one statement, not that the core has no
-        // memory tool.
+        // The other half of the same rule, since GH #552: a name this collector
+        // does NOT answer must not be routed into it either. Both composites
+        // served `memory_recall` here until `5.0.0`, with the schema typed by
+        // hand against a contract one level up; the memory hive declares and
+        // answers it now, and the edge left in the same breath as the switch.
         assert!(
-            routes_into_the_collector("cogny", MEM),
-            "the core asks its memory by TOOL since GH #528 -- one ordinary edge \
-             on `{MEM}` keeps the call inside the composite"
+            !routes_into_the_collector(composite, MEM),
+            "{composite} still routes `{MEM}` into its collector, which no longer \
+             serves it — the call would reach a lane that parks it"
         );
-        assert_ne!(
-            collector_override("cogny", "memory_call_tier"),
-            Some(json!("")),
-            "so it must not switch the memory lane off"
-        );
-        assert!(
-            routes_into_the_collector("cogny", THREAD),
-            "the thread lane it does route too (GH #451)"
-        );
-        assert_ne!(
-            collector_override("cogny", "thread_recall"),
-            Some(json!("")),
-            "nor the thread lane"
+        assert_eq!(
+            collector_override(composite, "memory_call_tier"),
+            None,
+            "{composite} still sets a knob the collector does not have any more"
         );
     }
 }
@@ -466,6 +439,8 @@ fn the_shipped_composites_declare_exactly_the_lanes_they_route() {
 fn main_config(composite: &str) -> Value {
     let hive = format!("./{composite}");
     json!({"cell": {"type": "hive"}, "params": {"graph": {"edges": [
+        {"from": ".", "to": hive.clone(),
+         "condition": "has(hop.route) && hop.route == 'mutation_committed'"},
         {"from": hive.clone(), "to": "./tools",
          "condition": "has(hop.route) && hop.route == 'schemas'",
          "modifier": {"set_hop": {"route": "'in_schemas'"},
@@ -529,7 +504,15 @@ fn build_tree(td: &tempfile::TempDir, composite: &str, declared: &Value, base_ur
     let root = td.path();
     std::fs::write(
         root.join(".env"),
-        "OPENROUTER_API_KEY=test-key\nKEEPER_IDLE_MS=0\nSEARCH_API_KEY=\n",
+        "OPENROUTER_API_KEY=test-key\nSEARCH_API_KEY=\n",
+    )
+    .unwrap();
+    // GH #553: the menu is asked for on the MUTATION RECEIPT, and the boot is the
+    // first receipt (ruling O-0904-2). Opting in here is what makes the first
+    // menu happen at all -- the five-minute poll that used to do it is gone.
+    std::fs::write(
+        root.join("colony.json"),
+        r#"{"schema_version": 1, "mutation_receipts": {"to": "/"}}"#,
     )
     .unwrap();
     write(root, "main/config.json", &main_config(composite));
@@ -551,11 +534,17 @@ fn build_tree(td: &tempfile::TempDir, composite: &str, declared: &Value, base_ur
             },
         );
     }
-    patch(
-        root,
-        &format!("main/{composite}/collector/menu-clock/config.json"),
-        |v| v["params"]["schedules"][0]["cron"] = json!(EVERY_SECOND),
-    );
+    // Every open generation is a candidate the moment the sweep runs. It was a
+    // `KEEPER_IDLE_MS=0` line in the `.env` above until GH #138; the knob is a
+    // param of `./close` now, so such a line would be read by NOTHING -- the
+    // sweep would keep the shipped two hours and find no candidate.
+    if keeper.exists() {
+        patch(
+            root,
+            &format!("main/{composite}/session-keeper/close/config.json"),
+            |v| v["params"]["idle_ms"] = json!(0),
+        );
+    }
     patch(
         root,
         &format!("main/{composite}/collector/assemble/config.json"),
@@ -614,9 +603,9 @@ fn brain_slots(td: &tempfile::TempDir, composite: &str) -> Vec<String> {
 
 /// Claim 6. The shipped talky, beside the shipped tools hive, with no seed row
 /// anywhere in the tree: the tick fires by itself, and the agent's own `cell.db`
-/// ends up holding the two it declared AND the two it can answer for itself.
+/// ends up holding the two it declared AND the one it can answer for itself.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_grown_talky_ends_up_with_a_memory_tool_it_never_seeded() {
+async fn a_grown_talky_ends_up_with_a_thread_tool_it_never_seeded() {
     let (Some(_), Some(_)) = (shipped("talky"), shipped("tools")) else {
         return;
     };
@@ -635,11 +624,11 @@ async fn a_grown_talky_ends_up_with_a_memory_tool_it_never_seeded() {
             .into_iter()
             .filter_map(|p| p.strip_prefix("tools.").map(str::to_string))
             .collect();
-        if names.len() >= 4 {
+        if names.len() >= 3 {
             assert_eq!(
                 names,
-                want(&["web_fetch", "web_search", MEM, THREAD]),
-                "the two it declared and the two it answers itself"
+                want(&["web_fetch", "web_search", THREAD]),
+                "the two it declared and the one it answers itself"
             );
             return;
         }

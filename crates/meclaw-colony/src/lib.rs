@@ -73,7 +73,8 @@ pub use colony::{
     RespawnFn, colony_task, set_term_timeout_ms_for_test, spawn_watcher,
 };
 pub use colony_config::{
-    COLONY_CONFIG_SCHEMA_VERSION, ColonyConfig, ConfigError, resolve_message_timeout,
+    COLONY_CONFIG_SCHEMA_VERSION, ColonyConfig, ConfigError, MutationReceipts,
+    resolve_message_timeout,
 };
 pub use colony_dispatch::mutation_door_reply;
 pub use config::{CellHeader, EdgeSpec, GraphHints, HiveParams, ParsedConfig};

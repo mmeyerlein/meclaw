@@ -169,13 +169,13 @@ fn the_shipped_member_declares_the_import_lane_and_the_edge_that_serves_it() {
     assert_eq!(
         named.iter().map(|(t, _)| t.as_str()).collect::<Vec<_>>(),
         vec!["./affinity", "./assistants", "./firewall"],
-        "the three holders a part can NAME are the two whose documents the \
-         export sink files beside the memory's, and — since GH #475 — the \
-         container through which a part reaches the session keeper of one \
-         generation: {named:?}"
+        "the three holders a part can NAME are the two whose stores write their \
+         documents beside the memory's, and — since GH #475 — the container \
+         through which a part reaches the session keeper of one generation: \
+         {named:?}"
     );
     // The name in the hop is the HIVE the part came out of, which is the same
-    // word the export sink files it under. For two of the three that word is
+    // word its directory carries. For two of the three that word is
     // also the endpoint; for the keeper it is not, because the hive stands four
     // levels below the endpoint the member can address.
     for (to, cond) in &named {
@@ -207,19 +207,29 @@ fn the_shipped_member_declares_the_import_lane_and_the_edge_that_serves_it() {
          message that dies as `no_route` one hop after it crossed the level"
     );
 
-    // The receipt half the lane's own `because` promises: an import receipt
-    // rides the `dump` lane this level already drains into its export sink.
+    // The receipt half the lane's own `because` promises, and since GH #555 it
+    // LEAVES the level. Until then it ended inside the member, in a cell that
+    // read it and said nothing about it — the one arrangement GH #284 forbids,
+    // and it only ever ended there because that cell existed for the EXPORT
+    // half. The export writes its own files now, so the receipt travels the way
+    // every other receipt of this level does.
     assert!(
         edges.iter().any(|e| {
             e["from"] == "./memory-hive"
-                && e["to"] == "./export-sink"
+                && e["to"] == "."
                 && e["condition"]
                     .as_str()
                     .unwrap_or_default()
                     .contains("'dump'")
         }),
-        "the `dump` drain is gone, and with it the only consumer an import \
-         receipt has at this level"
+        "the `dump` exit is gone, and with it the only way an import receipt has \
+         out of this level"
+    );
+    assert!(
+        routes(&member["params"]["contract"], "emits")
+            .iter()
+            .any(|r| r == "dump"),
+        "the member carries `dump` out of its holders and does not declare it"
     );
 }
 

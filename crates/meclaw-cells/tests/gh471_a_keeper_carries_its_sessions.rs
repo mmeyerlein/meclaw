@@ -6,16 +6,21 @@
 //! talking to for a year as a stranger, and nothing anywhere says so — the new
 //! generation is a perfectly ordinary event. That is why the row has to travel.
 //!
-//! Two keepers stand in one colony here, wired the way `memory-hive`'s README
-//! prescribes for a hive-to-hive transfer: ONE edge, `old -> new` on
-//! `hop.route == 'dump'`, renaming the lane to `in_import` on the way. Nothing
+//! Two keepers stand in one colony here, and since GH #555 the transfer between
+//! them goes through a DIRECTORY rather than through an edge: the sending
+//! keeper's own store writes `<fence>/session-keeper/seed/sessions.jsonl`
+//! itself, and the document is carried into the receiving keeper as an
+//! `in_import` part built out of that file — the same document read the other
+//! way round, and exactly what `examples/memory-import/build_import.py`
+//! (`--after-boot`) writes for a keeper that cannot be seeded at birth. Nothing
 //! is mocked; both hives are the shipped `templates/session-keeper` tree.
 //!
 //! Three properties, and the third is the one a row count cannot reach:
 //!
-//! 1. **The walk leaves.** One part, `sessions`, carrying the schema the store
-//!    declares and the rows it holds — and it is the FINAL part, so the receipt
-//!    the sink of a real member waits for can exist at all.
+//! 1. **The walk leaves, as a file.** One table, `sessions`, written with the
+//!    schema the store declares on line 1 and one row per line after it, plus
+//!    the completeness marker beside it — and the keeper says `export_done`
+//!    itself, naming the directory relative to its own fence.
 //! 2. **The row arrives, once.** The same document applied twice leaves the
 //!    same state: that is what the probe before the insert buys, and applying
 //!    it twice is how a partial transfer is repaired.
@@ -126,7 +131,7 @@ fn rows(db: &std::path::Path, sql: &str) -> Vec<Vec<String>> {
 /// One shipped keeper at `main/<name>`, with the night timer left out: this
 /// file is about the transfer, and a cron that fires mid-test would close the
 /// very generation the third property reads.
-fn keeper(root: &std::path::Path, name: &str, seeded: bool) {
+fn keeper(root: &std::path::Path, name: &str, seeded: bool, fence: &std::path::Path) {
     let dst = root.join("main").join(name);
     copy_tree(&repo("templates/session-keeper"), &dst);
     std::fs::remove_file(dst.join("template.json")).unwrap();
@@ -141,6 +146,12 @@ fn keeper(root: &std::path::Path, name: &str, seeded: bool) {
         .collect::<Vec<_>>();
     hive["params"]["graph"]["edges"] = json!(edges);
     write_json(&dst.join("config.json"), &hive);
+
+    // The one thing an instance says about files (GH #555): the absolute
+    // directory this keeper's own store writes and reads inside.
+    let mut store_cfg = shipped_config("templates/session-keeper/sessions/config.json");
+    store_cfg["params"]["transfer"]["base_path"] = json!(fence.to_str().unwrap());
+    write_json(&dst.join("sessions/config.json"), &store_cfg);
 
     if seeded {
         let store = shipped_config("templates/session-keeper/sessions/config.json");
@@ -184,6 +195,21 @@ sys.stdout.write(json.dumps([]))
         "contract": {"version": "1.0.0", "settings": {}, "multi_send_capable": true,
                      "emits": {}, "consumes": {}}
     })
+}
+
+/// One `in_import` part, addressed at the receiving keeper's own path.
+async fn import(h: &ColonyHandle, part: &Value) {
+    let mut hop = Map::new();
+    hop.insert("route".to_string(), json!("in_import"));
+    h.send(
+        MessageBuilder::new(Path::new("/new"))
+            .hop(hop)
+            .body(Body::Inline(json!({"messages": [{
+                "origin": "assistant", "type": "text",
+                "text": to_string_pretty(part).unwrap()}]})))
+            .build(),
+    )
+    .await;
 }
 
 async fn nudge(h: &ColonyHandle, target: &str, route: &str, hop_extra: &[(&str, Value)]) {
@@ -242,8 +268,10 @@ async fn a_session_ledger_crosses_and_the_new_keeper_continues_the_conversation(
     let flag_dir = root.join("flags");
     std::fs::create_dir_all(&flag_dir).unwrap();
 
-    keeper(root, "old", true);
-    keeper(root, "new", false);
+    let fence = root.join("exports");
+    std::fs::create_dir_all(&fence).unwrap();
+    keeper(root, "old", true, &fence);
+    keeper(root, "new", false, &fence);
     write_json(
         &root.join("main/flag/config.json"),
         &flag_cell(flag_dir.to_str().unwrap()),
@@ -253,16 +281,15 @@ async fn a_session_ledger_crosses_and_the_new_keeper_continues_the_conversation(
         &json!({
             "cell": {"type": "hive"},
             "params": {"graph": {"edges": [
-                // The migration recipe, verbatim: one edge, renaming the lane.
-                {"from": "./old", "to": "./new",
-                 "condition": "has(hop.route) && hop.route == 'dump' && has(hop.dump_kind) && hop.dump_kind == 'export_part'",
-                 "modifier": {"set_hop": {"route": "'in_import'"}}},
-                // ... and the two lanes a caller has to subscribe to, on both
-                // sides, because `required_drains` is not a suggestion.
+                // No edge carries the document any more: the sending store
+                // writes it, and whoever moves the directory carries it in.
+                // What each side still owes is a subscription to what it says
+                // about the transfer, because `required_drains` is not a
+                // suggestion.
                 {"from": "./old", "to": "./flag",
-                 "condition": "has(hop.route) && (hop.route == 'dump' || hop.route == 'reject')"},
+                 "condition": "has(hop.route) && (hop.route == 'export_done' || hop.route == 'dump' || hop.route == 'reject')"},
                 {"from": "./new", "to": "./flag",
-                 "condition": "has(hop.route) && (hop.route == 'dump' || hop.route == 'reject' || hop.route == 'turn')"}
+                 "condition": "has(hop.route) && (hop.route == 'export_done' || hop.route == 'dump' || hop.route == 'reject' || hop.route == 'turn')"}
             ]}}
         }),
     );
@@ -272,32 +299,40 @@ async fn a_session_ledger_crosses_and_the_new_keeper_continues_the_conversation(
         .await
         .expect("bootstrap must succeed");
 
-    // ── 1. the walk leaves ──────────────────────────────────────────────────
+    // ── 1. the walk leaves, as a file ───────────────────────────────────────
     nudge(&h, "/old", "in_export", &[]).await;
-    let parts = wait_for(
-        &flag_dir.join("export_part.json"),
-        "the export part",
+    let done = wait_for(
+        &flag_dir.join("export_done.json"),
+        "the keeper's own completion word",
         &h,
         |v| !v.as_array().unwrap_or(&vec![]).is_empty(),
     )
     .await;
-    let parts = parts.as_array().unwrap().clone();
+    let done = done.as_array().unwrap().clone();
+    assert_eq!(done[0]["hop"]["export_hive"], "session-keeper");
     assert_eq!(
-        parts.len(),
-        1,
-        "the keeper holds ONE content table, so its walk is one part: {parts:?}"
+        done[0]["hop"]["seed_dir"], "session-keeper/seed",
+        "the completion word names the directory RELATIVE to the fence the store \
+         declares -- a receipt travels further than the fence does: {done:?}"
     );
-    assert_eq!(parts[0]["hop"]["export_final"], "1");
-    assert_eq!(parts[0]["hop"]["port_hive"], "session-keeper");
-    let part: Value = from_str(parts[0]["text"].as_str().unwrap()).unwrap();
-    assert_eq!(part["format"], "meclaw-session-export/1");
-    assert_eq!(part["table"], "sessions");
-    assert_eq!(part["rows"][0]["session_id"], SESSION);
+    assert_eq!(done[0]["hop"]["rows_written"], 1);
+    let seed = fence.join("session-keeper/seed");
+    let text = std::fs::read_to_string(seed.join("sessions.jsonl"))
+        .expect("the store must have written its own seed file");
+    let lines: Vec<&str> = text.trim_end_matches('\n').split('\n').collect();
+    assert_eq!(lines.len(), 2, "one schema line plus one row: {text}");
+    let header: Value = from_str(lines[0]).unwrap();
     assert_eq!(
-        part["schema"],
+        header["schema"],
         shipped_config("templates/session-keeper/sessions/config.json")["params"]["schema"]["sessions"],
         "line 1 of a seed file is the store's own declaration, verbatim -- that \
-         is what makes the part a birth format rather than a row dump"
+         is what makes the file a birth format rather than a row dump"
+    );
+    let row: Value = from_str(lines[1]).unwrap();
+    assert_eq!(row["session_id"], SESSION);
+    assert!(
+        seed.join("export_final.json").is_file(),
+        "the completeness marker is what tells a whole document from a prefix"
     );
     assert!(
         !flag_dir.join("reject.json").exists(),
@@ -306,6 +341,17 @@ async fn a_session_ledger_crosses_and_the_new_keeper_continues_the_conversation(
     );
 
     // ── 2. the row arrives, and a second application changes nothing ────────
+    // The document, read the other way round: the header line is the part's
+    // schema and the rest are its rows. `examples/memory-import/build_import.py`
+    // builds exactly this out of exactly these bytes.
+    let part = json!({
+        "format": "meclaw-session-export/1", "hive_template": "session-keeper",
+        "export_id": "gh471", "exported_at": "2026-09-04T00:00:00Z",
+        "table": "sessions", "part": 1, "of": 1, "final": true, "absent": false,
+        "schema": header["schema"], "rows": [row],
+    });
+    import(&h, &part).await;
+
     let new_db = root.join("main/new/sessions/cell.db");
     let deadline = std::time::Instant::now() + RECV_TIMEOUT;
     while std::time::Instant::now() < deadline
@@ -325,19 +371,16 @@ async fn a_session_ledger_crosses_and_the_new_keeper_continues_the_conversation(
         ]],
         "the transferred generation is not in the receiving keeper"
     );
-    let receipts = wait_for(
-        &flag_dir.join("import_receipt.json"),
-        "the import receipt",
-        &h,
-        |v| !v.as_array().unwrap_or(&vec![]).is_empty(),
-    )
+    let receipts = wait_for(&flag_dir.join("dump.json"), "the import receipt", &h, |v| {
+        !v.as_array().unwrap_or(&vec![]).is_empty()
+    })
     .await;
     assert_eq!(receipts[0]["hop"]["rows_written"], 1);
 
     // the same document again
-    nudge(&h, "/old", "in_export", &[]).await;
+    import(&h, &part).await;
     let receipts = wait_for(
-        &flag_dir.join("import_receipt.json"),
+        &flag_dir.join("dump.json"),
         "the second import receipt",
         &h,
         |v| v.as_array().map(Vec::len).unwrap_or(0) >= 2,

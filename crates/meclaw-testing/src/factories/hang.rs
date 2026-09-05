@@ -112,7 +112,7 @@ impl CellFactory for HangCellFactory {
                     db,
                     respawn_blob_store.clone(),
                     respawn_consumes.clone(),
-                    respawn_bounds,
+                    respawn_bounds.clone(),
                 );
                 meclaw_colony::renotify_stop_wiring(
                     &respawn_inbox_tx,
@@ -155,7 +155,7 @@ impl CellFactory for HangCellFactory {
                     db,
                     wake_blob_store.clone(),
                     wake_consumes.clone(),
-                    wake_bounds,
+                    wake_bounds.clone(),
                 );
             meclaw_colony::spawn_watcher(
                 &wake_watcher_inbox,

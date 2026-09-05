@@ -32,23 +32,40 @@ use std::time::{Duration, Instant};
 use tempfile::TempDir;
 use tokio::sync::mpsc;
 
-/// GET the URL until it answers or the deadline passes.
+/// GET the URL until the cell answers as a SERVED cell, or the deadline passes.
 ///
-/// The listener comes up inside a spawned task, so the first request can lose
-/// the race with `TcpListener::bind`. The generous window is the repo's 30 s
-/// failure-marker convention: it must not turn a slow machine into a red test,
-/// while a cell that never binds still fails in bounded time.
+/// A `web` cell comes up in two steps that are not one moment: the I/O half
+/// binds the socket, and the handler half publishes the first page snapshot
+/// (the readiness seam, GH #395). Between the two the listener is reachable and
+/// answers `503 starting` — a truthful "not published yet", not a verdict about
+/// the routes. Waiting only for a connection therefore measured the bind and
+/// read the gap to the publish as a broken cell (GH #578: `503` where `200` was
+/// expected, 0.017 s into the test, under parallel load).
+///
+/// So both pre-publish states are retried — no connection yet, and `503` — and
+/// what ends the wait is the positive signal that the cell is serving: any
+/// answer that is not `503`. The window is the repo's 30 s failure-marker
+/// convention.
+///
+/// **Why a real defect still fails this.** The retry consumes exactly one
+/// status, the one the cell itself emits while it has nothing to serve. A cell
+/// that never binds still ends at the marker; a cell that binds but never
+/// publishes stays at `503` and ends at the marker too; and every wrong answer
+/// a served cell can give — `404` from a broken page map, a `200` with the
+/// wrong body — is handed to the caller's assertions untouched.
 async fn get_with_retry(url: &str) -> reqwest::Response {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        match reqwest::get(url).await {
-            Ok(r) => return r,
-            Err(e) if Instant::now() < deadline => {
-                let _ = e;
-                tokio::time::sleep(Duration::from_millis(25)).await;
-            }
-            Err(e) => panic!("the web cell never answered on {url}: {e}"),
-        }
+        let last = match reqwest::get(url).await {
+            Ok(r) if r.status() != reqwest::StatusCode::SERVICE_UNAVAILABLE => return r,
+            Ok(r) => format!("{} (the cell had not published yet)", r.status()),
+            Err(e) => format!("{e}"),
+        };
+        assert!(
+            Instant::now() < deadline,
+            "the web cell never served on {url}; last answer: {last}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
     }
 }
 

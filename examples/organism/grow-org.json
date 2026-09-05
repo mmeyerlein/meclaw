@@ -4,7 +4,7 @@
     "add_nodes": [
       {
         "name": "acme",
-        "template": "org@1.3.0"
+        "template": "org@1.4.0"
       }
     ],
     "add_edges": [
@@ -37,6 +37,11 @@
         "from": ".",
         "to": "./acme",
         "condition": "has(hop.route) && hop.route == 'in_export' && (!has(context.org) || context.org == 'acme')"
+      },
+      {
+        "from": ".",
+        "to": "./acme",
+        "condition": "has(hop.route) && hop.route == 'mutation_committed' && (!has(context.org) || context.org == 'acme')"
       },
       {
         "from": "./acme",
@@ -92,6 +97,11 @@
         "from": "./acme",
         "to": ".",
         "condition": "has(hop.route) && hop.route == 'export_done'"
+      },
+      {
+        "from": "./acme",
+        "to": ".",
+        "condition": "has(hop.route) && hop.route == 'dump'"
       },
       {
         "from": "./acme",

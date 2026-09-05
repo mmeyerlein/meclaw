@@ -9,9 +9,778 @@ documented `error_code` strings (README § Stability). Anything that breaks one 
 them is listed under **Breaking** in its release, with the migration named. The
 Rust crates are internals and move without notice.
 
-## [Unreleased]
+## [0.30.0] — 2026-09-05
+
+This is the wave in which every open issue was either built or ruled. The poll
+timers are gone — the menu and the screen follow the mutation receipt the door
+now leaves behind, and `colony.json` carries `mutation_receipts` for it. File
+transfer moved into the substrate: the `transfer` slot writes and reads the
+directories a store owns, so the holders write their own seed set and the one
+cell that did it for them is gone. `memory_recall` is an ordinary tool call
+again, answered by the member's own memory hive instead of a private lane. Every
+member grows a screen and an app, and the OS hands out the port. The last ~140
+environment knobs in the template library are params, and a gate keeps that
+surface closed. And the wave that prepared it left one gate process behind
+(GH #577): a single entry point whose scope comes from the diff.
+
+### Breaking
+
+#### `talky@5.0.0`, `cogny@5.0.0`, `collector@4.0.0`: the private memory lane is gone (GH #552)
+
+The lane `in_memory_call` and the setting `memory_call_tier` are **removed**. Both
+existed for one reason: the collector inside `talky` and `cogny` answered
+`memory_recall` itself, out of the recall port it already owned for the ambient
+leg. It does not any more — the member's own memory hive declares the tool and
+serves the call — so a door into a room nobody is in came out with it, and the
+knob that switched it on came out with the door. `templates/collector` loses one
+accepted route and one setting; `talky` and `cogny` each lose the accepted route
+and the internal edge that fed it; `talky`'s brain seed loses the row that typed
+the schema.
+
+**Migration: none needed.** No shipped caller sends `in_memory_call` — the two
+composites routed the name into their own collector and nothing else ever did — and
+no shipped tree sets `memory_call_tier` beyond the two ref markers that moved with
+this change. If your own parent draws a `memory_recall` edge into `./talky` or
+`./cogny`, remove it: the call leaves on the ordinary tool exit now, and an edge of
+yours pointing at the composite delivers it to a lane that parks. `memory_recall` is
+declared on the assistant level's `tools` list
+(`templates/assistant/talky/config.json`, `override_params."collector/assemble".tools`),
+which is where a name only the level can route belongs — the same place
+`consult_cogny` is declared, for the same reason.
+
+#### `member@1.6.0`: `export-sink` is gone — the holders write their own seed set (GH #555)
+
+The one `code` cell the member level owned is **removed**, and with it the six
+edges that fed it and drained it. It existed for one reason: a document that is
+a FILE by definition travelled as messages, and something had to turn the stack
+back into files. Since the substrate half of GH #555 the `transfer` slot writes
+directories itself, so every holder's own store does it — `memory-hive`,
+`affinity`, `firewall` and, four levels down inside a named generation, the
+`session-keeper`. Each one's porter names a directory, asks its store to write,
+and raises `export_done` off the slot's own receipt: `hop.export_hive`,
+`hop.seed_dir` (relative to that store's fence) and `hop.rows_written`. The
+ruling behind it is one sentence: *cells manage their own files, nobody else
+does.*
+
+**Migration.** Point each exporting store at a directory with
+`params.transfer.base_path` — an absolute path, `override_params` on the
+manifest that grows the level: `"memory-hive/store"`, `"affinity/store"`,
+`"firewall/rules"`, and `"talky/session-keeper/sessions"` on the manifest that
+grows a generation. The env knob `MEMBER_EXPORT_DIR` is gone with the cell that
+read it; the fence is a param now, and `hop.export_to` — which the operator's
+`in_dump` trigger passes through beside `hop.target` — names the directory of
+one run under it. A tree that sets neither keeps the shipped default
+(`/tmp/meclaw-member-export`) and lands one directory per holder under it, which
+is the layout the sink wrote. **Redirect it.** That default is the sink's, and
+what travelled through it now travels through a store's own fence: `/tmp` is
+world-readable on an ordinary host, and a member's export is its whole memory,
+its curated record and its screening policy. Nothing about the fence is a
+secret, and nothing about it is checked — the substrate writes where the
+`params` say, which is exactly the point of putting the decision in the
+instance.
+
+**What is lost, and it is one thing.** The member-level `export_final.json`
+**no longer exists**. It was a composition statement about four hives — which of
+them had finished — written by the one cell that saw all four, and the substrate
+knows no hives at all: it writes the marker of the CELL that wrote a directory,
+`{format, cell, exported_at, tables, rows}`. What replaces it is that every
+directory says for itself whether it is whole. `examples/memory-import/build_import.py`
+reads exactly that, one `seed/export_final.json` per directory, and refuses a
+directory without one; nothing else in the tree read the member-level file.
+A reader of your own that waited on it has to wait on the per-hive markers
+instead — or on `export_done`, which now arrives once per holder and names the
+directory.
+
+**Two lanes moved with it.** `export_done` is raised by the holder that finished
+rather than by the level, so the member draws one exit per holder instead of one
+per sink. And `dump` — which carried export parts AND import receipts, told apart
+by `hop.dump_kind` — carries only the import receipt now, and **leaves the
+level**: it used to end inside the member, in the cell that read it and said
+nothing about it, which is the one arrangement GH #284 forbids. `member`, `org`
+and `meclaw-os` each carry it out, the way they already carry `close_report`.
+`hop.dump_kind` is removed from every porter's contract: with one payload per lane
+there is nothing left to tell apart. `hop.export_final` stays — it marks the last
+part of an incoming document, which is what triggers the re-derivation.
+
+### Added
+
+#### The mutation door leaves a receipt, and the boot is the first one (GH #553, substrate half)
+
+A committed mutation was an event only its own caller could see. The verdict
+travels back on `reply_to` — and `POST /colony/mutations` sets none, `meclaw
+--apply` sets none, so on the two paths an operator actually uses there was no
+channel at all. Everything else in a tree that wanted to know the graph had
+moved asked on a timer instead: a menu tick every five minutes, a topology
+snapshot every minute, forever, for an answer that changes a few times a day.
+That is a poll in an event-driven substrate, and it is paid for in availability —
+the ticks are what put the loop under the watchdog's nose on a busy box.
+
+The door now emits the event itself. With `colony.json` carrying
+`"mutation_receipts": {"to": "<hive>"}`, every **committed** knock leaves exactly
+one terminal message at that hive: sender `/colony`, the mutation's own
+`trace_id`, the knocking message as `parent_message_id`, a fresh routing budget,
+an empty UBF body, and everything it has to say in the `hop` —
+`route: "mutation_committed"`, `mutation_id` (or `mutation_ids` for a manifest),
+`outcome`, `scope`, `form`. Five keys and no more: *what* changed is a question
+`/colony/graph` already answers, and a receipt that answered it too would be a
+second, staler truth. The target is a hive by intent, so the receipt enters as a
+hive transit and the hive's own `{"from": "."}` edges decide who hears it — the
+substrate hands over an event and never learns a listener's address.
+
+**And the boot leaves the first one.** Right after `InitialApply` puts the edge
+table up, one receipt with `form: "boot"` and a nil id goes out. A listener that
+only heard about *changes* would sit empty until the first mutation of the day —
+on a stable tree that is hours, and a screen that answers `503` for hours is a
+screen nobody trusts. It also heals the one case a shutdown could eat: an
+`--apply` run whose receipt died with the process is repaired by the next start.
+
+Three properties are structural rather than remembered: a refusal leaves no
+receipt (including a manifest that stopped part-way — its own reply already says
+where it stopped), the shutdown drain emits none (a receipt there is new work the
+drain would then have to wait for, the same rule GH #47 applies to source
+emissions), and a receipt is neither an answer nor a mutation, so it can start no
+round and beget no second receipt. Opt-in throughout: with no
+`mutation_receipts` key nothing is emitted and no mutation behaves differently.
+
+This is the second digit at the release cut: a caller can now do something that
+was never promised before.
+
+#### The transfer slot writes the seed it reads (GH #555)
+
+A document used to leave a cell as a message and arrive as a message. The file
+half — turning that document into the `seed/<table>.jsonl` a cell is born from —
+was done beside the store, by a script cell that had to be told where to put it.
+The owner's ruling on that is one sentence: *"cells manage their own files,
+nobody else does."* The `transfer` body slot now takes `{"operation": "export", "to":
+"<dir>"}` and `{"operation": "import", "from": "<dir>"}`, and the substrate
+writes and reads the directory itself, above every cell type with a `cell.db`.
+Without a `table` an export writes **every** content table into one directory;
+`tables` names the list and its order. The message form is untouched and stays
+the default when no path is named.
+
+**The fence is the cell's own, and it is the only place a file may appear.**
+`params.transfer.base_path` is an absolute directory the consuming cell declares
+for itself (the precedent is `file`'s `base_path`), and `to`/`from` are relative
+to it. A cell that declares none has nowhere to write and falls back nowhere.
+A path that climbs out — absolute, `../…`, or out through a symlink — is refused
+by name, and the lexical pre-check runs before any filesystem call, so the
+answer is identical whether anything exists out there or not. The fence is
+parsed but never canonicalised and never checked for existence at boot or at
+`--validate`: a member whose export directory does not exist yet still boots,
+and finds out at the first `to`/`from`. Every file lands whole or not at all
+(`.part`, `fsync`, one `rename(2)`), the completion marker
+`seed/export_final.json` is written last, and on the way in every part is parsed
+before the first one is applied. The colony stays write-free outside `{root}`
+instantiation; the one who writes is the cell.
+
+New `error_code`-class strings (README § Stability): `transfer_path_out_of_bounds`,
+`transfer_io_error`, `transfer_seed_malformed`.
+
+This is the second digit at the release cut: a caller can now do something that
+was never promised before.
 
 ### Changed
+
+#### `memory-hive@3.2.0`, `affinity@3.3.0`, `firewall@2.3.0`, `session-keeper@2.2.0`, `operator@1.2.0`: the export leg is one message (GH #555)
+
+Every one of the four holders walked its content out table by table, as one
+message per table, and the walk was the porter's whole export leg. It is one
+message now: `{"operation": "export", "to": <dir>, "tables": <walk>}` at the
+hive's own store, and the substrate writes `<fence>/<dir>/seed/<table>.jsonl`
+plus `seed/export_final.json` itself. What is left in each porter is the thing
+only that hive knows — the walk ORDER, which is load-bearing on the way back in
+— and the completion word. The stores declare the fence
+(`params.transfer.base_path`); a table that a store does not have refuses the
+whole export by name instead of travelling as an `absent` part, and
+`emb_models`, the scratch tables and the FTS shadows stay behind because the
+walk names what travels.
+
+`operator/export` passes `hop.export_to` through beside `hop.target` — the
+directory of one run, relative to each holder's own fence — and renders
+`hop.export_hive` and `hop.seed_dir` into the receipt an operator reads. It
+resolves neither and never sees the file: a path this side canonicalised would
+be a claim about a filesystem the operator does not stand on.
+
+New `reject_reason` for the four porters: `export_write_failed` replaces
+`export_read_failed`, because the read that could fail is the substrate's now
+and what a porter can be told is that the write did not happen. A refusal there
+means no marker was written, so the directory is not a document.
+
+The second digit for all five: a caller can name a run's directory and get files
+where it asked, which was never promised before.
+
+#### `builder@1.7.0`: every member grows a screen and an app, the OS hands out the port (GH #543)
+
+A person in this substrate is the thing that has input and output devices. The
+fast lane grew the person and stopped there: the screen it speaks through and the
+application that draws on it were a second, hand-written act, and every colony
+that wanted one wrote the same two declarations again — with a port somebody
+picked by hand, which is fine exactly once. Two members with two hand-picked
+ports agree only by luck, and when they do not, the second screen binds nothing
+and says so to nobody who is looking.
+
+A `grow_level` wish for a **member** now renders **two manifests** in order. The
+first is the level, unchanged to the byte
+(`examples/organism/grow-member.json`). The second is
+`examples/organism/grow-screen.json`, cut to the two declarations that grow the
+devices: a `display` into the member's `channels` and a `colony-view` into its
+`apps`. There is no parameter that turns them off — `classify` drops a falsy key,
+so *set to false* and *never mentioned* would be the same wish, and the ruling has
+no third state anyway. What fills them is the builder's own configuration:
+`member_screen_template`, `member_app_template` and `screen_port_base` are `params`
+of the `recipes` cell, overridable per instance, and the recipe reads them off its
+own stdin. It is still **told** which template to instantiate; only the teller
+changed.
+
+The port is `screen_port_base + <the member's index in its organisation>`, and the
+index is **measured**: a new cell, `templates/builder/tally`, parks the wish in the
+builder's round table, asks `/colony/graph` for the members container, counts its
+direct children and stamps `hop.member_index` on the wish before the renderer runs.
+The renderer keeps `network: deny` and its own promise — *no inference, no
+retrieval* — literally true. A colony carries many organisations and one OS, and
+the OS is what allocates what is system-near; the builder stands at the OS level,
+so this allocation is that responsibility in its first form rather than a right an
+organisation lent it (ADR-0022).
+
+Two manifests are two submissions with no rollback between them, and the order is
+semantics: the second draws into `<member>/channels`, a scope only the first
+creates. That is measured rather than assumed — applied the other way round the
+screen manifest applies nothing — and each manifest carries its own digest and its
+own caller row, so a refusal of either finds the door it came from.
+
+One edge moved with this. The way back from a screen into a generation —
+`<member>/assistants → ./<generation>` on `in_turn` guarded by `hop.owner` — used
+to exist only in the hand-written example, and no built colony had it: the
+ordinary `in_turn` door is guarded on `context.assistant`, which a view event never
+carries, so a screen event reached the container and stopped. It is part of the
+**assistant level** now, which is the only place that knows the generation's name,
+and it is an exact complement of that door (`!has(context.assistant)`) rather than
+a second edge beside it — `apply_edges` fans out to every matching regular edge,
+and a display *receipt* carries both the owner and the context the answer
+travelled on, so two overlapping edges would hand the generation the same turn
+twice. An assistant costs twenty-one transit edges instead of twenty.
+
+New `error_code`-class strings (README § Stability): `count_unavailable`, spoken
+by `templates/builder/tally` when the count could not be taken and by
+`templates/builder/recipes` when the index or the port base arrived unreadable.
+One code, because it is one event seen one cell apart — the OS was asked for a
+port and cannot answer — and one repair. It is never quietly rounded down to the
+base port: a screen given a socket somebody else holds fails as a page that never
+loads. An **absent** index is not that case and still means zero, because nobody
+counting is a statement about a first member rather than a guess.
+
+Second digit, because a caller can now do something that was never promised: one
+wish grows a person and the devices that person speaks through.
+
+#### `builder-librarian@2.2.0`: a level row gets a retrieval window of its own (GH #543)
+
+`retrieve` cut every row to 1200 characters unless it was a catalogue row. A LEVEL
+row is the complete transit edge set a level gives a new child, and a set published
+half is a set that will be drawn half — the promise
+`a_level_row_survives_the_retriever_whole` makes. It had been kept by thrift: the
+assistant row measured 1186 of 1200, and the header of `_level_body` had been
+trimmed four times to keep it there. The way back from a screen moved into that
+level and the row measured 1286.
+
+So the window moved rather than the set. `kind == "level"` is the third window
+(`BUILDER_LIBRARIAN_LEVEL_CHARS`, 1600), beside the catalogue's 4000 and the
+ordinary 1200, and `workshop/tools/build_librarian_seed.py` mirrors it — the
+generator still refuses a row it cannot publish whole rather than silently
+following whatever the retriever currently says. Third digit: an existing promise
+goes on holding.
+
+#### `tools@1.4.1`: the `build_topology` schema says what the builder does (GH #543)
+
+Two sentences the model reads were describing a builder that no longer exists.
+`credential` has ridden in the level's own declaration since `builder@1.6.1`
+(GH #567) and the schema still called it *a second declaration beside the level*;
+and a member wish now answers with two manifests, which the schema did not mention
+at all. Both repaired, plus one sentence saying what a member wish does **not**
+take: neither a screen flag nor a port, because a member always gets both and what
+fills them is the builder's own configuration. Third digit: prose repair.
+
+#### `meclaw-os@1.8.0`, `org@1.4.0`, `member@1.6.0`, `assistant@2.5.0`, `talky@5.0.0`, `cogny@5.0.0`, `collector@4.0.0`, `colony-view@1.1.0`: the menu and the screen follow the mutation receipt, the two poll timers are gone (GH #553)
+
+Two cells in this library asked a question that already had an answer.
+`collector/menu-clock` woke every five minutes to ask a tools hive for
+declarations that only change when somebody mutates the graph;
+`colony-view/refresh` woke every minute to ask `/colony/graph` for a topology that
+only changes for the same reason. On a real colony with two collectors that is
+roughly two thousand ticks a day, each one a full pass through the colony loop, and
+each answer identical to the last one in all but a handful of cases. A poll in an
+event-driven substrate is availability spent on a question that has already been
+answered — permitted, until this wave, only as a bridge until the event existed.
+
+The event exists. The mutation door leaves one terminal receipt per committed knock
+at the hive `colony.json` names (`mutation_receipts.to`), on the lane
+`mutation_committed` — and **the boot is the first receipt** (ruling O-0904-2), so a
+colony that has just started has already said "the graph moved" once before anybody
+touches it. There is no lazy first fill and no store round trip: a restarted colony
+fills its menus and draws its screens out of the boot receipt, which is why the
+`503` window of a display no longer depends on somebody sending an `in_refresh`.
+
+What is new here is the road from that receipt to the two consumers, and it is drawn
+**one level at a time** — because a level that declares a lane takes part in it and
+may not be skipped (ADR-0020). `meclaw-os` accepts `mutation_committed` and carries
+it into `./orgs`; `org` into `./members`; `member` into `./assistants` **and**
+`./apps`, because an agent's tool menu and a person's screen are the same fact read
+twice; `assistant` into `./talky` and `./cogny`, and each generation into its own
+`./collector`. **The lane keeps ONE name the whole way down**, which is what lets
+every level in between declare it — a level that declares a lane is a mandatory hop
+for it, and a level that renamed it could not be one. The collector turns
+`mutation_committed` into its own internal `in_menu_tick`, exactly the shape
+`./menu-clock -> ./assemble` had; the internal lane stays internal, and nothing
+outside can name it. `colony-view` turns the receipt into its own `in_refresh`,
+which was always the lane its `refresh` timer fired on.
+
+`templates/collector/menu-clock/` and `templates/colony-view/refresh/` are **deleted**,
+with the edges that named them. `MENU_CRON` and `COLONY_VIEW_REFRESH_CRON` are gone
+with them; no other knob moves. `in_refresh` stays, as the operator gesture it always
+was: ask for the picture again without changing anything.
+
+**A shipped example opts in wherever it has a consumer.** `examples/organism` and
+`examples/display-colony-view` set `mutation_receipts` in their own `colony.json`,
+because each of them grows something that listens — an agent's collector, an app's
+picture — and since `colony-view@1.1.0` the app has no other producer at all. The one
+that stays out is `examples/meclaw-os`: it grows a `talky` and a `firewall` and no
+consumer of the lane, so an opt-in there would be a key with nothing behind it. What
+that costs while a colony is still growing is a **`no_route` dead letter at the empty
+container** — the boot receipt of an empty seed has nowhere below it to go yet, and that
+row is the documented, expected one: it names its sender and its trace, which is what
+GH #284 keeps the dead-letter queue for.
+
+**Version digits.** Second digit throughout, and for one reason on every level: a
+caller can now do something that was never promised before — send `mutation_committed`
+at `meclaw-os`, `org`, `member`, `assistant`, `colony-view`, `talky`, `cogny` and the
+collector inside them. `meclaw-os` 1.7.0 → **1.8.0**,
+`org` 1.3.0 → **1.4.0**, `colony-view` 1.0.2 → **1.1.0**. `member@1.6.0`,
+`assistant@2.5.0`, `talky@5.0.0`, `cogny@5.0.0` and `collector@4.0.0` are this wave's
+target versions already and carry the change without a second bump — a version moves
+once per wave, not once per strand. `clock` 1.0.0 → **1.0.1** is prose only:
+its README listed both timers this issue removed. `tools@1.4.1` carries a sentence of
+this strand too — its README named `MENU_CRON` — and moved for GH #543 in the same
+wave, so it is not bumped twice either.
+
+#### `memory-hive@3.2.0`: the memory answers `memory_recall` itself (GH #552)
+
+Whoever is reached declares themselves. Until this version the name was answered by
+a COLLECTOR one composite away, and the schema the model read was a hand-typed
+projection of *this* hive's own `in_query` contract: seven context keys, three of
+them the model's, retyped into a template that answers no recall — and a second time
+into a brain's birth seed, and a third time as README prose. Three artefacts for one
+contract, each free to drift, held together by one test whose own header said it was
+an interim. The half-open-window rule is the case in point: `read_window` here
+REFUSES a window with one bound, and the copy said both bounds were independently
+optional, so a model that named one bought a refusal it could not see coming.
+
+The hive that enforces the rules now writes them down. Two cells, and neither
+retrieves anything: `schemas` answers the hive's new `in_schemas` lane with one
+`{name, description, parameters}` — the `tools` hive's own cell, byte for byte in
+lane pair and answer shape (GH #548) — and `tool` translates, one way turning a
+`tool_call` into the ask `./recall` already understands, the other turning the
+bundle, or the refusal, into one `tool_result` under the original call id. The tier
+stays configuration (`tool` params.tier): a model that could choose its own depth
+could ask for one the instance was tuned away from. A refusal is an ANSWER —
+`missing_audience`, `missing_channel`, `half_open_window` and `store_refused` reach
+the caller as `hop.error_code` on the result — because a call nobody answers stalls
+the asking round until its idle window runs out.
+
+The road is four template edges at the member rim (`member@1.6.0`), six inside the
+generation (`assistant@2.5.0`) and four rendered per generation by
+`builder@1.7.0`'s level recipe. Template edges rather than v-lanes on purpose: the
+member is a mandatory hop anyway, because it is the level that stamps the round a
+recall is asked in, and an edge on disk is one an audit can read. Two silent traps
+came with it and both are pinned: `./cogny -> ./tools` had to become a `default`
+edge in the same act, or a named `memory_recall` edge beside it delivers every core
+tool call twice; and the hive's two ways out of `./recall` had to be narrowed
+explicitly on `context.memory_call_id`, because this hive already has two default
+edges and a third piece of default semantics is a debugging cost nobody can afford.
+
+New `error_code`-class strings on `memory-hive`'s `tool_result` lane:
+`malformed_tool_call`, `memory_not_configured`, and the recall cell's own four
+refusal reasons handed on verbatim. The `schemas` cell answers with the tools hive's
+own two, `tool_unknown` and `tools_missing`.
+
+Second version digit for the hive: two accepted lanes and two emitted ones are new
+and nothing existing changed behaviour. First digit for the three templates that
+gave the name back, second for the two that gained the edges. See
+[#552](https://github.com/mmeyerlein/meclaw/issues/552).
+
+#### `memory-hive@3.2.0`: every knob is a param, the tick is called `clock` (GH #138, #551)
+
+Forty-nine behaviour knobs of this hive were `${MEMORY_*}` substitution tokens:
+colony-global by construction, so two members of one colony could not have their
+memories tuned apart, and every knob NAME was a public configuration contract
+that could only be renamed by breaking a running colony. Worse, none of them
+could be tuned per instance AT ALL: an `override_params` entry may only name a
+key the addressed cell carries under `params`
+([#294](https://github.com/mmeyerlein/meclaw/issues/294)), and a knob that exists
+only as a token inside a script literal is not such a key. The configuration
+surface of the biggest template in the library was one shared `.env` or nothing.
+
+All forty-nine are params now, defaults bit-identical, in the form
+`collector@1.2.0` set ([#136](https://github.com/mmeyerlein/meclaw/issues/136)):
+the value lives under `params.<knob>`, is declared in `contract.settings.<knob>`,
+and the script reads it off the stdin document with the same number as its own
+fallback literal. Thirty-one belong to `./recall`, eleven to `./dream-glue`, two
+to `./close-glue`; `./closer`, `./dreamer`, `./dialectic` and `./judge` carry
+their deliberation budget as a literal inside `params.provider_extra`, and the
+nightly schedule is a literal inside `params.schedules[0].cron`. `./recall` gained
+thirty declarations it never had: thirty-one knobs stood beside ONE
+`contract.settings` entry, so the contract said almost nothing about a cell that
+is almost entirely configuration. The environment route is GONE rather than deprecated:
+the only `${...}` left anywhere under `templates/memory-hive/` is the provider
+lane, twelve names, each of them a credential, an endpoint or a model id.
+`MEMORY_EMBED_DIM` is on that list one by one and not by class: it is one
+statement with `MEMORY_EMBED_MODEL` and the shipped `store/seed/emb_models.jsonl`,
+the seed is not variable-substituted, and a `dim` that disagrees empties the
+semantic leg silently instead of raising — so the three stay on one surface or
+they stop matching.
+
+The tick moved in the same commit: `templates/memory-hive/cron` is
+`templates/memory-hive/clock` (ruling R-0904-5), which is the third and last of
+the three renames [#551](https://github.com/mmeyerlein/meclaw/issues/551) asked
+for. The dated exception list in
+`gh401_shipped_timer_schedules_deserialize.rs` is empty again, so the sweep over
+the tree is the whole rule.
+
+What this cost elsewhere, and why it is stated: six tests and three eval harnesses
+used to push the nightly consolidation out of a run's way with a
+`MEMORY_DREAM_CRON=` line in a `.env`, and such a line is read by nothing now —
+silently, which is the failure mode this kind of migration has. They say it with
+`override_params` instead, and a test asserts that the schedule an override names
+is the one the real timer parser plans on, not merely that the runs stayed green
+(`the_clock_ticks_on_the_schedule_its_params_carry`). The scenario suite and the
+LongMemEval harness grew a `params` lane beside their `env` lane for the same
+reason. The three copies of every value are pinned against each other by
+`crates/meclaw-cells/tests/gh138_memory_hive_params.rs`, and
+`scripts/check_tree_rules.py` R6 stops parking this template: a new `${KNOB}` in
+it is a hard finding now.
+
+The version digit does not move again — 3.2.0 already carries `memory_recall`
+(#552) and the one-message export leg (#555), and this is the same release of the
+same template. Had it stood alone it would still have been the second digit: a
+caller can now do something that was never possible before, which is the rule's
+own words. See [#138](https://github.com/mmeyerlein/meclaw/issues/138) and
+[#551](https://github.com/mmeyerlein/meclaw/issues/551).
+
+#### `session-keeper@2.2.0`, `summarizer@2.1.0`, `dispatcher@1.2.0`: knobs are params (GH #138)
+
+Ten behaviour knobs of these three templates were `${KEEPER_*}` /
+`${SUMMARIZER_*}` / `${DISPATCHER_*}` substitution tokens, and the dispatcher is
+the case that shows why that was too narrow: this template is instantiated MORE
+THAN ONCE inside a single agent — once in `talky`, once in `cogny`, once in
+`builder` — and one colony-global key made the asking surface and the answering
+core share a tool-class declaration they must not share. A `consult_cogny`
+handoff belongs on the asking side and nowhere else, and the environment form
+could not say so at all.
+
+All ten are params now, defaults bit-identical, in the form `collector@1.2.0`
+set ([#136](https://github.com/mmeyerlein/meclaw/issues/136)): the value lives
+under `params.<knob>`, is declared in `contract.settings.<knob>`, and the script
+reads it off the stdin document with the same value as its own fallback literal.
+`./close` carries `idle_ms` and `close_limit`; `./prep` carries `recent_turns`,
+`phaseout_chars`, `tool_chars` and `round_lines`; the dispatcher carries
+`max_calls`, `async_tools` and `handoff_tools` beside the `interim` it already
+had, and the two name lists read a JSON array or one comma-separated string. The
+keeper's nightly cron is a literal inside `params.schedules[0].cron`, because a
+`timer` has no top-level `cron` param and `TimerParams::parse` would ignore one
+in silence — an override names `schedules`, the key that exists. What is left in
+`.env` under these three templates is one name, `OPENROUTER_API_KEY` on the
+summarizer's writer.
+
+What this cost elsewhere, and why it is stated: **thirty-nine test setups and one
+eval harness wrote these names into a `.env`** to steer a run — eighteen of them
+a `KEEPER_NIGHT_CRON` line that pushed the nightly close sweep past the run,
+seventeen a `KEEPER_IDLE_MS` line that made every open generation a candidate for
+a forced sweep. Such a line is read by nothing now, SILENTLY: the shipped night
+fires for a few hours a day, so a run that lost its line behaves differently
+depending on the hour it started, and a lost idle window leaves a test waiting
+for a close that cannot come. Every one of them moved in the same commit — to an
+`override_params` entry addressed by cell path
+([#140](https://github.com/mmeyerlein/meclaw/issues/140)) where a mutation grows
+the tree, and to the same key written into the same `config.json` where the tree
+is booted from disk, which is what the mutation door does to a staged config.
+`crates/meclaw-cells/tests/gh138_keeper_summarizer_dispatcher_params.rs` measures
+each knob class twice — once with no override, where the shipped default must
+stand, and once with one, where the override must be what the cell acts on — so
+the claim is the behaviour and not the green.
+
+`meclaw-os@1.8.1` moves with them and is the third digit: its `requires.env`
+rollup named the dispatcher's three keys, and a rollup that names a key nothing
+reads sends an operator to set a value that goes nowhere. The three are gone from
+it and from `examples/meclaw-os/seed-ref/.env.example`; nothing else about the
+shell changed. `session-keeper` stays at 2.2.0 — the same release of the same
+template already carries the one-message export leg (#555) — and `summarizer` and
+`dispatcher` take the second digit, for the reason the rule gives in its own
+words: a caller can now name a key in `override_params` that was refused before.
+`talky@5.0.0` and `cogny@5.0.0` do not move; they reference the two sub-units,
+and a ref pin round is not a composite change. See
+[#138](https://github.com/mmeyerlein/meclaw/issues/138).
+
+#### `affinity@3.3.0`, `firewall@2.3.0`: knobs are params (GH #138)
+
+The two hives that stand around a person — the one that says who somebody is and
+the one that decides whether a stranger reaches them at all — carried ten
+behaviour knobs as `${AFFINITY_*}` / `${FIREWALL_*}` substitution tokens. That
+made every one of them colony-wide: two members of one colony could not keep
+their records at two cadences, and the screens in front of two channels could not
+be given two budgets. Worse, the knob could not be addressed at all — the mutation
+door only accepts an `override_params` key the cell actually carries under
+`params` (#294), and a value that exists only inside a `script_inline` literal
+carries nothing.
+
+All ten are params now, in the `collector@1.2.0` form (#136): a value under
+`params`, a declaration in `contract.settings`, and — for the nine a script reads
+— a literal beside the accessor, three copies of one number that a test compares
+against each other. `./brief` declares `disclosure_rows`, `traverse_depth` and
+`traverse_nodes`; `./push` declares `subscriber_rows`; `./screen` declares
+`firewall_max_chars`, `firewall_rate_max` and `firewall_rate_window_ms`;
+`./warden` declares `firewall_hold_ttl_ms` and `firewall_hold_max`. The tenth is
+`affinity/clock`'s cadence, which stays a value INSIDE `params.schedules` because
+that is the only key a timer's parser reads — a top-level `cron` would be ignored
+in silence. **Every default is bit-identical**, and neither hive reads a `.env`
+line any more: both are deterministic, neither asks a provider anything, so the
+allowed set of substitution tokens in these two subtrees is now empty and a test
+sweeps both trees to say so.
+
+The safety clamps survive the move and are pinned: `firewall_max_chars` still
+cannot be set above the hardline body ceiling of 262144, `firewall_hold_max` still
+cannot lift the hold pile above 1024, and `firewall_hold_ttl_ms` still has no
+value that switches the expiry off — `0` is floored at 1 ms. A knob that is
+absent, `null` or blank is "not configured" and is therefore the shipped default,
+which for the TTL means 3600000 rather than the floor; a number typed as a string
+is read as a number.
+
+**The silent half is the one that mattered.** Eighteen test files pushed one of
+these knobs out of their way with a line in a `.env`: fifteen wrote
+`AFFINITY_PUSH_CRON=` to keep the push tick out of a run, three wrote one of the
+`FIREWALL_*` names to set the screening arithmetic. Those lines are read by nothing
+now and would have said nothing about it — a lane ticking into a green run is a
+flake, not a red assert. Each one is an `override_params` entry or an instance
+config today, and `crates/meclaw-cells/tests/gh138_affinity_firewall_params.rs`
+proves the new form both ways round: without an override the shipped literal is
+what the real timer parser plans on, with one it is the overridden schedule.
+`scripts/check_tree_rules.py` R6 stops parking both templates: a new `${KNOB}` in
+either is a hard finding now.
+
+Neither version digit moves again — `affinity@3.3.0` and `firewall@2.3.0` already
+carry the one-message export leg (#555), and this is the same release of the same
+templates. Had either stood alone it would still have been the second digit: a
+caller can now do something that was never promised before. See
+[#138](https://github.com/mmeyerlein/meclaw/issues/138).
+
+#### `argus@1.1.0`, `access@2.5.0`, `receptionist@2.1.0`, `meclaw-os@1.8.1`: knobs are params (GH #138)
+
+Twenty-two behaviour knobs of these three templates were `${...}` substitution
+tokens: colony-global by construction, and — worse — not tunable per instance AT
+ALL. An `override_params` entry may only name a key the addressed cell carries
+under `params` ([#294](https://github.com/mmeyerlein/meclaw/issues/294)), and a
+knob that exists only as a token inside a script literal is not such a key. Two
+control loops in one colony had to share one measurement window; two brokers had
+to share one TTL ceiling; two receptions had to build the same composite onto the
+same lanes. The configuration surface of a security boundary and of a colony's
+front door was one shared `.env` or nothing.
+
+All twenty-two are params now, defaults bit-identical, in the form
+`collector@1.2.0` set ([#136](https://github.com/mmeyerlein/meclaw/issues/136)):
+the value lives under `params.<knob>`, is declared in `contract.settings.<knob>`,
+and the script reads it off the stdin document with the same value as its own
+fallback literal. Seven belong to `argus` (`./meter`, `./mutator`, `./probe`, and
+the cycle schedule as a literal inside `./clock`'s `params.schedules[0].cron`),
+eight to `access` (`./invoke`, `./policy`, `./sweep`, the sweep schedule in
+`./clock`, and the vault's `key_source` and `credential_name`), seven to
+`receptionist`'s `./greet`. The environment route is GONE rather than deprecated:
+the only `${...}` left anywhere under the three subtrees is the provider lane —
+the judge's provider, endpoint, model and key, and the reception's model id.
+`argus`'s radius knob changed shape with the move: `numeric_param_keys` is a JSON
+array rather than a comma string, because a params key can be typed and a
+comma-separated list was a workaround for an environment that has none. A typed
+comma string is still read the same way, since an override reaches that knob as a
+config line somebody writes.
+
+The vault's two knobs moved with the rest and nothing secret moved with them.
+`key_source` names a SOURCE (`auto`, `prompt`, `systemd-cred`, `plainfile`) and
+`credential_name` names a file under `$CREDENTIALS_DIRECTORY`; the passphrase
+itself is still an environment variable the hive only NAMES (`params.unlock_env`,
+shipped `null`), because a woken vault is locked until an operator opens it.
+
+**`meclaw-os@1.8.1`** followed, and this is the half that would have rotted in
+silence: the shell's `template.json` § `requires.env` is the roll-up of every
+`${VAR}` its refs substitute, derived by test rather than transcribed, and fifteen
+of its twenty-nine entries had just stopped binding anything — eighteen counting
+the three the authoring dispatcher took with it in the same wave, which leaves the
+block at eleven. A declared key that
+binds nothing asks an operator for a value that goes nowhere, so the fifteen are
+out, and `examples/meclaw-os/seed-ref/.env.example` — the copy-ready roll-up of
+that block — lost the same lines. Removing a declaration nothing reads is a
+repair, so the third digit.
+
+What this cost elsewhere, and why it is stated: five test setups pushed a sweep or
+a cycle out of their way with an `ACCESS_SWEEP_CRON` or `ARGUS_CYCLE_CRON` line in
+a `.env`, and two wired a reception through `RECEPTIONIST_REPLY_TO` and its
+siblings. Such a line is read by nothing now — silently, which is the failure mode
+this kind of migration has, and which no assert would have caught. They say it
+with the param instead, where a mutation's `override_params` would have merged it.
+The three copies of every value are pinned against each other by
+`crates/meclaw-cells/tests/gh138_argus_access_receptionist_params.rs`, which also
+proves the point of the move once per accessor class: two probes tuned to
+different windows, two receptions building different composites, two mutators with
+different radii, and both clocks planning on the schedule their own params carry —
+checked against the real `TimerParams` parser, not against a fixture.
+`scripts/check_tree_rules.py` R6 stops parking these three: a new `${KNOB}` in any
+of them is a hard finding now.
+
+Second digit for all three: a caller can do something that was never possible
+before, which is the rule's own words
+(`docs/development-rules.md` § 4). See
+[#138](https://github.com/mmeyerlein/meclaw/issues/138).
+
+#### the long tail: `builder-librarian@2.2.0`, `llm-registry@2.1.0`, `archive-bridge@1.1.0`, `daily-digest@2.1.0`, `canvy@2.2.0`, `clock@1.0.1`, `tools@1.4.1`, `vault@1.3.0`, `coder-pipeline@2.1.0`, `talky@5.0.0`, `cogny@5.0.0` — their knobs are params (GH #138)
+
+Twenty-two behaviour knobs across eleven templates, defaults bit-identical, in
+the form `collector@1.2.0` set
+([#136](https://github.com/mmeyerlein/meclaw/issues/136)). These are the
+templates with one, two or four knobs each — the tail after the hives — plus the
+grey zone ruling R-0904-6 settled by hand: a **grant id** and a **sandbox root**
+are references, not material, so they are behaviour and they are params, while a
+bearer token, an endpoint and a model id are the provider lane and stay in `.env`.
+
+The tail has three shapes and each needed a different move, which is why a
+migration that only knew the scripted one would have left two thirds of it behind.
+**Scripted** (`builder-librarian/retrieve` 4, `llm-registry/select` 2,
+`llm-registry/hand` 1, `archive-bridge` 1, `coder-pipeline/coderprep` and
+`/dispatch` 1 each): the knob becomes a `params` key, a `contract.settings` entry
+and the literal its own accessor falls back to — three copies, one value.
+**Typed** (`tools/file` and `tools/edit` `base_path`, `coder-pipeline/fs`
+`base_path`, `vault` `key_source` and `credential_name`, `talky/brain` and
+`cogny/brain` `credential_grant_id`): the key was always a param of a substrate
+cell type, with a token sitting inside it, so the migration is the TOKEN leaving.
+**Scheduled** (`clock` `cron` and `schedule_id`, `canvy/clock` `cron`,
+`daily-digest/clock` the digest URL and the chat id): the value lives inside
+`params.schedules`, one key holding the whole list, and an override replaces the
+list.
+
+What that buys is the point of the issue, and in this group it is unusually blunt.
+`clock` is a template whose entire purpose is to stand several times under
+different names — and `CLOCK_CRON` gave every clock in a colony the same cadence
+and every one of them the same schedule key. `tools` is one assistant's file
+surface, and `TOOLS_FILE_ROOT` gave every assistant in a colony the same
+directory to reach. `coder-pipeline` states its workspace in three places that
+must agree, and one environment variable made agreement look automatic while
+nothing checked it. `builder-librarian` briefs a builder, and two builders in one
+colony could not brief at different widths. None of this was reachable by
+`override_params` before: that mechanism may only name a key the addressed cell
+carries under `params` ([#294](https://github.com/mmeyerlein/meclaw/issues/294)),
+and a knob inside a `${VAR}` in a script literal is not such a key.
+
+**One behaviour change is worth reading twice.** `daily-digest`'s
+`TELEGRAM_DIGEST_CHAT_ID` had no default, so a colony that did not set it refused
+to boot and named the variable. A params default cannot refuse; the chat id
+therefore ships as the empty string. What replaces the refusal is the template's
+own shape — the hive instantiates inactive, so nothing fires until a crossing
+edge is drawn, and the mutation that draws it is the one that names the chat. An
+empty chat id delivers nowhere rather than somewhere wrong, and the README says
+so where the old table stood.
+
+The `.env` lane that stays in these eleven is four names, all credentials or
+endpoints: `OPENROUTER_API_KEY`, `TELEGRAM_BOT_TOKEN`, `SEARCH_ENDPOINT`,
+`SEARCH_API_KEY`. `tools`'s `requires.env` and `meclaw-os`'s rollup drop the keys
+they declared that nothing reads any more (`TOOLS_FILE_ROOT`, the four
+`BUILDER_LIBRARIAN_*`), because a rollup that names a dead key sends an operator
+to set a value that goes nowhere — `meclaw-os@1.8.1` and `builder@1.7.1` move a
+third digit for that and for the librarian knob table `templates/builder/README.md`
+published. Three test setups pushed one of these knobs out of their way with an
+`.env` line and now say it as `params` or as the instance config on disk; such a
+line is read by nothing after a migration and says nothing about it.
+`crates/meclaw-cells/tests/gh138_long_tail_params.rs` measures every knob class
+twice — once with nothing overridden, where the shipped literal must stand, and
+once with an override, where that is what the cell acts on: the real
+`TimerParams::parse` for the three clocks, `VaultParams::parse` for the vault,
+`LlmParams::parse` for the two brains, the `file`/`edit` factories for the sandbox
+roots, and the shipped scripts themselves for the scripted ten.
+`scripts/check_tree_rules.py` R6 parks none of the eleven any more.
+
+`llm-registry`, `archive-bridge`, `vault` and `coder-pipeline` take the second
+digit — a caller can now do something that was never promised. The other seven
+already carry this wave's target version and are not bumped twice for it.
+
+#### the env-knob migration is finished (GH #138)
+
+With this wave the shipped template catalogue has no behaviour knob left in
+the environment. One hundred and thirteen of them moved across twenty
+templates — the memory hive's forty-nine, argus/access/receptionist's
+twenty-two, the long tail's twenty-two,
+keeper/summarizer/dispatcher's ten and affinity/firewall's ten — every one of
+them onto the `params` surface of the cell that reads it, with defaults
+bit-identical and `collector@1.2.0` as the form, whose own twenty-six went
+first (#136). That is about a hundred and forty across twenty-one templates in
+all; `meclaw-os@1.8.1` and `builder@1.7.1` moved beside them, because a
+`requires.env` rollup that names a key nothing reads asks an operator for a
+value that goes nowhere. What remains in
+`.env` is the provider lane: credentials, endpoints and model ids, read off the
+NAME by `scripts/check_tree_rules.py` R6. The one template that did not migrate is
+`steward`, deprecated since [#462](https://github.com/mmeyerlein/meclaw/issues/462):
+it ships one more release and takes no further work, so its seven knobs stay
+parked in the gate's `TRANSITIONAL` table with that reason written down rather
+than being paid for.
+
+**One knob is deliberately outside all of this, and it is named here rather than
+rounded away.** R6 scans the catalogue, and `scan()` skips every `_`-prefixed
+root — the same `_`-prefix rule R1/R3/R4/R5 have always run under — so the
+minimal copy-from shapes under `templates/_cell-types/` are not in the scan.
+`templates/_cell-types/edit-min/config.json` carries
+`${EDIT_BASE_PATH:-/tmp/meclaw-edit}`, a sandbox-root knob of exactly the class
+this wave migrated everywhere else. The exclusion is scope, not principle:
+R-0904-6 ruled `templates/`, and `_cell-types` was never in the inventory.
+Whoever brings those roots into the scan brings that knob with them. So the
+count above is the catalogue's, `steward` is parked, and `EDIT_BASE_PATH` is the
+one behaviour knob left under `templates/` on purpose.
+
+#### docs: the terminal recording is archived (GH #43)
+
+`docs/` carried a terminal recording — `demo.sh`, the `demo.cast` it was recorded
+into, and the `demo.svg` rendered from it — and the export shipped all three with
+the published tree. The README stopped pointing at them on 2026-09-01, with the
+rewrite that gave the page its question sections, and that was deliberate: the
+quickstart a stranger walks and the shape of a colony in text are what the page
+needs, and a repository of this class does fine without a cast. The
+three files now live in `docs/archive/`, under an archive header that names when
+and why, and their `DOCS_MAP` entries are gone, so they no longer travel with the
+published tree. Nothing else referenced them; `docs/README.md` says where they went.
+
+#### templates: the env-knob surface is closed by a gate (GH #138, gate)
+
+A template's tunables were `${KNOB}` substitutions read out of `.env`, and the
+README called that an experimental surface that would migrate onto `params` "over
+the `0.x` line". It was narrower than it looked: `override_params` may only name a
+key the addressed cell actually carries under `params`
+([#294](https://github.com/mmeyerlein/meclaw/issues/294)), so a knob that exists
+only as a `${VAR}` inside a `script_inline` cannot be tuned per instance at all —
+it is colony-wide or it is nothing. Meanwhile nothing stopped the next one from
+being written, and 24 templates had grown about 120 of them.
+
+`scripts/check_tree_rules.py` gains **R6**: every `${VAR}` a template hands a cell
+— under `params`, `script_inline` included, and under `override_params` — is a
+finding unless its NAME says provider lane. The class is read off the name on
+purpose (`_API_KEY`, `_TOKEN`, `_BEARER`, `_BASE_URL`, `_ENDPOINT`, `_MODEL`,
+`_PROVIDER`, the prefix `MODEL_`, plus `OPENROUTER_HTTP_REFERER`,
+`OPENROUTER_X_TITLE` and `MEMORY_EMBED_DIM` one by one): a checker that guessed
+from the value would pass the day somebody writes a timeout into a variable called
+`..._BASE_URL`. `${uuid7:…}` and `${ctx.…}` are the instance class and are
+skipped. Every template that has not migrated yet is parked by name in the gate's
+`TRANSITIONAL` table with the strand that migrates it, so the gate is green from
+the day it lands and the remaining work is readable from one place; a migration
+that forgets its row gets a STALE line naming the row to delete.
+
+`gh204_declared_defaults_match_the_inline` now compares a knob in whichever form
+its template has — the environment twin, or the `collector@1.2.0` form of
+`params.<k>` against `contract.settings.<k>.default` against the script's own
+fallback literal ([#136](https://github.com/mmeyerlein/meclaw/issues/136)). Its
+measured floor is unchanged, and the count it guards went from 62 to 97, because
+a migrated template now converts its comparisons instead of losing them. No
+template moved in this change and no default changed; the migration itself
+follows. See [#138](https://github.com/mmeyerlein/meclaw/issues/138).
 
 #### One gate chain, and it reads the diff (GH #577)
 
@@ -33,6 +802,145 @@ v0.28.0 → v0.29.0 diff, the old chain ran the suite three times and the anchor
 gates four; the stations and their triggers live in the resolver's docstring
 and nowhere else. See
 [#577](https://github.com/mmeyerlein/meclaw/issues/577).
+
+#### `canvy@2.2.0`, `daily-digest@2.1.0`: a timer that only ticks is called `clock` (GH #551)
+
+The library shipped six names for the same cell. A `timer` whose whole job is to
+fire on a schedule was called `cron` in one template, `refresh` in another,
+`night`, `menu-clock`, `tick` or `clock` elsewhere, so a reader could not tell a
+cell's job from its name and a manifest author had to open the template to find
+out what the thing in front of them did. Two of the three are settled here:
+`templates/canvy/refresh` is now `templates/canvy/clock`, and
+`templates/daily-digest/cron` is now `templates/daily-digest/clock`; the third,
+`templates/memory-hive/cron`, moves in the `memory-hive@3.2.0` entry above and
+empties the dated exception list. Nothing else moved — the same schedules, the same defaults, the same single out-edge
+each, the same lanes at the rim. A tick whose NAME carries the semantics keeps
+it (`night` closes a session, `menu-clock` asks the tools hive), and the payload
+a `daily-digest` firing carries rides on its schedule rather than on the cell's
+name, which is why `cron` had nothing to say for itself.
+
+**A standing instance keeps the name it was grown with.** Instantiation copies
+the subtree, so a colony already running either template is untouched by this;
+a path IS a cell's identity and `move_nodes` is the only operation that changes
+one. Both hives are sealed (`params.ports` is empty), so no caller could ever
+name the renamed cell — the same reason `cogny@4.5.0` moved its second digit for
+the same shape of change, and the reason this one does too. The rule is no
+longer a warning either: the timer family left the unruled table in
+`scripts/check_tree_rules.py`, the ruling is written down in
+`docs/development-rules.md` § 8a R4, and what holds it is a sweep over the tree
+rather than a checker that guesses
+(`every_pure_tick_is_called_clock`). See
+[#551](https://github.com/mmeyerlein/meclaw/issues/551).
+
+#### The mutation door refuses a single-cell hive template by name (GH #572, #573, #574)
+
+A hive is a scope marker, not an actor, so no cell factory serves the type
+`hive` — and every door that stages a SINGLE cell used to discover that at the
+wrong end. A template whose root is a hive with nothing under it is not a
+subtree by either instantiating door's measure, so it took the single-cell path,
+validated clean, staged a directory, and was answered from the apply arm with
+`spawn: factory missing for hive`: an unnamed refusal from the half of the
+mutation that is past deciding. It is now refused at stage 4, pre-destructively,
+by name, at **both** doors — `add_nodes[].template` and the instantiate form of
+`swap_nodes[].with` — through one predicate, because it is one question. The
+refusal names the shape that works: grow the unit with an `add_nodes` entry,
+which stages the subtree and registers its hive scope, and let a generation
+change name it in `swap_nodes[].with: {"name": …}`. ADR-0021.
+
+Beside it, a second reader of one list is gone. The contracts a mutation gives
+birth to are deduplicated against what already stands — a path that stands keeps
+the contract it was born with — but a `swap_nodes` successor's contract was
+pulled out of the raw template read instead, behind the dedup's back. Naming a
+richer template in a RESUME of a sleeping hive was therefore enough to anchor a
+v-lane on a connect point that no `config.json` anywhere declares: the port
+boundary said no and the re-anchor verdict said yes, about the same path in the
+same mutation. Both now read the deduplicated list. The generation-change form is
+untouched — a successor an earlier `add_nodes` entry of the same diff
+contributed still counts — and a test holds each side. Underneath both, the five
+routing terms of an `add_edges` entry are read by one function
+(`add_entry_match_view`) and compared by one predicate
+(`edge_identity_equal_views`) that the apply-time dedup now shares: the two
+stage-6 lane checks and `EdgeTable::contains_equal` used to spell that reading
+out separately, which is why GH #283 had to add the routing phase to each of
+them by hand. The header-locality mirror (`mutation/header_views.rs`) still
+reads the same five terms itself, because it keeps the modifier as a typed
+`ModifierSpec` rather than the stored JSON; folding it in is a separate
+question.
+
+New `error_code`-class strings (README § Stability): `hive_template_single_cell`.
+
+All three repair an existing promise — validation is pre-destructive and refuses
+by name — so this is the third digit. See
+[#572](https://github.com/mmeyerlein/meclaw/issues/572),
+[#573](https://github.com/mmeyerlein/meclaw/issues/573) and
+[#574](https://github.com/mmeyerlein/meclaw/issues/574).
+
+### Fixed
+
+#### A `/colony` read no longer walks the templates library (GH #571)
+
+The colony's watchdog was ending the process at the top of every minute. The
+minute is not a coincidence: it is a display's refresh tick taking a
+`/colony/graph` read, and `docs/meclaw-overview` promises that read is answered
+"out of colony's in-memory registry, without touching a database". The read kept
+that promise. The dispatcher around it did not: **before** every `/colony/*`
+dispatch — whatever the endpoint — it read the whole `templates` table out of
+`colony.db`, cloned it into a snapshot, and built the rescan future, whose
+synchronous prologue walks the entire templates library with `read_dir` and reads
+every `template.json`. All of it ran on the colony task before the first `.await`,
+and all of it was discarded again for every endpoint but the three that actually
+read templates. Measured on a 48-template library: 98 read syscalls and 5.2 ms
+per `/colony/graph` read; on a real library with cold caches that is the
+half-second the watchdog saw. It is now 0 syscalls and 124 µs — the endpoint
+decides what the prologue costs, and a read costs nothing.
+
+**A read that is slow now has a name.** The work pulse GH #439 gave the mutation
+path reached the reads too, but was never ticked for them: a long read was
+silence, and the supervisor has exactly one reading for silence with nothing
+declared — a parked loop that stopped answering, which is the fatal verdict.
+Every `/colony/*` dispatch now declares itself as `colony-read <endpoint>`, so a
+slow read is a `slow_work_item` on the work-item budget and the trip line says
+which endpoint the loop was inside. `/colony/mutations` is unaffected: its own
+label follows and wins, as it always did.
+
+**And the heartbeat now survives a burst.** The colony→supervisor channel held 8
+beats. The loop emits three per handled event and the supervisor drains once per
+period, so a handful of events filled it in milliseconds — and what a full
+channel keeps is the OLDEST word, not the newest. A loop that had just said
+`Working` was read as one whose last word was `Parked`, which is
+`in_flight_work=false`, which is `starved=colony_loop`, which ends the process. The
+capacity is a named constant now (`HEARTBEAT_CAPACITY = 256`) and carries a
+sixty-event burst without losing the loop's last word.
+
+Repair of shipped behaviour, no contract moved: third digit.
+
+#### The single-declaration door refuses a manifest body by name (GH #581)
+
+The colony has two mutation doors: one takes a single declaration, one takes a
+manifest — an ordered list of such declarations in one body. Handed a manifest
+body, the SINGLE door answered `committed` and applied nothing: no node, no edge,
+no log row for any of the entries it was given. A caller that took the wrong door
+got a green receipt and a colony that had not moved.
+
+The mechanism was one `unwrap_or`. The single door reads its work from the body's
+`diff` key and treats an absent key as the *empty* diff — a reasonable reading for
+a no-op declaration, and a silent one for a body whose whole content sits under
+`manifest`. Every step below it then had nothing to do, found nothing wrong, and
+committed. The vocabulary check that already refuses a key nobody reads looks
+INSIDE the diff, so it never saw the top-level key that made the body a different
+form. A body carrying `manifest` *beside* `diff` was worse still: the `diff` half
+landed, the other half was dropped without a word.
+
+The door now names the refusal, on the same discriminator the manifest door uses —
+the presence of a top-level `manifest`, and nothing else. Any other unknown
+top-level key stays ignored exactly as it was. The refusal is spurless by
+position: it runs before the mutation id is minted, so it opens no mutation-log
+row, exactly like the drain refusal. `error_code` is the existing `schema` and no
+new string joins the documented set — a body form a door will not apply is what
+`schema` has always meant, and the manifest door says the same from its side.
+
+"Committed" for "did nothing" is the one answer a door must never give. Repair of
+shipped behaviour, no contract moved: third digit.
 
 ## [0.29.0] — 2026-09-02
 

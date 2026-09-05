@@ -62,9 +62,12 @@ impl From<ContractBlock> for ContractView {
     /// Maps `multi_send_capable` into `ContractView`. The `emits` field is NOT
     /// compiled here — compilation is fallible and must travel through the boot /
     /// mutation path as a `Result` (see B3/B4). `emits: None, validate_emits: false`
-    /// are safe defaults; the real compile happens via `compile_contract_view` (B3).
+    /// are safe defaults; the real compile happens via `compile_spawn_view` (B3).
     /// `consumes: None` likewise — the real compile happens in
-    /// `compile_contract_view` (Slice 2).
+    /// `compile_spawn_view` (Slice 2). `transfer_base_path: None` for a third
+    /// reason (GH #555): it does not live in the contract block at all, so this
+    /// conversion cannot know it — only `compile_spawn_view`, which sees the
+    /// same config's `params`, can fill it.
     fn from(c: ContractBlock) -> Self {
         Self {
             multi_send_capable: c.multi_send_capable,
@@ -73,6 +76,7 @@ impl From<ContractBlock> for ContractView {
             consumes: None,
             write_surface: c.write_surface,
             transfer: c.transfer,
+            transfer_base_path: None,
         }
     }
 }

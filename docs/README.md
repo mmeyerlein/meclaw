@@ -93,7 +93,7 @@ when that cycle closed) is part of a published tree, which is why both are
 named here rather than linked: a link to a file the published tree does not
 carry is a dead link in the only tree that matters.
 
-**`demo.sh`, `demo.cast` and `demo.svg`** are a terminal recording of
-`docs/demo.sh` driving [`../examples/swarm/`](../examples/swarm/) — the
-tool-loop showing up as a path through the tree. Replayable with
-`asciinema play docs/demo.cast`.
+**`archive/demo.sh`, `archive/demo.cast` and `archive/demo.svg`** are a
+terminal recording from June 2026, kept for the record and no longer part of
+the published tree. The README's quickstart and the live view carry the point
+instead.

@@ -63,6 +63,25 @@ pub struct ColonyConfig {
     /// iteration counter instead. Everything that does not opt in keeps the
     /// sharp guard.
     pub ttl_notice: bool,
+    /// GH #553 — opt in to the **mutation receipt**: where a committed knock at
+    /// the mutation door leaves its event.
+    ///
+    /// A committed mutation is an event only its own caller could see: the
+    /// verdict travels back on `reply_to`, and both `--apply` and
+    /// `POST /colony/mutations` set no `reply_to` at all. Everything else that
+    /// wanted to know "the graph moved" had to ask on a timer — a poll in an
+    /// event-driven substrate, paid for in availability.
+    ///
+    /// With this set, the door emits ONE terminal message per committed knock
+    /// (and one more right after the boot's `InitialApply`, so a restart fills
+    /// what listens without waiting for the first mutation of the day). Off —
+    /// the default, and the state of every colony that says nothing — nothing
+    /// is emitted and nothing about a mutation changes.
+    ///
+    /// Opt-in for the same reason `ttl_notice` is: the receipt is new traffic
+    /// in a topology that did not have it, and who hears it is the colony's
+    /// decision, never the substrate's.
+    pub mutation_receipts: Option<MutationReceipts>,
     /// Maximum `one_for_one` restarts per cell before `failed`.
     pub restart_max_retries: u32,
     /// Threshold (bytes) at/above which a UBF body is offloaded to a blob.
@@ -109,6 +128,20 @@ pub struct ColonyConfig {
     pub watchdog_on_trip: crate::watchdog::WatchdogOnTrip,
 }
 
+/// GH #553 — where the mutation door leaves its receipt.
+///
+/// `to` is a **hive** path. A hive is what makes the receipt an event rather
+/// than a delivery: the message enters as a hive transit, so the hive's own
+/// `{"from": "."}` edges decide who hears it and under which lane, and the
+/// substrate never learns a single listener's address. Naming a cell works and
+/// delivers to exactly that cell — it is simply the narrower choice.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MutationReceipts {
+    /// Absolute path the receipt is addressed to (a hive, by intent).
+    pub to: String,
+}
+
 /// Serde/`Default` seed for [`ColonyConfig::shutdown_drain_timeout_ms`] — one
 /// source for both, so the two can never drift apart (GH #47).
 fn default_shutdown_drain_timeout_ms() -> u64 {
@@ -133,6 +166,9 @@ impl Default for ColonyConfig {
             // TTL means for a loop, so it is a colony's decision, never the
             // substrate's (same discipline as `modifier.restore_ttl`).
             ttl_notice: false,
+            // GH #553: OFF by default — a receipt is traffic a topology has to
+            // be built for, so the substrate never invents a listener.
+            mutation_receipts: None,
             restart_max_retries: 5,
             blob_inline_max_bytes: 65_536,
             blob_max_recursion_depth: 64,
@@ -208,6 +244,17 @@ impl ColonyConfig {
                 field: "watchdog_period_ms",
                 reason: "must be >= 1 ms (a zero-length supervisor period is not a period)"
                     .to_string(),
+            });
+        }
+        // GH #553: a receipt target that is not an absolute path can never be
+        // routed, and a colony that asked for receipts and silently gets none
+        // is the worst of the three outcomes. Strict-fail, like the two above.
+        if let Some(r) = &cfg.mutation_receipts
+            && !r.to.starts_with('/')
+        {
+            return Err(ConfigError::InvalidField {
+                field: "mutation_receipts.to",
+                reason: format!("must be an absolute path, got `{}`", r.to),
             });
         }
         Ok(cfg)
@@ -479,6 +526,40 @@ mod tests {
         assert!(
             !warns.contains(&"strict_validation".to_owned()),
             "unexpected unwired-warn for strict_validation: {warns:?}"
+        );
+    }
+
+    /// GH #553 — the receipt target is opt-in, and a target that cannot be
+    /// routed is a boot failure rather than a silence. A colony that ordered
+    /// receipts and quietly gets none is the worst of the three outcomes, so
+    /// this fails the same way a zero watchdog period does.
+    #[test]
+    fn a_receipt_target_is_optional_and_must_be_absolute() {
+        assert!(
+            ColonyConfig::default().mutation_receipts.is_none(),
+            "off by default — a receipt is traffic a topology has to be built for"
+        );
+        assert!(
+            ColonyConfig::parse_str("{}")
+                .unwrap()
+                .mutation_receipts
+                .is_none()
+        );
+
+        let on = ColonyConfig::parse_str(r#"{"mutation_receipts": {"to": "/os"}}"#)
+            .expect("an absolute target parses");
+        assert_eq!(on.mutation_receipts.expect("set").to, "/os");
+
+        let err = ColonyConfig::parse_str(r#"{"mutation_receipts": {"to": "os"}}"#)
+            .expect_err("a relative target can never be routed");
+        assert!(
+            matches!(err, ConfigError::InvalidField { field, .. } if field == "mutation_receipts.to"),
+            "the refusal names the field: {err:?}"
+        );
+
+        assert!(
+            ColonyConfig::parse_str(r#"{"mutation_receipts": {"to": "/os", "who": "x"}}"#).is_err(),
+            "the block denies unknown keys, like every other one"
         );
     }
 

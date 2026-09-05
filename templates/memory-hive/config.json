@@ -56,6 +56,20 @@
           "route": "in_import",
           "context": [],
           "because": "take ONE part of such a document into this RUNNING hive, idempotently. The part is the body; nothing else is needed and nothing is inferred. Applying the same part twice leaves the same state -- that is what makes the document a backup and a merge rather than only a birth seed. A part that lost a provenance column in transit is REFUSED on `reject` with nothing written: an imported row whose participant set did not survive is a row that may be told to anyone"
+        },
+        {
+          "route": "tool_call",
+          "context": [
+            "audience_now",
+            "channel",
+            "session_id"
+          ],
+          "because": "one `memory_recall` call a brain decided to make, split out by a dispatcher and carried here by the member the asker stands in (GH #552). The body is the tool_call turn and nothing else -- `hop.tool_name` says which tool and `hop.tool_call_id` is the correlation the asking round is waiting on. The tier is NOT in it: how deep a recall runs is configuration of this hive (`./tool` params.tier), never a model argument, because a model that could choose its own depth could ask for one the instance was tuned away from. The round the question is asked in is required exactly as on `in_query` -- `audience_now` (a JSON list of who is present) and `channel` (where it is asked) -- and a recall without an audience is not a recall with an empty one: it is refused, and the refusal comes back as the call's own result"
+        },
+        {
+          "route": "in_schemas",
+          "context": [],
+          "because": "a collector asking this memory what its tool looks like, by NAME -- `{\"tools\": [\"memory_recall\"]}`, or `[\"*\"]` for everything this hive declares, which is one schema. Whoever is reached declares themselves (GH #552): until this lane the schema was a hand-typed projection of THIS hive's `in_query` contract, kept in a collector one composite away and seeded a second time into a brain. It is not a tool round and carries no `tool_name`. The lane, the body and the answer are the tools hive's own, byte for byte, so a collector cuts this answer together with a tools hive's without knowing which of them was which"
         }
       ],
       "emits": [
@@ -72,8 +86,20 @@
           "because": "what the close pass did with one closed session (GH #300, ruling Q9): how many turns it read, what it sharpened and what it left alone. It is the ONLY positive signal the lane has -- the pass writes through the inline ingress, which answers nobody, so without this the caller cannot tell a pass that ran and changed nothing from a pass that never ran at all. Drain it: undrained, the pass costs one strong-model call per session and reaches nobody, which is the same disease as an undrained export"
         },
         {
+          "route": "export_done",
+          "because": "this hive has written itself out completely: every table of the walk stands as `<seed_dir>/<table>.jsonl` and the completion marker `export_final.json` stands beside them, written last and by one rename, so a reader that watches the marker never meets a directory that is still filling. `hop.export_hive` names the hive, `hop.seed_dir` the directory RELATIVE to the fence the store declares (`params.transfer.base_path`), `hop.export_of` how many tables travelled and `hop.rows_written` how many rows. It is the lane that says an export is a BACKUP rather than a stack of messages, and it replaces the walk that used to say so in sixteen `dump` parts (GH #555)"
+        },
+        {
           "route": "dump",
-          "because": "the transfer lane's output: `hop.dump_kind == 'export_part'` is one part of the exported document (`hop.export_part` of `hop.export_of`, `hop.export_final` marking the last), `hop.dump_kind == 'import_receipt'` says what one applied part wrote (`hop.rows_written`). Drain it with a PLAIN `hop.route == 'dump'` edge -- an edge that also tests `dump_kind` reads as no drain under the required_drains probe. Undrained, an export runs and reaches nobody"
+          "because": "the receipt of one applied import part: `hop.rows_written` counts the inserts it dispatched, so zero means the target already had every row, and `hop.export_part` of `hop.export_of` locates it in the document and `hop.export_final` marks the last one. Since 0.30.0 the lane carries NOTHING ELSE -- an export writes its own files and reports on `export_done` (GH #555), so the `dump_kind` key that told the two apart is gone with the distinction. Drain it with a PLAIN `hop.route == 'dump'` edge -- an edge that tests a second key reads as no drain under the required_drains probe. Undrained, it becomes `no_route` in the dead-letter queue, which is where the shipped member leaves it (GH #284 state 2): the receipt localises itself with its sender and its trace instead of being dropped inside a cell that read it and said nothing"
+        },
+        {
+          "route": "tool_result",
+          "because": "the answer to one `memory_recall` call, as one tool_result turn under the original `tool_call_id` (GH #552). A refusal answers HERE too -- a missing audience, a half-open window, a store that said no -- because a call that is not answered stalls the asking round until its idle window runs out; `hop.error_code` carries the recall cell's own `reject_reason` verbatim, and the caller reads it off the message exactly as it does for any other tool"
+        },
+        {
+          "route": "tool_schemas",
+          "because": "this memory's OWN declaration, one `{name, description, parameters}` for `memory_recall`, plus in `unknown[]` the asked names it does not serve. Provider-neutral, like the tools hive's answer. A lane of its own and NOT `tool_result`: a result belongs to a call somebody made, this belongs to a start-up question"
         }
       ]
     },
@@ -105,8 +131,8 @@
       },
       {
         "accepts": "in_export",
-        "emits": "dump",
-        "because": "the export IS the dump lane -- wired without it, the walk runs, reads the whole store and delivers the document to nobody"
+        "emits": "export_done",
+        "because": "the export IS this lane -- wired without it, the store writes its seed set and nobody is ever told where, or that it finished at all"
       },
       {
         "accepts": "in_export",
@@ -122,6 +148,16 @@
         "accepts": "in_import",
         "emits": "reject",
         "because": "a part this hive will not take -- one whose audience did not survive the transfer above all -- leaves here; undrained, a refused transfer looks exactly like a successful one"
+      },
+      {
+        "accepts": "tool_call",
+        "emits": "tool_result",
+        "because": "a caller that hands this hive a call and does not take the result back has stopped its own tool round half way: the recall runs, costs what it costs, and answers into nothing while the brain waits for a name it will never see again"
+      },
+      {
+        "accepts": "in_schemas",
+        "emits": "tool_schemas",
+        "because": "a collector that asks this memory what it serves and does not subscribe to the answer offers its model a menu without `memory_recall` in it -- and the round then looks like a model that chose not to ask its memory, which is the one failure nobody can see from the outside"
       }
     ],
     "graph": {
@@ -263,7 +299,7 @@
           }
         },
         {
-          "from": "./cron",
+          "from": "./clock",
           "to": "./dream-glue",
           "condition": "has(hop.schedule_name) && hop.schedule_name == 'nightly-dream'",
           "modifier": {
@@ -472,7 +508,7 @@
         {
           "from": "./recall",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'bundle'",
+          "condition": "has(hop.route) && hop.route == 'bundle' && (!has(context.memory_call_id) || context.memory_call_id == '')",
           "modifier": {
             "set_hop": {
               "recall_caller": "has(context.recall_caller) ? context.recall_caller : ''"
@@ -493,7 +529,7 @@
         {
           "from": "./recall",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'reject'",
+          "condition": "has(hop.route) && hop.route == 'reject' && (!has(context.memory_call_id) || context.memory_call_id == '')",
           "modifier": {
             "set_hop": {
               "recall_caller": "has(context.recall_caller) ? context.recall_caller : ''"
@@ -627,6 +663,24 @@
         {
           "from": "./porter",
           "to": ".",
+          "condition": "has(hop.route) && hop.route == 'export_done'",
+          "modifier": {
+            "delete_context": [
+              "batch_id",
+              "close_pass",
+              "dream_run",
+              "dream_to",
+              "mem_phase",
+              "port_run",
+              "port_table",
+              "recall_id",
+              "store_origin"
+            ]
+          }
+        },
+        {
+          "from": "./porter",
+          "to": ".",
           "condition": "has(hop.route) && hop.route == 'dump'",
           "modifier": {
             "delete_context": [
@@ -659,15 +713,92 @@
               "store_origin"
             ]
           }
+        },
+        {
+          "from": ".",
+          "to": "./schemas",
+          "condition": "has(hop.route) && hop.route == 'in_schemas'"
+        },
+        {
+          "from": "./schemas",
+          "to": ".",
+          "condition": "has(hop.operation) && hop.operation == 'schemas'",
+          "modifier": {
+            "set_hop": {
+              "route": "'tool_schemas'"
+            },
+            "delete_context": [
+              "batch_id",
+              "close_pass",
+              "dream_run",
+              "dream_to",
+              "mem_phase",
+              "port_run",
+              "port_table",
+              "recall_id",
+              "store_origin"
+            ]
+          }
+        },
+        {
+          "from": ".",
+          "to": "./tool",
+          "condition": "has(hop.route) && hop.route == 'tool_call'",
+          "modifier": {
+            "set_context": {
+              "memory_call_id": "has(hop.tool_call_id) ? hop.tool_call_id : ''"
+            }
+          }
+        },
+        {
+          "from": "./tool",
+          "to": "./recall",
+          "condition": "has(hop.route) && hop.route == 'ask'",
+          "modifier": {
+            "set_hop": {
+              "phase": "'recall'"
+            },
+            "set_context": {
+              "recall_query": "has(hop.recall_query) ? hop.recall_query : ''",
+              "memory_tier": "has(hop.memory_tier) ? hop.memory_tier : ''",
+              "recall_as_of": "''",
+              "recall_window_from": "has(hop.recall_window_from) ? hop.recall_window_from : ''",
+              "recall_window_to": "has(hop.recall_window_to) ? hop.recall_window_to : ''"
+            }
+          }
+        },
+        {
+          "from": "./recall",
+          "to": "./tool",
+          "condition": "has(hop.route) && (hop.route == 'bundle' || hop.route == 'reject') && has(context.memory_call_id) && context.memory_call_id != ''"
+        },
+        {
+          "from": "./tool",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'tool_result'",
+          "modifier": {
+            "delete_context": [
+              "batch_id",
+              "close_pass",
+              "dream_run",
+              "dream_to",
+              "mem_phase",
+              "port_run",
+              "port_table",
+              "recall_id",
+              "store_origin",
+              "memory_call_id"
+            ]
+          }
         }
       ]
     }
   },
   "description": {
-    "purpose": "Scope marker of the memory hive: bundles the durable store and the write/recall/extraction/consolidation lanes of one MEMBER's memory behind ITS OWN PATH (ADR-0002 E1 -- agents are lenses on it, a second agent of the same member inherits what that member knows). `params.ports` is empty, so no edge reaches a cell in here; a caller names the hive and a lane on `hop.route`. The transfer lane (#243) carries the content OUT as a versioned document and back IN to a running hive, so a memory is an asset with an identity of its own rather than a side effect of one deployment. The consolidation lane carries two model roles: the dreamer writes the change narrative, the judge decides identity for the nightly canonicalisation round.",
+    "purpose": "Scope marker of the memory hive: bundles the durable store and the write/recall/extraction/consolidation lanes of one MEMBER's memory behind ITS OWN PATH (ADR-0002 E1 -- agents are lenses on it, a second agent of the same member inherits what that member knows). `params.ports` is empty, so no edge reaches a cell in here; a caller names the hive and a lane on `hop.route`. The transfer lane (#243) carries the content OUT as a versioned document and back IN to a running hive, so a memory is an asset with an identity of its own rather than a side effect of one deployment. The recall tool (#552) is the same memory reached the way a model reaches any tool: `tool_call` in, one `tool_result` out, and the declaration handed out on `in_schemas` by the hive that enforces it. The consolidation lane carries two model roles: the dreamer writes the change narrative, the judge decides identity for the nightly canonicalisation round.",
     "use_when": "Instantiate once per member; wire the lanes at the hive path in the same mutation. Every write lane needs the provenance of the turn on its ingress context (audience_set, channel, and speaker/agent_id), every read lane the asking round (audience_now, channel).",
     "not_in_scope": "No agent logic, no conversation state, no routing for the parent scope — the hive only carries its internal graph.",
-    "contract_in": "Six lanes, all at the hive path. in_episode -- remember this turn. in_query -- answer this question. in_remember -- take this block now (inline). in_close_pass -- this session is over, read it whole once. in_export -- write the remembered content out as a document. in_import -- take one part of such a document in, idempotently. Which cell serves a lane is this hive's business.",
-    "contract_out": "Four lanes, out of the hive path. bundle -- the answer to a question. close_report -- what the close pass did with one session. dump -- the transfer document, part by part, and the receipt of an applied part. reject -- something this hive would not take; the body says which and why."
+    "contract_in": "Eight lanes, all at the hive path. in_episode -- remember this turn. in_query -- answer this question. in_remember -- take this block now (inline). in_close_pass -- this session is over, read it whole once. in_export -- write the remembered content out as a document. in_import -- take one part of such a document in, idempotently. tool_call -- one `memory_recall` call a brain made, correlated by `hop.tool_call_id` (#552). in_schemas -- what does that tool look like. Which cell serves a lane is this hive's business.",
+    "contract_out": "Six lanes, out of the hive path. bundle -- the answer to a question. close_report -- what the close pass did with one session. dump -- the transfer document, part by part, and the receipt of an applied part. reject -- something this hive would not take; the body says which and why. tool_result -- the answer to one `memory_recall` call, refusals included. tool_schemas -- this memory's own declaration of that tool (#552)."
   }
 }

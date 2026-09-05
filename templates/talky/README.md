@@ -1,4 +1,4 @@
-# `talky@4.6.1`
+# `talky@5.0.0`
 
 A whole conversational agent as one template. Three referenced units under one hive:
 [`session-keeper`](../session-keeper/), [`collector`](../collector/) and
@@ -6,7 +6,7 @@ A whole conversational agent as one template. Three referenced units under one h
 `llm` brain, the sidecar splitter and one error collector. No new cell type, no Rust.
 
 **The Egon rollout wired this by hand.** Keeper in the ingress, collector at the seam,
-dispatcher for the fan-out, the close batch out to the write port -- thirty-one edges,
+dispatcher for the fan-out, the close batch out to the write port -- thirty-two edges,
 each of them a decision that had already been made in a README. That is the definition of a
 composite: a recurring unit that should be instantiated, not re-derived. Here it is one
 `add_nodes` plus the four port edges the parent has to draw anyway.
@@ -41,7 +41,7 @@ composite: a recurring unit that should be instantiated, not re-derived. Here it
 | path | type | from |
 |---|---|---|
 | `session-keeper/{stamp,close,sessions,night}` | `code`, `code`, `store`, `timer` | `session-keeper` **(sealed)** |
-| `collector/{assemble,window,menu-clock}` | `code`, `store`, `timer` | `collector` **(sealed)** |
+| `collector/{assemble,window}` | `code`, `store` | `collector` **(sealed)** |
 | `dispatcher` | `code` | `dispatcher` (a single-cell template) |
 | `brain` | `llm` | this template |
 | `splitter` | `code` | this template |
@@ -60,13 +60,13 @@ The three sub-units are **references**, not copies. Each of the three directorie
 one `config.json` and nothing else:
 
 ```json
-{"cell": {"type": "ref", "template": "collector@3.5.0"}}
+{"cell": {"type": "ref", "template": "collector@4.0.0"}}
 ```
 
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`talky@4.6.1` above it in its provenance chain.
+`talky@5.0.0` above it in its provenance chain.
 
 **The library has to carry the three.** A reference resolves against the colony's template
 registry, so `collector`, `session-keeper` and `dispatcher` have to sit in
@@ -110,7 +110,6 @@ The rest, each optional and each still at the same address:
 | `in_tool` | in | one tool result coming back |
 | `in_advice` | in | an advisor's answer coming back |
 | `in_bundle` | in | a memory bundle coming back |
-| `in_memory_call` | in | a memory tool call handed back into the composite |
 | `in_thread_call` | in | a `thread_recall` tool call handed back into the composite (since 3.0.1) |
 | `in_sweep` | in | an operator-forced session sweep |
 | `in_prune` | in | the age cut of the context window. **Paired**: see `prune` |
@@ -122,7 +121,8 @@ The rest, each optional and each still at the same address:
 | `in_menu` | in | their declarations coming back, plus the names that hive had nothing under. Since 4.5.0 |
 | `in_export` | in | a demand for the session ledger as a versioned document. It crosses to `./session-keeper` unchanged and the keeper's own walk answers it. **Paired**: see `dump`. Since 4.5.0 |
 | `in_import` | in | one part of such a document, for a keeper that is already running. Same crossing, same hive, same pairing. Since 4.5.0 |
-| `dump` | out | what the two transfer lanes produce: an export part (`hop.dump_kind == 'export_part'`) or the receipt of an applied one (`'import_receipt'`). **Drain it with a PLAIN `hop.route == 'dump'` test** -- an edge that also tested `dump_kind` reads as no drain under the `required_drains` probe. Since 4.5.0 |
+| `export_done` | out | the keeper inside this composite wrote its whole session ledger itself and says where: `hop.seed_dir` (relative to the fence its store declares), `hop.export_hive`, `hop.export_of`, `hop.rows_written`. Carried out unchanged -- this level owns no part of the document. Since 5.0.0 ([#555](https://github.com/mmeyerlein/meclaw/issues/555)) |
+| `dump` | out | the receipt of one applied import part (`hop.rows_written`, `hop.export_final == "1"` on the last). Since #555 that is all this lane carries. **Drain it with a PLAIN `hop.route == 'dump'` test** -- an edge that also tested a second hop key reads as no drain under the `required_drains` probe. Since 4.5.0 |
 
 ### The sessions leave, and come back (`in_export` / `in_import`, GH #475)
 
@@ -157,10 +157,10 @@ the whole of the finding.
 which `./errors` already drains and normalises -- so an export that aborted mid-walk and a
 brain that returned a 500 leave this composite on one lane, in one shape, and the parent
 still drains one edge. Above this level, [`assistant`](../assistant/README.md) passes the
-same three edges through and [`member`](../member/README.md) files the parts in its own
-export sink; a member's whole recipe is in
-[`../member/README.md`](../member/README.md) § *The export, and the one cell this level
-owns*.
+same lanes through and [`member`](../member/README.md) carries them out; since #555 the
+keeper's own store writes the ledger and nothing on the way files anything. A member's
+whole recipe is in [`../member/README.md`](../member/README.md) § *The export, and the cell
+this level no longer owns*.
 
 **`in_prune` and `prune` are one decision, and the substrate insists on it.** The
 prune answers unconditionally -- the zero report is the case an operator most needs,
@@ -281,75 +281,90 @@ same address -- and the `has()` guards are not decoration: an emission that carr
 with a log line per lane per message. A tool name nobody answers to dead-letters and
 stalls that round until the collector's idle window closes it (`round_idle_ms`).
 
-### The two tools the composite serves itself
+### The one tool the composite serves itself
 
-**Since `talky@4.2.2` the composite draws these edges, not the parent**
-([#55](https://github.com/mmeyerlein/meclaw/issues/55)). `memory_recall` (GH #78) and
-`thread_recall` ([#245](https://github.com/mmeyerlein/meclaw/issues/245)) are not the
-per-agent choice above: the collector inside this hive **serves** both of them. It holds
-the recall port for the per-turn leg, so the memory tool is answered where the memory leg
-already lives; and it owns the round table a `thread_recall` stub points at, so the way
-back to an elided payload is a table lookup in the cell that elided it. Both are therefore
-routed internally, by two ordinary edges of this template's own `params.graph`:
+**Since `talky@4.2.2` the composite draws this edge, not the parent**
+([#55](https://github.com/mmeyerlein/meclaw/issues/55)).
+`thread_recall` ([#245](https://github.com/mmeyerlein/meclaw/issues/245)) is not the
+per-agent choice above: the collector inside this hive **serves** it. It owns the round
+table a `thread_recall` stub points at, and that table lives in its own `cell.db`, which no
+other cell in the substrate may read -- so the way back to an elided payload is a table
+lookup in the cell that elided it, or it is nothing. It is therefore routed internally, by
+one ordinary edge of this template's own `params.graph`:
 
 ```json
 {"from": "./dispatcher", "to": "./collector",
- "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'memory_recall'",
- "modifier": {"set_hop": {"route": "'in_memory_call'"}}}
+ "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'thread_recall'",
+ "modifier": {"set_hop": {"route": "'in_thread_call'"}}}
 ```
 
-… and the same shape one lane further for `hop.tool_name == 'thread_recall'` →
-`in_thread_call`. Nothing downstream changed: the `collector` has accepted both lanes
-since `2.0.1`, and the door edge from `.` still routes them for a caller that hands such a
-call in from outside.
+Nothing downstream changed: the `collector` has accepted that lane since `2.0.1`, and the
+door edge from `.` still routes it for a caller that hands such a call in from outside.
 
-**RETRACTED: the parent no longer draws the two self-loops.** Up to `talky@4.1.1` this page
-told every parent to wire each name as a loop at the composite's own address -- `{"from":
-"./talky", "to": "./talky", "modifier": {"set_hop": {"route": "'in_memory_call'"}}}` -- and
-the port table below carried a row for each. **That instruction is withdrawn.** A parent
-that still draws them delivers every such call **twice**, once by its own edge and once by
-the composite's, so remove them when you lift an instance to `4.2.0`. The `in_memory_call`
-and `in_thread_call` lanes stay declared and stay real doors: a parent MAY still hand such
-a call in, it simply no longer has to.
+**`memory_recall` was the second, and it left with `talky@5.0.0`**
+([#552](https://github.com/mmeyerlein/meclaw/issues/552)). It was served here for the same
+reason `thread_recall` still is -- the collector holds the recall port for the per-turn leg
+-- but the two cases are not alike. The round table is this cell's own; the MEMORY is the
+member's, one level up, and the rules a recall obeys (who was present, what a half-open
+window means, how deep to go) are enforced in the memory hive. Serving the call here meant
+typing that hive's schema by hand, in a template that answers no recall, and a second time
+as a seed row in the brain. Now the hive declares it and answers it: the call leaves on the
+ordinary tool exit below, the member's rim carries it to the memory, and the result comes
+back as an ordinary `in_tool`. The lane `in_memory_call` is gone with it -- it existed only
+because this composite answered the name, and a door into a room nobody is in is worse than
+no door. **If you are lifting an instance from `4.x`:** nothing sends that lane in the
+shipped tree, so there is nothing to migrate; if YOUR parent drew a `memory_recall` edge
+into `./talky` by hand, remove it and let the call leave on the tool exit.
+
+**RETRACTED: the parent no longer draws the self-loop.** Up to `talky@4.1.1` this page
+told every parent to wire each reserved name as a loop at the composite's own address --
+`{"from": "./talky", "to": "./talky", "modifier": {"set_hop": {"route": "'in_thread_call'"}}}`
+-- and the port table below carried a row for it. **That instruction is withdrawn.** A
+parent that still draws it delivers every such call **twice**, once by its own edge and
+once by the composite's, so remove it when you lift an instance to `4.2.0`. The
+`in_thread_call` lane stays declared and stays a real door: a parent MAY still hand such a
+call in, it simply no longer has to.
 
 **The tool exit stopped naming names.** `./dispatcher -> .` on `hop.route == 'tool'` is a
 **guarded default edge** since `4.2.0` ([#283](https://github.com/mmeyerlein/meclaw/issues/283),
 ruling Q1): it is consulted only when no ordinary edge out of `./dispatcher` fired for the
-message. The two edges above are ordinary, so a reserved name silences the exit for itself
-and no term of exclusion is written anywhere. A third reserved name would cost one ordinary
+message. The edge above is ordinary, so a reserved name silences the exit for itself
+and no term of exclusion is written anywhere. A second reserved name would cost one ordinary
 edge and **no** change to the exit at all -- which is the whole difference between a default
-edge and the negation chain it replaces.
+edge and the negation chain it replaces. It is also what made `memory_recall` cheap to give
+back: one edge deleted, and the name leaves on the default like every other tool.
 
 **Two properties keep that honest, and both are measured against this tree rather than
 assumed.** The guard is not decoration: `./dispatcher` emits four sorts (`calls`, `result`,
 `answer`, `tool`) and default suppression is **sender-wide**, so an unguarded default would
 try to carry `calls`/`result`/`answer` outward whenever nothing ordinary happened to fire
-for them. And there is **no unconditional tee**: `./dispatcher` has six out-edges here and
+for them. And there is **no unconditional tee**: `./dispatcher` has five out-edges here and
 every ordinary one is conditioned on its own lane. If you add a tee of your own -- a logger,
 a tap, a mirror, at `./talky/dispatcher` -- condition it on its own routes, or it silences
 this default for every tool call and your tool cells go dark.
 
-**RETRACTED: the composite carries the schemas of the two tools it serves.** Up to
+**RETRACTED: the composite carries the schema of the tool it serves.** Up to
 `talky@4.1.1` this page said: *"The tool SCHEMAS are a different thing again: they live in
 the brain's `system.tools`, seeded (`brain/seed/system.jsonl`) or written by a system
 update. The composite carries neither -- identity, instructions and tools are the agent,
 not the topology."* The second half of that no longer holds, and the line runs elsewhere
 now: **a tool the composite implements is topology; a tool the parent wires is the agent.**
-So the composite carries the schemas of `memory_recall` and `thread_recall` -- schema and
+So the composite carries the schema of `thread_recall` -- schema and
 edge together, because a schema without the edge is a call into a void and an edge without
 the schema is a tool the model never learns it has -- and it carries **no others**.
 Identity, instructions and every per-agent tool stay the agent's, in the brain's own
-`cell.db`. The schema half of #55 ships in the brain's seed (`brain/seed/system.jsonl`);
-the `memory_recall` parameter block is documented in
-[`../collector/README.md`](../collector/README.md) § The memory tool.
+`cell.db`. The schema half of #55 ships in the brain's seed (`brain/seed/system.jsonl`),
+one row since `5.0.0`; `memory_recall`'s row went with the lane, because the answerer
+declares it now and a seed row would be a second copy of somebody else's contract
+([`../memory-hive/README.md`](../memory-hive/README.md) § The recall tool).
 
 **The seed takes on a FRESH birth only, and saying that is half the promise.**
 `brain/seed/system.jsonl` is loaded by `LlmCellFactory` at spawn and **only** when the
 brain's `cell.db` was created in that moment (`OpenStatus::Created`); a resume never
 re-seeds, because a template default that overwrote the accumulated identity at every
 restart would be worse than no seed at all (`docs/cell-types.md` § Seed,
-`crates/meclaw-cells/src/llm/seed.rs`). So an **existing** talky does **not** gain the two
-tool schemas from a template bump. It gains them one of two ways: a `system.tools` update
+`crates/meclaw-cells/src/llm/seed.rs`). So an **existing** talky does **not** gain the
+tool schema from a template bump. It gains it one of two ways: a `system.tools` update
 message -- a body carrying `system` and no `messages[]`, which upserts the slot and
 triggers no inference -- or a fresh generation whose brain starts with a new `cell.db`.
 Bumping the template and expecting a running agent to change is the half-truth that
@@ -399,12 +414,12 @@ the door edges' business, exactly as it is for the four essential lanes:
 | lane | endpoint | when |
 |---|---|---|
 | memory recall | `./talky` route `recall` out, lane `in_bundle` in | the per-turn leg only with `memory_tier` set; the same pair also serves the memory **tool** below |
-| memory tool | **nothing to wire** -- the composite routes `hop.tool_name == 'memory_recall'` to its own `in_memory_call` lane | GH #78 / GH #55. Since `4.2.0` this row is a statement, not an instruction: draw the old self-loop and the call arrives twice. The recall pair above is still the parent's, because the answer comes from a memory hive |
+| memory tool | **the parent's** -- since `5.0.0` `memory_recall` leaves on the ordinary tool exit and the parent routes it to a memory hive, which declares the schema and answers the call | GH #552. Up to `4.6.1` the composite answered the name itself and this row said "nothing to wire"; it does not any more. The `assistant` level ships the four edges (`templates/assistant/README.md`), and the recall pair above is the same road's other leg |
 | thread tool | **nothing to wire** -- the composite routes `hop.tool_name == 'thread_recall'` to its own `in_thread_call` lane | GH #245 / GH #55. Since `4.2.0` likewise. It matters most as soon as `context_window` is set, because from then on the curator leaves stubs that name this tool as their way back -- and now they always reach it |
 | forced sweep | `./talky` lane `in_sweep` | an operator or a second schedule |
 | housekeeping | `./talky` lanes `in_prune`, `in_round_sweep` | a timer; the template never fires them itself |
 | per-turn write | `./talky` route `turn_write` out | one message per turn into a memory hive's `in_episode` lane; on by default -- see below |
-| memory lookup | **nothing to wire any more -- RETRACTED in `4.5.1`** (GH #530). The `ask_memory` errand is retired; a fast memory question is the `memory_recall` row two lines up, answered by this composite out of its own recall port | the row used to send that question to a core that has no memory leg. See *The one errand, and the memory question that is not one* |
+| memory lookup | **nothing to wire any more -- RETRACTED in `4.5.1`** (GH #530). The `ask_memory` errand is retired; a fast memory question is the `memory_recall` row two lines up, answered since `5.0.0` by the member's own memory hive | the row used to send that question to a core that has no memory leg. See *The one errand, and the memory question that is not one* |
 | inline extraction | `./talky` on `hop.route == 'extraction'` -> the memory hive's `in_remember` lane, **plus** its `reject` egress into the parent's own drain | the memory's write path for what a turn carried -- see "The extraction sidecar". Since `talky@4.1.0` the lane is a ROUTE, not a tool name: a parent still wired on `hop.tool_name == 'remember'` writes nothing |
 
 ### Per-turn episodes (`turn_write`)
@@ -453,10 +468,10 @@ downstream as well.
 
 ## The internal wiring, edge by edge
 
-Fifteen edges of round in this hive's `params.graph` -- plus the sixteen that ARE the
-boundary (five door edges from `.`, eleven leaving towards it, and those are the lanes
-above). The two halves are the whole of this file, counted from it. Every one of the
-fifteen names a sub-unit **by its path**: two of the six nodes below are sealed hives, so
+Fourteen edges of round in this hive's `params.graph` -- plus the eighteen that ARE the
+boundary (six door edges from `.`, twelve leaving towards it, and those are the lanes
+above; the sixth door is the mutation receipt, GH #553). The two halves are the whole of this file, counted from it. Every one of the
+fourteen names a sub-unit **by its path**: two of the six nodes below are sealed hives, so
 the address is the hive and the lane in the third column is what the door behind it
 reads; what those two draw INSIDE themselves is theirs and is not counted here. Read it
 as the round it is:
@@ -478,7 +493,6 @@ session-keeper --(reject)--------> errors    <- the session store refused a step
 dispatcher --(calls)---> collector   in_calls    dispatcher ==(tool, DEFAULT)==> [your tools]
 dispatcher --(result)--> collector   in_tool
 dispatcher --(answer)--> collector   in_answer
-dispatcher --(tool_name == memory_recall)--> collector  in_memory_call   <- served here
 dispatcher --(tool_name == thread_recall)--> collector  in_thread_call   <- served here
 
 collector --(write)---------->  .            <- the close batch, out of the write port
@@ -628,7 +642,7 @@ tools this agent uses -- shipped as `["web_search", "web_fetch"]`, `["*"]` for e
 tools hive has -- and the schemas behind those names are asked for:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "talky@4.6.1",
+{"add_nodes": [{"name": "scribe", "template": "talky@5.0.0",
                 "override_params": {"collector/assemble": {"tools": ["web_search", "bash"]}}}]}
 ```
 
@@ -657,10 +671,16 @@ upserts `system.*` per slot path into its own `cell.db`, so the menu costs **one
 change and nothing per turn**. It is the same door `in_pack` uses one section down, and it
 is durable for the same reason.
 
-**The tick is not a birth.** The substrate hands a cell no message at spawn, so nothing can
-ask at boot: the first ask is the first firing of `./collector/menu-clock`, whose cadence is
-`MENU_CRON`. That is also how a tool ADDED to the hive later reaches this agent -- nothing
-over there pushes. An operator who does not want to wait triggers the schedule by id.
+**The ask is not a birth, and since `5.0.0` it is not a tick either.** The substrate hands a
+cell no message at spawn, so nothing can ask at boot by itself: what asks is the MUTATION
+RECEIPT. This composite declares `mutation_committed` at its own rim -- the lane keeps ONE
+name from the mutation door down to the collector, which is what lets every level in between
+declare it and be a mandatory hop for it -- and carries it inwards with one edge of its own,
+`. -> ./collector`. The boot receipt is the first one,
+so an agent has its menu before its first turn, and a tool ADDED to the hive later reaches this
+agent with the receipt of the very mutation that added it. Until `5.0.0` a `timer` inside the
+collector (`./collector/menu-clock`, `MENU_CRON`) did it every five minutes
+([#553](https://github.com/mmeyerlein/meclaw/issues/553)).
 
 **A name nobody has is named.** It comes back in `hop.menu_unknown` and as a warn line in
 `log.jsonl`; a declaration pointing at nothing is a defect in this agent's own template, and
@@ -703,7 +723,7 @@ core, N channel voices. It is reached like a tool and answers like an event, so 
 connection is two edges plus one knob.
 
 ```json
-"DISPATCHER_HANDOFF_TOOLS": "consult_cogny"
+"override_params": {"talky/dispatcher": {"handoff_tools": ["consult_cogny"]}}
 ```
 
 A consult is a **handoff**, not merely async: the advisor's answer comes back as its own
@@ -783,8 +803,9 @@ Why it had to go rather than be renamed: the lookup class assumed the core could
 memory question, and at the time it was drawn **the core had no memory leg at all** --
 `cogny` ships `memory_tier` empty, so nothing assembled a bundle for a turn of the core,
 and an `ask_memory` errand reached a brain that answered a question about memory without
-one. The surface HAS one, one hop away: its collector serves `memory_recall` itself, out
-of its own recall port, against the person's memory.
+one. The surface HAS one, one hop away: its collector runs the ambient recall leg, and
+since `5.0.0` the deliberate `memory_recall` call reaches the member's own memory hive,
+which declares the tool and answers it -- one hop out of this composite and back.
 
 **And the boundary outlives that reason.** Even where a tree wires the core a memory leg
 of its own, a lookup routed through the core is a whole extra TURN -- the errand leaves,
@@ -798,7 +819,7 @@ only one of them leaves this composite:
 
 | the question | who answers it | how it comes back |
 |---|---|---|
-| a fast memory question -- one lookup, a flat tier, a second or two | **this composite**, through its own `memory_recall` tool (GH #78 / GH #55) | inside the same round, as a tool result |
+| a fast memory question -- one lookup, a flat tier, a second or two | **the member's memory**, through the `memory_recall` tool it declares and answers (GH #78 / GH #552) | inside the same round, as a tool result |
 | synthesis, a time series, anything multi-step or research-shaped | **the core**, through `consult_cogny` | as its own later turn on `in_advice` |
 
 **The errand takes `question` AND `context`, both required, and the asking side filters
@@ -942,8 +963,8 @@ because the measurement harness can still run that arm
 (`workshop/evals/conversation-guide/run_guide.py --annotation tool`) and because a colony
 that has not been rewired yet still looks like this. **Do not wire it into anything new.**
 The parent edge was `hop.tool_name == 'remember'` instead of `hop.route == 'extraction'`,
-and the brain carried a `remember` tool named in `DISPATCHER_ASYNC_TOOLS` (never in
-`DISPATCHER_HANDOFF_TOOLS`: a memory write answers nothing and never comes back, so the
+and the brain carried a `remember` tool named in `async_tools` (never in
+`handoff_tools`: a memory write answers nothing and never comes back, so the
 model still owed the turn a sentence, and putting it in the handoff list brought back the
 silence [#372](https://github.com/mmeyerlein/meclaw/issues/372) had fixed).
 
@@ -1051,18 +1072,20 @@ the port boundary does not apply to it: `override_params` is addressed by the ce
 inside the template (GH #140), which is how a sealed sub-unit stays tunable at birth while
 being unwireable from outside.
 
-**Env knobs are an experimental surface.** Until this template's knobs move onto the `params`
-block of the cells that read them, their names carry no compatibility promise and may change in
-any `0.x` release; provider credentials keep living in `.env` either way. The migration is
-tracked in [#138](https://github.com/mmeyerlein/meclaw/issues/138), with the
-`collector@1.2.0` migration ([#136](https://github.com/mmeyerlein/meclaw/issues/136)) as the
-reference pattern.
+**Every knob of this composite is a param now**
+-- the collector's since `collector@1.2.0`,
+the keeper's since `session-keeper@2.2.0`,
+the dispatcher's since `dispatcher@1.2.0`
+([#138](https://github.com/mmeyerlein/meclaw/issues/138)).
+What stays in `.env` is the provider lane: the API key and the model id. Each row
+below names the CELL the knob belongs to, because that is what an
+`override_params` entry addresses (GH #140).
 
 | knob | where | default | unit |
 |---|---|---|---|
-| `KEEPER_IDLE_MS` | env | `7200000` | session-keeper -- silence before a generation may end (2 h) |
-| `KEEPER_NIGHT_CRON` | env | `0 0,30 22-23,0-3 * * *` | session-keeper -- the sweep, **in UTC** (summer image of 00:00-05:30 CEST) |
-| `KEEPER_CLOSE_LIMIT` | env | `50` | session-keeper -- generations one firing may seal |
+| `idle_ms` | param | `7200000` | session-keeper/close -- silence before a generation may end (2 h) |
+| `schedules[0].cron` | param | `0 0,30 22-23,0-3 * * *` | session-keeper/night -- the sweep, **in UTC** (summer image of 00:00-05:30 CEST). A timer has no top-level `cron` param: an override names the whole `schedules` array |
+| `close_limit` | param | `50` | session-keeper/close -- generations one firing may seal |
 | `window_turns` | param | `12` | collector -- newest turns entering the context |
 | `window_bytes` | param | `8000` | collector -- byte cap over the window |
 | `turn_chars` | param | `4000` | collector -- per-turn cap before the byte cap |
@@ -1072,16 +1095,14 @@ reference pattern.
 | `max_iter` | param | `8` | collector -- **the loop bound**; at the cap the seam leaves on `answer` |
 | `round_idle_ms` | param | `120000` | collector -- idle window of one tool round |
 | `memory_tier` | param | `""` | collector -- empty = no memory leg at all |
-| `memory_call_tier` | param | `"1"` | collector -- tier of the `memory_recall` tool; empty = tool off |
 | `memory_form` | param | `"readable"` | collector -- `readable` / `json` / `both` |
 | `prune_after_ms` | param | `604800000` | collector -- age gate on the prune lane (7 d) |
 | `turn_write` | param | `"1"` | collector -- **on by default** (GH #298): one message per unwritten turn leaves on route `turn_write` after every stored turn and every stored answer. `""` or `"0"` switch it off, and off means nothing said in this session reaches a memory at all |
 | `context_window` | param | `0` | collector -- the curator's budget in tokens; `0` = curation off. A channel voice is the shape the curator was **not** built for; leave it off unless the window is genuinely large. The full curator table is in [`collector`](../collector/#knobs) |
 | `tools` | param | `["web_search", "web_fetch"]` | collector -- the tool names this agent **declares** it uses (GH #464). Set at this template since `4.5.0`: a channel voice wants a small, named surface, so the shipped list is two tools and not `["*"]`. The schemas behind the names are asked for on the `schemas` lane and written into the brain as `system.tools`; an empty list asks nothing at all. A level that puts a reasoning core beside this surface overrides the list to add `consult_cogny` (GH #529) -- the errand is the level's, not this template's. See [The menu is asked for](#the-menu-is-asked-for-not-typed-schemas--in_menu-gh-464) |
-| `cron` | env | `0 */5 * * * *` | collector/menu-clock -- `MENU_CRON`, the cadence of the menu tick (UTC). The first ask is the first tick, because the substrate hands a cell no message at spawn |
-| `DISPATCHER_MAX_CALLS` | env | `16` | dispatcher -- per-answer call budget |
-| `DISPATCHER_ASYNC_TOOLS` | env | (empty) | dispatcher -- comma-separated tools that answer on their own lane instead of inside the round. The key is colony-global, so in practice ONE list carries every async name of the tree. It carried `remember` until `talky@4.1.0`; per-turn extraction is not a tool call any more (GH #379), so the list is empty unless the instance wires an async tool of its own |
-| `DISPATCHER_HANDOFF_TOOLS` | env | (empty) | dispatcher -- the tools whose call ends the TURN, because the answer comes back as a later one (`consult_cogny` -- and since GH #530 that is the whole list: `ask_memory` was retired, not replaced). Declares async too -- the dispatcher unions the two lists, so one entry is enough and naming a tool in both is harmless, just redundant. `remember` did not belong here while it existed (GH #372) |
+| `max_calls` | param | `16` | dispatcher -- per-answer call budget |
+| `async_tools` | param | `""` | dispatcher -- tools that answer on their own lane instead of inside the round, as a JSON array or one comma-separated string. Since `dispatcher@1.2.0` it is a param of THIS composite's own dispatcher (GH #138), so the surface's list and a sibling core's list are two statements and not one. It carried `remember` until `talky@4.1.0`; per-turn extraction is not a tool call any more (GH #379), so the list is empty unless the instance wires an async tool of its own |
+| `handoff_tools` | param | `""` | dispatcher -- the tools whose call ends the TURN, because the answer comes back as a later one (`consult_cogny` -- and since GH #530 that is the whole list: `ask_memory` was retired, not replaced). Declares async too -- the dispatcher unions the two lists, so one entry is enough and naming a tool in both is harmless, just redundant. `remember` did not belong here while it existed (GH #372) |
 
 **`ctx.model` is the one instantiation-class knob** and it is strict: `add_nodes` without
 it is rejected with `ctx_key_missing`. Two equally valid forms (session ruling
@@ -1105,8 +1126,8 @@ curl -s -X POST http://127.0.0.1:PORT/colony/mutations -H 'Content-Type: applica
         "add_edges":[ ... the four ports plus the tool lanes, in the SAME mutation ... ]}}'
 ```
 
-The composite comes up with all twelve cells (plus three hive markers); the two `timer`s
-spawn as soon as the crossing edge makes the subtree active, and the `store`/`llm` cells report
+The composite comes up with all eleven cells (plus three hive markers); the `timer`
+spawns as soon as the crossing edge makes the subtree active, and the `store`/`llm` cells report
 `active=true` + `NotYetSpawned`, which is the correct hot/cold form for a stateful cell.
 Two things to have ready before the mutation:
 
@@ -1147,7 +1168,7 @@ address.
   cell (if any) owns the rest. Since `4.3.0` (GH #447) no writer inside this composite
   owns `system.handover` at all, because there is no such slot any more. The topology
   owns none of that. **Tool schemas are the one place this line moved** (`4.2.0`, GH #55): the two
-  tools the composite *implements* -- `memory_recall` and `thread_recall` -- ship with it,
+  the tool the composite *implements* -- `thread_recall` -- ships with it,
   schema and edge together, and no others do. A tool the parent wires is still entirely
   the agent's, schema included.
 - **Not a drain.** `./errors` normalises and forwards; it does not swallow. An unwired
@@ -1179,9 +1200,14 @@ direction instead of a pass-through chain through three rims — and that neithe
 this level nor the generation above has to declare, forward or guard a lane it
 takes no part in.
 
-The brain accordingly ships `params.credential_grant_id` resolving to the empty
+The brain accordingly ships `params.credential_grant_id` as the empty
 string, which is no grant at all (GH #271): standalone this composite behaves
-exactly as it did before and spends its `api_key`. Switching it over takes **two**
+exactly as it did before and spends its `api_key`. Since 5.0.0 that empty string
+is a LITERAL and not a `${TALKY_CREDENTIAL_GRANT_ID:-}` token
+([#138](https://github.com/mmeyerlein/meclaw/issues/138), ruling R-0904-6): a
+grant id is a reference, not material, and two generations in one colony present
+different ones -- which an environment variable, being colony-wide, could not
+say. Switching it over takes **two**
 `override_params` keys and not one, because a cell asks for a credential only
 while it holds none — and `params.api_key` counts as one:
 

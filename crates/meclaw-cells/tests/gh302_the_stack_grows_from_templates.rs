@@ -276,8 +276,7 @@ fn build_root(root: &std::path::Path) {
          TELEGRAM_BOT_TOKEN=test-token\n\
          TELEGRAM_BOT_TOKEN_2=test-token-2\n\
          TELEGRAM_ALLOWED_USER_ID=0\n\
-         EXAMPLE_CHAT_TOKEN=test-chat-token\n\
-         KEEPER_NIGHT_CRON=0 0 0 1 1 *\n",
+         EXAMPLE_CHAT_TOKEN=test-chat-token\n",
     )
     .unwrap();
 }
@@ -965,9 +964,9 @@ async fn c_a_second_assistant_is_one_instantiation_with_its_own_parameters() {
          `member` template on disk declares"
     );
     assert_eq!(
-        declared, 21,
+        declared, 27,
         "the member's own edges to and from its assistants container are the member \
-         template's, drawn ONCE at member instantiation. EIGHT reach the container: the \
+         template's, drawn ONCE at member instantiation. ELEVEN reach the container: the \
          screened turn coming back off ./firewall, the memory hive's bundle \u{2014} as the \
          DEFAULT since GH #533, so a bundle addressed to the asker OUTSIDE the member takes \
          the level's own exit instead \u{2014} the memory hive's REFUSAL of a recall an asker \
@@ -977,7 +976,13 @@ async fn c_a_second_assistant_is_one_instantiation_with_its_own_parameters() {
          off ./channels, re-stamped to `in_turn` with the lane on `hop.kind`, because the \
          assistant level has no event lane and did not grow one, and \u{2014} since GH #475 \
          \u{2014} the two transfer lanes `in_export` and `in_import`, carried in plain, so \
-         that the session ledger of a NAMED generation can leave and come back. THIRTEEN \
+         that the session ledger of a NAMED generation can leave and come back, and \
+         \u{2014} since GH #552 \u{2014} the memory's own two answers, `tool_result` \
+         re-stamped to `in_tool` and `tool_schemas` re-stamped to `in_menu` carrying \
+         `context.tool_answerer = 'memory'`, and \u{2014} since GH #553 \u{2014} the mutation \
+         door's receipt on `mutation_committed`, which the level carries into BOTH of its \
+         containers so that an agent's tool menu and a person's screen follow a graph \
+         change instead of asking a timer for it. SIXTEEN \
          leave it: recall, extraction, write, turn_write, prune, error, `build`, the \
          second fan-out of `write` that fires the close pass into the memory hive since \
          GH #447, the second fan-out of `turn_write` that writes the EPISODE into that same \
@@ -987,10 +992,15 @@ async fn c_a_second_assistant_is_one_instantiation_with_its_own_parameters() {
          guarded on `context.channel_node`, one out at the rim as the guarded default for a \
          turn that arrived through the member's own door), `pack_ack` since GH #458 \
          \u{2014} the receipt of an identity ./affinity pushed INTO a generation, which nothing \
-         at this level consumes and nothing at this level can \u{2014} and `dump` since \
-         GH #475, the transfer document of that generation's session keeper, which this \
-         level DOES consume: it lands in the member's own export sink, in a directory \
-         beside the three holders' own. The push itself draws no edge here: producer and \
+         at this level consumes and nothing at this level can \u{2014} and, since GH #555, \
+         the TWO receipt lanes of that generation's session keeper: `export_done`, which \
+         says the keeper wrote its own ledger out and where, and `dump`, the receipt of one \
+         applied import part. Neither is consumed here any more \u{2014} the cell that read \
+         a transfer document at this level is gone with the ruling that gave every store \
+         its own files \u{2014} plus \u{2014} since GH #552 \u{2014} the memory \
+         road's other half: `tool`, on the one tool name that leaves a generation, and \
+         `schemas`, the menu tick that asks what it looks like. The push itself draws no \
+         edge here: producer and \
          consumer are siblings, so it addresses \
          `<member>/assistants/<agent>` at its own path. A second agent must not move this \
          number \u{2014} that is what makes it one instantiation."

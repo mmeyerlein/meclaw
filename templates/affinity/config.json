@@ -51,16 +51,20 @@
           "because": "a transfer this hive would not carry out: an export whose read failed mid-walk, or an import part whose format, schema or audience did not survive (`hop.reject_reason` names the case). It is the porter's only fail-closed exit and it leaves the hive, because the caller that asked for the transfer is outside it (GH #471)"
         },
         {
+          "route": "export_done",
+          "because": "this hive has written itself out completely: every table of the walk stands as `<seed_dir>/<table>.jsonl` and the completion marker `export_final.json` stands beside them, written last and by one rename, so a reader that watches the marker never meets a directory that is still filling. `hop.export_hive` names the hive, `hop.seed_dir` the directory RELATIVE to the fence the store declares (`params.transfer.base_path`), `hop.export_of` how many tables travelled and `hop.rows_written` how many rows. It is the lane that says an export is a BACKUP rather than a stack of messages, and it replaces the walk that used to say so in sixteen `dump` parts (GH #555)"
+        },
+        {
           "route": "dump",
-          "because": "the transfer lane's output: `hop.dump_kind == 'export_part'` is one part of the exported document (`hop.export_part` of `hop.export_of`, `hop.export_final` marking the last, `hop.port_hive` naming which hive it came out of), `hop.dump_kind == 'import_receipt'` says what one applied part wrote (`hop.rows_written`). Drain it with a PLAIN `hop.route == 'dump'` edge -- an edge that also tests `dump_kind` reads as no drain under the required_drains probe. Undrained, an export runs and reaches nobody"
+          "because": "the receipt of one applied import part: `hop.rows_written` counts the inserts it dispatched, so zero means the target already had every row, and `hop.export_part` of `hop.export_of` locates it in the document and `hop.export_final` marks the last one. Since 0.30.0 the lane carries NOTHING ELSE -- an export writes its own files and reports on `export_done` (GH #555), so the `dump_kind` key that told the two apart is gone with the distinction. Drain it with a PLAIN `hop.route == 'dump'` edge -- an edge that tests a second key reads as no drain under the required_drains probe. Undrained, it becomes `no_route` in the dead-letter queue, which is where the shipped member leaves it (GH #284 state 2): the receipt localises itself with its sender and its trace instead of being dropped inside a cell that read it and said nothing"
         }
       ]
     },
     "required_drains": [
       {
         "accepts": "in_export",
-        "emits": "dump",
-        "because": "the export IS the dump lane -- wired without it, the walk runs, reads the whole store and delivers the document to nobody"
+        "emits": "export_done",
+        "because": "the export IS this lane -- wired without it, the store writes its seed set and nobody is ever told where, or that it finished at all"
       },
       {
         "accepts": "in_export",
@@ -282,6 +286,26 @@
             "set_context": {
               "port_phase": "context.port_phase"
             }
+          }
+        },
+        {
+          "from": "./porter",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'export_done'",
+          "modifier": {
+            "delete_context": [
+              "aff_audience",
+              "aff_carry",
+              "aff_channel",
+              "aff_phase",
+              "aff_slots",
+              "aff_subject",
+              "aff_subscriber",
+              "affinity_origin",
+              "port_phase",
+              "port_run",
+              "port_table"
+            ]
           }
         },
         {

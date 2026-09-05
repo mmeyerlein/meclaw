@@ -9,7 +9,7 @@
       {
         "schedule_id": "${uuid7:affinity-push}",
         "schedule_name": "affinity-push",
-        "cron": "${AFFINITY_PUSH_CRON:-0 */5 * * * *}",
+        "cron": "0 */5 * * * *",
         "emit_to": "../push",
         "emit_body": {
           "messages": [
@@ -32,7 +32,7 @@
         "type": "string",
         "secret": false,
         "default": "0 */5 * * * *",
-        "description": "6-field Quartz cron of the push tick (AFFINITY_PUSH_CRON). Cron runs in UTC."
+        "description": "6-field Quartz cron of the push tick, in UTC. It is a value of `params.schedules[0]`, not a top-level param: `TimerParams::parse` reads `schedules` and `query_timeout_ms` and nothing else, so an override names the whole `schedules` array. Was AFFINITY_PUSH_CRON until 3.3.0."
       }
     },
     "emits": {

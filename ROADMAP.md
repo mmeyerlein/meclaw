@@ -29,42 +29,27 @@ is a red build.
 Release detail is in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
-## Now: the wave that shipped, and what it left standing
+## Now: the wave that closed the tracker
 
-The clean-up wave is **released as v0.29.0**. Everything the organism wave left
-standing in the tracker is either built or ruled: the submitter lives in the
-front door, the deep edge is the declared form (v-lanes, ADR-0020) and the three
-lanes that only bridged a level ride it now, a member carries its own broker and
-its brains ask it over a sealed lane, a newborn's contracts are read below the
-template root, and a generation grows with its credential road in one act. What
-the wave did is the [`[0.29.0]`](CHANGELOG.md) section of the changelog. The
-substrate flanks it opened — a lane cannot vanish inside one diff, a capped round
-is a named partial answer, a key collision is a refusal, a citation marker never
-reaches a person — closed with it.
+The clean-up wave is **released as v0.30.0**, and with it every issue the
+tracker held is either built or ruled. The poll timers are gone — the mutation
+door leaves a receipt and the menu and the screen follow it; file transfer is a
+substrate slot, so every store writes and reads the directories it owns and the
+one cell that did it for the holders is gone; `memory_recall` is an ordinary
+tool call answered by the member's own memory hive; every member grows a screen
+and an app, and the OS hands out the port; and the last ~140 environment knobs
+in the template library are params, with a gate that keeps the surface closed.
+What the wave did is the [`[0.30.0]`](CHANGELOG.md) section of the changelog.
+The wave that prepared it left the gate process behind as one entry point whose
+scope comes from the diff.
 
-One thing is open under this horizon, and it is about how the next wave is
-built rather than about what it builds:
-
-- [#577](https://github.com/mmeyerlein/meclaw/issues/577) — the gate process
-  gets one entry point, and its scope comes from the diff. Three chains — a
-  strand gate, a pre-push gate and the CI workflow — each carried its own
-  hard-coded list of steps, so they drifted apart and each of them paid for work
-  the change had not asked for: a Python-only edit still compiled the workspace.
-  One runner asks one resolver which stations a diff needs, runs each of them
-  once, and leaves a receipt the release gate can read instead of running the
-  same four checks again.
-
-The streams below carry what comes next; the tracker carries the rest.
+Nothing is open under this horizon. The streams below carry what comes next;
+the tracker carries the rest.
 
 ## Next: substrate flanks
 
 Findings from running the thing.
 
-- [#543](https://github.com/mmeyerlein/meclaw/issues/543) — a member grows its
-  own screen. Everything in the level already assumes one — the screen belongs
-  to the person, not to a generation — and it is the one piece a second,
-  hand-written act still has to supply. The port stays a parameter of the wish,
-  because a port is an instance fact.
 - Re-measuring the builder's acceptance quota, once the acceptance cases stop
   moving under it. The last run measured four cases, one of them ordering a
   build no template could deliver; a quota read off that is a reading about the
@@ -80,11 +65,6 @@ Findings from running the thing.
   front raised it, so a rule that would open the shell to the operator and not
   to an agent cannot be written today — the shell-scoped rule ships switched
   off instead. *(register: policy-by-requester-origin)*
-- [#555](https://github.com/mmeyerlein/meclaw/issues/555) — the file is a
-  first-class transfer form. The substrate produces export content and reads
-  seed files, but never writes them; that gap is why a hand-written sink cell
-  exists at the member level. Export learns a `to:` path, import learns a
-  `from:` path, the sink dissolves.
 
 ## Later: memory after the measurement, and names for people
 
@@ -110,32 +90,9 @@ already delivered the gold session.
   mutable display names held in a database, never an address, the tree untouched
   underneath. It gets a design round before it gets an issue.
   *(register: display-names)*
-- [#553](https://github.com/mmeyerlein/meclaw/issues/553) — polling stops. Two
-  shipped timers ask for state that only changes on a committed mutation: the
-  tool menu and the topology view. The mutation receipt becomes the event
-  source, first fills happen lazily, and the timers go. One design, two
-  subscribers; until it lands the timers are documented debt.
 
 ## Alongside: surfaces, docs, and the way it is operated
 
-- [#43](https://github.com/mmeyerlein/meclaw/issues/43) — the README showcase
-  is down to its last piece: the moving proof is a capture of the colony view
-  now, or nothing; the keyless quickstart and the annotated trace shipped long
-  ago.
-- [#138](https://github.com/mmeyerlein/meclaw/issues/138) — the environment
-  knobs are a declared **experimental** surface; ~140 knob names remain across
-  the shipped templates and migrate to params one template at a time, defaults
-  bit-identical. Order: `memory-hive`, then `builder-librarian`, then the long
-  tail.
-- [#552](https://github.com/mmeyerlein/meclaw/issues/552) — the memory hive
-  answers tool calls itself. Today `memory_recall` is served by the collector
-  out of a special lane pair, under a hand-typed schema; the hive becomes a
-  classic tool answerer with a `schemas` cell of its own, and the collector's
-  special case goes. `thread_recall` stays with the collector — the slate is
-  its own database.
-- [#551](https://github.com/mmeyerlein/meclaw/issues/551) — the rest of that
-  sweep: five families of one role under two names, and the boundary the
-  instance-name rule needs before it reaches the examples.
 - Realtime voice — not a further channel but the way the thing is meant to be
   operated: spoken intent straight into structure in the tree. It gets a
   design round of its own before it gets an issue. Dictation (a voice note
@@ -153,6 +110,9 @@ a requirement, not a convention.
 One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- **v0.30.0** — every open issue is built or ruled: the poll timers are gone,
+  a store writes its own files, memory answers an ordinary tool call, every
+  member grows a screen, and one gate process reads the diff.
 - **v0.29.0** — the tracker is clean: the front door is one place, the deep edge
   is the declared form, and a generation grows with its keys in one act.
 - **v0.28.0** — the organism grows its own surfaces: four composition levels from

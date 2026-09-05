@@ -1,4 +1,4 @@
-# `vault@1.2.0`
+# `vault@1.3.0`
 
 A secret store with **no operation that returns a secret**.
 
@@ -232,7 +232,14 @@ neighbourhood fails closed the same way a wrong one does.
 
 ## The key
 
-`params.key_source` names a *source*, never material — same layering ssh uses:
+`params.key_source` names a *source*, never material — same layering ssh uses.
+**Since 1.3.0 it and `params.credential_name` are literals rather than
+`VAULT_KEY_SOURCE` / `VAULT_CREDENTIAL_NAME` tokens**
+([#138](https://github.com/mmeyerlein/meclaw/issues/138), ruling R-0904-6). Both
+name a source or a file, never key material, which is exactly why they were on
+the params side of the ruling and not on the `.env` side — and why two vaults in
+one colony may now unlock from different places, which one colony-wide variable
+per key could not express:
 
 | source | where the passphrase comes from |
 |---|---|

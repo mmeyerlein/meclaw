@@ -52,38 +52,14 @@ fn config_of(rel: &str) -> Value {
     meclaw_core::serde_json::from_str(&raw).expect("config json")
 }
 
-fn resolve_vars(script: &str, over: &[(&str, &str)]) -> String {
-    let mut out = String::with_capacity(script.len());
-    let mut rest = script;
-    while let Some(start) = rest.find("${") {
-        out.push_str(&rest[..start]);
-        let tail = &rest[start + 2..];
-        let end = tail.find('}').expect("unterminated ${...}");
-        let inner = &tail[..end];
-        let (name, default) = match inner.split_once(":-") {
-            Some((n, d)) => (n, d),
-            None => (inner, ""),
-        };
-        let value = over
-            .iter()
-            .find(|(k, _)| *k == name)
-            .map(|(_, v)| *v)
-            .unwrap_or(default);
-        out.push_str(value);
-        rest = &tail[end + 1..];
-    }
-    out.push_str(rest);
-    out
-}
-
-fn script_of(cell: &str, over: &[(&str, &str)]) -> String {
-    let v = config_of(&format!("{cell}/config.json"));
-    resolve_vars(
-        v["params"]["script_inline"]
-            .as_str()
-            .expect("script_inline"),
-        over,
-    )
+/// The shipped script, verbatim. Since GH #138 there is nothing to substitute:
+/// the screen's and the warden's knobs are params of the cell, so the source
+/// that ships is the source that runs.
+fn script_of(cell: &str) -> String {
+    config_of(&format!("{cell}/config.json"))["params"]["script_inline"]
+        .as_str()
+        .expect("script_inline")
+        .to_string()
 }
 
 /// The script goes to python3 on STDIN, not in argv: a single argv string is
@@ -112,9 +88,13 @@ fn run_script_on_stdin(script: &str, stdin_doc: &str) -> std::process::Output {
     child.wait_with_output().expect("wait")
 }
 
-fn emit_from(cell: &str, over: &[(&str, &str)], doc: Value) -> Vec<Value> {
+/// `params` is the instance's own `params` object -- the way `override_params`
+/// hands a knob down since GH #138.
+fn emit_from(cell: &str, params: Value, doc: Value) -> Vec<Value> {
+    let mut doc = doc;
+    doc["params"] = params;
     let out = run_script_on_stdin(
-        &script_of(cell, over),
+        &script_of(cell),
         &meclaw_testing::code_stdin(&doc).to_string(),
     );
     assert!(
@@ -131,7 +111,7 @@ fn emit_from(cell: &str, over: &[(&str, &str)], doc: Value) -> Vec<Value> {
 }
 
 fn screen(doc: Value) -> Vec<Value> {
-    emit_from("screen", &[], doc)
+    emit_from("screen", json!({}), doc)
 }
 
 fn hop_str(msg: &Value, key: &str) -> String {
@@ -175,12 +155,12 @@ fn an_invisible_codepoint_is_refused_with_every_row_gone() {
 
 #[test]
 fn the_body_ceiling_outranks_the_knob_that_was_supposed_to_bound_it() {
-    // FIREWALL_MAX_CHARS is a knob, and a knob set to a billion turns the
+    // `firewall_max_chars` is a knob, and a knob set to a billion turns the
     // screen itself into the resource risk it stands in front of.
     let huge = "a".repeat(262_145);
     let out = emit_from(
         "screen",
-        &[("FIREWALL_MAX_CHARS", "1000000000")],
+        json!({"firewall_max_chars": 1_000_000_000i64}),
         inbound(&huge),
     );
     assert_hardline(&out, "hardline:body-ceiling");
@@ -189,7 +169,7 @@ fn the_body_ceiling_outranks_the_knob_that_was_supposed_to_bound_it() {
     let ok = "a".repeat(262_144);
     let out = emit_from(
         "screen",
-        &[("FIREWALL_MAX_CHARS", "1000000000")],
+        json!({"firewall_max_chars": 1_000_000_000i64}),
         inbound(&ok),
     );
     assert_eq!(hop_str(&out[0], "route"), "fwstore", "{out:?}");
@@ -247,7 +227,7 @@ fn the_hardline_runs_ahead_of_the_size_cap_it_bounds() {
     // Both would fire; the hardline is the one that is named, because the
     // ceiling is what the cap can never be configured above.
     let huge = format!("{}\u{200b}", "a".repeat(262_200));
-    let out = emit_from("screen", &[("FIREWALL_MAX_CHARS", "10")], inbound(&huge));
+    let out = emit_from("screen", json!({"firewall_max_chars": 10}), inbound(&huge));
     assert_hardline(&out, "hardline:body-ceiling");
 }
 
@@ -255,8 +235,8 @@ fn the_hardline_runs_ahead_of_the_size_cap_it_bounds() {
 
 #[test]
 fn no_hardline_can_produce_anything_but_a_reject() {
-    let screen_src = script_of("screen", &[]);
-    let warden_src = script_of("warden", &[]);
+    let screen_src = script_of("screen");
+    let warden_src = script_of("warden");
     for src in [&screen_src, &warden_src] {
         for line in src.lines() {
             let code = line.split('#').next().unwrap_or_default();
@@ -279,8 +259,8 @@ fn the_hardline_table_names_exactly_the_ids_the_scripts_can_fire() {
     // development-rules § 2d: grep the surface AND assert the mechanism. The
     // ids are read out of the two shipped scripts, so the table cannot name a
     // fourth that nothing fires, nor miss one that something does.
-    let screen_src = script_of("screen", &[]);
-    let warden_src = script_of("warden", &[]);
+    let screen_src = script_of("screen");
+    let warden_src = script_of("warden");
     let both = format!("{screen_src}\n{warden_src}");
     let mut found: Vec<String> = Vec::new();
     for (i, _) in both.match_indices("hardline:") {
@@ -330,8 +310,8 @@ fn the_two_numbers_in_the_prose_come_out_of_the_code() {
     // § 2d: a number in template prose is either derived from the code inside
     // the test, or it appears exactly once. These two appear in the README and
     // in `template.json`, so they are derived.
-    let ceiling = constant_of(&script_of("screen", &[]), "HARDLINE_MAX_CHARS");
-    let pile = constant_of(&script_of("warden", &[]), "HARDLINE_HOLD_CEILING");
+    let ceiling = constant_of(&script_of("screen"), "HARDLINE_MAX_CHARS");
+    let pile = constant_of(&script_of("warden"), "HARDLINE_HOLD_CEILING");
     assert_eq!(ceiling, 262_144, "the shipped body ceiling");
     assert_eq!(pile, 1024, "the shipped pile ceiling");
 

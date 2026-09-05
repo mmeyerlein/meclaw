@@ -372,7 +372,7 @@ fn build_tree(td: &tempfile::TempDir, member: &std::path::Path, assistant: &std:
     // `access` joined them with member@1.5.0 (GH #560): it is a REF, and this
     // tree has no registry to resolve one, so it is doubled like every other
     // holder this round never reaches.
-    for holder in ["access", "affinity", "memory-hive", "export-sink"] {
+    for holder in ["access", "affinity", "memory-hive"] {
         write(
             root,
             &format!("main/person/{holder}/config.json"),

@@ -300,14 +300,55 @@ fn dummy_env(source: &std::path::Path) -> String {
             }
         }
     }
-    let mut out: String = names
+    // Only the provider lane is left to fill: since GH #138 the two crons this
+    // helper used to append (`AFFINITY_PUSH_CRON`, `KEEPER_NIGHT_CRON`) are
+    // params of the cells that read them, and are pushed out of the run's way
+    // with an `override_params` entry instead of with a line here.
+    names
         .into_iter()
         .map(|n| format!("{n}=dummy-{n}\n"))
-        .collect();
-    out.push_str("AFFINITY_PUSH_CRON=0 0 4 1 1 *\n");
-    out.push_str("MEMORY_DREAM_CRON=0 0 4 1 1 *\n");
-    out.push_str("KEEPER_NIGHT_CRON=0 0 4 1 1 *\n");
-    out
+        .collect()
+}
+
+/// The nightly consolidation, pushed to a date this run cannot reach.
+///
+/// It was a `MEMORY_DREAM_CRON=` line in the `.env` above until GH #138. The
+/// hive's schedule is a LITERAL of `memory-hive/clock`'s own params now, so
+/// such a line would be read by nothing at all: the night would fire into this
+/// run and nobody would say so. `override_params` replaces the whole
+/// `schedules` key -- the key that EXISTS under a timer's params, which is the
+/// only kind GH #294 accepts -- and the timer plans on what it finds there
+/// (`crates/meclaw-cells/tests/gh138_memory_hive_params.rs` is the proof).
+fn quiet_night() -> Value {
+    json!({"schedules": [{
+        "schedule_id": "0190a3f2-0000-7000-8000-00000000dead",
+        "schedule_name": "nightly-dream",
+        "cron": "0 0 4 1 1 *",
+        "emit_to": "../dream-glue",
+        "emit_body": {"messages": [{"origin": "user", "type": "text", "text": "nightly-dream"}]},
+        "emit_headers": {}
+    }]})
+}
+
+/// The record hive's push tick, pushed to a date this run cannot reach.
+///
+/// It was an `AFFINITY_PUSH_CRON=` line in the `.env` above until GH #138. The
+/// hive's cadence is a LITERAL of `affinity/clock`'s own params now, so such a
+/// line would be read by nothing at all: the lane would tick into this run
+/// every five minutes and nobody would say so. `override_params` replaces the
+/// whole `schedules` key -- the key that EXISTS under a timer's params, which
+/// is the only kind GH #294 accepts -- and the timer plans on what it finds
+/// there (`crates/meclaw-cells/tests/gh138_affinity_firewall_params.rs` is the
+/// proof).
+fn quiet_push() -> Value {
+    json!({"schedules": [{
+        "schedule_id": "0190a3f2-0000-7000-8000-00000000beef",
+        "schedule_name": "affinity-push",
+        "cron": "0 0 4 1 1 *",
+        "emit_to": "../push",
+        "emit_body": {"messages": [{"origin": "user", "type": "text", "text": "affinity-push"}]},
+        "emit_headers": {}
+    }]})
 }
 
 /// A stand-in for the generation: it takes one poke and hands out ONE message
@@ -484,6 +525,15 @@ async fn one_turn(wired: bool) -> Run {
     std::fs::create_dir_all(&flags).unwrap();
 
     copy_tree(&repo("templates"), &root.join("templates"));
+    // The keeper's nightly close sweep, pushed to a date this run cannot reach.
+    // It was a `KEEPER_NIGHT_CRON` line in the `.env` below until GH #138: the
+    // schedule is a LITERAL of `session-keeper/night`'s own params now, so such
+    // a line is read by nothing at all -- the sweep would fire into this run and
+    // nobody would say so. The library copy is this tree's own, so writing the
+    // key into it is what an `override_params` entry does to a staged config
+    // (`crates/meclaw-cells/tests/gh138_keeper_summarizer_dispatcher_params.rs`
+    // is the proof that the timer plans on what it finds there).
+    meclaw_testing::quiet_keeper_night(&root.join("templates/session-keeper"));
     if !wired {
         remove_episode_edge(&root.join("templates/member/config.json"));
     }
@@ -554,7 +604,10 @@ async fn one_turn(wired: bool) -> Run {
         json!({"manifest": [{
             "scope": "/members",
             "diff": {
-                "add_nodes": [{"name": MEMBER, "template": "member@1.5.1"}],
+                "add_nodes": [{"name": MEMBER, "template": "member@1.6.0",
+                               "override_params": {
+                                   "memory-hive/clock": quiet_night(),
+                                   "affinity/clock": quiet_push()}}],
                 "add_edges": container_edges(),
             }
         }]}),

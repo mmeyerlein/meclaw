@@ -192,20 +192,20 @@ fn the_level_carries_four_refs_and_three_containers() {
             "apps".to_string(),
             "assistants".to_string(),
             "channels".to_string(),
-            "export-sink".to_string(),
             "firewall".to_string(),
             "memory-hive".to_string(),
         ],
         "the member owns exactly four holders — the memory, the record, the screen and, \
          since 1.5.0, the `access` that holds this person's own provider credentials \
-         (GH #560) — THREE containers — `assistants`, and since 1.3.0 `channels` (GH #454) \
-         and `apps` (GH #459) — and the one cell of its own that lands a memory export on \
-         disk (GH #447, since 1.2.0). A FIFTH holder is something the siblings did not have \
-         to share; a missing one is something an assistant would have to hold itself. `export-sink` is neither: it holds nothing and is read by \
-         nobody, it is the destination of one lane whose whole point is a file. `apps` is a \
-         container and not a holder for the same reason `channels` is not: what stands in it \
-         is instantiated per person, and an app writes VIEWS onto this member's screen \
-         rather than being something the assistants read."
+         (GH #560) — and THREE containers — `assistants`, and since 1.3.0 `channels` \
+         (GH #454) and `apps` (GH #459). It owns NO cell of its own any more: since \
+         1.6.0 each holder's store writes its own seed set through the `transfer` slot \
+         (GH #555), so the one `code` cell that used to file somebody else's export is \
+         gone with the lane it drained. A FIFTH holder is something the siblings did not \
+         have to share; a missing one is something an assistant would have to hold \
+         itself. `apps` is a container and not a holder for the same reason `channels` \
+         is not: what stands in it is instantiated per person, and an app writes VIEWS \
+         onto this member's screen rather than being something the assistants read."
     );
 
     // Adding a container and the lanes around it is an ADDITION, which is the
@@ -225,12 +225,11 @@ fn the_level_carries_four_refs_and_three_containers() {
          has shipped yet."
     );
 
-    // The one own cell is a cell, not a fourth holder pulled in by reference.
-    assert_eq!(
-        config_at(&member.join("export-sink"))["cell"]["type"],
-        "code",
-        "the export sink is this level's own code cell — a ref would make it a holder, \
-         and a holder is something two assistants must SHARE"
+    // And the level owns no cell at all: GH #555 moved the one it had into the
+    // substrate, where a cell writes its OWN files and nobody else's.
+    assert!(
+        !member.join("export-sink").exists(),
+        "the member level still ships the cell that filed somebody else's export"
     );
 
     // The instance name equals the template name — the standing naming rule.
@@ -1284,8 +1283,7 @@ fn the_member_declares_the_lanes_that_cross_its_boundary() {
             "./affinity",
             "./apps",
             "./assistants",
-            "./channels",
-            "./export-sink"
+            "./channels"
         ],
         "every failure that is not a refusal leaves on one lane. Since GH #560 the member's \
          own `access` is one of them, and its drain is the ONLY edge of this graph that \

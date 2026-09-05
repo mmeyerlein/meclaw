@@ -52,7 +52,7 @@ The whole file of a `ref` directory, with a default for the referenced template'
 {
   "cell": {
     "type": "ref",
-    "template": "dispatcher@1.1.2"
+    "template": "dispatcher@1.2.0"
   },
   "override_params": {
     "": { "external_timeout_ms": 30000 }
@@ -542,6 +542,18 @@ This replaces the last direct `colony.db` read in the tree (the `vault` unlock a
 **Relation to `contract.write_surface`:** two independent statements about the same seam. `write_surface` bounds the write half to the parent scope and leaves an `export` untouched (no write surface has ever bounded a read) — and that gap is exactly why #314 was opened, because the `vault`'s disclosure was a **read**. A cell that wants both declares both; one does not switch on the other.
 
 **Correction (GH #336, `access@2.0.4`):** this used to read "first and today only consumer: `vault`" — that is retracted, and it was only true for as long as the `vault` was the sole declarant. It is **two** cell types across **three** shipped configs: `vault` (`templates/vault`, `templates/access/vault`) and the capability broker's `store` (`templates/access/store`), whose `grants` are live bearer handles — an export is a read, which `contract.write_surface` explicitly does not bound, which is why migration there means re-granting at the target rather than importing. `cell-types.md` § Content transfer carries the same retraction.
+
+**`params.transfer.base_path` — the fence a cell manages its own files inside (GH #555).** The counterpart to `contract.transfer`, and deliberately on the **other** surface: the owner's ruling of 2026-09-04 reads, verbatim, *"cells manage their own files, nobody else does"*, and *where* an instance keeps its files is a statement about that instance — not about its role. Two cells of the same template must be able to write into different directories; with the fence in the `contract` they would share one. Hence `params`, exactly as for `file`'s `base_path`.
+
+```json
+"params": { "transfer": { "base_path": "/srv/meclaw/export" } }
+```
+
+An **absolute** path, or none at all. It bounds the file half of the `transfer` body slot (`cell-types.md` § Content transfer): `{"operation": "export", "to": "<dir>"}` and `{"operation": "import", "from": "<dir>"}` resolve `<dir>` **relative** to this directory. With the key absent the cell has no directory and falls back to none — every named `to`/`from` is refused with `error_code: "transfer_path_out_of_bounds"`, and that is exactly the default: a cell that says nothing writes nothing. Absolute is required because the cell task knows no colony root (`root` lives in the colony struct and never reaches `spawn_cell`) — a relative fence would resolve against the process's working directory and would not be a boundary. A relative value, a non-string, or a `transfer` block that is not an object are therefore **loud boot errors**, like a broken `emits` schema declaration.
+
+**Nothing here is canonicalised and nothing is checked for existence — neither at boot nor at `--validate`.** The parse checks the string and `is_absolute`, and nothing else. That is a decision with a receipt: a `file` cell canonicalises its `base_path` in `validate_params`, which is why the shipped interim export sink was a `code` cell rather than a `file` cell — a member whose export directory did not exist yet would otherwise fail `--validate` and fail to boot, for a lane nobody had used. A fence is a promise about **where**, and a promise about where does not require the where to exist yet. If the directory is missing, the first `to`/`from` finds out — as `error_code: "transfer_io_error"` on the message.
+
+**Relation to `contract.write_surface` and `contract.transfer`:** three independent statements about the same seam. `transfer` says **whether** the database answers the seam at all (and it strikes first, before any path is resolved), `write_surface` says **who** may write (and it holds for `from:` exactly as for a message `import` — reading the document off a disk does not make it a different operation), `params.transfer.base_path` says **where**. None switches on another.
 
 **Enforcement state:** The substrate-side required-`consumes` check runs at the delivery boundary (before `handle()`): missing/type-wrong required key → error message to `reply_to` (`error_code: "consumes_violation"`), otherwise dead letter (same token). **The error reply is delivered DIRECTLY to `reply_to`** (registry lookup via `route()`), not routed via the consumer's out-edges. It is feedback to a known sender, not a routing target (W2b ruling 2026-06-12; see `meclaw-overview.md` § Routing errors "Outputs arm: three disjoint cases", case 2). A catch-all out-edge of the consumer does not redirect the error reply.
 

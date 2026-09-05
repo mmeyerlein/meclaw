@@ -35,6 +35,8 @@ PIN-mutation-reject-clean-de	docs/meclaw-overview.md	Diese Rejects sind wieder *
 PIN-mutation-reject-clean-en	docs/meclaw-overview.en.md	These rejects are **clean** again (GH #276)	pinned	a_stop_wiring_reject_registers_nothing
 PIN-mutation-collecting-validator-de	docs/meclaw-overview.md	wird **einmal** abgelehnt und benennt alle fünf	pinned	a_mutation_with_five_violations_in_one_stage_is_refused_once_naming_all_five
 PIN-mutation-collecting-validator-en	docs/meclaw-overview.en.md	is refused **once** and names all five	pinned	a_mutation_with_five_violations_in_one_stage_is_refused_once_naming_all_five
+PIN-mutation-receipt-de	docs/meclaw-overview.md	**Und der Boot ist das erste** (Ruling O-0904-2)	pinned	the_boot_is_the_first_receipt
+PIN-mutation-receipt-en	docs/meclaw-overview.en.md	**And the boot is the first one** (ruling O-0904-2)	pinned	the_boot_is_the_first_receipt
 PIN-transfer-export	docs/meclaw-overview.md	wird vom **Substrat** beantwortet	pinned	an_exported_document_is_a_seed_file_and_births_the_same_rows
 PIN-transfer-import	docs/cell-types.md	Kein Cell-Type-Feature, sondern ein **Substrat**-Slot	pinned	import_inserts_what_is_missing_and_the_target_wins_every_collision
 PIN-transfer-exempt	docs/config.md	nimmt die `cell.db` dieser Zelle vom `transfer`-Body-Slot aus	pinned	a_declared_transfer_exemption_reaches_the_view_the_substrate_spawns_with
@@ -123,6 +125,8 @@ PIN-read-tag-echo-de	docs/meclaw-overview.md	gekürzt und kommt unverändert zur
 PIN-read-tag-echo-en	docs/meclaw-overview.en.md	truncated to 64 characters and comes back verbatim	pinned	a_graph_tag_is_truncated_and_never_refused
 PIN-graph-edge-default-de	docs/meclaw-overview.md	steht dagegen **immer da, auf beiden Werten**	pinned	every_edge_object_names_its_phase
 PIN-graph-edge-default-en	docs/meclaw-overview.en.md	is there **always, on both values**	pinned	every_edge_object_names_its_phase
+PIN-graph-read-no-db-de	docs/meclaw-overview.md	aus Colonys In-Memory-Registry, ohne jeden Datenbank-Zugriff	pinned	a_graph_read_never_walks_the_templates_library
+PIN-graph-read-no-db-en	docs/meclaw-overview.en.md	out of colony's in-memory registry, without touching a database	pinned	a_graph_read_never_walks_the_templates_library
 #
 PIN-slot-declaration-de	docs/cell-types.md	Eine Edge auf einen deklarierten Slot ist kein unauflösbarer Endpunkt	pinned	a_declared_slot_is_not_a_dangling_endpoint
 PIN-slot-declaration-en	docs/cell-types.en.md	An edge onto a declared slot is not an unresolvable endpoint	pinned	a_declared_slot_is_not_a_dangling_endpoint
@@ -200,9 +204,9 @@ PIN-assistant-wires-channels-once	templates/assistant/README.md	The measured fan
 PIN-container-declares-nothing	templates/member/README.md	a container hive that its own level	pinned	neither_container_declares_a_contract_because_the_level_wires_them
 PIN-member-holds-the-memory	templates/member/README.md	**The memory belongs to the member, not to the agent.**	pinned	the_level_wires_the_screen_the_memory_and_the_record
 PIN-level-lane-union-derived	templates/member/README.md	A level's transit contract carries the lanes that	pinned	the_member_declares_the_lanes_that_cross_its_boundary
-PIN-talky-serves-its-own-tools	templates/talky/README.md	the collector inside this hive **serves** both of them	pinned	memory_recall_is_served_inside_and_never_leaves_on_the_tool_lane
+PIN-talky-serves-its-own-tools	templates/talky/README.md	the collector inside this hive **serves** it	pinned	thread_recall_is_served_inside_and_never_leaves_on_the_tool_lane
 PIN-talky-tool-exit-default	templates/talky/README.md	**The tool exit stopped naming names.**	pinned	an_ordinary_tool_call_still_leaves_on_the_tool_lane
-PIN-talky-ships-its-tool-schemas	templates/talky/README.md	So the composite carries the schemas of `memory_recall` and `thread_recall`	pinned	the_shipped_talky_declares_memory_recall_to_the_provider
+PIN-talky-ships-its-tool-schemas	templates/talky/README.md	So the composite carries the schema of `thread_recall`	pinned	the_shipped_talky_declares_the_tool_it_serves_to_the_provider
 PIN-no-silencer	templates/terminal/README.md	A `reject` or an `error` lane has exactly **two** honest states	pinned	no_shipped_topology_routes_a_refusal_into_a_cell_that_swallows_it
 PIN-organism-grows-from-templates	examples/organism/README.md	An empty folder, the template library, and **six declarations**	pinned	b_the_registry_records_the_true_origin_at_every_level
 PIN-web-asset-route-de	docs/cell-types.md	erst wird die materialisierte Seitenkarte gefragt, dann die Asset-Karte	pinned	a_page_and_an_asset_do_not_shadow_each_other

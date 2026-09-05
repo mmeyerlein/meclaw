@@ -245,11 +245,7 @@ fn main_config() -> Value {
 
 fn build_tree(td: &tempfile::TempDir, base_url: &str) {
     let root = td.path();
-    std::fs::write(
-        root.join(".env"),
-        "OPENROUTER_API_KEY=test-key\nKEEPER_IDLE_MS=0\n",
-    )
-    .unwrap();
+    std::fs::write(root.join(".env"), "OPENROUTER_API_KEY=test-key\n").unwrap();
     write(root, "main/config.json", &main_config());
     write(
         root,
@@ -284,14 +280,14 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str) {
         v["params"]["schedules"][0]["schedule_id"] = json!(SCHEDULE_ID);
         v["params"]["schedules"][0]["cron"] = json!(NEVER);
     });
-    // GH #464 -- the second timer of a shipped composite, and the same two
-    // patches for the same two reasons: `${uuid7:*}` is an INSTANTIATION
-    // substitution and a tree written straight to disk carries a literal, and a
-    // menu tick during a test run would ask a tools hive this colony does not
-    // have.
-    patch(root, "main/talky/collector/menu-clock/config.json", |v| {
-        v["params"]["schedules"][0]["schedule_id"] = json!(SCHEDULE_ID);
-        v["params"]["schedules"][0]["cron"] = json!(NEVER);
+    // Every open generation is a candidate the moment the sweep runs. It was a
+    // `KEEPER_IDLE_MS=0` line in the `.env` above until GH #138; the knob is a
+    // param of `./close` now, so such a line would be read by NOTHING -- the
+    // sweep would keep the shipped two hours, find no candidate, and this test
+    // would wait for a close that cannot come. Patching the copied config is
+    // what an `override_params` entry does to a staged one.
+    patch(root, "main/talky/session-keeper/close/config.json", |v| {
+        v["params"]["idle_ms"] = json!(0);
     });
     // The age gate of the prune lane, opened all the way: per-INSTANCE tuning,
     // the same knob a live parent sets, not a behaviour patch. The shipped week

@@ -1,4 +1,4 @@
-# `firewall@2.2.0`
+# `firewall@2.3.0`
 
 Deterministic screening on an ingress channel, drawn as topology. One `code` cell
 (`screen`) plus one `store` (`rules`) sit between the surface and the agent: every
@@ -61,12 +61,12 @@ screen's own `hold` route and by `in_release` / `in_sweep`.
 | # | rule | driven by | `reject_reason` | `rule_id` |
 |---|---|---|---|---|
 | H | **the hardline** | this template's code | `hardline_blocked` | `hardline:<name>` |
-| 1 | **size cap** | `FIREWALL_MAX_CHARS` | `oversize` | `size-cap` |
+| 1 | **size cap** | `./screen`'s `firewall_max_chars` | `oversize` | `size-cap` |
 | 2 | **unreadable rule row** | the `rules` table itself | — (the row is skipped; a receipt names it) | the offending row |
 | 3 | **sender blocklist** | `kind=sender, action=reject` | `sender_denied` | that row |
 | 4 | **sender allowlist** | `kind=sender, action=allow` | `sender_not_allowed` | `allowlist:<field>` |
 | 5 | **pattern blocklist** | `kind=substring` / `prefix` / `suffix` / `glob` | `pattern_blocked` | that row |
-| 6 | **rate limit** | `FIREWALL_RATE_MAX` / `_WINDOW_MS` | `rate_limited` | `rate-limit` |
+| 6 | **rate limit** | `./screen`'s `firewall_rate_max` / `firewall_rate_window_ms` | `rate_limited` | `rate-limit` |
 | 7 | **hold** | `kind=sender` / a pattern kind, `action=hold` | — (the turn is parked) | that row |
 
 **And one refusal that is not a rule.** If the `rules` store does not answer the read
@@ -138,9 +138,9 @@ and this is not one.
 
 | `rule_id` | what it refuses | why no row may lift it |
 |---|---|---|
-| `hardline:body-ceiling` | a turn above 262 144 characters | `FIREWALL_MAX_CHARS` is a knob, and a knob set to a billion turns the screen itself into the resource risk it stands in front of. The ceiling bounds the knob. |
+| `hardline:body-ceiling` | a turn above 262 144 characters | `firewall_max_chars` is a knob, and a knob set to a billion turns the screen itself into the resource risk it stands in front of. The ceiling bounds the knob. |
 | `hardline:invisible-format` | a turn carrying an invisible or direction-**overriding** codepoint, or a control character other than tab, newline and carriage return | one zero-width space inside a forbidden literal defeats *every* pattern row at once. A row that could switch this off would switch off the effectiveness of the whole table, which is the class this layer exists for. |
-| `hardline:hold-ceiling` | a turn that would push the hold pile past 1024 | `FIREWALL_HOLD_MAX` may only **lower** that number. An unbounded pile is an outage of the channel wearing the mask of a queue. |
+| `hardline:hold-ceiling` | a turn that would push the hold pile past 1024 | `firewall_hold_max` may only **lower** that number. An unbounded pile is an outage of the channel wearing the mask of a queue. |
 
 Two exclusions in the second one are deliberate and are not oversights: **ZWNJ (U+200C)
 and ZWJ (U+200D)** carry emoji sequences and Indic/Arabic joining, and the directional
@@ -337,7 +337,7 @@ lane carries is a **notice**, and the notice is what a person reads.
 | the parked turn | one row in `./rules`'s `held` table: body, hop and the context its ingress edge promoted, stored whole and not summarised |
 | the notice | the `hold` lane, carrying `hop.hold_id`, `hop.rule_id`, `hop.expires_at`, `hop.held_at` and the turn itself |
 | the answer | `in_release` — `hop.hold_id` names one parked turn, `hop.decision` is `release` or `refuse`, `hop.decided_by` is who answered |
-| the timeout | `FIREWALL_HOLD_TTL_MS`, and its receipt is `hold_expired` on the `reject` lane |
+| the timeout | `./warden`'s `firewall_hold_ttl_ms`, and its receipt is `hold_expired` on the `reject` lane |
 
 **The row is written before anyone is told, and the answer is written before the turn
 moves.** Both orderings are load-bearing. A notice naming a hold that does not exist is a
@@ -351,7 +351,7 @@ touched — a new hold, a release, an `in_sweep` — and a release of an overdue
 the row to `expired` and ends the turn on `reject`. There is no window in which the
 timeout has passed and the turn still travels.
 
-**The pile is bounded twice.** `FIREWALL_HOLD_MAX` (default 100) refuses a would-be hold
+**The pile is bounded twice.** `firewall_hold_max` (default 100) refuses a would-be hold
 with `hold_pile_full` rather than dropping it, and the hardline ceiling of 1024 is the
 number that knob may only lower. A held turn also books its arrival, so the rate window
 bounds how fast the pile can fill in the first place.
@@ -402,23 +402,53 @@ honest limit rather than a hidden one.
 
 ## Knobs
 
-**Env knobs are an experimental surface.** Until this template's knobs move onto the `params`
-block of the cells that read them, their names carry no compatibility promise and may change in
-any `0.x` release; provider credentials keep living in `.env` either way. The migration is
-tracked in [#138](https://github.com/mmeyerlein/meclaw/issues/138), with the
-`collector@1.2.0` migration ([#136](https://github.com/mmeyerlein/meclaw/issues/136)) as the
-reference pattern.
+**Since 2.3.0 every knob of this hive is a param** ([#138](https://github.com/mmeyerlein/meclaw/issues/138),
+following the `collector` migration pattern in [#136](https://github.com/mmeyerlein/meclaw/issues/136)).
+There is no `${FIREWALL_*}` token left in the template and no `.env` line this hive reads:
+each cell declares its knobs under `params`, declares them again in `contract.settings`, and
+reads them off the same stdin document the turn arrives on. The defaults did not move a byte.
 
-| variable | default | effect |
+**What that buys.** A knob that lived only as a `${VAR}` inside a script was colony-global by
+construction, and `override_params` could not name it at all — the mutation door only accepts a
+key the addressed cell actually carries under `params`
+([#294](https://github.com/mmeyerlein/meclaw/issues/294)). Two channels of one colony can now
+be screened at two different budgets, and a mutation retunes one of them without touching the
+other.
+
+`./screen`:
+
+| param | default | effect |
 |---|---|---|
-| `FIREWALL_MAX_CHARS` | `16000` | size cap of one inbound turn (total characters over `messages[].text`) |
-| `FIREWALL_RATE_MAX` | `30` | turns one channel may pass per window; `0` closes the channel |
-| `FIREWALL_RATE_WINDOW_MS` | `60000` | width of the rate window in milliseconds |
-| `FIREWALL_HOLD_TTL_MS` | `3600000` | how long a parked turn waits for a person before it expires. There is no value that switches the timeout off |
-| `FIREWALL_HOLD_MAX` | `100` | how many turns may be parked at once; a turn above it is **rejected**, never dropped. It may only lower the hardline ceiling of 1024, never raise it |
+| `firewall_max_chars` | `16000` | size cap of one inbound turn (total characters over `messages[].text`) |
+| `firewall_rate_max` | `30` | turns one channel may pass per window; `0` closes the channel |
+| `firewall_rate_window_ms` | `60000` | width of the rate window in milliseconds |
 
-They are substituted into the script at instantiation (a `code` cell never sees its own
-`params`). A non-numeric or unset value falls back to the default rather than crashing.
+`./warden`:
+
+| param | default | effect |
+|---|---|---|
+| `firewall_hold_ttl_ms` | `3600000` | how long a parked turn waits for a person before it expires. There is no value that switches the timeout off: `0` is floored at 1 ms. A blank one is not an attempt to switch it off but "not configured", and is the shipped 3600000 |
+| `firewall_hold_max` | `100` | how many turns may be parked at once; a turn above it is **rejected**, never dropped. It may only lower the hardline ceiling of 1024, never raise it |
+
+Tune one instance in the mutation that grows it:
+
+```json
+"override_params": {
+  "firewall/screen": {"firewall_rate_max": 5, "firewall_rate_window_ms": 60000},
+  "firewall/warden": {"firewall_hold_ttl_ms": 900000}
+}
+```
+
+**A knob that is not configured, or is `null`, or is a blank string, is the shipped default** —
+an operator who blanks a line in a config means the default, and there is no number in an empty
+string. A number typed as a string is read as a number, because that is what a config line
+somebody types looks like. Neither knob of `./warden` can make the pile less safe: the TTL is
+floored at 1 ms and the pile cap is capped at the hardline ceiling of 1024, both after the
+value is read.
+
+**A running instance keeps the bytes it was born from.** Instantiation copies the subtree, so
+this bump reaches no colony that is already up; upgrading is instantiating the new version
+beside the old one.
 
 ## Lanes and wiring
 
@@ -450,7 +480,8 @@ the four edges above are still the whole wiring for one.
 | in_export / in_import | the transfer lane. `in_export` demands the whole rule table as a versioned document, `in_import` feeds ONE part of such a document back into a running hive. Both declare an empty `context`: an export is about the hive, not about a round. |
 | in_release / in_sweep | the hold lane. `in_release` carries one person's answer about one parked turn (`hop.hold_id`, `hop.decision`, `hop.decided_by`); `in_sweep` carries nothing and expires whatever is due. `params.required_drains` pairs `in_release` with `pass` AND `reject`, and `in_sweep` with `reject` — draw one and the mutation holds you to its exits. |
 | hold | the notice that a turn was parked and its row is written: `hop.hold_id`, `hop.rule_id`, `hop.expires_at`, `hop.held_at` and the turn itself. It is the ONE lane of this hive with no required drain, because requiring it would break every parent that wired an `in_turn` and never asked for a hold. Undrawn it is a recorded `no_route` in the DLQ, and the expiry receipt still arrives on `reject`. |
-| dump | the transfer lane's output — an export part (`hop.dump_kind == 'export_part'`) or the receipt of an applied one (`'import_receipt'`). **Drain it with a PLAIN `hop.route == 'dump'` test**: an edge that additionally tests `dump_kind` reads as no drain at all under the `required_drains` probe, and the mutation is refused. |
+| export_done | this hive's own store wrote the whole rule table into `<fence>/<dir>/seed/` and says where: `hop.seed_dir` (relative to `params.transfer.base_path`), `hop.export_hive`, `hop.export_of`, `hop.rows_written` (#555). |
+| dump | the receipt of one applied IMPORT part (`hop.rows_written`, `hop.export_final == "1"` on the last) — since #555 that is all this lane carries. **Drain it with a PLAIN `hop.route == 'dump'` test**: an edge that additionally tests a second hop key reads as no drain at all under the `required_drains` probe, and the mutation is refused. |
 
 **Both exits clear the firewall's own context keys, and the hive does it itself now.**
 `context.fw_body` holds a full copy of the turn (that is how a stateless cell carries it
@@ -506,29 +537,44 @@ which is what lets the completeness marker exist at all:
 
 `schema` is the store's own declaration, so `{"schema": …}` as line 1 plus one row per
 line after it **is** a `rules/seed/rules.jsonl` — birth path and transfer path speak one
-format. `final` (mirrored as `hop.export_final == "1"`) is the completeness marker; a
-document without it is partial, and nothing else in it would say so. `absent` is not
-`rows: []`: an empty table held no rules, an absent one never had the table.
+format. Since [#555](https://github.com/mmeyerlein/meclaw/issues/555) the EXPORT half does
+not travel as messages at all: this hive's own store writes that file itself, through the
+substrate's `transfer` slot and inside the fence it declares in
+`params.transfer.base_path`, with `seed/export_final.json` beside it as the completeness
+marker — a directory without it is a prefix, and nothing else in it would say so. The
+object above is therefore what an IMPORT part looks like, which is one of those files read
+back the other way round. `absent` is not `rows: []`: an empty table held no rules, an
+absent one never had the table.
+
+**Redirect that fence before the first export.** The shipped default is
+`/tmp/meclaw-member-export`, which is world-readable on most hosts, and what lands under it is
+the whole SCREENING POLICY — every rule that decides which inbound turn reaches the person.
+Nothing about the fence is a secret and nothing about it is checked: the store writes where
+`params` say, so name a directory of your own with `override_params` on `"firewall/rules"`
+before anything is exported.
 
 **Wiring, in the same mutation as the ingress.** `params.required_drains` pairs each
-ingress lane with both of its exits (`in_export → dump`, `in_export → reject`,
+ingress lane with both of its exits (`in_export → export_done`, `in_export → reject`,
 `in_import → dump`, `in_import → reject`) and refuses the mutation unless all of them are
-drawn at once — an export that reaches nobody read the whole store for nothing, and an
-undrained refusal makes a transfer that did not happen look exactly like one that did.
+drawn at once — an export nobody drains writes the whole rule table and tells nobody where,
+and an undrained refusal makes a transfer that did not happen look exactly like one that
+did.
 
 ```json
 [
   { "from": "./ops", "to": "./firewall",
     "modifier": {"set_hop": {"route": "'in_export'"}} },
-  { "from": "./firewall", "to": "./export-sink",
+  { "from": "./firewall", "to": "./drain",
+    "condition": "has(hop.route) && hop.route == 'export_done'" },
+  { "from": "./firewall", "to": "./drain",
     "condition": "has(hop.route) && hop.route == 'dump'" },
   { "from": "./firewall", "to": "./drain",
     "condition": "has(hop.route) && hop.route == 'reject'" }
 ]
 ```
 
-The `reject` edge the screen already needs is that second drain — one lane, two
-producers. The `dump` edge stays a **plain** route test, for the reason under *Lanes and
+The `reject` edge the screen already needs is that third drain — one lane, two
+producers. Both transfer edges stay **plain** route tests, for the reason under *Lanes and
 wiring*: the probe runs the described hop through the real edge evaluator.
 
 **What stays behind.** `arrivals` does not travel: it is the rate window **this**
@@ -544,7 +590,8 @@ in one `select`, and inserts only what is missing. The target wins every collisi
 import never updates, so a rule an operator disabled here is not silently re-enabled by a
 document from elsewhere, and "send it again" is the repair for any failure.
 
-**Every refusal is fail-closed and lands on `reject`:** `export_read_failed`,
+**Every refusal is fail-closed and lands on `reject`:** `export_write_failed` (the store
+would not write the seed set — no marker, so the directory is not a document),
 `import_format`, `import_unknown_table`, `import_schema_drift` (the source declares a
 column this store does not have — growing a schema is a template change, not something an
 import does silently), `import_probe_failed`, `import_write_failed`. There is no
@@ -553,8 +600,8 @@ screen in front of the whole member.
 
 **Birth is the other half, and it is a file.** A seed is read **once**, when the `cell.db`
 is created, and is inert for ever after: to give a firewall rules before it exists, write
-the part as `rules/seed/rules.jsonl` and instantiate. Under a member the export sink has
-already filed it there — `<export_dir>/firewall/seed/rules.jsonl` — because
+the part as `rules/seed/rules.jsonl` and instantiate. Since #555 an export has already
+written exactly that file — `<fence>/<dir>/firewall/seed/rules.jsonl` — because
 `member/firewall` is a `ref` directly beneath the member, so the member's `in_export`
 fans out to this hive's and an import is routed back by `hop.import_hive == 'firewall'`.
 

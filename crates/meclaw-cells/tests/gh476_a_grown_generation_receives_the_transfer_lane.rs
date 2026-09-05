@@ -13,8 +13,8 @@
 //!
 //! The failure is silent in exactly the way GH #475 exists to end. An export
 //! that walked three holders looks like a complete one: three directories, three
-//! `export_done`, a member-level marker naming three hives, and nothing that
-//! says the fourth was never asked. So this file measures the POSITIVE signal —
+//! `export_done`, and nothing that says the fourth was never asked. So this file
+//! measures the POSITIVE signal —
 //! the keeper's ledger on disk, carrying the row a real turn opened — rather
 //! than the absence of a complaint.
 //!
@@ -34,20 +34,21 @@
 //!    names it.** One colony, the shipped library, the member grown through the
 //!    mutation door and two generations grown from what `grow_level` renders —
 //!    nothing in the wiring is typed out in this file. A real turn opens a
-//!    session in the first, an `in_export` naming it puts that very row on disk
-//!    as `session-keeper/seed/sessions.jsonl`, the member-level marker names
-//!    four hives, and the second generation stays empty: the name is an address,
-//!    not a fan-out.
+//!    session in the first, an `in_export` naming it has that keeper's own store
+//!    put that very row on disk as `session-keeper/seed/sessions.jsonl` beside
+//!    the other three directories, and the second generation stays empty: the
+//!    name is an address, not a fan-out.
 //!
 //! **Substitutions, named rather than hidden.** The same two
 //! `gh475_a_member_reaches_the_keeper_it_holds.rs` makes, for the same reasons:
 //! the `llm` type is an inert lazy double (a generation carries three brains and
 //! a spawned one opens a connection to a provider; the keeper's stamp sits
 //! BEFORE the brain in `talky`'s graph, so a session is opened by a turn
-//! arriving), and the shipped `export-sink` is run `trusted` through
-//! `override_params` because its shipped `restricted` sandbox is fail-closed
-//! against the host and would measure the kernel this runs on. Every other cell
-//! type is the shipped factory.
+//! arriving), and the fence the keeper's store writes inside is set on this
+//! colony's own copy of the library — a generation is grown from that library
+//! rather than from a manifest this file writes (that is the whole of GH #476),
+//! and the shipped default is an absolute path outside this tempdir. Every other
+//! cell type is the shipped factory.
 //!
 //! Guarded like every template-reading test (GH #49): a tree that does not carry
 //! the library is skipped, never judged.
@@ -97,7 +98,6 @@ fn shipped() -> bool {
     [
         "templates/builder/recipes/config.json",
         "templates/member/config.json",
-        "templates/member/export-sink/config.json",
         "templates/assistant/config.json",
         "templates/talky/config.json",
         "templates/session-keeper/config.json",
@@ -143,7 +143,7 @@ fn grow_level(params: Value) -> Value {
 fn rendered_transfer_edges(name: &str) -> Vec<Value> {
     let decl = grow_level(json!({
         "scope": format!("/members/{MEMBER}"), "level": "assistant", "name": name,
-        "template": "assistant@2.4.1"}));
+        "template": "assistant@2.5.0"}));
     decl["diff"]["add_edges"]
         .as_array()
         .expect("add_edges")
@@ -349,19 +349,55 @@ fn dummy_env(source: &std::path::Path) -> String {
             }
         }
     }
-    let mut out: String = names
+    // Only the provider lane is left to fill: since GH #138 the two crons this
+    // helper used to append (`AFFINITY_PUSH_CRON`, `KEEPER_NIGHT_CRON`) are
+    // params of the cells that read them, and are pushed out of the run's way
+    // with an `override_params` entry instead of with a line here.
+    names
         .into_iter()
         .map(|n| format!("{n}=dummy-{n}\n"))
-        .collect();
-    for cron in [
-        "AFFINITY_PUSH_CRON",
-        "MEMORY_DREAM_CRON",
-        "KEEPER_NIGHT_CRON",
-        "MENU_CRON",
-    ] {
-        out.push_str(&format!("{cron}=0 0 4 1 1 *\n"));
-    }
-    out
+        .collect()
+}
+
+/// The nightly consolidation, pushed to a date this run cannot reach.
+///
+/// It was a `MEMORY_DREAM_CRON=` line in the `.env` above until GH #138. The
+/// hive's schedule is a LITERAL of `memory-hive/clock`'s own params now, so
+/// such a line would be read by nothing at all: the night would fire into this
+/// run and nobody would say so. `override_params` replaces the whole
+/// `schedules` key -- the key that EXISTS under a timer's params, which is the
+/// only kind GH #294 accepts -- and the timer plans on what it finds there
+/// (`crates/meclaw-cells/tests/gh138_memory_hive_params.rs` is the proof).
+fn quiet_night() -> Value {
+    json!({"schedules": [{
+        "schedule_id": "0190a3f2-0000-7000-8000-00000000dead",
+        "schedule_name": "nightly-dream",
+        "cron": "0 0 4 1 1 *",
+        "emit_to": "../dream-glue",
+        "emit_body": {"messages": [{"origin": "user", "type": "text", "text": "nightly-dream"}]},
+        "emit_headers": {}
+    }]})
+}
+
+/// The record hive's push tick, pushed to a date this run cannot reach.
+///
+/// It was an `AFFINITY_PUSH_CRON=` line in the `.env` above until GH #138. The
+/// hive's cadence is a LITERAL of `affinity/clock`'s own params now, so such a
+/// line would be read by nothing at all: the lane would tick into this run
+/// every five minutes and nobody would say so. `override_params` replaces the
+/// whole `schedules` key -- the key that EXISTS under a timer's params, which
+/// is the only kind GH #294 accepts -- and the timer plans on what it finds
+/// there (`crates/meclaw-cells/tests/gh138_affinity_firewall_params.rs` is the
+/// proof).
+fn quiet_push() -> Value {
+    json!({"schedules": [{
+        "schedule_id": "0190a3f2-0000-7000-8000-00000000beef",
+        "schedule_name": "affinity-push",
+        "cron": "0 0 4 1 1 *",
+        "emit_to": "../push",
+        "emit_body": {"messages": [{"origin": "user", "type": "text", "text": "affinity-push"}]},
+        "emit_headers": {}
+    }]})
 }
 
 /// A code cell that appends every message it is handed to one file per lane, so
@@ -391,9 +427,34 @@ sys.stdout.write(json.dumps([]))
 
 /// The shell the member is grown into: a members container, and a flag cell that
 /// takes every lane the member level raises.
-async fn boot(td: &tempfile::TempDir, flag_dir: &std::path::Path) -> ColonyHandle {
+async fn boot(
+    td: &tempfile::TempDir,
+    flag_dir: &std::path::Path,
+    fence: &std::path::Path,
+) -> ColonyHandle {
     let root = td.path();
     copy_tree(&repo("templates"), &root.join("templates"));
+    // The keeper's nightly close sweep, pushed to a date this run cannot reach.
+    // It was a `KEEPER_NIGHT_CRON` line in the `.env` below until GH #138: the
+    // schedule is a LITERAL of `session-keeper/night`'s own params now, so such
+    // a line is read by nothing at all -- the sweep would fire into this run and
+    // nobody would say so. The library copy is this tree's own, so writing the
+    // key into it is what an `override_params` entry does to a staged config
+    // (`crates/meclaw-cells/tests/gh138_keeper_summarizer_dispatcher_params.rs`
+    // is the proof that the timer plans on what it finds there).
+    meclaw_testing::quiet_keeper_night(&root.join("templates/session-keeper"));
+    // GH #555 — the keeper four levels down writes its OWN ledger, inside the
+    // fence its store declares. A generation is grown from the library rather
+    // than from a manifest this file writes (that is the whole of GH #476), so
+    // the fence is set on the library copy this colony instantiates from: the
+    // shipped default is an absolute path outside this tempdir, and a test that
+    // wrote there would measure the machine it runs on.
+    {
+        let p = root.join("templates/session-keeper/sessions/config.json");
+        let mut cfg: Value = from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        cfg["params"]["transfer"]["base_path"] = json!(fence.to_str().unwrap());
+        write_json(&p, &cfg);
+    }
     std::fs::create_dir_all(flag_dir).unwrap();
     let lanes = [
         "answer",
@@ -406,6 +467,7 @@ async fn boot(td: &tempfile::TempDir, flag_dir: &std::path::Path) -> ColonyHandl
         "build",
         "close_report",
         "export_done",
+        "dump",
         "pack_ack",
     ];
     let mut edges = vec![
@@ -497,14 +559,19 @@ fn container_edges() -> Vec<Value> {
 }
 
 fn member_manifest(export_dir: &std::path::Path) -> Value {
-    let sink = shipped_config("templates/member/export-sink/config.json");
-    assert_eq!(
-        sink["params"]["sandbox"]["trust"], "restricted",
-        "the shipped sink is the one behind a boundary; if this ever reads \
-         `trusted`, the substitution below is hiding a real regression"
-    );
-    let over = json!({"export-sink": {"sandbox": {"trust": "trusted"},
-                                      "export_dir": export_dir.to_str().unwrap()}});
+    // Since GH #555 an instance says ONE thing about files: the fence each
+    // holder's own store writes inside. There is no cell to relax and no
+    // sandbox to substitute — the writer is the substrate.
+    let mut over = json!({"memory-hive/clock": quiet_night(),
+                          "affinity/clock": quiet_push()});
+    for (hive, cell) in [
+        ("memory-hive", "store"),
+        ("affinity", "store"),
+        ("firewall", "rules"),
+    ] {
+        over[format!("{hive}/{cell}")] =
+            json!({"transfer": {"base_path": export_dir.to_str().unwrap()}});
+    }
     json!({"manifest": [{
         // The declaration stands AT the container it grows into (GH #503),
         // which is the form `build_import.py` writes and the form
@@ -512,7 +579,7 @@ fn member_manifest(export_dir: &std::path::Path) -> Value {
         // member is named bare, and the path it lands at is unchanged.
         "scope": "/members",
         "diff": {
-            "add_nodes": [{"name": MEMBER, "template": "member@1.5.1",
+            "add_nodes": [{"name": MEMBER, "template": "member@1.6.0",
                            "override_params": over}],
             "add_edges": container_edges(),
         }
@@ -525,7 +592,7 @@ fn member_manifest(export_dir: &std::path::Path) -> Value {
 fn grown_generation(name: &str) -> Value {
     let decl = grow_level(json!({
         "scope": format!("/members/{MEMBER}"), "level": "assistant", "name": name,
-        "template": "assistant@2.4.1",
+        "template": "assistant@2.5.0",
         // The three brains of a generation are the doubles named in the header,
         // and a `ctx` key is still required: the model is a RESOLVED literal in
         // the template's `requires`, and the mutation refuses a generation whose
@@ -562,31 +629,6 @@ async fn wait_for(p: &std::path::Path, what: &str, h: &ColonyHandle) {
         p.display(),
         dead_letters(h).await
     );
-}
-
-/// Poll the member-level completeness marker until it names `want` holders. The
-/// sink rewrites it once per finishing walk, so reading it at the first sight of
-/// the file measures whichever walk happened to be first.
-async fn wait_marker(p: &std::path::Path, want: usize, h: &ColonyHandle) -> Value {
-    let deadline = std::time::Instant::now() + RECV_TIMEOUT;
-    loop {
-        let named = std::fs::read_to_string(p)
-            .ok()
-            .and_then(|raw| from_str::<Value>(&raw).ok());
-        if let Some(v) = &named
-            && v["hives"].as_array().map(Vec::len).unwrap_or_default() >= want
-        {
-            return v.clone();
-        }
-        if std::time::Instant::now() >= deadline {
-            panic!(
-                "the member-level marker never named {want} holders (last: {named:?}) -- \
-                 dead letters: {:?}",
-                dead_letters(h).await
-            );
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
 }
 
 /// Poll one store's own `cell.db` until it holds what the run is waiting for.
@@ -718,7 +760,7 @@ async fn a_generation_grown_from_a_wish_receives_the_export_that_names_it() {
     let flags = td.path().join("flags");
     let export_dir = td.path().join("exports");
     std::fs::create_dir_all(&export_dir).unwrap();
-    let h = boot(&td, &flags).await;
+    let h = boot(&td, &flags, &export_dir).await;
 
     let outcome = apply(&h, member_manifest(&export_dir)).await;
     assert!(
@@ -823,17 +865,20 @@ async fn a_generation_grown_from_a_wish_receives_the_export_that_names_it() {
     );
     assert_eq!(row["channel"], CHANNEL);
 
-    // The member-level marker is rewritten once per finishing walk, so it is
-    // read when it has stopped growing rather than at the first sight of it —
-    // four holders finish in whatever order their walks do.
-    let marker = wait_marker(&export_dir.join("export_final.json"), 4, &h).await;
+    // One directory per holder that finished, and nothing composes a statement
+    // about the set of them any more (GH #555): each directory says for itself
+    // whether it is whole, by carrying its own marker.
+    let mut wrote: Vec<String> = std::fs::read_dir(&export_dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    wrote.sort();
     assert_eq!(
-        marker["hives"],
-        json!(["affinity", "firewall", "memory-hive", "session-keeper"]),
-        "the member-level marker names every holder whose walk finished. Three \
-         of them is what a grown generation produced before GH #476, and three \
-         is exactly what a complete export looks like -- which is why this file \
-         measures the fourth rather than the absence of a complaint"
+        wrote,
+        vec!["affinity", "firewall", "memory-hive", "session-keeper"],
+        "three directories is what a grown generation produced before GH #476, \
+         and three is exactly what a complete export looks like -- which is why \
+         this file measures the fourth rather than the absence of a complaint"
     );
 
     // ── and the generation nobody named stayed out of it ────────────────────

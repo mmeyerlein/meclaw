@@ -472,28 +472,50 @@ fn the_only_edge_to_the_tool_surface_is_one_guarded_default_naming_no_tool() {
 /// requirement, and it is written into the config's own `because` next to the
 /// default edge as well as here.
 #[test]
-fn no_regular_out_edge_of_the_surface_is_unconditional() {
+fn no_regular_out_edge_of_either_brain_is_unconditional() {
     let Some(root) = shipped() else { return };
     let hp = hive_params(&root);
 
-    for e in hp.graph.edges.iter().filter(|e| e.from == "./talky") {
-        if e.is_default {
-            continue;
+    // BOTH brains since GH #552. The core used to reach `./tools` on the only
+    // `tool` edge it had, so the question of which one is the default never
+    // arose; `memory_recall` leaves the level on a NAMED edge out of `./cogny`
+    // now, and a named edge beside an unconditional one delivers the same call
+    // twice. Suppression is per SENDER, so the rule is per sender too.
+    for sender in ["./talky", "./cogny"] {
+        let mut default_on_tool = 0;
+        for e in hp.graph.edges.iter().filter(|e| e.from == sender) {
+            if e.is_default {
+                let cond = e.condition.as_deref().unwrap_or_default();
+                if stated_route(Some(cond)).as_deref() == Some("tool") {
+                    default_on_tool += 1;
+                }
+                continue;
+            }
+            let cond = e.condition.as_deref().unwrap_or_default();
+            assert!(
+                cond.contains("hop.route"),
+                "the edge {sender} -> {} carries no route condition. Suppression is per \
+                 SENDER: an unconditional tee out of {sender} fires for every tool call \
+                 and silences the guarded default, and the tool surface goes dark. {e:#?}",
+                e.to
+            );
+            let route = stated_route(Some(cond)).unwrap_or_default();
+            assert!(
+                route != "tool" || cond.contains("hop.tool_name"),
+                "the edge {sender} -> {} takes the whole `tool` lane without naming an \
+                 errand, so no tool call ever reaches the default: {e:#?}",
+                e.to
+            );
         }
-        let cond = e.condition.as_deref().unwrap_or_default();
-        assert!(
-            cond.contains("hop.route"),
-            "the edge ./talky -> {} carries no route condition. Suppression is per \
-             SENDER: an unconditional tee out of ./talky fires for every tool call and \
-             silences the guarded default, and the tool surface goes dark. {e:#?}",
-            e.to
-        );
-        let route = stated_route(Some(cond)).unwrap_or_default();
-        assert!(
-            route != "tool" || cond.contains("hop.tool_name"),
-            "the edge ./talky -> {} takes the whole `tool` lane without naming an \
-             errand, so no tool call ever reaches the default: {e:#?}",
-            e.to
+        assert_eq!(
+            default_on_tool, 1,
+            "{sender} needs EXACTLY ONE guarded default on the `tool` lane. Without it \
+             every named tool edge beside it delivers the call a second time; with two \
+             of them the level has no decidable exit at all. This is the flag GH #552 \
+             had to set on `./cogny -> ./tools` in the same act that gave `./cogny` a \
+             named `memory_recall` edge — and \
+             `a_core_tool_call_reaches_the_tool_surface_exactly_once` measures the \
+             delivery it protects."
         );
     }
 }
@@ -634,19 +656,22 @@ fn the_level_declares_the_lanes_its_occupants_ship() {
          without crossing this level at all: {emits:?}"
     );
 
-    // The subtraction. Since GH #454 there is exactly ONE — `tool`, consumed
-    // inside the level by ./tools through the guarded default. `answer` used to
-    // be the second and is now the level's own emit, which is the whole of
-    // GH #454 read off the derivation rule.
-    let gone = "tool".to_string();
+    // The subtraction was `tool`, consumed inside the level by ./tools through
+    // the guarded default — and GH #552 ENDED it. One tool name leaves now:
+    // `memory_recall`, taken out of the default by a named edge, because the
+    // memory belongs to the MEMBER and not to one of its generations. So the lane
+    // crosses, and a level whose derivation still subtracted it would promise
+    // nothing where a caller has to draw an edge.
+    let crossing = "tool".to_string();
     assert!(
-        talky_emits.contains(&gone),
-        "the subtraction of `{gone}` is stale: talky no longer emits it"
+        talky_emits.contains(&crossing),
+        "the derivation of `{crossing}` is stale: talky no longer emits it"
     );
     assert!(
-        !emits.contains(&gone),
-        "`{gone}` is consumed INSIDE this level by ./tools through the guarded default. A \
-         level that re-declared it would promise a lane whose messages never leave."
+        emits.contains(&crossing),
+        "`{crossing}` crosses this level since GH #552 — `memory_recall` leaves it for the \
+         member's own memory, and a lane a caller has to drain is a lane the level declares: \
+         {emits:?}"
     );
 
     // And the lane that STOPPED being a subtraction, which is the whole of
@@ -673,10 +698,20 @@ fn the_level_declares_the_lanes_its_occupants_ship() {
         "`answer` is declared and no edge carries it out of ./talky — the declaration \
          would be a promise with nothing behind it"
     );
+    // `in_tool` was supplied INSIDE the level by ./tools and was not an inbound
+    // lane at all. GH #552 made it one of both: a `memory_recall` result comes
+    // back from OUTSIDE, off the member's own memory, and the level hands it to
+    // whichever occupant asked. So the lane is declared AND still supplied inside
+    // — which is not a contradiction but the level doing its job, and the door
+    // has to exist or the result dies as no_route at the boundary.
     assert!(
-        talky_accepts.contains(&"in_tool".to_string()) && !accepts.contains(&"in_tool".to_string()),
-        "`in_tool` is supplied INSIDE the level by ./tools and must not be an inbound lane \
-         of the assistant: {accepts:?}"
+        talky_accepts.contains(&"in_tool".to_string()),
+        "the surface no longer takes `in_tool`: {talky_accepts:?}"
+    );
+    assert!(
+        accepts.contains(&"in_tool".to_string()),
+        "`in_tool` crosses this level since GH #552 — the answer to the one tool call that \
+         leaves it comes back the same way: {accepts:?}"
     );
 }
 
@@ -755,9 +790,11 @@ fn the_boundary_matches_the_member_this_level_is_instantiated_into() {
     // `answer` is on this list since GH #454 — it goes back to a channel of the
     // person — and `write` is on it twice over, as the close pass fan-out of
     // GH #447 beside the archive copy that leaves the level. `dump` joined them
-    // with GH #475: the session ledger of a generation is filed by the member's
-    // own export sink, in a directory beside the three holders' own, because a
-    // document that only exists as messages is not a backup. `turn_write`
+    // with GH #475 and LEFT again with GH #555: the member's own cell that
+    // turned a transfer document into files is gone -- each holder's store
+    // writes its own seed set now -- so the import receipt the keeper still
+    // raises crosses the member like every other receipt of this level rather
+    // than ending inside it. `turn_write`
     // joined them with GH #527, the second fan-out beside `write`: it is the
     // only path in this substrate from a conversation into an `episodes` table,
     // and the level that HOLDS the memory declined it until then — nine hops up
@@ -775,21 +812,24 @@ fn the_boundary_matches_the_member_this_level_is_instantiated_into() {
         "extraction",
         "write",
         "turn_write",
-        "dump",
+        "tool",
+        "schemas",
     ]
     .into_iter()
     .map(str::to_string)
     .collect();
     assert_eq!(
         consumed_by_the_member, want,
-        "the member consumes exactly the six lanes of this level it has a holder for: the \
+        "the member consumes exactly the seven lanes of this level it has a holder for: the \
          `answer` goes to a channel of the PERSON (GH #454), `recall` and `extraction` to \
          the memory that belongs to the person (GH #122), `write` is fanned onto the \
          memory's close pass as well as leaving the level (GH #447), `turn_write` is fanned \
          onto that same memory's episode lane (GH #527) -- the only path a conversation has \
-         into an `episodes` table -- and `dump`, the transfer document of the generation's \
-         session keeper, lands in the member's own export sink (GH #475). Every other lane \
-         an assistant raises crosses the member and is the parent's to drain."
+         into an `episodes` table -- and since GH #552 \
+         `tool` and `schemas` reach that same memory: a `memory_recall` call and the menu \
+         tick that asks what it looks like, both answered by the hive that enforces the \
+         rules a recall obeys. Every other lane an assistant raises crosses the member and \
+         is the parent's to drain."
     );
     for lane in &consumed_by_the_member {
         assert!(
@@ -1115,7 +1155,12 @@ doc = json.load(sys.stdin)
 hop = ((doc["envelope"].get("header") or {}).get("hop") or {})
 route = str(hop.get("route") or "")
 if route == "in_turn":
-    out = {"route": "tool", "tool_name": "web_search", "served_by": "cogny"}
+    # Whatever the driver named, `web_search` when it named nothing. The name is
+    # the whole point of the core-side delivery count: `web_search` takes the
+    # guarded default out to `./tools`, `memory_recall` takes the NAMED edge out
+    # of the level, and exactly one of the two may fire (GH #552).
+    out = {"route": "tool", "tool_name": str(hop.get("core_tool") or "") or "web_search",
+           "served_by": "cogny"}
 else:
     out = {"route": "answer", "served_by": "cogny",
            "via": str(hop.get("served_by") or ""),
@@ -1138,6 +1183,7 @@ fn cogny_cell() -> Value {
                 "hop": {
                     "route": {"type": "string", "values": ["tool", "answer"], "required": true},
                     "tool_name": {"type": "string", "required": false},
+                    "core_tool": {"type": "string", "required": false},
                     "served_by": {"type": "string", "required": false},
                     "via": {"type": "string", "required": false},
                     "via_caller": {"type": "string", "required": false}
@@ -1173,6 +1219,11 @@ fn main_config() -> Value {
         "prune",
         "error",
         "build",
+        // GH #552: the level emits these two now — `memory_recall` on its way to
+        // the member's memory, and the menu tick that asks what it looks like. A
+        // harness that did not drain them would read a delivery as a dead letter.
+        "tool",
+        "schemas",
     ] {
         edges.push(json!({"from": "./agent", "to": "/sink",
                           "condition": format!("has(hop.route) && hop.route == '{lane}'")}));
@@ -1188,7 +1239,8 @@ doc = json.load(sys.stdin)
 hop = ((doc["envelope"].get("header") or {}).get("hop") or {})
 sys.stdout.write(json.dumps({
     "header": {"route": "in_turn",
-               "tool_name": str(hop.get("tool_name") or "")},
+               "tool_name": str(hop.get("tool_name") or ""),
+               "core_tool": str(hop.get("core_tool") or "")},
     "messages": doc["body"].get("messages", [])}))
 "#;
 
@@ -1203,7 +1255,8 @@ fn driver_cell() -> Value {
                 "body": {"messages": {"type": "array", "required": true}},
                 "hop": {
                     "route": {"type": "string", "values": ["in_turn"], "required": true},
-                    "tool_name": {"type": "string", "required": false}
+                    "tool_name": {"type": "string", "required": false},
+                    "core_tool": {"type": "string", "required": false}
                 }
             },
             "consumes": {"body": {"messages": {"type": "array", "required": true}}},
@@ -1232,7 +1285,10 @@ hop = hdr.get("hop") or {}
 name = str(hop.get("tool_name") or "")
 route = str(hop.get("route") or "")
 if route == "in_turn" and name:
-    out = {"route": "tool", "tool_name": name, "consult_id": "c-1", "served_by": "talky"}
+    # `core_tool` rides through untouched: it is the name the CORE will call
+    # once the consult reaches it, and nothing between here and there reads it.
+    out = {"route": "tool", "tool_name": name, "consult_id": "c-1", "served_by": "talky",
+           "core_tool": str(hop.get("core_tool") or "")}
 elif route == "in_advice" or route == "in_tool":
     out = {"route": "answer", "served_by": "talky", "in_route": route,
            "in_served_by": str(hop.get("served_by") or ""),
@@ -1257,6 +1313,7 @@ fn talky_cell() -> Value {
                 "hop": {
                     "route": {"type": "string", "values": ["tool", "answer"], "required": true},
                     "tool_name": {"type": "string", "required": false},
+                    "core_tool": {"type": "string", "required": false},
                     "consult_id": {"type": "string", "required": false},
                     "served_by": {"type": "string", "required": false},
                     "in_route": {"type": "string", "required": false},
@@ -1326,10 +1383,26 @@ fn hop_of(m: &Message, key: &str) -> String {
         .to_string()
 }
 
+fn context_of(m: &Message, key: &str) -> String {
+    m.headers
+        .context
+        .get(key)
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string()
+}
+
 /// One screened turn, with the name of the tool or errand the surface will call.
 fn turn(tool_name: &str) -> Message {
+    turn_with(tool_name, "")
+}
+
+/// The same turn, plus the name the CORE will call once a consult reaches it.
+/// Empty leaves the core on its own default (`web_search`).
+fn turn_with(tool_name: &str, core_tool: &str) -> Message {
     let mut hop = meclaw_core::serde_json::Map::new();
     hop.insert("tool_name".into(), json!(tool_name));
+    hop.insert("core_tool".into(), json!(core_tool));
     MessageBuilder::new(Path::new("/driver"))
         .body(Body::Inline(json!({"messages": [
             {"origin": "user", "type": "text", "text": "hi"}
@@ -1491,6 +1564,103 @@ async fn a_consult_never_reaches_the_tool_surface() {
 
     assert!(h.drain_dead_letters().await.is_empty());
     h.shutdown().await;
+}
+
+/// The CORE's side of the same rule, and the delivery GH #552 had to protect.
+///
+/// Until `assistant@2.5.0` `./cogny -> ./tools` was the only `tool` edge the core
+/// had, so it did not matter that it was unconditional. #552 gave the core a
+/// SECOND one — `memory_recall`, named, out of the level to the member's own
+/// memory — and two edges that both fire for one call deliver it twice. The
+/// repair is one flag (`"default": true` on `./cogny -> ./tools`), and a flag
+/// nothing measures is a flag the next reader deletes.
+///
+/// So this is a COUNT, not a shape: the core calls `memory_recall`, and exactly
+/// one message leaves the assistant. Drop the flag and the tool surface answers
+/// beside the named edge — its result goes back to the core, the core answers,
+/// the surface says it again, and a SECOND message lands at the sink.
+///
+/// The positive control is the neighbouring name: `web_search` out of the same
+/// core still takes the guarded default to `./tools` and is answered there, so
+/// the silence measured here is the named edge claiming its call rather than a
+/// dead lane.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_core_tool_call_reaches_the_tool_surface_exactly_once() {
+    let Some(source) = shipped() else { return };
+
+    for (core_tool, want_route) in [
+        // the named edge: it leaves the level, and `./tools` never sees it
+        ("memory_recall", "tool"),
+        // the guarded default: `./tools` answers, and the round comes home
+        ("web_search", "answer"),
+    ] {
+        let td = tempfile::TempDir::new().unwrap();
+        build_tree(&td, &source);
+        let (h, mut sink_rx) = boot(&td).await;
+
+        h.send(turn_with("consult_cogny", core_tool)).await;
+        let first = recv_bounded(&mut sink_rx).await.unwrap_or_else(|| {
+            panic!("{core_tool}: the core's call never left the assistant at all")
+        });
+        assert_eq!(
+            hop_of(&first, "route"),
+            want_route,
+            "{core_tool}: hop {:?}",
+            first.headers.hop
+        );
+        if want_route == "tool" {
+            assert_eq!(
+                hop_of(&first, "tool_name"),
+                core_tool,
+                "the named edge carries the call OUT under its own name: hop {:?}",
+                first.headers.hop
+            );
+            assert_eq!(
+                context_of(&first, "tool_caller"),
+                "cogny",
+                "and stamps who asked, or the answer cannot find its way back: ctx {:?}",
+                first.headers.context
+            );
+        } else {
+            // The control, and it is a POSITIVE receipt: the surface's answer
+            // carries the core's own advice (`in_served_by`), and `via_caller`
+            // is what the TOOL SURFACE saw as `context.tool_caller` — so the
+            // guarded default really did carry this name to `./tools`, and the
+            // silence measured for `memory_recall` is a claimed call rather than
+            // a dead lane.
+            assert_eq!(
+                hop_of(&first, "in_served_by"),
+                "cogny",
+                "{core_tool}: hop {:?}",
+                first.headers.hop
+            );
+            assert_eq!(
+                hop_of(&first, "via_caller"),
+                "cogny",
+                "{core_tool}: the tool surface answered somebody else: hop {:?}",
+                first.headers.hop
+            );
+        }
+
+        // Every edge out of `./cogny` is decided in ONE `apply_edges` call on ONE
+        // message, so a competing delivery is already in flight by the time the
+        // winning one arrives. The wait exists only to let it land.
+        tokio::time::sleep(Duration::from_millis(750)).await;
+        if let Ok(second) = sink_rx.try_recv() {
+            panic!(
+                "{core_tool}: the assistant produced a SECOND message for ONE core tool \
+                 call — the guarded default on `./cogny -> ./tools` fired beside the \
+                 named edge (GH #552): hop {:?}",
+                second.headers.hop
+            );
+        }
+
+        assert!(
+            h.drain_dead_letters().await.is_empty(),
+            "{core_tool}: a served round must not dead-letter on the way"
+        );
+        h.shutdown().await;
+    }
 }
 
 /// #303's acceptance, read after GH #454 moved the subject: a second channel

@@ -26,12 +26,13 @@
 //!   still leaves the level, because the archive above and the memory below want
 //!   different things from one event. An edge that replaced the exit would take
 //!   a lane away from every caller that already drains it.
-//! * **The `dump` drain must test `hop.route` and NOTHING else.**
+//! * **Every transfer drain must test `hop.route` and NOTHING else.**
 //!   `required_drains` decides by running the described hop through the real edge
-//!   evaluator, so an edge additionally guarded on `hop.dump_kind` evaluates
+//!   evaluator, so an edge additionally guarded on a second hop key evaluates
 //!   false under the probe and reads as no drain at all -- the mutation that
 //!   wires the export would be refused, and the refusal would name a lane that
-//!   looks wired.
+//!   looks wired. Since GH #555 that is two lanes: `in_export` pairs with
+//!   `export_done` and `in_import` with `dump`.
 
 use meclaw_core::serde_json::Value;
 
@@ -90,7 +91,6 @@ const MEMBER: &str = "templates/member/config.json";
 const ORG: &str = "templates/org/config.json";
 const SHELL: &str = "templates/meclaw-os/config.json";
 const HIVE: &str = "templates/memory-hive/config.json";
-const SINK: &str = "templates/member/export-sink/config.json";
 
 // ---------------------------------------------------------------- close pass
 
@@ -208,10 +208,13 @@ fn the_member_declares_the_export_lane_and_opens_a_door_for_it() {
 }
 
 /// The drain that made the lane real. The plainness of the condition is the
-/// load-bearing half.
+/// load-bearing half — and since GH #555 the destination is the LEVEL's own rim
+/// rather than a cell of it: the hive's store writes its seed set itself, so
+/// what still travels on `dump` is the receipt of an applied import part, and it
+/// crosses this level like every other receipt.
 #[test]
-fn every_dump_part_reaches_the_sink_on_a_plain_route_test() {
-    let e = only(MEMBER, "./memory-hive", "./export-sink", "'dump'");
+fn every_dump_part_reaches_a_plain_route_test_and_leaves_the_level() {
+    let e = only(MEMBER, "./memory-hive", ".", "'dump'");
     let cond = e["condition"].as_str().expect("condition");
     assert_eq!(
         cond, "has(hop.route) && hop.route == 'dump'",
@@ -231,14 +234,18 @@ fn both_export_drains_leave_the_hive() {
         .map(|d| d["emits"].as_str().expect("emits").to_string())
         .collect();
     assert!(
-        required.contains(&"dump".to_string()) && required.contains(&"reject".to_string()),
-        "the hive pairs the export with its parts and a refusal; got {required:?}"
+        required.contains(&"export_done".to_string()) && required.contains(&"reject".to_string()),
+        "the hive pairs the export with its completion word and a refusal; got {required:?}"
     );
     assert_eq!(
-        matching(MEMBER, "./memory-hive", "./export-sink", "'dump'").len()
-            + matching(MEMBER, "./memory-hive", ".", "'dump'").len(),
+        matching(MEMBER, "./memory-hive", ".", "'dump'").len(),
         1,
         "`dump` leaves the hive exactly once"
+    );
+    assert_eq!(
+        matching(MEMBER, "./memory-hive", ".", "'export_done'").len(),
+        1,
+        "and so does the completion word the hive says for itself (GH #555)"
     );
     assert_eq!(
         matching(MEMBER, "./memory-hive", ".", "'reject'").len(),
@@ -247,72 +254,55 @@ fn both_export_drains_leave_the_hive() {
     );
 }
 
-/// The completion word is a lane of the level, with an edge behind it.
+/// The completion word is a lane of the level, with an edge behind it — one per
+/// holder since GH #555, because the holder that finished says so itself.
 #[test]
 fn the_level_says_export_done_and_nothing_inside_reads_it() {
     assert!(
         lanes(MEMBER, "emits").contains(&"export_done".to_string()),
         "the level declares the completion word"
     );
-    assert_eq!(
-        matching(MEMBER, "./export-sink", ".", "'export_done'").len(),
-        1,
-        "and carries it out"
-    );
-    assert_eq!(
-        matching(MEMBER, "./export-sink", ".", "'error'").len(),
-        1,
-        "a sink that could not write is a failure the level owes its parent, not \
-         a silence"
+    for holder in ["./memory-hive", "./affinity", "./firewall", "./assistants"] {
+        assert_eq!(
+            matching(MEMBER, holder, ".", "'export_done'").len(),
+            1,
+            "{holder} says `export_done` for itself and the level carries it out"
+        );
+    }
+    assert!(
+        !std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../templates/member/export-sink"
+        ))
+        .exists(),
+        "the level still owns a cell that writes somebody else's files (GH #555)"
     );
 }
 
-// ---------------------------------------------------------------- the sink
+// -------------------------------------------------------------- the fence
 
-/// The sink writes, so the one thing that must be true of it is that it can
-/// only write where the level said it may. The colony test drives the script;
-/// this asserts the boundary the script runs behind, because a test that ran
-/// the script under a relaxed profile would prove nothing about the shipped one.
+/// The sink used to be the boundary; since GH #555 the boundary is a `params`
+/// declaration of the store that writes. It is asserted here for the same
+/// reason the sandbox write root was: a level that says an export lands
+/// somewhere owes a statement about WHERE, and one that says it in prose only
+/// says it nowhere the substrate reads.
 #[test]
-fn the_sink_writes_only_under_the_directory_it_declares() {
-    let c = config(SINK);
-    assert_eq!(c["cell"]["type"], "code", "the sink is a code cell");
-
-    let dir = c["params"]["export_dir"]
-        .as_str()
-        .expect("params.export_dir");
-    let sandbox = &c["params"]["sandbox"];
-    assert_eq!(
-        sandbox["trust"], "restricted",
-        "a sink whose profile is `trusted` holds no boundary at all"
-    );
-    assert_eq!(sandbox["network"], "deny", "an export talks to nobody");
-    let write: Vec<&str> = sandbox["filesystem"]["write"]
-        .as_array()
-        .expect("filesystem.write")
-        .iter()
-        .map(|v| v.as_str().expect("path"))
-        .collect();
-    assert_eq!(
-        write,
-        vec![dir],
-        "the write root is exactly the directory the params name -- one token, \
-         two places, and they have to agree or the boundary is not the one the \
-         README describes"
-    );
-
-    assert_eq!(
-        c["params"]["max_concurrency"], 1,
-        "the parts are written in walk order, so the marker can never be written \
-         before a file it claims is complete"
-    );
-    let script = c["params"]["script_inline"]
-        .as_str()
-        .expect("script_inline");
-    assert!(
-        script.contains("export_final.json"),
-        "the last part writes the completeness marker"
-    );
+fn every_holder_that_exports_declares_the_fence_it_writes_inside() {
+    for (hive, cell) in [
+        ("memory-hive", "store"),
+        ("affinity", "store"),
+        ("firewall", "rules"),
+    ] {
+        let c = config(&format!("templates/{hive}/{cell}/config.json"));
+        let base = c["params"]["transfer"]["base_path"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{hive}/{cell} declares no params.transfer.base_path"));
+        assert!(
+            std::path::Path::new(base).is_absolute(),
+            "{hive}/{cell}: the fence must be absolute, got {base:?} — a relative \
+             one is a loud boot error, which is the point"
+        );
+    }
 }
 
 // ------------------------------------------------------- the levels above

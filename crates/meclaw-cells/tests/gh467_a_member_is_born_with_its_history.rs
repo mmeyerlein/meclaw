@@ -11,9 +11,10 @@
 //! `examples/memory-import/` is the recipe, and this file drives it end to end:
 //!
 //! 1. **A colony that remembers.** The shipped `memory-hive/store` and
-//!    `memory-hive/porter`, wired with the hive's own transfer edges, feeding
-//!    the shipped `member/export-sink`. It is walked with `in_export` and the
-//!    seed set lands on disk.
+//!    `memory-hive/porter`, wired with the hive's own transfer edges. It is
+//!    walked with `in_export`, and since GH #555 the STORE writes the seed set
+//!    itself, inside the fence it declares (`params.transfer.base_path`) — no
+//!    cell of any level touches the files.
 //! 2. **The example's own tool** turns that directory into ONE manifest: the
 //!    shipped `member` written out (the hive spliced in where the reference
 //!    stood, the export under `memory-hive/store/seed/`), registered as a local
@@ -92,7 +93,6 @@ fn shipped() -> bool {
         "templates/member/config.json",
         "templates/memory-hive/store/config.json",
         "templates/memory-hive/porter/config.json",
-        "templates/member/export-sink/config.json",
         "templates/affinity/config.json",
         "templates/firewall/config.json",
         "examples/memory-import/build_import.py",
@@ -294,23 +294,9 @@ sys.stdout.write(json.dumps([]))
     })
 }
 
-/// The shipped sink, pointed at this test's directory (see the module header for
-/// the sandbox substitution).
-fn sink_config(export_dir: &str) -> Value {
-    let mut c = shipped_config("templates/member/export-sink/config.json");
-    assert_eq!(
-        c["params"]["sandbox"]["trust"], "restricted",
-        "the shipped sink is the one behind a boundary; if this ever reads \
-         `trusted`, the substitution here is hiding a real regression"
-    );
-    c["params"]["export_dir"] = json!(export_dir);
-    c["params"]["sandbox"] = json!({"trust": "trusted"});
-    c
-}
-
 /// The hive's own transfer edges, verbatim in meaning from
 /// `templates/memory-hive/config.json`, plus the two the fixture writer needs.
-fn memory_hive_island(root: &std::path::Path) {
+fn memory_hive_island(root: &std::path::Path, export_dir: &str) {
     let edges = json!([
         {"from": ".", "to": "./porter",
          "condition": "has(hop.route) && hop.route == 'in_export'",
@@ -323,6 +309,8 @@ fn memory_hive_island(root: &std::path::Path) {
          "condition": "has(context.store_origin) && context.store_origin == 'porter'",
          "modifier": {"set_context": {"mem_phase": "context.mem_phase"}}},
         {"from": "./porter", "to": ".", "condition": "has(hop.route) && hop.route == 'dump'"},
+        {"from": "./porter", "to": ".",
+         "condition": "has(hop.route) && hop.route == 'export_done'"},
         {"from": "./porter", "to": ".", "condition": "has(hop.route) && hop.route == 'reject'"},
         // the fixture that writes the one alias row, from inside the hive
         {"from": ".", "to": "./alias-writer",
@@ -339,7 +327,10 @@ fn memory_hive_island(root: &std::path::Path) {
         &root.join("main/memory/config.json"),
         &json!({"cell": {"type": "hive"}, "params": {"graph": {"edges": edges}}}),
     );
-    let store = shipped_config("templates/memory-hive/store/config.json");
+    let mut store = shipped_config("templates/memory-hive/store/config.json");
+    // The one thing an instance says about files since GH #555: the fence this
+    // store writes its own seed set inside.
+    store["params"]["transfer"]["base_path"] = json!(export_dir);
     for (name, body) in boot_seed(&store["params"]) {
         std::fs::create_dir_all(root.join("main/memory/store/seed")).unwrap();
         std::fs::write(root.join("main/memory/store/seed").join(name), body).unwrap();
@@ -371,23 +362,15 @@ fn build_source_colony(root: &std::path::Path, export_dir: &str, flag_dir: &str)
              "condition": "has(hop.route) && hop.route == 'in_export'"},
             {"from": ".", "to": "./memory",
              "condition": "has(hop.route) && hop.route == 'in_alias'"},
-            {"from": "./memory", "to": "./sink",
-             "condition": "has(hop.route) && hop.route == 'dump'"},
             {"from": "./memory", "to": "./flag",
              "condition": "has(hop.route) && hop.route == 'alias_done'"},
             {"from": "./memory", "to": "./flag",
              "condition": "has(hop.route) && hop.route == 'reject'"},
-            {"from": "./sink", "to": "./flag",
-             "condition": "has(hop.route) && hop.route == 'export_done'"},
-            {"from": "./sink", "to": "./flag",
-             "condition": "has(hop.route) && hop.route == 'error'"}
+            {"from": "./memory", "to": "./flag",
+             "condition": "has(hop.route) && hop.route == 'export_done'"}
         ]}}}),
     );
-    memory_hive_island(root);
-    write_json(
-        &root.join("main/sink/config.json"),
-        &sink_config(export_dir),
-    );
+    memory_hive_island(root, export_dir);
     write_json(&root.join("main/flag/config.json"), &flag_cell(flag_dir));
 }
 
@@ -639,8 +622,9 @@ async fn a_fresh_colony_answers_out_of_a_memory_it_never_saw_written() {
     // ── 1. the colony that remembers, and the walk out of it ────────────────
     let source_td = tempfile::TempDir::new().unwrap();
     let export_dir = a_past_on_disk(&source_td).await;
-    // Since GH #471 the sink files a part under the hive it came out of, so
-    // this colony's one sender writes `memory-hive/seed/`.
+    // Since GH #471 a document is filed under the hive it came out of, and since
+    // GH #555 it is the hive's own store that files it: the porter names
+    // `memory-hive`, the store writes `<fence>/memory-hive/seed/`.
     let seed = export_dir.join("memory-hive").join("seed");
     assert!(
         seed.join("export_final.json").is_file(),
@@ -835,14 +819,12 @@ async fn the_second_step_takes_a_later_document_into_the_running_member() {
 
     let target_td = tempfile::TempDir::new().unwrap();
     let target = boot_target(&target_td).await;
-    let mut manifest = build_manifest(&export_dir, &target_td.path().join("templates"));
+    let manifest = build_manifest(&export_dir, &target_td.path().join("templates"));
     // An import receipt rides the same `dump` lane the export parts ride, so
     // the level's sink is going to be spawned by this test. Its shipped
     // `restricted` profile is fail-closed against the host (see the module
     // header), and it is relaxed here through the DECLARED override rather than
     // by editing the tree — which is also the one place a reader would relax it.
-    manifest["manifest"][0]["diff"]["add_nodes"][0]["override_params"] =
-        json!({"export-sink": {"sandbox": {"trust": "trusted"}}});
     let outcome = apply(&target, manifest).await;
     assert!(
         outcome.is_committed(),

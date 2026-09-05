@@ -34,7 +34,7 @@
           }
         },
         {
-          "from": "./cron",
+          "from": "./clock",
           "to": "./fetcher",
           "condition": "has(hop.schedule_name) && hop.schedule_name == 'daily-digest'",
           "modifier": {
@@ -84,7 +84,7 @@
     "use_when": "Daily one-URL digest to one chat, or a run demanded from outside on lane in_digest. Non-2xx fetches have no edge -- they dead-letter (wire a failure branch if you need alerting).",
     "not_in_scope": "No retries, no aggregation, no summarization.",
     "examples": [
-      "cron -> fetcher -> format -> notifier. chat_id travels: timer emit_headers (string) -> context on edge 1 -> recast to number by format -> context on edge 3. A run demanded at the hive path on lane in_digest enters at the fetcher with context.digest_origin 'parent' and its formatted digest leaves at the hive path on lane digest instead of going to the notifier; the caller brings context.chat_id itself."
+      "clock -> fetcher -> format -> notifier. chat_id travels: timer emit_headers (string) -> context on edge 1 -> recast to number by format -> context on edge 3. A run demanded at the hive path on lane in_digest enters at the fetcher with context.digest_origin 'parent' and its formatted digest leaves at the hive path on lane digest instead of going to the notifier; the caller brings context.chat_id itself."
     ]
   }
 }

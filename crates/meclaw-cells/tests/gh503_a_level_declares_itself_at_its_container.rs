@@ -37,7 +37,7 @@
 
 use meclaw_core::Path;
 use meclaw_core::serde_json::{Value, json};
-use meclaw_testing::{emit_one, shipped_script};
+use meclaw_testing::{emit_all, shipped_script};
 use std::path::PathBuf;
 
 const RECIPES: &str = concat!(
@@ -52,17 +52,24 @@ fn repo(rel: &str) -> PathBuf {
 }
 
 fn grow(params: Value) -> Value {
-    let out = emit_one(
+    // The FIRST manifest. Since GH #543 a member wish renders two — the level,
+    // and then the screen and the app that member always gets — and what this
+    // file is about is the level.
+    let out = emit_all(
         &shipped_script(RECIPES),
         &json!({
             "target": "/os/builder/recipes",
-            "header": {"hop": {"route": "recipe"}, "context": {}},
+            "header": {"hop": {"route": "recipe", "member_index": "0"},
+                       "context": {}},
             "ttl": 64,
             "messages": [{"origin": "tool", "type": "tool_result", "id": "",
                           "text": json!({"recipe": "grow_level", "request": "…",
                                          "params": params}).to_string()}],
         }),
-    );
+    )
+    .into_iter()
+    .find(|m| m["header"]["operation"] == json!("recipe"))
+    .expect("a first manifest");
     let decls = out["manifest"]
         .as_array()
         .unwrap_or_else(|| panic!("no manifest: {out}"));

@@ -55,19 +55,27 @@ fn repo(rel: &str) -> PathBuf {
         .join(rel)
 }
 
-/// One emission of the renderer, header and manifest alike.
+/// The renderer's FIRST answer to a wish, header and manifest alike.
+///
+/// First, because since GH #543 a member wish renders two manifests — the level,
+/// and then the devices that member always gets. The birth state under test is
+/// a property of the level, which is the first one.
 fn run_recipes(params: Value) -> Value {
-    emit_one(
+    let all = emit_all(
         &shipped_script(RECIPES),
         &json!({
             "target": "/os/builder/recipes",
-            "header": {"hop": {"route": "recipe"}, "context": {}},
+            "header": {"hop": {"route": "recipe", "member_index": "0"},
+                       "context": {}},
             "ttl": 64,
             "messages": [{"origin": "tool", "type": "tool_result", "id": "",
                           "text": json!({"recipe": "grow_level", "request": "…",
                                          "params": params}).to_string()}],
         }),
-    )
+    );
+    all.into_iter()
+        .next()
+        .expect("the renderer answers a wish at all")
 }
 
 /// One emission of the switch, for a wish written as a sentence.
@@ -215,7 +223,7 @@ fn an_unknown_birth_state_is_refused_by_name_and_no_manifest_comes_back() {
     let early = run_classify(json!({
         "recipe": "grow_level", "request": "…",
         "params": {"scope": "/os", "level": "org", "name": "acme",
-                   "template": "org@1.3.0", "birth": "dormant"}}));
+                   "template": "org@1.4.0", "birth": "dormant"}}));
     assert_eq!(
         early["header"]["route"],
         json!("error"),

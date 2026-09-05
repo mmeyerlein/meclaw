@@ -209,12 +209,6 @@ fn args_of(msg: &Value) -> Value {
     meclaw_core::serde_json::from_str(text).unwrap_or(Value::Null)
 }
 
-/// The document part carried by a `dump` message.
-fn part_of(msg: &Value) -> Value {
-    let text = msg["messages"][0]["text"].as_str().unwrap_or("null");
-    meclaw_core::serde_json::from_str(text).unwrap_or(Value::Null)
-}
-
 fn store_ops(out: &[Value]) -> Vec<Value> {
     out.iter()
         .filter(|m| route_of(m) == "pstore")
@@ -241,61 +235,71 @@ fn episode_row(id: &str, audience: &str) -> Value {
            "recorded_at": "2026-08-19T10:00:00Z"})
 }
 
-// ------------------------------------------------------- driving the export
+// ---------------------------------------------------- building the document
+//
+// Since GH #555 the EXPORT half of this lane is not a walk of messages any
+// more: the hive's store writes `<fence>/<dir>/seed/<table>.jsonl` itself
+// through the substrate's `transfer` slot, and the porter's export leg is one
+// message that names the directory and the walk. What a reader does with those
+// files — turn each one back into an `in_import` part, header line as the
+// schema and the rest as its rows — is what
+// `examples/memory-import/build_import.py` does and what this helper builds,
+// out of the porter's OWN declarations rather than out of a copy of them.
+//
+// The file half is pinned where it now happens:
+// `crates/meclaw-colony/tests/gh555_the_slot_writes_its_own_files.rs` (the
+// bytes) and `crates/meclaw-cells/tests/gh555_the_holders_write_their_own_export.rs`
+// (the whole path, on the shipped member).
 
 struct Walk {
-    /// The `select` the porter issued for each table, in walk order.
-    selects: Vec<(String, Value)>,
-    /// The document parts it emitted, in walk order.
+    /// The document parts a reader rebuilds, in walk order.
     parts: Vec<Value>,
 }
 
-/// Runs the whole export walk of the shipped script, answering every read with
-/// whatever `rows_for` says that table holds.
+/// The document of one export, as the files carry it: one part per table of the
+/// porter's own `WALK`, in that order, with the store's own schema as the header
+/// and whatever `rows_for` says that table holds.
 fn walk_export(rows_for: &dyn Fn(&str) -> Vec<Value>) -> Walk {
-    let mut walk = Walk {
-        selects: Vec::new(),
-        parts: Vec::new(),
-    };
-    let mut out = run_hop(&json!({
-        "header": {"context": {"mem_phase": "export"}, "hop": {}},
-        "messages": []
-    }));
-    assert_eq!(out.len(), 1, "the walk starts with exactly one read");
-    let mut next = out.remove(0);
-    for _ in 0..64 {
-        let table = next["header"]["port_table"]
-            .as_str()
-            .unwrap_or("")
-            .to_string();
-        let run = next["header"]["port_run"]
-            .as_str()
-            .unwrap_or("")
-            .to_string();
-        walk.selects.push((table.clone(), args_of(&next)));
-        let rows = rows_for(&table);
-        let mut got = run_hop(&json!({
-            "header": {"context": {"mem_phase": "export-page", "port_run": run,
-                                   "port_table": table, "store_origin": "porter"},
-                       "hop": {"operation": "select"}},
-            "messages": [{"origin": "tool", "type": "tool_result",
-                          "text": Value::Array(rows).to_string()}]
-        }));
-        assert_eq!(route_of(&got[0]), "dump", "a page answers with its part");
-        walk.parts.push(part_of(&got[0]));
-        if got.len() == 1 {
-            return walk;
+    let decl = declarations();
+    let tables: Vec<String> = decl["WALK"]
+        .as_array()
+        .expect("the porter declares a walk")
+        .iter()
+        .map(|v| v.as_str().expect("a table name").to_string())
+        .collect();
+    let of = tables.len();
+    let key_of = |t: &str| -> Value {
+        if decl["ALIAS_DIM"].get(t).is_some() {
+            return json!(["alias"]);
         }
-        next = got.remove(1);
-    }
-    panic!("the export walk did not terminate");
+        if decl["REJECT_DIM"].get(t).is_some() {
+            return json!(["left_value", "right_value"]);
+        }
+        decl["KEYS"].get(t).cloned().unwrap_or(json!([]))
+    };
+    let parts = tables
+        .iter()
+        .enumerate()
+        .map(|(i, table)| {
+            json!({
+                "format": decl["FORMAT"],
+                "hive_template": "memory-hive",
+                "export_id": "gh243",
+                "exported_at": "2026-09-04T00:00:00.000000Z",
+                "table": table,
+                "part": i + 1,
+                "of": of,
+                "final": i + 1 == of,
+                "absent": false,
+                "schema": decl["SCHEMA"][table],
+                "key": key_of(table),
+                "rows": rows_for(table),
+            })
+        })
+        .collect();
+    Walk { parts }
 }
 
-// ------------------------------------------------------- driving the import
-
-/// Runs one part through the whole import chain and returns the FINAL emission
-/// — the ops that actually change the target store. `present` is what the
-/// target already holds, as the probe would answer it.
 fn import_part(part: &Value, present: &[Value]) -> Vec<Value> {
     let first = run_hop(&json!({
         "header": {"context": {"mem_phase": "import"}, "hop": {}},
@@ -485,74 +489,63 @@ fn the_thread_a_turn_belonged_to_travels_with_it() {
     );
 }
 
-/// CLAIM 2 — a part projects every column the table declares, provenance first.
+/// CLAIM 2 — every column the table declares travels, provenance first.
 ///
 /// The read path learned this the hard way (#244): a filter over a column
 /// nobody selected is a filter that never fires. One axis further on, a column
 /// nobody selects is a column that never leaves the store — and the three that
 /// matter most are the ones that say who was there.
+///
+/// Since GH #555 the projection is the SUBSTRATE's — an export projects every
+/// column of the table, without a limit and in key order, and the slot's own
+/// tests pin that. What is still this script's decision is WHICH tables travel
+/// and which columns the mirror claims they have, and that is what is measured
+/// here: a column the mirror lost would silently stop being exported and
+/// silently stop being demanded of an incoming part.
 #[test]
 fn every_part_projects_the_columns_the_audience_gate_lives_in() {
     let Some(_) = hive_root() else { return };
+    let store = config_at("store/config.json");
     let decl = declarations();
     let mirror = decl["SCHEMA"].as_object().unwrap();
-    let walk = walk_export(&|_| vec![]);
+    let walk: Vec<&str> = decl["WALK"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
 
-    for (table, select) in &walk.selects {
-        assert_eq!(select["operation"], "select", "{table}");
-        assert_eq!(select["table"], table.as_str());
-        let mut got: Vec<&str> = select["columns"]
-            .as_array()
-            .unwrap_or_else(|| panic!("{table} was read without a columns array"))
-            .iter()
-            .map(|v| v.as_str().unwrap())
-            .collect();
-        got.sort_unstable();
-        let mut want: Vec<&str> = mirror[table]
+    for table in &walk {
+        let cols = mirror
+            .get(*table)
+            .unwrap_or_else(|| panic!("{table} is on the walk and not in the mirror"))
             .as_object()
-            .unwrap()
-            .keys()
-            .map(String::as_str)
-            .collect();
-        want.sort_unstable();
-        assert_eq!(got, want, "{table} does not export every declared column");
-        assert!(
-            select.get("limit").is_none(),
-            "{table} was read with a limit: a truncated part lies about being a table"
-        );
-        assert!(
-            select.get("order_by").is_some(),
-            "{table} was read unordered: two exports of one hive would not be diffable"
-        );
+            .unwrap();
+        if let Some(declared) = store["params"]["schema"].get(*table) {
+            assert_eq!(
+                mirror[*table], *declared,
+                "{table} does not mirror every declared column"
+            );
+        }
+        assert!(!cols.is_empty(), "{table} travels with no columns at all");
     }
     for (table, cols) in decl["PROVENANCE"].as_object().unwrap() {
-        let select = &walk
-            .selects
-            .iter()
-            .find(|(t, _)| t == table)
-            .unwrap_or_else(|| panic!("{table} is audience-bearing but never read"))
-            .1;
+        assert!(
+            walk.contains(&table.as_str()),
+            "{table} is audience-bearing and is not on the walk"
+        );
         for col in cols.as_array().unwrap() {
             assert!(
-                select["columns"].as_array().unwrap().contains(col),
-                "{table} is exported without {col}"
+                mirror[table].get(col.as_str().unwrap()).is_some(),
+                "{table} would travel without {col}"
             );
         }
     }
     // The one identity column that is neither audience nor key and would still
     // be lost silently.
-    let eps = &walk
-        .selects
-        .iter()
-        .find(|(t, _)| t == "episodes")
-        .unwrap()
-        .1;
     assert!(
-        eps["columns"]
-            .as_array()
-            .unwrap()
-            .contains(&json!("speaker")),
-        "episodes are exported without who spoke"
+        mirror["episodes"].get("speaker").is_some(),
+        "episodes would travel without who spoke"
     );
 }
 
@@ -803,8 +796,10 @@ fn the_same_document_applied_twice_writes_nothing_the_second_time() {
         store_ops(&out).is_empty(),
         "the second application wrote rows the target already had"
     );
+    // Since GH #555 `dump` carries the import receipt and nothing else, so the
+    // `dump_kind` key that told it from an export part is gone with the
+    // distinction — the lane IS the receipt now.
     let receipt = out.iter().find(|m| route_of(m) == "dump").expect("receipt");
-    assert_eq!(receipt["header"]["dump_kind"], json!("import_receipt"));
     assert_eq!(receipt["header"]["rows_written"], json!(0));
 
     // Half applied is half written, and only the half that is missing.
@@ -1037,7 +1032,9 @@ fn the_hive_declares_the_transfer_lanes_and_makes_their_drains_mandatory() {
         .map(|d| (d["accepts"].as_str().unwrap(), d["emits"].as_str().unwrap()))
         .collect();
     for pair in [
-        ("in_export", "dump"),
+        // GH #555 — the export half writes its own files and reports on
+        // `export_done`; `dump` is the import receipt and nothing else.
+        ("in_export", "export_done"),
         ("in_export", "reject"),
         ("in_import", "dump"),
         ("in_import", "reject"),

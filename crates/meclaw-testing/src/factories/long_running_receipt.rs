@@ -173,7 +173,7 @@ impl CellFactory for LongRunningReceiptFactory {
                 let cit = colony_inbox_tx.clone();
                 let bs = blob_store.clone();
                 let cons = consumes.clone();
-                let ws = bounds;
+                let ws = bounds.clone();
                 let join = tokio::spawn(async move {
                     cell_task_long_running(
                         p,

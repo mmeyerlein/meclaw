@@ -1,4 +1,4 @@
-# `org@1.3.0`
+# `org@1.4.0`
 
 The namespace, and nothing else.
 
@@ -41,6 +41,7 @@ The contract carries exactly what must cross this level to reach or leave a memb
 | emits | `write` | an assistant's batched conversation write, crossing on its way out |
 | emits | `turn_write` | one finished turn a member's assistant offers for archiving |
 | emits | `prune` | a housekeeping report from a member's assistant |
+| accepts | `mutation_committed` | the mutation door's receipt: the graph moved (GH #553). This level takes no part in what it means -- it carries it into `./members`, and declaring it is what makes it a mandatory hop for the lane |
 | accepts | `in_build_result` | the builder's answer on its way back into the member it belongs to |
 | emits | `build` | a structural wish or a submission leaving one of this organisation's members, bound for the one baumeister the whole colony shares |
 | accepts | `in_export` | a demand that a member's memory hand out everything it remembers, as a versioned document. The parts never cross this level -- they land on disk inside the member |
@@ -53,7 +54,7 @@ Each lane's `because` says the same thing in the hive's own words: **the level i
 boundary and a namespace, not a participant.** It reads nothing, decides nothing and
 holds nothing, and it translates nothing -- hop and context cross untouched.
 
-The internal graph is nineteen edges and nothing else: **seven doors** `.` into
+The internal graph is twenty edges and nothing else: **eight doors** `.` into
 `./members`, one per accepted lane, and **twelve exits** `./members` back out to `.`, one
 per emitted lane. The pair that arrived with GH #425, the three with GH #447, `pack_ack`
 with GH #458, `in_import` with GH #467 and `bundle` with GH #533 add no cell
@@ -115,6 +116,17 @@ drain: identity and meaning belong to the member's `affinity`, observations to t
 member's `memory-hive`, the screen to the member's `firewall`. Anything an organisation
 seems to need is either one member's or the shell's.
 
+**And a port is the shell's.** The same test answers the question GH #543 asked: a screen
+owns a TCP port, every member grows a screen, and the number cannot come from here. A port
+is **system-near** — scarce, colony-wide, and two holders of one is a collision rather than
+a disagreement — and a colony carries many organisations and exactly one OS. So an
+organisation holds no port band and assigns no port; it **asks the OS**
+(ADR-0022). Today that ask
+is implicit: the `builder` at the shell level gives every member it grows
+`screen_port_base` plus that member's index in this organisation, counted off
+`/colony/graph`. This level stays what it is — a namespace — and that is why it needs no
+configuration surface of its own, which is fortunate, because it has none to have.
+
 **The one exception, and it is not an exception to the rule.** A group that owns an
 agent nobody owns personally -- a shared assistant, a duty desk, a support persona --
 is a **member** with its own name, instantiated from `member` like any other. It
@@ -156,7 +168,7 @@ the first second.
 
 Two mutations, in this order.
 
-1. **The organisation.** One `add_nodes` with the template `org@1.3.0`, plus the transit
+1. **The organisation.** One `add_nodes` with the template `org@1.4.0`, plus the transit
    edges -- one per accepted lane onto the org's own path, and one per emitted lane
    back out to whoever asked. Nothing is registered as a cell: both directories become
    hive scopes, and a hive is a scope marker, not an actor. The inbound edges carry

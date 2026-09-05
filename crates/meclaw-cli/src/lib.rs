@@ -859,8 +859,9 @@ pub async fn run_with_hooks_tuned(
     let inbox_self_tx = inbox_tx.clone();
     // Deep-Audit F3: heartbeat channel — the colony loop emits ~10×/s; the
     // supervisor below counts misses and triggers a clean stop on colony death.
-    let (heartbeat_tx, heartbeat_rx) =
-        tokio::sync::mpsc::channel::<meclaw_colony::watchdog::Beat>(8);
+    let (heartbeat_tx, heartbeat_rx) = tokio::sync::mpsc::channel::<meclaw_colony::watchdog::Beat>(
+        meclaw_colony::watchdog::HEARTBEAT_CAPACITY,
+    );
 
     // Step 5.3 — Direct-Mode egress channel: root-hive HiveNoRoute → stdout.
     // Only set in Direct-Mode; --daemon/--api paths leave egress as None → DLQ

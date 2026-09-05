@@ -1,4 +1,4 @@
-# `access@2.4.3`
+# `access@2.5.0`
 
 The capability broker: an agent may **ask in natural language**, what travels on the wire
 is a **handle**, and no secret ever travels with a request. Built out of existing cell
@@ -752,7 +752,7 @@ residual.
 Five further limits, named rather than papered over:
 
 - **No encryption at rest** for `cell.db`, and no key rotation in the substrate.
-- **The `usage` page is bounded** (`ACCESS_USAGE_ROWS`, default 500). A `max_invocations`
+- **The `usage` page is bounded** (`params.usage_rows` of `./invoke`, default 500). A `max_invocations`
   above that bound cannot be enforced.
 - **No grant context in an agent's system prompt.** That an agent knows it has to ask is
   prompt and tool design, not something this template can arrange.
@@ -775,18 +775,54 @@ a comparison, recorded in a row, and addressed from a grant.
 
 ## Settings
 
-**Env knobs are an experimental surface.** Until this template's knobs move onto the `params`
-block of the cells that read them, their names carry no compatibility promise and may change in
-any `0.x` release; provider credentials keep living in `.env` either way. The migration is
-tracked in [#138](https://github.com/mmeyerlein/meclaw/issues/138), with the
-`collector@1.2.0` migration ([#136](https://github.com/mmeyerlein/meclaw/issues/136)) as the
-reference pattern.
+Two lanes, and the line between them is the ruling of
+[#138](https://github.com/mmeyerlein/meclaw/issues/138) (R-0904-6): a behaviour
+knob is a **param** of the cell that reads it; only the provider lane stays in
+`.env`, because a secret in a `config.json` is a secret in the repository.
 
-| variable | default | meaning |
-|---|---|---|
-| `ACCESS_SWEEP_CRON` | `0 */5 * * * *` | 6-field Quartz cron of the TTL sweep, **UTC** |
-| `ACCESS_POLICY_ROWS` | `200` | page bound of one rule read |
-| `ACCESS_MAX_TTL_MS` | `86400000` | the ceiling no rule can raise |
-| `ACCESS_USAGE_ROWS` | `500` | page bound of the quota read |
-| `ACCESS_SWEEP_ROWS` | `200` | grants examined per tick |
-| `ACCESS_SWEEP_EVENT_ROWS` | `2000` | event page per tick |
+Since `access@2.5.0` every knob below is a param. Two brokers in one colony can
+therefore be bounded apart -- which an environment they share could not say --
+and the manifest that grows one sets them with `override_params`, keyed by cell
+path:
+
+```json
+{"op": "add_nodes", "scope": "/os",
+ "nodes": [{"name": "access", "template": "access@2.5.0",
+            "override_params": {
+              "policy": {"max_ttl_ms": 3600000, "policy_rows": 1000},
+              "sweep":  {"sweep_rows": 500},
+              "vault":  {"unlock_env": "OS_VAULT_PASSPHRASE"}}}]}
+```
+
+The mutation door accepts those keys precisely because they EXIST under `params`
+([#294](https://github.com/mmeyerlein/meclaw/issues/294) ruling Q6: an override
+names a param the addressed cell has, and a cell with no `params` block has the
+empty set). While a knob was a `${...}` token inside `script_inline` it was not a
+param key at all, and no override could name it.
+
+A knob left out means the shipped default, and so does `null` -- that is "not
+configured", not a crash. Every knob here is a number and is read with `_int`, so
+a **blank string** falls back too: there is no number in it to read.
+
+| cell | param | default | meaning |
+|---|---|---|---|
+| `./clock` | `schedules[0].cron` | `0 */5 * * * *` | 6-field Quartz cron of the TTL sweep, **UTC**. A timer has no top-level `cron` param -- `TimerParams` reads `schedules` -- so an override replaces the whole array |
+| `./policy` | `policy_rows` | `200` | page bound of one rule read |
+| `./policy` | `max_ttl_ms` | `86400000` | the ceiling no rule can raise |
+| `./invoke` | `usage_rows` | `500` | page bound of the quota read |
+| `./sweep` | `sweep_rows` | `200` | grants examined per tick |
+| `./sweep` | `sweep_event_rows` | `2000` | event page per tick |
+| `./vault` | `key_source` | `auto` | where the master key comes from: `auto`, `prompt`, `systemd-cred`, `plainfile`. It names a SOURCE, never key material, which is why it moved with the rest |
+| `./vault` | `credential_name` | `vault_key` | the file read under `$CREDENTIALS_DIRECTORY` when `key_source` resolves to `systemd-cred`. A file NAME, not its content |
+| `./vault` | `unlock_env` | `null` | **the one setting every deployment makes**: the NAME of the environment variable holding the passphrase. Declared here so a manifest can set it (GH #427); shipped unset, because a woken vault is locked until an operator opens it |
+
+Nothing secret moved onto the params surface, and nothing in this hive stores a
+secret in a `config.json`. The passphrase is still an environment variable --
+this hive only ever names it -- and the credential material itself lives in the
+vault's own encrypted store.
+
+**A standing instance keeps what it was grown with.** Instantiation is a COPY, so
+a broker grown before `2.5.0` still carries the old `${ACCESS_*}` / `${VAULT_*}`
+tokens in its own `config.json` and still reads them out of the environment.
+Nothing here reaches it; what changes is only that a NEW broker will not read
+those lines.

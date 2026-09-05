@@ -1,8 +1,8 @@
 {
   "name": "canvy",
-  "version": "2.1.10",
+  "version": "2.2.0",
   "description": {
-    "purpose": "An interactive canvas of the colony, on a port of its own. A timer takes a topology snapshot, a code cell turns it into display objects, and a `web` cell holds them and serves the page. The browser owns the drag and the camera; nothing else.",
+    "purpose": "An interactive canvas of the colony, on a port of its own. A timer takes a topology snapshot, a code cell turns it into display objects, and a `web` cell holds them and serves the page. The browser owns the drag and the camera; nothing else. Since 2.2.0 the refresh cadence is a LITERAL inside `./clock`'s `params.schedules` rather than a `CANVY_REFRESH_CRON` substitution token out of the colony's environment ([#138](https://github.com/mmeyerlein/meclaw/issues/138), ruling R-0904-6), so two canvases in one colony refresh at different cadences -- the environment form had one value for all of them.",
     "use_when": "Somebody should see and rearrange something the colony knows, in a browser. One canvy per canvas: two canvases are two hives on two ports, which is what makes one reverse-proxy rule a complete access statement for one of them.",
     "not_in_scope": "It draws nothing the topology snapshot does not hold, and that snapshot arrives on a timer through this hive's OWN lane to the colony's read-only graph endpoint (GH #163), so the canvas is as fresh as that timer. No authentication and no TLS: the display binds loopback by default and everything in front of it is somebody else's job (R-W8-2). No object library beyond cells, hives and edges. No interior address: `params.ports` is empty, so no cell in here is an endpoint -- a caller names the hive and a lane (in_refresh in, event out).",
     "examples": [

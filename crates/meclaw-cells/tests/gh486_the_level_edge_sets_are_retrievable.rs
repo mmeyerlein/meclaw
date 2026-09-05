@@ -23,18 +23,27 @@
 //! artefact do a second job.
 //!
 //! **A chunk that does not survive retrieval is not indexed.**
-//! `builder-librarian/retrieve` hands the model `text[:1200]` of every row it
-//! returns, so a level whose set is published in a 2900-character chunk is
-//! published as its first two edges. That is why this file asserts the size as
-//! well as the content: the retrieval unit is the unit that has to be complete.
+//! `builder-librarian/retrieve` cuts every row it returns to the window its
+//! KIND is given, so a level whose set is published in a 2900-character chunk
+//! is published as its first two edges. That is why this file asserts the size
+//! as well as the content: the retrieval unit is the unit that has to be
+//! complete. Since GH #543 a level row has a window of its own, for exactly
+//! that reason.
 
 use meclaw_core::serde_json::Value;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-/// The retriever's own truncation. Mirrored, not imported — the point of the
-/// gate is to be red if the two ever disagree about what arrives whole.
-const RETRIEVED_CHARS: usize = 1200;
+/// The retriever's own truncation for a LEVEL row. Mirrored, not imported — the
+/// point of the gate is to be red if the two ever disagree about what arrives
+/// whole.
+///
+/// It is the THIRD window `builder-librarian/retrieve` keeps, and it exists
+/// because of what this file asserts: a level row had lived inside the ordinary
+/// 1200 with fourteen characters to spare, which is a coincidence rather than a
+/// margin, and GH #543 spent it. The set is what must survive, so the window
+/// moved rather than the set (`params.level_chars` of `./retrieve`).
+const RETRIEVED_CHARS: usize = 1600;
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../")

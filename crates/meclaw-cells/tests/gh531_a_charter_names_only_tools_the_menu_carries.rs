@@ -174,13 +174,17 @@ fn on(c: &Composite, key: &str) -> bool {
     }
 }
 
-/// The names the collector answers ITSELF (GH #512), decided by the two switches
-/// that already decide whether the lane is answered instead of refused.
+/// The names the collector answers ITSELF (GH #512), decided by the switch that
+/// already decides whether the lane is answered instead of refused.
+///
+/// It was two until GH #552. `memory_call_tier` decided the second, and the
+/// second was `memory_recall` — served out of the collector's own recall port
+/// under a schema it had typed by hand against a contract one level up. The
+/// member's memory hive declares and answers it now, so it reaches this
+/// composite's menu the ordinary way: DECLARED in `params.tools` and routed by an
+/// edge, which is what `menu` below already measures.
 fn self_served(c: &Composite) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
-    if on(c, "memory_call_tier") {
-        out.insert("memory_recall".to_string());
-    }
     if on(c, "thread_recall") {
         out.insert("thread_recall".to_string());
     }

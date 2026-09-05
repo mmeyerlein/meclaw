@@ -27,44 +27,20 @@ use std::process::{Command, Stdio};
 
 const PREP_CONFIG: &str = "../../templates/summarizer/prep/config.json";
 
-/// `${VAR:-default}` becomes the default (or the override, when the case names
-/// one), a bare `${VAR}` becomes the empty string -- the same substitution the
-/// colony performs when it instantiates the template.
-fn resolve_vars(script: &str, over: &[(&str, &str)]) -> String {
-    let mut out = String::with_capacity(script.len());
-    let mut rest = script;
-    while let Some(start) = rest.find("${") {
-        out.push_str(&rest[..start]);
-        let tail = &rest[start + 2..];
-        let end = tail
-            .find('}')
-            .expect("unterminated ${...} in script_inline");
-        let inner = &tail[..end];
-        let (name, default) = match inner.split_once(":-") {
-            Some((n, d)) => (n, d),
-            None => (inner, ""),
-        };
-        let value = over
-            .iter()
-            .find(|(k, _)| *k == name)
-            .map(|(_, v)| *v)
-            .unwrap_or(default);
-        out.push_str(value);
-        rest = &tail[end + 1..];
-    }
-    out.push_str(rest);
-    out
-}
-
-fn prep_script(over: &[(&str, &str)]) -> String {
+/// The shipped script, verbatim.
+///
+/// There is nothing left to substitute: since `summarizer@2.1.0` the four
+/// weighting knobs of `./prep` are params of that cell rather than substitution
+/// tokens (GH #138), so a case that wants a different weighting hands one down
+/// on the stdin document's `params` object -- the same object an
+/// `override_params` entry fills at instantiation.
+fn prep_script() -> String {
     let raw = std::fs::read_to_string(PREP_CONFIG).expect("prep config");
     let v: serde_json::Value = serde_json::from_str(&raw).expect("config json");
-    resolve_vars(
-        v["params"]["script_inline"]
-            .as_str()
-            .expect("script_inline"),
-        over,
-    )
+    v["params"]["script_inline"]
+        .as_str()
+        .expect("script_inline")
+        .to_string()
 }
 
 /// Run a shipped script over a real stdin document, handing the script to
@@ -104,9 +80,10 @@ fn run_script_on_stdin(script: &str, stdin_doc: &str) -> std::process::Output {
 
 /// Run the real script against a real stdin document and return the emitted
 /// messages.
-fn emit_with(over: &[(&str, &str)], doc: serde_json::Value) -> Vec<serde_json::Value> {
+fn emit_with(params: serde_json::Value, mut doc: serde_json::Value) -> Vec<serde_json::Value> {
+    doc["params"] = params;
     let out = run_script_on_stdin(
-        &prep_script(over),
+        &prep_script(),
         &meclaw_testing::code_stdin(&doc).to_string(),
     );
     assert!(
@@ -123,7 +100,7 @@ fn emit_with(over: &[(&str, &str)], doc: serde_json::Value) -> Vec<serde_json::V
 }
 
 fn emit(doc: serde_json::Value) -> Vec<serde_json::Value> {
-    emit_with(&[], doc)
+    emit_with(serde_json::json!({}), doc)
 }
 
 fn turn(origin: &str, text: &str) -> serde_json::Value {
@@ -203,10 +180,7 @@ fn a_write_batch_becomes_one_prompt_for_the_writer() {
 #[test]
 fn the_prompt_keeps_recent_turns_verbatim_and_condenses_older_ones() {
     let out = emit_with(
-        &[
-            ("SUMMARIZER_RECENT_TURNS", "2"),
-            ("SUMMARIZER_PHASEOUT_CHARS", "10"),
-        ],
+        serde_json::json!({"recent_turns": 2, "phaseout_chars": 10}),
         batch_doc(
             vec![
                 turn("user", "alpha-0123456789-ALPHA-TAIL"),
@@ -289,7 +263,7 @@ fn tool_rounds_enter_the_prompt_capped_and_bookkeeping_rows_do_not() {
                   "text": "result-0123456789-RESULT-TAIL"}, "fired": 1}
     ]);
     let out = emit_with(
-        &[("SUMMARIZER_TOOL_CHARS", "15")],
+        serde_json::json!({"tool_chars": 15}),
         batch_doc(vec![turn("user", "look it up")], rounds),
     );
     assert_eq!(out.len(), 1);

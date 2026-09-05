@@ -1,4 +1,4 @@
-# `dispatcher@1.1.2`
+# `dispatcher@1.2.0`
 
 The fan-**out** half of a tool loop, as one `code` cell -- no new cell type, no Rust.
 Its counterpart is the fan-**in**: [`collector`](../collector/), which assembles the
@@ -19,7 +19,7 @@ messages a graph can route.
 - **The expectation set first.** The assistant turn goes to the fan-in *before* any tool
   message leaves (PLAIN order). A tool that answers in a millisecond can otherwise report
   a result for a round the collector has not been told about yet.
-- **A budget that answers instead of dropping.** A bundle above `DISPATCHER_MAX_CALLS`
+- **A budget that answers instead of dropping.** A bundle above `max_calls`
   runs no tool at all -- and every expected `tool_call_id` still gets a reply, a synthetic
   error `tool_result`. The round stays fan-in-complete, so the brain sees the refusal and
   has to respond to it. A silently dropped call would stall the fan-in until the TTL runs
@@ -54,12 +54,12 @@ messages a graph can route.
   off. The final sentence is untouched by it: where nothing is waited for, that sentence
   **is** the answer of the turn.
 - **An async tool class that opens no expectation.** Names listed in
-  `DISPATCHER_ASYNC_TOOLS` are classified here -- this cell is the only one that ever sees
+  `async_tools` are classified here -- this cell is the only one that ever sees
   the whole bundle -- and their `tool_call_id`s ride out on `hop.async_calls`. The fan-in
   reads that and waits for the *other* calls only, so a tool that thinks for minutes never
   races the round's idle window.
 - **A handoff class on top of it, which also ends the turn.** Names listed in
-  `DISPATCHER_HANDOFF_TOOLS` are async *and* say that the answer comes from a **later
+  `handoff_tools` are async *and* say that the answer comes from a **later
   turn** -- an advisor's event, an escalation re-entering the seam. Their ids ride out on
   `hop.handoff_calls` beside `hop.async_calls`, and the fan-in files the round they leave
   behind as over even when no sentence stood beside the bundle. An async call that is *not*
@@ -121,31 +121,54 @@ edge with a log line per lane per message. Same rule as everywhere else --
 
 ## Knobs
 
-**Env knobs are an experimental surface.** Until this template's knobs move onto the `params`
-block of the cells that read them, their names carry no compatibility promise and may change in
-any `0.x` release; provider credentials keep living in `.env` either way. The migration is
-tracked in [#138](https://github.com/mmeyerlein/meclaw/issues/138), with the
-`collector@1.2.0` migration ([#136](https://github.com/mmeyerlein/meclaw/issues/136)) as the
-reference pattern.
+**Since `1.2.0` all four knobs of this cell are params, not environment
+variables** ([#138](https://github.com/mmeyerlein/meclaw/issues/138); the
+`collector@1.2.0` migration
+([#136](https://github.com/mmeyerlein/meclaw/issues/136)) is the reference
+pattern). Each one stands in the `params` block, is declared in
+`contract.settings`, and is the same value in both places plus as the fallback
+literal inside the script -- a test pins the three against each other. Defaults
+are bit-identical to the environment form they replace.
 
-| env var | default | meaning |
-|---|---|---|
-| `DISPATCHER_MAX_CALLS` | `16` | per-answer call budget. **At** the cap the bundle runs; one call over it, the bundle is refused **as a whole** and every id is answered with `call budget exceeded`. |
-| `DISPATCHER_ASYNC_TOOLS` | (empty) | comma-separated tool names that answer on a lane of their own instead of inside the round. Empty = no call is ever async. |
-| `DISPATCHER_HANDOFF_TOOLS` | (empty) | comma-separated tool names whose call ends the **turn**, because the answer comes from a later one. Naming a tool here declares it async as well -- the two lists are unioned. Empty = every async call is fire-and-forget. |
-
-And one on the `params` block, which is where the others are going
-([#138](https://github.com/mmeyerlein/meclaw/issues/138)) -- so a new knob starts there
-rather than adding a fourth token to the experimental surface:
+**What this buys, and it is the whole point here.** A substitution token resolved
+out of `.env` was colony-GLOBAL, and this template is instantiated MORE THAN ONCE
+in a single agent: `talky` has one dispatcher, `cogny` has another, `builder` a
+third. Under the old form the asking surface and the answering core shared one
+tool class list, which is exactly the thing they must not share -- a
+`consult_cogny` handoff belongs on the asking side and nowhere else. An
+`override_params` entry can now name the knob per cell, which it could not before
+(only a key a cell carries under `params` may be named,
+[#294](https://github.com/mmeyerlein/meclaw/issues/294)).
 
 | param | default | meaning |
 |---|---|---|
+| `max_calls` | `16` | per-answer call budget. **At** the cap the bundle runs; one call over it, the bundle is refused **as a whole** and every id is answered with `call budget exceeded`. |
+| `async_tools` | `""` | tool names that answer on a lane of their own instead of inside the round, as a JSON array or as one comma-separated string. Empty = no call is ever async. |
+| `handoff_tools` | `""` | tool names whose call ends the **turn**, because the answer comes from a later one. Same two forms. Naming a tool here declares it async as well -- the two lists are unioned. Empty = every async call is fire-and-forget. |
 | `interim` | `"1"` | whether a sentence standing next to a bundle leaves as an **interim** answer ([#539](https://github.com/mmeyerlein/meclaw/issues/539)). Off (`""`, `0`, `false`, `no`) the brain behind this cell has no channel, and the sentence does not leave the cell at all -- so it never reaches the window either, because the `calls` lane's text is dropped by the fan-in on the ground that the answer lane wrote it. A sentence nobody could hear was never said. A **final** sentence is unaffected. |
 
-One knob per concern: the first bounds **one brain answer**, the second says which calls
-the round is allowed to end without, the third which of those end the turn with them, and
-the fourth whether there is anybody to say a half-answer to. None of them bounds the loop
--- see below.
+```json
+"override_params": {
+  "talky/dispatcher": {"handoff_tools": ["consult_cogny"]},
+  "cogny/dispatcher": {"interim": "", "max_calls": 8}
+}
+```
+
+A knob set to `null` or to whitespace means "not configured" and falls back to
+the shipped default -- except `interim`, where a blank string is the VALUE that
+switches the channel promise off. A name list that is neither a string nor an
+array is read as EMPTY rather than half-read: a declaration that lost half its
+names would leave a fan-in waiting for a call that never answers.
+
+One knob per concern: the first bounds **one brain answer**, the second says
+which calls the round is allowed to end without, the third which of those end the
+turn with them, and the fourth whether there is anybody to say a half-answer to.
+None of them bounds the loop -- see below.
+
+**A standing instance is untouched.** Instantiation is a COPY, so a colony grown
+from `1.1.2` keeps its own `templates/` copy and goes on reading its `.env`. What
+stops working is the reverse: an old environment line in a colony grown from
+`1.2.0` is read by nothing at all, and says so nowhere.
 
 ## The async class (GH #28) and the handoff class (GH #372)
 
@@ -153,9 +176,9 @@ An advisor that thinks does not fit inside a round. Waiting for it would mean be
 round's idle window against thinking time -- and losing that bet means a synthetic "tool
 result lost" in the transcript. So the class is declared, once, here:
 
-```
-DISPATCHER_HANDOFF_TOOLS=consult_cogny
-DISPATCHER_ASYNC_TOOLS=write_journal
+```json
+"override_params": {"talky/dispatcher": {"handoff_tools": ["consult_cogny"],
+                                       "async_tools": ["write_journal"]}}
 ```
 
 **`remember` used to be the example in that second line, and it is not one any more.**
@@ -182,7 +205,7 @@ What changes for a call whose name is on either list:
 | key | value |
 |---|---|
 | `hop.async_calls` (on the `calls` lane) | the comma-joined `tool_call_id`s of the async calls in this bundle -- the fan-in opens no expectation for them |
-| `hop.handoff_calls` (on the `calls` lane) | the subset of those whose tool is on `DISPATCHER_HANDOFF_TOOLS`. Always present, empty included: a hop key that is sometimes absent makes a CEL modifier fail, and a failed modifier skips the edge |
+| `hop.handoff_calls` (on the `calls` lane) | the subset of those whose tool is named in `handoff_tools`. Always present, empty included: a hop key that is sometimes absent makes a CEL modifier fail, and a failed modifier skips the edge |
 | `hop.async` (on the `tool` lane) | `"1"` |
 | `hop.consult_id` | `arguments.consult_id` when the model answers a question the advisor asked back, otherwise the `tool_call_id`. One correlation across the whole exchange, in both directions. |
 | `hop.consult_eta` | `arguments.eta` -- the model's own coarse duration estimate, produced in the SAME turn (GH #123). **Logged, never consumed.** |

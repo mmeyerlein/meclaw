@@ -60,21 +60,41 @@ async fn an_idle_colony_loop_alternates_working_and_parked() {
         .with_heartbeat(hb_tx),
     ));
 
-    // The loop wakes itself ~10×/s while idle, so a second is many iterations.
+    // WANTED beats: twelve full iterations of an idle loop. The wait is bounded
+    // by the repo's 30 s failure-marker convention, NOT by the cadence — the
+    // loop wakes itself ~10×/s while idle, so this is a fifth of a second of
+    // work inside a thirty-second window.
+    //
+    // The earlier spelling counted whatever arrived inside a 1.2 s wall-clock
+    // window and demanded at least eight. That made the ASSERTION a cadence
+    // measurement, and on a host under parallel build load it read six beats
+    // and called a healthy loop broken (GH #579). Cadence is not what this test
+    // is about: the claim in the name is that the loop ALTERNATES, and the
+    // supporting claim is that an idle loop keeps beating at all.
+    //
+    // **Why a real defect still fails this.** The failure this guards is a loop
+    // that stops beating — wedged in an `.await`, or gone with its task. Such a
+    // loop delivers nothing, so it can never reach `WANTED` and the wait ends
+    // red at the marker. The same holds for a loop that beats once and then
+    // stops. What no longer fails it is a loop that beats late.
+    const WANTED: usize = 24;
     let mut beats: Vec<Beat> = Vec::new();
-    let deadline = tokio::time::Instant::now() + Duration::from_millis(1_200);
-    while tokio::time::Instant::now() < deadline && beats.len() < 24 {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while beats.len() < WANTED {
         match tokio::time::timeout_at(deadline, hb_rx.recv()).await {
             Ok(Some(b)) => beats.push(b),
-            _ => break,
+            Ok(None) => panic!(
+                "the colony loop dropped its heartbeat sender after {} beats: {beats:?}",
+                beats.len()
+            ),
+            Err(_) => panic!(
+                "an idle colony must keep beating; only {} of {WANTED} beats arrived \
+                 within the failure marker: {beats:?}",
+                beats.len()
+            ),
         }
     }
 
-    assert!(
-        beats.len() >= 8,
-        "an idle colony must keep beating; got {} beats: {beats:?}",
-        beats.len()
-    );
     assert!(
         beats.contains(&Beat::Working),
         "the loop must declare the work item it is about to enter: {beats:?}"

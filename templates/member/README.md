@@ -1,7 +1,7 @@
-# `member@1.5.1`
+# `member@1.6.0`
 
-One person, as a level. **Four holders, three open containers and one cell of
-its own** — eight nodes and fifty-two edges.
+One person, as a level. **Four holders, three open containers and no cell of
+its own** — seven nodes and sixty edges.
 
 | holder | what it holds |
 |---|---|
@@ -11,8 +11,11 @@ its own** — eight nodes and fifty-two edges.
 | [`access`](../access/README.md) | **the keys** — since 1.5.0 (GH #560). The provider credentials this person's agents authenticate with, held by the person rather than by the OS. Nothing in this level's graph reaches it but the drain for its `error` lane; a brain asks it over a v-lane. |
 
 Beside them stand `assistants` and — since 1.3.0 — `channels` and `apps`, three
-real, empty, open containers, and `export-sink`, the one `code` cell this level
-owns.
+real, empty, open containers. Since 1.6.0 there is nothing else: the one `code`
+cell this level owned, `export-sink`, is gone with
+[#555](https://github.com/mmeyerlein/meclaw/issues/555) — every holder's own
+store writes its seed set now, so the level composes nothing and files
+nothing.
 
 Memory produces, affinity decides, the screen measures. Three holders, three
 jobs, no overlap (GH #122, the three-holders ruling of 2026-08-19). Since
@@ -58,14 +61,37 @@ further: so does the way the person is reached.
 
 ## What crosses the boundary
 
-Seven lanes in, twelve out. Every one is a lane an occupant
-actually has at the version pinned above; nothing here describes a lane a holder
-lost.
+Eight lanes in, twelve out — **plus six that are not at this rim at all**: `recall` and
+`in_bundle` ([#562](https://github.com/mmeyerlein/meclaw/issues/562)) and, since 1.6.0,
+`tool`, `in_tool`, `schemas` and `in_menu` ([#552](https://github.com/mmeyerlein/meclaw/issues/552))
+carry `at: ["./assistants"]`. Both roads start inside `./assistants` and end inside
+`./memory-hive`, siblings in here; the declaration is what makes this level a hop nothing
+may skip, because this level is where the round a recall is asked in gets stamped. Every one
+of the twenty-six is a lane an occupant actually has at the version pinned above; nothing
+here describes a lane a holder lost.
+
+### The memory road has two legs (1.6.0)
+
+The AMBIENT one is older: `recall` up from an asker, `in_bundle` back down, one bundle per
+turn before the model has read it. The DELIBERATE one is the tool
+([#552](https://github.com/mmeyerlein/meclaw/issues/552)), and since `memory-hive@3.2.0` the
+memory answers it itself:
+
+| edge | lane | what it does |
+|---|---|---|
+| `./assistants -> ./memory-hive` | `tool`, `hop.tool_name == 'memory_recall'` | turns the call into the hive's own `tool_call` and stamps the round: `audience_now`, `channel`, `session_id`, `turn_id` |
+| `./memory-hive -> ./assistants` | `tool_result` | the answer, restamped to `in_tool` — an ordinary tool result re-entering the round that asked, refusals included |
+| `./assistants -> ./memory-hive` | `schemas` | a generation's menu tick, turned into the hive's own `in_schemas` |
+| `./memory-hive -> ./assistants` | `tool_schemas` | the declaration, restamped to `in_menu` and stamped `context.tool_answerer = 'memory'` — the key the menu merge of #529 files an answerer under |
+
+They are **template** edges rather than v-lanes, and that is the one place the two legs
+differ: this level is a mandatory hop for both, so nothing is bought by drawing the tool
+road per generation, and an edge on disk is an edge an audit can read.
 
 | in | goes to | the caller promotes |
 |---|---|---|
 | `in_turn` | the screen | `context.channel` — the chat or room this turn is in — and `context.user_id` if this colony has per-user firewall rules. The door edge promotes what it finds and falls back to the empty string, so an unpromoted channel costs one shared rate bucket rather than a vanished turn. A caller that wants the answer routed back into one of this member's own channels promotes `context.channel_node` as well (§ *The two channel keys*); an operator that does not gets the answer out of the level, which is what it asked for |
-| `in_recall` | the memory, as its own `in_query` | `hop.recall_query`, `hop.memory_tier`, `hop.recall_window_from`, `hop.recall_window_to`, `hop.memory_call_id` (the collector's correlation id, GH #411 — promoted into context because a hop does not survive the hive), plus the round: `context.audience_set` and `context.channel`. The answer comes back on `bundle` and the refusal on `reject`, both out of this level — see § *The asker outside* ([#533](https://github.com/mmeyerlein/meclaw/issues/533)); until then the lane promised an answer the level had no exit for |
+| `in_recall` | the memory, as its own `in_query` | `hop.recall_query`, `hop.memory_tier`, `hop.recall_window_from`, `hop.recall_window_to`, plus the round: `context.audience_set` and `context.channel`. The lane carried a correlation id as well until 1.6.0; it does not any more ([#552](https://github.com/mmeyerlein/meclaw/issues/552)), because the hive's own `bundle` exit branches on exactly that key to tell a tool round from the ambient one, and a door that set it would send every outside question through the adapter. The answer comes back on `bundle` and the refusal on `reject`, both out of this level — see § *The asker outside* ([#533](https://github.com/mmeyerlein/meclaw/issues/533)); until then the lane promised an answer the level had no exit for |
 | `in_brief` | the record, to read | `context.asker` and `context.audience_set` |
 | `in_propose` | the record, to write | `context.actor`, and `context.subscriber` for a `subscribe` |
 | `in_build_result` | `./assistants`, under the same name | nothing. Which generation it belongs to is decided by the per-instance edge inside the container, the same way `in_bundle` finds its way home |
@@ -78,13 +104,14 @@ lost.
 | `bundle` | the memory | the answer to a question that came in at this level's own `in_recall` door — the recalled material, on its way back to an asker OUTSIDE this member ([#533](https://github.com/mmeyerlein/meclaw/issues/533)). It leaves only for that asker: the exit is guarded on `hop.recall_caller == 'outside'`, and every other bundle goes DOWN into `./assistants` on the default edge, exactly as it always did |
 | `ack` | the record | a proposed change was accepted or rejected, with its reason code |
 | `reject` | the screen **or** the memory | a refusal. `hop.reject_reason` says which case. A refused RECALL is sorted like the answer to one since #533: the outside asker's leaves here, an assistant's goes back down as `in_bundle` |
-| `error` | the record, a **channel**, an **app**, an assistant **or** the export sink | a failure that was not a refusal. Which cell inside produced it is not the caller's business; the member is a boundary, not a consumer. The channel source arrived with #454 — a connector's own failure used to leave through the generation that held it. The app source arrived with #459, for the same reason, and so did one more case that is not an app's at all: a screen `event` or `receipt` whose owner this level cannot place leaves here, carrying the lane it was on in `hop.kind`, rather than dead-lettering where nobody would look for it |
+| `error` | the record, a **channel**, an **app** **or** an assistant | a failure that was not a refusal. Which cell inside produced it is not the caller's business; the member is a boundary, not a consumer. The channel source arrived with #454 — a connector's own failure used to leave through the generation that held it. The app source arrived with #459, for the same reason, and so did one more case that is not an app's at all: a screen `event` or `receipt` whose owner this level cannot place leaves here, carrying the lane it was on in `hop.kind`, rather than dead-lettering where nobody would look for it |
 | `write` | an assistant | a batched conversation write, on its way past this level. It is **also** fanned onto the memory's close pass and is not consumed by that fan-out |
 | `turn_write` | an assistant | one finished turn, offered for archiving as it is produced. Like `write` it is **also** fanned down — onto the memory's `in_episode` lane since #527 — and is not consumed by that fan-out |
 | `prune` | an assistant | a housekeeping report, raised when something above fired `in_prune` |
 | `build` | an assistant | a structural wish or a submission leaving one of this person's generations, on its way to the one baumeister the colony shares. The member neither reads it nor answers it: everything between the tool surface and the OS level is transit (GH #425) |
 | `close_report` | the memory | what one close pass did to an ended session: added, sharpened, corrected, closed, restated, and the three counts that say what it could not do |
-| `export_done` | `./export-sink` | one holder's seed set is complete on disk — every part written and the marker file beside them. `hop.seed_dir` says where and `hop.export_hive` which holder; three travel per export |
+| `export_done` | a holder, or a generation's keeper | that holder's seed set is complete on disk — every table written and `export_final.json` beside them, written last. `hop.seed_dir` says where, RELATIVE to the fence that holder's store declares, and `hop.export_hive` says which holder; three travel per export, four when a generation was named. Since 1.6.0 the holder says it ITSELF ([#555](https://github.com/mmeyerlein/meclaw/issues/555)); before that a cell of this level said it for all of them |
+| `dump` | a holder, or a generation's keeper | the receipt of one applied import part: `hop.rows_written` counts the inserts it dispatched, so zero means the target already had every row. It is the only positive signal an import has, and since 1.6.0 it LEAVES the level — until then it ended inside the member, in the cell that existed for the export half and read a receipt without saying anything about it |
 | `pack_ack` | an assistant | the receipt of one identity pack `./affinity` pushed into a generation. Nothing here consumes it, and nothing here can (since 1.4.0, GH #458) |
 
 The `assistant` level emits **nine** lanes since `assistant@2.2.0`, and this
@@ -155,9 +182,10 @@ stamps it:
 space of `recall_caller` at this boundary is this level's own — a caller that
 kept its own vocabulary would get its bundle routed by a word this level cannot
 guard on, which is the failure again with more steps. An outside caller with
-several askers of its own tells its rounds apart on `hop.memory_call_id`, which
-the same door promotes into context and which crosses the hive untouched
-([#411](https://github.com/mmeyerlein/meclaw/issues/411)).
+several askers of its own tells its rounds apart on a hop key of its own, which
+crosses the hive untouched; the door promotes no correlation at all since 1.6.0
+([#411](https://github.com/mmeyerlein/meclaw/issues/411),
+[#552](https://github.com/mmeyerlein/meclaw/issues/552)).
 
 **`bundle` is therefore an `emits` lane of this level**, and of the two levels
 above it: `org` and `meclaw-os` carry it out, or an outside recall answered here
@@ -279,9 +307,9 @@ defect that looks exactly like the missing edge from the outside.
 hop (GH #411), so context is the only compartment that survives one — and the collector's
 `in_bundle` lane parks the whole turn when the bundle comes home unable to name the round
 it belongs to. `talky`'s `recall` exit has named `turn_id` among its keys all along; this
-level promoted seven of them and not that one. It never showed on the TOOL path, which is
-why it shipped: a `memory_recall` call happens *after* the brain call and the brain edge
-has promoted `hop.turn_id` into context long before. The AMBIENT leg leaves before the
+level promoted seven of them and not that one. It never showed on the tool path of the day,
+which is why it shipped: a `memory_recall` call happened *after* the brain call and the brain
+edge has promoted `hop.turn_id` into context long before. The AMBIENT leg leaves before the
 model has seen the turn, so there is no context copy yet — measured on a running colony
 the moment the ambient knob was turned on, as silence.
 
@@ -326,55 +354,54 @@ different things from the same event. The receipt comes back on `close_report`
 and leaves: this level fires the pass and does not read it
 ([#447](https://github.com/mmeyerlein/meclaw/issues/447)).
 
-**The export, and the one cell this level owns.** `in_export` crosses the
+**The export, and the cell this level no longer owns.** `in_export` crosses the
 boundary untouched onto the `in_export` of **all three holders at once** —
 `./memory-hive`, `./affinity` and `./firewall` — and, when the caller names a
 generation, onto a **fourth** target: `./assistants`, through which the demand
 reaches that generation's own session keeper four levels down
-([#475](https://github.com/mmeyerlein/meclaw/issues/475)). Every part any of
-them walks out comes back on `dump`, into `./export-sink`. That cell is a `code` cell
-that files each part under the hive it came out of:
-`<MEMBER_EXPORT_DIR>/<hive>/seed/<table>.jsonl`, the schema declaration as line
-1, one row per line after it, which is the birth format
+([#475](https://github.com/mmeyerlein/meclaw/issues/475)). What each of them
+does with it changed completely in 1.6.0
+([#555](https://github.com/mmeyerlein/meclaw/issues/555)), and the ruling behind
+it is one sentence: *cells manage their own files, nobody else does.*
+
+Every holder's own STORE writes its seed set, through the substrate's `transfer`
+slot: `<fence>/<hive>/seed/<table>.jsonl`, the schema declaration as line 1 and
+one row per line after it, which is the birth format
 [`../memory-hive/README.md`](../memory-hive/README.md) § *The document*
-specifies and the two other holders' stores read the same way. An `absent` table
-writes no file; an empty one writes a file with only its schema line, because
-those are two different statements. The last part of a hive also writes
-`<hive>/seed/export_final.json`, rewrites the member-level
-`export_final.json` that names every holder finished so far, and the level says
-`export_done` with `hop.export_hive` naming which one. **Three travel per
-export**, in whatever order the walks finish in — **four** when a generation was
-named and its keeper walked its ledger out beside them.
+specifies and the two other holders' stores read the same way. The fence is a
+`params` declaration of that store — `params.transfer.base_path`, absolute, the
+precedent being `file`'s `base_path` — and `hop.export_to`, which the operator's
+own trigger passes through, names the directory of ONE run under it. Each
+holder's porter names the directory (its own template name), asks its store to
+write, and raises `export_done` off the receipt the slot hands back:
+`hop.export_hive`, `hop.seed_dir` (relative to that fence) and
+`hop.rows_written`. **Three travel per export**, in whatever order the walks
+finish in — **four** when a generation was named and its keeper wrote its ledger
+out beside them.
 
-**Every file the sink writes lands whole, and what it cannot read it names.**
-A part and both markers are written into a neighbour file and renamed over the
-name a reader watches: `open(path, "w")` truncates before it fills, and a
-reader of the member-level marker measurably got zero bytes in that gap
-([#563](https://github.com/mmeyerlein/meclaw/issues/563)). That buys a
-concurrent *reader*, not durability — there is no `fsync` here, so a power loss
-is a different question.
-
-**Exactly one thing means "that hive has not finished": the marker is not
-there.** The hives of a member walk on their own clock, and an absent marker is
-that ordinary state. Every other answer is a marker the cell could not read and
-says nothing about whether the hive finished — a directory standing where the
-marker belongs, a permission the export process does not have, an I/O error, or
-a file that is there and is not a JSON object (which, after the rename, can no
-longer be a write caught halfway). All of those are **named**, not dropped:
-they appear in an `unreadable` array on the member-level marker, the cell says
-so on `stderr`, and `hives` stays the list of the readable ones. Answering
-*"that hive has not finished"* for a marker the cell simply could not read
-would make this document claim an incompleteness the directory does not have,
-which is the one thing it must never do.
+**What this level lost, and it is worth stating rather than implying.** Until
+1.5.1 the parts travelled as MESSAGES on `dump`, and one `code` cell of this
+level, `export-sink`, turned the stack back into the files it had been all
+along. That cell also wrote a **member-level** `export_final.json` beside the
+per-hive directories, naming every holder that had finished. **That document no
+longer exists.** It was a composition statement about four hives, written by the
+one thing that saw all four, and the substrate knows no hives at all — it writes
+the marker of the CELL that wrote the directory. What replaces it is that every
+directory says for itself whether it is whole: `<hive>/seed/export_final.json`
+is written last and by one rename, so a reader that watches it never meets a
+directory that is still filling.
+[`../../examples/memory-import/build_import.py`](../../examples/memory-import/build_import.py)
+reads exactly that, one marker per directory, and refuses a directory without
+one.
 
 **The fourth target is guarded, and the guard is the point.** The edge reads
 `hop.route == 'in_export' && has(context.assistant) && context.assistant != ''`.
 Two measurable reasons, neither of them taste. A member with two generations
-holds **two** session ledgers and they are not one document; and the sink files a
-part under the hive it came out of, so two keepers would both claim
-`<MEMBER_EXPORT_DIR>/session-keeper/` and the directory would hold whichever walk
-finished last, silently. An export that names no generation is therefore exactly
-the export this level always did — three holders, no keeper, and no dead letter,
+holds **two** session ledgers and they are not one document; and a document is
+filed under the hive it came out of, so two keepers would both claim
+`<fence>/session-keeper/` and the directory would hold whichever walk finished
+last, silently. An export that names no generation is therefore exactly the
+export this level always did — three holders, no keeper, and no dead letter,
 because the container is open and an unguarded fan-out into an empty one would
 be a `no_route` on every export a member without an assistant ever ran.
 
@@ -392,22 +419,21 @@ additive and it is each hive's own: [`affinity`](../affinity/README.md) and
 `memory-hive` has had since 2.2.0, and this level fans out to them and drains
 all three.
 
-Four details there are decisions rather than defaults. **One directory per
+Three details there are decisions rather than defaults. **One directory per
 hive** is a requirement, not tidiness: `memory-hive` and `affinity` both declare
-a table called `entities`, so the flat sink this level shipped before #471 would
-have written one over the other without a word. Each part names its own hive
-(`hive_template`) and the sink files it under that name. **The `dump` edges test
-`hop.route` and nothing else**: every one of the three hives pairs `in_export`
-with `dump` in `params.required_drains`, and the probe that checks the pairing
-runs the described hop through the real edge evaluator, so an edge additionally
-guarded on `hop.dump_kind` evaluates false under it and reads as no drain at
-all — one plain edge per holder, three in total. **The sink is a `code` cell
-rather than a `file` cell** because a `file` cell canonicalises its `base_path`
-in `validate_params` — a member whose export directory did not exist would fail
-`--validate` and boot, for a lane nobody had used yet; the sandbox write root is
-the same boundary one message later, where a missing directory is a routed
-`io_error`. And `params.max_concurrency` is `1`, so the parts are written in
-walk order and a marker cannot be written before the file it claims is complete.
+a table called `entities`, so a flat directory would have written one over the
+other without a word. Each holder's porter names its own hive and the store
+writes under that name. **The `export_done` edges test `hop.route` and nothing
+else**: every one of the holders pairs `in_export` with `export_done` in
+`params.required_drains`, and the probe that checks the pairing runs the
+described hop through the real edge evaluator, so an edge additionally guarded
+on a second key evaluates false under it and reads as no drain at all — one
+plain edge per holder. **And the fence is never canonicalised at boot**: a
+member whose export directory does not exist yet still boots and still passes
+`--validate`, and finds out at the first `to`/`from` with a `transfer_io_error`.
+That is the same reason the sink was a `code` cell rather than a `file` cell,
+kept as a property of the substrate instead of as a property of a cell nobody
+else could see.
 
 **What a holder leaves behind is the holder's decision, not this level's.**
 `memory-hive` keeps its three machine tables and its `emb_models` configuration
@@ -448,9 +474,12 @@ ever after, so a member that is already running cannot be given a past.
 export was walked reaches a hive that is now running, and all three holders
 accept `in_import` for that. The door THROUGH this level is what 1.4.0 adds:
 the lane, and the edges that carry it untouched — plain, the way `in_export`'s
-are, because `in_import` is the name on both sides of this boundary. It needs no
-new drain: an import receipt rides the `dump` lane this level already takes into
-`./export-sink`, and the sink ignores it on purpose.
+are, because `in_import` is the name on both sides of this boundary. The receipt
+of an applied part rides `dump`, and since 1.6.0 that lane LEAVES the level
+(#555): until then it ended in the sink, which read it and said nothing about
+it — the one arrangement [#284](https://github.com/mmeyerlein/meclaw/issues/284)
+forbids, and it only ever ended there because that cell existed for the export
+half.
 
 **Which holder a part belongs to is edge truth.** A body is model-writable and
 an edge is not, so the holder is read off `hop.import_hive`: `'affinity'` and
@@ -488,10 +517,11 @@ two, and the keeper's own leg of it in
 assistant's `error` get one plain exit edge each, `./assistants -> .`, and no
 translation on the way. `turn_write` was the fourth until #527 and is not one
 any more: it leaves on that same plain edge **and** is fanned onto the memory's
-`in_episode`, exactly the way `write` is fanned onto the close pass. An assistant's `dump` is not one of them and never was:
-it is the transfer document of that generation's session keeper, and this level
-**consumes** it, into the same `./export-sink` its own three holders write to
-(#475). This level owns no archive and no timer, so it has
+`in_episode`, exactly the way `write` is fanned onto the close pass. An
+assistant's `export_done` and `dump` join them since 1.6.0: the keeper of a
+named generation writes its own ledger and says so, and the receipt of an
+applied import part is a receipt like any other — both leave on one plain edge
+each, where until then the level consumed them (#475, #555). This level owns no archive and no timer, so it has
 nothing to do with any of them except refuse to swallow them — which is the
 same rule the refusal lanes follow, applied to lanes that are not refusals.
 `write` and `turn_write` are the two fan-outs: each leaves on the same kind of
@@ -765,12 +795,13 @@ and the same shape:
 ```
 
 The `dump` edge is **plain** and has to be: every level between here and the
-keeper pairs `in_export` with `dump` in `params.required_drains`, and the probe
-that checks the pairing runs the described hop through the real edge evaluator —
-so an edge that additionally tested `hop.dump_kind` would evaluate false under it
-and read as no drain at all. What arrives on it are the parts of that keeper's
-document and the receipts of applied ones, and this level files both in
-`./export-sink`.
+keeper pairs `in_export` with `export_done` and `in_import` with `dump` in
+`params.required_drains`, and the probe that checks a pairing runs the described
+hop through the real edge evaluator — so an edge that additionally tested a
+second hop key would evaluate false under it and read as no drain at all. What
+arrives on them is the keeper's own completion word and the receipt of an
+applied part, and since 1.6.0 this level carries both OUT rather than filing
+them (#555).
 
 **5. And the member itself is addressed the same way (#478).** One storey up,
 `./members` fans out to its children exactly as `./assistants` does here — one
@@ -794,7 +825,7 @@ The whole arrangement, as three mutations. The member first:
 
 ```json
 {"scope": "<org>/members", "diff": {
-  "add_nodes": [{"name": "alex", "template": "member@1.5.1"}]
+  "add_nodes": [{"name": "alex", "template": "member@1.6.0"}]
 }}
 ```
 
@@ -803,7 +834,7 @@ lanes (`../assistant/README.md` § *Instantiating* writes them out):
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@2.4.1"}],
+  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@2.5.0"}],
   "add_edges": [
     {"from": "./assistants", "to": "./assistants/scribe",
      "condition": "has(hop.route) && hop.route == 'in_turn' && has(context.assistant) && context.assistant == 'scribe'"},
@@ -1096,10 +1127,9 @@ at it.
 - **No `memory-drain`.** Per-turn extraction ([#298](https://github.com/mmeyerlein/meclaw/issues/298),
   ruling Q11) replaced it, and #302 says explicitly that it does not belong in
   the assistant either.
-- **No `terminal`, and no sink for a refusal.** See the refusal lanes above.
-  `./export-sink` is not that kind of sink: it is the declared destination of one
-  lane whose whole point is to land on disk, it reads nothing else, and it
-  swallows no refusal.
+- **No `terminal`, and no sink for a refusal.** See the refusal lanes above. And
+  since 1.6.0 no sink of any kind: the one cell this level owned wrote files for
+  its holders, and #555 gave every store its own.
 - **No org-level anything.** A group is an audience, not a holder: *what does the
   group know about X* is a filter on the read, never a second store. Two stores
   would force the writer to pick one before extraction has run, which is not a
@@ -1163,8 +1193,8 @@ the reason GH #454 and GH #459 shared one before it: a version is a shipped fact
 `1.4.0` has not shipped, and cutting a `1.5.0` for the second half of one
 unreleased wave would invent a version nobody could ever have wired against.
 Across the release boundary a parent sees one addition. What moved underneath is
-real all the same — the lane fans out to three holders, the sink files by hive,
-`export_done` travels three times with `hop.export_hive`, `hop.import_hive`
+real all the same — the lane fans out to three holders, each files by its own
+hive name, `export_done` travels three times with `hop.export_hive`, `hop.import_hive`
 picks the holder on the way back, and `./affinity` gained a `reject` exit. Both
 occupant pins moved with it, and the pinned versions live where they belong — in
 `affinity/config.json` and `firewall/config.json`, not in this prose.

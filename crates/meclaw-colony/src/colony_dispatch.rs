@@ -959,6 +959,84 @@ pub fn handle_rescan_templates<'a>(
 // Phase-13.5-A6-T3: dispatch_colony_endpoint + reply-builders + parser-helpers
 // ============================================================================
 
+/// The boxed rescan future the caller hands to [`dispatch_colony_endpoint`].
+///
+/// The lifetime is the templates root's: the future is awaited inside the same
+/// `colony_task` scope the root lives in and is never spawned.
+pub(crate) type RescanFuture<'a> = std::pin::Pin<
+    Box<
+        dyn std::future::Future<Output = Result<(), crate::templates::scanner::ScannerError>>
+            + Send
+            + 'a,
+    >,
+>;
+
+/// GH #571: the templates half of the `/colony/*` dispatch prologue — taken only
+/// for the endpoints that actually read templates.
+///
+/// Every `/colony/*` dispatch used to pay this unconditionally: the whole
+/// `templates` table read out of `colony.db`, a clone of it into a snapshot, and
+/// the rescan future — whose SYNCHRONOUS prologue walks the entire templates
+/// library with `read_dir` and reads every `template.json`. All of it ran on the
+/// colony task before the first `.await`, and all of it was thrown away again for
+/// every endpoint but the three named below. On a real library that is hundreds
+/// of directory reads and dozens of file reads per request, so `/colony/graph` —
+/// the read a display refresh takes at the top of every minute — held the loop
+/// for half a second in order to answer from two in-memory tables. The watchdog
+/// read that stall as a wedge and ended the process.
+///
+/// Which endpoint is being served is known before any of it happens, so the
+/// decision is taken here, once, in one place all three call sites share.
+///
+/// The `&ColonyDb` borrow lives only inside this synchronous function — that is
+/// what keeps the surrounding `colony_task` future `Send` (`ColonyDb` is
+/// `!Sync`), and confining it to one function is the tighter form of the same
+/// rule the three inline prologues followed by hand.
+pub(crate) fn templates_prologue<'a>(
+    endpoint: &meclaw_core::Path,
+    colony_db: &ColonyDb,
+    // GH #277: the LIBRARY, not the workspace. `root` also holds the
+    // instantiated trees and the builder's staging history; a name repeated down
+    // there is not a duplicate class offer, and since ruling Q7 it would abort
+    // the whole scan.
+    templates_root: &'a std::path::Path,
+) -> (
+    crate::templates::TemplatesRegistry,
+    Vec<crate::persist::colony_db::TemplateRow>,
+    Option<RescanFuture<'a>>,
+) {
+    let rescan_future: Option<RescanFuture<'a>> = if endpoint.as_str() == "/colony/templates/rescan"
+    {
+        Some(Box::pin(handle_rescan_templates(colony_db, templates_root)))
+    } else {
+        None
+    };
+    if !matches!(
+        endpoint.as_str(),
+        "/colony/mutations" | "/colony/templates" | "/colony/templates/rescan"
+    ) {
+        return (
+            crate::templates::TemplatesRegistry::default(),
+            Vec::new(),
+            rescan_future,
+        );
+    }
+    let templates_rows = colony_db.read_templates().unwrap_or_default();
+    let templates_snapshot = crate::templates::TemplatesRegistry::from_entries(
+        templates_rows
+            .clone()
+            .into_iter()
+            .map(|r| crate::templates::TemplateEntry {
+                template_id: r.template_id,
+                name: r.name,
+                version: r.version,
+                filesystem_path: std::path::PathBuf::from(r.filesystem_path),
+            })
+            .collect(),
+    );
+    (templates_snapshot, templates_rows, rescan_future)
+}
+
 /// Build a reply-Cascade if `reply_to` is set, else `Done`.
 ///
 /// Reply routing per the A6 plan: NO `outputs_tx` send (that would fill the outputs
@@ -1826,12 +1904,14 @@ pub(crate) async fn run_mutation_door(
 /// - `templates_rows`: pre-extracted template rows for `/colony/templates`. The caller
 ///   reads `colony_db.read_templates()` synchronously before the `.await` and passes
 ///   them through owned.
-/// - `rescan_future`: pre-extracted rescan future for `/colony/templates/rescan`.
-///   The caller builds `handle_rescan_templates(&colony_db, &root)` synchronously (the
-///   synchronous prologue consumes the `&ColonyDb` borrow, the returned future captures
-///   only Send-owned data) and passes it through boxed. Lifetime `'fut` is bound to
-///   `&root` in the caller (it lives in the `colony_task` scope; the future is awaited
-///   in the same scope and not spawned).
+/// - `rescan_future`: pre-extracted rescan future for `/colony/templates/rescan`,
+///   and `None` for every other endpoint (GH #571 — building it walks the whole
+///   templates library, see [`templates_prologue`]). The caller builds
+///   `handle_rescan_templates(&colony_db, &root)` synchronously (the synchronous
+///   prologue consumes the `&ColonyDb` borrow, the returned future captures only
+///   Send-owned data) and passes it through boxed. Lifetime `'fut` is bound to
+///   `&root` in the caller (it lives in the `colony_task` scope; the future is
+///   awaited in the same scope and not spawned).
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn dispatch_colony_endpoint<'fut>(
     registry: &mut std::collections::HashMap<meclaw_core::Path, crate::RegistryEntry>,
@@ -1844,13 +1924,7 @@ pub(crate) async fn dispatch_colony_endpoint<'fut>(
     db_path: &std::path::Path,
     templates_snapshot: crate::templates::TemplatesRegistry,
     templates_rows: Vec<crate::persist::colony_db::TemplateRow>,
-    rescan_future: std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Result<(), crate::templates::scanner::ScannerError>>
-                + Send
-                + 'fut,
-        >,
-    >,
+    rescan_future: Option<RescanFuture<'fut>>,
     factories: &crate::CellFactoryRegistry,
     root: &std::path::Path,
     // GH #440: the resolved `--templates` library, forwarded to the mutation
@@ -1869,6 +1943,11 @@ pub(crate) async fn dispatch_colony_endpoint<'fut>(
     blob_inline_max_bytes: usize, // Phase-13.5 A8 (F2) — offload threshold forwarded to handle_mutation
     env_source: Option<&std::path::Path>, // U8 (RULED A8) — env source from startup, forwarded to handle_mutation
     pulse: &crate::watchdog::WorkPulse, // GH #439 — the outputs-arm's work item, forwarded to handle_mutation
+    // GH #553 — `(receipt target, fresh ttl)` when the colony asked for
+    // mutation receipts, `None` otherwise. `None` is also what the SHUTDOWN
+    // drain passes: a receipt there would be new work the drain then has to
+    // wait for, the same reason GH #47 refuses a source emission in the drain.
+    mutation_receipt: Option<(&meclaw_core::Path, u32)>,
 ) -> crate::colony::RouteAction {
     // GH #432 — the door resolves a blob body BEFORE it dispatches.
     //
@@ -1912,8 +1991,26 @@ pub(crate) async fn dispatch_colony_endpoint<'fut>(
     let trace_id = msg.trace_id;
     let parent_message_id = msg.id;
 
+    // GH #571: the read declares itself. Every `/colony/*` dispatch is a work
+    // item of the colony loop, and until now only the mutation half said so —
+    // `handle_mutation` relabels this very pulse with the id and scope it mints
+    // (which is why labelling here costs the mutation path nothing: its own
+    // label follows and wins). A read that takes long was pure silence, and the
+    // supervisor has exactly one reading for silence with no declared item: a
+    // parked loop that stopped answering, which is fatal under the shipped
+    // policy. Under a name it is a `slow_work_item` on the work-item budget, and
+    // the trip line says which endpoint it was inside.
+    let read_pulse = pulse.with_label(crate::watchdog::WorkItem::new(format!(
+        "colony-read {}",
+        endpoint.as_str()
+    )));
+    read_pulse.tick();
+
     match endpoint.as_str() {
         "/colony/mutations" => {
+            // GH #553: read before the body moves into the door (see
+            // `receipt_scope_of`).
+            let receipt_scope = crate::colony::receipt_scope_of(&body);
             let outcome = run_mutation_door(
                 registry,
                 hive_scopes,
@@ -1943,6 +2040,22 @@ pub(crate) async fn dispatch_colony_endpoint<'fut>(
                 pulse,
             )
             .await;
+            // GH #553: the receipt is the door's own event and goes back into
+            // the loop as its own work item — the verdict below stays exactly
+            // the answer it always was.
+            if let Some((to, ttl)) = mutation_receipt {
+                crate::colony::enqueue_colony_receipt(
+                    inbox_self_tx,
+                    crate::colony::build_mutation_receipt(
+                        &outcome,
+                        &receipt_scope,
+                        trace_id,
+                        parent_message_id,
+                        to,
+                        ttl,
+                    ),
+                );
+            }
             let reply_body = mutation_door_reply(&outcome);
             emit_reply_or_done(reply_to, reply_body)
         }
@@ -1987,8 +2100,18 @@ pub(crate) async fn dispatch_colony_endpoint<'fut>(
         "/colony/templates/rescan" => {
             // The rescan future comes owned from the caller (the synchronous-prologue
             // pattern consumed the `&ColonyDb` borrow; the future is Send + 'static).
-            let outcome = rescan_future.await;
-            let reply_body = build_rescan_reply(&outcome);
+            //
+            // GH #571: it is `Some` exactly for this endpoint — `templates_prologue`
+            // decides that from the same endpoint string this `match` reads, so the
+            // `None` branch is unreachable by construction. It answers in the
+            // rescan reply's own error shape rather than silently claiming `ok`:
+            // a rescan that did not run must never look like one that did.
+            let reply_body = match rescan_future {
+                Some(fut) => build_rescan_reply(&fut.await),
+                None => meclaw_core::serde_json::json!({
+                    "rescan": {"status": "error", "error": "internal: rescan future missing"},
+                }),
+            };
             emit_reply_or_done(reply_to, reply_body)
         }
         "/colony/graph" => {
@@ -2545,7 +2668,8 @@ mod tests {
             .build();
 
         let templates_rows = colony_db.read_templates().unwrap_or_default();
-        let rescan_future = Box::pin(handle_rescan_templates(&colony_db, td.path()));
+        let rescan_future: Option<RescanFuture<'_>> =
+            Some(Box::pin(handle_rescan_templates(&colony_db, td.path())));
         let db_path = colony_db.db_path().to_path_buf();
 
         let action = dispatch_colony_endpoint(
@@ -2576,6 +2700,8 @@ mod tests {
             0,
             None,
             &crate::watchdog::WorkPulse::silent(),
+            // GH #553: these unit tests are not about receipts.
+            None,
         )
         .await;
 
@@ -2820,7 +2946,8 @@ mod tests {
             .build();
 
         let templates_rows = colony_db.read_templates().unwrap_or_default();
-        let rescan_future = Box::pin(handle_rescan_templates(&colony_db, td.path()));
+        let rescan_future: Option<RescanFuture<'_>> =
+            Some(Box::pin(handle_rescan_templates(&colony_db, td.path())));
         let db_path = colony_db.db_path().to_path_buf();
 
         let action = dispatch_colony_endpoint(
@@ -2851,6 +2978,8 @@ mod tests {
             0,
             None,
             &crate::watchdog::WorkPulse::silent(),
+            // GH #553: these unit tests are not about receipts.
+            None,
         )
         .await;
 
@@ -2917,7 +3046,8 @@ mod tests {
             .build();
 
         let templates_rows = colony_db.read_templates().unwrap_or_default();
-        let rescan_future = Box::pin(handle_rescan_templates(&colony_db, td.path()));
+        let rescan_future: Option<RescanFuture<'_>> =
+            Some(Box::pin(handle_rescan_templates(&colony_db, td.path())));
         let db_path = colony_db.db_path().to_path_buf();
 
         let action = dispatch_colony_endpoint(
@@ -2948,6 +3078,8 @@ mod tests {
             0,
             None,
             &crate::watchdog::WorkPulse::silent(),
+            // GH #553: these unit tests are not about receipts.
+            None,
         )
         .await;
 

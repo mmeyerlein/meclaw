@@ -182,7 +182,7 @@ impl CellFactory for LlmCellFactory {
                     db,
                     respawn_blob.clone(),
                     respawn_consumes.clone(),
-                    respawn_bounds,
+                    respawn_bounds.clone(),
                 );
                 // Phase-13.5 Slice 4 T6: re-notify the colony of the fresh stop
                 // pair (the frozen RespawnFn 3-tuple cannot return it). try_send,
@@ -236,7 +236,7 @@ impl CellFactory for LlmCellFactory {
                     db,
                     wake_blob.clone(),
                     wake_consumes.clone(),
-                    wake_bounds,
+                    wake_bounds.clone(),
                 );
             meclaw_colony::spawn_watcher(
                 &wake_watcher_inbox,

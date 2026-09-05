@@ -1,4 +1,4 @@
-# `session-keeper@2.1.0`
+# `session-keeper@2.2.0`
 
 A session lifecycle as a hive of existing cell types -- no new cell type, no Rust. Five cells:
 `stamp` (a `code` cell in the ingress path), `close` (a `code` cell for the night),
@@ -85,8 +85,9 @@ that names it is refused (see above).
 |---|---|---|---|
 | `turn` | `stamp` | the context assembly | the inbound turn, unchanged. **Promote `hop.session_id` to context on this edge** -- that promotion IS the stamp. |
 | `close` | `close` | the consumer of a finished session | one request per generation; promote `hop.session_id`, `hop.channel` and `hop.audience_set` -- all three, and the third is the one a caller wiring from `template.json` used to miss (see below). |
-| `dump` | `porter` | the sink of a transfer, or the target keeper | the transfer lane's output: an export part (`hop.dump_kind == 'export_part'`, with `hop.export_part` of `hop.export_of` and `hop.export_final` on the last) or the receipt of an applied one (`'import_receipt'`, with `hop.rows_written`). **Drain it with a PLAIN `hop.route == 'dump'` test** -- an edge that also tests `dump_kind` reads as no drain under the `required_drains` probe and the mutation is refused. |
-| `reject` | `stamp`, `close`, `porter` | wherever a broken keeper is read | the session store did not answer a step of this keeper ([#343](https://github.com/mmeyerlein/meclaw/issues/343)). `hop.reject_reason` is `store_refused`, `hop.store_error` carries the store's own `error_code` (a free string -- the store's code list is open) and `hop.store_operation` the refused op. **Drain it.** Every one of these failures reads as a correct run: an unanswered lookup looks like a channel with no open session -- and used to **open a second generation** for one that had one -- and an unanswered nightly sweep looks like a night with no idle channel. The body names the **step**, because they do not leave the same thing standing: at `touch` and `open` the stamped turn has already left in the same emission, and the `open` case is the sharp one -- the turn travels with a session id whose row was never written, so the next turn opens yet another generation. Since 2.1.0 a **third producer** takes the same lane: `porter` refuses a transfer it will not carry out and names the case in the same `hop.reject_reason` (`export_read_failed`, `import_format`, `import_unknown_table`, `import_schema_drift`, `missing_audience`, `import_probe_failed`, `import_write_failed`). One drain takes all of them; the reason code tells them apart. |
+| `export_done` | `porter` | whoever asked for the export | this keeper's own store wrote the whole ledger into `<fence>/<dir>/seed/` and says where: `hop.seed_dir` (relative to `params.transfer.base_path`), `hop.export_hive`, `hop.export_of`, `hop.rows_written` ([#555](https://github.com/mmeyerlein/meclaw/issues/555)). |
+| `dump` | `porter` | whoever fed the import | the receipt of one applied import part (`hop.rows_written`, `hop.export_part` of `hop.export_of`, `hop.export_final == "1"` on the last). Since #555 that is all this lane carries. **Drain it with a PLAIN `hop.route == 'dump'` test** -- an edge that also tests a second hop key reads as no drain under the `required_drains` probe and the mutation is refused. |
+| `reject` | `stamp`, `close`, `porter` | wherever a broken keeper is read | the session store did not answer a step of this keeper ([#343](https://github.com/mmeyerlein/meclaw/issues/343)). `hop.reject_reason` is `store_refused`, `hop.store_error` carries the store's own `error_code` (a free string -- the store's code list is open) and `hop.store_operation` the refused op. **Drain it.** Every one of these failures reads as a correct run: an unanswered lookup looks like a channel with no open session -- and used to **open a second generation** for one that had one -- and an unanswered nightly sweep looks like a night with no idle channel. The body names the **step**, because they do not leave the same thing standing: at `touch` and `open` the stamped turn has already left in the same emission, and the `open` case is the sharp one -- the turn travels with a session id whose row was never written, so the next turn opens yet another generation. Since 2.1.0 a **third producer** takes the same lane: `porter` refuses a transfer it will not carry out and names the case in the same `hop.reject_reason` (`export_write_failed`, `import_format`, `import_unknown_table`, `import_schema_drift`, `missing_audience`, `import_probe_failed`, `import_write_failed`). One drain takes all of them; the reason code tells them apart. |
 
 **The close lane, as a port convention (Track K/E):** the keeper emits `hop.route == 'close'`
 carrying `hop.session_id`, `hop.channel` and `hop.audience_set`, and a body with no turns
@@ -129,18 +130,55 @@ crossing edge derives inactive, and its timer never spawns.
 
 ## Knobs
 
-**Env knobs are an experimental surface.** Until this template's knobs move onto the `params`
-block of the cells that read them, their names carry no compatibility promise and may change in
-any `0.x` release; provider credentials keep living in `.env` either way. The migration is
-tracked in [#138](https://github.com/mmeyerlein/meclaw/issues/138), with the
-`collector@1.2.0` migration ([#136](https://github.com/mmeyerlein/meclaw/issues/136)) as the
-reference pattern.
+**Since `2.2.0` the three knobs of this hive are params, not environment
+variables** ([#138](https://github.com/mmeyerlein/meclaw/issues/138); the
+`collector@1.2.0` migration
+([#136](https://github.com/mmeyerlein/meclaw/issues/136)) is the reference
+pattern). Each one lives in the `params` block of the cell that reads it, is
+declared in that cell's `contract.settings`, and is the same value in both places
+plus as the fallback literal inside the script -- a test pins the three against
+each other. Defaults are bit-identical to the environment form they replace.
 
-| env var | default | meaning |
-|---|---|---|
-| `KEEPER_IDLE_MS` | `7200000` | how long a channel has to be silent before a firing ends its generation. Two hours. |
-| `KEEPER_NIGHT_CRON` | `0 0,30 22-23,0-3 * * *` | 6-field Quartz cron of the sweep, **in UTC** (see below). |
-| `KEEPER_CLOSE_LIMIT` | `50` | how many generations one firing may seal. A store `select` has no implicit limit. |
+**What this buys.** A substitution token resolved out of `.env` was
+colony-GLOBAL: two keepers in one colony could not end their sessions on
+different rules, and an `override_params` entry could not name the knob at all,
+because only a key a cell carries under `params` may be named
+([#294](https://github.com/mmeyerlein/meclaw/issues/294)). Now it can.
+
+| cell | param | default | meaning |
+|---|---|---|---|
+| `./close` | `idle_ms` | `7200000` | how long a channel has to be silent before a firing ends its generation. Two hours. |
+| `./close` | `close_limit` | `50` | how many generations one firing may seal. A store `select` has no implicit limit. |
+| `./night` | `schedules[0].cron` | `0 0,30 22-23,0-3 * * *` | 6-field Quartz cron of the sweep, **in UTC** (see below). |
+
+A `timer` cell has no top-level `cron` param and never will: `TimerParams::parse`
+reads `schedules` and `query_timeout_ms`, and would ignore any other key in
+silence. So the nightly cron is a literal *inside* the schedule, and moving it
+means naming `schedules` -- the key that does exist:
+
+```json
+"override_params": {
+  "session-keeper/close": {"idle_ms": 600000, "close_limit": 20},
+  "session-keeper/night": {"schedules": [{
+    "schedule_id": "<a real uuid>",
+    "schedule_name": "night-close",
+    "cron": "0 0,30 23,0-4 * * *",
+    "emit_to": "../close",
+    "emit_body": {"messages": [{"origin": "user", "type": "text", "text": "night-close"}]},
+    "emit_headers": {}
+  }]}
+}
+```
+
+The whole `schedules` array is replaced, not merged, so every field has to be
+there -- including `schedule_id` as a real UUID, because the template's
+`uuid7` token is minted at instantiation and an override takes that moment over.
+
+**A standing instance is untouched.** Instantiation is a COPY: a colony grown
+from an earlier version keeps its own `templates/` copy with the old tokens in it
+and goes on reading its `.env`. What stops working is the reverse -- an old
+environment line in a colony grown from `2.2.0` is read by nothing at all, and
+says so nowhere. Move such a line into `override_params` when you regrow.
 
 ## The timer computes in UTC. Do the sum.
 
@@ -165,8 +203,9 @@ list is written as two ranges and not as `22-3`.
 
 Running the summer cron in winter is not a defect, it is an hour of drift: the sweep opens
 at 23:00 local instead of midnight. Since the idle threshold is what actually ends a
-session, an hour of drift costs nothing -- but if you want the boundary exact, set
-`KEEPER_NIGHT_CRON` per season, or point it at a window wide enough for both
+session, an hour of drift costs nothing -- but if you want the boundary exact,
+override `./night`'s `schedules` per season, or point it at a window wide enough
+for both
 (`0 0,30 22-23,0-4 * * *`).
 
 **Missed firings expire.** The timer never catches up (`docs/cell-types.md` § timer), and
@@ -224,30 +263,44 @@ which is what lets the completeness marker exist at all:
 
 `schema` is the store's own declaration, so `{"schema": …}` as line 1 plus one row per
 line after it **is** a `sessions/seed/sessions.jsonl` — birth path and transfer path speak
-one format. `final` (mirrored as `hop.export_final == "1"`) is the completeness marker; a
-document without it is partial, and nothing else in it would say so.
+one format. Since [#555](https://github.com/mmeyerlein/meclaw/issues/555) the EXPORT half
+does not travel as messages at all: this keeper's own store writes that file itself,
+through the substrate's `transfer` slot and inside the fence it declares in
+`params.transfer.base_path`, with `seed/export_final.json` beside it as the completeness
+marker — a directory without it is a prefix, and nothing else in it would say so. The
+object above is therefore what an IMPORT part looks like, which is that file read back the
+other way round.
 
-**Wiring.** `params.required_drains` pairs each ingress lane with both of its exits
-(`in_export → dump`, `in_export → reject`, `in_import → dump`, `in_import → reject`), and
-the mutation is refused unless all of them are drawn **in the same mutation** as the
-ingress edge. An export nobody drains is a walk that read the whole store for nothing,
-and an undrained refusal makes a transfer that did not happen look exactly like one that
-did. Keeper to keeper, the move itself is a single edge:
+**Redirect that fence before the first export.** The shipped default is
+`/tmp/meclaw-member-export`, which is world-readable on most hosts, and what lands under it is
+the whole SESSION LEDGER — every turn of every session this keeper holds. Nothing about the
+fence is a secret and nothing about it is checked: the store writes where `params` say, so name
+a directory of your own with `override_params` on `"talky/session-keeper/sessions"` (or the path
+the keeper stands at) before anything is exported.
+
+**Wiring.** `params.required_drains` pairs each ingress lane with its exit
+(`in_export → export_done`, `in_export → reject`, `in_import → dump`,
+`in_import → reject`), and the mutation is refused unless all of them are drawn **in the
+same mutation** as the ingress edge. An export nobody drains writes the whole ledger and
+tells nobody where, and an undrained refusal makes a transfer that did not happen look
+exactly like one that did. Keeper to keeper, the move goes through a DIRECTORY since #555
+and no edge carries the document at all:
 
 ```json
 [
-  { "from": "./keeper-old", "to": "./keeper-new",
-    "condition": "hop.route == 'dump' && hop.dump_kind == 'export_part'",
-    "modifier": {"set_hop": {"route": "'in_import'"}} },
   { "from": "./keeper-old", "to": "./transfer-drain",
-    "condition": "has(hop.route) && (hop.route == 'dump' || hop.route == 'reject')" },
+    "condition": "has(hop.route) && (hop.route == 'export_done' || hop.route == 'dump' || hop.route == 'reject')" },
   { "from": "./keeper-new", "to": "./transfer-drain",
-    "condition": "has(hop.route) && (hop.route == 'dump' || hop.route == 'reject')" }
+    "condition": "has(hop.route) && (hop.route == 'export_done' || hop.route == 'dump' || hop.route == 'reject')" }
 ]
 ```
 
-The carrying edge may narrow on `dump_kind` — a receipt must not be re-imported. The
-**drain** may not, on either side: that is what the plainness rule above is about.
+`in_export` at the old keeper writes `<fence>/<dir>/seed/sessions.jsonl`; the file read
+back the other way round — header line = schema, rest = rows — is the `in_import` part the
+new one takes, which is exactly what
+[`../../examples/memory-import/build_import.py`](../../examples/memory-import/build_import.py)
+writes with `--after-boot`. Every drain stays a plain route test: that is what the
+plainness rule above is about.
 `crates/meclaw-cells/tests/gh471_a_keeper_carries_its_sessions.rs` drives exactly this
 shape and then asks the third question a row count cannot: a turn on the transferred
 channel is stamped with the session the **source** keeper had open. A ledger that arrives
@@ -275,10 +328,11 @@ such gate and needs none: a rule names no audience.
 hive used to forward one, so the sessions were the one table a rebuilt member came back
 without. [`talky`](../talky/README.md) and [`assistant`](../assistant/README.md) pass
 `in_export` and `in_import` straight through — no modifier, because the lane is named the
-same on both sides of every one of those boundaries — and carry the `dump` back out, where
-[`member`](../member/README.md) files it in its own export sink beside the three holders'
-documents (`<export_dir>/session-keeper/seed/`). Two things are asked of the caller and
-neither is this hive's:
+same on both sides of every one of those boundaries — and carry `export_done` and `dump`
+back out, past [`member`](../member/README.md) to whoever asked. Since #555 this keeper's
+own store writes the ledger beside the three holders' documents
+(`<fence>/<dir>/session-keeper/seed/`) rather than handing parts up to a cell of the member
+that files them. Two things are asked of the caller and neither is this hive's:
 
 ```jsonc
 // the export, at the member's own path
@@ -342,8 +396,8 @@ one that is already running — the two are complements, not a choice.
   crosses `member -> assistants -> assistant -> surface -> session-keeper` since
   [#475](https://github.com/mmeyerlein/meclaw/issues/475), but the member's fan-out edge
   is guarded on `context.assistant`: a member with two generations holds two ledgers, and
-  they are not one document — nor could the export sink file them, since it files a part
-  under the hive it came out of and both would claim the same directory. So an export that
+  they are not one document — nor could a directory hold both, since a document is filed
+  under the hive it came out of and both would claim the same name. So an export that
   names no generation is the export the member always did, three holders and no sessions.
   That is a property of the address, not a gap in this hive.
 - **A session is keyed on a channel, and a channel belongs to the member.** Since

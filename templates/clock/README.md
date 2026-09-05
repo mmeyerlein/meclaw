@@ -1,10 +1,12 @@
-# `clock@1.0.0`
+# `clock@1.0.1`
 
 A periodic tick, as one `timer` cell. It exists because of a gap the library had rather
-than the substrate: nine shipped templates carry a `timer` inside them -- `access/clock`,
-`argus/clock`, `affinity/clock`, `memory-hive/cron`, `session-keeper/night`,
-`collector/menu-clock`, `colony-view/refresh`, `canvy/refresh`, `daily-digest/cron` --
-and **not one of them was instantiable on its own**. An `add_nodes` entry requires a
+than the substrate: seven shipped templates carry a `timer` inside them -- `access/clock`,
+`argus/clock`, `affinity/clock`, `memory-hive/clock`, `session-keeper/night`, `canvy/clock`,
+`daily-digest/clock` -- and **not one of them was instantiable on its own**. There were nine
+until [#553](https://github.com/mmeyerlein/meclaw/issues/553): `collector/menu-clock` and
+`colony-view/refresh` polled for a change the mutation door can simply announce, and both
+are gone. An `add_nodes` entry requires a
 `name` and a `template`, there is no form for a bare cell, and so a running colony could
 not be given a periodic tick by any manifest, by any caller, through any door
 ([#484](https://github.com/mmeyerlein/meclaw/issues/484)).
@@ -16,11 +18,12 @@ That is the whole template: one cell, one schedule, and no decision.
 - **A tick a declaration can ask for.** `{"name": "sweeper", "template": "clock"}` and
   one edge, in the same mutation, and a hive that measured time only when somebody
   knocked measures it on the minute.
-- **A cadence that is a parameter three ways.** `override_params` on the node at
+- **A cadence that is a parameter two ways.** `override_params` on the node at
   instantiation (a flat params object -- a single-cell template has no inner cell to
-  address), the `CLOCK_CRON` knob colony-wide, and an `op` message at runtime --
+  address), and an `op` message at runtime --
   `{"op": "modify", "schedule_id": "...", "cron": "0 0 * * * *"}` retunes a running clock
-  without a restart.
+  without a restart. There was a third, `CLOCK_CRON`, and it is gone since 1.0.1: an
+  environment knob is colony-wide, which is precisely what a clock must not be.
 - **A firing that says which schedule fired and when.** Six auto headers ride every tick:
   `event_id`, `schedule_id`, `schedule_name`, `scheduled_at`, `fired_at` and
   `iteration_n`.
@@ -65,23 +68,24 @@ into the same cell later, and an unconditional edge would carry both.
 
 ## Knobs
 
-**Env knobs are an experimental surface.** Until they move onto the `params` block of the
-cell that reads them, their names carry no compatibility promise and may change in any
-`0.x` release; the migration is tracked in
-[#138](https://github.com/mmeyerlein/meclaw/issues/138).
+**Since 1.0.1 both knobs are literals in `params.schedules`, not environment tokens**
+([#138](https://github.com/mmeyerlein/meclaw/issues/138), ruling R-0904-6). `CLOCK_CRON`
+and `CLOCK_SCHEDULE_ID` are gone, and nothing reads them any more. That is not tidiness:
+an environment knob is colony-wide, so under the old form every clock in a colony ticked
+on the same expression and carried the same schedule key -- in a template whose entire
+purpose is to be instantiated several times under different names.
 
-| variable | default | effect |
+| field of `params.schedules[0]` | default | effect |
 |---|---|---|
-| `CLOCK_CRON` | `0 */5 * * * *` | 6-field Quartz cron (`Second Minute Hour DayOfMonth Month DayOfWeek`), evaluated in **UTC** |
-| `CLOCK_SCHEDULE_ID` | `0190a3f2-0000-7000-8000-000000000484` | the schedule key the runtime ops address |
+| `cron` | `0 */5 * * * *` | 6-field Quartz cron (`Second Minute Hour DayOfMonth Month DayOfWeek`), evaluated in **UTC** |
+| `schedule_id` | `0190a3f2-0000-7000-8000-000000000484` | the schedule key the runtime ops address. A literal UUID v7, never a `${uuid7:...}` token: such a token is resolved at instantiation and has no filesystem-side producer, so a tree written straight to disk would refuse to boot on it. Two clocks may carry the same key -- a timer's key space is its own `cell.db` -- and neither ever meets the other. |
 
-An env knob is colony-wide, so two clocks that need different cadences take theirs from
-`override_params` instead. On a single-cell template it is a **flat** params object --
-there is no inner cell to address, and the path-keyed form (`{"": …}`) is refused with
-`schema`:
+`schedules` is ONE params key holding the whole list, so an override replaces the list,
+last-write-wins. On a single-cell template it is a **flat** params object -- there is no
+inner cell to address, and the path-keyed form (`{"": …}`) is refused with `schema`:
 
 ```json
-{"name": "sweeper", "template": "clock@1.0.0",
+{"name": "sweeper", "template": "clock@1.0.1",
  "override_params": {"schedules": [{"schedule_id": "0190a3f2-0000-7000-8000-000000000484",
                                     "schedule_name": "tick", "cron": "0 0 * * * *",
                                     "emit_to": ".", "emit_body": {"messages": []}}]}}

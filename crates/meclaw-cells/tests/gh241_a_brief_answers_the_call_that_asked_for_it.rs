@@ -175,11 +175,7 @@ async fn boot(
 ) -> (tempfile::TempDir, ColonyHandle, mpsc::Receiver<Message>) {
     let td = tempfile::TempDir::new().unwrap();
     let root = td.path();
-    std::fs::write(
-        root.join(".env"),
-        format!("AFFINITY_PUSH_CRON={QUIET_CRON}\n"),
-    )
-    .unwrap();
+    std::fs::write(root.join(".env"), "").unwrap();
     write(root, "main/config.json", &main_config());
     write(root, "main/asker/config.json", &asker_config());
     copy_cells(root_template, &root.join("main/affinity"));
@@ -189,6 +185,12 @@ async fn boot(
     let mut v: Value =
         meclaw_core::serde_json::from_str(&std::fs::read_to_string(&clock).unwrap()).unwrap();
     v["params"]["schedules"][0]["schedule_id"] = json!("01916f00-0000-7000-8000-00000000024a");
+    // The cadence used to come out of the `.env` through a
+    // `${AFFINITY_PUSH_CRON:-…}` token. Since GH #138 it is a literal of
+    // `./clock`'s own params, so it is written here beside the schedule_id --
+    // an `.env` line would be read by nothing at all and would say nothing
+    // about it.
+    v["params"]["schedules"][0]["cron"] = json!(QUIET_CRON);
     std::fs::write(
         &clock,
         meclaw_core::serde_json::to_string_pretty(&v).unwrap(),

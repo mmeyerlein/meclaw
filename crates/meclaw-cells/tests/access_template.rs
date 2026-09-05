@@ -302,7 +302,6 @@ const VAULT_PASSPHRASE: &str = "a passphrase nobody guesses";
 
 fn build_tree(td: &tempfile::TempDir, root_template: &std::path::Path, cron: &str) {
     let root = td.path();
-    std::fs::write(root.join(".env"), format!("ACCESS_SWEEP_CRON={cron}\n")).unwrap();
     write(root, "main/config.json", &main_config());
     write(
         root,
@@ -340,11 +339,17 @@ fn build_tree(td: &tempfile::TempDir, root_template: &std::path::Path, cron: &st
     copy_cells(root_template, &root.join("main/access"));
     // `${uuid7:…}` is an INSTANTIATION-side substitution (the mutation path
     // mints it); a raw directory copy bootstrapped from the filesystem has to
-    // be handed a literal. The cron itself is NOT patched -- it comes out of the
-    // `.env` above through the shipped `${ACCESS_SWEEP_CRON:-…}` default, so the
-    // late-binding form is under test rather than bypassed.
+    // be handed a literal.
+    //
+    // The cron travels the same way since GH #138: it is a LITERAL inside
+    // `params.schedules[0].cron`, so a case that wants a different tick says so
+    // where a mutation's `override_params` would have merged it. It used to be
+    // an `ACCESS_SWEEP_CRON` line in a `.env` beside the tree — and after the
+    // migration that line would have reached nothing, leaving every case here
+    // with the shipped five-minute sweep firing into it and no assert saying so.
     patch(root, "main/access/clock/config.json", |v| {
         v["params"]["schedules"][0]["schedule_id"] = json!("01916f00-0000-7000-8000-0000000000ac");
+        v["params"]["schedules"][0]["cron"] = json!(cron);
     });
 }
 

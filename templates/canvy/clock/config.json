@@ -6,9 +6,9 @@
     "query_timeout_ms": 5000,
     "schedules": [
       {
-        "schedule_id": "${uuid7:colony-view-topology-refresh}",
-        "schedule_name": "colony-view-topology-refresh",
-        "cron": "${COLONY_VIEW_REFRESH_CRON:-0 * * * * *}",
+        "schedule_id": "${uuid7:canvy-topology-refresh}",
+        "schedule_name": "canvy-topology-refresh",
+        "cron": "0 * * * * *",
         "emit_to": "../probe",
         "emit_body": {
           "messages": []
@@ -24,7 +24,7 @@
         "type": "string",
         "secret": false,
         "default": "0 * * * * *",
-        "description": "6-field Quartz cron of the topology snapshot (COLONY_VIEW_REFRESH_CRON). Cron runs in UTC."
+        "description": "6-field Quartz cron of the topology snapshot. Cron runs in UTC."
       }
     },
     "emits": {
@@ -71,10 +71,10 @@
   },
   "description": {
     "purpose": "Ticks the topology snapshot, and nothing else.",
-    "use_when": "Inside a colony-view hive whose parent granted the lane to the colony's read-only graph endpoint.",
-    "not_in_scope": "It does not know what a topology is. Once a minute because a colony's graph changes on mutation, not on mouse movement; a view that must be fresher wants a push, which is a separate design pass.",
+    "use_when": "Inside a canvy hive whose parent granted the `./probe -> /colony/graph` lane.",
+    "not_in_scope": "It does not know what a topology is. Once a minute because a colony's graph changes on mutation, not on mouse movement; a canvas that must be fresher wants a push, which is a separate design pass.",
     "examples": [
-      "every minute: one tick, on its way to becoming a picture"
+      "every minute -> ./probe"
     ]
   }
 }

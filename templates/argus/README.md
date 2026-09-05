@@ -1,4 +1,4 @@
-# `argus@1.0.0`
+# `argus@1.1.0`
 
 The colony's watcher and its control loop, as a hive of seven cells. It is what
 turns "the system can improve itself" from a claim into something you can check.
@@ -109,7 +109,7 @@ has to be refused rather than sent: a cycle that pushed an overlay nobody merges
 and then receipted `applied` would be a loop reporting improvements over a
 colony where nothing moved. The mutator cannot see a target's cell type — it has
 a path and a key — so it checks the half it can check honestly, the KEY, against
-`ARGUS_NUMERIC_PARAM_KEYS`. A key outside that set comes back as
+`params.numeric_param_keys` of `./mutator`. A key outside that set comes back as
 `key_outside_radius_<key>` with a receipt, and nothing leaves.
 
 Widening the set is an operator declaration: point it at a key whose target
@@ -176,7 +176,7 @@ not use, and it read `unhealthy` for every healthy cycle
 ([#338](https://github.com/mmeyerlein/meclaw/issues/338)). Because that ledger
 row can trail the probe by milliseconds -- the update and the probe order leave
 in one batch -- the question is **asked again** a bounded number of times
-(`ARGUS_PROBE_LEDGER_TRIES`, one round trip per try, 100 ms apart) before the
+(`params.probe_ledger_tries`, one round trip per try, 100 ms apart) before the
 update counts as missing.
 
 The probe fails **closed**, and that verdict is read before the three: a probe
@@ -288,19 +288,69 @@ to this hive.
 
 ## Configuration
 
+Two lanes, and the line between them is the ruling of
+[#138](https://github.com/mmeyerlein/meclaw/issues/138) (R-0904-6): a behaviour
+knob is a **param** of the cell that reads it; only the provider lane stays in
+`.env`, because a secret in a `config.json` is a secret in the repository.
+
+Since `argus@1.1.0` the seven knobs below are params. Two loops in one colony can
+therefore be given different windows, radii and budgets -- which an environment
+they share could not say -- and the manifest that grows one sets them with
+`override_params`, keyed by cell path:
+
+```json
+{"op": "add_nodes", "scope": "/os",
+ "nodes": [{"name": "argus", "template": "argus@1.1.0",
+            "override_params": {
+              "probe": {"probe_window_sec": 900, "probe_max_errors": 2},
+              "mutator": {"numeric_param_keys": ["temperature", "top_p"]},
+              "clock": {"schedules": [{"schedule_id": "<uuid7>",
+                                       "schedule_name": "argus-cycle",
+                                       "cron": "0 0 * * * *",
+                                       "emit_to": "../meter",
+                                       "emit_body": {"messages": [
+                                         {"origin": "user", "type": "text",
+                                          "text": "argus-cycle"}]}}]}}}]}
+```
+
+The mutation door accepts those keys precisely because they EXIST under `params`
+([#294](https://github.com/mmeyerlein/meclaw/issues/294) ruling Q6: an override
+names a param the addressed cell has, and a cell with no `params` block has the
+empty set). While a knob was a `${...}` token inside `script_inline` it was not a
+param key at all, and no override could name it.
+
+A knob left out means the shipped default. A knob set to `null` means the same:
+that is "not configured", not a crash. A knob set to a **blank string** is where
+the two accessor kinds part company, deliberately -- `_int` falls back (there is
+no number in a blank string), and this hive's knobs are all numbers except the
+radius, which is a list read by `_list` and empty rather than half-read if it
+arrives as something else.
+
+| cell | param | default | meaning |
+|---|---|---|---|
+| `./clock` | `schedules[0].cron` | `0 0 */6 * * *` | the tick, UTC. A loop that ticks faster than its window can fill measures only noise. A timer has no top-level `cron` param -- `TimerParams` reads `schedules` -- so an override replaces the whole array |
+| `./meter` | `max_ledger_rows` | 200000 | the `scan_budget` the meter **asks** `/colony/ledger` for: the hard bound on the rows each windowed sub-query may read. Since [#385](https://github.com/mmeyerlein/meclaw/issues/385) an answer that hit the bound is **discarded** -- the cycle is receipted as not measured rather than ruled on a part of the window -- so a budget smaller than the colony's traffic in one window means the meter never measures at all and the loop stands still. Generous is the safe direction |
+| `./mutator` | `max_numeric_step_pct` | 50 | how far one cycle may move a numeric param |
+| `./mutator` | `numeric_param_keys` | `["temperature", "max_tokens", "external_timeout_ms", "attachment_timeout_ms"]` | the numeric half of the radius, as a key set. The default is the `llm` cell's runtime-mutable numeric params; a key outside it is refused with `key_outside_radius_<key>` rather than receipted as applied. A JSON array, or a comma-separated string, which is read the same way |
+| `./probe` | `probe_window_sec` | 120 | how far back the health check looks |
+| `./probe` | `probe_max_errors` | 0 | errors tolerated in that window |
+| `./probe` | `probe_ledger_tries` | 3 | how often the health check re-**asks** the ledger -- one round trip per try, 100 ms apart -- before it calls the cycle's params update missing. Closes the write-lag race against a row that is still being written |
+
+The provider lane, in `.env`, and all of it:
+
 | variable | default | meaning |
 |---|---|---|
-| `ARGUS_CYCLE_CRON` | `0 0 */6 * * *` | the tick, UTC. A loop that ticks faster than its window can fill measures only noise |
-| `ARGUS_MAX_LEDGER_ROWS` | 200000 | the `scan_budget` the meter **asks** `/colony/ledger` for: the hard bound on the rows each windowed sub-query may read. Since [#385](https://github.com/mmeyerlein/meclaw/issues/385) an answer that hit the bound is **discarded** -- the cycle is receipted as not measured rather than ruled on a part of the window -- so a budget smaller than the colony's traffic in one window means the meter never measures at all and the loop stands still. Generous is the safe direction |
-| `ARGUS_MAX_NUMERIC_STEP_PCT` | 50 | how far one cycle may move a numeric param |
-| `ARGUS_NUMERIC_PARAM_KEYS` | `temperature,max_tokens,external_timeout_ms,attachment_timeout_ms` | the numeric half of the radius, as a key set. The default is the `llm` cell's runtime-mutable numeric params; a key outside it is refused with `key_outside_radius_<key>` rather than receipted as applied |
-| `ARGUS_PROBE_WINDOW_SEC` | 120 | how far back the health check looks |
-| `ARGUS_PROBE_MAX_ERRORS` | 0 | errors tolerated in that window |
-| `ARGUS_PROBE_LEDGER_TRIES` | 3 | how often the health check re-**asks** the ledger -- one round trip per try, 100 ms apart -- before it calls the cycle's params update missing. Closes the write-lag race against a row that is still being written |
 | `ARGUS_JUDGE_MODEL` | `anthropic/claude-opus-4` | the thinking model. The one cell in the hive where a weaker model is a false economy: it decides what the colony does to itself |
 | `ARGUS_JUDGE_PROVIDER` | `openai` | provider adapter of the judge. `openai` is the only value `LlmParams` accepts today; it names the Chat-Completions **wire**, not the vendor, and the endpoint it talks to is `ARGUS_JUDGE_BASE_URL` ([#387](https://github.com/mmeyerlein/meclaw/issues/387)) |
 | `ARGUS_JUDGE_BASE_URL` | `https://openrouter.ai/api/v1` | provider endpoint of the judge |
 | `OPENROUTER_API_KEY` | — (required) | the judge's key. Bound late, never stored in the tree |
+
+**A standing instance keeps what it was grown with.** Instantiation is a COPY --
+the mutation stages a fresh directory and renames it into place -- so an argus
+grown before `1.1.0` still carries the old `${ARGUS_*}` tokens in its own
+`config.json` and still reads them out of the environment. Nothing here reaches
+it. What changes for it is only that a NEW loop grown from this template will not
+read those lines.
 
 **Retracted:** `ARGUS_COLONY_DB` is gone
 ([#267](https://github.com/mmeyerlein/meclaw/issues/267)). The meter and the
@@ -376,7 +426,7 @@ know what it spent cannot measure itself while the network is what broke.
   `/main/talky/brain` counts `/main/talky/brainstem`'s traffic too. It can
   therefore mask a cell that went silent. It cannot invent a healthy verdict on
   its own: errors and dead letters are counted independently of it. And the
-  re-read is now a re-**ask**: up to `ARGUS_PROBE_LEDGER_TRIES` round trips
+  re-read is now a re-**ask**: up to `probe_ledger_tries` round trips
   100 ms apart, so a colony under load fails the check later than it used to,
   never earlier.
 - **The window ends at the current second, and that had to be said out loud.**

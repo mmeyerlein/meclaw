@@ -94,20 +94,22 @@ const REFERENCED_SUB_UNITS: [(&str, &str); 3] = [
 
 /// One cell from `door@1`, FOUR from `firewall@2` (the third is the transfer
 /// lane's `porter`, GH #471, the fourth the hold pile's `warden`,
-/// `firewall@2.2.0`, GH #450), twelve from `talky` (the tenth
+/// `firewall@2.2.0`, GH #450), eleven from `talky` (the tenth
 /// is the sidecar `splitter`, `talky@4.1.0`, GH #379; the summarizer's two left
-/// with `talky@4.3.0`, GH #447; the eleventh is the collector's `menu-clock`,
-/// `collector@3.3.0`, GH #464; the twelfth is the keeper's own `porter`,
-/// `session-keeper@2.1.0`, GH #471), one from `terminal@1`.
-const CELLS_AFTER_GROW: usize = 18;
+/// with `talky@4.3.0`, GH #447; the eleventh is the keeper's own `porter`,
+/// `session-keeper@2.1.0`, GH #471), one from `terminal@1`. The collector's
+/// `menu-clock` was a twelfth between `collector@3.3.0` (GH #464) and
+/// `collector@4.0.0` (GH #553), which asks the menu on the mutation receipt
+/// instead. MEASURED.
+const CELLS_AFTER_GROW: usize = 17;
 
-/// Plus six from `cogny`: the brain, the cell that declares the core's own
-/// errand (`cogny@4.4.0`, GH #528), the three collector cells (the menu clock
-/// came with `collector@3.3.0`, GH #464) and the split. The lookup lane's brain
-/// was the sixth until 4.4.0 and `./schemas` took its place in the count, which
-/// is a coincidence of arithmetic and not a swap: one is an `llm`, the other a
-/// `code` cell answering a menu question.
-const CELLS_AFTER_COGNY: usize = 24;
+/// Plus five from `cogny`: the brain, the cell that declares the core's own
+/// errand (`cogny@4.4.0`, GH #528), the two collector cells and the split. The
+/// lookup lane's brain was one until 4.4.0 and `./schemas` took its place in the
+/// count, which is a coincidence of arithmetic and not a swap: one is an `llm`,
+/// the other a `code` cell answering a menu question. The collector's menu clock
+/// was a sixth until GH #553. MEASURED.
+const CELLS_AFTER_COGNY: usize = 22;
 
 fn read_json(p: &std::path::Path) -> Value {
     let raw = std::fs::read_to_string(p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
@@ -365,9 +367,6 @@ fn factories() -> Vec<(String, Arc<dyn CellFactory>)> {
     ]
 }
 
-/// Never during a test run: the shipped keeper default is the real night.
-const NEVER: &str = "0 0 0 1 1 *";
-
 /// The seed as the reader gets it, plus the template library next to it and the
 /// `.env` the README asks for. Only the provider endpoints are bent -- towards
 /// the mock wire, so the run costs nothing.
@@ -381,6 +380,12 @@ fn build_root(td: &tempfile::TempDir, base_url: &str) {
     {
         copy_tree(&repo_path(dir), &root.join("templates").join(name));
     }
+    // The keeper's nightly close sweep, pushed to a date this run cannot reach.
+    // It was a `KEEPER_NIGHT_CRON` line in the `.env` below until GH #138: the
+    // schedule is a LITERAL of `session-keeper/night`'s own params now, so such
+    // a line is read by nothing at all -- the sweep would fire into this run and
+    // close the very generation the walkthrough opens, and nobody would say so.
+    meclaw_testing::quiet_keeper_night(&root.join("templates/session-keeper"));
     for rel in [
         "templates/talky/brain/config.json",
         "templates/cogny/brain/config.json",
@@ -391,10 +396,7 @@ fn build_root(td: &tempfile::TempDir, base_url: &str) {
     }
     std::fs::write(
         root.join(".env"),
-        format!(
-            "OPENROUTER_API_KEY=test-key\nMODEL_BRAIN=gpt-4o-mock\nMODEL_CORE=gpt-4o-mock\n\
-             KEEPER_NIGHT_CRON={NEVER}\nMENU_CRON={NEVER}\n"
-        ),
+        "OPENROUTER_API_KEY=test-key\nMODEL_BRAIN=gpt-4o-mock\nMODEL_CORE=gpt-4o-mock\n",
     )
     .unwrap();
 }
@@ -556,7 +558,7 @@ async fn the_seed_plus_grow_json_is_a_living_agent() {
     assert_eq!(
         after.len(),
         CELLS_AFTER_GROW,
-        "zero checked-in cells plus sixteen instantiated ones: {after:?}"
+        "zero checked-in cells plus seventeen instantiated ones: {after:?}"
     );
 
     // --- the liveness proof: one turn, all the way through.

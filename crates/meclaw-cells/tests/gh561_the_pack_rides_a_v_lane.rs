@@ -292,14 +292,7 @@ const NEVER: &str = "0 0 0 1 1 *";
 
 fn build_tree(td: &tempfile::TempDir, affinity: &std::path::Path, assistant: &std::path::Path) {
     let root = td.path();
-    // Two seconds, so the push tick fires several times inside the test's own
-    // budget. The cron comes out of the `.env` through the shipped
-    // `${AFFINITY_PUSH_CRON:-…}` default, so late binding is under test too.
-    std::fs::write(
-        root.join(".env"),
-        "AFFINITY_PUSH_CRON=*/2 * * * * *\nOPENROUTER_API_KEY=test-key\nKEEPER_IDLE_MS=0\n",
-    )
-    .unwrap();
+    std::fs::write(root.join(".env"), "OPENROUTER_API_KEY=test-key\n").unwrap();
     write(root, "main/config.json", &main_config());
     write(
         root,
@@ -325,6 +318,14 @@ fn build_tree(td: &tempfile::TempDir, affinity: &std::path::Path, assistant: &st
     quiesce(&root.join("main/assistants"), &mut counter);
     patch(root, "main/affinity/clock/config.json", |v| {
         v["params"]["schedules"][0]["schedule_id"] = json!(CLOCK_ID);
+        // Since GH #138 the cadence is a literal of `./clock`'s own params, so
+        // it is written here beside the schedule_id -- the form an
+        // `override_params` entry takes at instantiation. An
+        // `AFFINITY_PUSH_CRON=` line in the `.env` would be read by nothing at
+        // all and would say nothing about it.
+        // Two seconds, so the push tick fires several times inside the
+        // test's own budget.
+        v["params"]["schedules"][0]["cron"] = json!("*/2 * * * * *");
     });
 }
 
@@ -703,7 +704,18 @@ fn a_vouching_level_keeps_a_lane_door_check_it_can_pass() {
             condition: e["condition"].as_str().map(|c| {
                 meclaw_colony::cel_eval::parse_condition(c).expect("a shipped condition parses")
             }),
-            modifier: None,
+            // GH #552: the modifier travels now. One exit of this level STATES
+            // its lane instead of carrying it (`./talky -> .` on the memory tool,
+            // `set_hop.route = 'tool'`), and `check_lane_doors` reads exactly that
+            // when a route probe cannot make the condition fire. A fixture that
+            // dropped it would ask the substrate about a level the tree does not
+            // ship.
+            modifier: e["modifier"].as_object().map(|_| {
+                let spec: meclaw_colony::config::ModifierSpec =
+                    meclaw_core::serde_json::from_value(e["modifier"].clone())
+                        .expect("a shipped modifier parses");
+                meclaw_colony::cel_eval::parse_modifier(&spec).expect("a shipped modifier compiles")
+            }),
             is_default: false,
             lane: None,
         })

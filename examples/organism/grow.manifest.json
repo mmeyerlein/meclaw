@@ -6,7 +6,7 @@
         "add_nodes": [
           {
             "name": "os",
-            "template": "meclaw-os@1.7.0"
+            "template": "meclaw-os@1.8.1"
           }
         ],
         "add_edges": []
@@ -18,7 +18,7 @@
         "add_nodes": [
           {
             "name": "acme",
-            "template": "org@1.3.0"
+            "template": "org@1.4.0"
           }
         ],
         "add_edges": [
@@ -53,6 +53,11 @@
             "condition": "has(hop.route) && hop.route == 'in_export' && (!has(context.org) || context.org == 'acme')"
           },
           {
+            "from": ".",
+            "to": "./acme",
+            "condition": "has(hop.route) && hop.route == 'mutation_committed' && (!has(context.org) || context.org == 'acme')"
+          },
+          {
             "from": "./acme",
             "to": ".",
             "condition": "has(hop.route) && hop.route == 'answer'"
@@ -110,6 +115,11 @@
           {
             "from": "./acme",
             "to": ".",
+            "condition": "has(hop.route) && hop.route == 'dump'"
+          },
+          {
+            "from": "./acme",
+            "to": ".",
             "condition": "has(hop.route) && hop.route == 'pack_ack'"
           }
         ]
@@ -121,7 +131,7 @@
         "add_nodes": [
           {
             "name": "alex",
-            "template": "member@1.5.1"
+            "template": "member@1.6.0"
           }
         ],
         "add_edges": [
@@ -156,6 +166,11 @@
             "condition": "has(hop.route) && hop.route == 'in_export' && (!has(context.member) || context.member == 'alex')"
           },
           {
+            "from": ".",
+            "to": "./alex",
+            "condition": "has(hop.route) && hop.route == 'mutation_committed' && (!has(context.member) || context.member == 'alex')"
+          },
+          {
             "from": "./alex",
             "to": ".",
             "condition": "has(hop.route) && hop.route == 'answer'"
@@ -213,6 +228,11 @@
           {
             "from": "./alex",
             "to": ".",
+            "condition": "has(hop.route) && hop.route == 'dump'"
+          },
+          {
+            "from": "./alex",
+            "to": ".",
             "condition": "has(hop.route) && hop.route == 'pack_ack'"
           }
         ]
@@ -229,7 +249,7 @@
         "add_nodes": [
           {
             "name": "scribe",
-            "template": "assistant@2.4.1",
+            "template": "assistant@2.5.0",
             "override_params": {
               "cogny/brain": {
                 "temperature": 0.2
@@ -245,6 +265,11 @@
           },
           {
             "from": ".",
+            "to": "./scribe",
+            "condition": "has(hop.route) && hop.route == 'mutation_committed' && (!has(context.assistant) || context.assistant == 'scribe')"
+          },
+          {
+            "from": ".",
             "to": "./scribe/cogny",
             "lane": "in_bundle",
             "condition": "has(hop.route) && hop.route == 'in_bundle' && has(context.assistant) && context.assistant == 'scribe' && has(hop.recall_caller) && hop.recall_caller == 'cogny'"
@@ -253,8 +278,8 @@
             "from": ".",
             "to": "./scribe/talky",
             "lane": "in_bundle",
-            "default": true,
-            "condition": "has(hop.route) && hop.route == 'in_bundle' && has(context.assistant) && context.assistant == 'scribe'"
+            "condition": "has(hop.route) && hop.route == 'in_bundle' && has(context.assistant) && context.assistant == 'scribe'",
+            "default": true
           },
           {
             "from": "./scribe",
@@ -293,6 +318,36 @@
                 "tool_answerer"
               ]
             }
+          },
+          {
+            "from": "./scribe",
+            "to": ".",
+            "condition": "has(hop.route) && hop.route == 'tool'",
+            "modifier": {
+              "set_context": {
+                "assistant": "'scribe'"
+              }
+            }
+          },
+          {
+            "from": "./scribe",
+            "to": ".",
+            "condition": "has(hop.route) && hop.route == 'schemas'",
+            "modifier": {
+              "set_context": {
+                "assistant": "'scribe'"
+              }
+            }
+          },
+          {
+            "from": ".",
+            "to": "./scribe",
+            "condition": "has(hop.route) && hop.route == 'in_tool' && (!has(context.assistant) || context.assistant == 'scribe')"
+          },
+          {
+            "from": ".",
+            "to": "./scribe",
+            "condition": "has(hop.route) && hop.route == 'in_menu' && (!has(context.assistant) || context.assistant == 'scribe')"
           },
           {
             "from": "./scribe",
@@ -347,7 +402,17 @@
           {
             "from": "./scribe",
             "to": ".",
+            "condition": "has(hop.route) && hop.route == 'export_done'"
+          },
+          {
+            "from": "./scribe",
+            "to": ".",
             "condition": "has(hop.route) && hop.route == 'dump'"
+          },
+          {
+            "from": ".",
+            "to": "./scribe",
+            "condition": "has(hop.route) && hop.route == 'in_turn' && !has(context.assistant) && has(hop.owner) && hop.owner.contains('/assistants/scribe/')"
           }
         ]
       }

@@ -1,4 +1,4 @@
-# `cogny@4.6.1`
+# `cogny@5.0.0`
 
 The agent core as one template. Four units under one hive:
 [`collector`](../collector/) and [`dispatcher`](../dispatcher/) -- each carrying its
@@ -45,14 +45,17 @@ runs is a lens on the same hive, and a second one inherits what the member alrea
   becomes the asking talky's `in_advice` event -- which is why the same lane carries a
   *question back* without a second mechanism.
 - **Nobody waits.** The consult is classified at the asking dispatcher
-  (`DISPATCHER_HANDOFF_TOOLS=consult_cogny` -- a handoff is async and says in
+  (the asking dispatcher's `handoff_tools` names `consult_cogny` -- a handoff is async and says in
   the same breath that the answer comes from a later turn, GH #372), so the asker's fan-in
   opens no expectation for it and the round it leaves behind is over. Thinking time never
   races an idle window. That property lives on the *asking* side; this template is the half
   that is allowed to be slow.
-- **A memory it asks on purpose (4.4.0).** `memory_call_tier` is `"1"` and `memory_tier`
-  is empty: the core has no ambient bundle handed to it and a `memory_recall` tool instead,
-  with a time range and a session it chose itself. A problem solver asks; it is not read to.
+- **A memory it asks on purpose (4.4.0, moved in 5.0.0).** `memory_tier` is empty: the core
+  has no ambient bundle handed to it and a `memory_recall` tool instead, with a time range
+  and a session it chose itself. A problem solver asks; it is not read to. Since 5.0.0 the
+  tool is not this composite's to answer ([#552](https://github.com/mmeyerlein/meclaw/issues/552)):
+  the member's own memory hive declares the schema and serves the call, and the call leaves
+  here on the ordinary tool exit like any other name.
 - **One answer per consultation (4.4.0, #539).** *No channel* is enforced here rather than only
   stated: the `./dispatcher` ref marker carries `override_params {"": {"interim": ""}}`, so
   the sentence a thinking model puts next to its tool bundle -- "I am checking the official
@@ -71,7 +74,7 @@ runs is a lens on the same hive, and a second one inherits what the member alrea
 
 | path | type | from |
 |---|---|---|
-| `collector/{assemble,window,menu-clock}` | `code`, `store`, `timer` | `collector` **(sealed)** |
+| `collector/{assemble,window}` | `code`, `store` | `collector` **(sealed)** |
 | `dispatcher` | `code` | `dispatcher` (a single-cell template) |
 | `brain` | `llm` | this template -- the one inference |
 | `schemas` | `code` | this template -- the errand schema (4.4.0; named `declare` until 4.5.0) |
@@ -87,9 +90,8 @@ The two sub-units are **references**, not copies. Each of the two directories ho
 `config.json` and nothing else:
 
 ```json
-{"cell": {"type": "ref", "template": "collector@3.5.0"},
+{"cell": {"type": "ref", "template": "collector@4.0.0"},
  "override_params": {"assemble": {"context_window": 128000,
-                                  "memory_call_tier": "1",
                                   "curate_soft": 0.5,
                                   "curate_hard": 0.75,
                                   "tools": ["*"]}}}
@@ -98,17 +100,18 @@ The two sub-units are **references**, not copies. Each of the two directories ho
 Since `4.1.0` the collector reference carries an `override_params` block, and that is where
 the curator is switched **on** -- see [The curator, live](#the-curator-live) below.
 
-**And where the memory TOOL is switched ON** (`4.4.0`,
-[#528](https://github.com/mmeyerlein/meclaw/issues/528)). `memory_call_tier` decides whether
-a `memory_recall` tool call is answered out of the collector's own recall port or refused
-with a typed error, and since `collector@3.3.1` the same knob decides whether the tool is
-**declared** to the brain at all. `4.3.1` set it to `""` for a reason that was true then: the
-core drew no `memory_recall` edge, so a call would have left through the guarded default exit
-and died at a tools hive that never heard of the name -- a core offering a tool it cannot
-serve. `4.4.0` draws the edge instead. One ordinary `./dispatcher -> ./collector` edge on the
-name is all a reserved name costs here, the collector answers it out of the same `recall` port
-the ambient leg used to use, and what goes out carries `hop.memory_call_id` so the returning
-bundle is filed as that call's `tool_result`.
+**And where the memory TOOL went** (`5.0.0`,
+[#552](https://github.com/mmeyerlein/meclaw/issues/552)). It was here from `4.4.0` to
+`4.6.1`: `memory_call_tier` decided whether a `memory_recall` call was answered out of the
+collector's own recall port or refused with a typed error, one ordinary
+`./dispatcher -> ./collector` edge kept the call inside, and the schema the model read was
+typed by hand -- in a template that answers no recall -- as a projection of the memory hive's
+own `in_query` contract. Three copies of one contract, each able to drift on its own. The
+hive declares and answers the name now, so this composite does with `memory_recall` what it
+does with `web_search`: the dispatcher names it, the guarded default carries it out, and an
+edge the PARENT draws knows the cell. Nothing here has to be switched on for it -- the
+declared list is `["*"]`, so whatever answerers the level wires are asked, the memory among
+them.
 
 **The ambient leg goes the other way.** `memory_tier` stays empty, and that is the whole
 shape of the ruling: the core is the problem solver, so it asks about a time range or a
@@ -122,7 +125,7 @@ declaration for either.
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`cogny@4.6.1` above it in its provenance chain.
+`cogny@5.0.0` above it in its provenance chain.
 
 **The library has to carry both.** A reference resolves against the colony's template
 registry, so `collector` and `dispatcher` have to sit in the same `templates/` directory
@@ -292,9 +295,12 @@ tool cells and no map of them. Wiring a tool is one edge pair:
 the `calls`, `result` and `answer` emissions carry no `tool_name` at all and an unguarded
 comparison **errors** in CEL, which skips the edge with a log line per lane per message.
 
-**Two tool names are reserved inside this composite and never leave**: `thread_recall`
-(GH #451) and, since 4.4.0, `memory_recall` ([#528](https://github.com/mmeyerlein/meclaw/issues/528)).
-Both are served by this hive's own collector, and each costs exactly one ordinary
+**One tool name is reserved inside this composite and never leaves**: `thread_recall`
+(GH #451), which reads the collector's own slate -- a table in that cell's own `cell.db`,
+which no other cell may read. `memory_recall` stood beside it from 4.4.0 to 4.6.1 and left
+with 5.0.0 ([#552](https://github.com/mmeyerlein/meclaw/issues/552)): a memory belongs to the
+MEMBER, and the hive that enforces the rules a recall obeys is the hive that declares it.
+The reserved name is served by this hive's own collector and costs exactly one ordinary
 `./dispatcher -> ./collector` edge -- which is what the **guarded default edge** of `4.0.2`
 was designed for ([#283](https://github.com/mmeyerlein/meclaw/issues/283), ruling Q1). The
 exit is `{"from": "./dispatcher", "to": ".", "default": true, "condition": "has(hop.route)
@@ -328,21 +334,19 @@ an ambient one:
  "modifier": {"set_hop": {"route": "'in_bundle'"}}}
 ```
 
-**`memory_call_id` is the whole correlation and the parent MUST carry it in both
-directions.** A request that leaves with the key set is a `memory_recall` tool call and its
-answer is filed as that call's `tool_result`, under the original `tool_call_id`; a request
-that leaves with the key empty is an ambient leg and its answer is filed as the memory of the
-turn. One port, two meanings, told apart by what the request carried out
-(`templates/collector/README.md` § *The memory tool*). Drop the key on the way back and the
-bundle is filed as a turn's memory leg while the round waits for a tool result that never
-comes -- until the idle exit closes it. Every key is always present and empty rather than
-absent, because a missing hop key makes the promoting CEL modifier fail and a failed modifier
-skips the edge.
+**The recall port has ONE meaning since 5.0.0** ([#552](https://github.com/mmeyerlein/meclaw/issues/552)):
+the ambient leg of a turn. It carried two until then, told apart by a `memory_call_id` the
+request carried out -- set meant "this answers a `memory_recall` call", empty meant "this is
+the turn's own memory". Both halves of the tool live in the memory hive now, so the key is
+gone from this road and the parent carries no correlation on it at all. Every key that IS on
+it is always present and empty rather than absent, because a missing hop key makes the
+promoting CEL modifier fail and a failed modifier skips the edge.
 
-`params.memory_tier` on `./collector/assemble` stays **empty** here and
-`params.memory_call_tier` is `"1"`: the core asks on purpose. The tier of a tool call is read
-off `memory_call_tier` and never off the model's arguments -- a tier is a cost decision of the
-tree, not something a prompt gets to raise.
+`params.memory_tier` on `./collector/assemble` stays **empty** here: this core takes no
+ambient bundle. It asks on purpose, and since 5.0.0 it asks the member's memory the way it
+asks any other tool. The tier of such a call is read off the hive's own `tool` cell and never
+off the model's arguments -- a tier is a cost decision of the tree, not something a prompt
+gets to raise.
 
 **The error drain is one edge**, because the brain is normalised onto the lane by
 the exit edge itself rather than by a cell:
@@ -363,15 +367,15 @@ the consultation died.
 | housekeeping (`in_prune`, `in_round_sweep`) | not declared |
 | a normalising `errors` cell | R-CG-2 names "collector + dispatcher + llm, and nothing else"; an `errors` cell is not among them, so the brain is put on the lane by the exit edge's `set_hop.route` instead. That is enough to make the failure reachable; it is not enough to give it a body a reader can grep, which is what `talky/errors` adds |
 
-**The two tools this composite serves ITSELF are wired since 4.4.0**, and that is the
-retraction of a row that stood here through three versions. `thread_recall` landed with the
-curator in `4.1.0`; `memory_recall` follows in `4.4.0`, on the same shape and for a sharper
-reason -- a problem solver that cannot ask about a time range or a session is not one. Both
-are `./dispatcher -> ./collector` edges on the tool name, in **this template's**
-`params.graph`, because a parent cannot draw them: the seal refuses an outside edge naming
-`./cogny/dispatcher`. Neither touched the tool exit, which is exactly what the guarded
-default of `4.0.2` promised a reserved name would cost. That is the shape `talky` ships for
-both of its own served tools ([#55](https://github.com/mmeyerlein/meclaw/issues/55)).
+**The one tool this composite serves ITSELF is wired since 4.1.0.** `thread_recall` landed
+with the curator, as a `./dispatcher -> ./collector` edge on the tool name in **this
+template's** `params.graph`, because a parent cannot draw it: the seal refuses an outside
+edge naming `./cogny/dispatcher`. It never touched the tool exit, which is exactly what the
+guarded default of `4.0.2` promised a reserved name would cost. That is the shape `talky`
+ships for its own served tool ([#55](https://github.com/mmeyerlein/meclaw/issues/55)).
+`memory_recall` was the second from 4.4.0 to 4.6.1 and is an ORDINARY name since 5.0.0
+([#552](https://github.com/mmeyerlein/meclaw/issues/552)) -- one edge deleted, and the call
+leaves on the default like every other.
 
 The tool SCHEMAS of the tools a PARENT wires are a different thing again: they live in the
 brain's `system.tools`, asked for on the `schemas` lane since 4.3.0 and written there by the
@@ -389,7 +393,7 @@ answer is the same, for the sharper reason that nobody else can hold it.
 twenty-two-second research answer waited **15.5 s** in an `llm` cell's serial mailbox for a
 call it finished in 2.5 s. The measurement was right and the topology answered the wrong
 question: the lookup should never have been an errand at all. It is the **conversation
-surface** that holds the window and the person, and a `memory_recall` tool there answers in
+surface** that holds the window and the person, and a `memory_recall` tool answers in
 one call what an advisor round trip answered in two hops and a queue.
 
 So `4.4.0` takes the split out and moves the class boundary into the one place a caller
@@ -400,8 +404,7 @@ reads before it decides -- the `consult_cogny` description this core now hands o
                                                          │
                      dispatcher <──(stop | tool_calls)───┘
                             │
-     thread_recall ─────────┤
-     memory_recall ─────────┴──> collector
+     thread_recall ─────────┴──> collector
 ```
 
 **One class, one lane, one mailbox.** Synthesis, a development over time, multi-step work
@@ -418,7 +421,7 @@ person in the same reply, so nobody waits without knowing why.
 What went with the lane: `brain_fast` and its `brevity` seed, `ctx.model_fast`,
 `context.consult_class` on the seam edge, the `ask_memory` ingress edge, and
 `escalate_to_deep` -- the reserved tool name, its edge, and the paragraph that told every
-instance to put it in `DISPATCHER_HANDOFF_TOOLS`. **Drop it from that list**: a name in the
+instance to put it in its dispatcher's handoff list. **Drop it from that list**: a name in the
 handoff list that no cell serves is a call the dispatcher marks as answered-elsewhere and
 nothing ever answers.
 
@@ -442,7 +445,6 @@ dispatcher --(calls)---> collector  in_calls
 dispatcher --(result)--> collector  in_tool
 dispatcher --(answer)--> collector  in_answer     -> and out of the advice port
 dispatcher --(tool_name == thread_recall)--> collector  in_thread_call
-dispatcher --(tool_name == memory_recall)--> collector  in_memory_call   <- #528
 
 .          --(in_turn)-----------> collector         THE DOORS
 .          --(in_tool|in_bundle|in_pack|in_menu)-> collector
@@ -464,7 +466,7 @@ both brains on one errand and answered twice. With one brain there is nothing to
 **Two reserved tool names, and the exit is untouched by either.** The `==` on the exit marks
 the **default** edge (`4.0.2`, [#283](https://github.com/mmeyerlein/meclaw/issues/283)): it is
 consulted only after every ordinary edge out of `dispatcher` has declined, which is precisely
-how `thread_recall` and `memory_recall` silence it without being named there. A per-instance
+how `thread_recall` silences it without being named there. A per-instance
 tool of either name would be swallowed by the lane that claims it.
 
 **The loopback bound is an edge literal, on purpose.** `int(hop.iter) < 12` is a safety
@@ -519,14 +521,12 @@ once. Its fourth, `interim`, is a param like the collector's, and this template 
 | `max_iter` | param | `8` | collector -- **the loop bound**; at the cap the seam leaves on `answer` with `hop.round_capped == "1"`, `hop.partial == "1"` and a named partial answer as its last turn ([#570](https://github.com/mmeyerlein/meclaw/issues/570)). Raise it per instance for research-sized errands -- see above |
 | `round_idle_ms` | param | `120000` | collector -- idle window of one tool round |
 | `memory_tier` | param | `""` | collector -- the AMBIENT memory leg, and it stays **empty** at this template since 4.4.0: a problem solver asks on purpose. Setting it gives the core a bundle before it has read the question, and pays for it every consult |
-| `memory_call_tier` | param | `"1"` | collector -- tier of the `memory_recall` TOOL, and the knob that also decides whether the tool is DECLARED (`collector@3.3.1`). **Set at this template since 4.4.0** ([#528](https://github.com/mmeyerlein/meclaw/issues/528)), together with the `./dispatcher -> ./collector` edge that keeps the call inside. Empty = tool off, which is what `4.3.1` shipped and why |
 | `memory_form` | param | `"readable"` | collector -- `readable` / `json` / `both` |
 | `interim` | param | `""` | dispatcher -- **off at this template since 4.4.0** ([#539](https://github.com/mmeyerlein/meclaw/issues/539)). On (the shipped default, and what a channel voice keeps) a sentence standing next to a tool bundle leaves on the `answer` lane at once. This core has no channel, and its `answer` lane is the asking voice's advice lane, so such a sentence arrives as an advice nobody gave. Off it does not leave the dispatcher at all, and therefore does not enter this core's own window either -- a sentence nobody could hear was never said. The FINAL answer is untouched |
 | `prune_after_ms` | param | `604800000` | collector -- age gate on the prune lane (7 d) |
 | `turn_write` | param | `"1"` | collector -- per-turn episodes, **on by default** since GH #298. The write belongs at the **talky**, not here: set it to `"0"` at the core unless the core's own `turn_write` route is wired -- see below |
 | `context_window` | param | `128000` | collector -- **the curator's budget in tokens**; `0`/empty = curation off. **Set at this template since `4.1.0`** (GH #451) -- see [The curator, live](#the-curator-live). This is the knob the core wants and the channel voice does not: a cogny is exactly the shape the curator was built for (few turns, huge tool results), a talky is the other one. The number is the window of the model this template DEFAULTS to (`openai/gpt-4o-mini`, 128k), not the largest window in the catalogue: an estimate here may only err low, because a budget set too high curates too late while one set too low merely curates a little early. Instantiating with a 200k model means raising it in the same mutation |
-| `tools` | param | `["*"]` | collector -- the tool names this core **declares** it uses (GH #464). Set at this template since `4.3.0`, and set to EVERYTHING on purpose: a reasoning core should reach whatever its surface can, and a list typed here would be a second copy of a catalogue that drifts on the first tool added to the hive. The declarations are asked for on the `schemas` lane and written into the brain as durable `system.tools`, together with the two names the collector serves itself (`memory_recall`, `thread_recall`) |
-| `cron` | env | `0 */5 * * * *` | collector/menu-clock -- `MENU_CRON`, the cadence of the menu tick (UTC) |
+| `tools` | param | `["*"]` | collector -- the tool names this core **declares** it uses (GH #464). Set at this template since `4.3.0`, and set to EVERYTHING on purpose: a reasoning core should reach whatever its surface can, and a list typed here would be a second copy of a catalogue that drifts on the first tool added to the hive. The declarations are asked for on the `schemas` lane and written into the brain as durable `system.tools`, together with the one name the collector serves itself (`thread_recall`). `memory_recall` reaches this list the ordinary way since 5.0.0: `["*"]` asks every answerer the level wired, the member's memory among them ([#552](https://github.com/mmeyerlein/meclaw/issues/552)) |
 | `curate_soft` / `curate_hard` | param | `0.5` / `0.75` | collector -- the working mark and the emergency mark, as fractions of the budget |
 | `keep_rounds` | param | `2` | collector -- newest tool iterations kept verbatim whatever the budget says |
 | `recoverability` | param | `""` | collector -- what may be elided, declared per tool NAME (`lookup:repeatable,write:env`). Undeclared = `unique` = never elided. **Declare the core's own tools here**, because the core is where the large results are |
@@ -536,14 +536,16 @@ once. Its fourth, `interim`, is a param like the collector's, and this template 
 | `curate_budget_line` | param | `"1"` | collector -- the deterministic remaining-budget sentence in `system.budget`; `""`/`"0"` sends the leaf empty |
 | `thread_recall` | param | `"1"` | collector -- the `thread_recall` tool. **The edge is drawn since `4.1.0`**: `./dispatcher -> ./collector` on `hop.route == 'tool' && hop.tool_name == 'thread_recall'` with `set_hop {"route": "'in_thread_call'"}`, in this template's own `params.graph`, because a parent cannot draw an edge into a sealed sub-unit. It is exactly the one ordinary edge the guarded default exit of `4.0.2` was designed to cost for a second reserved name, and nothing else changed. It landed together with `context_window` and not before it: until the edge exists every stub the curator leaves is a dead end, and a dead end is worse than no stub |
 | `thread_recall_budget` | param | `0.2` | collector -- share of the budget one turn's recalls may spend; over it the call is refused, never truncated |
-| `DISPATCHER_MAX_CALLS` | env | `16` | dispatcher -- per-answer call budget |
-| `DISPATCHER_ASYNC_TOOLS` | env | (empty) | dispatcher -- the core's OWN async tools. The `consult_cogny` declaration belongs on the **asking** side. The key is colony-global, so in practice one list carries them all |
-| `DISPATCHER_HANDOFF_TOOLS` | env | (empty) | dispatcher -- async tools whose call ends the TURN because the answer comes from a later one. This core needs **none** since 4.4.0: `escalate_to_deep` is gone, and `consult_cogny` belongs on the asking side, where an advisor's answer arrives as its own turn. A name in this list that no cell serves is a call the dispatcher marks as answered-elsewhere and nothing ever answers |
+| `max_calls` | param | `16` | cogny/dispatcher -- per-answer call budget |
+| `async_tools` | param | `""` | cogny/dispatcher -- the core's OWN async tools, as a JSON array or one comma-separated string. The `consult_cogny` declaration belongs on the **asking** side, and since `dispatcher@1.2.0` it can stay there: the knob is a param of each dispatcher cell (GH #138), so the surface's list and this core's list are two statements instead of one shared key |
+| `handoff_tools` | param | `""` | cogny/dispatcher -- async tools whose call ends the TURN because the answer comes from a later one. This core needs **none** since 4.4.0: `escalate_to_deep` is gone, and `consult_cogny` belongs on the asking side, where an advisor's answer arrives as its own turn. A name in this list that no cell serves is a call the dispatcher marks as answered-elsewhere and nothing ever answers |
 
-**Every `env` knob above and everywhere else in a cogny tree is an EXPERIMENTAL config
-surface.** They are colony-global by construction and will follow the collector's knobs onto
-`params`, one template at a time, in a 0.x release -- so treat a name in that column as
-something that moves, not as a stable contract (`refs #138`).
+**There is no `env` column above any more.** Since `dispatcher@1.2.0` the last
+three knobs of a cogny tree moved onto `params` with the rest
+([#138](https://github.com/mmeyerlein/meclaw/issues/138)); what is left in `.env`
+is the provider lane -- the API key, the endpoint, the model id. Each row names
+the CELL its knob belongs to, because that is what an `override_params` entry
+addresses (GH #140).
 
 **The sharp edge is gone (1.3.0).** Until `collector@1.1.0` every collector knob was a
 colony-global env name, and because an env key is colony-global by construction, a `cogny` and
@@ -558,7 +560,7 @@ Now the knob is set where it belongs, and the sub-unit stays a reference to the 
 `collector`:
 
 ```json
-{"op": "instantiate", "template": "cogny@4.6.1", "at": "/cores/deep",
+{"op": "instantiate", "template": "cogny@5.0.0", "at": "/cores/deep",
  "override_params": {"collector/assemble": {"context_window": 200000,
                                             "recoverability": "lookup:repeatable,write:env"}}}
 ```
@@ -728,9 +730,14 @@ direction instead of a pass-through chain through three rims — and that neithe
 this level nor the generation above has to declare, forward or guard a lane it
 takes no part in.
 
-The brain accordingly ships `params.credential_grant_id` resolving to the empty
+The brain accordingly ships `params.credential_grant_id` as the empty
 string, which is no grant at all (GH #271): standalone this composite behaves
-exactly as it did before and spends its `api_key`. Switching it over takes **two**
+exactly as it did before and spends its `api_key`. Since 5.0.0 that empty string
+is a LITERAL and not a `${COGNY_CREDENTIAL_GRANT_ID:-}` token
+([#138](https://github.com/mmeyerlein/meclaw/issues/138), ruling R-0904-6): a
+grant id is a reference, not material, and two generations in one colony present
+different ones -- which an environment variable, being colony-wide, could not
+say. Switching it over takes **two**
 `override_params` keys and not one, because a cell asks for a credential only
 while it holds none — and `params.api_key` counts as one:
 
@@ -831,11 +838,14 @@ back, two edges and never one; a name that hive has nothing under comes back in
 `hop.menu_unknown` and as a warn line rather than as a silence. The full account lives in
 [`templates/talky/README.md`](../talky/README.md) § "The menu is asked for" and
 [`templates/collector/README.md`](../collector/README.md) § "The menu is asked for";
-everything there holds here without exception. Since 4.4.0 the menu the collector writes
-also carries the two tools it answers ITSELF -- `memory_recall` and `thread_recall`, both
-routed by name inside this composite and neither of them a tool any hive has a declaration
-for. That is the `collector`'s own doing since GH #512, and the switches that decide it are
-the two this template sets: `memory_call_tier` and `thread_recall`.
+everything there holds here without exception. Since 4.1.0 the menu the collector writes
+also carries the tool it answers ITSELF -- `thread_recall`, routed by name inside this
+composite and not a tool any hive has a declaration for. That is the `collector`'s own doing
+since GH #512, and the switch that decides it is the one this template sets:
+`thread_recall`. `memory_recall` was on that list from 4.4.0 to 4.6.1 and is on the ordinary
+one since 5.0.0: the member's memory declares it, the `["*"]` above asks for it, and the
+merge of GH #529 files it under a third answerer
+([#552](https://github.com/mmeyerlein/meclaw/issues/552)).
 
 **And this core answers a menu question of its own (`in_schemas` / `tool_schemas`,
 [#528](https://github.com/mmeyerlein/meclaw/issues/528)).** The two lane pairs point in

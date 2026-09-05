@@ -256,10 +256,44 @@ async fn a_trip_inside_a_mutation_names_the_mutation() {
         .unwrap();
     let _ = tokio::time::timeout(Duration::from_secs(30), ack_rx).await;
 
-    let trip = tokio::time::timeout(Duration::from_secs(30), trip_rx.recv())
-        .await
-        .expect("a loop that stopped talking inside a declared item must trip")
-        .expect("a trip");
+    // The trip under test is the one that happened INSIDE the declared item, and
+    // it is recognised by a positive signal: it carries the work item the loop
+    // declared. Trips that arrive before the mutation has declared anything are
+    // a different observation — the supervisor watching an idle loop on a busy
+    // host — and they are skipped rather than asserted on. `LogOnly` keeps the
+    // watchdog supervising after a non-fatal trip, so the labelled one still
+    // comes.
+    //
+    // The earlier spelling asserted on the FIRST trip. On a loaded host the
+    // colony task was scheduled late between the door taking the mutation and
+    // its first `WorkingOn` beat, the 5 × 10 ms window closed on that gap, and
+    // the test read `armed_for=51ms beats_seen=2 work_item=none` — a
+    // host-scheduling observation presented as a broken diagnosis (GH #580).
+    //
+    // **Why a real defect still fails this.** Nothing here is widened: the
+    // window stays at 5 × 10 ms and every assertion below is unchanged. What is
+    // demanded is the POSITIVE outcome — a trip that names the mutation. If the
+    // mutation path stopped labelling its beats, or the supervisor lost the
+    // label before the trip, no labelled trip is ever produced and the wait ends
+    // red at the 30 s failure marker.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let mut skipped = 0usize;
+    let trip = loop {
+        let t = tokio::time::timeout_at(deadline, trip_rx.recv())
+            .await
+            .unwrap_or_else(|_| {
+                panic!(
+                    "a loop that stopped talking inside a declared item must trip with \
+                     the item it was inside; {skipped} trips arrived, none of them \
+                     carrying a work item"
+                )
+            })
+            .expect("a trip");
+        if t.work_item.is_some() {
+            break t;
+        }
+        skipped += 1;
+    };
     assert!(
         trip.in_flight_work,
         "the last word was a declared work item: {trip}"

@@ -442,15 +442,68 @@ fn probe_cell_db(path: &std::path::Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Build a `ContractView` from a parsed `contract` block, compiling its
-/// `emits` schemas (P13/D-010a). `Err(reason)` if a schema is malformed — the
-/// caller turns this into a `BootstrapError`/`MutationError` so the boot /
-/// mutation path fails loudly (config.md Z.37 Boot-Strict-Kultur), never a
-/// silent "validation off". `validate_emits` is left `false` here; the spawn
-/// path resolves the effective flag (B5) since `strict_validation` lives in
-/// colony.json. Shared between the boot path (B3) and the mutation path (B4).
-pub(crate) fn compile_contract_view(
+/// GH #555 — `params.transfer.base_path`, parsed and nothing more.
+///
+/// The **pure** half, in the sense `file`'s `parse_params_pure` is pure: it
+/// checks that the value is a string and that the path is absolute, and asks
+/// the filesystem nothing at all. No `canonicalize`, no `is_dir`, no existence
+/// check — not here and not at `--validate`.
+///
+/// That is a decision with a receipt. `templates/member/README.md` records why
+/// the interim export sink was a `code` cell rather than a `file` cell: a
+/// `file` cell canonicalises its `base_path` in `validate_params`, so a member
+/// whose export directory did not exist yet failed `--validate` and failed to
+/// boot — for a lane nobody had used. A fence is a *promise about where*, and a
+/// promise about where does not require the where to exist yet. The first
+/// `to`/`from` finds out, and answers `transfer_io_error` on the message.
+///
+/// Absolute is required because the cell task knows no colony root: `root`
+/// lives in the colony struct and never reaches `spawn_cell`. A relative fence
+/// would resolve against whatever directory the process happened to start in,
+/// which is not a boundary — so it is a loud refusal, exactly like a malformed
+/// `emits` schema.
+fn parse_transfer_base_path(params: &JsonValue) -> Result<Option<std::path::PathBuf>, String> {
+    let Some(block) = params.get("transfer") else {
+        return Ok(None);
+    };
+    let obj = block
+        .as_object()
+        .ok_or("params.transfer must be an object (its one key today is `base_path`)")?;
+    let Some(raw) = obj.get("base_path") else {
+        return Ok(None);
+    };
+    let text = raw
+        .as_str()
+        .ok_or("params.transfer.base_path must be a string")?;
+    let path = std::path::Path::new(text);
+    if !path.is_absolute() {
+        return Err(format!(
+            "params.transfer.base_path must be absolute, got: {text}"
+        ));
+    }
+    Ok(Some(path.to_path_buf()))
+}
+
+/// Build a `ContractView` from a parsed `contract` block and the same config's
+/// `params`, compiling the `emits` schemas (P13/D-010a). `Err(reason)` if a
+/// schema is malformed or the transfer fence is not one — the caller turns this
+/// into a `BootstrapError`/`MutationError` so the boot / mutation path fails
+/// loudly (config.md Z.37 Boot-Strict-Kultur), never a silent "validation off".
+/// `validate_emits` is left `false` here; the spawn path resolves the effective
+/// flag (B5) since `strict_validation` lives in colony.json. Shared between the
+/// boot path (B3) and the mutation path (B4).
+///
+/// **Why `params` and not only `contract`** (GH #555): the view this builds is
+/// the *spawn* view, not a projection of the contract block. `contract` says
+/// what a cell IS — its role, and what the substrate may do on its behalf;
+/// `params.transfer.base_path` says where THIS instance keeps its files, which
+/// is instance-specific in exactly the way `file`'s `base_path` is. Putting the
+/// fence in the contract would have made two cells of the same role share one
+/// directory. Hence the rename from `compile_contract_view`: the function now
+/// reads both halves of one `config.json`, and its name says so.
+pub(crate) fn compile_spawn_view(
     block: &crate::config::ContractBlock,
+    params: &JsonValue,
 ) -> Result<ContractView, String> {
     let emits = if block.emits.body.is_empty() && block.emits.hop.is_empty() {
         None
@@ -483,6 +536,8 @@ pub(crate) fn compile_contract_view(
         write_surface: block.write_surface,
         // GH #314: likewise — whether this cell's database travels at all.
         transfer: block.transfer,
+        // GH #555: the one field that comes from `params` — see the fn docs.
+        transfer_base_path: parse_transfer_base_path(params)?.map(std::sync::Arc::from),
     })
 }
 /// GH #424 — read one `ref` marker's `config.json` into a [`PlannedGrowth`].
@@ -1016,8 +1071,18 @@ pub fn plan_bootstrap_with_env(
             // Paket-7 B3: compile `contract.emits` here so a malformed schema is
             // a LOUD boot error (analog to the unknown-`cell`-key refusal — config.md Z.37
             // Boot-Strict-Kultur), never a silent "validation off".
-            let contract_view = match compile_contract_view(&cfg.contract) {
+            let contract_view = match compile_spawn_view(&cfg.contract, &cfg.params) {
                 Ok(cv) => cv,
+                Err(reason) if reason.starts_with("params.transfer") => {
+                    // GH #555: a fence that cannot be one is its own boot error
+                    // — an operator reading "invalid emits schema" over a
+                    // mistyped directory would look in the wrong file.
+                    errors.push(BootstrapError::InvalidTransferBasePath {
+                        path: fs_path.clone(),
+                        reason,
+                    });
+                    continue;
+                }
                 Err(reason) => {
                     errors.push(BootstrapError::InvalidEmitsSchema {
                         path: fs_path.clone(),
@@ -1671,6 +1736,18 @@ pub enum BootstrapError {
         /// Filesystem path of the offending cell directory.
         path: PathBuf,
         /// Compile-error reason (names the failing section, e.g. `emits.body`).
+        reason: String,
+    },
+    /// GH #555: a cell's `params.transfer` block is not an object, or its
+    /// `base_path` is not a string or not absolute. Boot fails loudly for the
+    /// same reason a malformed `emits` schema does — a fence that quietly means
+    /// "no fence" is the worst outcome this key can have. Note what is NOT an
+    /// error here: a directory that does not exist yet. The parse is pure, and
+    /// the first `to`/`from` answers `transfer_io_error` on the message.
+    InvalidTransferBasePath {
+        /// Filesystem path of the offending cell directory.
+        path: PathBuf,
+        /// Parse-error reason (names the key and the offending value).
         reason: String,
     },
     /// Hardening Slice 4 (Task 4.2): a NON-hive cell's `contract` block does
@@ -3029,7 +3106,7 @@ mod plan_tests {
             meclaw_core::serde_json::from_str::<crate::config::ParsedConfig>(cfg_json)
                 .unwrap()
                 .contract;
-        let err = compile_contract_view(&block).unwrap_err();
+        let err = compile_spawn_view(&block, &JsonValue::Null).unwrap_err();
         assert!(err.contains("emits.body"), "loud schema error: {err}");
     }
 
@@ -3041,7 +3118,7 @@ mod plan_tests {
             meclaw_core::serde_json::from_str::<crate::config::ParsedConfig>(cfg_json)
                 .unwrap()
                 .contract;
-        let cv = compile_contract_view(&block).unwrap();
+        let cv = compile_spawn_view(&block, &JsonValue::Null).unwrap();
         assert!(cv.emits.is_some());
     }
 

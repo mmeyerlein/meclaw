@@ -8,7 +8,15 @@
         {
           "from": "./keep",
           "to": "./episodes",
-          "condition": "has(hop.route) && hop.route == 'mstore'"
+          "condition": "has(hop.route) && hop.route == 'mstore'",
+          "modifier": {
+            "set_context": {
+              "recall_query": "hop.recall_query",
+              "recall_window_from": "hop.recall_window_from",
+              "recall_window_to": "hop.recall_window_to",
+              "memory_call_id": "hop.memory_call_id"
+            }
+          }
         },
         {
           "from": "./episodes",
@@ -23,8 +31,8 @@
     }
   },
   "description": {
-    "purpose": "A one-table memory: the episode surface every turn is written to, and the cell that serves the recall port in front of it. Two cells, one internal round trip, no model call anywhere in it.",
-    "use_when": "As the smallest thing that can answer a collector's recall port, so an example can show the port working end to end.",
+    "purpose": "A one-table memory: the episode surface every turn is written to, and the cell that answers the `memory_recall` tool in front of it. Two cells, one internal round trip, no model call anywhere in it.",
+    "use_when": "As the smallest thing that can answer a `memory_recall` tool call, so an example can show the road of GH #552 working end to end.",
     "not_in_scope": "No extraction, no fact model, no ranking, no consolidation -- this hive stores what was said and answers questions about WHEN. Anything that reads meaning out of a turn is a different and much larger thing behind the same port."
   }
 }

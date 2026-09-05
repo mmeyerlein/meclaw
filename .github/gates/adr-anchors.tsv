@@ -86,3 +86,6 @@ adr	status	anchor_home	target
 0020-v-lanes-contract-declared-corridors.md	accepted	self	file:scripts/check_tree_rules.py
 0020-v-lanes-contract-declared-corridors.md	accepted	self	file:crates/meclaw-colony/tests/gh559_a_v_lane_is_a_declared_deep_edge.rs
 0020-v-lanes-contract-declared-corridors.md	accepted	self	file:crates/meclaw-colony/tests/gh567_a_newborns_nested_contracts_are_read.rs
+0021-a-hive-enters-the-world-as-a-subtree.md	accepted	self	file:crates/meclaw-colony/tests/gh572_a_hive_successor_is_refused_by_name.rs
+0022-the-os-hands-out-what-is-system-near.md	accepted	self	test:the_os_hands_out_the_port
+0022-the-os-hands-out-what-is-system-near.md	accepted	self	file:crates/meclaw-cells/tests/gh543_a_member_always_gets_its_screen.rs

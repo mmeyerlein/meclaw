@@ -436,3 +436,241 @@ async fn a_resume_cannot_re_declare_a_standing_hives_connect_point() {
 
     h.shutdown().await;
 }
+
+// ── (d) GH #573: the re-anchor verdict reads the SAME list the port boundary does ─
+
+/// `sleepy@1.0.0` / `sleepy_declaring@1.0.0` — two generations of one unit whose
+/// connect point sits at the ROOT of the template, not one `ref` hop below it.
+///
+/// The root is where it has to be for GH #573: the swap block pulls the
+/// successor's contract out of the staged list by `hive_path == t3`, so only a
+/// declaration on the template ROOT can reach the re-anchor verdict at all.
+fn write_sleepy_templates(root: &std::path::Path) {
+    let tpl = root.join("templates/sleepy");
+    write(
+        &tpl,
+        "template.json",
+        r#"{"name":"sleepy","version":"1.0.0"}"#,
+    );
+    write(&tpl, "config.json", r#"{"cell":{"type":"hive"}}"#);
+    write(&tpl, "brain/config.json", ECHO);
+
+    let tpl = root.join("templates/sleepy_declaring");
+    write(
+        &tpl,
+        "template.json",
+        r#"{"name":"sleepy_declaring","version":"1.0.0"}"#,
+    );
+    write(
+        &tpl,
+        "config.json",
+        &format!(
+            r#"{{"cell":{{"type":"hive"}},"params":{{"contract":{{"accepts":[
+                {{"route":"{LANE}","at":["{CONNECT_POINT}"],
+                  "because":"the successor generation invites the grant lane in"}}]}}}}}}"#
+        ),
+    );
+    write(&tpl, "brain/config.json", ECHO);
+}
+
+/// `gen_root@1.0.0` — the same composite shape as `gen@1.0.0`, but the
+/// declaration sits on the template ROOT and names the deep connect point.
+///
+/// This is the successor a legitimate generation change grows, and it is the
+/// fixture that separates the fix from the obvious mis-fix (see the second test
+/// below).
+fn write_gen_root_template(root: &std::path::Path) {
+    let tpl = root.join("templates/gen_root");
+    write(
+        &tpl,
+        "template.json",
+        r#"{"name":"gen_root","version":"1.0.0"}"#,
+    );
+    write(
+        &tpl,
+        "config.json",
+        &format!(
+            r#"{{"cell":{{"type":"hive"}},"params":{{"contract":{{"accepts":[
+                {{"route":"{LANE}","at":["./talky/brain"],
+                  "because":"the unit invites the grant lane onto its rim's brain"}}]}}}}}}"#
+        ),
+    );
+    write(&tpl, "talky/config.json", r#"{"cell":{"type":"hive"}}"#);
+    write(&tpl, "talky/brain/config.json", ECHO);
+}
+
+/// A standing `/old` that really does invite the lane in: the pre-state a
+/// generation change starts from.
+fn plant_standing_old(root: &std::path::Path) {
+    write(
+        root,
+        "main/old/config.json",
+        &format!(
+            r#"{{"cell":{{"type":"hive"}},"params":{{"contract":{{"accepts":[
+                {{"route":"{LANE}","at":["{CONNECT_POINT}"],
+                  "because":"the outgoing generation invites the grant lane in"}}]}}}}}}"#
+        ),
+    );
+    write(root, "main/old/brain/config.json", ECHO);
+}
+
+/// A standing `/gen` whose rim declares the connect point, so a v-lane can be
+/// laid onto `/gen/talky/brain` before the swap that has to re-anchor it.
+fn plant_declaring_gen(root: &std::path::Path) {
+    write(root, "main/gen/config.json", r#"{"cell":{"type":"hive"}}"#);
+    write(
+        root,
+        "main/gen/talky/config.json",
+        &format!(
+            r#"{{"cell":{{"type":"hive"}},"params":{{"contract":{{"accepts":[
+                {{"route":"{LANE}","at":["{CONNECT_POINT}"],
+                  "because":"the standing rim invites the grant lane in"}}]}}}}}}"#
+        ),
+    );
+    write(root, "main/gen/talky/brain/config.json", ECHO);
+}
+
+/// The v-lane the swap has to re-anchor, read off `/colony/graph` by its `to`.
+async fn lane_to(h: &ColonyHandle, to: &str) -> Option<meclaw_colony::api_dto::GraphEdgeDto> {
+    read_graph(h)
+        .await
+        .edges
+        .into_iter()
+        .find(|e| e.from == "/broker" && e.to == to && e.lane.as_deref() == Some(LANE))
+}
+
+/// GH #573 — a RESUME cannot hand a swap successor a connect point either.
+///
+/// `a_resume_cannot_re_declare_a_standing_hives_connect_point` above holds that
+/// line at the PORT BOUNDARY: the birth contracts are deduplicated against what
+/// already stands, so a resume naming a richer template cannot talk a live hive
+/// into inviting a lane. The re-anchor verdict asked the same question a few
+/// lines further down and got a different answer, because it read the successor
+/// out of the RAW template read instead of the deduplicated list — one list,
+/// two readers, and the second one saw a declaration the colony does not hold.
+///
+/// The shape here is the one that makes the difference visible: `/gen` STANDS
+/// (grown by the boot from `sleepy@1.0.0`, born asleep, so an `add_nodes` at
+/// that path is a legal resume) and declares nothing; the diff resumes it with
+/// `sleepy_declaring@1.0.0`, which DOES declare the connect point, and swaps the
+/// standing `/old` onto it. Nothing about that resume changes what is on disk,
+/// so the v-lane `/broker -> /old/brain` would be re-anchored onto a connect
+/// point that exists in no config.json anywhere — refused, pre-destructively,
+/// and the old lane stands.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_resume_cannot_re_declare_a_swap_successors_connect_point() {
+    let td = tempfile::TempDir::new().unwrap();
+    plant(td.path());
+    write_sleepy_templates(td.path());
+    plant_standing_old(td.path());
+    write(
+        td.path(),
+        "main/gen/config.json",
+        r#"{"cell":{"type":"ref","template":"sleepy@1.0.0"},"birth":"inactive"}"#,
+    );
+    let h = boot(td.path()).await;
+
+    let laid = send_mutation(
+        &h,
+        json!({"scope":"/","diff":{
+            "add_edges":[{"from":"./broker","to":"./old/brain","lane":LANE}]
+        }}),
+    )
+    .await;
+    assert!(
+        matches!(laid, MutationOutcome::Committed { .. }),
+        "the standing generation declares the connect point, so the lane lands: {laid:?}"
+    );
+    assert!(
+        lane_to(&h, "/old/brain").await.is_some(),
+        "the pre-state this case needs is a STANDING v-lane"
+    );
+
+    let outcome = send_mutation(
+        &h,
+        json!({"scope":"/","diff":{
+            "add_nodes":[{"name":"gen","template":"sleepy_declaring@1.0.0"}],
+            "swap_nodes":[{"match":{"name":"old"},"with":{"name":"gen"}}]
+        }}),
+    )
+    .await;
+    let MutationOutcome::Rejected {
+        error_code,
+        details,
+        ..
+    } = &outcome
+    else {
+        panic!("a resume must not anchor a v-lane on a declaration nobody holds: {outcome:?}");
+    };
+    assert_eq!(
+        error_code, "v_lane_unanchored",
+        "the standing successor keeps the contract it was born with — none: {details}"
+    );
+
+    assert!(
+        lane_to(&h, "/old/brain").await.is_some(),
+        "the refusal is pre-destructive: the old lane still stands"
+    );
+    assert!(
+        lane_to(&h, "/gen/brain").await.is_none(),
+        "and nothing was re-anchored onto the successor"
+    );
+
+    h.shutdown().await;
+}
+
+/// The other half of GH #573: the fix must not take the working shape with it.
+///
+/// This is `a_v_lane_onto_a_swapped_in_successors_connect_point_commits` with
+/// the successor's declaration moved to the template ROOT — which is precisely
+/// where the obvious mis-fix breaks. Reading the successor with the
+/// `already_spoken_for` predicate verbatim would find `/gen2` in the newborn
+/// list (the `add_nodes` branch of this very diff put it there one loop
+/// earlier), conclude "spoken for", hand the verdict `None`, and refuse a
+/// generation change that is exactly what GH #256 tells people to write.
+///
+/// Reading the DEDUPLICATED list instead answers both questions with one
+/// sentence: what STANDS keeps what it was born with, and what this diff gives
+/// birth to counts.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_swapped_in_successor_declaring_at_its_root_still_re_anchors() {
+    let td = tempfile::TempDir::new().unwrap();
+    plant(td.path());
+    write_gen_root_template(td.path());
+    plant_declaring_gen(td.path());
+    let h = boot(td.path()).await;
+
+    let laid = send_mutation(
+        &h,
+        json!({"scope":"/","diff":{"add_edges":[v_lane_onto("gen")]}}),
+    )
+    .await;
+    assert!(
+        matches!(laid, MutationOutcome::Committed { .. }),
+        "the standing rim declares the connect point, so the lane lands: {laid:?}"
+    );
+
+    let swapped = send_mutation(
+        &h,
+        json!({"scope":"/","diff":{
+            "add_nodes":[{"name":"gen2","template":"gen_root@1.0.0"}],
+            "swap_nodes":[{"match":{"name":"gen"},"with":{"name":"gen2"}}]
+        }}),
+    )
+    .await;
+    assert!(
+        matches!(swapped, MutationOutcome::Committed { .. }),
+        "the successor this diff gives birth to declares the connect point: {swapped:?}"
+    );
+
+    let edge = lane_to(&h, "/gen2/talky/brain")
+        .await
+        .expect("the v-lane is re-anchored onto the successor's connect point");
+    assert_eq!(edge.lane.as_deref(), Some(LANE));
+    assert!(
+        lane_to(&h, "/gen/talky/brain").await.is_none(),
+        "and it is re-anchored, not duplicated"
+    );
+
+    h.shutdown().await;
+}

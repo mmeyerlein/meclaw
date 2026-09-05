@@ -81,6 +81,15 @@ fn shipped() -> bool {
 fn build_root(root: &Path) {
     copy_tree(&repo("examples/organism/seed"), root);
     copy_tree(&repo("templates"), &root.join("templates"));
+    // The keeper's nightly close sweep, pushed to a date this run cannot reach.
+    // It was a `KEEPER_NIGHT_CRON` line in the `.env` below until GH #138: the
+    // schedule is a LITERAL of `session-keeper/night`'s own params now, so such
+    // a line is read by nothing at all -- the sweep would fire into this run and
+    // nobody would say so. The library copy is this tree's own, so writing the
+    // key into it is what an `override_params` entry does to a staged config
+    // (`crates/meclaw-cells/tests/gh138_keeper_summarizer_dispatcher_params.rs`
+    // is the proof that the timer plans on what it finds there).
+    meclaw_testing::quiet_keeper_night(&root.join("templates/session-keeper"));
     std::fs::write(
         root.join(".env"),
         "OPENROUTER_API_KEY=test-key\n\
@@ -94,8 +103,7 @@ fn build_root(root: &Path) {
          TELEGRAM_BOT_TOKEN=test-token\n\
          TELEGRAM_BOT_TOKEN_2=test-token-2\n\
          TELEGRAM_ALLOWED_USER_ID=0\n\
-         EXAMPLE_CHAT_TOKEN=test-chat-token\n\
-         KEEPER_NIGHT_CRON=0 0 0 1 1 *\n",
+         EXAMPLE_CHAT_TOKEN=test-chat-token\n",
     )
     .unwrap();
 }

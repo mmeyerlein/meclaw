@@ -21,6 +21,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
@@ -313,8 +314,8 @@ class TestReceipt(GateShTestCase):
         self.assertTrue(receipt.exists(), res.stdout + res.stderr)
         doc = json.loads(receipt.read_text())
         self.assertEqual(
-            {"mode", "rev", "base", "dirty", "started", "finished",
-             "stations", "verdict"},
+            {"mode", "rev", "base", "dirty", "lock_wait_secs", "started",
+             "finished", "stations", "verdict"},
             set(doc))
         self.assertEqual("strand", doc["mode"])
         self.assertEqual(rev, doc["rev"])
@@ -426,6 +427,80 @@ class TestTreeStamp(GateShTestCase):
     def stamp(self):
         return self.repo / "target" / ".gate-tree"
 
+    # The four build inputs a full touch owes the workspace: a library source,
+    # an integration test source, the member manifest and the root manifest.
+    # Before the fix only the second one was touched, so an rlib compiled from
+    # `src/` in a since-deleted worktree stayed "fresh" (measured 2026-09-04).
+    BUILD_INPUTS = ("crates/x/src/lib.rs", "crates/x/tests/t.rs",
+                    "crates/x/Cargo.toml", "Cargo.toml")
+
+    def add_crate(self):
+        """Commit a one-member workspace and age every build input of it."""
+        (self.repo / "crates" / "x" / "src").mkdir(parents=True)
+        (self.repo / "crates" / "x" / "tests").mkdir(parents=True)
+        (self.repo / "crates" / "x" / "src" / "lib.rs").write_text("pub fn a() {}\n")
+        (self.repo / "crates" / "x" / "tests" / "t.rs").write_text("#[test]\nfn t() {}\n")
+        (self.repo / "crates" / "x" / "Cargo.toml").write_text(
+            '[package]\nname = "x"\nversion = "0.0.0"\n')
+        (self.repo / "Cargo.toml").write_text('[workspace]\nmembers = ["crates/x"]\n')
+        _git(self.repo, "add", "-A")
+        _git(self.repo, "commit", "-q", "-m", "crate")
+        old = time.time() - 3600
+        for rel in self.BUILD_INPUTS:
+            os.utime(self.repo / rel, (old, old))
+        return old
+
+    def assert_all_inputs_touched(self, before):
+        for rel in self.BUILD_INPUTS:
+            self.assertGreater((self.repo / rel).stat().st_mtime, before,
+                               "%s was not touched" % rel)
+
+    def test_no_stamp_full_touches_every_build_input(self):
+        before = self.add_crate()
+        res = run_gate(self.repo, "strand", plan=self.plan_file(PLAN_CARGO),
+                       dry=False)
+        rows = {r["name"]: r for r in gate_lines(res.stdout)}
+        self.assertEqual("full touch: no stamp, 4 files", rows["tree-sync"]["scope"])
+        self.assert_all_inputs_touched(before)
+
+    def test_a_stale_stamp_full_touches_every_build_input(self):
+        before = self.add_crate()
+        self.stamp().parent.mkdir(parents=True, exist_ok=True)
+        self.stamp().write_text("%s\n%s\n\n" % (self.repo, "deadbeef" * 5))
+        res = run_gate(self.repo, "strand", plan=self.plan_file(PLAN_CARGO),
+                       dry=False)
+        rows = {r["name"]: r for r in gate_lines(res.stdout)}
+        self.assertEqual("full touch: stale stamp deadbee, 4 files",
+                         rows["tree-sync"]["scope"])
+        self.assert_all_inputs_touched(before)
+
+    def test_resync_full_touches_every_build_input(self):
+        # An up-to-date stamp for THIS tree: without --resync nothing at all
+        # would be touched, so the switch is the only thing under test here.
+        before = self.add_crate()
+        self.stamp().parent.mkdir(parents=True, exist_ok=True)
+        self.stamp().write_text("%s\n%s\n\n" % (
+            self.repo, _git(self.repo, "rev-parse", "HEAD").stdout.strip()))
+        res = run_gate(self.repo, "strand", "--resync",
+                       plan=self.plan_file(PLAN_CARGO), dry=False)
+        rows = {r["name"]: r for r in gate_lines(res.stdout)}
+        self.assertEqual("full touch: --resync, 4 files", rows["tree-sync"]["scope"])
+        self.assert_all_inputs_touched(before)
+
+    def test_a_tree_switch_still_touches_only_the_difference(self):
+        # The targeted path is deliberately NOT a full touch: the stamp names a
+        # commit that still exists, so the diff plus the dirty lists is exact.
+        before = self.add_crate()
+        self.stamp().parent.mkdir(parents=True, exist_ok=True)
+        self.stamp().write_text("/somewhere/else\n%s\n\n" % (
+            _git(self.repo, "rev-parse", "HEAD").stdout.strip()))
+        res = run_gate(self.repo, "strand", plan=self.plan_file(PLAN_CARGO),
+                       dry=False)
+        rows = {r["name"]: r for r in gate_lines(res.stdout)}
+        self.assertNotIn("full touch", rows["tree-sync"]["scope"], res.stdout)
+        self.assertEqual((self.repo / "crates" / "x" / "src" / "lib.rs").stat().st_mtime,
+                         before, "the targeted touch went wide")
+
     def test_a_stale_stamp_sha_forces_a_full_touch(self):
         self.stamp().parent.mkdir(parents=True, exist_ok=True)
         self.stamp().write_text("%s\n%s\n\n" % (self.repo, "deadbeef" * 5))
@@ -434,13 +509,14 @@ class TestTreeStamp(GateShTestCase):
         rows = {r["name"]: r for r in gate_lines(res.stdout)}
         self.assertIn("tree-sync", rows)
         self.assertEqual("NOTE", rows["tree-sync"]["verdict"])
-        self.assertEqual("full touch: stale stamp deadbee", rows["tree-sync"]["scope"])
+        self.assertEqual("full touch: stale stamp deadbee, 0 files",
+                         rows["tree-sync"]["scope"])
 
     def test_a_first_run_full_touches_and_then_stamps(self):
         res = run_gate(self.repo, "strand", plan=self.plan_file(PLAN_CARGO),
                        dry=False)
         rows = {r["name"]: r for r in gate_lines(res.stdout)}
-        self.assertEqual("full touch: no stamp", rows["tree-sync"]["scope"])
+        self.assertEqual("full touch: no stamp, 0 files", rows["tree-sync"]["scope"])
         lines = self.stamp().read_text().splitlines()
         self.assertEqual(str(self.repo), lines[0])
         self.assertEqual(_git(self.repo, "rev-parse", "HEAD").stdout.strip(), lines[1])
@@ -870,6 +946,193 @@ class TestOptionValues(GateShTestCase):
             self.assertEqual(2, res.returncode,
                              "%s: %r / %r" % (flag, res.stdout, res.stderr))
             self.assertIn("%s needs a value" % flag, res.stderr)
+
+
+class TestPorcelainRenames(GateShTestCase):
+    """A staged rename must not travel as one path.
+
+    `git status --porcelain` prints a rename as `R  old -> new` (and quotes
+    either half when it holds a space). Cutting the first three characters off
+    that line yields the literal string `old -> new`, which then reached the
+    resolver and the nextest filterset: `failed to parse filterset`, the tests
+    station RED with 0 tests run (measured 2026-09-04). Both halves are real
+    paths -- the old one is a deletion the resolver drops by itself, the new
+    one is the file to touch and to select.
+    """
+
+    def stamp_paths(self):
+        """The tree stamp's third line IS the dirty list, comma-joined."""
+        text = (self.repo / "target" / ".gate-tree").read_text()
+        return text.splitlines()[2].split(",")
+
+    def run_with_a_cargo_station(self):
+        res = run_gate(self.repo, "strand", plan=self.plan_file(PLAN_CARGO),
+                       dry=False)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        return res
+
+    def test_a_staged_rename_yields_both_paths_and_never_an_arrow(self):
+        (self.repo / "a.rs").write_text("fn a() {}\n")
+        _git(self.repo, "add", "a.rs")
+        _git(self.repo, "commit", "-q", "-m", "a.rs")
+        _git(self.repo, "mv", "a.rs", "b.rs")
+        # ... and a plainly modified file next to it.
+        (self.repo / "README.md").write_text("third\n")
+        self.run_with_a_cargo_station()
+        paths = self.stamp_paths()
+        self.assertIn("b.rs", paths)
+        self.assertIn("a.rs", paths)
+        self.assertIn("README.md", paths)
+        self.assertFalse([p for p in paths if "->" in p],
+                         "a rename arrow reached the path list: %r" % (paths,))
+
+    def test_a_path_with_a_space_survives_unquoted(self):
+        (self.repo / "two words.rs").write_text("fn t() {}\n")
+        _git(self.repo, "add", "two words.rs")
+        self.run_with_a_cargo_station()
+        paths = self.stamp_paths()
+        self.assertIn("two words.rs", paths,
+                      "the path came back quoted or mangled: %r" % (paths,))
+
+    def test_a_renamed_path_with_a_space_yields_both_halves(self):
+        (self.repo / "old name.rs").write_text("fn o() {}\n")
+        _git(self.repo, "add", "old name.rs")
+        _git(self.repo, "commit", "-q", "-m", "old name")
+        _git(self.repo, "mv", "old name.rs", "new name.rs")
+        self.run_with_a_cargo_station()
+        paths = self.stamp_paths()
+        self.assertIn("new name.rs", paths)
+        self.assertIn("old name.rs", paths)
+
+    def test_an_untracked_rename_half_does_not_make_the_tree_dirty(self):
+        """The `dirty` field is the tracked half -- a rename IS tracked."""
+        (self.repo / "a.rs").write_text("fn a() {}\n")
+        _git(self.repo, "add", "a.rs")
+        _git(self.repo, "commit", "-q", "-m", "a.rs")
+        _git(self.repo, "mv", "a.rs", "b.rs")
+        self.run_with_a_cargo_station()
+        self.assertTrue(self.last_receipt()["dirty"])
+
+
+class TestEnvLink(GateShTestCase):
+    """The scenario stations read `<repo>/.env`; a linked worktree has none.
+
+    `workshop/evals/scenarios/run_scenarios.py` reads the tree's `.env` and
+    copies the keys it needs into every colony it boots. From a linked worktree
+    that file does not exist -- `FileNotFoundError .../wt-t7/.env`, the station
+    RED with 0 cases (measured 2026-09-04). The runner LINKS it. It never opens
+    it.
+    """
+
+    def make_env(self):
+        # A fixture, not a secret: the runner only ever links this file.
+        (self.repo / ".env").write_text("FAKE_KEY=not-a-secret\n")
+        (self.repo / ".gitignore").write_text(".env\n")
+        _git(self.repo, "add", ".gitignore")
+        _git(self.repo, "commit", "-q", "-m", "ignore .env")
+
+    def add_worktree(self, name="wt", branch="side"):
+        wt = pathlib.Path(self._tmp.name) / name
+        _git(self.repo, "worktree", "add", "-q", "-b", branch, str(wt))
+        return wt
+
+    def test_a_linked_worktree_gets_a_symlink_to_the_main_trees_env(self):
+        self.make_env()
+        wt = self.add_worktree()
+        res = run_gate(wt, "strand", "--plan-only", plan=self.plan_file(PLAN_OK_BAD))
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertIn("gate: env = %s/.env (linked)" % self.repo, res.stdout)
+        self.assertTrue((wt / ".env").is_symlink(), res.stdout)
+        self.assertEqual(str(self.repo / ".env"), os.readlink(str(wt / ".env")))
+
+    def test_a_second_run_does_not_recreate_the_link(self):
+        self.make_env()
+        wt = self.add_worktree()
+        run_gate(wt, "strand", "--plan-only", plan=self.plan_file(PLAN_OK_BAD))
+        before = os.lstat(str(wt / ".env"))
+        time.sleep(0.02)
+        res = run_gate(wt, "strand", "--plan-only", plan=self.plan_file(PLAN_OK_BAD))
+        after = os.lstat(str(wt / ".env"))
+        self.assertEqual((before.st_ino, before.st_ctime_ns),
+                         (after.st_ino, after.st_ctime_ns),
+                         "the link was recreated")
+        # It still says where the file comes from.
+        self.assertIn("gate: env = %s/.env (linked)" % self.repo, res.stdout)
+
+    def test_a_worktree_whose_main_tree_has_no_env_gets_none(self):
+        wt = self.add_worktree()
+        res = run_gate(wt, "strand", "--plan-only", plan=self.plan_file(PLAN_OK_BAD))
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertNotIn("gate: env =", res.stdout)
+        self.assertFalse((wt / ".env").is_symlink())
+        self.assertFalse((wt / ".env").exists())
+
+    def test_the_main_worktree_is_never_linked_to_itself(self):
+        self.make_env()
+        res = run_gate(self.repo, "strand", "--plan-only",
+                       plan=self.plan_file(PLAN_OK_BAD))
+        self.assertNotIn("gate: env =", res.stdout)
+        self.assertFalse((self.repo / ".env").is_symlink())
+
+
+class TestLockWait(GateShTestCase):
+    """The queue in front of the run lock is visible, not hidden in a station.
+
+    A wave measured 3211 s for `fmt` -- almost all of it spent waiting for
+    another run's lock. The wait is now its own NOTE line before the first
+    cargo station, and its own field in the receipt.
+    """
+
+    def lock_path(self):
+        return self.repo.parent / "cargo.lock.test"
+
+    def hold_the_lock(self, seconds):
+        lock = self.lock_path()
+        lock.touch()
+        holder = subprocess.Popen(["flock", str(lock), "sleep", str(seconds)])
+        self.addCleanup(holder.wait)
+        self.addCleanup(holder.terminate)
+        for _ in range(500):
+            probe = subprocess.run(["flock", "-n", str(lock), "true"])
+            if probe.returncode != 0:
+                return holder
+            time.sleep(0.01)
+        self.skipTest("the background holder never took the lock")
+
+    def test_the_wait_is_its_own_note_line_before_the_cargo_station(self):
+        self.hold_the_lock(3)
+        res = run_gate(self.repo, "strand", plan=self.plan_file(PLAN_CARGO),
+                       dry=False, timeout_s=60)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        rows = gate_lines(res.stdout)
+        names = [r["name"] for r in rows]
+        self.assertIn("lock-wait", names, res.stdout)
+        row = rows[names.index("lock-wait")]
+        self.assertEqual("NOTE", row["verdict"])
+        self.assertGreaterEqual(int(row["secs"]), 2, res.stdout)
+        self.assertIn("behind other runs", row["scope"])
+        # It comes BEFORE the station it was waiting for ...
+        self.assertLess(names.index("lock-wait"), names.index("build"), names)
+        # ... and that station's own seconds no longer carry the queue.
+        self.assertLessEqual(int(rows[names.index("build")]["secs"]), 1, res.stdout)
+
+    def test_the_wait_is_in_the_receipt_and_counts_as_no_judgement(self):
+        self.hold_the_lock(3)
+        res = run_gate(self.repo, "strand", plan=self.plan_file(PLAN_CARGO),
+                       dry=False, timeout_s=60)
+        receipt = self.last_receipt()
+        self.assertGreaterEqual(receipt["lock_wait_secs"], 2, res.stdout)
+        self.assertIn("lock-wait", [s["name"] for s in receipt["stations"]])
+        summary = [m.groupdict() for m in
+                   (SUMMARY_LINE.match(ln) for ln in res.stdout.splitlines()) if m]
+        self.assertEqual("1", summary[0]["total"], res.stdout)
+
+    def test_a_run_that_never_waits_has_no_line_and_a_zero_field(self):
+        res = run_gate(self.repo, "strand", plan=self.plan_file(PLAN_CARGO),
+                       dry=False, timeout_s=60)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertNotIn("lock-wait", [r["name"] for r in gate_lines(res.stdout)])
+        self.assertEqual(0, self.last_receipt()["lock_wait_secs"])
 
 
 class TestUsage(GateShTestCase):

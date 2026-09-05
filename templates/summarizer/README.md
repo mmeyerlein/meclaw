@@ -1,4 +1,4 @@
-# `summarizer@2.0.2`
+# `summarizer@2.1.0`
 
 The session handover step as a hive of existing cell types -- no new cell type, no Rust.
 Two cells: `prep` (a `code` cell, the glue) and `writer` (an `llm` cell, the prose).
@@ -22,7 +22,7 @@ generation opens lazily on the first morning turn and already carries the handov
   exactly one emission on route `summary` -- or exactly one on `summary_error`, never
   both, never silence.
 - **Recency weighting as structure, not hope.** The prompt is shaped deterministically
-  before any model sees it: the newest `SUMMARIZER_RECENT_TURNS` turns travel verbatim,
+  before any model sees it: the newest `recent_turns` turns travel verbatim,
   everything older phases out to a bounded per-turn preview and is counted, tool rounds
   enter as capped previews. What the model weights is what the prompt already weighted.
 - **The prompt lives in the glue phase.** An `llm` cell has no `params.system` slot; its
@@ -99,19 +99,45 @@ crossing edge derives inactive and never spawns. Instantiation needs `ctx.model`
 
 ## Knobs
 
-**Env knobs are an experimental surface.** Until this template's knobs move onto the `params`
-block of the cells that read them, their names carry no compatibility promise and may change in
-any `0.x` release; provider credentials keep living in `.env` either way. The migration is
-tracked in [#138](https://github.com/mmeyerlein/meclaw/issues/138), with the
-`collector@1.2.0` migration ([#136](https://github.com/mmeyerlein/meclaw/issues/136)) as the
-reference pattern.
+**Since `2.1.0` the four weighting knobs are params of `./prep`, not environment
+variables** ([#138](https://github.com/mmeyerlein/meclaw/issues/138); the
+`collector@1.2.0` migration
+([#136](https://github.com/mmeyerlein/meclaw/issues/136)) is the reference
+pattern). Each one stands in the `params` block of that cell, is declared in its
+`contract.settings`, and is the same number in both places plus as the fallback
+literal inside the script -- a test pins the three against each other. Defaults
+are bit-identical to the environment form they replace.
 
-| env var | default | meaning |
+**What this buys.** A substitution token resolved out of `.env` was
+colony-GLOBAL: two summarizers in one colony could not weight their days apart,
+and an `override_params` entry could not name the knob at all, because only a key
+a cell carries under `params` may be named
+([#294](https://github.com/mmeyerlein/meclaw/issues/294)). Now it can.
+
+| param (on `./prep`) | default | meaning |
 |---|---|---|
-| `SUMMARIZER_RECENT_TURNS` | `12` | how many of the newest turns travel verbatim into the prompt |
-| `SUMMARIZER_PHASEOUT_CHARS` | `200` | per-turn character cap on the phased-out older turns |
-| `SUMMARIZER_TOOL_CHARS` | `200` | per-item character cap on tool call/result previews |
-| `SUMMARIZER_ROUND_LINES` | `40` | how many tool-activity lines enter at most (newest kept) |
+| `recent_turns` | `12` | how many of the newest turns travel verbatim into the prompt |
+| `phaseout_chars` | `200` | per-turn character cap on the phased-out older turns |
+| `tool_chars` | `200` | per-item character cap on tool call/result previews |
+| `round_lines` | `40` | how many tool-activity lines enter at most (newest kept) |
+
+```json
+"override_params": {
+  "summarizer/prep": {"recent_turns": 24, "phaseout_chars": 400}
+}
+```
+
+A knob set to `null` or to whitespace means "not configured" and falls back to
+the shipped default; a number may arrive as a string, which is what an operator
+typing a config line writes.
+
+**A standing instance is untouched.** Instantiation is a COPY, so a colony grown
+from `2.0.2` keeps its own `templates/` copy and goes on reading its `.env`. What
+stops working is the reverse: an old environment line in a colony grown from
+`2.1.0` is read by nothing at all, and says so nowhere.
+
+What does NOT move: `OPENROUTER_API_KEY` and `ctx.model` on `./writer`. A
+credential in a `config.json` is a credential in the repository.
 
 ## The protocol, row by row
 

@@ -133,14 +133,28 @@ pub enum TransferPolicy {
 /// the `contract` block through the spawn helpers into the seam, as one value
 /// rather than as a widening list of parameters.
 ///
-/// The default is the pre-declaration behaviour in both fields: an open write
-/// surface and a database that travels.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// The default is the pre-declaration behaviour in all three fields: an open
+/// write surface, a database that travels, and no directory of its own.
+///
+/// `Copy` was dropped when the fence arrived (GH #555): a path is not a machine
+/// word, and the alternative — a fourth parameter threaded through every spawn
+/// helper — would have split one seam's semantics across two values.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TransferBounds {
     /// GH #260 — who may reach the WRITE half of the seam (the `import`).
     pub write_surface: WriteSurface,
     /// GH #314 — whether this cell's database answers the seam at all.
     pub policy: TransferPolicy,
+    /// GH #555 — `params.transfer.base_path`: the one absolute directory this
+    /// cell's own file writes and reads stay inside. `None` means this cell
+    /// named none, and every `to`/`from` is refused by name
+    /// (`transfer_path_out_of_bounds`) rather than falling back anywhere.
+    ///
+    /// Behind `Arc` because the bounds are cloned into every respawn closure;
+    /// carried verbatim from the config — never canonicalised, never checked
+    /// for existence, because a cell whose export directory does not exist yet
+    /// must still boot and still pass `--validate`.
+    pub base_path: Option<std::sync::Arc<std::path::Path>>,
 }
 
 impl TransferBounds {
@@ -151,6 +165,7 @@ impl TransferBounds {
         Self {
             write_surface: WriteSurface::default(),
             policy: TransferPolicy::None,
+            base_path: None,
         }
     }
 

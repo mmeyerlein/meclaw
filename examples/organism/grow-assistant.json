@@ -9,7 +9,7 @@
     "add_nodes": [
       {
         "name": "scribe",
-        "template": "assistant@2.4.1",
+        "template": "assistant@2.5.0",
         "override_params": {
           "cogny/brain": {
             "temperature": 0.2
@@ -25,6 +25,11 @@
       },
       {
         "from": ".",
+        "to": "./scribe",
+        "condition": "has(hop.route) && hop.route == 'mutation_committed' && (!has(context.assistant) || context.assistant == 'scribe')"
+      },
+      {
+        "from": ".",
         "to": "./scribe/cogny",
         "lane": "in_bundle",
         "condition": "has(hop.route) && hop.route == 'in_bundle' && has(context.assistant) && context.assistant == 'scribe' && has(hop.recall_caller) && hop.recall_caller == 'cogny'"
@@ -33,8 +38,8 @@
         "from": ".",
         "to": "./scribe/talky",
         "lane": "in_bundle",
-        "default": true,
-        "condition": "has(hop.route) && hop.route == 'in_bundle' && has(context.assistant) && context.assistant == 'scribe'"
+        "condition": "has(hop.route) && hop.route == 'in_bundle' && has(context.assistant) && context.assistant == 'scribe'",
+        "default": true
       },
       {
         "from": "./scribe",
@@ -73,6 +78,36 @@
             "tool_answerer"
           ]
         }
+      },
+      {
+        "from": "./scribe",
+        "to": ".",
+        "condition": "has(hop.route) && hop.route == 'tool'",
+        "modifier": {
+          "set_context": {
+            "assistant": "'scribe'"
+          }
+        }
+      },
+      {
+        "from": "./scribe",
+        "to": ".",
+        "condition": "has(hop.route) && hop.route == 'schemas'",
+        "modifier": {
+          "set_context": {
+            "assistant": "'scribe'"
+          }
+        }
+      },
+      {
+        "from": ".",
+        "to": "./scribe",
+        "condition": "has(hop.route) && hop.route == 'in_tool' && (!has(context.assistant) || context.assistant == 'scribe')"
+      },
+      {
+        "from": ".",
+        "to": "./scribe",
+        "condition": "has(hop.route) && hop.route == 'in_menu' && (!has(context.assistant) || context.assistant == 'scribe')"
       },
       {
         "from": "./scribe",
@@ -127,7 +162,17 @@
       {
         "from": "./scribe",
         "to": ".",
+        "condition": "has(hop.route) && hop.route == 'export_done'"
+      },
+      {
+        "from": "./scribe",
+        "to": ".",
         "condition": "has(hop.route) && hop.route == 'dump'"
+      },
+      {
+        "from": ".",
+        "to": "./scribe",
+        "condition": "has(hop.route) && hop.route == 'in_turn' && !has(context.assistant) && has(hop.owner) && hop.owner.contains('/assistants/scribe/')"
       }
     ]
   }

@@ -63,8 +63,12 @@ fn read(path: &Path) -> Option<String> {
     std::fs::read_to_string(path).ok()
 }
 
+/// The FIRST manifest a wish renders. Since GH #543 a member wish renders two —
+/// the person, then the screen and the app that person always gets — and this
+/// file is about the LEVEL, which is the first one. The second is owned by
+/// `gh543_a_member_always_gets_its_screen.rs`.
 fn run_recipes(payload: Value) -> Value {
-    emit_one(
+    let all = emit_all(
         &shipped_script(RECIPES),
         &json!({
             "target": "/os/builder/recipes",
@@ -73,7 +77,32 @@ fn run_recipes(payload: Value) -> Value {
             "messages": [{"origin": "tool", "type": "tool_result", "id": "",
                           "text": payload.to_string()}],
         }),
+    );
+    assert_eq!(
+        all.len(),
+        1,
+        "a wish that is not a member's renders exactly one manifest and no \
+         binding: {all:?}"
+    );
+    all.into_iter().next().expect("one emission")
+}
+
+/// The same, for the one wish that renders more than one thing.
+fn first_manifest(payload: Value) -> Value {
+    emit_all(
+        &shipped_script(RECIPES),
+        &json!({
+            "target": "/os/builder/recipes",
+            "header": {"hop": {"route": "recipe", "member_index": "0"},
+                       "context": {}},
+            "ttl": 64,
+            "messages": [{"origin": "tool", "type": "tool_result", "id": "",
+                          "text": payload.to_string()}],
+        }),
     )
+    .into_iter()
+    .find(|m| m["header"]["operation"] == json!("recipe"))
+    .expect("a first manifest")
 }
 
 fn run_classify(args: Value) -> Value {
@@ -91,7 +120,13 @@ fn run_classify(args: Value) -> Value {
 
 /// One rendered declaration for a level, as `grow_level` produces it.
 fn grow(params: Value) -> Value {
-    let out = run_recipes(json!({"recipe": "grow_level", "request": "…", "params": params}));
+    let member = params["level"] == json!("member");
+    let wish = json!({"recipe": "grow_level", "request": "…", "params": params});
+    let out = if member {
+        first_manifest(wish)
+    } else {
+        run_recipes(wish)
+    };
     let decls = out["manifest"]
         .as_array()
         .unwrap_or_else(|| panic!("no manifest: {out}"));
@@ -184,18 +219,21 @@ fn levels() -> Vec<Level> {
             file: "grow-channel.json",
             index: 0,
         },
+        // GH #543 — the two devices a member always gets, at the names the
+        // renderer gives them and on the port `screen_port_base` hands the
+        // first member of an organisation.
         Level {
             name: "screen",
             params: json!({"scope": "/os/orgs/acme/members/alex", "level": "screen",
-                   "name": "display-desk",
-                   "override_params": {"web": {"port": 7902}}}),
+                   "name": "display",
+                   "override_params": {"web": {"port": 7900}}}),
             file: "grow-screen.json",
             index: 0,
         },
         Level {
             name: "app",
             params: json!({"scope": "/os/orgs/acme/members/alex", "level": "app",
-                   "name": "colony-view", "screen": "display-desk"}),
+                   "name": "colony-view", "screen": "display"}),
             file: "grow-screen.json",
             index: 1,
         },
@@ -334,6 +372,12 @@ fn the_briefing_tells_the_composer_the_same_counts() {
         "sixteen",
         "seventeen",
         "eighteen",
+        "nineteen",
+        "twenty",
+        "twenty-one",
+        "twenty-two",
+        "twenty-three",
+        "twenty-four",
     ];
     for (name, n) in rendered_counts() {
         let word = words.get(n - 1).copied().unwrap_or("?");
@@ -359,7 +403,7 @@ fn the_briefing_tells_the_composer_the_same_counts() {
 fn a_level_the_table_does_not_carry_is_refused_by_name() {
     let out = run_recipes(json!({"recipe": "grow_level", "request": "…",
         "params": {"scope": "/os", "level": "department", "name": "x",
-                   "template": "org@1.3.0"}}));
+                   "template": "org@1.4.0"}}));
     assert_eq!(
         out["header"]["error_code"],
         json!("level_unknown"),
@@ -375,7 +419,7 @@ fn a_level_the_table_does_not_carry_is_refused_by_name() {
     // and the switch refuses it one cell earlier, before an inference is bought
     let early = run_classify(json!({"request": "…", "recipe": "grow_level",
         "params": {"scope": "/os", "level": "department", "name": "x",
-                   "template": "org@1.3.0"}}));
+                   "template": "org@1.4.0"}}));
     assert_eq!(early["header"]["error_code"], json!("level_unknown"));
     assert_eq!(early["header"]["route"], json!("error"));
 }
@@ -401,7 +445,7 @@ fn a_named_grow_level_missing_its_per_level_parameter_is_refused_not_downgraded(
 #[test]
 fn the_grow_sentence_takes_the_fast_lane_and_a_half_sentence_does_not() {
     let full = run_classify(json!({
-        "request": "grow an assistant named scribe from assistant@2.4.1 under \
+        "request": "grow an assistant named scribe from assistant@2.5.0 under \
                     /os/orgs/acme/members/alex",
         "ctx": {"model": "m", "model_fast": "f", "model_surface": "s"}}));
     assert_eq!(full["header"]["route"], json!("recipe"));
@@ -475,7 +519,7 @@ fn the_composer_budget_in_the_readme_is_the_one_the_cell_declares() {
 /// for byte — the same discipline the six levels above run under.
 fn credentialled_wish() -> Value {
     json!({"scope": "/os/orgs/acme/members/alex", "level": "assistant",
-           "name": "scribe", "template": "assistant@2.4.1",
+           "name": "scribe", "template": "assistant@2.5.0",
            "ctx": {"model": "${MODEL_CORE}", "model_fast": "${MODEL_CORE_FAST}",
                    "model_surface": "${MODEL_SURFACE}"},
            "override_params": {"cogny/brain": {"temperature": 0.2}},

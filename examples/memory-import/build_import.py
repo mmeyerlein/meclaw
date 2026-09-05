@@ -4,9 +4,11 @@
 A `member` exports what it IS -- since GH #471 that is three documents, not one:
 `memory-hive/seed/<table>.jsonl` (what was said to this person), `affinity/…`
 (the curated record that decides who may be told what) and `firewall/…` (the
-screen every inbound turn passes). Each directory carries its own
-`seed/export_final.json` when that hive's walk finished, and one
-`export_final.json` beside them names every hive that did.
+screen every inbound turn passes), plus the session ledger of a NAMED generation
+(`session-keeper/…`, GH #475). Since GH #555 each of those is written by the
+holder's OWN store, inside the fence it declares, and each directory carries its
+own `seed/export_final.json` when that store finished. There is no marker beside
+them naming the set: a directory says for itself whether it is whole.
 
 Getting those sets back IN is where the tree has no declared door, because the
 only manifest key that carries FILES is `add_templates[].files` and the shipped
@@ -25,12 +27,14 @@ Usage:
     build_import.py --export DIR --templates DIR --scope /os/orgs/acme \\
                     --name alex [--template-name member-alex] [--indent 2]
 
-`--export` is the directory the export sink wrote (`params.export_dir` of
-`member/export-sink`), the one that HOLDS the per-hive directories -- not one of
-them, and not a `seed/` itself. A directory in the pre-#471 flat shape
+`--export` is the directory the holders wrote into -- since GH #555 that is
+`<params.transfer.base_path>` of each holder's own store, plus the run directory
+`hop.export_to` named, if one was named. It is the one that HOLDS the per-hive
+directories -- not one of them, and not a `seed/` itself. A directory in the
+pre-#471 flat shape
 (`DIR/seed/…` with no per-hive level) is still read, as a memory-hive-only
-export: that is what every export written before the sink learned to file by
-hive looks like, and refusing it would strand the documents already on disk.
+export: that is what every export written before the parts were filed by hive
+looks like, and refusing it would strand the documents already on disk.
 
 The manifest goes to stdout. Apply it with `meclaw --apply`, or post it to the
 mutation door.
@@ -71,11 +75,26 @@ PLACEABLE = {
     "firewall": ("rules", set()),
 }
 
-# The marker the sink writes after the last part of a complete walk. Without it
-# the directory is a PREFIX of a document, and a prefix looks exactly like a
-# whole one from the outside -- which is the reason the marker exists. The
-# member-level file of the same name lists the hives that finished.
+# The marker the substrate writes after the last table of a complete export
+# (GH #555). Without it the directory is a PREFIX of a document, and a prefix
+# looks exactly like a whole one from the outside -- which is the reason the
+# marker exists. There is no member-level file of the same name any more: it was
+# a composition statement about four hives, written by the one cell that
+# composed them, and that cell is gone. Every directory now says for itself
+# whether it is whole, which is what this tool reads.
 MARKER = "export_final.json"
+
+# The DOCUMENT format of each hive, for the way back in. The marker the
+# substrate writes carries its own format (`meclaw-cell-export/1`) and cannot
+# carry a hive's: the substrate knows cells, not hives. A part handed to a
+# porter has to name the format that porter reads, or the import is refused as
+# a document from an unknown version -- which is exactly what that check is for.
+HIVE_FORMAT = {
+    "memory-hive": "meclaw-memory-export/1",
+    "affinity": "meclaw-affinity-export/1",
+    "firewall": "meclaw-firewall-export/1",
+    "session-keeper": "meclaw-session-export/1",
+}
 
 # Files that describe the shipped template to a reader rather than to the
 # substrate. They are not copied: a derived template that carries the original's
@@ -141,11 +160,10 @@ def hive_seed_files(seed_dir, own_seed):
 def export_parts(export_dir):
     """Every hive this export carries, as {hive: {table file: content}}.
 
-    Two shapes are read. The one the sink writes since GH #471 is a directory
-    per hive; the flat one it wrote before -- `seed/` directly under the export
-    directory -- is read as a memory-hive-only export, because that is what
-    every document already on disk looks like and refusing it would strand
-    them.
+    Two shapes are read. The one written since GH #471 is a directory per hive;
+    the flat one that came before -- `seed/` directly under the export directory
+    -- is read as a memory-hive-only export, because that is what every document
+    already on disk looks like and refusing it would strand them.
     """
     if not os.path.isdir(export_dir):
         die("%s is not a directory" % export_dir)
@@ -161,7 +179,7 @@ def export_parts(export_dir):
         parts[entry] = hive_seed_files(seed_dir, own)
     if not parts:
         die("%s holds neither a seed/ directory nor one per hive -- point "
-            "--export at the sink's export_dir, not at a seed/ itself"
+            "--export at the directory that HOLDS them, not at a seed/ itself"
             % export_dir)
     return parts, False
 
@@ -244,7 +262,7 @@ def edges(name):
                "in_build_result", "in_export"]
     outbound = ["answer", "bundle", "ack", "reject", "error", "write",
                 "turn_write", "prune", "build", "close_report", "export_done",
-                "pack_ack"]
+                "dump", "pack_ack"]
     # The doors carry the member's own name as well (GH #478). `Edge.to` is a
     # static path, so a container with two members needs two addresses -- and
     # the guard is PERMISSIVE, because nothing promotes `context.member` today:
@@ -254,6 +272,12 @@ def edges(name):
     out = [{"from": ".", "to": "./" + name,
             "condition": "has(hop.route) && hop.route == '%s'%s" % (route, guard)}
            for route in inbound]
+    # GH #553 -- the mutation receipt, on the SAME permissive guard: two members
+    # of one container may not share a door under one condition (GH #478). What
+    # makes it a fan-out anyway is that a receipt carries no context, so the
+    # permissive half is true for every member.
+    out.append({"from": ".", "to": "./" + name,
+                "condition": "has(hop.route) && hop.route == 'mutation_committed'%s" % guard})
     out += [{"from": "./" + name, "to": ".",
              "condition": "has(hop.route) && hop.route == '%s'" % route}
             for route in outbound]
@@ -270,14 +294,16 @@ AFTER_BOOT = {
 
 
 def import_part(hive, marker, table_file, body, index, of):
-    """One `in_import` part, rebuilt from what the sink wrote out.
+    """One `in_import` part, rebuilt from what the store wrote out.
 
-    The sink files a part as a SEED file -- `{"schema": …}` on line 1 and one row
-    per line after it -- because that is the shape a store reads at birth. Going
-    back the other way is the same document read the other way round: the header
-    line is the part's schema, the rest are its rows, and everything that is not
-    in the file (the format, the export id, when the walk ran) is in the marker
-    the sink wrote beside them.
+    A store writes its own tables as SEED files -- `{"schema": …}` on line 1 and
+    one row per line after it -- because that is the shape a store reads at
+    birth (GH #555). Going back the other way is the same document read the
+    other way round: the header line is the part's schema and the rest are its
+    rows. What is not in the file is in the marker beside it (when the export
+    ran) or in `HIVE_FORMAT` (which porter reads this document) -- the marker
+    the substrate writes names the CELL that wrote it, never the hive, because
+    the substrate knows no hives.
     """
     lines = [line for line in body.splitlines() if line.strip()]
     if not lines:
@@ -292,8 +318,8 @@ def import_part(hive, marker, table_file, body, index, of):
     if not isinstance(schema, dict):
         die("%s/%s has no schema header. A row list without one is a guess, and "
             "the receiving porter refuses it as such" % (hive, table_file))
-    return {"format": marker.get("format"), "hive_template": hive,
-            "export_id": marker.get("export_id"), "exported_at": marker.get("exported_at"),
+    return {"format": HIVE_FORMAT.get(hive) or marker.get("format"), "hive_template": hive,
+            "export_id": marker.get("export_id") or "", "exported_at": marker.get("exported_at"),
             "table": table_file[:-len(".jsonl")], "part": index, "of": of,
             "final": index == of, "absent": False, "schema": schema, "rows": rows}
 
@@ -312,12 +338,12 @@ def after_boot_messages(export_dir, target, parts, holders):
         marker = json.loads(read(marker_path)) if os.path.isfile(marker_path) else {}
         table_files = sorted(parts[hive])
         if len(table_files) > 1:
-            # The sink writes files, and files carry no walk ORDER. One table is
+            # A store writes files, and files carry no walk ORDER. One table is
             # one part and the question does not arise; several would have to be
             # applied in the order the source walked them, which the directory
             # does not record. Saying so beats inventing a sequence.
             die("%s carries %d tables and this tool cannot order them: a hive's "
-                "walk order is not recoverable from the files the sink wrote, "
+                "walk order is not recoverable from the files on disk, "
                 "and a part marked final in the wrong place re-derives too early"
                 % (hive, len(table_files)))
         of = len(table_files)
@@ -344,8 +370,9 @@ def after_boot_messages(export_dir, target, parts, holders):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--export", required=True,
-                    help="the sink's export_dir (the directory holding the "
-                         "per-hive directories)")
+                    help="the directory holding the per-hive directories: a "
+                         "holder's own `params.transfer.base_path`, plus the run "
+                         "directory `hop.export_to` named, if one was named")
     ap.add_argument("--templates", required=True, help="the template library")
     ap.add_argument("--scope", required=True,
                     help="the org the member is grown into, e.g. /os/orgs/acme "

@@ -462,13 +462,19 @@ fn the_round_rejoins_the_supersession_arithmetic_through_one_door() {
 
 #[test]
 fn the_switch_takes_the_ask_away_and_leaves_the_apply() {
-    // MEMORY_CANON_JUDGE=0 is the cost switch: no scan, no candidate feed, no
+    // `canon_judge = "0"` is the cost switch: no scan, no candidate feed, no
     // model call -- the run goes straight into the arithmetic, exactly as it did
     // before this package. What it does NOT disable is applying a judgement that
     // was handed in, because applying is arithmetic and asking is what costs.
+    //
+    // Since GH #138 the knob is a PARAM of `./dream-glue`, so what is patched
+    // here is the script's own fallback literal -- which is the value a cell
+    // uses when its config says nothing, and the same number `params.canon_judge`
+    // and `contract.settings.canon_judge.default` carry. The scenario suite
+    // disables the round by naming that param in `override_params` instead.
     let off = glue_script().replace(
-        "CANON_JUDGE = \"1\" == \"1\"",
-        "CANON_JUDGE = \"0\" == \"1\"",
+        "_str(\"canon_judge\", \"1\")",
+        "_str(\"canon_judge\", \"0\")",
     );
     assert!(
         off != glue_script(),

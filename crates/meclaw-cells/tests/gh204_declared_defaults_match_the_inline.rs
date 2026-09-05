@@ -24,11 +24,33 @@
 //! shipped tree already follows, in that order: the description opens with the
 //! env var's name (`"RECEPTIONIST_INGRESS -- entry port of …"`), or the env var
 //! ends in `_` plus the setting's key upper-cased (`close_limit` ↔
-//! `KEEPER_CLOSE_LIMIT`). A setting that links to neither is SKIPPED, because
-//! that is the shape of a `params`-class knob (#136) — the collector's twenty
-//! knobs are params and carry no `${VAR}` at all, and there is nothing for them
-//! to disagree with. The floor at the end is what keeps that skip from
-//! swallowing the whole check.
+//! `KEEPER_CLOSE_LIMIT`).
+//!
+//! ## Both forms, since GH #138
+//!
+//! A setting with no env twin used to be SKIPPED, on the argument that this is
+//! the shape of a `params`-class knob (#136) and there is nothing for it to
+//! disagree with. That was true of one template and it is about to be false of
+//! every template: ruling R-0904-6 moves ~140 behaviour knobs onto the params
+//! surface in one wave, and a check that only understands the OLD form would
+//! have counted itself down to nothing while the tree got better — the floor
+//! below would have had to be lowered at every strand until it meant nothing.
+//!
+//! So a knob is compared in whichever form its template has, and counted once:
+//!
+//! * **the environment form** — `contract.settings.<k>.default` against the
+//!   `${VAR:-default}` beside it, as before;
+//! * **the params form** (#136, the pattern
+//!   `crates/meclaw-cells/tests/w13_collector_params.rs` pins for the collector
+//!   alone) — `params.<k>` against `contract.settings.<k>.default`, and against
+//!   the script's own fallback literal wherever the script reads the knob
+//!   through an accessor. Three copies of one value, all three compared.
+//!
+//! A param that is still a `${...}` token is NOT the params form: it is the
+//! environment form written one place further out, and it is skipped here so
+//! that half a migration cannot look finished. The floor at the end is what
+//! keeps every skip from swallowing the whole check; it now has room to GROW
+//! with the wave instead of shrinking with it.
 
 use meclaw_core::serde_json::Value;
 use std::collections::HashMap;
@@ -120,24 +142,41 @@ fn as_literal(v: &Value) -> Option<String> {
     }
 }
 
-#[test]
-fn a_declared_default_is_the_default_the_script_resolves() {
-    let files = scripted_contracts();
-    assert!(
-        files.len() >= 10,
-        "the sweep found almost no scripted contracts: {}",
-        files.len()
-    );
+/// The literal a script hands its own accessor for `key`, if it reads it that
+/// way: `_int("window_turns", 12)` -> `12`.
+///
+/// The accessor's NAME is left open — `_int`, `_float`, `_str`, `_list` are the
+/// collector's four and a later template may read a knob some other way. A knob
+/// this finds nothing for is not accused of anything: the two copies that
+/// always exist (param and declaration) are still compared, and this is the
+/// third when it is there.
+fn script_literal(src: &str, key: &str) -> Option<Value> {
+    let needle = format!("(\"{key}\", ");
+    let rest = &src[src.find(&needle)? + needle.len()..];
+    meclaw_core::serde_json::from_str(&rest[..rest.find(')')?]).ok()
+}
+
+/// Every declared default of ONE config, compared against whichever half of the
+/// template it has. Returns how many knobs were compared and what disagreed.
+///
+/// The two forms are asked in order and a knob is counted ONCE: a setting with
+/// an env twin is the environment form and is judged there; everything else with
+/// a param beside it is the params form.
+fn compare_config(rel: &str, val: &Value) -> (usize, Vec<String>) {
+    let src = val["params"]["script_inline"].as_str().unwrap_or("");
+    let inline = inline_defaults(src);
+    let empty = meclaw_core::serde_json::Map::new();
+    let params = val["params"].as_object().unwrap_or(&empty);
     let mut compared = 0usize;
     let mut findings = Vec::new();
-    for (rel, val) in &files {
-        let inline = inline_defaults(val["params"]["script_inline"].as_str().unwrap());
-        for (key, spec) in val["contract"]["settings"].as_object().unwrap() {
-            let description = spec["description"].as_str().unwrap_or("");
-            // No env twin: a `params`-class knob (#136), nothing to disagree with.
-            let Some(var) = env_var_of(key, description, &inline) else {
-                continue;
-            };
+    let Some(settings) = val["contract"]["settings"].as_object() else {
+        return (compared, findings);
+    };
+    for (key, spec) in settings {
+        let description = spec["description"].as_str().unwrap_or("");
+
+        // --- the environment form ------------------------------------------
+        if let Some(var) = env_var_of(key, description, &inline) {
             let Some(declared) = spec.get("default").and_then(as_literal) else {
                 continue;
             };
@@ -151,7 +190,57 @@ fn a_declared_default_is_the_default_the_script_resolves() {
                      actually runs on. One of them is wrong and nothing else can tell which."
                 ));
             }
+            continue;
         }
+
+        // --- the params form (#136) ----------------------------------------
+        let (Some(param), Some(declared)) = (params.get(key), spec.get("default")) else {
+            continue;
+        };
+        // A param that is STILL a substitution token has not migrated. It is
+        // the environment form written one place further out, and comparing it
+        // against a declaration that carries the same token would be a knob
+        // agreeing with itself.
+        if param.as_str().is_some_and(|s| s.contains("${")) {
+            continue;
+        }
+        compared += 1;
+        if param != declared {
+            findings.push(format!(
+                "{rel}: contract.settings.{key}.default is {declared}, but params.{key} is \
+                 {param}. Since the knob is a param, the declaration is a SECOND copy of the \
+                 shipped value and not a description of it; a reader of the contract and the \
+                 cell itself would be told different things."
+            ));
+        }
+        if let Some(literal) = script_literal(src, key)
+            && &literal != param
+        {
+            findings.push(format!(
+                "{rel}: the script's own fallback for {key} is {literal}, but params.{key} is \
+                 {param}. The literal is what the cell uses when its config says nothing, so a \
+                 default moved in the params block and forgotten in the script is a cell that \
+                 runs on the old value the moment the knob is left unset."
+            ));
+        }
+    }
+    (compared, findings)
+}
+
+#[test]
+fn a_declared_default_is_the_default_the_script_resolves() {
+    let files = scripted_contracts();
+    assert!(
+        files.len() >= 10,
+        "the sweep found almost no scripted contracts: {}",
+        files.len()
+    );
+    let mut compared = 0usize;
+    let mut findings = Vec::new();
+    for (rel, val) in &files {
+        let (n, found) = compare_config(rel, val);
+        compared += n;
+        findings.extend(found);
     }
     assert!(
         findings.is_empty(),
@@ -188,8 +277,103 @@ fn a_declared_default_is_the_default_the_script_resolves() {
     // it be present. The failure this guard exists for -- the env-var
     // convention matching nothing, so every setting is skipped -- collapses the
     // count towards zero, not by twenty percent.
+    //
+    // The floor is UNCHANGED by GH #138 and stays measured. What changed is the
+    // direction it has to survive: with both forms compared the private tree
+    // measures 97 on 2026-09-04 (62 before), and each template the wave
+    // migrates converts its env comparisons into params comparisons rather than
+    // losing them -- memory-hive alone turns 15 into 49. A floor that had to be
+    // lowered at every strand would have been a floor that measured nothing.
     assert!(
         compared >= 40,
         "the check compared almost no defaults: {compared}"
     );
+}
+
+/// The generalisation, on a fixture rather than on the tree (GH #138).
+///
+/// The tree sweep above cannot prove WHICH form it compared: a green run and a
+/// run that skipped everything look the same from outside, which is what the
+/// floor exists for. This one names both forms and asserts each is counted
+/// once and each is caught when it drifts.
+#[test]
+fn both_forms_of_a_knob_are_compared() {
+    // The env form: the knob lives in a `${VAR:-default}` and is declared
+    // beside it. The params form (#136): the knob is a param, the declared
+    // default is that same value, and the script's own fallback literal is the
+    // third copy.
+    let agreeing = meclaw_core::serde_json::json!({
+        "params": {
+            "script_inline": "A = \"${KEEPER_IDLE_MS:-600000}\"\nB = _int(\"window_turns\", 12)\n",
+            "window_turns": 12
+        },
+        "contract": {"settings": {
+            "idle_ms": {"description": "KEEPER_IDLE_MS -- idle cut", "default": "600000"},
+            "window_turns": {"description": "rolling window", "default": 12}
+        }}
+    });
+    let (compared, findings) = compare_config("fixture/config.json", &agreeing);
+    assert!(
+        findings.is_empty(),
+        "the agreeing fixture disagrees: {findings:?}"
+    );
+    assert_eq!(
+        compared, 2,
+        "both forms must be counted: the env twin AND the params form"
+    );
+
+    // The params form drifting: the declared default says one thing, the
+    // param says another. Before this test the whole form was invisible.
+    let drifting = meclaw_core::serde_json::json!({
+        "params": {
+            "script_inline": "B = _int(\"window_turns\", 12)\n",
+            "window_turns": 12
+        },
+        "contract": {"settings": {
+            "window_turns": {"description": "rolling window", "default": 20}
+        }}
+    });
+    let (compared, findings) = compare_config("fixture/config.json", &drifting);
+    assert_eq!(compared, 1);
+    assert_eq!(
+        findings.len(),
+        1,
+        "a params-form knob whose declared default drifted must be a finding"
+    );
+
+    // The script's own fallback drifting from the shipped param -- the third
+    // copy, the one `w13_collector_params.rs` pins for the collector alone.
+    let stale_literal = meclaw_core::serde_json::json!({
+        "params": {
+            "script_inline": "B = _int(\"window_turns\", 8)\n",
+            "window_turns": 12
+        },
+        "contract": {"settings": {
+            "window_turns": {"description": "rolling window", "default": 12}
+        }}
+    });
+    let (compared, findings) = compare_config("fixture/config.json", &stale_literal);
+    assert_eq!(compared, 1);
+    assert_eq!(
+        findings.len(),
+        1,
+        "a script fallback that drifted from the shipped param must be a finding"
+    );
+
+    // A param that is STILL a substitution token has not migrated: it is the
+    // environment form written one place further out, and comparing it against
+    // a declaration carrying the same token would be a knob agreeing with
+    // itself. Half a migration must not look finished.
+    let unmigrated = meclaw_core::serde_json::json!({
+        "params": {
+            "script_inline": "TABLE = P.get(\"table\")\n",
+            "table": "${ARCHIVE_TABLE:-rows}"
+        },
+        "contract": {"settings": {
+            "table": {"description": "the table", "default": "${ARCHIVE_TABLE:-rows}"}
+        }}
+    });
+    let (compared, findings) = compare_config("fixture/config.json", &unmigrated);
+    assert!(findings.is_empty(), "{findings:?}");
+    assert_eq!(compared, 0, "an unmigrated param is not a params-form knob");
 }

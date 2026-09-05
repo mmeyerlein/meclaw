@@ -1,4 +1,4 @@
-# `builder-librarian@2.1.1`
+# `builder-librarian@2.2.0`
 
 Lexical retrieval over the builder's own knowledge base, as a hive of existing cell types
 -- no new cell type, no Rust. Three cells: `retrieve` (a `code` cell, the query/brief state
@@ -148,11 +148,27 @@ text as zero rows.
 
 ## Knobs
 
-| env var | default | meaning |
+**Since 2.2.0 every knob of this hive is a param of `./retrieve`, not an environment
+variable** ([#138](https://github.com/mmeyerlein/meclaw/issues/138), ruling R-0904-6). Each
+one exists three times with one value: under `params`, as a `contract.settings` entry, and
+as the literal the shipped script falls back to; `crates/meclaw-cells/tests/gh138_long_tail_params.rs`
+pins the three against each other. Retune one librarian without touching another:
+
+```json
+{"add_nodes": [{"name": "builder-librarian", "template": "builder-librarian",
+  "override_params": {"retrieve": {"topk": 8, "row_chars": 2000}}}]}
+```
+
+| param of `./retrieve` | default | meaning |
 |---|---|---|
-| `BUILDER_LIBRARIAN_TOPK` | `5` | how many rows the store returns and the briefing renders |
-| `BUILDER_LIBRARIAN_ROW_CHARS` | `1200` | the window one rendered row may spend -- for every kind but `template` |
-| `BUILDER_LIBRARIAN_CATALOGUE_CHARS` | `4000` | the window for a CATALOGUE row (`kind: "template"`), which is the corpus chunker's own cap, so such a row travels whole |
+| `topk` | `5` | how many rows the store returns and the briefing renders |
+| `row_chars` | `1200` | the window one rendered row may spend -- for every kind but `template` and `level` |
+| `catalogue_chars` | `4000` | the window for a CATALOGUE row (`kind: "template"`), which is the corpus chunker's own cap, so such a row travels whole |
+| `level_chars` | `1600` | the window for a LEVEL row (`kind: "level"`), which carries a composition level's complete transit edge set |
+
+A numeric knob may arrive as a string, and one blanked or set to `null` means "not
+configured" and falls back to the shipped default -- an operator who empties a line in a
+config did not mean to stop the cell.
 
 **A cut row says it was cut** ([#511](https://github.com/mmeyerlein/meclaw/issues/511)).
 The retriever used to hand the model `text[:1200]` of every hit: silent, mid-word, and the

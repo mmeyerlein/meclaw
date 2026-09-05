@@ -284,15 +284,12 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str) {
     let root = td.path();
     std::fs::write(
         root.join(".env"),
-        format!(
-            "OPENROUTER_API_KEY=test-key\n\
-             KEEPER_IDLE_MS={IDLE_MS}\n\
-             KEEPER_NIGHT_CRON={FAST_NIGHT}\n\
-             RECEPTIONIST_MODEL=gpt-4o-mock\n\
-             RECEPTIONIST_REPLY_TO=./sink\n\
-             RECEPTIONIST_WRITE_TO=./drain\n\
-             RECEPTIONIST_ERROR_TO=./park\n"
-        ),
+        // What is left of this file after GH #138: the provider lane, and all of
+        // it. The keeper's two knobs and the reception's three addresses used
+        // to stand here and are params of their own cells now, written below
+        // where an `override_params` entry would have merged them.
+        "OPENROUTER_API_KEY=test-key\n\
+         RECEPTIONIST_MODEL=gpt-4o-mock\n",
     )
     .unwrap();
     write(root, "main/config.json", &main_config());
@@ -314,6 +311,16 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str) {
         &repo("templates/receptionist"),
         &root.join("main/reception"),
     );
+    // The three addresses this reception answers onto are PARAMS of `greet`
+    // since GH #138, not a colony-wide `.env`. A tree assembled by hand has no
+    // mutation to carry `override_params`, so they are written where a mutation
+    // would have merged them; without them the reception draws the ingress edge
+    // and nothing else, and no answer would reach the sink below.
+    patch(root, "main/reception/greet/config.json", |v| {
+        v["params"]["reply_to"] = json!("./sink");
+        v["params"]["write_to"] = json!("./drain");
+        v["params"]["error_to"] = json!("./park");
+    });
     copy_cells(&repo("templates/memory-drain"), &root.join("main/drain"));
     memory_write_path(root);
 
@@ -322,6 +329,24 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str) {
     copy_template("talky", &root.join("templates"));
     patch(root, "templates/talky/brain/config.json", |v| {
         v["params"]["base_url"] = json!(base_url)
+    });
+    // `templates/talky/session-keeper` is a `ref` MARKER, not a tree: the keeper
+    // travels beside the composite as `templates/session-keeper` and is resolved
+    // at instantiation, so that is the copy an instance reads.
+    //
+    // A night that fires every second and a three-second idle window: this test
+    // wants the sweep to RUN, and to run inside the deadline it waits on. Both
+    // were `KEEPER_*` lines in the `.env` above until GH #138; they are params
+    // of the keeper's own two cells now, and an environment line of either name
+    // would be read by NOTHING -- the shipped night (a few hours a day) and the
+    // shipped two-hour window would leave this test waiting for a close that
+    // cannot come. The library copy is this tree's own, so writing the keys into
+    // it is what an `override_params` entry does to a staged config.
+    patch(root, "templates/session-keeper/night/config.json", |v| {
+        v["params"]["schedules"][0]["cron"] = json!(FAST_NIGHT)
+    });
+    patch(root, "templates/session-keeper/close/config.json", |v| {
+        v["params"]["idle_ms"] = json!(IDLE_MS)
     });
 }
 

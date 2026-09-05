@@ -24,7 +24,9 @@
 //!   colony A   shipped affinity + shipped talky, one active self-subscription
 //!              -> the brain's `cell.db` holds `identity.soul` and
 //!                 `instructions.reply`
-//!   export     `in_export` into the affinity hive, nine parts out on `dump`
+//!   export     `in_export` into the affinity hive; since GH #555 its own store
+//!              writes the seed set into the fence it declares, and the hive
+//!              says `export_done` when it is whole
 //!   colony B   the same two templates with EMPTY affinity seeds — anonymous,
 //!              exactly as a freshly grown one is — fed the nine parts on
 //!              `in_import`
@@ -180,7 +182,8 @@ fn main_config() -> Value {
          "condition": "has(hop.route) && hop.route == 'pack_ack'"},
         // ── the transfer lane's own output, and its refusal ──
         {"from": "./affinity", "to": "/sink",
-         "condition": "has(hop.route) && (hop.route == 'dump' || hop.route == 'reject')"},
+         "condition": "has(hop.route) && (hop.route == 'export_done' || hop.route == 'dump' \
+          || hop.route == 'reject')"},
         {"from": "./affinity", "to": "/park",
          "condition": "has(hop.route) && (hop.route == 'error' || hop.route == 'ack' \
           || (hop.route == 'answer' && hop.subscriber != '/talky'))"},
@@ -190,6 +193,7 @@ fn main_config() -> Value {
     ]}}})
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_tree(
     td: &tempfile::TempDir,
     affinity: &std::path::Path,
@@ -197,34 +201,45 @@ fn build_tree(
     base_url: &str,
     anonymous: bool,
     subscription: Option<&Value>,
+    fence: &std::path::Path,
 ) {
     let root = td.path();
-    // Two seconds, so several push ticks fit inside the test's own budget. The
-    // cron comes out of the `.env` through the shipped `${AFFINITY_PUSH_CRON:-…}`
-    // default, so late binding is under test too.
-    std::fs::write(
-        root.join(".env"),
-        "AFFINITY_PUSH_CRON=*/2 * * * * *\nOPENROUTER_API_KEY=test-key\nKEEPER_IDLE_MS=0\n",
-    )
-    .unwrap();
+    std::fs::write(root.join(".env"), "OPENROUTER_API_KEY=test-key\n").unwrap();
     write(root, "main/config.json", &main_config());
     copy_cells(affinity, &root.join("main/affinity"));
     copy_cells(talky, &root.join("main/talky"));
     patch(root, "main/affinity/clock/config.json", |v| {
         v["params"]["schedules"][0]["schedule_id"] = json!(CLOCK_ID);
+        // Since GH #138 the cadence is a literal of `./clock`'s own params, so
+        // it is written here beside the schedule_id -- the form an
+        // `override_params` entry takes at instantiation. An
+        // `AFFINITY_PUSH_CRON=` line in the `.env` would be read by nothing at
+        // all and would say nothing about it.
+        // Two seconds, so the push tick fires several times inside the
+        // test's own budget.
+        v["params"]["schedules"][0]["cron"] = json!("*/2 * * * * *");
     });
     patch(root, "main/talky/session-keeper/night/config.json", |v| {
         v["params"]["schedules"][0]["schedule_id"] = json!(KEEPER_ID);
         v["params"]["schedules"][0]["cron"] = json!(NEVER);
     });
-    // GH #464 — the menu tick would ask a tools hive this colony does not have.
-    patch(root, "main/talky/collector/menu-clock/config.json", |v| {
-        v["params"]["schedules"][0]["schedule_id"] = json!(KEEPER_ID);
-        v["params"]["schedules"][0]["cron"] = json!(NEVER);
+    // Every open generation is a candidate the moment a sweep runs. It was a
+    // `KEEPER_IDLE_MS=0` line in the `.env` above until GH #138; the knob is a
+    // param of `./close` now, so such a line would be read by NOTHING, and the
+    // shipped two-hour window would be back without anybody saying so. Patching
+    // the copied config is what an `override_params` entry does to a staged one.
+    patch(root, "main/talky/session-keeper/close/config.json", |v| {
+        v["params"]["idle_ms"] = json!(0);
     });
     patch(root, "main/talky/brain/config.json", |v| {
         v["params"]["base_url"] = json!(base_url);
         v["params"]["model"] = json!("gpt-4o-mock");
+    });
+    // GH #555 — the one thing an instance says about files: the fence this
+    // store writes its own seed set inside.
+    let fence_s = fence.to_str().expect("a utf-8 fence").to_string();
+    patch(root, "main/affinity/store/config.json", |v| {
+        v["params"]["transfer"]["base_path"] = json!(fence_s);
     });
 
     if anonymous {
@@ -302,16 +317,6 @@ fn hop_of(m: &Message, key: &str) -> String {
         .and_then(|v| v.as_str())
         .unwrap_or_default()
         .to_string()
-}
-
-fn first_text(m: &Message) -> String {
-    match &m.body {
-        Body::Inline(v) => v["messages"][0]["text"]
-            .as_str()
-            .unwrap_or_default()
-            .to_string(),
-        Body::Blob(_) => String::new(),
-    }
 }
 
 /// The next message on `rx` whose `hop.route` matches. 30s is the failure
@@ -428,6 +433,10 @@ async fn an_exported_agent_comes_back_knowing_who_it_is() {
     // ── colony A ────────────────────────────────────────────────────────────
     let a_mock = MockOpenAI::start(vec![]).await;
     let a_td = tempfile::TempDir::new().unwrap();
+    // The fence lives outside both colonies: it is the directory the document
+    // travels through, and neither tree owns it.
+    let fence_td = tempfile::TempDir::new().unwrap();
+    let fence = fence_td.path().to_path_buf();
     build_tree(
         &a_td,
         &affinity,
@@ -435,6 +444,7 @@ async fn an_exported_agent_comes_back_knowing_who_it_is() {
         &a_mock.base_url,
         false,
         Some(&subscription),
+        &fence,
     );
     let (a, mut a_sink, _a_park) = boot(&a_td).await;
 
@@ -475,34 +485,54 @@ async fn an_exported_agent_comes_back_knowing_who_it_is() {
     )
     .await;
 
+    // Since GH #555 the store writes the seed set itself and the hive says so
+    // ONCE. What travels between the two colonies is a directory, and the parts
+    // below are those files read back the other way round — header line as the
+    // part's schema, the rest as its rows, which is what
+    // `examples/memory-import/build_import.py` does.
+    let done = recv_route(&mut a_sink, "export_done").await;
+    assert_eq!(hop_of(&done, "export_hive"), "affinity");
+    let seed = fence.join(hop_of(&done, "seed_dir"));
+    assert!(
+        seed.join("export_final.json").is_file(),
+        "an export without its completeness marker is a prefix, not a document"
+    );
+    let walk = [
+        "entity_aliases",
+        "entity_rejected_pairs",
+        "entities",
+        "relations",
+        "trust",
+        "disclosure",
+        "subscribers",
+        "proposals",
+        "audit",
+    ];
     let mut parts: Vec<(i64, String)> = Vec::new();
-    loop {
-        let m = recv_route(&mut a_sink, "dump").await;
-        assert_ne!(
-            hop_of(&m, "dump_kind"),
-            "",
-            "a dump names what it is: {:?}",
-            m.headers.hop
-        );
-        let idx = m
-            .headers
-            .hop
-            .get("export_part")
-            .and_then(|v| {
-                v.as_i64()
-                    .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
-            })
-            .unwrap_or_default();
-        let last = hop_of(&m, "export_final") == "1";
-        parts.push((idx, first_text(&m)));
-        if last {
-            break;
-        }
+    for (i, table) in walk.iter().enumerate() {
+        let raw = std::fs::read_to_string(seed.join(format!("{table}.jsonl")))
+            .unwrap_or_else(|e| panic!("{table}.jsonl: {e}"));
+        let mut lines = raw.lines().filter(|l| !l.trim().is_empty());
+        let header: Value =
+            meclaw_core::serde_json::from_str(lines.next().expect("a schema header")).unwrap();
+        let rows: Vec<Value> = lines
+            .map(|l| meclaw_core::serde_json::from_str(l).expect("a row"))
+            .collect();
+        let part = json!({
+            "format": "meclaw-affinity-export/1", "hive_template": "affinity",
+            "export_id": "gh488", "exported_at": "2026-09-04T00:00:00Z",
+            "table": table, "part": i + 1, "of": walk.len(),
+            "final": i + 1 == walk.len(), "absent": false,
+            "schema": header["schema"], "rows": rows,
+        });
+        parts.push((
+            i as i64 + 1,
+            meclaw_core::serde_json::to_string(&part).unwrap(),
+        ));
     }
-    parts.sort_by_key(|(i, _)| *i);
     assert!(
         parts.len() >= 9,
-        "the affinity walk writes one part per transferable table; it wrote {}",
+        "the affinity walk writes one file per transferable table; it wrote {}",
         parts.len()
     );
     let carried: Value = meclaw_core::serde_json::from_str(
@@ -524,7 +554,15 @@ async fn an_exported_agent_comes_back_knowing_who_it_is() {
     // ── colony B: it never heard any of this ────────────────────────────────
     let b_mock = MockOpenAI::start(vec![canned_chat_completion("understood", "stop")]).await;
     let b_td = tempfile::TempDir::new().unwrap();
-    build_tree(&b_td, &affinity, &talky, &b_mock.base_url, true, None);
+    build_tree(
+        &b_td,
+        &affinity,
+        &talky,
+        &b_mock.base_url,
+        true,
+        None,
+        &fence,
+    );
     let (b, mut b_sink, _b_park) = boot(&b_td).await;
 
     // Anonymous, and measurably so: nothing has been pushed, because there is
@@ -554,10 +592,10 @@ async fn an_exported_agent_comes_back_knowing_who_it_is() {
         )
         .await;
         let receipt = recv_route(&mut b_sink, "dump").await;
-        assert_eq!(
-            hop_of(&receipt, "dump_kind"),
-            "import_receipt",
-            "part {idx} was refused rather than applied: {:?}",
+        assert!(
+            receipt.headers.hop.contains_key("rows_written"),
+            "part {idx} was refused rather than applied — since GH #555 `dump` is \
+             the import receipt and nothing else, so the receipt IS the lane: {:?}",
             receipt.headers.hop
         );
     }

@@ -1,4 +1,4 @@
-# `affinity@3.2.0`
+# `affinity@3.3.0`
 
 The curated record of the people and agents a colony knows -- as one hive of existing
 cell types. No new cell type, no Rust, and no model: every judgement in here is a
@@ -160,7 +160,8 @@ round trip *is* the cell's memory. That is why this hive has ten internal edges 
 | `out_error` | `./gate`, `./brief`, `./push` -> a drain | `hop.route == 'error'` -- the parent MUST wire it |
 | `in_export` | in -> the **hive path** | a demand that this hive hand out everything it holds. No keys travel with it: an export is about the whole hive, never about a round (§ Taking the record out) |
 | `in_import` | in -> the **hive path** | ONE part of such a document, for a hive that is already running. Applying the same part twice leaves the same state |
-| `out_dump` | `./porter` -> a drain | `hop.route == 'dump'`: one export part (`hop.dump_kind == 'export_part'`) or the receipt of one applied part (`'import_receipt'`). The edge that satisfies the gate must be **plain** -- see below |
+| `out_export_done` | `./porter` -> a drain | `hop.route == 'export_done'`: this hive's store wrote its whole seed set itself and says where -- `hop.seed_dir` relative to `params.transfer.base_path`, `hop.export_hive`, `hop.export_of`, `hop.rows_written` (#555) |
+| `out_dump` | `./porter` -> a drain | `hop.route == 'dump'`: the receipt of one applied import part (`hop.rows_written`, `hop.export_final == "1"` on the last). Since #555 that is all it carries. The edge that satisfies the gate must be **plain** -- see below |
 | `out_reject` | `./porter` -> a drain | `hop.route == 'reject'`: a transfer this hive would not carry out, with `hop.reject_reason` naming the case. `reject` is new in `affinity@3.2.0`; before it the hive spoke only `answer`, `ack` and `error` |
 
 All four in-lanes are asserted at the hive path and not at a cell behind it: `params.ports`
@@ -525,7 +526,7 @@ so without a second declaration an `import` would write rows straight past the o
 sentence this hive is built on. `store/config.json` therefore also carries
 `"write_surface": "internal"` in its **`contract`** block. Both halves compute the same
 owning scope, so the store has exactly one boundary; an `export` is a read and neither
-half bounds it. The transfer lane of `affinity@3.2.0` is not an exception to that and does
+half bounds it. The transfer lane of `affinity@3.3.0` is not an exception to that and does
 not need to be: `./porter` stands **inside** the hive scope and writes through the store's
 own ops, so it is bounded by the same sentence as `./gate` is. `clock` carries the contract half as well: its `cell.db` is where the
 schedules live, and a planted schedule fires into `./push` with an `emit_to` of the
@@ -663,22 +664,39 @@ in the phase they pin, because a `code` cell has no `cell.db` to tell a walk out
 with -- and `port_phase` is the porter's own key, so the lanes that were here first cannot
 collide with it.
 
-**`params.required_drains` names four pairs** (`in_export`->`dump`, `in_export`->`reject`,
+**`params.required_drains` names four pairs** (`in_export`->`export_done`, `in_export`->`reject`,
 `in_import`->`dump`, `in_import`->`reject`): whoever draws an ingress edge draws both drains in
 the SAME mutation, or the mutation is refused. Each pair prevents a state nothing else notices.
-An export nobody drains reads the whole store and reaches nobody. An export that aborts mid-walk
-has already emitted parts, so an undrained `reject` leaves a partial document that looks
-complete. An undrained receipt means nobody learns whether an import landed, and an undrained
-refusal makes a transfer this hive would not carry out look exactly like one it did. **The drain
-has to be a PLAIN `hop.route == 'dump'` edge**: one that also tests `hop.dump_kind` reads to the
+An export nobody drains writes the whole seed set and nobody is ever told where. An export that
+could not write says so on `reject`, and an undrained one leaves a directory that looks like a
+document. An undrained receipt means nobody learns whether an import landed, and an undrained
+refusal makes a transfer this hive would not carry out look exactly like one it did. **The drains
+have to be PLAIN `hop.route` edges**: one that also tests a second hop key reads to the
 required-drains probe as no drain at all, and the mutation is refused although the wiring looks
-finished. Tell the two kinds apart *inside* the drain.
+finished.
 
 ### The document
 
-Nine parts, one per table, each a whole JSON object on the `dump` lane. There is no monolithic
-file: the store cannot return two result sets at once, so a part *is* what one read of one table
-answers.
+
+**Since 0.30.0 the EXPORT half of this does not travel as messages at all**
+([#555](https://github.com/mmeyerlein/meclaw/issues/555)). This hive's own store writes the
+seed set itself, through the substrate's `transfer` slot, inside the fence it declares in
+`params.transfer.base_path`: one `<dir>/seed/<table>.jsonl` per table of the walk, the schema
+declaration on line 1 and one row per line after it, and `seed/export_final.json` last. The
+porter names the directory and raises `export_done` off the slot's own receipt
+(`hop.export_hive`, `hop.seed_dir`, `hop.export_of`, `hop.rows_written`). The document shape
+below is therefore what an IMPORT part looks like — and what one of those files, read back the
+other way round, becomes.
+
+**Redirect that fence before the first export.** The shipped default is
+`/tmp/meclaw-member-export`, which is world-readable on most hosts, and what lands under it is
+this hive's CURATED RECORD — the identities, the statements and the disclosure rules that decide
+who may be told what. Nothing about the fence is a secret and nothing about it is checked: the
+store writes where `params` say, so name a directory of your own with `override_params` on
+`"affinity/store"` before anything is exported.
+
+Nine parts, one per table, each a whole JSON object. There is no monolithic file: the store
+cannot return two result sets at once, so a part *is* one table.
 
 ```json
 {"format": "meclaw-affinity-export/1", "hive_template": "affinity",
@@ -688,10 +706,9 @@ answers.
  "rows": [ {"…": "…"} ]}
 ```
 
-The header travels beside it, so a drain can file a part without parsing it: `hop.route ==
-'dump'`, `hop.dump_kind` (`export_part` or `import_receipt`), `hop.port_hive == 'affinity'`,
-`hop.port_table`, `hop.export_part` of `hop.export_of`, `hop.export_final` (`"1"` on the last
-part), and on a receipt only `hop.rows_written`.
+The header travels beside a receipt, so a drain can read it without parsing the body:
+`hop.route == 'dump'`, `hop.port_hive == 'affinity'`, `hop.port_table`, `hop.export_part` of
+`hop.export_of`, `hop.export_final` (`"1"` on the last part) and `hop.rows_written`.
 
 The walk order is fixed -- `entity_aliases`, `entity_rejected_pairs`, `entities`, `relations`,
 `trust`, `disclosure`, `subscribers`, `proposals`, `audit` -- and load-bearing on the way **in**:
@@ -736,8 +753,9 @@ needs `audience` and `audience_set`, `trust` needs `audience`, `subscribers` nee
 row whose audience did not survive is a row that may be told to anyone, and an audience is not
 something anybody can reconstruct afterwards. An audience present but **empty** is written as it
 stands -- empty means invisible, the honest fate of such a row, and inventing one would *be* the
-laundering. The other refusals: `export_read_failed` (a read failed mid-walk; a partial document
-is worse than none, because it looks complete to whoever imports it), `import_format`,
+laundering. The other refusals: `export_write_failed` (the store would not write the seed set;
+no marker was written, so the directory is not a document -- and a prefix looks complete to
+whoever imports it), `import_format`,
 `import_unknown_table`, `import_schema_drift` (the source declares a column this store lacks --
 growing the schema is a template change, not something an import may do silently),
 `import_probe_failed` and `import_write_failed`.
@@ -762,7 +780,7 @@ the export carries it -- a fictional `Alex Kern` beside an imported record would
 person nobody imported. `in_import` is the other half: the way into a hive that is already
 running, which no seed can reach.
 
-`affinity` hangs directly under the member (`member/affinity`, a `ref` to `affinity@3.2.0`) and
+`affinity` hangs directly under the member (`member/affinity`, a `ref` to `affinity@3.3.0`) and
 its `in_export` is fanned by the member's own. The sink files the parts under
 `<export_dir>/affinity/seed/`, and a directory per hive is a requirement rather than tidiness:
 `memory-hive` and `affinity` both have a table called `entities`, and a flat sink would have
@@ -770,20 +788,64 @@ written one over the other.
 
 ## Settings
 
-**Env knobs are an experimental surface.** Until this template's knobs move onto the `params`
-block of the cells that read them, their names carry no compatibility promise and may change in
-any `0.x` release; provider credentials keep living in `.env` either way. The migration is
-tracked in [#138](https://github.com/mmeyerlein/meclaw/issues/138), with the
-`collector@1.2.0` migration ([#136](https://github.com/mmeyerlein/meclaw/issues/136)) as the
-reference pattern.
+**Since 3.3.0 every knob of this hive is a param** ([#138](https://github.com/mmeyerlein/meclaw/issues/138),
+following the `collector` migration pattern in [#136](https://github.com/mmeyerlein/meclaw/issues/136)).
+There is no `${AFFINITY_*}` token left in the template and no `.env` line this hive reads —
+it asks no provider anything, so it has no environment lane at all. Each cell declares its
+knobs under `params`, declares them again in `contract.settings`, and reads them off the same
+stdin document the request arrives on. The defaults did not move a byte.
 
-| env | default | what it bounds |
+**What that buys.** A knob that lived only as a `${VAR}` inside a script was colony-global by
+construction, and `override_params` could not name it at all — the mutation door only accepts a
+key the addressed cell actually carries under `params`
+([#294](https://github.com/mmeyerlein/meclaw/issues/294)). Two members of one colony can now
+keep their records at two cadences, and a mutation retunes one of them without touching the
+other.
+
+`./brief`:
+
+| param | default | what it bounds |
 |---|---|---|
-| `AFFINITY_DISCLOSURE_ROWS` | 200 | the visibility read for one subject and audience |
-| `AFFINITY_TRAVERSE_DEPTH` | 2 | hops the relationship slot walks (store cap 5) |
-| `AFFINITY_TRAVERSE_NODES` | 200 | node bound of that walk (store cap 5000) |
-| `AFFINITY_SUBSCRIBER_ROWS` | 200 | subscriptions and subjects read per push tick |
-| `AFFINITY_PUSH_CRON` | `0 */5 * * * *` | the tick. **Cron runs in UTC.** |
+| `disclosure_rows` | 200 | the visibility read for one subject and audience |
+| `traverse_depth` | 2 | hops the relationship slot walks (store cap 5) |
+| `traverse_nodes` | 200 | node bound of that walk (store cap 5000) |
+
+`./push`:
+
+| param | default | what it bounds |
+|---|---|---|
+| `subscriber_rows` | 200 | subscriptions and subjects read per push tick |
+
+`./clock` is a `timer`, so its cadence is a value INSIDE a param rather than a param of its
+own: `TimerParams::parse` reads `schedules` and `query_timeout_ms` and nothing else, and a
+top-level `cron` key would be ignored in silence. The shipped schedule is
+`0 */5 * * * *` — **cron runs in UTC** — and an override replaces the whole array:
+
+```json
+"override_params": {
+  "affinity/brief": {"traverse_depth": 3},
+  "affinity/clock": {"schedules": [{
+    "schedule_id": "0190a3f2-0000-7000-8000-000000000001",
+    "schedule_name": "affinity-push",
+    "cron": "0 */30 * * * *",
+    "emit_to": "../push",
+    "emit_body": {"messages": [{"origin": "user", "type": "text", "text": "affinity-push"}]},
+    "emit_headers": {}
+  }]}
+}
+```
+
+The `schedule_id` has to be a real UUID: the shipped file carries `${uuid7:affinity-push}`,
+which the colony mints at instantiation, and an override writes the value rather than the token.
+
+**A knob that is not configured, or is `null`, or is a blank string, is the shipped default** —
+an operator who blanks a line in a config means the default, and there is no number in an empty
+string. A number typed as a string is read as a number, because that is what a config line
+somebody types looks like.
+
+**A running instance keeps the bytes it was born from.** Instantiation copies the subtree, so
+this bump reaches no colony that is already up; upgrading is instantiating the new version
+beside the old one.
 
 ## What is deliberately not here
 

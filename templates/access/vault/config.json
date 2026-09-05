@@ -4,8 +4,8 @@
   },
   "params": {
     "broker": "./invoke",
-    "key_source": "${VAULT_KEY_SOURCE:-auto}",
-    "credential_name": "${VAULT_CREDENTIAL_NAME:-vault_key}",
+    "key_source": "auto",
+    "credential_name": "vault_key",
     "unlock_env": null,
     "unlock_ttl_ms": null,
     "sealed_neighbors": [],
@@ -18,13 +18,13 @@
         "type": "string",
         "secret": false,
         "default": "auto",
-        "description": "VAULT_KEY_SOURCE -- where the master key comes from: auto|prompt|systemd-cred|plainfile. Names a SOURCE, never key material."
+        "description": "Where the master key comes from: auto|prompt|systemd-cred|plainfile. Names a SOURCE, never key material, which is why GH #138 puts it on the params surface while the passphrase itself stays an environment variable this cell only NAMES (`params.unlock_env`)."
       },
       "credential_name": {
         "type": "string",
         "secret": false,
         "default": "vault_key",
-        "description": "VAULT_CREDENTIAL_NAME -- the file read under $CREDENTIALS_DIRECTORY when key_source resolves to systemd-cred"
+        "description": "The file read under $CREDENTIALS_DIRECTORY when key_source resolves to systemd-cred. A file NAME, not its content."
       }
     },
     "multi_send_capable": true,

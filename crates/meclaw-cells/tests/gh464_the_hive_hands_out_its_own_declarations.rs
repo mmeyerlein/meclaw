@@ -330,8 +330,10 @@ fn the_editor_declares_the_serialisation_it_actually_ships() {
 /// there the two filesystem cells stand in as `code` doubles.
 ///
 /// `base_path` is the one that has to be spent rather than merely parsed: it must
-/// name a directory that EXISTS, so `${TOOLS_FILE_ROOT:-/tmp}` is resolved here
-/// the way an instantiation resolves it and handed to the factory as it stands.
+/// name a directory that EXISTS. Since `tools@1.4.1` it is the literal `/tmp`
+/// rather than a `${TOOLS_FILE_ROOT:-/tmp}` token (GH #138), so the resolution
+/// below is a no-op for it and the factory is handed the shipped value as it
+/// stands -- which is the stronger form of the same claim.
 #[test]
 fn the_substrate_accepts_the_params_of_every_occupant_that_joined() {
     for (dir, factory) in [

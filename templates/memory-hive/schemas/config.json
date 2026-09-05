@@ -1,0 +1,89 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json\n\n# The DECLARATION of this memory's own tool, in the hive, beside the cells that\n# serve it.\n#\n# WHY IT LIVES HERE. Whoever is reached declares themselves. Until GH #552 this\n# schema was a HAND-TYPED projection of THIS hive's own `in_query` contract,\n# kept in a collector one composite away: `memory-hive` named seven context keys\n# on that lane, three of them were the model's, and a person had retyped those\n# three -- twice, because `talky`'s brain seeded a second copy -- into templates\n# that answer no recall at all. Nothing but a test held the copies to the\n# contract, and a schema held to its contract by a test is a schema that has no\n# owner.\n#\n# The lane pair and the answer shape are the tools hive's, byte for byte\n# (`templates/tools/README.md` § Asking for the declarations): a caller that can\n# ask one answerer can ask the other, and the collector cuts three answers\n# together without knowing which of them was a hive of tools.\n#\n# THE DESCRIPTION IS WHERE THE RULES ARE WRITTEN. `read_window` in `./recall`\n# REFUSES a half-open window (`half_open_window`) rather than widening it, and\n# until this cell existed that rule was enforced in one template and unsaid in\n# another -- a model that named one bound bought a refusal it could not see\n# coming. It is one sentence now, in the file that enforces it.\n#\n# THE TIER IS NOT AN ARGUMENT and never becomes one. How deep a recall runs is\n# configuration of this hive (`./tool` params.tier); a model that could choose\n# its own depth could ask for one the instance was tuned away from.\nSCHEMAS = {\n    \"memory_recall\": {\n        \"description\":\n            \"Ask this member's long-term memory about something, optionally \"\n            \"restricted to a time range. Name BOTH bounds or neither: a \"\n            \"half-open window is refused, not widened.\",\n        \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {\n                \"query\": {\n                    \"type\": \"string\",\n                    \"description\": \"what to look for\"},\n                \"window_from\": {\n                    \"type\": \"string\",\n                    \"description\": \"ISO-8601 start of the time range \"\n                                   \"(optional; needs `window_to`)\"},\n                \"window_to\": {\n                    \"type\": \"string\",\n                    \"description\": \"ISO-8601 end of the time range \"\n                                   \"(optional; needs `window_from`)\"}},\n            \"required\": [\"query\"]}}\n}\n\ndoc = json.load(sys.stdin)\nbody = doc[\"body\"]\nasked = body.get(\"tools\")\n\n# ABSENT and EMPTY are two different requests and must not look alike -- the\n# same rule the tools hive follows. A caller that declared no tools gets no\n# schemas, and that is an answer; a request that carries no `tools` slot at all\n# lost it on the way.\nif not isinstance(asked, list):\n    sys.stdout.write(json.dumps({\n        \"header\": {\"operation\": \"schemas\", \"error_code\": \"tools_missing\",\n                   \"schema_count\": 0, \"unknown_count\": 0},\n        \"schemas\": [], \"unknown\": [],\n        \"messages\": [{\"origin\": \"tool\", \"type\": \"tool_result\", \"id\": \"\",\n                      \"text\": \"the request carried no `tools` list\"}]}))\n    sys.exit(0)\n\nnames = [str(n) for n in asked if isinstance(n, str)]\nif \"*\" in names:\n    wanted, unknown = sorted(SCHEMAS), []\nelse:\n    seen, wanted, unknown = set(), [], []\n    for n in names:\n        if n in seen:\n            continue\n        seen.add(n)\n        (wanted if n in SCHEMAS else unknown).append(n)\n\nschemas = [dict(name=n, **SCHEMAS[n]) for n in wanted]\nheader = {\"operation\": \"schemas\", \"schema_count\": len(schemas),\n          \"unknown_count\": len(unknown)}\nif unknown:\n    # Named, never dropped: a caller asking this memory for a name it does not\n    # serve has to learn that from the answer and not from a silence.\n    header[\"error_code\"] = \"tool_unknown\"\nsys.stdout.write(json.dumps({\n    \"header\": header, \"schemas\": schemas, \"unknown\": unknown, \"messages\": []}))\n",
+    "external_timeout_ms": 10000,
+    "sandbox": {
+      "trust": "restricted",
+      "network": "deny",
+      "filesystem": {
+        "runtime": true
+      }
+    }
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "emits": {
+      "body": {
+        "schemas": {
+          "type": "array",
+          "required": true
+        },
+        "unknown": {
+          "type": "array",
+          "required": true
+        },
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "operation": {
+          "type": "string",
+          "values": [
+            "schemas"
+          ],
+          "required": true
+        },
+        "schema_count": {
+          "type": "number",
+          "required": true
+        },
+        "unknown_count": {
+          "type": "number",
+          "required": true
+        },
+        "error_code": {
+          "type": "string",
+          "values": [
+            "tool_unknown",
+            "tools_missing"
+          ],
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "tools": {
+          "type": "array",
+          "required": false
+        },
+        "messages": {
+          "type": "array",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "The declaration of this memory's OWN tool, handed out by name: a request naming `memory_recall` comes back as its JSON schema, and any other name comes back in `unknown` rather than as a silence. Whoever is reached declares themselves -- until GH #552 this schema was a HAND-TYPED projection of this hive's own `in_query` contract, living in a collector one composite away and seeded a second time into a brain, held to the contract by nothing but a test.",
+    "use_when": "Reached on this hive's `in_schemas` lane, on an asking collector's menu tick, with the names that collector declares it uses. Never addressed by name, never part of a tool round: it answers no `tool_call` and carries no `tool_name`.",
+    "not_in_scope": "No judgement about which tier a caller SHOULD ask for -- the tier is this hive's configuration (`./tool` params.tier) and deliberately not a model argument, because a model that could choose its own depth could ask for one the instance was tuned away from. No `thread_recall`: that one reads the COLLECTOR's own slate, which no other cell may read, so it is declared where it is answered. No provider envelope: the answer is {name, description, parameters}, and wrapping it in whatever a model provider wants is the caller's business.",
+    "emits_meaning": "schemas[]: `{name, description, parameters}` for every asked name this hive serves, sorted for `*`. unknown[]: the names it does not serve, verbatim. hop.error_code `tool_unknown` when that list is non-empty, `tools_missing` when the request carried no `tools` slot at all -- an absent list and an empty one are two different requests.",
+    "consumes_meaning": "body.tools: the names the asking collector declares it uses, e.g. [\"memory_recall\"]. The single entry [\"*\"] asks for everything this memory declares, which is one schema.",
+    "examples": [
+      "{\"tools\":[\"*\"]} -> one schema, `memory_recall`, unknown empty",
+      "{\"tools\":[\"memory_recall\",\"web_search\"]} -> one schema, unknown [\"web_search\"], hop.error_code `tool_unknown` -- the tools hive answers that one",
+      "{} -> no schemas, hop.error_code `tools_missing`"
+    ]
+  }
+}

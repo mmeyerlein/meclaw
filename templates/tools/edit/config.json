@@ -3,7 +3,7 @@
     "type": "edit"
   },
   "params": {
-    "base_path": "${TOOLS_FILE_ROOT:-/tmp}",
+    "base_path": "/tmp",
     "max_concurrency": 1
   },
   "contract": {
@@ -13,7 +13,7 @@
         "type": "string",
         "secret": false,
         "default": "/tmp",
-        "description": "TOOLS_FILE_ROOT -- the same root the `file` occupant reads. One assistant, one file root: two roots would mean a tool could edit what the other cannot read."
+        "description": "The one directory this assistant's file surface may reach -- the same root the `file` occupant carries. One assistant, one file root: two roots would mean a tool could edit what the other cannot read, so a mutation that repoints one repoints both."
       }
     },
     "emits": {
@@ -66,7 +66,7 @@
   },
   "description": {
     "purpose": "Editing an existing file in place, inside the same boundary the `file` occupant reads: replace every occurrence of a literal, or insert a line.",
-    "use_when": "The `edit` occupant of a tools hive, reached on hop.tool_name == 'edit'. It shares `TOOLS_FILE_ROOT` with `file`, deliberately: one assistant has one file root, and a tool that could edit what its neighbour cannot read would be a boundary nobody could state.",
+    "use_when": "The `edit` occupant of a tools hive, reached on hop.tool_name == 'edit'. It shares its `params.base_path` with `file`, deliberately: one assistant has one file root, and a tool that could edit what its neighbour cannot read would be a boundary nobody could state.",
     "not_in_scope": "No patch format (deferred, it needs a diff design of its own), no creation of a file that is not there, and no atomicity -- a read-modify-write without tempfile+rename, exactly as `file`'s write. And no concurrency: `params.max_concurrency` is 1 because two edits of the same file race at the filesystem, which is a hazard the CALLER cannot see, so this cell serialises rather than declaring a reentrancy it does not have.",
     "emits_meaning": "messages[]: one tool_result turn naming what changed. hop.matches_changed counts the replaced occurrences; hop.operation is `unknown` when the arguments did not parse far enough to say which op was meant.",
     "consumes_meaning": "messages[]: a tool_call turn whose text is JSON args {op, path, ...}.",

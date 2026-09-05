@@ -1,13 +1,13 @@
 {
   "name": "archive-bridge",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": {
-    "purpose": "The missing piece between an llm's answer and a store: one code cell that turns the LAST non-empty assistant text turn into a store-native {operation: insert, table, row: {id, text, recorded_at}} tool_call -- and quietly swallows the store's reply echo so nothing dead-letters. Stores are driven by tool_call args, not by headers; this cell is the translation.",
+    "purpose": "The missing piece between an llm's answer and a store: one code cell that turns the LAST non-empty assistant text turn into a store-native {operation: insert, table, row: {id, text, recorded_at}} tool_call -- and quietly swallows the store's reply echo so nothing dead-letters. Stores are driven by tool_call args, not by headers; this cell is the translation. Since 1.1.0 the target table is a PARAM of the cell that reads it rather than a substitution token out of the colony's environment ([#138](https://github.com/mmeyerlein/meclaw/issues/138), ruling R-0904-6): it exists three times with one value -- under `params`, as a `contract.settings` entry, and as the literal the shipped script falls back to -- so two bridges in one colony archive into different tables, which the environment form made impossible.",
     "use_when": "Behind an llm cell's answer lane (or any cell that emits final assistant text turns), in front of a store cell that owns the archive table. Wire two lanes in the SAME mutation that instantiates it: route 'store' into the store, and the store's reply UNCONDITIONALLY back into this cell (the echo lane).",
     "not_in_scope": "No deduplication, no updates (append-only), no querying, no table creation -- the store's params.schema must already declare the table (columns id/text/recorded_at, all text). No fan-out: one answer, one insert.",
     "examples": [
       "PORTS - Entry: any message; only one with a non-empty assistant text turn produces output. Exit on hop.route: 'store' -> the store cell. Echo lane: store -> this cell, unconditional -- the insert reply (tool_result under the bridge's own 'archive-' id) dies here by design, which is what keeps the DLQ empty.",
-      "an agent's final answer 'The capital is Paris.' -> row {id, text: 'The capital is Paris.', recorded_at: <ISO-8601 UTC>} in table ${ARCHIVE_TABLE:-archive}",
+      "an agent's final answer 'The capital is Paris.' -> row {id, text: 'The capital is Paris.', recorded_at: <ISO-8601 UTC>} in table `archive` (params.archive_table)",
       "a research loop that archives every finished answer: planner finish 'stop' -> bridge -> store, while the loop's tool rounds pass the bridge untouched (no assistant text turn at the bridge, nothing emitted)"
     ]
   },

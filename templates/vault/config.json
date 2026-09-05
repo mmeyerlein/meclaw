@@ -4,8 +4,8 @@
   },
   "params": {
     "broker": "./invoke",
-    "key_source": "${VAULT_KEY_SOURCE:-auto}",
-    "credential_name": "${VAULT_CREDENTIAL_NAME:-vault_key}",
+    "key_source": "auto",
+    "credential_name": "vault_key",
     "unlock_ttl_ms": null,
     "sealed_neighbors": [],
     "external_timeout_ms": 5000
@@ -17,13 +17,13 @@
         "type": "string",
         "secret": false,
         "default": "auto",
-        "description": "VAULT_KEY_SOURCE -- where the master key comes from: auto|prompt|systemd-cred|plainfile. Names a SOURCE, never key material."
+        "description": "Where the master key comes from: auto|prompt|systemd-cred|plainfile. Names a SOURCE, never key material, which is why it is a param and not a `.env` line -- and why two vaults in one colony may unlock from different places."
       },
       "credential_name": {
         "type": "string",
         "secret": false,
         "default": "vault_key",
-        "description": "VAULT_CREDENTIAL_NAME -- the file read under $CREDENTIALS_DIRECTORY when key_source resolves to systemd-cred"
+        "description": "The file read under $CREDENTIALS_DIRECTORY when key_source resolves to systemd-cred. A NAME, never material."
       }
     },
     "multi_send_capable": true,

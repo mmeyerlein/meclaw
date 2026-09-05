@@ -770,7 +770,8 @@ pub(crate) fn patch_and_substitute_config(
         )));
     }
     // Extract the contract block from the post-substitution config (T23) and
-    // compile it via the shared `compile_contract_view` helper (paket-7 B4).
+    // compile it, with the same config's `params`, via the shared
+    // `compile_spawn_view` helper (paket-7 B4; GH #555 added the params half).
     // A malformed `contract.emits` schema yields `MutationError::Schema` HERE —
     // during staging, BEFORE the atomic rename — so the `.staging` dir is
     // discarded and the live filesystem is unchanged (handle_mutation step 1/2
@@ -798,8 +799,8 @@ pub(crate) fn patch_and_substitute_config(
             refusal_name(&cfg_path)
         )));
     }
-    let contract_view = crate::bootstrap::compile_contract_view(&contract_block)
-        .map_err(|reason| MutationError::Schema(format!("contract.emits: {reason}")))?;
+    let contract_view = crate::bootstrap::compile_spawn_view(&contract_block, &params)
+        .map_err(MutationError::Schema)?;
     // Hardening Slice 1 (Task 1.4): 14-B projection of the SAME parsed block —
     // the mutation-spawn arm registers it in the colony's `node_contracts` map.
     let header_view = crate::mutation::validate::header_view_from_contract(&contract_block);
@@ -900,7 +901,7 @@ fn default_sandbox_block() -> JsonValue {
 /// registry, which is where the declaration lives. An empty registry means "no
 /// declaration reachable" and therefore the pre-#398 behaviour — that is the
 /// honest default here, because a type nobody registered will never spawn.
-pub(crate) fn seed_cell_db_if_present(
+pub fn seed_cell_db_if_present(
     staging_path: &std::path::Path,
     cell_type: &str,
     factories: &crate::CellFactoryRegistry,

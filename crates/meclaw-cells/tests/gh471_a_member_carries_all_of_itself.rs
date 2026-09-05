@@ -19,8 +19,8 @@
 //!
 //! * **A** grows a shipped `member@1.5.0`, gets one distinctive row written
 //!   into each of its three holders, and is told `in_export` ONCE. Three walks
-//!   run, the sink files three documents, one per holder, and the member-level
-//!   marker names all three.
+//!   run, each holder's own store writes its document, and each of the three
+//!   directories carries its own completeness marker (GH #555).
 //! * **B** never heard any of it. `examples/memory-import/build_import.py`
 //!   turns the directory into one manifest; the manifest grows a member; and
 //!   the member arrives with the memory, the record AND the screen.
@@ -29,11 +29,13 @@
 //! turn on a rule that only ever existed in A. A rule table that arrives and is
 //! not read is a table, not a screen.
 //!
-//! **One deliberate substitution, named rather than hidden** (the same one
-//! `gh447` and `gh467` make): the shipped sink runs behind `params.sandbox`
-//! with `trust: "restricted"`, which is fail-closed against the host, so a
-//! colony test that kept it would measure the kernel it runs on. It is replaced
-//! through `override_params`, and the shipped value is asserted first.
+//! **No substitution any more.** Until GH #555 this file relaxed the shipped
+//! sink's `restricted` sandbox through `override_params`, because a profile
+//! that is fail-closed against the host makes a colony test measure the kernel
+//! it runs on. There is no sink and no sandbox: the writer is the substrate,
+//! and the only thing an instance says about files is the fence each holder's
+//! store declares (`params.transfer.base_path`), which this file sets through
+//! the same declared override.
 //!
 //! Guarded like every template-reading test (GH #49): a tree that does not
 //! carry the library or the example is skipped, never judged.
@@ -72,7 +74,6 @@ fn repo(rel: &str) -> std::path::PathBuf {
 fn shipped() -> bool {
     [
         "templates/member/config.json",
-        "templates/member/export-sink/config.json",
         "templates/affinity/porter/config.json",
         "templates/firewall/porter/config.json",
         "templates/memory-hive/porter/config.json",
@@ -119,10 +120,6 @@ fn copy_tree(src: &std::path::Path, dst: &std::path::Path) {
 fn write_json(path: &std::path::Path, v: &Value) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, to_string_pretty(v).unwrap()).unwrap();
-}
-
-fn shipped_config(rel: &str) -> Value {
-    from_str(&std::fs::read_to_string(repo(rel)).expect(rel)).expect("shipped config is json")
 }
 
 fn rows(db: &std::path::Path, sql: &str) -> Vec<Vec<String>> {
@@ -190,14 +187,55 @@ fn dummy_env(source: &std::path::Path) -> String {
             }
         }
     }
-    let mut out: String = names
+    // Only the provider lane is left to fill: since GH #138 the two crons this
+    // helper used to append (`AFFINITY_PUSH_CRON`, `KEEPER_NIGHT_CRON`) are
+    // params of the cells that read them, and are pushed out of the run's way
+    // with an `override_params` entry instead of with a line here.
+    names
         .into_iter()
         .map(|n| format!("{n}=dummy-{n}\n"))
-        .collect();
-    out.push_str("AFFINITY_PUSH_CRON=0 0 4 1 1 *\n");
-    out.push_str("MEMORY_DREAM_CRON=0 0 4 1 1 *\n");
-    out.push_str("KEEPER_NIGHT_CRON=0 0 4 1 1 *\n");
-    out
+        .collect()
+}
+
+/// The nightly consolidation, pushed to a date this run cannot reach.
+///
+/// It was a `MEMORY_DREAM_CRON=` line in the `.env` above until GH #138. The
+/// hive's schedule is a LITERAL of `memory-hive/clock`'s own params now, so
+/// such a line would be read by nothing at all: the night would fire into this
+/// run and nobody would say so. `override_params` replaces the whole
+/// `schedules` key -- the key that EXISTS under a timer's params, which is the
+/// only kind GH #294 accepts -- and the timer plans on what it finds there
+/// (`crates/meclaw-cells/tests/gh138_memory_hive_params.rs` is the proof).
+fn quiet_night() -> Value {
+    json!({"schedules": [{
+        "schedule_id": "0190a3f2-0000-7000-8000-00000000dead",
+        "schedule_name": "nightly-dream",
+        "cron": "0 0 4 1 1 *",
+        "emit_to": "../dream-glue",
+        "emit_body": {"messages": [{"origin": "user", "type": "text", "text": "nightly-dream"}]},
+        "emit_headers": {}
+    }]})
+}
+
+/// The record hive's push tick, pushed to a date this run cannot reach.
+///
+/// It was an `AFFINITY_PUSH_CRON=` line in the `.env` above until GH #138. The
+/// hive's cadence is a LITERAL of `affinity/clock`'s own params now, so such a
+/// line would be read by nothing at all: the lane would tick into this run
+/// every five minutes and nobody would say so. `override_params` replaces the
+/// whole `schedules` key -- the key that EXISTS under a timer's params, which
+/// is the only kind GH #294 accepts -- and the timer plans on what it finds
+/// there (`crates/meclaw-cells/tests/gh138_affinity_firewall_params.rs` is the
+/// proof).
+fn quiet_push() -> Value {
+    json!({"schedules": [{
+        "schedule_id": "0190a3f2-0000-7000-8000-00000000beef",
+        "schedule_name": "affinity-push",
+        "cron": "0 0 4 1 1 *",
+        "emit_to": "../push",
+        "emit_body": {"messages": [{"origin": "user", "type": "text", "text": "affinity-push"}]},
+        "emit_headers": {}
+    }]})
 }
 
 /// A code cell that appends every message it is handed to one file per lane, so
@@ -230,6 +268,15 @@ sys.stdout.write(json.dumps([]))
 async fn boot(td: &tempfile::TempDir, flag_dir: &std::path::Path) -> ColonyHandle {
     let root = td.path();
     copy_tree(&repo("templates"), &root.join("templates"));
+    // The keeper's nightly close sweep, pushed to a date this run cannot reach.
+    // It was a `KEEPER_NIGHT_CRON` line in the `.env` below until GH #138: the
+    // schedule is a LITERAL of `session-keeper/night`'s own params now, so such
+    // a line is read by nothing at all -- the sweep would fire into this run and
+    // nobody would say so. The library copy is this tree's own, so writing the
+    // key into it is what an `override_params` entry does to a staged config
+    // (`crates/meclaw-cells/tests/gh138_keeper_summarizer_dispatcher_params.rs`
+    // is the proof that the timer plans on what it finds there).
+    meclaw_testing::quiet_keeper_night(&root.join("templates/session-keeper"));
     std::fs::create_dir_all(flag_dir).unwrap();
     let lanes = [
         "answer",
@@ -242,6 +289,7 @@ async fn boot(td: &tempfile::TempDir, flag_dir: &std::path::Path) -> ColonyHandl
         "build",
         "close_report",
         "export_done",
+        "dump",
         "pack_ack",
     ];
     let mut edges = vec![
@@ -387,51 +435,21 @@ async fn wait_for(p: &std::path::Path, what: &str, h: &ColonyHandle) {
     );
 }
 
-/// Poll the MEMBER-level marker until it names `want` holders.
-///
-/// A hive's own `seed/export_final.json` is not the signal that the member-level
-/// one is on disk: the sink writes the hive marker FIRST and rebuilds the
-/// member-level marker after it, in the same run. Waiting for the hive markers
-/// and then reading the member-level file reads it in the gap — as the empty
-/// file the rebuild has just truncated, or as the shorter list of the rebuild
-/// before it. The completeness of the LEVEL is what this file asserts, so the
-/// level's own document is what it waits for. `gh476` waits the same way.
-async fn wait_marker(p: &std::path::Path, want: usize, h: &ColonyHandle) -> Value {
-    let deadline = std::time::Instant::now() + RECV_TIMEOUT;
-    loop {
-        let named = std::fs::read_to_string(p)
-            .ok()
-            .and_then(|raw| from_str::<Value>(&raw).ok());
-        if let Some(v) = &named
-            && v["hives"].as_array().map(Vec::len).unwrap_or_default() >= want
-        {
-            return v.clone();
-        }
-        if std::time::Instant::now() >= deadline {
-            panic!(
-                "the member-level marker never named {want} holders (last: {named:?}) -- \
-                 dead letters: {:?}",
-                h.drain_dead_letters()
-                    .await
-                    .iter()
-                    .map(|d| (d.sender_path.as_str().to_string(), d.reason.as_code()))
-                    .collect::<Vec<_>>()
-            );
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-}
-
 fn member_manifest(export_dir: Option<&std::path::Path>) -> Value {
-    let sink = shipped_config("templates/member/export-sink/config.json");
-    assert_eq!(
-        sink["params"]["sandbox"]["trust"], "restricted",
-        "the shipped sink is the one behind a boundary; if this ever reads \
-         `trusted`, the substitution below is hiding a real regression"
-    );
-    let mut over = json!({"export-sink": {"sandbox": {"trust": "trusted"}}});
+    // Since GH #555 an instance says ONE thing about files: the fence each
+    // holder's own store writes inside. There is no cell to relax and no
+    // sandbox to substitute — the writer is the substrate.
+    let mut over = json!({"memory-hive/clock": quiet_night(),
+                          "affinity/clock": quiet_push()});
     if let Some(dir) = export_dir {
-        over["export-sink"]["export_dir"] = json!(dir.to_str().unwrap());
+        for (hive, cell) in [
+            ("memory-hive", "store"),
+            ("affinity", "store"),
+            ("firewall", "rules"),
+        ] {
+            over[format!("{hive}/{cell}")] =
+                json!({"transfer": {"base_path": dir.to_str().unwrap()}});
+        }
     }
     json!({"manifest": [{
         // The declaration stands AT the container it grows into (GH #503),
@@ -440,7 +458,7 @@ fn member_manifest(export_dir: Option<&std::path::Path>) -> Value {
         // member is named bare, and the path it lands at is unchanged.
         "scope": "/members",
         "diff": {
-            "add_nodes": [{"name": MEMBER, "template": "member@1.5.1",
+            "add_nodes": [{"name": MEMBER, "template": "member@1.6.0",
                            "override_params": over}],
             "add_edges": container_edges(),
         }
@@ -564,15 +582,23 @@ async fn an_export_carries_memory_record_and_screen_and_a_member_is_born_with_al
         )
         .await;
     }
-    let marker = wait_marker(&export_dir.join("export_final.json"), 3, &a).await;
-    assert_eq!(marker["format"], "meclaw-member-export/1");
-    assert_eq!(
-        marker["hives"],
-        json!(["affinity", "firewall", "memory-hive"]),
-        "the member-level marker names every holder whose walk finished. Before \
-         GH #471 it could only ever have named one, and a reader had no way to \
-         tell a complete export from a memory-only one"
+    // Each directory carries its own marker and NOTHING carries a member-level
+    // one any more: it was a composition statement about four hives, and it
+    // went with the cell that composed it (GH #555). What replaces it is that
+    // every directory says for itself whether it is whole.
+    assert!(
+        !export_dir.join("export_final.json").exists(),
+        "something wrote a member-level marker. The substrate knows no hives, and \
+         a composition statement written by nobody is a claim with no author"
     );
+    for hive in ["memory-hive", "affinity", "firewall"] {
+        let marker: Value = from_str(
+            &std::fs::read_to_string(export_dir.join(hive).join("seed/export_final.json")).unwrap(),
+        )
+        .expect("a marker is parseable JSON");
+        assert_eq!(marker["format"], "meclaw-cell-export/1");
+        assert!(marker["tables"].as_array().map(Vec::len).unwrap_or(0) > 0);
+    }
     assert!(
         !a_flags.join("reject.json").exists(),
         "a walk refused something: {:?}",
@@ -611,9 +637,7 @@ async fn an_export_carries_memory_record_and_screen_and_a_member_is_born_with_al
         "build_import.py failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let mut manifest: Value = from_str(&String::from_utf8_lossy(&out.stdout)).expect("manifest");
-    manifest["manifest"][0]["diff"]["add_nodes"][0]["override_params"] =
-        json!({"export-sink": {"sandbox": {"trust": "trusted"}}});
+    let manifest: Value = from_str(&String::from_utf8_lossy(&out.stdout)).expect("manifest");
     let outcome = apply(&b, manifest).await;
     assert!(
         outcome.is_committed(),

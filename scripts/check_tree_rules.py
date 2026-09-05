@@ -16,6 +16,12 @@ R5 joined them on 2026-08-31 with the v-lanes wave
 reason: it guards a form that does not exist in the tree yet, so that the first
 one written is written right.
 
+R6 joined on 2026-09-04 for a third reason: the tree is full of violations and
+they are being migrated away over one wave, so the rule is here to stop the
+NEXT one from being written in a template that has migrated or never had one
+([GH #138](https://github.com/mmeyerlein/meclaw/issues/138)). Inside a template
+that is still PARKED it stops nothing -- see the transition list below.
+
 THE RULES
 =========
 
@@ -137,6 +143,66 @@ writes it rather than in the mutation that submits it. A finding is a FAILURE,
 not a warning: unlike R4's role families there is no open question here -- the
 form was ruled before the first v-lane was drawn.
 
+R6 -- a behaviour knob is a param
+---------------------------------
+Every `${VAR}` substitution a template hands to a cell names either a
+BEHAVIOUR KNOB or the PROVIDER LANE, and only the second one belongs in `.env`
+(ruling R-0904-6, 2026-09-04,
+[GH #138](https://github.com/mmeyerlein/meclaw/issues/138)).
+
+A knob in `.env` is not merely inelegant: it is unreachable. `override_params`
+may only name a key the addressed cell actually carries under `params`
+(GH #294, ruling Q6 -- "a cell with no `params` block at all has the empty
+set"), so a knob that lives only inside a `${...}` token in `script_inline`
+cannot be tuned per instance at all. It is colony-wide or it is nothing. The
+whole point of the migration is that `params.<knob>` +
+`contract.settings.<knob>` + the literal in the script make the same value
+addressable, declared and readable in one place -- `collector@1.2.0` is the
+reference migration (GH #136), pinned by
+`crates/meclaw-cells/tests/w13_collector_params.rs`.
+
+What the rule reads, and what it deliberately does not:
+
+  * `params` (with `script_inline` inside it) and `override_params`, because
+    those are the values a cell is HANDED. A `contract` block is skipped
+    wherever it sits: `contract.settings.<k>.description` legitimately says
+    "retune it with FOO_ROWS" while the knob is still on the old surface, and
+    that prose is rewritten by the same commit that moves the knob.
+  * `${uuid7:<label>}` and `${ctx.<key>}` are skipped: they are the INSTANCE
+    class, resolved once at instantiation and written to disk
+    (`crates/meclaw-colony/src/mutation/substitute.rs`, the class table). They
+    are not a surface anybody tunes afterwards.
+  * `templates/_cell-types/` is not scanned, because `scan()` skips every
+    `_`-prefixed root -- the same `_`-prefix rule R1/R3/R4/R5 have always run
+    under, and this rule inherits it rather than arguing for itself.
+
+    It is worth saying plainly what that costs, because the obvious
+    justification is not true: the three folders in there DO carry a
+    `template.json` with a name and a version, and their README calls them
+    minimal INSTANTIABLE templates. What they do not have is a catalogue row in
+    `templates/README.md`, and what they are is a shape to copy from when
+    composing a topology.
+
+    So the exclusion is scope, not principle. One real behaviour knob sits
+    outside it: `edit-min/config.json` carries
+    `${EDIT_BASE_PATH:-/tmp/meclaw-edit}`, a sandbox-root knob of exactly the
+    class R6 flags -- the one `templates/tools` and `templates/coder-pipeline`
+    carried until GH #138 made both a param -- everywhere else
+    (`MEMBER_EXPORT_DIR` was the third until GH #555 replaced it with a param,
+    `params.transfer.base_path` on the store that writes). It is deliberately left outside this
+    wave (R-0904-6 rules `templates/`, and `_cell-types` was never in the
+    inventory). Whoever brings `_cell-types` into the scan brings that knob
+    with it.
+
+The allowlist is `ENV_LANE_SUFFIXES` / `ENV_LANE_PREFIXES` / `ENV_LANE_EXACT`
+below, and it is a rule about NAMES on purpose -- see the comment there.
+
+Unlike R1/R3/R4/R5 this rule was written BEFORE the tree obeyed it: on the day
+it landed, 24 templates still grew ~120 knobs between them. Every one of them
+is parked in `TRANSITIONAL` with the strand that migrates it, so the gate is
+green from day one and the list shrinks with the wave. A migration that forgets
+its row gets a STALE line naming the row to delete.
+
 USAGE
 =====
     python3 scripts/check_tree_rules.py [--check] [--root DIR] [--selftest]
@@ -182,27 +248,90 @@ LANE_ANSWERER = {
 # from its job. They are WARNINGS and not failures on purpose: nobody has ruled
 # on them, and a gate that fails on an open question gets switched off.
 # A family leaves this table when it is ruled -- either into LANE_ANSWERER (if
-# a lane names it) or out of the tree (if the names get unified).
+# a lane names it) or out of the tree (if the names get unified). The timer
+# family left on 2026-09-04 the second way (GH #551 § 2, ruling R-0904-5):
+# the pure tick is named `clock` everywhere, `night` is the ruled exception
+# (`menu-clock` was the second until GH #553 removed the cell), and the sweep that holds it is a test over the tree
+# (`gh401_shipped_timer_schedules_deserialize.rs`) rather than a row here --
+# a checker cannot tell a pure tick from a payload-carrying one by name.
 ROLE_FAMILIES = (
     # (role, the name the sweep proposed as the survivor, the other spellings
     #  seen in the tree, issue)
-    ("the timer", "clock", ("cron", "refresh", "night", "menu-clock"), 551),
     ("the fan-out", "dispatcher", ("dispatch",), 551),
     ("the error drain", "drain", ("errors",), 551),
     ("the outbound bridge", "proxy", ("notifier",), 551),
     ("the pipeline's own store", "state", ("memory",), 551),
 )
 
+# --- R6, the env-lane allowlist ---------------------------------------------
+# Ruling R-0904-6 (2026-09-04, GH #138): every `${VAR}` behaviour knob under
+# `templates/` lives on the params surface. What stays in `.env` is the
+# PROVIDER LANE and nothing else -- a secret in a config.json is a secret in
+# the repository (`templates/README.md` § *Env knobs are an experimental
+# surface*).
+#
+# The allowlist is by NAME SUFFIX/PREFIX, deliberately, because the class of a
+# knob is what its NAME says. A checker that guessed the class from the value
+# would pass the day somebody writes a timeout into a variable called
+# `..._BASE_URL`; a checker that kept a path list would be a list nobody
+# maintains. Three names are on it verbatim, and each of them is a grey-zone
+# call the ruling made out loud rather than a category:
+#
+#   OPENROUTER_HTTP_REFERER / OPENROUTER_X_TITLE -- provider attribution. They
+#     travel with the endpoint and are the same statement colony-wide.
+#   MEMORY_EMBED_DIM -- coupled to MEMORY_EMBED_MODEL and to the shipped
+#     `store/seed/emb_models.jsonl`; the three stay together or the embeddings
+#     stop matching.
+ENV_LANE_SUFFIXES = ("_API_KEY", "_TOKEN", "_BEARER",
+                     "_BASE_URL", "_ENDPOINT", "_MODEL", "_PROVIDER")
+ENV_LANE_PREFIXES = ("MODEL_",)
+ENV_LANE_EXACT = frozenset({
+    "OPENROUTER_HTTP_REFERER",
+    "OPENROUTER_X_TITLE",
+    "MEMORY_EMBED_DIM",
+})
+
+# `$${` is the escape form and is NOT a substitution (`substitute.rs`
+# `replace_env`), so the `$` may not be preceded by another one.
+SUBSTITUTION = re.compile(r"(?<!\$)\$\{([^}]*)\}")
+
+# The instance class: resolved once at instantiation and written to disk, so it
+# is never a knob anybody tunes afterwards (`substitute.rs` module doc, the
+# class table).
+INSTANCE_FORMS = ("uuid7:", "ctx.")
+
 # --- The dated transition list ----------------------------------------------
-# ADDED 2026-08-30, and every row leaves again with the commit that lands its
-# issue. These are the violations the sweep measured; three strands are fixing
-# them right now, and this gate had to be able to go green against the tree as
-# it stands or it could not be committed at all. A row that no longer matches
-# anything is reported as a stale row to delete -- the gate says which line.
+# Every row leaves again with the commit that lands its issue. A rule is
+# written when it is ruled, not when the tree already obeys it, so a new rule
+# had to be able to go green against the tree as it stands or it could not be
+# committed at all -- this list is how. A row that no longer matches anything
+# is reported as a stale row to delete, and the gate says which line.
+#
+# R6 joined the list on 2026-09-04 with the whole tree in it: the rule was
+# written before the migration it guards, so that no NEW knob can be added to a
+# template that has migrated or never had one while the ~140 existing ones move
+# template by template (R-0904-6). Every row below is one template's migration,
+# and it leaves with the commit that lands it. `steward` is the one row that is
+# not a migration: it has been deprecated since GH #462, ships one more release
+# and takes no further work, so it is parked permanently rather than paid for.
+#
+# THE GAP THIS LEAVES, said out loud: R6 reports one finding per TEMPLATE and a
+# row excuses that whole finding, so a knob ADDED to one of the parked templates
+# is excused along with the ones already there, silently, until that template's
+# migration lands. It is the price of a rule that could be committed at all --
+# a per-cell finding could not be parked by a row that names a template, and a
+# rule nobody can run is a habit. What closes the gap is the migration itself,
+# and until then the diff: the finding names every cell and every knob, so a
+# strand reading its own gate output sees a knob it did not expect.
 #
 #   rule, path relative to the repo root      issue  what lands
-TRANSITIONAL = {}
-TRANSITIONAL_ADDED = "2026-08-30"
+TRANSITIONAL = {
+    # Not a migration: deprecated since GH #462, ships one more release, not
+    # migrated. This row stays until the template leaves the tree.
+    ("R6", "templates/steward"): (
+        138, "deprecated since #462, ships one more release, not migrated"),
+}
+TRANSITIONAL_ADDED = "2026-09-04"
 
 CONTROL_PLANE = "/colony/"
 
@@ -448,8 +577,60 @@ def v_lane_walk(
     return findings, []
 
 
+# --- R6, the env-knob scan ---------------------------------------------------
+
+
+def is_env_lane(name: str) -> bool:
+    """Is this variable name the provider lane rather than a behaviour knob?"""
+    return (
+        name in ENV_LANE_EXACT
+        or name.endswith(ENV_LANE_SUFFIXES)
+        or name.startswith(ENV_LANE_PREFIXES)
+    )
+
+
+def substituted_strings(value: object) -> list[str]:
+    """Every string of a value that a reader of the config would act on.
+
+    `contract` is skipped wherever it sits: a `contract.settings` entry
+    describes a knob in prose ("retune it with FOO_ROWS"), and the migration
+    rewrites that prose in the same commit that moves the knob. What R6 asks
+    about is the value a cell is HANDED -- `params` (`script_inline` included)
+    and the `override_params` a ref pushes down.
+    """
+    out: list[str] = []
+    if isinstance(value, str):
+        out.append(value)
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            if key == "contract":
+                continue
+            out.extend(substituted_strings(item))
+    elif isinstance(value, list):
+        for item in value:
+            out.extend(substituted_strings(item))
+    return out
+
+
+def behaviour_knobs(cfg: dict) -> list[str]:
+    """The `${NAME}` behaviour knobs one config hands to its cell, in order."""
+    names: list[str] = []
+    for block in (cfg.get("params"), cfg.get("override_params")):
+        for text in substituted_strings(block):
+            for match in SUBSTITUTION.finditer(text):
+                inner = match.group(1)
+                if inner.startswith(INSTANCE_FORMS):
+                    continue
+                name = inner.split(":-", 1)[0].strip()
+                if not name or is_env_lane(name):
+                    continue
+                if name not in names:
+                    names.append(name)
+    return names
+
+
 def check_template(root: Path, repo_root: Path) -> tuple[list[Finding], list[str]]:
-    """R1, R3, R4 and R5 against one template root."""
+    """R1, R3, R4, R5 and R6 against one template root."""
     findings: list[Finding] = []
     notes: list[str] = []
     dirs = node_dirs(root)
@@ -459,6 +640,29 @@ def check_template(root: Path, repo_root: Path) -> tuple[list[Finding], list[str
     for d, cfg in configs.items():
         hit, _ = edge_endpoints(d, cfg)
         wired |= hit
+
+    # --- R6 -----------------------------------------------------------------
+    # One finding for the WHOLE template, not one per cell: the transition list
+    # parks a template's migration, and a per-cell finding could not be parked
+    # by a row that names the template. It names every cell and every knob, so
+    # the finding is still the work list.
+    grown: list[str] = []
+    for d in dirs:
+        for name in behaviour_knobs(configs[d]):
+            where = "." if d == root else "./" + d.relative_to(root).as_posix()
+            grown.append(f"`{where}` ${{{name}}}")
+    if grown:
+        findings.append(Finding(
+            "R6", root.relative_to(repo_root).as_posix(),
+            f"{len(grown)} behaviour knob(s) still read out of the environment: "
+            f"{', '.join(grown)}. A behaviour knob is a param -- it belongs in "
+            f"`params.<knob>`, is declared in `contract.settings.<knob>` and is "
+            f"read from the stdin document (`collector@1.2.0` is the reference "
+            f"migration, GH #136). Only the provider lane stays in `.env`: a "
+            f"name ending in {', '.join(ENV_LANE_SUFFIXES)}, starting with "
+            f"{', '.join(ENV_LANE_PREFIXES)}, or one of the ruled "
+            f"{', '.join(sorted(ENV_LANE_EXACT))} (GH #138).",
+        ))
 
     for d, cfg in configs.items():
         rel = d.relative_to(repo_root).as_posix()
@@ -680,7 +884,7 @@ def run(repo_root: Path, quiet: bool = False) -> int:
         return 1
 
     say(
-        f"tree rules OK: R1/R3/R4/R5 hold across templates/; "
+        f"tree rules OK: R1/R3/R4/R5/R6 hold across templates/; "
         f"{len(excused)} transitional, {len(warnings)} note(s)."
     )
     return 0
@@ -713,6 +917,47 @@ SELFTEST_TREE = {
             ]},
         },
     },
+    # --- R6: one template that grows a knob, one that only carries the lane --
+    # `knob` fires ONCE for the whole template, which is what makes the
+    # transition list workable: a row parks a template, not a cell.
+    "templates/knob/config.json": {
+        "cell": {"type": "hive"},
+        "params": {"graph": {"edges": [
+            {"from": ".", "to": "./tuned"},
+            {"from": ".", "to": "./laned"},
+        ]}},
+    },
+    "templates/knob/tuned/config.json": {
+        "cell": {"type": "code"},
+        "params": {"script_inline": "TIMEOUT = ${FOO_TIMEOUT_MS:-5}"},
+    },
+    "templates/knob/laned/config.json": {
+        "cell": {"type": "llm"},
+        "params": {"api_key": "${OPENROUTER_API_KEY}"},
+    },
+    # The R6 silence: every shape the rule lets through, in one template --
+    # the lane by suffix, by prefix and by exact name, the two instance-class
+    # substitutions, and a `${...}` that stands in contract PROSE about a knob
+    # rather than in a value anybody reads.
+    "templates/lane/config.json": {
+        "cell": {"type": "hive"},
+        "params": {"graph": {"edges": [{"from": ".", "to": "./wire"}]}},
+    },
+    "templates/lane/wire/config.json": {
+        "cell": {"type": "llm"},
+        "params": {
+            "api_key": "${OPENROUTER_API_KEY}",
+            "base_url": "${LOCAL_LLM_BASE_URL}",
+            "model": "${MODEL_BUILDER}",
+            "dim": "${MEMORY_EMBED_DIM:-1024}",
+            "session_id": "${uuid7:session}",
+            "surface": "${ctx.model_surface}",
+        },
+        "contract": {"settings": {"topk": {
+            "description": "Retune it with ${FOO_TIMEOUT_MS} until the migration lands."
+        }}},
+    },
+
     # The clean control: a template with nothing wrong in it.
     "templates/clean/config.json": {
         "cell": {"type": "hive"},
@@ -903,6 +1148,8 @@ def selftest() -> int:
             ("R5", "templates/vlane/barename"),         # and its consequence
             # R5, a vouching ANCESTOR is not the endpoint's parent.
             ("R5", "templates/vlane/farvouch/mid"),
+            # R6, once for the template that still grows a behaviour knob.
+            ("R6", "templates/knob"),
         ])
         if got != want:
             print("selftest FAILED", file=sys.stderr)
@@ -913,17 +1160,19 @@ def selftest() -> int:
         # The declared island, the clean template and the two declared v-lanes
         # produce nothing -- a gate that fires on everything measures nothing.
         silent = ("templates/clean", "templates/vlane/anchor",
-                  "templates/vlane/member", "templates/member")
+                  "templates/vlane/member", "templates/member",
+                  "templates/lane", "templates/knob/laned")
         for rule, path in got:
             if "declared-island" in path or path.startswith(silent):
                 print(f"selftest FAILED: {rule} fired on {path}", file=sys.stderr)
                 return 1
 
-    print("tree rules selftest OK: R1, R3, R4 fire exactly once and R5 once per "
+    print("tree rules selftest OK: R1, R3, R4 fire exactly once, R5 once per "
           "failing row of its table -- including an `at` of `\".\"` or a bare "
-          "name, and an ancestor that vouched but is not the endpoint's parent; "
-          "a declared island, a clean template and a declared v-lane (also "
-          "across a ref) stay silent.")
+          "name, and an ancestor that vouched but is not the endpoint's parent "
+          "-- and R6 once per template that still grows a knob; a declared "
+          "island, a clean template, a declared v-lane (also across a ref) and "
+          "a template that carries only the provider lane stay silent.")
     return 0
 
 

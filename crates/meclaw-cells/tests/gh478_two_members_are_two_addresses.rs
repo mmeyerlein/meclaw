@@ -36,7 +36,7 @@
 
 use meclaw_colony::cel_eval::{evaluate_condition, parse_condition};
 use meclaw_core::serde_json::{Map, Value, json};
-use meclaw_testing::{emit_one, shipped_script};
+use meclaw_testing::{emit_all, shipped_script};
 
 const RECIPES: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -45,17 +45,24 @@ const RECIPES: &str = concat!(
 
 /// The `add_edges` of one rendered level, as the shipped script produces them.
 fn rendered_edges(params: Value) -> Vec<Value> {
-    let out = emit_one(
+    // The FIRST manifest. Since GH #543 a member wish renders two — the level,
+    // and then the screen and the app that member always gets — and what this
+    // file is about is the level.
+    let out = emit_all(
         &shipped_script(RECIPES),
         &json!({
             "target": "/os/builder/recipes",
-            "header": {"hop": {"route": "recipe"}, "context": {}},
+            "header": {"hop": {"route": "recipe", "member_index": "0"},
+                       "context": {}},
             "ttl": 64,
             "messages": [{"origin": "tool", "type": "tool_result", "id": "",
                           "text": json!({"recipe": "grow_level", "request": "…",
                                          "params": params}).to_string()}],
         }),
-    );
+    )
+    .into_iter()
+    .find(|m| m["header"]["operation"] == json!("recipe"))
+    .expect("a first manifest");
     out["manifest"][0]["diff"]["add_edges"]
         .as_array()
         .unwrap_or_else(|| panic!("no rendered edges: {out}"))

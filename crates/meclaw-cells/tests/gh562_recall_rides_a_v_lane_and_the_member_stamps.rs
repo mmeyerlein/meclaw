@@ -224,7 +224,7 @@ fn walk(table: &EdgeTable, from: &str, headers: Headers) -> (Vec<String>, Header
 /// The request an asker inside the generation raises — the shape
 /// `collector/assemble`'s `recall_ask` builds, every key present and empty
 /// rather than absent.
-fn recall_request(call_id: &str) -> Headers {
+fn recall_request() -> Headers {
     headers(
         &[
             ("assistant", "scribe"),
@@ -237,7 +237,6 @@ fn recall_request(call_id: &str) -> Headers {
             ("route", "recall"),
             ("recall_query", "what did we decide"),
             ("memory_tier", "1"),
-            ("memory_call_id", call_id),
             ("recall_window_from", ""),
             ("recall_window_to", ""),
             ("turn_id", "S-42#7"),
@@ -397,11 +396,7 @@ fn a_recall_from_either_asker_reaches_the_hive_carrying_the_members_stamps() {
     let t = shipped_table();
 
     for (asker, token) in [("talky", "talky"), ("cogny", "cogny")] {
-        let (trace, arrived) = walk(
-            &t,
-            &format!("{GEN}/{asker}"),
-            recall_request(&format!("c-{asker}")),
-        );
+        let (trace, arrived) = walk(&t, &format!("{GEN}/{asker}"), recall_request());
         assert_eq!(
             trace.last().map(String::as_str),
             Some("/m/memory-hive/recall"),
@@ -439,7 +434,6 @@ fn a_recall_from_either_asker_reaches_the_hive_carrying_the_members_stamps() {
             "the v-lane carries the reply-to token the assistant's rim used to stamp"
         );
         assert_eq!(ctx_of(&arrived, "session_id"), "S-42");
-        assert_eq!(ctx_of(&arrived, "memory_call_id"), format!("c-{asker}"));
 
         // The road is one hop shorter, and it is the ASSISTANT's rim that fell
         // out — not the member's.
@@ -464,27 +458,22 @@ fn the_bundle_still_finds_the_asker_that_made_it() {
     // Both legs leave at once from the two occupants of ONE generation. Routing
     // is per message, so "at the same time" is exactly this: two chains, two
     // contexts, one table.
-    let (_, core_at_hive) = walk(&t, &format!("{GEN}/cogny"), recall_request("c-core"));
-    let (_, surface_at_hive) = walk(&t, &format!("{GEN}/talky"), recall_request("c-surface"));
+    let (_, core_at_hive) = walk(&t, &format!("{GEN}/cogny"), recall_request());
+    let (_, surface_at_hive) = walk(&t, &format!("{GEN}/talky"), recall_request());
 
-    let answer = |at_hive: &Headers, call_id: &str| -> Headers {
+    let answer = |at_hive: &Headers| -> Headers {
         Headers::from_parts(
             at_hive.context.clone(),
-            [
-                ("route", "bundle"),
-                ("memory_call_id", call_id),
-                ("turn_id", "S-42#7"),
-            ]
-            .iter()
-            .map(|(k, v)| ((*k).to_string(), Value::String((*v).to_string())))
-            .collect(),
+            [("route", "bundle"), ("turn_id", "S-42#7")]
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), Value::String((*v).to_string())))
+                .collect(),
         )
     };
 
     let hive_recall = format!("{HIVE}/recall");
-    let (core_trace, core_home) = walk(&t, &hive_recall, answer(&core_at_hive, "c-core"));
-    let (surface_trace, surface_home) =
-        walk(&t, &hive_recall, answer(&surface_at_hive, "c-surface"));
+    let (core_trace, core_home) = walk(&t, &hive_recall, answer(&core_at_hive));
+    let (surface_trace, surface_home) = walk(&t, &hive_recall, answer(&surface_at_hive));
 
     assert_eq!(
         core_trace.last().map(String::as_str),
@@ -498,8 +487,6 @@ fn the_bundle_still_finds_the_asker_that_made_it() {
     );
     assert_eq!(hop_of(&core_home, "route"), "in_bundle");
     assert_eq!(hop_of(&surface_home, "route"), "in_bundle");
-    assert_eq!(hop_of(&core_home, "memory_call_id"), "c-core");
-    assert_eq!(hop_of(&surface_home, "memory_call_id"), "c-surface");
     assert!(
         !core_trace.contains(&GEN.to_string()),
         "and the way back skips the generation's rim as well: {core_trace:?}"

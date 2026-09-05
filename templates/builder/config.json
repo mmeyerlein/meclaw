@@ -63,6 +63,74 @@
         },
         {
           "from": "./classify",
+          "to": "./tally",
+          "condition": "has(hop.route) && hop.route == 'count'"
+        },
+        {
+          "from": "./tally",
+          "to": "./transcript",
+          "condition": "has(hop.route) && hop.route == 'cstore'",
+          "modifier": {
+            "set_context": {
+              "store_origin": "'tally'",
+              "tally_tag": "hop.tally_tag",
+              "member_index": "hop.member_index"
+            }
+          }
+        },
+        {
+          "from": "./transcript",
+          "to": "./tally",
+          "condition": "context.store_origin == 'tally'"
+        },
+        {
+          "from": "./tally",
+          "to": "/colony/graph",
+          "condition": "has(hop.route) && hop.route == 'graph'"
+        },
+        {
+          "from": "./tally",
+          "to": "./recipes",
+          "condition": "has(hop.route) && hop.route == 'recipe'",
+          "modifier": {
+            "set_context": {
+              "build_call_id": "hop.build_call_id",
+              "agent": "hop.agent",
+              "build_op": "hop.build_op",
+              "build_scope": "hop.build_scope",
+              "build_caller": "hop.build_caller",
+              "build_auto_submit": "hop.build_auto_submit"
+            },
+            "delete_context": [
+              "store_origin",
+              "tally_tag",
+              "member_index"
+            ]
+          }
+        },
+        {
+          "from": "./tally",
+          "to": ".",
+          "condition": "has(hop.operation) && hop.operation == 'tally' && has(hop.error_code)",
+          "modifier": {
+            "set_hop": {
+              "route": "'error'"
+            },
+            "delete_context": [
+              "agent",
+              "build_id",
+              "build_op",
+              "build_scope",
+              "lib_call_id",
+              "member_index",
+              "repairs",
+              "store_origin",
+              "tally_tag"
+            ]
+          }
+        },
+        {
+          "from": "./classify",
           "to": "./brief",
           "condition": "has(hop.route) && hop.route == 'design'",
           "modifier": {
@@ -118,8 +186,10 @@
               "build_op",
               "build_scope",
               "lib_call_id",
+              "member_index",
               "repairs",
-              "store_origin"
+              "store_origin",
+              "tally_tag"
             ]
           }
         },
@@ -188,8 +258,10 @@
               "build_op",
               "build_scope",
               "lib_call_id",
+              "member_index",
               "repairs",
-              "store_origin"
+              "store_origin",
+              "tally_tag"
             ]
           }
         },
@@ -315,8 +387,10 @@
               "build_op",
               "build_scope",
               "lib_call_id",
+              "member_index",
               "repairs",
-              "store_origin"
+              "store_origin",
+              "tally_tag"
             ]
           }
         },
@@ -334,8 +408,10 @@
               "build_op",
               "build_scope",
               "lib_call_id",
+              "member_index",
               "repairs",
-              "store_origin"
+              "store_origin",
+              "tally_tag"
             ]
           }
         },
@@ -353,8 +429,10 @@
               "build_op",
               "build_scope",
               "lib_call_id",
+              "member_index",
               "repairs",
-              "store_origin"
+              "store_origin",
+              "tally_tag"
             ]
           }
         },
@@ -372,8 +450,10 @@
               "build_op",
               "build_scope",
               "lib_call_id",
+              "member_index",
               "repairs",
-              "store_origin"
+              "store_origin",
+              "tally_tag"
             ]
           }
         },
@@ -391,8 +471,10 @@
               "build_op",
               "build_scope",
               "lib_call_id",
+              "member_index",
               "repairs",
-              "store_origin"
+              "store_origin",
+              "tally_tag"
             ]
           }
         },
@@ -410,8 +492,10 @@
               "build_op",
               "build_scope",
               "lib_call_id",
+              "member_index",
               "repairs",
-              "store_origin"
+              "store_origin",
+              "tally_tag"
             ]
           }
         },

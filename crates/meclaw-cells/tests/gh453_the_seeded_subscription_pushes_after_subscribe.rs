@@ -505,7 +505,7 @@ fn main_config() -> Value {
 
 fn build_tree(td: &tempfile::TempDir, root_template: &std::path::Path, cron: &str) {
     let root = td.path();
-    std::fs::write(root.join(".env"), format!("AFFINITY_PUSH_CRON={cron}\n")).unwrap();
+    std::fs::write(root.join(".env"), "").unwrap();
     write(root, "main/config.json", &main_config());
     write(root, "main/probe/config.json", &probe_cell());
     write(root, "main/writer/config.json", &writer_cell());
@@ -515,6 +515,12 @@ fn build_tree(td: &tempfile::TempDir, root_template: &std::path::Path, cron: &st
     let mut v: Value =
         meclaw_core::serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
     v["params"]["schedules"][0]["schedule_id"] = json!("01916f00-0000-7000-8000-0000000000b5");
+    // The cadence used to come out of the `.env` through a
+    // `${AFFINITY_PUSH_CRON:-…}` token. Since GH #138 it is a literal of
+    // `./clock`'s own params, so it is written here beside the schedule_id --
+    // an `.env` line would be read by nothing at all and would say nothing
+    // about it.
+    v["params"]["schedules"][0]["cron"] = json!(cron);
     std::fs::write(p, meclaw_core::serde_json::to_string_pretty(&v).unwrap()).unwrap();
 }
 

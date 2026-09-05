@@ -43,16 +43,20 @@
           "because": "a step of this keeper that the session store did not answer (GH #343). hop.reject_reason is 'store_refused', hop.store_error carries the store's own error_code -- a free string, because the store's code list is open -- and hop.store_operation the refused op. The body names the STEP that was refused, because they do not leave the same thing standing -- at 'touch' and 'open' the stamped turn has ALREADY left in the same emission, and at 'open' the missing row makes the next turn open yet another generation. It matters because every one of these failures reads as a correct run: an unanswered lookup looks like a channel with no open session (and used to OPEN a second generation for one that had one), and an unanswered nightly sweep looks like a night with no idle channel. Drain it: undrained, a keeper that stopped keeping is indistinguishable from a quiet one Since 2.1.0 a SECOND producer takes the same lane: `./porter` refuses a transfer it would not carry out -- an export whose read failed mid-walk, or an import part whose format, schema or audience did not survive -- and names the case in the same `hop.reject_reason`. The two are told apart by the reason code, and a drain that takes the lane at all takes both (GH #471)."
         },
         {
+          "route": "export_done",
+          "because": "this keeper has written itself out completely: its table stands as `<seed_dir>/<table>.jsonl` and the completion marker `export_final.json` stands beside it, written last and by one rename, so a reader that watches the marker never meets a directory that is still filling. `hop.export_hive` names the hive, `hop.seed_dir` the directory RELATIVE to the fence the store declares (`params.transfer.base_path`), `hop.export_of` how many tables travelled and `hop.rows_written` how many rows. It replaces the walk that used to say so in `dump` parts a level four storeys up turned back into files (GH #555)"
+        },
+        {
           "route": "dump",
-          "because": "the transfer lane's output: `hop.dump_kind == 'export_part'` is one part of the exported document (`hop.export_part` of `hop.export_of`, `hop.export_final` marking the last, `hop.port_hive` naming which hive it came out of), `hop.dump_kind == 'import_receipt'` says what one applied part wrote (`hop.rows_written`). Drain it with a PLAIN `hop.route == 'dump'` edge -- an edge that also tests `dump_kind` reads as no drain under the required_drains probe. Undrained, an export runs and reaches nobody"
+          "because": "the receipt of one applied import part: `hop.rows_written` counts the inserts it dispatched, so zero means the target already had every row, and `hop.export_part` of `hop.export_of` locates it in the document and `hop.export_final` marks the last one. Since 0.30.0 the lane carries NOTHING ELSE -- an export writes its own files and reports on `export_done` (GH #555), so the `dump_kind` key that told the two apart is gone with the distinction. Drain it with a PLAIN `hop.route == 'dump'` edge -- an edge that tests a second key reads as no drain under the required_drains probe"
         }
       ]
     },
     "required_drains": [
       {
         "accepts": "in_export",
-        "emits": "dump",
-        "because": "the export IS the dump lane -- wired without it, the walk runs, reads the whole store and delivers the document to nobody"
+        "emits": "export_done",
+        "because": "the export IS this lane -- wired without it, the store writes its seed set and nobody is ever told where, or that it finished at all"
       },
       {
         "accepts": "in_export",
@@ -234,6 +238,23 @@
             "set_context": {
               "port_phase": "context.port_phase"
             }
+          }
+        },
+        {
+          "from": "./porter",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'export_done'",
+          "modifier": {
+            "delete_context": [
+              "keeper_audience",
+              "keeper_body",
+              "keeper_session",
+              "port_phase",
+              "port_run",
+              "port_table",
+              "ses_phase",
+              "store_origin"
+            ]
           }
         },
         {

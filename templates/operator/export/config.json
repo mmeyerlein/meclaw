@@ -4,7 +4,7 @@
   },
   "params": {
     "runner": "python3",
-    "script_inline": "\nimport sys, json\n\n# The operator's export occupant: the trigger for an export, from the OS side.\n#\n# It owns no format and holds no dump. What leaves here is an ADDRESS on the\n# `export` lane, carrying `hop.target`; the level below re-stamps it onto the\n# lane the memory accepts -- `{route: 'in_export', target: <member path>}` --\n# and relays it unchanged from there. The file is written where the memory is;\n# only the ASKING is the operator's.\n\ndoc = json.load(sys.stdin)\nenv = doc[\"envelope\"]\nhop = (env.get(\"header\") or {}).get(\"hop\") or {}\nbody = doc[\"body\"]\n\nCALL_ID = str(hop.get(\"tool_call_id\") or \"\")\n\n\ndef receipt(text, code=\"\", extra=None):\n    header = {\"route\": \"receipt\", \"operation\": \"operator_export\"}\n    if code:\n        header[\"error_code\"] = code\n    if CALL_ID:\n        header[\"tool_call_id\"] = CALL_ID\n    header.update(extra or {})\n    sys.stdout.write(json.dumps({\n        \"header\": header,\n        \"messages\": [{\"origin\": \"tool\", \"type\": \"tool_result\", \"id\": CALL_ID,\n                      \"text\": text}]}))\n    sys.exit(0)\n\n\ndef args_of(d):\n    \"\"\"The request, out of the last `tool_call` turn, or off the hop.\"\"\"\n    raw = \"\"\n    for m in (d.get(\"messages\") or []):\n        if m.get(\"type\") == \"tool_call\" and m.get(\"text\"):\n            raw = m[\"text\"]\n    try:\n        v = json.loads(raw)\n    except Exception:\n        v = None\n    return v if isinstance(v, dict) else {}\n\n\n# ---- What came back from below. It is rendered rather than forwarded: an\n# operator asked a question and is owed a sentence, not a lane.\nif str(hop.get(\"route\") or \"\") == \"export_done\":\n    said = \"\"\n    for m in (body.get(\"messages\") or []):\n        if m.get(\"text\"):\n            said = str(m[\"text\"])\n    code = str(hop.get(\"error_code\") or \"\")\n    extra = {}\n    for key in (\"target\", \"part\", \"parts\", \"dump_kind\"):\n        if hop.get(key) is not None:\n            extra[key] = hop[key]\n    if code:\n        text = \"the export was refused: %s\" % code\n        if said:\n            text += \" -- \" + said[:600]\n    else:\n        text = said or \"the export answered without a sentence\"\n    receipt(text, code, extra)\n\n# ---- The trigger.\nargs = args_of(body)\ntarget = str(args.get(\"target\") or hop.get(\"target\") or \"\")\nif not target:\n    # Fail loudly rather than broadcast. An export with no address would be a\n    # request every memory in the colony could believe was meant for it.\n    receipt(\"in_dump needs a target: the path of the member whose memory is \"\n            \"to be exported\", \"export_target_missing\")\n\nheader = {\"route\": \"export\", \"operation\": \"operator_export\",\n          \"target\": target}\nif CALL_ID:\n    header[\"tool_call_id\"] = CALL_ID\nfor key in (\"dump_kind\", \"since\"):\n    if args.get(key) is not None:\n        header[key] = args[key]\nsys.stdout.write(json.dumps({\"header\": header, \"messages\": []}))\n",
+    "script_inline": "\nimport sys, json\n\n# The operator's export occupant: the trigger for an export, from the OS side.\n#\n# It owns no format and holds no dump. What leaves here is an ADDRESS on the\n# `export` lane, carrying `hop.target`; the level below re-stamps it onto the\n# lane the memory accepts -- `{route: 'in_export', target: <member path>}` --\n# and relays it unchanged from there. The file is written where the memory is;\n# only the ASKING is the operator's.\n#\n# Since GH #555 the request may carry a second address, and it is passed through\n# exactly like the first: `export_to` names the DIRECTORY of one run, relative\n# to the fence each holder's store declares for itself\n# (`params.transfer.base_path`). Under it every holder keeps a directory of its\n# own name, so two hives that both have a table called `entities` never meet.\n# Absent, each holder writes into its own name directly. This cell does not\n# resolve it, does not check it and never sees the file: a path this side\n# canonicalised would be a claim about a filesystem the operator does not\n# stand on.\n\ndoc = json.load(sys.stdin)\nenv = doc[\"envelope\"]\nhop = (env.get(\"header\") or {}).get(\"hop\") or {}\nbody = doc[\"body\"]\n\nCALL_ID = str(hop.get(\"tool_call_id\") or \"\")\n\n\ndef receipt(text, code=\"\", extra=None):\n    header = {\"route\": \"receipt\", \"operation\": \"operator_export\"}\n    if code:\n        header[\"error_code\"] = code\n    if CALL_ID:\n        header[\"tool_call_id\"] = CALL_ID\n    header.update(extra or {})\n    sys.stdout.write(json.dumps({\n        \"header\": header,\n        \"messages\": [{\"origin\": \"tool\", \"type\": \"tool_result\", \"id\": CALL_ID,\n                      \"text\": text}]}))\n    sys.exit(0)\n\n\ndef args_of(d):\n    \"\"\"The request, out of the last `tool_call` turn, or off the hop.\"\"\"\n    raw = \"\"\n    for m in (d.get(\"messages\") or []):\n        if m.get(\"type\") == \"tool_call\" and m.get(\"text\"):\n            raw = m[\"text\"]\n    try:\n        v = json.loads(raw)\n    except Exception:\n        v = None\n    return v if isinstance(v, dict) else {}\n\n\n# ---- What came back from below. It is rendered rather than forwarded: an\n# operator asked a question and is owed a sentence, not a lane.\nif str(hop.get(\"route\") or \"\") == \"export_done\":\n    said = \"\"\n    for m in (body.get(\"messages\") or []):\n        if m.get(\"text\"):\n            said = str(m[\"text\"])\n    code = str(hop.get(\"error_code\") or \"\")\n    extra = {}\n    for key in (\"target\", \"part\", \"parts\", \"export_hive\", \"seed_dir\"):\n        if hop.get(key) is not None:\n            extra[key] = hop[key]\n    if code:\n        text = \"the export was refused: %s\" % code\n        if said:\n            text += \" -- \" + said[:600]\n    else:\n        text = said or \"the export answered without a sentence\"\n    receipt(text, code, extra)\n\n# ---- The trigger.\nargs = args_of(body)\ntarget = str(args.get(\"target\") or hop.get(\"target\") or \"\")\nif not target:\n    # Fail loudly rather than broadcast. An export with no address would be a\n    # request every memory in the colony could believe was meant for it.\n    receipt(\"in_dump needs a target: the path of the member whose memory is \"\n            \"to be exported\", \"export_target_missing\")\n\nheader = {\"route\": \"export\", \"operation\": \"operator_export\",\n          \"target\": target}\nif CALL_ID:\n    header[\"tool_call_id\"] = CALL_ID\nfor key in (\"since\", \"export_to\"):\n    if args.get(key) is not None:\n        header[key] = args[key]\nsys.stdout.write(json.dumps({\"header\": header, \"messages\": []}))\n",
     "external_timeout_ms": 10000,
     "sandbox": {
       "trust": "restricted",
@@ -44,10 +44,6 @@
           "type": "string",
           "required": false
         },
-        "dump_kind": {
-          "type": "string",
-          "required": false
-        },
         "since": {
           "type": "string",
           "required": false
@@ -57,6 +53,18 @@
           "required": false
         },
         "error_code": {
+          "type": "string",
+          "required": false
+        },
+        "export_to": {
+          "type": "string",
+          "required": false
+        },
+        "export_hive": {
+          "type": "string",
+          "required": false
+        },
+        "seed_dir": {
           "type": "string",
           "required": false
         }
@@ -78,12 +86,13 @@
     "purpose": "The trigger for an export, from the OS side: it turns `{target: <member path>}` into a message on the lane the memory that has to answer accepts, and renders what comes back into one sentence.",
     "use_when": "Reached only through this hive's `in_dump` door. The export itself is written where the memory stands; what happens here is the ASKING.",
     "not_in_scope": "No dump, no format, no file and no store. It owns no part of what an export produces -- a cell that assembled one here would have made the colony operator's decision about where the record lives.",
-    "emits_meaning": "route export: the request, carrying `hop.target` -- the path of the member whose memory is to be exported. The level below re-stamps it onto `in_export` and relays it unchanged; nothing here knows the shape of the memory it is addressing. route receipt: what the export answered, or the refusal that it named no target.",
-    "consumes_meaning": "The request as a tool_call turn: `{target, dump_kind?, since?}`. `hop.target` is read as a fallback, so an edge may address a member without a body.",
+    "emits_meaning": "route export: the request, carrying `hop.target` -- the path of the member whose memory is to be exported -- and, when the caller named one, `hop.export_to`, the directory of this run relative to the fence each holder's store declares (GH #555). The level below re-stamps it onto `in_export` and relays it unchanged; nothing here knows the shape of the memory it is addressing. route receipt: what the export answered, or the refusal that it named no target.",
+    "consumes_meaning": "The request as a tool_call turn: `{target, export_to?, since?}`. `hop.target` is read as a fallback, so an edge may address a member without a body.",
     "examples": [
       "in_dump {target: '/os/orgs/acme/members/alex'} -> export, hop.target set, one message down",
       "in_dump with no target -> receipt, hop.error_code 'export_target_missing' -- an export with no address is a request every memory could believe was meant for it",
-      "export_done with hop.error_code -> receipt naming the code"
+      "export_done with hop.error_code -> receipt naming the code",
+      "in_dump {target: '/os/orgs/acme/members/alex', export_to: 'nightly-2026-09-04'} -> export, hop.export_to set; each holder writes <fence>/nightly-2026-09-04/<hive>/seed/"
     ]
   }
 }

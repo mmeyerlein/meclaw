@@ -535,53 +535,16 @@ fn the_pair_counts_towards_the_curator_budget() {
     );
 }
 
-// ══════════════════════════════════════ 5. THE EXPLICIT PATH IS UNTOUCHED
-
-/// Only the AMBIENT leg moves. A bundle that answers a `memory_recall` the
-/// model itself emitted still comes back under the ORIGINAL `tool_call_id`
-/// (GH #78) and gets no synthetic pair of its own — two results for one call is
-/// a malformed round, and a second call nobody made is a lie about the turn.
-#[test]
-fn a_model_initiated_memory_recall_still_answers_under_its_own_call_id() {
-    let out = emit_with(
-        &[("memory_tier", "0")],
-        lane_doc(
-            "in_bundle",
-            &[("memory_call_id", "call_abc123")],
-            bundle_body(AS_OF, QUERY, READABLE),
-        ),
-    );
-    assert_eq!(
-        out.len(),
-        1,
-        "the answer to the call and nothing else -- a bundle with a call id is \
-         a RESULT of the running round, never the ambient leg of the turn: {out:?}"
-    );
-
-    let op: serde_json::Value =
-        serde_json::from_str(out[0]["messages"][0]["text"].as_str().expect("op text"))
-            .expect("op json");
-    assert_eq!(op["table"], "round");
-    assert_eq!(op["row"]["role"], "tool");
-    let turn: serde_json::Value =
-        serde_json::from_str(op["row"]["turn"].as_str().expect("turn text")).expect("turn json");
-    assert_eq!(
-        turn["id"], "call_abc123",
-        "the answer keeps the id the model asked under: {out:?}"
-    );
-    assert_eq!(turn["type"], "tool_result");
-    assert!(
-        !turn["id"]
-            .as_str()
-            .unwrap_or_default()
-            .starts_with("call_recall_"),
-        "the explicit path does not get a synthetic id: {out:?}"
-    );
-    assert_eq!(
-        turn["text"], READABLE,
-        "and it carries the bundle in the configured form, as before: {out:?}"
-    );
-}
+// ═════════════════════ 5. THE EXPLICIT PATH LEFT THIS CELL ENTIRELY (GH #552)
+//
+// A bundle that answered a `memory_recall` the MODEL emitted used to come back
+// on this same lane, told apart by `context.memory_call_id`, and was filed as a
+// result of the running round under the original `tool_call_id`. Both halves of
+// that live in the memory hive now — it declares the tool, answers the call, and
+// hands back an ordinary `tool_result` on `in_tool` — so this lane has one
+// meaning again and nothing here has to tell two apart.
+// `crates/meclaw-cells/tests/gh552_the_memory_hive_declares_the_recall_it_answers.rs`
+// measures the road that replaced it.
 
 // ═════════════════════════════ 6. THE TRACE DOES NOT RIDE INTO THE PROMPT
 

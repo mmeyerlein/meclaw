@@ -295,13 +295,18 @@ fn the_member_stamps_the_outside_asker_at_its_own_door() {
         "the door STAMPS the token, it does not carry what the caller sent: the value space of \
          `recall_caller` at this boundary is this level's, and a token only written when it is \
          missing is inherited from whatever chain last set it (ADR-0019). An outside caller with \
-         askers of its own tells its rounds apart on `hop.memory_call_id`, which this same door \
-         promotes"
+         askers of its own tells its rounds apart on a hop key of its own, which rides through \
+         this hive untouched"
     );
+    // A `memory_call_id` was promoted here until GH #552, because the shipped
+    // collector served `memory_recall` itself and told a called bundle apart from
+    // the ambient leg by it. Both halves live in the memory hive now, so this
+    // lane has one meaning again and the door promotes no correlation at all.
     assert!(
-        m.set_context.contains_key("memory_call_id"),
-        "…and that correlation key has to survive the hive, so the door promotes it into context \
-         (GH #411)"
+        !m.set_context.contains_key("memory_call_id"),
+        "the `in_query` lane has ONE meaning since GH #552 — a question — and the hive's own \
+         `bundle` exit branches on exactly this key to tell a tool round from the ambient one: \
+         a member door that set it would send every outside question through the adapter"
     );
 }
 
@@ -436,14 +441,13 @@ fn the_shipped_recipes_draw_the_drain_they_owe() {
 /// The shape an outside asker sends: the recall keys the member's door reads,
 /// and the round it is asking in. Nothing names a generation — that is the
 /// whole point of the lane.
-fn outside_recall(call_id: &str) -> Headers {
+fn outside_recall() -> Headers {
     headers(
         &[("audience_set", "[\"alex\"]"), ("channel", "chat:1")],
         &[
             ("route", "in_recall"),
             ("recall_query", "what did we decide"),
             ("memory_tier", "1"),
-            ("memory_call_id", call_id),
             ("recall_window_from", ""),
             ("recall_window_to", ""),
         ],
@@ -468,7 +472,7 @@ fn hive_answer(at_hive: &Headers, route: &str, extra: &[(&str, &str)]) -> Header
 #[test]
 fn a_question_from_outside_reaches_the_memory_carrying_the_levels_own_token() {
     let t = shipped_table();
-    let (trace, arrived) = walk(&t, OS, outside_recall("c-outside-1"));
+    let (trace, arrived) = walk(&t, OS, outside_recall());
     assert_eq!(
         trace.last().map(String::as_str),
         Some(RECALL),
@@ -480,7 +484,6 @@ fn a_question_from_outside_reaches_the_memory_carrying_the_levels_own_token() {
         "outside",
         "and it arrives stamped as the third value of the reply-to token"
     );
-    assert_eq!(ctx_of(&arrived, "memory_call_id"), "c-outside-1");
     assert_eq!(ctx_of(&arrived, "audience_now"), "[\"alex\"]");
     assert_eq!(hop_of(&arrived, "route"), "in_query");
 }
@@ -488,13 +491,9 @@ fn a_question_from_outside_reaches_the_memory_carrying_the_levels_own_token() {
 #[test]
 fn the_bundle_leaves_the_member_and_the_two_levels_above_it() {
     let t = shipped_table();
-    let (_, at_hive) = walk(&t, OS, outside_recall("c-outside-2"));
+    let (_, at_hive) = walk(&t, OS, outside_recall());
 
-    let (trace, home) = walk(
-        &t,
-        RECALL,
-        hive_answer(&at_hive, "bundle", &[("memory_call_id", "c-outside-2")]),
-    );
+    let (trace, home) = walk(&t, RECALL, hive_answer(&at_hive, "bundle", &[]));
     assert_eq!(
         trace.last().map(String::as_str),
         Some(OS),
@@ -515,18 +514,15 @@ fn the_bundle_leaves_the_member_and_the_two_levels_above_it() {
         "outside",
         "carrying the token that addressed it, which no level in between reads"
     );
-    assert_eq!(
-        hop_of(&home, "memory_call_id"),
-        "c-outside-2",
-        "and the caller's own correlation id, which is how a caller with several askers of its \
-         own tells its rounds apart"
-    );
+    // The caller's own correlation key rides on the hop, untouched by every level
+    // it passes: `recall_caller` is what this road addresses by, and the id a
+    // caller with several askers of its own uses is that caller's business.
 }
 
 #[test]
 fn a_refusal_of_an_outside_question_comes_home_the_same_way() {
     let t = shipped_table();
-    let (_, at_hive) = walk(&t, OS, outside_recall("c-outside-3"));
+    let (_, at_hive) = walk(&t, OS, outside_recall());
 
     let (trace, home) = walk(
         &t,

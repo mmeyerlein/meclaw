@@ -4,7 +4,7 @@
     "add_nodes": [
       {
         "name": "alex",
-        "template": "member@1.5.1"
+        "template": "member@1.6.0"
       }
     ],
     "add_edges": [
@@ -37,6 +37,11 @@
         "from": ".",
         "to": "./alex",
         "condition": "has(hop.route) && hop.route == 'in_export' && (!has(context.member) || context.member == 'alex')"
+      },
+      {
+        "from": ".",
+        "to": "./alex",
+        "condition": "has(hop.route) && hop.route == 'mutation_committed' && (!has(context.member) || context.member == 'alex')"
       },
       {
         "from": "./alex",
@@ -92,6 +97,11 @@
         "from": "./alex",
         "to": ".",
         "condition": "has(hop.route) && hop.route == 'export_done'"
+      },
+      {
+        "from": "./alex",
+        "to": ".",
+        "condition": "has(hop.route) && hop.route == 'dump'"
       },
       {
         "from": "./alex",

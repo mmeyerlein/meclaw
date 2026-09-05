@@ -26,43 +26,18 @@ fn config_of(rel: &str) -> serde_json::Value {
     serde_json::from_str(&raw).expect("config json")
 }
 
-/// `${VAR:-default}` becomes the default (or the override, when the case names
-/// one), a bare `${VAR}` becomes the empty string -- the same substitution the
-/// colony performs when it instantiates the template.
-fn resolve_vars(script: &str, over: &[(&str, &str)]) -> String {
-    let mut out = String::with_capacity(script.len());
-    let mut rest = script;
-    while let Some(start) = rest.find("${") {
-        out.push_str(&rest[..start]);
-        let tail = &rest[start + 2..];
-        let end = tail
-            .find('}')
-            .expect("unterminated ${...} in script_inline");
-        let inner = &tail[..end];
-        let (name, default) = match inner.split_once(":-") {
-            Some((n, d)) => (n, d),
-            None => (inner, ""),
-        };
-        let value = over
-            .iter()
-            .find(|(k, _)| *k == name)
-            .map(|(_, v)| *v)
-            .unwrap_or(default);
-        out.push_str(value);
-        rest = &tail[end + 1..];
-    }
-    out.push_str(rest);
-    out
-}
-
-fn script_of(cell: &str, over: &[(&str, &str)]) -> String {
-    let v = config_of(&format!("{cell}/config.json"));
-    resolve_vars(
-        v["params"]["script_inline"]
-            .as_str()
-            .expect("script_inline"),
-        over,
-    )
+/// The shipped script, verbatim.
+///
+/// There is nothing left to substitute: since `session-keeper@2.2.0` the two
+/// knobs of `./close` are params of that cell rather than substitution tokens
+/// (GH #138), so a case that wants a different idle window hands one down on the
+/// stdin document's `params` object -- the same object an `override_params`
+/// entry fills at instantiation.
+fn script_of(cell: &str) -> String {
+    config_of(&format!("{cell}/config.json"))["params"]["script_inline"]
+        .as_str()
+        .expect("script_inline")
+        .to_string()
 }
 
 /// Run a shipped script over a real stdin document, handing the script to
@@ -102,9 +77,14 @@ fn run_script_on_stdin(script: &str, stdin_doc: &str) -> std::process::Output {
 
 /// Run the real script against a real stdin document and return the emitted
 /// messages.
-fn emit_with(cell: &str, over: &[(&str, &str)], doc: serde_json::Value) -> Vec<serde_json::Value> {
+fn emit_with(
+    cell: &str,
+    params: serde_json::Value,
+    mut doc: serde_json::Value,
+) -> Vec<serde_json::Value> {
+    doc["params"] = params;
     let out = run_script_on_stdin(
-        &script_of(cell, over),
+        &script_of(cell),
         &meclaw_testing::code_stdin(&doc).to_string(),
     );
     assert!(
@@ -121,7 +101,7 @@ fn emit_with(cell: &str, over: &[(&str, &str)], doc: serde_json::Value) -> Vec<s
 }
 
 fn stamp(doc: serde_json::Value) -> Vec<serde_json::Value> {
-    emit_with("stamp", &[], doc)
+    emit_with("stamp", serde_json::json!({}), doc)
 }
 
 /// The store args of an emitted `kstore` message.
@@ -397,12 +377,12 @@ fn a_finished_step_is_terminal() {
 
 // =================================================================== THE CLOSE
 
-fn close_with(over: &[(&str, &str)], doc: serde_json::Value) -> Vec<serde_json::Value> {
-    emit_with("close", over, doc)
+fn close_with(params: serde_json::Value, doc: serde_json::Value) -> Vec<serde_json::Value> {
+    emit_with("close", params, doc)
 }
 
 fn close(doc: serde_json::Value) -> Vec<serde_json::Value> {
-    close_with(&[], doc)
+    close_with(serde_json::json!({}), doc)
 }
 
 /// A firing as the timer delivers it: the auto headers of the schedule, no
@@ -437,17 +417,17 @@ fn the_night_sweep_asks_only_for_the_channels_that_fell_silent() {
         op["where"]["closed"], 0,
         "a sealed generation is not a candidate"
     );
-    assert_eq!(op["limit"], 50, "KEEPER_CLOSE_LIMIT default");
+    assert_eq!(op["limit"], 50, "the shipped `close_limit`");
     // The idle rule is arithmetic: the cutoff is now minus the threshold, and
     // "older than the cutoff" runs in the store as a lexicographic `lt`.
     let cutoff = op["where"]["last_seen"]["lt"].as_str().expect("lt cutoff");
     let back = seconds_back(cutoff);
     assert!(
         (7100..=7300).contains(&back),
-        "KEEPER_IDLE_MS default is two hours, got {back}s back"
+        "the shipped `idle_ms` is two hours, got {back}s back"
     );
 
-    let out = close_with(&[("KEEPER_IDLE_MS", "600000")], firing());
+    let out = close_with(serde_json::json!({"idle_ms": 600000}), firing());
     let cutoff = op_of(&out[0])["where"]["last_seen"]["lt"]
         .as_str()
         .expect("lt cutoff")
@@ -735,7 +715,10 @@ fn the_night_schedule_is_declared_in_utc_and_lands_on_the_local_night() {
     // The timer computes in UTC -- always, everywhere, no zone parameter
     // exists. So the shipped default is the UTC IMAGE of the local night, and
     // the README does the sum for the other half of the year.
-    let cron = resolve_vars(sched["cron"].as_str().expect("cron"), &[]);
+    // A literal since `session-keeper@2.2.0`, not a `${KEEPER_NIGHT_CRON:-…}`
+    // token: the schedule is a param of this timer now (GH #138), which is what
+    // makes it addressable by an `override_params` entry naming `schedules`.
+    let cron = sched["cron"].as_str().expect("cron").to_string();
     let parser = croner::parser::CronParser::builder()
         .seconds(croner::parser::Seconds::Required)
         .build();
@@ -783,7 +766,7 @@ fn the_night_schedule_is_declared_in_utc_and_lands_on_the_local_night() {
 fn the_close_pass_is_arithmetic_and_never_deletes() {
     // R-OS-3: no counselor, no model, no "is the conversation over?" call --
     // and No-Delete all the way down. A closed generation keeps its row.
-    let script = script_of("close", &[]);
+    let script = script_of("close");
     for forbidden in ["\"delete\"", "route\": \"brain", "llm"] {
         assert!(
             !script.contains(forbidden),
@@ -940,9 +923,18 @@ fn main_config() -> Value {
     ]}}})
 }
 
-fn build_tree(td: &tempfile::TempDir, env: &str) {
+/// The tree, with `idle_ms` for `./close` or `None` for the shipped two hours.
+///
+/// That knob was an environment line here until GH #138. It is a param of
+/// `./close` now, so such a line would be read by NOTHING -- and a sweep that
+/// silently kept the shipped two hours would find no candidate, leaving this
+/// test waiting for a close that cannot come. Patching the copied config is
+/// exactly what an `override_params` entry does to a tree booted from disk: the
+/// mutation door writes the same key into the same file
+/// (`patch_and_substitute_config`).
+fn build_tree(td: &tempfile::TempDir, idle_ms: Option<i64>) {
     let root = td.path();
-    std::fs::write(root.join(".env"), env).unwrap();
+    std::fs::write(root.join(".env"), "").unwrap();
     write(root, "main/config.json", &main_config());
     let template =
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../templates/session-keeper");
@@ -954,6 +946,13 @@ fn build_tree(td: &tempfile::TempDir, env: &str) {
     night["params"]["schedules"][0]["schedule_id"] = json!(SCHEDULE_ID);
     night["params"]["schedules"][0]["cron"] = json!(NEVER);
     std::fs::write(&night_path, serde_json::to_string_pretty(&night).unwrap()).unwrap();
+    if let Some(ms) = idle_ms {
+        let close_path = root.join("main/session-keeper/close/config.json");
+        let mut close: Value =
+            serde_json::from_str(&std::fs::read_to_string(&close_path).unwrap()).unwrap();
+        close["params"]["idle_ms"] = json!(ms);
+        std::fs::write(&close_path, serde_json::to_string_pretty(&close).unwrap()).unwrap();
+    }
     write(root, "main/probe/config.json", &code_cell(PROBE, &["turn"]));
     write(
         root,
@@ -1087,7 +1086,7 @@ async fn await_close_pass(td: &tempfile::TempDir, n: i64) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn every_turn_of_a_call_carries_the_same_session_id() {
     let td = tempfile::TempDir::new().unwrap();
-    build_tree(&td, "");
+    build_tree(&td, None);
     let (h, mut sink_rx, _park_rx) = boot(&td).await;
 
     let a1 = say(&h, &mut sink_rx, "tg:42", "my editor is helix").await;
@@ -1114,7 +1113,7 @@ async fn a_firing_on_a_channel_that_just_spoke_closes_nothing() {
     let td = tempfile::TempDir::new().unwrap();
     // The shipped idle threshold: two hours of silence. The channel spoke
     // milliseconds ago, so the night finds nothing to end.
-    build_tree(&td, "");
+    build_tree(&td, None);
     let (h, mut sink_rx, mut park_rx) = boot(&td).await;
 
     let sid = say(&h, &mut sink_rx, "tg:42", "still talking").await;
@@ -1141,7 +1140,7 @@ async fn an_idle_channel_is_closed_once_and_reopens_on_the_next_turn() {
     // Zero idle time: every channel counts as silent the moment the sweep runs.
     // The threshold is the only difference to the test above -- everything else
     // about the tree, the wiring and the traffic is identical.
-    build_tree(&td, "KEEPER_IDLE_MS=0\n");
+    build_tree(&td, Some(0));
     let (h, mut sink_rx, mut park_rx) = boot(&td).await;
 
     let sid = say(&h, &mut sink_rx, "tg:42", "good night").await;

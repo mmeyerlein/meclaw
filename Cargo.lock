@@ -1545,7 +1545,7 @@ dependencies = [
 
 [[package]]
 name = "meclaw"
-version = "0.29.0"
+version = "0.30.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1555,7 +1555,7 @@ dependencies = [
 
 [[package]]
 name = "meclaw-api"
-version = "0.29.0"
+version = "0.30.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1575,7 +1575,7 @@ dependencies = [
 
 [[package]]
 name = "meclaw-cells"
-version = "0.29.0"
+version = "0.30.0"
 dependencies = [
  "argon2",
  "axum",
@@ -1605,7 +1605,7 @@ dependencies = [
 
 [[package]]
 name = "meclaw-cli"
-version = "0.29.0"
+version = "0.30.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1628,7 +1628,7 @@ dependencies = [
 
 [[package]]
 name = "meclaw-colony"
-version = "0.29.0"
+version = "0.30.0"
 dependencies = [
  "cel",
  "meclaw-core",
@@ -1645,7 +1645,7 @@ dependencies = [
 
 [[package]]
 name = "meclaw-core"
-version = "0.29.0"
+version = "0.30.0"
 dependencies = [
  "jsonschema",
  "serde",
@@ -1656,14 +1656,14 @@ dependencies = [
 
 [[package]]
 name = "meclaw-surface"
-version = "0.29.0"
+version = "0.30.0"
 dependencies = [
  "meclaw-core",
 ]
 
 [[package]]
 name = "meclaw-testing"
-version = "0.29.0"
+version = "0.30.0"
 dependencies = [
  "futures-util",
  "meclaw-colony",

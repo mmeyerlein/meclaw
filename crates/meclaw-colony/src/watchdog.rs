@@ -23,6 +23,27 @@
 //! whose witness failed the same test is not evidence about the colony, and it
 //! never ends the process.
 
+/// How many beats the colony→supervisor heartbeat channel buffers (GH #571).
+///
+/// The channel shipped at 8. The loop emits three beats per handled event — the
+/// top of the iteration, the `Parked` before the `select!`, the arm's own
+/// declaration — and the supervisor drains it once per `watchdog_period_ms`,
+/// so a burst of a handful of events filled it inside a few milliseconds. Every
+/// beat after that was dropped by `try_send`, and what survived in the buffer was
+/// the OLDEST word, not the newest: a loop that had just said `Working` was read
+/// as one whose last word was `Parked`. `in_flight_work` came out false, the trip
+/// said `starved=colony_loop`, and that verdict ends the process under the
+/// shipped `watchdog_on_trip = exit`. A talking loop was killed for being silent.
+///
+/// 256 buffers the bursts a real colony produces — a timer tick that fans out
+/// across a member's cells, a mutation instantiating a subtree — while staying
+/// small enough to be irrelevant in memory (a `Beat` is a discriminant plus, in
+/// the labelled case, one `Arc<str>` word). It is a constant, not a
+/// `colony.json` knob: nothing an operator can usefully tune, and a channel that
+/// can be configured too small is the same defect with a config file in front of
+/// it.
+pub const HEARTBEAT_CAPACITY: usize = 256;
+
 /// What the colony loop says about itself when it beats (GH #165).
 ///
 /// The pre-#165 heartbeat was a bare `()`: it proved that an iteration had
@@ -1702,5 +1723,77 @@ mod tests {
             "the loop's last word was `Parked`: {trip:?}"
         );
         drop(hb_tx);
+    }
+
+    /// GH #571 — the shipped heartbeat capacity carries a burst without losing
+    /// the phase the loop is actually in.
+    ///
+    /// The loop declares three phases per handled event: the top-of-iteration
+    /// `Working`, the `Parked` before the `select!`, and the arm's own `Working`.
+    /// `beat` is a `try_send`, so once the channel is full every further
+    /// declaration is silently dropped — and what survives in the buffer is the
+    /// OLDEST word, not the newest. At the capacity the substrate shipped with
+    /// that is eight beats, less than three events: a loop in the middle of a
+    /// burst was read as one whose last word had been `Parked`. That reading is
+    /// `in_flight_work == false` (see [`run_watchdog`], which keeps exactly the
+    /// last phase it drained), the trip then says `starved=colony_loop`, and that
+    /// verdict ends the process under the shipped `watchdog_on_trip = exit`. It
+    /// is how a colony that was talking got killed for being silent at the top of
+    /// every minute.
+    ///
+    /// Both halves are asserted: the old capacity to show the mechanism is real,
+    /// [`HEARTBEAT_CAPACITY`] to show the shipped one carries the burst. The
+    /// second half is what a future change to the constant is measured against.
+    #[test]
+    fn the_shipped_heartbeat_capacity_carries_a_burst_of_declarations() {
+        /// Events in the burst — the fan-out order of magnitude of one timer tick
+        /// across a member's cells.
+        const BURST_EVENTS: usize = 60;
+
+        /// One handled event, declared the way the colony loop declares it.
+        fn declare_one_event(tx: &Option<tokio::sync::mpsc::Sender<Beat>>) {
+            crate::colony::beat(tx, Beat::Working);
+            crate::colony::beat(tx, Beat::Parked);
+            crate::colony::beat(tx, Beat::Working);
+        }
+
+        /// What the supervisor takes away from the channel: it drains everything
+        /// buffered in the period and keeps the LAST phase, with a labelled beat
+        /// normalised to `Working` exactly as [`run_watchdog`] normalises it.
+        fn last_phase_seen(rx: &mut tokio::sync::mpsc::Receiver<Beat>) -> Option<Beat> {
+            let mut last = None;
+            while let Ok(b) = rx.try_recv() {
+                last = Some(match b {
+                    Beat::WorkingOn(_) => Beat::Working,
+                    other => other,
+                });
+            }
+            last
+        }
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Beat>(8);
+        let shipped_before = Some(tx);
+        for _ in 0..BURST_EVENTS {
+            declare_one_event(&shipped_before);
+        }
+        assert_eq!(
+            last_phase_seen(&mut rx),
+            Some(Beat::Parked),
+            "eight slots hold less than three events, so the supervisor is left \
+             on a phase the loop left long ago — the defect GH #571 measured"
+        );
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Beat>(HEARTBEAT_CAPACITY);
+        let shipped = Some(tx);
+        for _ in 0..BURST_EVENTS {
+            declare_one_event(&shipped);
+        }
+        assert_eq!(
+            last_phase_seen(&mut rx),
+            Some(Beat::Working),
+            "the shipped capacity must carry a burst of {BURST_EVENTS} events \
+             ({} beats) so the supervisor reads the phase the loop is in",
+            BURST_EVENTS * 3
+        );
     }
 }

@@ -267,11 +267,6 @@ const QUIET_CRON: &str = "0 0 4 * * *";
 
 fn build_tree(td: &tempfile::TempDir, root_template: &std::path::Path) {
     let root = td.path();
-    std::fs::write(
-        root.join(".env"),
-        format!("ACCESS_SWEEP_CRON={QUIET_CRON}\n"),
-    )
-    .unwrap();
     write(root, "main/config.json", &main_config());
     write(
         root,
@@ -299,8 +294,13 @@ fn build_tree(td: &tempfile::TempDir, root_template: &std::path::Path) {
         &code_cell(PROBE, &["pstore"], json!({})),
     );
     copy_cells(root_template, &root.join("main/access"));
+    // The quiet tick is a PARAM since GH #138, not an `ACCESS_SWEEP_CRON` line
+    // in a `.env`: a hand-assembled tree has no mutation to carry
+    // `override_params`, so it is written where a mutation would have merged
+    // it. The old line would have gone on being read by nothing.
     patch(root, "main/access/clock/config.json", |v| {
         v["params"]["schedules"][0]["schedule_id"] = json!("01916f00-0000-7000-8000-0000000000ac");
+        v["params"]["schedules"][0]["cron"] = json!(QUIET_CRON);
     });
 }
 

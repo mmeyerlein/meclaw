@@ -40,7 +40,11 @@ const KNOBS: &[(&str, &str)] = &[
     ("memory_chars", "_int"),
     ("memory_tier", "_str"),
     ("memory_form", "_str"),
-    ("memory_call_tier", "_str"),
+    // `memory_call_tier` stood here until GH #552. It was the tier of the memory
+    // TOOL, and the tool is not this cell's any more: the member's memory hive
+    // declares the name and answers the call, with a tier of its own on the cell
+    // that serves it. The AMBIENT leg above is what is left, and it keeps its own
+    // three knobs.
     ("max_iter", "_int"),
     ("round_idle_ms", "_int"),
     ("prune_after_ms", "_int"),

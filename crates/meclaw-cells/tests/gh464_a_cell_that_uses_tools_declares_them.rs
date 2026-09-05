@@ -138,10 +138,6 @@ fn patch(root: &std::path::Path, rel: &str, f: impl FnOnce(&mut Value)) {
 const SCHEDULE_ID: &str = "0190a3f2-0000-7000-8000-000000000464";
 /// Never during a test run.
 const NEVER: &str = "0 0 0 1 1 *";
-/// Every second, for the one timer whose firing this file is about. The tick is
-/// the only way an ask ever happens — the substrate hands a cell no message at
-/// spawn — so a test of the ask has to let it fire.
-const EVERY_SECOND: &str = "* * * * * *";
 
 // ═════════════════════════════════════════ 1. the declaration is the template's
 
@@ -277,54 +273,85 @@ fn the_public_surfaces_say_what_the_lane_does_and_the_lane_does_it() {
     assert!(emits.contains(&"menu"), "and so has the menu: {emits:?}");
     assert!(
         !accepts.contains(&"in_menu_tick"),
-        "the tick is INTERNAL -- `./menu-clock` names it on the edge into `./assemble`,          and a lane nothing outside can send is not a door: {accepts:?}"
+        "the tick is INTERNAL -- the hive's own edge into `./assemble` names it, and a          lane nothing outside can send is not a door. What a caller says is          `mutation_committed` (GH #553): {accepts:?}"
     );
 }
 
-/// The cadence is one number and it stands in one place per surface, derived
-/// here rather than copied (`docs/development-rules.md` § 2d).
+/// GH #553 — the ask has a CAUSE now, and the cause is a mutation.
+///
+/// The cadence used to be a number in two places (`MENU_CRON` in
+/// `./menu-clock`, the same number spelled out in the README), and the number
+/// was a guess: a poll asks whether anything changed, on a schedule that has no
+/// relationship to when anything does. The receipt says it instead — so what is
+/// derived here is not a cadence but a CHAIN: the caller's lane, the door it
+/// finds, and the internal lane it becomes.
 #[test]
-fn the_menu_ticks_cadence_is_one_number_in_two_places() {
+fn the_menu_is_asked_on_the_mutation_receipt_and_not_on_a_clock() {
     let Some(collector) = shipped("collector") else {
         return;
     };
-    let clock = read_json(&collector.join("menu-clock/config.json"));
-    let cron = clock["params"]["schedules"][0]["cron"]
-        .as_str()
-        .expect("the tick has a cron");
-    let default = cron
-        .strip_prefix("${MENU_CRON:-")
-        .and_then(|c| c.strip_suffix('}'))
-        .unwrap_or_else(|| panic!("the cadence is an env knob with a default: {cron:?}"));
-    assert_eq!(
-        clock["contract"]["settings"]["cron"]["default"],
-        json!(default),
-        "the schedule and the declared default are one value in two places"
+    assert!(
+        !collector.join("menu-clock").exists(),
+        "the poll timer is back in `templates/collector`; the menu follows the \
+         mutation receipt since GH #553"
     );
-    // Six fields, the Quartz shape the substrate parses; not a five-field crontab.
-    assert_eq!(
-        default.split_whitespace().count(),
-        6,
-        "the timer takes 6-field Quartz (`Second Minute Hour DayOfMonth Month DayOfWeek`): {default:?}"
+    let cfg = read_json(&collector.join("config.json"));
+    let accepts: Vec<&str> = cfg["params"]["contract"]["accepts"]
+        .as_array()
+        .expect("accepts")
+        .iter()
+        .filter_map(|a| a["route"].as_str())
+        .collect();
+    assert!(
+        accepts.contains(&"mutation_committed"),
+        "the receipt needs a door of its own -- it comes from OUTSIDE the hive, \
+         which is exactly what the tick never did: {accepts:?}"
     );
+    let edges = cfg["params"]["graph"]["edges"]
+        .as_array()
+        .expect("edges")
+        .clone();
+    let door = edges
+        .iter()
+        .find(|e| {
+            e["condition"]
+                .as_str()
+                .is_some_and(|c| c.contains("hop.route == 'mutation_committed'"))
+        })
+        .expect("the receipt lane has a door into the hive");
+    assert_eq!(door["from"], json!("."), "it enters at the hive path");
+    assert_eq!(door["to"], json!("./assemble"), "and reaches the assembler");
+    assert_eq!(
+        door["modifier"]["set_hop"]["route"],
+        json!("'in_menu_tick'"),
+        "the door is where the caller's lane becomes the hive's own -- the same \
+         shape `./menu-clock -> ./assemble` had, minus the clock"
+    );
+    // The lane keeps ONE name from the mutation door down to this rim, which is
+    // what lets every level in between declare it and be a mandatory hop for it
+    // — and it deliberately does NOT start with `in_`, so the generic inbound
+    // door cannot carry it as well and hand the assembler the same message twice.
+    for composite in ["talky", "cogny"] {
+        let Some(root) = shipped(composite) else {
+            continue;
+        };
+        let gen_cfg = read_json(&root.join("config.json"));
+        let lanes: Vec<&str> = gen_cfg["params"]["contract"]["accepts"]
+            .as_array()
+            .expect("accepts")
+            .iter()
+            .filter_map(|a| a["route"].as_str())
+            .collect();
+        assert!(
+            lanes.contains(&"mutation_committed"),
+            "{composite} has to take the receipt at its rim and carry it to its \
+             collector; the lane is not renamed on the way: {lanes:?}"
+        );
+    }
     let readme = std::fs::read_to_string(collector.join("README.md")).expect("the README ships");
     assert!(
-        readme.contains("`MENU_CRON` (default: every five minutes, UTC)"),
-        "the README states the cadence in words and the shipped cron is {default:?}"
-    );
-    assert!(
-        default.contains("*/5"),
-        "the README says every five minutes: {default:?}"
-    );
-    assert_eq!(
-        clock["params"]["schedules"][0]["emit_to"], "../assemble",
-        "the tick reaches the assembler and nothing else"
-    );
-    assert!(
-        !meclaw_core::serde_json::to_string(&clock["params"]["schedules"][0])
-            .unwrap()
-            .contains("uuid7"),
-        "the schedule id is a LITERAL: `${{uuid7:*}}` is an instantiation substitution          with no filesystem-side producer, and this hive is read straight off the disk          all over the test corpus -- a token here refuses the boot"
+        readme.contains("`mutation_committed`"),
+        "the README no longer names the lane the menu is asked on"
     );
 }
 
@@ -483,12 +510,13 @@ fn the_answer_is_wrapped_in_the_provider_envelope_the_hive_refuses_to_write() {
     assert_eq!(out.len(), 1, "one menu message: {out:#?}");
     let msg = &out[0];
     assert_eq!(msg["header"]["route"], "menu");
-    // Four, not two, since GH #512: the two declared names plus the two the
+    // Three, not two, since GH #512: the two declared names plus the one the
     // collector answers ITSELF, which no tools hive has a declaration for.
     // `gh512_the_collector_declares_the_tools_it_answers_itself.rs` owns that
-    // half; this file keeps measuring the wrapping and the `$replace`.
-    assert_eq!(msg["header"]["menu_count"], "4");
-    assert_eq!(msg["header"]["menu_self"], "memory_recall,thread_recall");
+    // half; this file keeps measuring the wrapping and the `$replace`. It was
+    // four until GH #552 took `memory_recall` to the hive that answers it.
+    assert_eq!(msg["header"]["menu_count"], "3");
+    assert_eq!(msg["header"]["menu_self"], "thread_recall");
     assert_eq!(msg["header"]["menu_unknown"], "");
     assert!(
         stderr.is_empty(),
@@ -538,10 +566,10 @@ fn the_answer_is_wrapped_in_the_provider_envelope_the_hive_refuses_to_write() {
         .collect();
     assert_eq!(
         leaves,
-        ["memory_recall", "thread_recall", "web_fetch", "web_search"]
+        ["thread_recall", "web_fetch", "web_search"]
             .into_iter()
             .collect(),
-        "exactly the declared names and the two this cell serves itself (GH #512), and no \
+        "exactly the declared names and the one this cell serves itself (GH #512), and no \
          menu somebody else typed"
     );
 }
@@ -552,8 +580,8 @@ fn a_name_the_hive_does_not_have_is_reported_and_the_others_still_arrive() {
     assert_eq!(out.len(), 1, "the partial answer is still an answer");
     let msg = &out[0];
     assert_eq!(
-        msg["header"]["menu_count"], "3",
-        "one found, two served here"
+        msg["header"]["menu_count"], "2",
+        "one found, one served here"
     );
     assert_eq!(
         msg["header"]["menu_unknown"], "telepathy",
@@ -674,6 +702,8 @@ fn the_answering_hive_pairs_the_two_lanes_in_required_drains() {
 fn main_config(composite: &str) -> Value {
     let hive = format!("./{composite}");
     json!({"cell": {"type": "hive"}, "params": {"graph": {"edges": [
+        {"from": ".", "to": hive.clone(),
+         "condition": "has(hop.route) && hop.route == 'mutation_committed'"},
         {"from": hive.clone(), "to": "./tools",
          "condition": "has(hop.route) && hop.route == 'schemas'",
          "modifier": {"set_hop": {"route": "'in_schemas'"},
@@ -691,7 +721,15 @@ fn build_tree(td: &tempfile::TempDir, composite: &str, declared: &Value, base_ur
     let root = td.path();
     std::fs::write(
         root.join(".env"),
-        "OPENROUTER_API_KEY=test-key\nKEEPER_IDLE_MS=0\nSEARCH_API_KEY=\n",
+        "OPENROUTER_API_KEY=test-key\nSEARCH_API_KEY=\n",
+    )
+    .unwrap();
+    // GH #553: the menu is asked for on the MUTATION RECEIPT, and the boot is the
+    // first receipt (ruling O-0904-2). Opting in here is what makes the first
+    // menu happen at all -- the five-minute poll that used to do it is gone.
+    std::fs::write(
+        root.join("colony.json"),
+        r#"{"schema_version": 1, "mutation_receipts": {"to": "/"}}"#,
     )
     .unwrap();
     write(root, "main/config.json", &main_config(composite));
@@ -720,22 +758,25 @@ fn build_tree(td: &tempfile::TempDir, composite: &str, declared: &Value, base_ur
             },
         );
     }
-    // The one timer this file is about: the shipped cadence is five minutes, and
-    // a test that waited for it would be a test nobody runs.
-    patch(
-        root,
-        &format!("main/{composite}/collector/menu-clock/config.json"),
-        |v| v["params"]["schedules"][0]["cron"] = json!(EVERY_SECOND),
-    );
+    // Every open generation is a candidate the moment the sweep runs. It was a
+    // `KEEPER_IDLE_MS=0` line in the `.env` above until GH #138; the knob is a
+    // param of `./close` now, so such a line would be read by NOTHING -- the
+    // sweep would keep the shipped two hours and find no candidate.
+    if keeper.exists() {
+        patch(
+            root,
+            &format!("main/{composite}/session-keeper/close/config.json"),
+            |v| v["params"]["idle_ms"] = json!(0),
+        );
+    }
     // `copy_cells` follows the `ref` and copies the referenced template, so the
     // ref's own `override_params` — the composite's declaration — does not
     // travel with it. Writing it here is applying that declaration by hand, and
     // `the_shipped_composites_declare_what_they_use` above is what pins the
     // value being applied.
-    // ... and so does every other knob the ref sets, which since GH #512 includes
-    // `memory_call_tier`: a composite that routes no `memory_recall` edge switches
-    // the tool off there, and a tree that dropped the override would measure a
-    // collector nobody ships.
+    // ... and so does every other knob the ref sets, `thread_recall` included: a
+    // composite that routes no lane for a name switches the tool off there, and a
+    // tree that dropped the override would measure a collector nobody ships.
     let overrides = read_json(
         &templates_root()
             .join(composite)
@@ -913,15 +954,15 @@ async fn a_talky_asks_for_its_two_tools_and_gets_exactly_those_two() {
     );
     let (_h, _park) = boot(&td).await;
 
-    let mut names = await_menu(&td, "talky", "brain", 4).await;
-    names.retain(|n| n != "memory_recall" && n != "thread_recall");
+    let mut names = await_menu(&td, "talky", "brain", 3).await;
+    names.retain(|n| n != "thread_recall");
     names.sort();
     assert_eq!(
         names,
         vec!["web_fetch".to_string(), "web_search".to_string()],
         "a cell that uses tools declares them, and it gets the ones it declared — not \
          the hive's whole catalogue, and not a list somebody typed into its prompt. The \
-         two the collector serves itself are held out here and measured by \
+         one the collector serves itself is held out here and measured by \
          `gh512_the_collector_declares_the_tools_it_answers_itself.rs`"
     );
 }
@@ -946,14 +987,14 @@ async fn a_cogny_asks_for_everything_and_its_brain_gets_it() {
     let (_h, _park) = boot(&td).await;
 
     for brain in brains_of("cogny") {
-        let mut names = await_menu(&td, "cogny", brain, everything.len() + 2).await;
-        // The two the collector serves ITSELF (GH #512, `collector@3.3.1`): the
-        // shipped cogny routes `thread_recall` and, since `cogny@4.4.0`
-        // (GH #528), `memory_recall` too -- one ordinary edge each, both by
-        // name, and no tools hive has a declaration for either. They are held
-        // out here and measured by
+        let mut names = await_menu(&td, "cogny", brain, everything.len() + 1).await;
+        // The one the collector serves ITSELF (GH #512, `collector@3.3.1`): the
+        // shipped cogny routes `thread_recall` by name, and no tools hive has a
+        // declaration for it. It is held out here and measured by
         // `gh512_the_collector_declares_the_tools_it_answers_itself.rs`.
-        names.retain(|n| n != "thread_recall" && n != "memory_recall");
+        // `memory_recall` stood beside it until GH #552 and is the member's
+        // memory's own declaration now — a standalone cogny has no member.
+        names.retain(|n| n != "thread_recall");
         names.sort();
         let mut want = everything.clone();
         want.sort();

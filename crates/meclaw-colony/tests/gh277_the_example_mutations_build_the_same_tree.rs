@@ -238,8 +238,7 @@ fn build_root(root: &std::path::Path) {
          MODEL_BRAIN=gpt-4o-mock\n\
          MODEL_CORE=gpt-4o-mock\n\
          MODEL_CORE_FAST=gpt-4o-mock-fast\n\
-         MODEL_SURFACE=gpt-4o-mock-surface\n\
-         KEEPER_NIGHT_CRON=0 0 0 1 1 *\n",
+         MODEL_SURFACE=gpt-4o-mock-surface\n",
     )
     .unwrap();
 }
@@ -442,7 +441,7 @@ const TEMPLATE_REFERENCES_IN_THE_FIVE: usize = 11;
 /// Moved 40 -> 43 with GH #464: `collector@3.3.0` grew one cell, the
 /// `menu-clock` timer that asks a tools hive what this agent's declared tools
 /// look like, and three of the instantiated composites carry a collector (two
-/// `talky`s and one `cogny`).
+/// `talky`s and one `cogny`). It left again with GH #553, see below.
 ///
 /// Moved 43 -> 46 with GH #471: three hives grew a `porter`, the one cell that
 /// walks a hive's own tables out as a document and takes one back. Two of the
@@ -453,7 +452,12 @@ const TEMPLATE_REFERENCES_IN_THE_FIVE: usize = 11;
 ///
 /// Moved 46 -> 47 with GH #450: the one `firewall` grew a `warden`, the cell
 /// that holds a parked turn until a person answers.
-const TEMPLATE_BORN_ROWS: usize = 47;
+///
+/// Moved 47 -> 44 with GH #553, and this one SHRINKS: `collector@4.0.0` lost
+/// its `menu-clock` timer -- the tool menu is asked for on the mutation receipt
+/// now -- and three of the instantiated composites carry a collector (two
+/// `talky`s and one `cogny`). RE-MEASURED with [`print_the_measurement`].
+const TEMPLATE_BORN_ROWS: usize = 44;
 
 /// Distinct `registry.template` values across those rows. Fewer than the
 /// eleven references above, because three scopes instantiate the same
@@ -576,7 +580,8 @@ const REFERENCED_SUB_UNITS: [&str; 3] = ["collector", "dispatcher", "session-kee
 /// [`print_the_measurement`] rather than added up -- the readout is the
 /// authority here, because this constant moved twice in one wave.
 /// `collector@3.3.0` brings ONE internal edge (`./menu-clock -> ./assemble`,
-/// the tick) and three of the instantiated composites carry a collector;
+/// the tick -- since GH #553 the same one edge, drawn from the hive path
+/// instead) and three of the instantiated composites carry a collector;
 /// `talky@4.6.1` draws two more (`./collector -> ./brain` on `menu`,
 /// `./collector -> .` on `schemas`) and two of the five grow a talky;
 /// `cogny@4.3.0` draws three, because the menu reaches BOTH brains, and exactly
@@ -601,6 +606,13 @@ const REFERENCED_SUB_UNITS: [&str; 3] = ["collector", "dispatcher", "session-kee
 /// measured where a generation is grown. RE-MEASURED with
 /// [`print_the_measurement`].
 ///
+/// Moved 189 -> 194 with GH #555: the member, the org and the shell each carry
+/// the import receipt out on `dump` now — it used to end inside the member, in
+/// the one cell that read a transfer document and said nothing about it — and
+/// the keeper's own completion word `export_done` crosses the assistant and the
+/// talky beside it. Five declarations, five new edges. RE-MEASURED with
+/// [`print_the_measurement`].
+///
 /// Moved 187 -> 195 with GH #449 / GH #450: `firewall@2.2.0` grew a fourth
 /// cell, `warden`, and eight internal edges with it -- the screen's `hold`
 /// route into it, the two hold ingress lanes, the store leg in both
@@ -617,7 +629,32 @@ const REFERENCED_SUB_UNITS: [&str; 3] = ["collector", "dispatcher", "session-kee
 /// the declaration itself: `examples/meclaw-os/grow-cogny.json` drew three edges
 /// and now draws two, because the `ask_memory` ingress is gone. RE-MEASURED with
 /// [`print_the_measurement`].
-const EDGES: usize = 190;
+///
+/// Moved 190 -> 186 with GH #552, and this one shrinks too. `memory_recall` is
+/// the memory hive's tool now, so the composites that used to serve it give the
+/// internal edge back: `talky@5.0.0` goes from 31 to 30 and `cogny@5.0.0` from 20
+/// to 19. Two of the five declarations grow a talky and one grows a cogny, so
+/// that is 2 x -1 and 1 x -1. The fourth is in a declaration:
+/// `examples/never-forgets/grow.json` drew three memory edges (the composite
+/// loopback, the recall port and the bundle back) and draws two now, the two
+/// edges every ordinary tool costs. RE-MEASURED with [`print_the_measurement`].
+///
+/// Moved 186 -> 189 with GH #553, and the sum is exact. The collector's own
+/// edge count does NOT change: `./menu-clock -> ./assemble` on the tick is
+/// replaced one-for-one by `. -> ./assemble` on `mutation_committed`, stamping
+/// the same internal lane -- so the three instantiated collectors contribute
+/// zero. What each COMPOSITE gains is one edge, `. -> ./collector`, because the
+/// receipt now enters at the composite's own rim and has to be carried inwards;
+/// two of the five declarations grow a talky and one grows a cogny, so that is
+/// 3 x 1. No declaration of the five draws a receipt edge of its own, and that is
+/// a fact about THESE five: they are the `meclaw-os` and `never-forgets`
+/// examples, which grow a `talky` and no consumer of the lane, so neither opts
+/// into `mutation_receipts`. The examples that DO have a consumer
+/// (`organism`, `display-colony-view`) opt in and draw the fan-out, and they
+/// are measured where they live —
+/// `gh553_the_shipped_examples_follow_the_receipt.rs`. RE-MEASURED with
+/// [`print_the_measurement`].
+const EDGES: usize = 194;
 
 /// Cells that were on disk before the first declaration — the three seeds' own
 /// cells (`hard-shell`'s `probe`, `never-forgets`'s `replay`,

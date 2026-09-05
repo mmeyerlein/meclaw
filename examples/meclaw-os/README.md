@@ -44,6 +44,16 @@ Two of the four templates were extracted out of this folder to make that true: t
 "the two cells a library cannot ship". They turned out to be the two cells a library *should*
 ship -- generic, ten lines each, and needed by every tree.
 
+**This `colony.json` does not opt in to `mutation_receipts`, and that is deliberate.** The key
+turns every committed mutation into a message at the hive it names (GH #553), and this tree grows
+no consumer for it: there is no `colony-view` app here -- `canvy` in step four draws its own
+picture from its own read -- and no tools hive wired into a collector. An opt-in would be a key
+with nothing behind it. `examples/organism` and `examples/display-colony-view` do opt in, because
+each grows something that listens; what they pay for it is one **`no_route` dead letter at the
+first empty container**, because the boot receipt of an empty seed has nowhere below it to go
+yet. That row is the documented, expected one -- it names its sender and its trace, which is what
+a dead-letter queue is for (see `CHANGELOG.md`).
+
 ## What grows
 
 `grow.json` names four templates and draws the edges between them:
@@ -51,8 +61,8 @@ ship -- generic, ten lines each, and needed by every tree.
 | node | from template | what it brings |
 |---|---|---|
 | `/door` | [`door@1.0.2`](../../templates/door/) | 1 cell. `POST /messages` becomes a turn on the ingress lane, carrying the channel identity. |
-| `/firewall` | [`firewall@2.2.0`](../../templates/firewall/) | 4 cells. Size cap, sender rules, rate limit -- every verdict a comparison or a clock, never a model -- plus a hardline layer no rule row can lift and the custody of a turn parked for a person. |
-| `/talky` | [`talky`](../../templates/talky/) | 12 cells. Session keeper, context collector, tool dispatcher, answer splitter, and an `llm` brain, with every internal edge pre-wired. |
+| `/firewall` | [`firewall@2.3.0`](../../templates/firewall/) | 4 cells. Size cap, sender rules, rate limit -- every verdict a comparison or a clock, never a model -- plus a hardline layer no rule row can lift and the custody of a turn parked for a person. |
+| `/talky` | [`talky`](../../templates/talky/) | 11 cells. Session keeper, context collector, tool dispatcher, answer splitter, and an `llm` brain, with every internal edge pre-wired. |
 | `/sink` | [`terminal@1.0.1`](../../templates/terminal/) | 1 cell. The stop for two lanes that have not been decided yet. |
 
 ```
@@ -202,7 +212,8 @@ is the **agent core**: core knowledge, core personality, thinking models that ma
 time, and the heavy reasoning and tool work. One core, N voices -- siblings, never nested.
 
 The talky reaches it like a tool and it answers like an event, so the connection is two edges
-and one knob (`DISPATCHER_HANDOFF_TOOLS=consult_cogny` in the environment file -- a handoff is
+and one knob (`consult_cogny` in the talky dispatcher's `handoff_tools`, an `override_params`
+entry since `dispatcher@1.2.0` -- a handoff is
 async *and* says the answer comes from a later turn, which is what lets the round the consult
 leaves behind end without a sentence of its own, GH #372). Both edges clear
 `col_phase` (the errand leaves another collector's chain mid-assembly and would be refused with
@@ -275,7 +286,7 @@ an `error` into a cell that swallows it.
 
 ## Step three: the colony that measures itself
 
-`grow-argus.json` adds the [`argus@1.0.0`](../../templates/argus/) — seven more cells that
+`grow-argus.json` adds the [`argus@1.1.0`](../../templates/argus/) — seven more cells that
 read a charter, measure this colony out of its own ledger, have a model judge and simulate
 against those numbers, send the decided change to the cell it names, verify, and then keep the
 change or revert it against a plan authored beforehand. Every cycle writes a receipt.
@@ -313,7 +324,7 @@ at all — a `code` cell's numeric cap, like the collector's `max_iter`, comes b
 `key_outside_radius_<key>` with a receipt, rather than as a change nobody applied.
 
 Note the shape of the endpoint on the way out: it is the **hive**, not a cell inside it.
-`argus@1.0.0` is sealed (`params.ports: []`), so `./argus/mutator` is not an address at all
+`argus@1.1.0` is sealed (`params.ports: []`), so `./argus/mutator` is not an address at all
 any more — a caller asks for the `mutate` lane and never learns which cell produces it. The
 other lane the hive offers, `error`, would be drawn at the hive for the same reason — but
 this declaration draws it nowhere (GH #284). An argus whose `error` ended in the sink would
@@ -328,7 +339,7 @@ you what it *would* have done before you let it do anything.
 
 ## Step four: the colony draws itself
 
-`grow-canvy.json` adds [`canvy@2.1.10`](../../templates/canvy/) — a timer, two `code` cells and a
+`grow-canvy.json` adds [`canvy@2.2.0`](../../templates/canvy/) — a timer, two `code` cells and a
 `web` cell that serves one interactive canvas of this colony on a port of its own:
 
 ```bash
@@ -367,7 +378,7 @@ its own recipe: [`templates/canvy/MIGRATION.md`](../../templates/canvy/MIGRATION
 
 ## Step five: the front door
 
-`grow-operator.json` adds [`operator@1.1.0`](../../templates/operator/) — a sealed hive that
+`grow-operator.json` adds [`operator@1.2.0`](../../templates/operator/) — a sealed hive that
 turns a request from outside into a message with a **sender**, and that since GH #556 carries
 the **submitter** as one of its occupants.
 
@@ -402,7 +413,7 @@ becomes a manifest, reaches the gate, asks, and stops there. The receipt an oper
 the one the front door renders; nothing is applied, and nothing is lost silently. A colony
 that wants the round to finish wires `ask` to a broker, `in_verdict` back, and `mutate` on to
 the mutation door — which is exactly the shape
-[`meclaw-os@1.7.0`](../../templates/meclaw-os/) ships, and the reason a shell is the thing you
+[`meclaw-os@1.8.1`](../../templates/meclaw-os/) ships, and the reason a shell is the thing you
 grow when you want an OS rather than an agent with a door.
 
 ```bash
@@ -433,7 +444,7 @@ A built colony arrives in two stages instead.
 seed-ref/
 ├── colony.json            substrate defaults. two lines.
 ├── main/config.json       type: "hive", ONE edge, and not one cell
-└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@1.7.0"}}
+└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@1.8.1"}}
 ```
 
 ```bash
@@ -447,9 +458,9 @@ cp examples/meclaw-os/seed-ref/.env.example examples/meclaw-os/seed-ref/.env
 
 The third file is a **declaration, not a cell**. The first start resolves it against the
 template library and grows it — the capability broker, the control loop, the baumeister, the
-submitter, the front door, the empty `orgs` container and the forty-seven edges between them —
+submitter, the front door, the empty `orgs` container and the forty-eight edges between them —
 through the very resolution and staging a mutation takes. Then the marker is **gone**: what stands at its
-address is [`meclaw-os@1.7.0`](../../templates/meclaw-os/). A second boot finds nothing to grow.
+address is [`meclaw-os@1.8.1`](../../templates/meclaw-os/). A second boot finds nothing to grow.
 
 **The one edge is the whole birth topology.** `./os -> /colony/mutations`, on the `mutate` lane
 and nothing else. It cannot be added by a mutation on any scope — an edge *is* a mutation — so it
@@ -488,7 +499,7 @@ change:
 curl -s -X POST http://127.0.0.1:7778/messages -H 'Content-Type: application/json' -d '{
   "target": "/os", "hop": {"route": "in_build"},
   "body": {"messages": [{"origin": "user", "type": "text", "id": "",
-    "text": "{\"request\": \"grow an org named acme from org@1.3.0 under /os\", \"scope\": \"/os\"}"}]}}'
+    "text": "{\"request\": \"grow an org named acme from org@1.4.0 under /os\", \"scope\": \"/os\"}"}]}}'
 
 # -> receipt, hop.draft_state 'draft_ready', hop.manifest_sha256 <digest>,
 #    hop.draft_path /os/operator/drafts, body.manifest the declarations verbatim.

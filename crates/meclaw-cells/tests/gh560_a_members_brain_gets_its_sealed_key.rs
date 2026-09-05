@@ -318,19 +318,55 @@ fn dummy_env(source: &std::path::Path) -> String {
             }
         }
     }
-    let mut out: String = names
+    // Only the provider lane is left to fill: since GH #138 the two crons this
+    // helper used to append (`AFFINITY_PUSH_CRON`, `KEEPER_NIGHT_CRON`) are
+    // params of the cells that read them, and are pushed out of the run's way
+    // with an `override_params` entry instead of with a line here.
+    names
         .into_iter()
         .map(|n| format!("{n}=dummy-{n}\n"))
-        .collect();
-    for cron in [
-        "AFFINITY_PUSH_CRON",
-        "MEMORY_DREAM_CRON",
-        "KEEPER_NIGHT_CRON",
-        "MENU_CRON",
-    ] {
-        out.push_str(&format!("{cron}=0 0 4 1 1 *\n"));
-    }
-    out
+        .collect()
+}
+
+/// The nightly consolidation, pushed to a date this run cannot reach.
+///
+/// It was a `MEMORY_DREAM_CRON=` line in the `.env` above until GH #138. The
+/// hive's schedule is a LITERAL of `memory-hive/clock`'s own params now, so
+/// such a line would be read by nothing at all: the night would fire into this
+/// run and nobody would say so. `override_params` replaces the whole
+/// `schedules` key -- the key that EXISTS under a timer's params, which is the
+/// only kind GH #294 accepts -- and the timer plans on what it finds there
+/// (`crates/meclaw-cells/tests/gh138_memory_hive_params.rs` is the proof).
+fn quiet_night() -> Value {
+    json!({"schedules": [{
+        "schedule_id": "0190a3f2-0000-7000-8000-00000000dead",
+        "schedule_name": "nightly-dream",
+        "cron": "0 0 4 1 1 *",
+        "emit_to": "../dream-glue",
+        "emit_body": {"messages": [{"origin": "user", "type": "text", "text": "nightly-dream"}]},
+        "emit_headers": {}
+    }]})
+}
+
+/// The record hive's push tick, pushed to a date this run cannot reach.
+///
+/// It was an `AFFINITY_PUSH_CRON=` line in the `.env` above until GH #138. The
+/// hive's cadence is a LITERAL of `affinity/clock`'s own params now, so such a
+/// line would be read by nothing at all: the lane would tick into this run
+/// every five minutes and nobody would say so. `override_params` replaces the
+/// whole `schedules` key -- the key that EXISTS under a timer's params, which
+/// is the only kind GH #294 accepts -- and the timer plans on what it finds
+/// there (`crates/meclaw-cells/tests/gh138_affinity_firewall_params.rs` is the
+/// proof).
+fn quiet_push() -> Value {
+    json!({"schedules": [{
+        "schedule_id": "0190a3f2-0000-7000-8000-00000000beef",
+        "schedule_name": "affinity-push",
+        "cron": "0 0 4 1 1 *",
+        "emit_to": "../push",
+        "emit_body": {"messages": [{"origin": "user", "type": "text", "text": "affinity-push"}]},
+        "emit_headers": {}
+    }]})
 }
 
 /// The shell the member is grown into: one container and one terminal drain.
@@ -338,6 +374,15 @@ async fn boot(td: &tempfile::TempDir, real_brain: &str) -> ColonyHandle {
     let root = td.path();
     if !root.join("templates").is_dir() {
         copy_tree(&repo("templates"), &root.join("templates"));
+        // The keeper's nightly close sweep, pushed to a date this run cannot reach.
+        // It was a `KEEPER_NIGHT_CRON` line in the `.env` below until GH #138: the
+        // schedule is a LITERAL of `session-keeper/night`'s own params now, so such
+        // a line is read by nothing at all -- the sweep would fire into this run and
+        // nobody would say so. The library copy is this tree's own, so writing the
+        // key into it is what an `override_params` entry does to a staged config
+        // (`crates/meclaw-cells/tests/gh138_keeper_summarizer_dispatcher_params.rs`
+        // is the proof that the timer plans on what it finds there).
+        meclaw_testing::quiet_keeper_night(&root.join("templates/session-keeper"));
         let mut edges = vec![json!({"from": ".", "to": "./members",
                     "condition": "has(hop.route) && hop.route == 'in_turn'"})];
         for lane in [
@@ -418,10 +463,11 @@ fn member_manifest() -> Value {
     json!({"manifest": [{
         "scope": "/members",
         "diff": {
-            "add_nodes": [{"name": MEMBER, "template": "member@1.5.1",
+            "add_nodes": [{"name": MEMBER, "template": "member@1.6.0",
                            "override_params": {
-                               "export-sink": {"sandbox": {"trust": "trusted"}},
-                               "access/vault": {"unlock_env": UNLOCK_ENV}}}],
+                               "access/vault": {"unlock_env": UNLOCK_ENV},
+                               "memory-hive/clock": quiet_night(),
+                               "affinity/clock": quiet_push()}}],
             "add_edges": [
                 {"from": ".", "to": format!("./{MEMBER}"),
                  "condition": "has(hop.route) && hop.route == 'in_turn'"},
@@ -499,7 +545,7 @@ fn assistant_manifest(base_url: &str) -> Value {
                 "model_surface": "gpt-4o-mini"},
         "diff": {
             "add_nodes": [{"name": format!("assistants/{AGENT}"),
-                           "template": "assistant@2.4.1",
+                           "template": "assistant@2.5.0",
                            "override_params": {
                                // The brain under test: no bearer of its own
                                // (an empty string is not a bearer, GH #271), a

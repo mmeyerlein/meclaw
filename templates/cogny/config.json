@@ -21,7 +21,7 @@
         {
           "route": "in_bundle",
           "context": [],
-          "because": "a memory bundle, coming back from whatever keeps this agent's memory. Since 4.4.0 it is the answer to a TOOL call and not to an ambient leg: `memory_tier` stays empty here -- a problem solver asks on purpose -- and what leaves on `recall` carries `hop.memory_call_id`, which is what tells the collector to file the returning bundle as the `tool_result` of that call rather than as the memory leg of the turn. One port, two meanings, told apart by what the request carried out ([#528](https://github.com/mmeyerlein/meclaw/issues/528))"
+          "because": "a memory bundle, coming back from whatever keeps this agent's memory -- the AMBIENT leg of a turn, and the only meaning this lane has since GH #552. `memory_tier` stays empty here (a problem solver asks on purpose), so nothing in the shipped core fires it; a tree that switches the ambient leg on gets its bundle here. The DELIBERATE lookup went the other way: `memory_recall` is an ordinary tool name since cogny@5.0.0, the member's own memory hive declares and answers it, and its result arrives on `in_tool` under the id the round is waiting on. Until then this lane carried both, told apart by a `hop.memory_call_id` the request carried out ([#528](https://github.com/mmeyerlein/meclaw/issues/528), [#552](https://github.com/mmeyerlein/meclaw/issues/552))"
         },
         {
           "route": "in_pack",
@@ -29,7 +29,7 @@
         },
         {
           "route": "in_menu",
-          "because": "the tool declarations coming back from a tools hive the parent wired (GH #464). Since cogny@4.3.0 this core ASKS what its tools look like instead of carrying a menu somebody typed, and it declares `[\"*\"]`: a reasoning core is the one caller of an assistant that should be able to reach everything the surface can, and a list typed here would be a second copy of the hive's own catalogue that drifts on the first tool added. `./menu-clock` ticks, the request leaves on `schemas`, and the answer is written into `./brain` as durable `system.tools` -- the collector emits `menu` once and this template's edge carries it, exactly as it does with `pack`. Since 4.4.0 the menu the collector writes also carries the two tools it serves ITSELF -- `memory_recall` and `thread_recall` (`collector@3.3.1`, GH #512) -- because this core routes both by name and no tools hive has a declaration for either. PAIRED with `schemas`. The full account of the lane pair lives in `templates/talky/README.md` § The menu is asked for; everything there holds here"
+          "because": "the tool declarations coming back from a tools hive the parent wired (GH #464). Since cogny@4.3.0 this core ASKS what its tools look like instead of carrying a menu somebody typed, and it declares `[\"*\"]`: a reasoning core is the one caller of an assistant that should be able to reach everything the surface can, and a list typed here would be a second copy of the hive's own catalogue that drifts on the first tool added. The request leaves on `schemas`, and the answer is written into `./brain` as durable `system.tools` -- the collector emits `menu` once and this template's edge carries it, exactly as it does with `pack`. Since 4.4.0 the menu the collector writes also carries the two tools it serves ITSELF -- `memory_recall` and `thread_recall` (`collector@3.3.1`, GH #512) -- because this core routes both by name and no tools hive has a declaration for either. PAIRED with `schemas`. The full account of the lane pair lives in `templates/talky/README.md` § The menu is asked for; everything there holds here"
         },
         {
           "route": "in_schemas",
@@ -42,6 +42,10 @@
             "./brain"
           ],
           "because": "the answer half of the same lane (GH #560): the broker's `ack` for `vault.deliver` carrying the sealed box, renamed at the boundary to the name this rim knows it by. It lands on `./brain` and on nothing else -- the box is sealed against the ephemeral key of the cell that asked, so a delivery anywhere else is a box nobody can open plus a receipt the asker never gets. Address the edge with `hop.grant_id`, which the broker stamps: one grant per consumer, or two brains are handed each other's rounds"
+        },
+        {
+          "route": "mutation_committed",
+          "because": "the mutation receipt on its last hop, GH #553: the graph moved, and the collector inside this composite is what has to hear it -- the tool menu is re-asked on it. The lane keeps ONE name from the mutation door down to here, and this rim is a plain door for it: the composite's own edge carries it to `./collector`, which turns it into its internal `in_menu_tick`. It replaces a five-minute poll timer that used to sit inside the collector, and the boot receipt is the first ask, so an agent has its menu before its first turn. Derived from collector@4.0.0"
         }
       ],
       "emits": [
@@ -51,11 +55,11 @@
         },
         {
           "route": "tool",
-          "because": "a tool call for a cell the parent wired; hop.tool_name says which one. Since cogny@4.0.3 the exit is a GUARDED DEFAULT edge (GH #283, ruling Q1) instead of a negation chain: `{\"from\": \"./dispatcher\", \"to\": \".\", \"default\": true, \"condition\": \"has(hop.route) && hop.route == 'tool'\"}`. A reserved name is held by an ordinary edge, and an ordinary edge that fires silences the default for that message -- so a reserved name costs exactly one ordinary edge and no change here. TWO names are reserved since 4.4.0 and both are served by this composite's own collector: `thread_recall` (GH #451), which redeems a stub the curator left, and `memory_recall` ([#528](https://github.com/mmeyerlein/meclaw/issues/528)), which asks the member's memory about a time range or a session. `escalate_to_deep` was the third until 4.4.0 and is gone with the lane it escalated to. The guard is not decoration: ./dispatcher emits four sorts (calls, result, answer, tool) and suppression is SENDER-WIDE, so an unguarded default would try to carry calls/result/answer outward whenever nothing ordinary fired for them. And the no-tee requirement holds at this tree: ./dispatcher has five out-edges (calls, result, answer, thread_recall and memory_recall into ./collector, plus this one), each conditioned on its own lane, and there is NO unconditional tee -- one added later would silence this default for every tool call. The sender inventory of the whole composite, for the same reason: five senders (., ./collector, ./brain, ./dispatcher, ./schemas) over 20 edges since 4.4.0, five of which reach `.` -- and the sender-wide rule counts an edge a PARENT draws from ./cogny/dispatcher too"
+          "because": "a tool call for a cell the parent wired; hop.tool_name says which one. Since cogny@4.0.3 the exit is a GUARDED DEFAULT edge (GH #283, ruling Q1) instead of a negation chain: `{\"from\": \"./dispatcher\", \"to\": \".\", \"default\": true, \"condition\": \"has(hop.route) && hop.route == 'tool'\"}`. A reserved name is held by an ordinary edge, and an ordinary edge that fires silences the default for that message -- so a reserved name costs exactly one ordinary edge and no change here. ONE name is reserved since cogny@5.0.0 and it is served by this composite's own collector: `thread_recall` (GH #451), which redeems a stub the curator left. `memory_recall` ([#528](https://github.com/mmeyerlein/meclaw/issues/528)) was the second until then; since GH #552 the member's memory hive declares and answers it, so it is an ORDINARY tool name and leaves on this default edge like any other. `escalate_to_deep` was the third until 4.4.0 and is gone with the lane it escalated to. The guard is not decoration: ./dispatcher emits four sorts (calls, result, answer, tool) and suppression is SENDER-WIDE, so an unguarded default would try to carry calls/result/answer outward whenever nothing ordinary fired for them. And the no-tee requirement holds at this tree: ./dispatcher has four out-edges (calls, result, answer and thread_recall into ./collector, plus this one), each conditioned on its own lane, and there is NO unconditional tee -- one added later would silence this default for every tool call. The sender inventory of the whole composite, for the same reason: five senders (., ./collector, ./brain, ./dispatcher, ./schemas) over 19 edges since 5.0.0, five of which reach `.` -- and the sender-wide rule counts an edge a PARENT draws from ./cogny/dispatcher too"
         },
         {
           "route": "recall",
-          "because": "a memory read the brain ASKED for. Since 4.4.0 this lane carries a tool call and not an ambient leg: `memory_tier` is empty here on purpose, `memory_call_tier` is `\"1\"`, and the request goes out with `hop.memory_call_id` set to the call it belongs to -- plus `hop.recall_query` and the two window keys the model filled in. Whoever answers it MUST carry `memory_call_id` back on `in_bundle`, or the bundle is filed as a turn's memory leg and the round waits for a tool result that never comes ([#528](https://github.com/mmeyerlein/meclaw/issues/528))"
+          "because": "a memory read the brain ASKED for -- the AMBIENT leg of a turn, and the only meaning this lane has since GH #552. `memory_tier` is empty here on purpose, so the shipped core fires it never; a tree that switches the ambient leg on gets a request carrying `hop.recall_query` and the two window keys, and the answer comes back on `in_bundle`. From 4.4.0 to 4.6.1 the lane carried a TOOL call as well, with `hop.memory_call_id` naming the call it belonged to; the member's own memory hive declares and answers `memory_recall` now, the call leaves on the ordinary `tool` lane, and the result comes back on `in_tool` ([#528](https://github.com/mmeyerlein/meclaw/issues/528), [#552](https://github.com/mmeyerlein/meclaw/issues/552))"
         },
         {
           "route": "error",
@@ -178,16 +182,6 @@
           }
         },
         {
-          "from": "./dispatcher",
-          "to": "./collector",
-          "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'memory_recall'",
-          "modifier": {
-            "set_hop": {
-              "route": "'in_memory_call'"
-            }
-          }
-        },
-        {
           "from": "./collector",
           "to": ".",
           "condition": "has(hop.route) && hop.route == 'answer'",
@@ -260,6 +254,11 @@
               "col_phase"
             ]
           }
+        },
+        {
+          "from": ".",
+          "to": "./collector",
+          "condition": "has(hop.route) && hop.route == 'mutation_committed'"
         }
       ]
     },
@@ -277,7 +276,7 @@
     ]
   },
   "description": {
-    "purpose": "Scope marker of the cogny composite: the agent core as ONE hive -- the proven tool-loop core (collector fan-in, dispatcher fan-out, ONE brain) behind one consult ingress and one advice exit, plus the cell that declares what that ingress takes. Since 3.0.1 five further lanes meet at the same path (GH #240): in_tool and in_bundle in, tool, recall and error out. Its own seam, its own iteration bound, its own restore_ttl. No keeper, no summarizer, no proxy: the core has no channel, no sessions and no night, so nothing here mints an id or closes a day. Since 4.2.0 (GH #458) it has the one door it never had: `in_pack`, through which a durable `system.*` slot -- an identity, a persona, a handover -- reaches the brain from outside a composite that is otherwise sealed against exactly that. Since 4.3.0 (GH #464) the tool menu is asked for rather than typed: `./menu-clock` ticks, `./collector`'s `params.tools` ([\"*\"]) leaves on `schemas`, and the declarations come back on `in_menu` and are written into the brain as durable `system.tools`. Since 4.4.0 ([#528](https://github.com/mmeyerlein/meclaw/issues/528)) the core is the PROBLEM SOLVER and nothing else: ONE brain, one seam lane, no lookup class; it declares its own errand on `in_schemas`/`tool_schemas`, and its memory leg is a TOOL (`memory_call_tier` \"1\") rather than an ambient bundle. Since 4.5.0 ([#548](https://github.com/mmeyerlein/meclaw/issues/548)) the cell that answers `in_schemas` is called `./schemas` and not `./declare`: one lane, one cell name. It does the same job as the tools hive's `schemas` occupant, under the same lane pair, and two words for one thing cost every caller and every mutation a lookup.",
+    "purpose": "Scope marker of the cogny composite: the agent core as ONE hive -- the proven tool-loop core (collector fan-in, dispatcher fan-out, ONE brain) behind one consult ingress and one advice exit, plus the cell that declares what that ingress takes. Since 3.0.1 five further lanes meet at the same path (GH #240): in_tool and in_bundle in, tool, recall and error out. Its own seam, its own iteration bound, its own restore_ttl. No keeper, no summarizer, no proxy: the core has no channel, no sessions and no night, so nothing here mints an id or closes a day. Since 4.2.0 (GH #458) it has the one door it never had: `in_pack`, through which a durable `system.*` slot -- an identity, a persona, a handover -- reaches the brain from outside a composite that is otherwise sealed against exactly that. Since 4.3.0 (GH #464) the tool menu is asked for rather than typed: `./collector`'s `params.tools` ([\"*\"]) leaves on `schemas`, and the declarations come back on `in_menu` and are written into the brain as durable `system.tools`. Since 4.4.0 ([#528](https://github.com/mmeyerlein/meclaw/issues/528)) the core is the PROBLEM SOLVER and nothing else: ONE brain, one seam lane, no lookup class; it declares its own errand on `in_schemas`/`tool_schemas`, and its memory leg is a TOOL rather than an ambient bundle -- served by the member's own memory hive since GH #552, not by this composite. Since 4.5.0 ([#548](https://github.com/mmeyerlein/meclaw/issues/548)) the cell that answers `in_schemas` is called `./schemas` and not `./declare`: one lane, one cell name. It does the same job as the tools hive's `schemas` occupant, under the same lane pair, and two words for one thing cost every caller and every mutation a lookup.",
     "use_when": "One per agent, never one per channel voice. Instantiate it as a SIBLING of the channel voices and wire the consult ingress, the advice exit and the tool, memory, error and declaration lanes in the same mutation; the composite is an island until an edge crosses into it. The ingress edge MUST promote `session_id` -- the lane contract demands it, because the core's memory tool asks about sessions.",
     "not_in_scope": "No tool cells (they are wired per instance on hop.tool_name), no memory hive, no channel surface, no session lifecycle, and no errors cell -- the brain is joined onto the error lane by the exit edges' own set_hop.route. The core's identity and instructions live in the brain's own cell.db - the composite carries the topology, never the persona. The one schema it DOES carry is its own errand, and that is the opposite of a persona: a caller cannot reach what nobody declared. And no class decision: since 4.4.0 there is one class and one lane, so nothing anywhere picks between them."
   }

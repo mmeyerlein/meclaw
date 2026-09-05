@@ -36,44 +36,20 @@ const SPLIT_CONFIG: &str = "../../templates/dispatcher/config.json";
 
 // ======================================================================= SCRIPT
 
-/// `${VAR:-default}` becomes the default (or the override, when the case names
-/// one), a bare `${VAR}` becomes the empty string -- the same substitution the
-/// colony performs when it instantiates the template.
-fn resolve_vars(script: &str, over: &[(&str, &str)]) -> String {
-    let mut out = String::with_capacity(script.len());
-    let mut rest = script;
-    while let Some(start) = rest.find("${") {
-        out.push_str(&rest[..start]);
-        let tail = &rest[start + 2..];
-        let end = tail
-            .find('}')
-            .expect("unterminated ${...} in script_inline");
-        let inner = &tail[..end];
-        let (name, default) = match inner.split_once(":-") {
-            Some((n, d)) => (n, d),
-            None => (inner, ""),
-        };
-        let value = over
-            .iter()
-            .find(|(k, _)| *k == name)
-            .map(|(_, v)| *v)
-            .unwrap_or(default);
-        out.push_str(value);
-        rest = &tail[end + 1..];
-    }
-    out.push_str(rest);
-    out
-}
-
-fn split_script(over: &[(&str, &str)]) -> String {
+/// The shipped script, verbatim.
+///
+/// There is nothing left to substitute: since `dispatcher@1.2.0` all four knobs
+/// of this cell are params rather than substitution tokens (GH #138), so a case
+/// that wants a smaller budget or a named tool class hands one down on the stdin
+/// document's `params` object -- the same object an `override_params` entry
+/// fills at instantiation.
+fn split_script() -> String {
     let raw = std::fs::read_to_string(SPLIT_CONFIG).expect("dispatcher config");
     let v: Value = meclaw_core::serde_json::from_str(&raw).expect("config json");
-    resolve_vars(
-        v["params"]["script_inline"]
-            .as_str()
-            .expect("script_inline"),
-        over,
-    )
+    v["params"]["script_inline"]
+        .as_str()
+        .expect("script_inline")
+        .to_string()
 }
 
 /// Run a shipped script over a real stdin document, handing the script to
@@ -113,9 +89,10 @@ fn run_script_on_stdin(script: &str, stdin_doc: &str) -> std::process::Output {
 
 /// Runs the real script against a real stdin document and returns the emitted
 /// messages.
-fn emit_with(over: &[(&str, &str)], doc: Value) -> Vec<Value> {
+fn emit_with(params: Value, mut doc: Value) -> Vec<Value> {
+    doc["params"] = params;
     let out = run_script_on_stdin(
-        &split_script(over),
+        &split_script(),
         &meclaw_testing::code_stdin(&doc).to_string(),
     );
     assert!(
@@ -132,7 +109,7 @@ fn emit_with(over: &[(&str, &str)], doc: Value) -> Vec<Value> {
 }
 
 fn emit(doc: Value) -> Vec<Value> {
-    emit_with(&[], doc)
+    emit_with(json!({}), doc)
 }
 
 /// One OpenAI-form tool call as the `llm` cell emits it: the turn `text` is the
@@ -275,7 +252,7 @@ fn an_async_call_opens_no_fan_in_expectation_and_carries_its_consult_id() {
     // the call -- it NAMES it on the expectation lane, and the collector reads
     // that name instead of keeping its own list.
     let out = emit_with(
-        &[("DISPATCHER_ASYNC_TOOLS", "consult_cogny")],
+        json!({"async_tools": ["consult_cogny"]}),
         brain_doc(
             "tool_calls",
             vec![
@@ -338,10 +315,7 @@ fn without_the_knob_no_call_is_async() {
 #[test]
 fn a_handoff_tool_is_named_on_both_lists_and_declares_itself_async() {
     let out = emit_with(
-        &[
-            ("DISPATCHER_ASYNC_TOOLS", "remember"),
-            ("DISPATCHER_HANDOFF_TOOLS", "escalate_to_deep"),
-        ],
+        json!({"async_tools": ["remember"], "handoff_tools": ["escalate_to_deep"]}),
         brain_doc(
             "tool_calls",
             vec![
@@ -378,7 +352,7 @@ fn a_reply_to_an_open_consult_keeps_the_correlation_id_it_was_given() {
     // model passes the id it was shown. Without this the reply would open a
     // SECOND consult and the advisor would have to guess the thread.
     let out = emit_with(
-        &[("DISPATCHER_ASYNC_TOOLS", "consult_cogny")],
+        json!({"async_tools": ["consult_cogny"]}),
         brain_doc(
             "tool_calls",
             vec![call_turn(
@@ -449,19 +423,13 @@ fn the_budget_is_a_knob_and_a_bundle_at_the_cap_still_runs() {
             call_turn("c2", "web_fetch", "{}"),
         ]
     };
-    let at_cap = emit_with(
-        &[("DISPATCHER_MAX_CALLS", "2")],
-        brain_doc("tool_calls", two()),
-    );
+    let at_cap = emit_with(json!({"max_calls": 2}), brain_doc("tool_calls", two()));
     assert_eq!(at_cap.len(), 3, "the cap is a ceiling, not a barrier");
     assert_eq!(route_of(&at_cap[1]), "tool");
 
     let mut three = two();
     three.push(call_turn("c3", "web_search", "{}"));
-    let over = emit_with(
-        &[("DISPATCHER_MAX_CALLS", "2")],
-        brain_doc("tool_calls", three),
-    );
+    let over = emit_with(json!({"max_calls": 2}), brain_doc("tool_calls", three));
     assert_eq!(
         over.len(),
         4,
@@ -621,11 +589,27 @@ fn main_config() -> Value {
     ]}}})
 }
 
-fn build_tree(td: &tempfile::TempDir, env: &str) {
+/// The tree, with `max_calls` for the dispatcher or `None` for the shipped
+/// sixteen.
+///
+/// It was an environment line here until GH #138. The knob is a param of the
+/// cell now, so such a line would be read by NOTHING and the bundle below would
+/// simply run -- a green test measuring the opposite of what it says. Patching
+/// the copied config is exactly what an `override_params` entry does to a tree
+/// booted from disk: the mutation door writes the same key into the same file
+/// (`patch_and_substitute_config`).
+fn build_tree(td: &tempfile::TempDir, max_calls: Option<i64>) {
     let root = td.path();
-    std::fs::write(root.join(".env"), env).unwrap();
+    std::fs::write(root.join(".env"), "").unwrap();
     write(root, "main/config.json", &main_config());
     copy_cells(&template_dir(), &root.join("main/dispatcher"));
+    if let Some(n) = max_calls {
+        let p = root.join("main/dispatcher/config.json");
+        let mut v: Value =
+            meclaw_core::serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        v["params"]["max_calls"] = json!(n);
+        std::fs::write(&p, meclaw_core::serde_json::to_string_pretty(&v).unwrap()).unwrap();
+    }
     let finish = json!({"finish_reason": {"type": "string",
                                           "values": ["stop", "tool_calls"], "required": true}});
     write(
@@ -680,7 +664,7 @@ async fn drain(rx: &mut mpsc::Receiver<Message>, n: usize) -> Vec<(String, Strin
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_bundle_fans_out_by_name_and_the_round_comes_back_complete() {
     let td = tempfile::TempDir::new().unwrap();
-    build_tree(&td, "");
+    build_tree(&td, None);
     let (h, mut sink_rx, _park_rx) = boot(&td).await;
 
     h.send(turn("tools please")).await;
@@ -715,7 +699,7 @@ async fn a_bundle_fans_out_by_name_and_the_round_comes_back_complete() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_stop_turn_reaches_the_answer_lane_and_runs_no_tool() {
     let td = tempfile::TempDir::new().unwrap();
-    build_tree(&td, "");
+    build_tree(&td, None);
     let (h, mut sink_rx, _park_rx) = boot(&td).await;
 
     h.send(turn("just answer")).await;
@@ -735,7 +719,7 @@ async fn a_stop_turn_reaches_the_answer_lane_and_runs_no_tool() {
 async fn a_bundle_over_the_budget_keeps_the_round_complete_without_running_a_tool() {
     let td = tempfile::TempDir::new().unwrap();
     // One call per answer: the two-call bundle of this brain is over budget.
-    build_tree(&td, "DISPATCHER_MAX_CALLS=1\n");
+    build_tree(&td, Some(1));
     let (h, mut sink_rx, _park_rx) = boot(&td).await;
 
     h.send(turn("tools please")).await;

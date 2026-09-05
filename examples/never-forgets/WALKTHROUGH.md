@@ -54,8 +54,14 @@ exchange gets answered out of an empty store.
 **This step is easy to miss and the example does not work without it.** The
 topology in `grow.json` wires the `memory_recall` lane, but a wired lane is not a
 tool the model can see. Tool *schemas* are not topology — they live in the
-brain's `system.tools`, seeded next to the cell. The composite ships none,
-deliberately: identity, instructions and tools are the agent, not the graph.
+brain's `system.tools`, seeded next to the cell. The composite ships none for this
+name, deliberately: identity, instructions and tools are the agent, not the graph.
+In the shipped library a member's memory hive DECLARES the schema and the
+collector fetches it whenever a mutation commits
+([#552](https://github.com/mmeyerlein/meclaw/issues/552),
+[#553](https://github.com/mmeyerlein/meclaw/issues/553)); this example wires a
+two-cell memory of its own and no menu, so the seed is what the reader writes by
+hand.
 
 ```bash
 mkdir -p examples/never-forgets/templates/talky/brain/seed
@@ -145,18 +151,18 @@ curl -s -X POST http://127.0.0.1:7788/colony/mutations \
 ```
 
 ```
-15 cells:
+16 cells:
   /memory/episodes           store     /talky/errors                    code
   /memory/keep               code      /talky/session-keeper/close      code
   /replay                    code      /talky/session-keeper/night      timer
-  /sink                      code      /talky/session-keeper/sessions   store
-  /door                      code      /talky/session-keeper/stamp      code
-  /talky/brain               llm       /talky/dispatcher                code
-  /talky/collector/assemble  code      /talky/splitter                  code
-  /talky/collector/window    store
+  /sink                      code      /talky/session-keeper/porter     code
+  /door                      code      /talky/session-keeper/sessions   store
+  /talky/brain               llm       /talky/session-keeper/stamp      code
+  /talky/collector/assemble  code      /talky/dispatcher                code
+  /talky/collector/window    store     /talky/splitter                  code
 ```
 
-Three checked in, twelve instantiated from templates by one POST. Verify the
+Three checked in, thirteen instantiated from templates by one POST. Verify the
 seed landed while you are here:
 
 ```bash
@@ -308,19 +314,19 @@ spine of them, with the header keys that decide each turn:
 /talky/collector            -> /talky/brain                 {route: brain, iter: 0}  <- inference 1
 /talky/brain                -> /talky/splitter              {finish_reason: tool_calls}
 /talky/splitter             -> /talky/dispatcher            {finish_reason: tool_calls}
-/talky/dispatcher           -> /talky/collector             {route: in_memory_call,
+/talky/dispatcher           -> /talky                       {route: tool,
                                                              tool_name: memory_recall}
-/talky/collector            -> /talky/collector/assemble    {route: in_memory_call}
-/talky/collector/assemble   -> /talky/collector             {route: recall,
+/talky                      -> /memory/keep                 {route: in_call,
+                                                             tool_call_id: <the call>}
+/memory/keep                -> /memory/episodes             {route: mstore,
                                                              recall_query: "What did the plumber
                                                                say about the radiator in February?",
                                                              recall_window_from: 2026-02-01T00:00:00Z,
                                                              recall_window_to:   2026-02-28T23:59:59Z}
-/talky/collector            -> /memory/keep                 {route: in_recall, …}
-/memory/keep                -> /memory/episodes             {route: mstore}
 /memory/episodes            -> /memory/keep                 {route: in_echo}
-/memory/keep                -> /talky/collector             {route: in_bundle, iter: 0}
-/talky/collector            -> /talky/collector/assemble    {route: in_bundle, iter: 0}
+/memory/keep                -> /talky                       {route: result}
+/talky                      -> /talky/collector             {route: in_tool, iter: 0}
+/talky/collector            -> /talky/collector/assemble    {route: in_tool, iter: 0}
 
 /talky/collector/assemble   -> /talky/collector             {route: brain, iter: 1}
 /talky/collector            -> /talky/brain                 {route: brain, iter: 1}  <- inference 2
@@ -375,10 +381,13 @@ was the one asking.
 
 **From the dispatcher's side it is an ordinary tool.** `/talky/dispatcher` matched on
 `hop.tool_name == 'memory_recall'` exactly the way it matches any other tool
-name, and an edge knew which cell answers. From the collector's side it is the
-one tool it serves itself, because it already owns the recall port — so the
-round ends where it began, and memory never learns a word of dispatcher
-vocabulary.
+name, the call left the composite on the guarded default exit, and an edge of
+`grow.json` knew which cell answers. Since
+[#552](https://github.com/mmeyerlein/meclaw/issues/552) that cell is the MEMORY,
+and the answer comes back as an ordinary `tool_result` on `in_tool` — whoever is
+reached declares the tool, and the rules a recall obeys are the memory's. The
+composite served the name itself until `talky@5.0.0`, on a private lane and out of
+its own recall port.
 
 **And the round trip is visible as `iter`.** Inference 1 runs at `iter: 0`,
 memory answers, inference 2 runs at `iter: 1`. Two provider calls with one

@@ -44,9 +44,10 @@
 //!    state with no turn beside it, so a refusal is a warn line and a stop —
 //!    never a `degraded` reply in front of somebody who asked nothing.
 //! 8. **The shipped wiring carries it.** The assistant level draws the second
-//!    `schemas` / `in_menu` pair to its core, every `tool_schemas` edge stamps
-//!    an answerer, and the collector's own store has the table the round trip
-//!    writes to.
+//!    `schemas` / `in_menu` pair to its core and, since GH #552, a third out of
+//!    the level to the member's memory; every `tool_schemas` edge stamps an
+//!    answerer, and the collector's own store has the table the round trip writes
+//!    to.
 
 use meclaw_core::serde_json::{Value, json};
 use meclaw_testing::{code_stdin, run_shipped_script, shipped_script};
@@ -236,11 +237,30 @@ fn an_answer_is_recorded_under_the_answerer_that_gave_it() {
 // ═════════════════════════════════════════════ 2.-3. the write is the union
 
 #[test]
-fn two_answerers_produce_one_menu_carrying_both() {
-    let declared = json!(["a_tool", "consult_cogny"]);
-    let (rec_tools, _) = record("tools", &[decl("a_tool")], &["consult_cogny"], &declared);
-    let (rec_core, _) = record("cogny", &[decl("consult_cogny")], &["a_tool"], &declared);
-    let rows = [row_of(&rec_tools), row_of(&rec_core)];
+fn three_answerers_produce_one_menu_carrying_all_of_them() {
+    // Three since GH #552: the tools hive, the reasoning core, and the member's
+    // own MEMORY, which declares the one tool it answers. The merge machinery
+    // did not change for the third — that is the claim.
+    let declared = json!(["a_tool", "consult_cogny", MEM]);
+    let (rec_tools, _) = record(
+        "tools",
+        &[decl("a_tool")],
+        &["consult_cogny", MEM],
+        &declared,
+    );
+    let (rec_core, _) = record(
+        "cogny",
+        &[decl("consult_cogny")],
+        &["a_tool", MEM],
+        &declared,
+    );
+    let (rec_mem, _) = record(
+        "memory",
+        &[decl(MEM)],
+        &["a_tool", "consult_cogny"],
+        &declared,
+    );
+    let rows = [row_of(&rec_tools), row_of(&rec_core), row_of(&rec_mem)];
 
     let (out, stderr) = merge(&rows, &declared);
     assert_eq!(out.len(), 1, "one menu message: {out:#?}");
@@ -249,7 +269,7 @@ fn two_answerers_produce_one_menu_carrying_both() {
     assert_eq!(
         names(msg),
         want(&["consult_cogny", "a_tool", MEM, THREAD]),
-        "the union of both answerers plus the two this cell serves itself: {msg:#?}"
+        "the union of all three answerers plus the one this cell serves itself: {msg:#?}"
     );
     assert_eq!(
         msg["system"]["tools"]["$replace"],
@@ -260,13 +280,13 @@ fn two_answerers_produce_one_menu_carrying_both() {
     );
     assert_eq!(msg["header"]["menu_count"], "4");
     assert_eq!(
-        msg["header"]["menu_answerers"], "cogny,tools",
+        msg["header"]["menu_answerers"], "cogny,memory,tools",
         "the receipt says whose rows the write stands on: {msg:#?}"
     );
-    assert_eq!(msg["header"]["menu_self"], format!("{MEM},{THREAD}"));
+    assert_eq!(msg["header"]["menu_self"], THREAD);
     assert_eq!(
         msg["header"]["menu_unknown"], "",
-        "each answerer had nothing under the OTHER's tool, and neither of those is a \
+        "each answerer had nothing under the OTHERS' tools, and none of those is a \
          finding: `menu_unknown` is computed against the merged menu (GH #529): {msg:#?}"
     );
     assert!(stderr.is_empty(), "nothing to report: {stderr}");
@@ -293,7 +313,7 @@ fn a_name_two_answerers_declare_is_taken_from_the_first_of_them() {
     let msg = &out[0];
     assert_eq!(
         names(msg),
-        want(&["shared", MEM, THREAD]),
+        want(&["shared", THREAD]),
         "one leaf per name: a menu that declared the same tool twice is a menu no provider \
          accepts: {msg:#?}"
     );
@@ -374,7 +394,7 @@ fn an_answer_with_no_answerer_named_is_the_shape_every_tree_had_before() {
     let (menu, _) = merge(&[row_of(&out)], &declared);
     assert_eq!(
         names(&menu[0]),
-        want(&["a_tool", MEM, THREAD]),
+        want(&["a_tool", THREAD]),
         "which produces exactly the menu a one-answerer tree wrote before #529: {menu:#?}"
     );
 }
@@ -478,14 +498,20 @@ fn every_declaration_answer_in_the_shipped_assistant_names_its_answerer() {
         .collect();
     assert_eq!(
         asks.len(),
-        2,
-        "the surface asks BOTH occupants what they serve — the tool hive has nothing under \
-         `consult_cogny` and the core has nothing under the search tools, and since #529 \
-         neither of those is a finding: {asks:#?}"
+        3,
+        "the surface asks both occupants AND the level's rim what they serve — the tool hive \
+         has nothing under `consult_cogny`, the core has nothing under the search tools, the \
+         member's memory has nothing under any of them, and since #529 none of those is a \
+         finding: {asks:#?}"
     );
     let mut targets: Vec<&str> = asks.iter().map(|e| e["to"].as_str().unwrap()).collect();
     targets.sort_unstable();
-    assert_eq!(targets, vec!["./cogny", "./tools"]);
+    assert_eq!(
+        targets,
+        vec![".", "./cogny", "./tools"],
+        "the third one leaves the level, because a memory belongs to the MEMBER and not to \
+         one of its generations (GH #552)"
+    );
 
     assert!(
         !edges.iter().any(|e| e["condition"]

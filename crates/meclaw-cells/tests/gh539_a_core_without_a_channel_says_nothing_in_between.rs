@@ -54,11 +54,10 @@ const DISPATCHER: &str = "../../templates/dispatcher/config.json";
 fn script() -> String {
     let raw = std::fs::read_to_string(DISPATCHER).expect("dispatcher config");
     let v: Value = serde_json::from_str(&raw).expect("config json");
-    meclaw_testing::resolve_script_vars(
-        v["params"]["script_inline"]
-            .as_str()
-            .expect("script_inline"),
-    )
+    v["params"]["script_inline"]
+        .as_str()
+        .expect("script_inline")
+        .to_string()
 }
 
 /// The shipped script over a real stdin document. The program travels on stdin
@@ -168,12 +167,16 @@ fn a_final_sentence_beside_an_async_bundle_leaves_even_with_the_knob_off() {
     // GH #378 read from the other side: when every call is async and none is a
     // handoff, nothing is waited for and the sentence IS this turn's answer.
     // The knob withholds the PROMISE of a later answer, never an answer.
+    // The async class rides on the same `params` object as the knob under test
+    // -- it was a substitution token this case patched into the script until
+    // `dispatcher@1.2.0` (GH #138), and a patch like that is exactly the harness
+    // that keeps working after the surface it imitated is gone.
     let doc = brain_doc(
         "tool_calls",
-        OFF(),
+        json!({"interim": "", "async_tools": ["remember"]}),
         vec![call_turn("c1", "remember"), said()],
     );
-    let out = emit_with_async(doc, "remember");
+    let out = emit(doc);
 
     let answers: Vec<&Value> = out.iter().filter(|m| route_of(m) == "answer").collect();
     assert_eq!(answers.len(), 1, "the sentence still leaves: {out:?}");
@@ -185,46 +188,6 @@ fn a_final_sentence_beside_an_async_bundle_leaves_even_with_the_knob_off() {
         out.iter().any(|m| route_of(m) == "tool"),
         "the fire-and-forget call still travels: {out:?}"
     );
-}
-
-/// The async class is an env token on the experimental surface, so this one case
-/// substitutes it the way the colony would before the script runs.
-fn emit_with_async(doc: Value, tools: &str) -> Vec<Value> {
-    let raw = std::fs::read_to_string(DISPATCHER).expect("dispatcher config");
-    let v: Value = serde_json::from_str(&raw).expect("config json");
-    let s = v["params"]["script_inline"]
-        .as_str()
-        .expect("script_inline")
-        .replace("${DISPATCHER_ASYNC_TOOLS:-}", tools);
-    let s = meclaw_testing::resolve_script_vars(&s);
-    let stdin_doc = meclaw_testing::code_stdin(&doc).to_string();
-    let src = format!(
-        concat!(
-            "import sys, io\n",
-            "_script = {}\n",
-            "sys.stdin = io.StringIO({})\n",
-            "exec(compile(_script, 'cell', 'exec'), globals())\n"
-        ),
-        serde_json::to_string(&s).unwrap(),
-        serde_json::to_string(&stdin_doc).unwrap(),
-    );
-    let mut child = Command::new("python3")
-        .arg("-")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("python3");
-    let mut sink = child.stdin.take().expect("stdin");
-    sink.write_all(src.as_bytes()).expect("write program");
-    drop(sink);
-    let out = child.wait_with_output().expect("wait");
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    serde_json::from_slice(&out.stdout).expect("message array")
 }
 
 #[test]

@@ -1,12 +1,12 @@
 {
   "name": "daily-digest",
-  "version": "2.0.3",
+  "version": "2.1.0",
   "description": {
-    "purpose": "Scheduled fetch-and-forward: a timer fires daily, a web_fetch pulls a URL, a code cell formats the result, a Telegram proxy delivers it to a fixed chat.",
+    "purpose": "Scheduled fetch-and-forward: a timer fires daily, a web_fetch pulls a URL, a code cell formats the result, a Telegram proxy delivers it to a fixed chat. Since 2.1.0 both behaviour knobs are PARAMS of `./clock` rather than substitution tokens out of the colony's environment ([#138](https://github.com/mmeyerlein/meclaw/issues/138), ruling R-0904-6): they live inside `params.schedules`, the one key that holds the whole list, so an `override_params` entry names `schedules` and replaces it, and `contract.settings` declares what each field means.",
     "use_when": "Periodic push of one URL's content to one Telegram chat. Override the URL, the cron expression and the chat id at instantiation. A parent may also demand a run at the hive path on lane in_digest, bringing context.chat_id itself, and take the formatted digest back on lane digest.",
     "not_in_scope": "No multi-source aggregation, no LLM summarization (insert an llm cell between format and notifier for that), no per-user subscriptions.",
     "examples": [
-      "08:00 daily -> GET $DIGEST_URL -> 'Daily digest:\\n<first 3500 chars>' to $TELEGRAM_DIGEST_CHAT_ID"
+      "08:00 daily -> GET <params.digest_url> -> 'Daily digest:\\n<first 3500 chars>' to <params.chat_id>"
     ]
   },
   "tags": [

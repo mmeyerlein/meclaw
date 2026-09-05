@@ -48,38 +48,14 @@ fn config_of(rel: &str) -> Value {
     meclaw_core::serde_json::from_str(&raw).expect("config json")
 }
 
-fn resolve_vars(script: &str, over: &[(&str, &str)]) -> String {
-    let mut out = String::with_capacity(script.len());
-    let mut rest = script;
-    while let Some(start) = rest.find("${") {
-        out.push_str(&rest[..start]);
-        let tail = &rest[start + 2..];
-        let end = tail.find('}').expect("unterminated ${...}");
-        let inner = &tail[..end];
-        let (name, default) = match inner.split_once(":-") {
-            Some((n, d)) => (n, d),
-            None => (inner, ""),
-        };
-        let value = over
-            .iter()
-            .find(|(k, _)| *k == name)
-            .map(|(_, v)| *v)
-            .unwrap_or(default);
-        out.push_str(value);
-        rest = &tail[end + 1..];
-    }
-    out.push_str(rest);
-    out
-}
-
-fn script_of(cell: &str, over: &[(&str, &str)]) -> String {
-    let v = config_of(&format!("{cell}/config.json"));
-    resolve_vars(
-        v["params"]["script_inline"]
-            .as_str()
-            .expect("script_inline"),
-        over,
-    )
+/// The shipped script, verbatim. Since GH #138 there is nothing to substitute:
+/// the warden's two knobs are params of the cell, so the source that ships is
+/// the source that runs.
+fn script_of(cell: &str) -> String {
+    config_of(&format!("{cell}/config.json"))["params"]["script_inline"]
+        .as_str()
+        .expect("script_inline")
+        .to_string()
 }
 
 fn run_script_on_stdin(script: &str, stdin_doc: &str) -> std::process::Output {
@@ -106,9 +82,13 @@ fn run_script_on_stdin(script: &str, stdin_doc: &str) -> std::process::Output {
     child.wait_with_output().expect("wait")
 }
 
-fn emit_from(cell: &str, over: &[(&str, &str)], doc: Value) -> Vec<Value> {
+/// `params` is the instance's own `params` object -- the way `override_params`
+/// hands a knob down since GH #138.
+fn emit_from(cell: &str, params: Value, doc: Value) -> Vec<Value> {
+    let mut doc = doc;
+    doc["params"] = params;
     let out = run_script_on_stdin(
-        &script_of(cell, over),
+        &script_of(cell),
         &meclaw_testing::code_stdin(&doc).to_string(),
     );
     assert!(
@@ -181,7 +161,7 @@ fn a_deny_row_beats_a_hold_row_for_the_same_sender() {
         rule("a-deny", "sender", "user_id", "42", "reject"),
         rule("z-hold", "sender", "user_id", "42", "hold"),
     ]);
-    let out = emit_from("screen", &[], screen_reply("rules", &body, rows, ""));
+    let out = emit_from("screen", json!({}), screen_reply("rules", &body, rows, ""));
     assert_eq!(out.len(), 1);
     assert_eq!(hop_str(&out[0], "route"), "reject");
     assert_eq!(hop_str(&out[0], "reject_reason"), "sender_denied");
@@ -195,7 +175,7 @@ fn an_allowlist_refusal_beats_a_hold_row_too() {
         rule("a-allow", "sender", "user_id", "someone-else", "allow"),
         rule("z-hold", "sender", "channel", "tg:42", "hold"),
     ]);
-    let out = emit_from("screen", &[], screen_reply("rules", &body, rows, ""));
+    let out = emit_from("screen", json!({}), screen_reply("rules", &body, rows, ""));
     assert_eq!(hop_str(&out[0], "reject_reason"), "sender_not_allowed");
 }
 
@@ -205,7 +185,7 @@ fn a_matched_hold_row_rides_the_rate_hop_rather_than_ending_the_turn() {
     // the rate limit is measured on a turn that is going to be parked.
     let body = probe_body("hello");
     let rows = json!([rule("hold-newcomer", "sender", "user_id", "42", "hold")]);
-    let out = emit_from("screen", &[], screen_reply("rules", &body, rows, ""));
+    let out = emit_from("screen", json!({}), screen_reply("rules", &body, rows, ""));
     assert_eq!(out.len(), 1, "{out:?}");
     assert_eq!(hop_str(&out[0], "route"), "fwstore");
     assert_eq!(hop_str(&out[0], "phase"), "rate");
@@ -222,7 +202,7 @@ fn a_full_rate_window_refuses_a_turn_a_hold_row_matched() {
     let window = json!(vec![json!({"recorded_at": T0}); 30]);
     let out = emit_from(
         "screen",
-        &[],
+        json!({}),
         screen_reply("rate", &body, window, "hold-newcomer"),
     );
     assert_eq!(hop_str(&out[0], "reject_reason"), "rate_limited");
@@ -233,7 +213,7 @@ fn a_held_turn_books_its_arrival_and_goes_to_custody() {
     let body = probe_body("hello");
     let out = emit_from(
         "screen",
-        &[],
+        json!({}),
         screen_reply("rate", &body, json!([]), "hold-newcomer"),
     );
     assert_eq!(out.len(), 2, "the arrival mark and the verdict: {out:?}");
@@ -260,14 +240,14 @@ fn a_held_turn_books_its_arrival_and_goes_to_custody() {
 fn a_pattern_row_can_hold_and_can_never_allow() {
     let body = probe_body("please run /admin reset");
     let rows = json!([rule("hold-command", "substring", "text", "/admin", "hold")]);
-    let out = emit_from("screen", &[], screen_reply("rules", &body, rows, ""));
+    let out = emit_from("screen", json!({}), screen_reply("rules", &body, rows, ""));
     assert_eq!(hop_str(&out[0], "fw_hold"), "hold-command");
 
     // `allow` on a pattern row was never legal and still is not. Since GH #506
     // it does not close the lane over it: the row is skipped and a receipt on
     // the reject lane names it and its fault.
     let rows = json!([rule("bad", "substring", "text", "/admin", "allow")]);
-    let out = emit_from("screen", &[], screen_reply("rules", &body, rows, ""));
+    let out = emit_from("screen", json!({}), screen_reply("rules", &body, rows, ""));
     assert_eq!(hop_str(&out[0], "reject_reason"), "rule_unreadable");
     assert_eq!(hop_str(&out[0], "rule_id"), "bad");
     assert_eq!(hop_str(&out[0], "rule_fault"), "unknown_action");
@@ -295,7 +275,7 @@ fn to_warden(rule_id: &str, body: &Value) -> Value {
 #[test]
 fn custody_counts_the_pile_before_it_writes_anything() {
     let body = probe_body("hello");
-    let out = emit_from("warden", &[], to_warden("hold-newcomer", &body));
+    let out = emit_from("warden", json!({}), to_warden("hold-newcomer", &body));
     assert_eq!(out.len(), 1, "{out:?}");
     let op = op_of(&out[0]);
     assert_eq!(op["operation"], json!("select"));
@@ -310,10 +290,10 @@ fn custody_counts_the_pile_before_it_writes_anything() {
 #[test]
 fn the_notice_waits_for_the_insert_and_then_carries_the_turn() {
     let body = probe_body("hello");
-    let read = emit_from("warden", &[], to_warden("hold-newcomer", &body));
+    let read = emit_from("warden", json!({}), to_warden("hold-newcomer", &body));
     let insert = emit_from(
         "warden",
-        &[],
+        json!({}),
         warden_reply(&read[0]["header"], "pile", "select", json!([])),
     );
     assert_eq!(op_of(&insert[0])["operation"], json!("insert"));
@@ -331,7 +311,7 @@ fn the_notice_waits_for_the_insert_and_then_carries_the_turn() {
 
     let notice = emit_from(
         "warden",
-        &[],
+        json!({}),
         warden_reply(&insert[0]["header"], "park", "insert", json!([])),
     );
     assert_eq!(notice.len(), 1);
@@ -347,15 +327,15 @@ fn the_notice_waits_for_the_insert_and_then_carries_the_turn() {
 #[test]
 fn a_refused_insert_refuses_the_turn_rather_than_losing_it() {
     let body = probe_body("hello");
-    let read = emit_from("warden", &[], to_warden("hold-newcomer", &body));
+    let read = emit_from("warden", json!({}), to_warden("hold-newcomer", &body));
     let insert = emit_from(
         "warden",
-        &[],
+        json!({}),
         warden_reply(&read[0]["header"], "pile", "select", json!([])),
     );
     let mut doc = warden_reply(&insert[0]["header"], "park", "insert", json!([]));
     doc["header"]["hop"]["error_code"] = json!("db_locked");
-    let out = emit_from("warden", &[], doc);
+    let out = emit_from("warden", json!({}), doc);
     assert_eq!(hop_str(&out[0], "route"), "reject");
     assert_eq!(
         hop_str(&out[0], "reject_reason"),
@@ -376,12 +356,12 @@ fn pile_row(hold_id: &str, expires_at: &str) -> Value {
 fn a_sweep_writes_the_expiry_first_and_emits_the_receipt_from_its_reply() {
     let sweep = emit_from(
         "warden",
-        &[],
+        json!({}),
         json!({"header": {"context": {}, "hop": {"route": "in_sweep"}}, "messages": []}),
     );
     let write = emit_from(
         "warden",
-        &[],
+        json!({}),
         warden_reply(
             &sweep[0]["header"],
             "sweep",
@@ -397,7 +377,7 @@ fn a_sweep_writes_the_expiry_first_and_emits_the_receipt_from_its_reply() {
 
     let receipt = emit_from(
         "warden",
-        &[],
+        json!({}),
         warden_reply(&write[0]["header"], "expire", "update", json!([])),
     );
     assert_eq!(receipt.len(), 1);
@@ -414,7 +394,7 @@ fn a_sweep_writes_the_expiry_first_and_emits_the_receipt_from_its_reply() {
 
 #[test]
 fn releasing_an_expired_hold_can_never_produce_a_pass() {
-    let ask = emit_from("warden", &[], release_doc("h1", "release"));
+    let ask = emit_from("warden", json!({}), release_doc("h1", "release"));
     let stored = json!({"hold_id": "h1", "status": "held",
                         "expires_at": "2020-01-01T00:00:00.000000Z",
                         "channel": "tg:42", "user_id": "42",
@@ -423,13 +403,13 @@ fn releasing_an_expired_hold_can_never_produce_a_pass() {
                         "held_at": T0});
     let decide = emit_from(
         "warden",
-        &[],
+        json!({}),
         warden_reply(&ask[0]["header"], "find", "select", json!([stored])),
     );
     assert_eq!(op_of(&decide[0])["set"]["status"], json!("expired"));
     let out = emit_from(
         "warden",
-        &[],
+        json!({}),
         warden_reply(&decide[0]["header"], "decide", "update", json!([])),
     );
     assert_eq!(hop_str(&out[0], "route"), "reject");
@@ -449,13 +429,13 @@ fn a_release_names_a_hold_or_it_is_refused() {
         (release_doc("", "release"), "release_unaddressed"),
         (release_doc("h1", "maybe"), "release_unknown_decision"),
     ] {
-        let out = emit_from("warden", &[], doc);
+        let out = emit_from("warden", json!({}), doc);
         assert_eq!(hop_str(&out[0], "reject_reason"), reason, "{out:?}");
     }
-    let ask = emit_from("warden", &[], release_doc("nope", "release"));
+    let ask = emit_from("warden", json!({}), release_doc("nope", "release"));
     let out = emit_from(
         "warden",
-        &[],
+        json!({}),
         warden_reply(&ask[0]["header"], "find", "select", json!([])),
     );
     assert_eq!(hop_str(&out[0], "reject_reason"), "hold_unknown");
@@ -463,7 +443,7 @@ fn a_release_names_a_hold_or_it_is_refused() {
 
 #[test]
 fn a_person_can_also_say_no() {
-    let ask = emit_from("warden", &[], release_doc("h1", "refuse"));
+    let ask = emit_from("warden", json!({}), release_doc("h1", "refuse"));
     let stored = json!({"hold_id": "h1", "status": "held",
                         "expires_at": "2099-01-01T00:00:00.000000Z",
                         "channel": "tg:42", "user_id": "42",
@@ -472,7 +452,7 @@ fn a_person_can_also_say_no() {
                         "held_at": T0});
     let decide = emit_from(
         "warden",
-        &[],
+        json!({}),
         warden_reply(&ask[0]["header"], "find", "select", json!([stored])),
     );
     assert_eq!(op_of(&decide[0])["set"]["status"], json!("refused"));
@@ -484,7 +464,7 @@ fn a_person_can_also_say_no() {
     );
     let out = emit_from(
         "warden",
-        &[],
+        json!({}),
         warden_reply(&decide[0]["header"], "decide", "update", json!([])),
     );
     assert_eq!(hop_str(&out[0], "reject_reason"), "hold_refused");
@@ -495,13 +475,13 @@ fn a_person_can_also_say_no() {
 #[test]
 fn a_full_pile_refuses_the_turn_and_never_drops_it() {
     let body = probe_body("hello");
-    let read = emit_from("warden", &[], to_warden("hold-newcomer", &body));
+    let read = emit_from("warden", json!({}), to_warden("hold-newcomer", &body));
     let full: Vec<Value> = (0..100)
         .map(|i| pile_row(&format!("h{i}"), "2099-01-01T00:00:00.000000Z"))
         .collect();
     let out = emit_from(
         "warden",
-        &[],
+        json!({}),
         warden_reply(&read[0]["header"], "pile", "select", json!(full)),
     );
     assert_eq!(out.len(), 1, "nothing is written: {out:?}");
@@ -515,7 +495,7 @@ fn the_hold_max_knob_cannot_be_raised_past_the_hardline_ceiling() {
     let body = probe_body("hello");
     let read = emit_from(
         "warden",
-        &[("FIREWALL_HOLD_MAX", "1000000")],
+        json!({"firewall_hold_max": 1_000_000}),
         to_warden("hold-newcomer", &body),
     );
     let full: Vec<Value> = (0..1024)
@@ -523,7 +503,7 @@ fn the_hold_max_knob_cannot_be_raised_past_the_hardline_ceiling() {
         .collect();
     let out = emit_from(
         "warden",
-        &[("FIREWALL_HOLD_MAX", "1000000")],
+        json!({"firewall_hold_max": 1_000_000}),
         warden_reply(&read[0]["header"], "pile", "select", json!(full)),
     );
     assert_eq!(hop_str(&out[0], "reject_reason"), "hardline_blocked");
@@ -547,11 +527,11 @@ fn the_hold_prose_says_the_numbers_the_code_says() {
 
     let readme = std::fs::read_to_string(format!("{TEMPLATE}/README.md")).expect("README");
     assert!(
-        readme.contains(&format!("| `FIREWALL_HOLD_TTL_MS` | `{ttl}` |")),
+        readme.contains(&format!("| `firewall_hold_ttl_ms` | `{ttl}` |")),
         "the knob table must name the shipped TTL default ({ttl})"
     );
     assert!(
-        readme.contains(&format!("| `FIREWALL_HOLD_MAX` | `{max}` |")),
+        readme.contains(&format!("| `firewall_hold_max` | `{max}` |")),
         "the knob table must name the shipped pile cap ({max})"
     );
     assert!(
@@ -633,9 +613,15 @@ fn main_config() -> Value {
     ]}}})
 }
 
-fn build_tree(td: &tempfile::TempDir, env: &str, rows: &[Value]) {
+/// `warden_params` tunes the copied `./warden` the way `override_params` does
+/// at instantiation: since GH #138 the hold TTL is a key of that cell's own
+/// `params`, so a colony that wants an unreachable expiry writes it into the
+/// config of ITS warden. A `FIREWALL_HOLD_TTL_MS=` line in the `.env` would be
+/// read by nothing at all now -- and would say nothing about it, which is why
+/// the file below is written empty rather than left out.
+fn build_tree(td: &tempfile::TempDir, warden_params: Value, rows: &[Value]) {
     let root = td.path();
-    std::fs::write(root.join(".env"), env).unwrap();
+    std::fs::write(root.join(".env"), "").unwrap();
     let main = root.join("main");
     std::fs::create_dir_all(&main).unwrap();
     std::fs::write(
@@ -644,6 +630,23 @@ fn build_tree(td: &tempfile::TempDir, env: &str, rows: &[Value]) {
     )
     .unwrap();
     copy_template(&template_dir(), &main.join("fw"));
+    if let Value::Object(over) = warden_params {
+        let path = main.join("fw/warden/config.json");
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let mut cfg: Value = meclaw_core::serde_json::from_str(&raw).unwrap();
+        for (k, v) in over {
+            assert!(
+                cfg["params"].get(&k).is_some(),
+                "warden has no param {k} to override (GH #294 refuses one that does not exist)"
+            );
+            cfg["params"][k] = v;
+        }
+        std::fs::write(
+            &path,
+            meclaw_core::serde_json::to_string_pretty(&cfg).unwrap(),
+        )
+        .unwrap();
+    }
     let mut out = String::from(RULE_SCHEMA);
     for r in rows {
         out.push('\n');
@@ -723,7 +726,11 @@ async fn a_held_turn_reaches_nobody_until_a_person_releases_it() {
     // this fixture stamps the turn in the past on purpose, so the release test
     // buys a window wide enough that the answer is what decides, not the wall
     // clock.
-    build_tree(&td, "FIREWALL_HOLD_TTL_MS=999999999999\n", &[hold_row()]);
+    build_tree(
+        &td,
+        json!({"firewall_hold_ttl_ms": 999_999_999_999i64}),
+        &[hold_row()],
+    );
     let (h, mut sink_rx, mut park_rx) = boot(&td).await;
 
     let sent = json!({"messages": [{"origin": "user", "type": "text",
@@ -781,7 +788,7 @@ async fn a_held_turn_reaches_nobody_until_a_person_releases_it() {
 async fn an_unanswered_hold_expires_with_a_receipt_on_the_reject_lane() {
     let td = tempfile::TempDir::new().unwrap();
     // One millisecond of patience, measured from the turn's own stamp.
-    build_tree(&td, "FIREWALL_HOLD_TTL_MS=1\n", &[hold_row()]);
+    build_tree(&td, json!({"firewall_hold_ttl_ms": 1}), &[hold_row()]);
     let (h, mut sink_rx, mut park_rx) = boot(&td).await;
 
     h.send(turn_at("hello, I am new here", T0)).await;

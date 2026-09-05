@@ -1,4 +1,4 @@
-# `builder@1.6.1`
+# `builder@1.7.1`
 
 The intake that turns a structural wish into a **manifest** — an ordered list of
 mutation declarations, ready to be submitted by whoever asked for it.
@@ -53,6 +53,7 @@ address them.
 |---|---|---|
 | `classify` | `code` | Reads the tool arguments and decides the CLASS: a named recipe whose parameters are complete, or everything else. Calls no model. |
 | `recipes` | `code` | The fast lane. Renders one of four predefined recipes straight into a manifest, deterministically — including the whole transit edge set of a composition level. |
+| `tally` | `code` | How many members does this organisation already carry? The one lookup the fast lane makes: it parks the wish in the round table, asks `/colony/graph`, counts the DIRECT children of the members container and stamps `hop.member_index` on the wish before `recipes` sees it. Only a MEMBER wish takes this hop. |
 | `builder-librarian` | `ref builder-librarian` | Retrieval over the corpus. Referenced, never copied (ADR-0011). |
 | `brief` | `code` | Assembles the authoring prompt: the retrieved sections become instructions, the request stays a user turn. It emits twice — the prompt to the composer, and the same question and the same instruction tree into the round table, because round 1 onwards is briefed by the loop and not by this cell. |
 | `compose` | `llm` | The model call of the design lane — asked once per round, not once per build. |
@@ -229,9 +230,9 @@ repairs, and a refusal a human cannot read is one they cannot answer.
 ## A level is a recipe
 
 Growing a child into a composition level was, until `1.2.0`, a paragraph a model
-rewrote from scratch on every build: an organisation gets **18** transit edges, a
-member **18**, an assistant **16**, a channel **3**, a screen **2**, an app
-**2** — and they are the same edges every time, with the child's name
+rewrote from scratch on every build: an organisation gets **20** transit edges, a
+member **20**, an assistant **23**, a channel **3**, a screen **2**, an app
+**3** — and they are the same edges every time, with the child's name
 substituted in. `examples/organism` writes all six out by hand, which is what
 made them measurable.
 
@@ -249,7 +250,7 @@ of that same set, `examples/memory-import/build_import.py`, had been writing it
 correctly the whole time, and the two are now compared element for element.
 
 **A container's children are ADDRESSES, not a broadcast** ([#478](https://github.com/mmeyerlein/meclaw/issues/478)). Each
-of those six doors carries the child's own name beside the lane —
+of those seven doors carries the child's own name beside the lane —
 `(!has(context.member) || context.member == '<name>')` for a member,
 `context.org` for an organisation — because `Edge.to` is a static path one storey
 up as well. Without the name, a container holding two children fans every message
@@ -309,11 +310,14 @@ member cannot recompute — the session ledger of its own `session-keeper`, four
 levels down — and until the recipe drew those three, a generation grown from a
 wish could not receive it: an `in_export` that named it stopped as `no_route` at
 the container, silently, because an export that walked three holders looks
-exactly like a complete one. The `dump` edge is **plain** on purpose: every
-level between the container and the keeper pairs `in_export` with `dump` in
-`params.required_drains`, and the probe that checks the pairing runs the
-described hop through the real edge evaluator — an edge that additionally tested
-`hop.dump_kind` reads as no drain at all and the mutation is refused.
+exactly like a complete one. Since GH #555 the recipe draws FOUR: the keeper
+writes its own ledger and says `export_done`, and `dump` carries the receipt of
+an applied import part. Both exits are **plain** on purpose: every level between
+the container and the keeper pairs `in_export` with `export_done` and
+`in_import` with `dump` in `params.required_drains`, and the probe that checks a
+pairing runs the described hop through the real edge evaluator — an edge that
+additionally tested a second hop key reads as no drain at all and the mutation
+is refused.
 
 `grow_level` renders them from a table. What it does **not** decide is the
 template: which class a level is filled with is a catalogue question, and the
@@ -337,7 +341,69 @@ on a `channel` (§ *A round is provenance*).
 | `override_params` | optional | addressed per cell of the template (`{"cogny/brain": {"temperature": 0.2}}`) |
 | `birth` | optional | `active` or `inactive` — the door's own vocabulary, written top-level on the `add_nodes` entry. A name the door does not know is refused here as `birth_unknown`, one hop from the wish that made it, rather than at the door one hop from the manifest. The default is the door's (`active`) for every level except `channel`, which is born **asleep** |
 | `subscribe` | optional, `assistant` | draw the identity door as well — since #561 four v-lanes: one push from the member's own `./affinity` into each brain rim of the generation, and one `pack_ack` drain back from each. It is not part of the level and is not counted in the table above; see § *The identity door is opt-in* |
+| — | never for `member` | there is **no** parameter that turns the screen off, chooses what fills it or names its port. A member always gets both devices, and what fills them is the builder's own configuration (§ *A member grows a screen and an app, and the OS hands out the port*) |
 | `credential` | optional, `assistant` | grow the generation with **no key of its own** — four more v-lanes to the member's own broker, the grants that answer them, and both credential params on both brains. `{"cred_ref": …, "subject": …, "expires_at": …}` are required inside it, `rule_id` and `rate_per_min` optional. Since `1.6.1` it is drawn in the SAME declaration as the generation, which stands at the member for it; the four edges are not counted in the table above; see § *The credential lanes are opt-in too, and they ride in the level's own declaration* |
+
+### A member grows a screen and an app, and the OS hands out the port
+
+Since `1.7.0` a `grow_level` wish for a **member** answers with **two
+manifests** rather than one
+([#543](https://github.com/mmeyerlein/meclaw/issues/543)). The first is the
+level, unchanged to the byte. The second grows the two devices that person
+speaks through:
+
+```json
+{"manifest": [
+  {"scope": "/os/orgs/acme/members/alex/channels",
+   "diff": {"add_nodes": [{"name": "display", "template": "display@1.0.2",
+                           "override_params": {"web": {"port": 7900}}}], "…": "…"}},
+  {"scope": "/os/orgs/acme/members/alex/apps",
+   "diff": {"add_nodes": [{"name": "colony-view", "template": "colony-view@1.1.0"}], "…": "…"}}]}
+```
+
+**There is no way to ask for a member without them.** A person in this substrate
+is the thing that HAS input and output devices; whether they are used is a
+second question, and whether they exist is not one at all. A `screen: false`
+would not even be expressible — `classify` drops a falsy key, so *set to false*
+and *never mentioned* are the same wish — and there is no third state to
+express.
+
+**What fills them is the builder's, not the wish's.** `member_screen_template`,
+`member_app_template` and `screen_port_base` are `params` of the `recipes` cell,
+overridable per instance with `override_params`, and the recipe reads them off
+its own stdin. That keeps the rule the fast lane has always run under: it is
+**told** which template to instantiate, because what a level should be filled
+with is a catalogue question. It is colony-wide rather than org-wide, and in a
+colony carrying one organisation those are the same statement; the substrate has
+no per-org surface at all (an org is a namespace, `HiveParams` is
+`deny_unknown_fields`, and no read endpoint hands params out).
+
+**The port is measured, and the OS is what hands it out.** `screen_port_base +
+<the member's index in its organisation>`, written as `override_params` on the
+screen's own node. The index is not in the wish: `tally` asks `/colony/graph`
+for `<org>/members` and counts the direct children before the renderer runs. A
+colony carries many organisations and **one** OS, and the OS is what allocates
+what is system-near — a port, an address, a socket. The allocation in this
+builder is the first form of that responsibility, because the builder is part of
+the OS (ADR-0022).
+
+**A count that could not be taken is named, never rounded down.** If the graph
+read is refused, comes back without its tag, or the parked round is gone,
+`tally` answers on `error` with `hop.error_code = count_unavailable` and the
+build stops there — the wish reaches no renderer and no manifest is drafted, so
+what a caller sees is a named refusal rather than a member. `recipes` speaks the
+same code for the same event one cell later: an index or a `screen_port_base`
+that arrived *unreadable* (present, and not a number) refuses instead of
+rendering. An **absent** index is not that case and never was — nobody counted,
+so this is the first member and the base port is the answer.
+
+**Two manifests are two submissions, and the order is semantics.** The second
+draws into `<member>/channels`, a scope only the first creates, and there is no
+rollback between them — applied the other way round the screen is refused for a
+scope that does not exist. That is measured rather than assumed
+(`gh543_a_member_always_gets_its_screen.rs`), and each manifest carries its own
+digest and its own caller row, so a refusal of either finds the door it came
+from.
 
 ### The credential lanes are opt-in too, and they ride in the level's own declaration
 
@@ -407,8 +473,8 @@ the second half. It read the member's identity off the last segment of the scope
 the wish had named — the DIRECTORY the member stands in — which is the right
 answer only while the folder happens to be spelled like the person.
 
-A member directory called `egon` holding a person called `marcus` is the normal
-case, not a pathology, and there the edge declared `member:egon`: a participant
+A member directory called `assistant` holding a person called `alex` is the normal
+case, not a pathology, and there the edge declared `member:assistant`: a participant
 that exists in no row of the store. What that costs is not a wrong string.
 `memory-hive/recall`'s gate admits a row only when the declared round is a
 **subset** of the row's own, so one wrong name refuses **every** row, in every
@@ -548,7 +614,7 @@ reason is worth writing down so nobody re-derives the disappointment:
   its `accepts` and `emits` are both empty, and its two upward edges condition on
   `has(hop.error_code)` — on a failure key, not on a lane.
 - **Lane count is not edge count**, in either direction. `assistant` declares
-  eighteen lanes and gets sixteen edges: four of them are addressed at the path
+  twenty-five lanes and gets twenty-two edges: four of them are addressed at the path
   directly (ruling W7-R5), `in_pack` and `pack_ack` are the opt-in identity door
   and no part of the level, `display` folds `event`+`receipt` into **one**
   edge one level further out — and since [#562](https://github.com/mmeyerlein/meclaw/issues/562)
@@ -577,7 +643,7 @@ Four bounds, and each one buys something different:
 |---|---|---|---|
 | `BUILDER_MAX_ITER` | the condition of `./weave → ./compose` | 6 | a model that keeps looking and never writes |
 | `BUILDER_WRITE_ROUNDS` | `params` of `weave` | 1 | the last round being spent looking as well |
-| `DISPATCHER_MAX_CALLS` | the referenced `dispatcher` | 16 | one answer asking for forty tools at once |
+| `max_calls` | `params` of the referenced `dispatcher` | 16 | one answer asking for forty tools at once |
 | `BUILDER_MAX_REPAIRS` | the condition of the repair edge | 2 | a refusal being retried forever |
 | `BUILDER_ROUND_IDLE_MS` | arithmetic in `weave` | 120000 | a fan-in waiting on a result that will never come |
 
@@ -662,7 +728,7 @@ and the cap did not cause it.
 
 ### The sentence beside the bundle is not a dead letter
 
-**Since `1.4.1`.** `dispatcher@1.1.2` splits one model answer into two emissions
+**Since `1.4.1`.** `dispatcher@1.2.0` splits one model answer into two emissions
 when it carries content **and** tool calls: the bundle on `hop.route == 'calls'`,
 the sentence beside it on `hop.route == 'answer'` with `hop.interim` set (GH
 #378). This hive drew edges for `calls`, for `tool_name`, for `result` and a
@@ -1027,9 +1093,19 @@ no.
 | `MODEL_BUILDER` | the model the composer asks |
 | `LOCAL_LLM_BASE_URL` | the OpenAI-shaped endpoint it asks at |
 | `LOCAL_LLM_API_KEY` | the credential, if the endpoint wants one — empty means absent, and no `Authorization` header is sent (GH #271) |
-| `BUILDER_LIBRARIAN_TOPK` | how many corpus chunks the briefing carries (the librarian's own knob) |
-| `BUILDER_LIBRARIAN_ROW_CHARS` | how much of one corpus chunk the briefing carries; a chunk that does not fit is cut on a word boundary and says so (the librarian's own knob, defaults beside it) |
-| `BUILDER_LIBRARIAN_CATALOGUE_CHARS` | the same window for a CATALOGUE row, which is wide enough that a template's row -- its contract, its params and its worked example -- travels whole (the librarian's own knob) |
+
+The retrieval knobs are NOT here any more. Since `builder-librarian@2.2.0`
+([#138](https://github.com/mmeyerlein/meclaw/issues/138)) they are params of
+that template's `./retrieve` cell, set with `override_params` on the librarian a
+builder is wired to rather than colony-wide -- which is what lets two builders
+in one colony brief at different widths:
+
+| param of `builder-librarian/retrieve` | What it is |
+|---|---|
+| `topk` | how many corpus chunks the briefing carries |
+| `row_chars` | how much of one corpus chunk the briefing carries; a chunk that does not fit is cut on a word boundary and says so |
+| `catalogue_chars` | the same window for a CATALOGUE row, which is wide enough that a template's row -- its contract, its params and its worked example -- travels whole |
+| `level_chars` | the same window for a LEVEL row -- the complete transit edge set of one level, which is the one chunk that has to arrive whole or not at all |
 
 ## One walk of the whole lane, with a real model
 

@@ -161,16 +161,25 @@ fn the_reasoning_core_keeps_no_ambient_leg() {
 
 /// The ambient leg is an addition, never a swap: the two legs answer different
 /// questions. `memory_recall` stays the deliberate lookup a model asks for by
-/// name, and the collector goes on serving it itself (#512, `talky@4.2.1`).
+/// name — and since GH #552 it is the MEMBER'S MEMORY that answers it, so what
+/// this level owes the tool is the declaration and the edges, not a switch.
 #[test]
 fn the_ambient_leg_does_not_replace_the_memory_tool() {
     let (_root, staged) = staged_assistant();
     let params = staged_params(&staged, "/main/gen/talky/collector/assemble");
-    assert_eq!(
-        params["memory_call_tier"], "1",
-        "the memory TOOL is still on — a switch left empty is a lane that \
-         answers a typed refusal, and the charter gate (#531) would then find a \
-         menu naming a tool nothing serves"
+    let tools = params["tools"]
+        .as_array()
+        .expect("the level declares the surface's tool list");
+    assert!(
+        tools.iter().any(|t| t == "memory_recall"),
+        "the memory TOOL is still declared — a level that draws the edge and does \
+         not name the tool offers its model a menu without it, and the round then \
+         looks like a model that chose not to ask its memory: {tools:?}"
+    );
+    assert!(
+        params["memory_call_tier"].is_null(),
+        "…and the switch that used to turn it on is gone with the lane it turned \
+         on (GH #552): the collector does not serve the call any more"
     );
 }
 
@@ -257,8 +266,10 @@ fn the_members_recall_edge_promotes_the_turn_id() {
         set["audience_now"],
         "has(context.audience_set) ? context.audience_set : ''"
     );
-    assert_eq!(
-        set["memory_call_id"],
-        "has(hop.memory_call_id) ? hop.memory_call_id : ''"
-    );
+    // `memory_call_id` was promoted here too until GH #552, because the recall
+    // port carried two meanings and this key told them apart. Both halves of the
+    // tool live in the memory hive now, so the lane has one meaning and the door
+    // promotes no correlation at all — and it must not: the hive's own `bundle`
+    // exit branches on exactly that key.
+    assert!(set.get("memory_call_id").is_none());
 }

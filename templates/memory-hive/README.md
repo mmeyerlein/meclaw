@@ -1,8 +1,8 @@
-# `memory-hive@3.1.0`
+# `memory-hive@3.2.0`
 
-A **member's** memory as a hive of existing cell types — no new cell type, no Rust. Thirteen cells:
+A **member's** memory as a hive of existing cell types — no new cell type, no Rust. Fifteen cells:
 `store` (all durable data), `writer`, `recall`, `extract-glue`, `close-glue`, `closer`,
-`dream-glue`, `dreamer`, `judge`, `cron`, `embed`, `dialectic`, `porter`.
+`dream-glue`, `dreamer`, `judge`, `clock`, `embed`, `dialectic`, `porter`, `tool`, `schemas`.
 
 What it delivers today (packages P2–P5 = spec phases 1–4, plus P15 = temporal truth):
 
@@ -124,7 +124,7 @@ What it delivers today (packages P2–P5 = spec phases 1–4, plus P15 = tempora
   * **One list, by construction.** `open_axes()` in `close-glue` builds the `facts` block of the
     prompt AND the `shown` array of the write blocks out of the same rows, so "what was shown"
     and "what may be closed" cannot drift apart — the only way two lists never disagree is that
-    there is only one of them. Its budget is `MEMORY_CLOSE_FACT_ROWS` over the open facts of the
+    there is only one of them. Its budget is `close_fact_rows` over the open facts of the
     session being closed; what the page left behind is counted and stated on `close_report`
     (`truncated`) rather than guessed at.
   * **A replacement points FORWARDS in time (GH #71).** The window says which statements may be
@@ -155,7 +155,7 @@ What it delivers today (packages P2–P5 = spec phases 1–4, plus P15 = tempora
     rather than one gate interval. The model's reason is structural rather than prose: the
     replacing value, the value replaced and the episode both came from.
   * **The night validates it** (guard rail 3, second half): the canonicalisation round's axis
-    pages also carry statements a RECENT extract closure ended (`MEMORY_CANON_EXTRACT_LOOKBACK_DAYS`),
+    pages also carry statements a RECENT extract closure ended (`canon_extract_lookback_days`),
     and the judge may contradict one. A contradiction clears the attribution and the re-derive of
     that same night withdraws the columns — the W3 revert, one producer over. Only the closures
     this lane wrote are reviewable there: a round that could revoke a JUDGEMENT would make
@@ -279,11 +279,11 @@ What it delivers today (packages P2–P5 = spec phases 1–4, plus P15 = tempora
     so the alias that would unite the two chains was never proposed, in exactly the case where a
     closure had just proved the two spellings name one thing. The identity questions therefore
     have a **read of their own**: the closed rows, most recently ended first,
-    `MEMORY_CANON_CLOSED_ROWS` of them, and up to `MEMORY_CANON_MAX_CLOSED_AXES` spellings out of
+    `canon_closed_rows` of them, and up to `canon_max_closed_axes` spellings out of
     that page are merged into the inventory and the entity context at the meeting point. Bounded
     on ROWS and never on a clock, because `expired_at` is an EVENT time -- the instant a
     statement stopped being TRUE -- and it says nothing about when the closure was written, so the
-    review lane's lookback (`MEMORY_CANON_EXTRACT_LOOKBACK_DAYS`) is the wrong bound for this
+    review lane's lookback (`canon_extract_lookback_days`) is the wrong bound for this
     question and stays where it is. The merge is a union, so it can only ever ADD a spelling no
     open row carries; the open side keeps its slots in the entity context and a closed claim
     fills what is left. Pinned by `crates/meclaw-cells/tests/f10_closed_spelling_identity.rs`
@@ -315,7 +315,7 @@ cells rank and fuse instead of fetching everything.
 ## Lanes
 
 The hive is an **island**: instantiate `add_nodes` and the `add_edges` in ONE mutation,
-otherwise the subtree stays inactive and `cron` never spawns (the island-activation pattern:
+otherwise the subtree stays inactive and `clock` never spawns (the island-activation pattern:
 an island without a crossing edge is never woken, so the mutation that creates the subtree has
 to be the mutation that connects it).
 
@@ -358,16 +358,21 @@ ruling F3. Both halves use the same owning scope, so the store still has exactly
 | `in_close_pass` | in → `./memory` | a session that just ended, to be read WHOLE once (GH #300, ruling Q9 of 2026-08-21). **Nothing travels in the body** — the lane names a session and the hive reads its own turns. The context is the same provenance every write lane of this hive demands and is not optional: `set_context: {session_id: …, audience_set: …, channel: …}`; the pass proposes writes, so a pass without them would mint sharpened rows nobody can filter afterwards. The shipped caller already has all three — `talky`'s `./session-keeper → ./collector` close edge promotes exactly this set. Wire `close_report` in the SAME mutation. The pass costs one strong-model call per session — see [What a close pass costs](#what-a-close-pass-costs-measured) |
 | `in_export` | in → `./memory` | nothing. The lane names the whole memory; the hive walks its own tables and answers with one part per table on `dump` (see [Transfer](#taking-a-memory-out-putting-it-into-another-243)). Wire `dump` in the SAME mutation — `required_drains` enforces it, and an export nobody drains reads the whole store for nothing |
 | `in_import` | in → `./memory` | ONE part of such a document, as the body of the message; nothing on the hop and nothing in the context. Applying the same part twice leaves the same state. A part whose declared schema lost `audience_set` or `channel` is refused on `reject` with nothing written |
+| `tool_call` | in → `./memory` | one `memory_recall` call a brain made (#552), split out by a dispatcher and carried here by the member the asker stands in. The body is the tool_call turn and nothing else; `hop.tool_call_id` is the correlation the asking round waits on, and the hive's own door promotes it to `context.memory_call_id`. **Plus the asking round**, exactly as on `in_query`: `audience_now` and `channel`, and `session_id` if the session leg is to be scoped. The tier is NOT on this lane — how deep a recall runs is `tool`'s own `params.tier`, because a model that could choose its own depth could ask for one the instance was tuned away from. Wire `tool_result` in the SAME mutation |
+| `in_schemas` | in → `./memory` | the names a collector declares it uses — `{"tools": ["memory_recall"]}` in the body, or `["*"]` for everything this hive declares, which is one schema. Nothing on the hop but the lane, nothing in the context. It is not a tool round and carries no `tool_name`. Wire `tool_schemas` in the SAME mutation |
 | `bundle` | out → your consumer | condition `hop.route == 'bundle'` on an edge FROM `./memory`. It carries `hop.recall_caller` back, off the `context.recall_caller` the question came in with and empty when it came with none — a caller with more than one asker routes the answer on it, and one with a single asker ignores it ([#532](https://github.com/mmeyerlein/meclaw/issues/532)) |
 | `close_report` | out → your drain | condition `hop.route == 'close_report'` on an edge FROM `./memory`. **Drain it.** It is the ONLY positive signal the close lane has — the pass writes through the inline ingress, which answers nobody, so without this drain a caller cannot tell a pass that ran and changed nothing from a pass that never ran at all. Eight numbers ride on the hop: `added`, `sharpened`, `corrected`, `closed`, `restated`, `unseen_refs`, `exceptions` (the `pending` rows of this session the pass swept) and `truncated` (what the page bounds left behind). A pass that got no verdict leaves on `reject` instead, with `hop.reject_reason == 'closer_failed'` — nothing was written and the exception list was NOT swept |
-| `dump` | out → your drain | condition `hop.route == 'dump'` on an edge FROM `./memory`, and make it a PLAIN one: an edge that also tests `hop.dump_kind` evaluates to `false` under the `required_drains` probe and reads as no drain. `hop.dump_kind` tells the two payloads apart — `export_part` (one part of the document, `hop.export_part` of `hop.export_of`, `hop.export_final == '1'` on the last) and `import_receipt` (`hop.rows_written` for one applied part) |
-| `reject` | out → your drain | condition `hop.route == 'reject'` on an edge FROM `./memory`. **Drain it.** `hop.reject_reason` names the case: `missing_audience` and `missing_channel` for a turn, block or question whose provenance was incomplete (#244), `inline_invalid` for a block that did not survive validation. The transfer lane adds `import_format`, `import_unknown_table`, `import_schema_drift`, `import_probe_failed`, `import_write_failed` and `export_read_failed`, and it reuses `missing_audience`/`missing_channel` for a document part that lost a provenance column on the way. Beyond those, two older things arrive here and the body says which: an inline block the hive could not bind, and a HALF window (exactly one of `recall_window_from`/`_to` non-empty), which is a caller bug and leaves at request entry before the leg fan. Undrained, a refused block is an unrouted dead end — nobody ever learns the memory was not written — and a refused question leaves the caller waiting for a bundle that never comes. A colony that ran the inline lane for weeks with only the recall half drained is where that lesson comes from. **Since 2.3.1 the same lane also carries what this hive's own STORE would not do** (`hop.reject_reason == 'store_refused'`, `hop.store_error` = the store's `error_code`, `hop.store_operation` = the op it refused): a read or a write that came back refused stops its lane there instead of being read as zero rows. The nightly consolidation reports here too -- it has no caller of its own, and the alternative was reporting nowhere. See [When the store says no](#when-the-store-says-no-gh-343-since-231) |
+| `export_done` | out → your drain | condition `hop.route == 'export_done'` on an edge FROM `./memory`, PLAIN: this hive's store has written its whole seed set into `<fence>/<dir>/seed/`, marker and all, and says so itself ([#555](https://github.com/mmeyerlein/meclaw/issues/555)). `hop.seed_dir` names the directory RELATIVE to the fence the store declares (`params.transfer.base_path`), `hop.export_hive` names the hive, `hop.export_of` how many tables travelled and `hop.rows_written` how many rows |
+| `dump` | out → your drain | condition `hop.route == 'dump'` on an edge FROM `./memory`, and make it a PLAIN one: an edge that also tests a second hop key evaluates to `false` under the `required_drains` probe and reads as no drain. Since #555 it carries ONE thing: the receipt of an applied import part (`hop.rows_written`, `hop.export_part` of `hop.export_of`, `hop.export_final == '1'` on the last) — the export writes its own files and reports on `export_done`, so the `dump_kind` key that told the two apart is gone with the distinction |
+| `tool_result` | out → your caller | condition `hop.route == 'tool_result'` on an edge FROM `./memory`. One tool_result turn under the original `hop.tool_call_id`, ready to re-enter the round that made the call. A REFUSAL leaves here too and not on `reject`: `hop.error_code` carries the recall cell's own `reject_reason` verbatim (`missing_audience`, `missing_channel`, `half_open_window`, `store_refused`) plus this hive's own two (`malformed_tool_call`, `memory_not_configured`). A call that is not answered stalls the asking round until its idle window runs out, which is why every case answers |
+| `tool_schemas` | out → your caller | condition `hop.route == 'tool_schemas'` on an edge FROM `./memory`. One `{name, description, parameters}` for `memory_recall`, provider-neutral, plus in `unknown[]` the asked names this hive does not serve. A lane of its own and NOT `tool_result`: a result belongs to a call somebody made, this belongs to a start-up question |
+| `reject` | out → your drain | condition `hop.route == 'reject'` on an edge FROM `./memory`. **Drain it.** `hop.reject_reason` names the case: `missing_audience` and `missing_channel` for a turn, block or question whose provenance was incomplete (#244), `inline_invalid` for a block that did not survive validation. The transfer lane adds `import_format`, `import_unknown_table`, `import_schema_drift`, `import_probe_failed`, `import_write_failed` and `export_write_failed` (the store would not write its seed set -- no marker, so the directory is not a document), and it reuses `missing_audience`/`missing_channel` for a document part that lost a provenance column on the way. Beyond those, two older things arrive here and the body says which: an inline block the hive could not bind, and a HALF window (exactly one of `recall_window_from`/`_to` non-empty), which is a caller bug and leaves at request entry before the leg fan. Undrained, a refused block is an unrouted dead end — nobody ever learns the memory was not written — and a refused question leaves the caller waiting for a bundle that never comes. A colony that ran the inline lane for weeks with only the recall half drained is where that lesson comes from. **Since 2.3.1 the same lane also carries what this hive's own STORE would not do** (`hop.reject_reason == 'store_refused'`, `hop.store_error` = the store's `error_code`, `hop.store_operation` = the op it refused): a read or a write that came back refused stops its lane there instead of being read as zero rows. The nightly consolidation reports here too -- it has no caller of its own, and the alternative was reporting nowhere. See [When the store says no](#when-the-store-says-no-gh-343-since-231) |
 
 **The drain is enforced, and it is enforced in lanes** ([#237](https://github.com/mmeyerlein/meclaw/issues/237)).
 `params.required_drains` used to pair a PORT with the route it must drain, and it fired when
 something outside wired that port — which a sealed hive has no way of letting happen, so the
 declaration could never fire again and was removed with the seal rather than left as decoration.
-It is back in the vocabulary the seal left standing, and this hive declares nine entries:
+It is back in the vocabulary the seal left standing, and this hive declares eleven entries:
 
 ```json
 {"accepts": "in_episode",    "emits": "reject",       "because": "…"}
@@ -379,6 +384,8 @@ It is back in the vocabulary the seal left standing, and this hive declares nine
 {"accepts": "in_export",     "emits": "reject",       "because": "…"}
 {"accepts": "in_import",     "emits": "dump",         "because": "…"}
 {"accepts": "in_import",     "emits": "reject",       "because": "…"}
+{"accepts": "tool_call",     "emits": "tool_result",  "because": "…"}
+{"accepts": "in_schemas",    "emits": "tool_schemas", "because": "…"}
 ```
 
 Read as: *a caller that sends me `in_remember` must subscribe to `reject`.* A mutation that wires
@@ -432,6 +439,71 @@ every question as a point recall, including the explicit time-range ones the win
 for. Moving the derivation to the hive side is tracked in
 [#55](https://github.com/mmeyerlein/meclaw/issues/55); the keys, the reject rule and the tier-0
 notice are unaffected either way.
+
+## The recall tool ([#552](https://github.com/mmeyerlein/meclaw/issues/552))
+
+Everything above is the AMBIENT leg: a collector asks this memory once per turn, before the
+model has seen anything, and the bundle is in front of the first call. That leg cannot answer a
+question about a time RANGE, because nothing has decided yet that there is one. The tool is the
+other half — the deliberate lookup a model asks for by name — and since 3.2.0 it is served here.
+
+**It used to be served somewhere else, and that is the whole point of the change.** Until this
+version the name `memory_recall` was answered by the COLLECTOR out of its own recall port: a
+private composite edge carried the call into `collector/assemble`, the bundle came back on a
+second private lane, and the schema the model read was typed by hand — as a projection of THIS
+hive's `in_query` contract, in a template that answers no recall, and a second time as a seed row
+in a brain. Three copies of one contract, each able to drift on its own, held together by a test.
+Now the hive that enforces the rules writes them down: one declaration, in the file that refuses
+a half-open window.
+
+Two cells do it, and neither of them retrieves anything:
+
+- **`schemas`** answers `in_schemas` with one `{name, description, parameters}`. It is the
+  `tools` hive's cell, byte for byte in lane pair and answer shape (GH #548), so a collector cuts
+  this answer together with a tools hive's and a core's without knowing which was which.
+- **`tool`** is the translation. One way it turns a `tool_call` — arguments as a JSON string, one
+  correlation id — into the ask `./recall` already understands, stamping the tier out of its own
+  `params.tier`. The other way it turns the bundle, or the refusal, into one `tool_result` turn
+  under the original call id.
+
+**The tier is configuration and stays configuration.** `tool`'s `params.tier` is what the ask
+carries; a model that could choose its own depth could ask for one the instance was tuned away
+from. Empty switches the tool off, and a call then comes back as `memory_not_configured` rather
+than being asked into a void — an unanswered call stalls the asking round until its idle window
+runs out.
+
+**A refusal is an answer.** `missing_audience`, `missing_channel`, `half_open_window` and
+`store_refused` reach the caller as `hop.error_code` on a `tool_result`, not on `reject`. The
+vocabulary is the recall cell's own, handed on verbatim: a second set of names for the same four
+cases would be a translation nobody maintains.
+
+**Wiring it takes four edges at the member rim**, and they are template edges rather than
+v-lanes on purpose — the member is a mandatory hop anyway, because it is the level that stamps
+`audience_now` and `channel`, and an edge on disk is an edge an audit can read:
+
+```json
+{"from": "./assistants", "to": "./memory-hive",
+ "condition": "hop.route == 'tool' && hop.tool_name == 'memory_recall'",
+ "modifier": {"set_hop": {"route": "'tool_call'"}, "set_context": {…}}}
+{"from": "./memory-hive", "to": "./assistants",
+ "condition": "hop.route == 'tool_result'",
+ "modifier": {"set_hop": {"route": "'in_tool'"}}}
+{"from": "./assistants", "to": "./memory-hive",
+ "condition": "hop.route == 'schemas'",
+ "modifier": {"set_hop": {"route": "'in_schemas'"}}}
+{"from": "./memory-hive", "to": "./assistants",
+ "condition": "hop.route == 'tool_schemas'",
+ "modifier": {"set_hop": {"route": "'in_menu'"},
+              "set_context": {"tool_answerer": "'memory'"}}}
+```
+
+The answerer is called `memory` — short, no hyphen, the spelling `tools` and `cogny` already
+use. It is what the menu merge keys its store table on, so a third answerer joins the menu
+instead of overwriting it.
+
+**`thread_recall` did not move and will not.** It reads the collector's OWN slate — the round
+table in that cell's `cell.db`, which no other cell may read — so it is declared where it is
+answered. This hive knows nothing about it.
 
 ## The close pass: one session, read whole (GH #300)
 
@@ -488,13 +560,13 @@ Left unguarded deliberately for this release; if a real topology produces double
 ### What a close pass costs (measured)
 
 **≈ 0.077 EUR per closed session**, on `anthropic/claude-opus-5` with
-`MEMORY_REASONING_CLOSE=medium`. That is a measurement, not an estimate: three full runs of the
+`provider_extra.reasoning.effort = "medium"` on `./closer`. That is a measurement, not an estimate: three full runs of the
 conversation-guide harness on 2026-08-23 (26 turns each, one close each) cost 0.0774 / 0.0768 /
 0.0766 EUR for their close call, priced from `scripts/prices-openrouter-2026-08-22.json`. Over
 those three runs the close call was **0.2308 EUR of 0.2899 EUR — about 80 % of everything the
 colony spent**, front model, tool loop and all. The cost class follows from the shape rather than
 from the model: one call, the whole session in the prompt, a strong model by ruling. Budget one
-such call per closed session and size `MEMORY_CLOSE_TURN_ROWS` / `MEMORY_CLOSE_FACT_ROWS` knowing
+such call per closed session and size `close_turn_rows` / `close_fact_rows` knowing
 that both bound what the prompt pays for.
 
 ## The audience gate — who may be told what (#244)
@@ -700,9 +772,14 @@ operations, none of which is an export or an import. That gap is
 term. **#253 has since shipped and is closed** (2026-08-19): the substrate answers a
 `transfer` body slot — `export` and `import` — for every cell that has a `cell.db`, above
 the cell type and before `handle()` runs, which is exactly the paragraph on `write_surface`
-above. Nothing was removed here in the same move, so what still lives in this section is a
-lane pair built out of the twelve operations the store already had; the shrink onto the
-substrate slot is the work that is now owed, not a condition that may or may not arrive.
+above. **Half of the shrink has landed** ([#555](https://github.com/mmeyerlein/meclaw/issues/555),
+2026-09-04): the slot writes and reads DIRECTORIES now, and this hive's export leg is one
+message to its own store — `{"operation": "export", "to": <dir>, "tables": <walk>}` — where it
+used to be sixteen reads carried out as sixteen `dump` parts. What is still built out of the
+twelve operations is the IMPORT leg, which is the remaining half of
+[#261](https://github.com/mmeyerlein/meclaw/issues/261). The export path is BUILT and shipped;
+it has not yet carried a real memory, and that is the issue's one open precondition — a full
+round trip over a grown hive, out and back in, proved row for row across all sixteen tables.
 
 Four substrate properties this path had to work **around** rather than through. They are stated
 here because they are the evidence #253's design needs:
@@ -790,9 +867,10 @@ one row per line after it and you have a `seed/<table>.jsonl` — the birth path
 path speak one format. That is what makes "export the old hive, birth a new one from its parts"
 a mechanical operation instead of a script that has to understand the memory.
 
-**`final` is the completeness marker.** A document without the part carrying `final: true` (and
-`hop.export_final == "1"`) is incomplete — the walk aborted, and the reject lane says why. A
-partial document is not a backup, and nothing else in it says so.
+**`final` is the completeness marker of a part sequence**, which is what an IMPORT still is:
+a document without the part carrying `final: true` is incomplete, and a partial document is not
+a backup. On the way OUT the marker is a file since #555 — `seed/export_final.json`, written
+last and by one rename — so a reader watches the directory instead of counting messages.
 
 **`absent` is not `rows: []`.** An empty table says *this hive remembered nothing here*; an
 absent one says *this hive is older than the declaration and never had the table*.
@@ -882,26 +960,35 @@ counts the identities that moved — zero on a target that already agreed.
 ### What a migration looks like end to end
 
 ```bash
-# 1. wire the lanes on the SOURCE hive (one mutation), drain `dump` into a collector
-#    { "from": "./memory", "to": "./transfer-drain", "condition": "hop.route == 'dump'" }
+# 1. declare the fence on the SOURCE store -- params.transfer.base_path, absolute --
+#    and drain `export_done` and `reject` off the hive (one mutation)
+#    { "from": "./memory", "to": "./transfer-drain", "condition": "hop.route == 'export_done'" }
 # 2. send one message to the hive path with hop.route == 'in_export'
-# 3. 16 parts arrive on `dump`; the last carries hop.export_final == "1"
+#    (hop.export_to names the run's directory; without it the hive's own name)
+# 3. the STORE writes <fence>/<dir>/seed/<table>.jsonl itself, one per content
+#    table of the walk, and seed/export_final.json last. `export_done` says where.
 #
-# 4a. INTO A RUNNING HIVE: feed each part, in order, to the target hive's `in_import`.
-#     Hive to hive, that is a single edge:
-#     { "from": "./memory-old", "to": "./memory-new",
-#       "condition": "hop.route == 'dump'",
-#       "modifier": { "set_hop": { "route": "'in_import'" } } }
-#
-# 4b. INTO A FRESH HIVE AT BIRTH: write each part as a seed file --
-#     line 1 = {"schema": <part.schema>}, then one line per row --
-#     under <template>/store/seed/<part.table>.jsonl, and instantiate.
-#     The two alias families are the exception: they have to go through 4a,
+# 4a. INTO A FRESH HIVE AT BIRTH: the files ARE the seed set. Copy the directory
+#     under <template>/store/seed/ and instantiate -- there is nothing to convert,
+#     which is the whole of #555.
+#     The two alias families are the exception: they have to go through 4b,
 #     because a seeded keyed table is a table without its key.
+#
+# 4b. INTO A RUNNING HIVE: turn each file back into one `in_import` part --
+#     header line = the part's schema, the rest are its rows -- and post them in
+#     the walk's order at the target hive's `in_import`.
+#     `examples/memory-import/build_import.py` does exactly that.
 #
 # 5. the acceptance test: put the same question to both hives with the same
 #    audience_now and channel. Same bundle, or the transfer was wrong.
 ```
+
+**Redirect that fence before the first export.** The shipped default is
+`/tmp/meclaw-member-export`, which is world-readable on most hosts, and what lands under it is a
+member's WHOLE MEMORY — every episode, every fact, every claim this hive holds. Nothing about the
+fence is a secret and nothing about it is checked: the store writes where `params` say, so name a
+directory of your own with `override_params` on `"memory-hive/store"` before anything is
+exported.
 
 Nothing in that sequence touches a `cell.db`. There is no `sqlite3`, no trigger surgery, no
 schema header to lift by hand: the FTS indexes of `episodes` and `facts` are maintained by
@@ -971,87 +1058,177 @@ against a colony that never saw the memory written.
   it is the nightly identity round that decides whether they are one. That is the same division
   of labour as everywhere else here: the store never merges on similarity, the judge decides.
 
-## Variables
+## Variables and params
 
-Everything carries a `:-default` **except** `OPENROUTER_API_KEY` and the three `MODEL_*` slots the
-hive buys inference on — `MODEL_CLOSER`, `MODEL_DREAMER`, `MODEL_DIALECTIC`. Those four must come
-from `.env` (see the negative fixture `memory_hive_env_missing`). A model name has no defensible
-default: picking one silently is how a memory lane ends up on a weak model without anybody
-deciding it (see the recommendation below).
+**Since 3.2.0 every behaviour knob of this hive is a `param` of the cell that reads it**
+([#138](https://github.com/mmeyerlein/meclaw/issues/138), ruling R-0904-6). Forty-nine
+`${MEMORY_*}` substitutions became forty-nine params, defaults bit-identical, and the environment
+route is gone rather than deprecated -- a `.env` line for one of the retired names is read by
+nothing at all. The `collector`'s own migration
+([#136](https://github.com/mmeyerlein/meclaw/issues/136)) is the pattern: the value lives under `params.<knob>`, is declared in `contract.settings.<knob>`, and the
+script reads it off the stdin document the substrate hands it, with the same number as its own
+fallback literal. A test pins the three copies against each other
+(`crates/meclaw-cells/tests/gh138_memory_hive_params.rs`).
+
+It is worth more than tidiness. An `override_params` entry may only name a key the addressed cell
+carries under `params` ([#294](https://github.com/mmeyerlein/meclaw/issues/294)), so before the
+migration none of these could be tuned per instance at all: they were colony-wide or they were
+nothing, and two members of one colony shared one memory configuration. Now a mutation retunes ONE
+member's recall and leaves the other alone:
+
+```json
+{"add_nodes": [{"name": "alex", "template": "member@1.6.0",
+                "override_params": {"memory-hive/recall": {"tier1_topk": 40,
+                                                           "sem_max_distance": 0.35}}}]}
+```
+
+**A standing instance keeps the names it was born with.** Instantiation copied the subtree, so a
+running colony is pinned to the bytes it was built from -- a bump here never reaches it, its
+directory is still called `cron` if that is what it was called, and its cells still read the
+`${MEMORY_*}` lines its own `.env` carries. Upgrading is an explicit act: instantiate the new
+version beside the old one and move the edges. That is the reason the copy exists
+(`templates/README.md` § *Versioning*, `docs/meclaw-overview.md` § *No-Delete-Policy*).
+
+### What stays in `.env`: the provider lane
+
+Credentials, endpoints and model ids do not move, because a secret in a `config.json` is a secret
+in the repository. Everything below carries a `:-default` **except** `OPENROUTER_API_KEY` and the
+three `MODEL_*` slots the hive buys inference on -- `MODEL_CLOSER`, `MODEL_DREAMER`,
+`MODEL_DIALECTIC`. Those four must come from `.env` (see the negative fixture
+`memory_hive_env_missing`). A model name has no defensible default: picking one silently is how a
+memory lane ends up on a weak model without anybody deciding it (see the recommendation below).
 
 `MODEL_JUDGE` is the deliberate exception (0.2.0 P5). It carries a **top-tier placeholder**
 default, because the failure mode is the other way round there: an unset variable would make the
 nightly canonicalisation round fail silently, every night, and nobody would notice a merge that
-did not happen. The default is not a recommendation to leave it alone — set it explicitly at
+did not happen. The default is not a recommendation to leave it alone -- set it explicitly at
 rollout, and set it to the strongest model you have (see below).
-
-> **The `MEMORY_*` knob names are an EXPERIMENTAL configuration surface and carry no
-> compatibility promise.** They will migrate onto the `params` surface in a 0.x release, at which
-> point the environment-variable spellings below change or disappear; refs
-> [#138](https://github.com/mmeyerlein/meclaw/issues/138).
 
 | Variable | Default | Effect |
 |---|---|---|
 | `OPENROUTER_API_KEY` | — (required) | api_key of `closer`, `dreamer`, `judge` and `dialectic` |
 | `MODEL_CLOSER` | — (required) | close-pass model (GH #300, ruling Q9 of 2026-08-21). **Put the strongest model you have here.** It is the one call that sees a whole session at once and it is the only party that can supply the replacement window, so a quiet fallback to a cheap model would not just measure less, it would revoke the ruling. Deliberately without a default for exactly that reason |
 | `MODEL_DREAMER` | — (required) | consolidation model (change narrative) |
+| `MODEL_DIALECTIC` | — (required) | tier-2 answer model (the dialectic with its mandatory gap statement) |
 | `MODEL_JUDGE` | `anthropic/claude-opus-5` | identity judgement of the nightly canonicalisation round — **the strongest model of the hive belongs here** |
 | `MEMORY_LLM_BASE_URL` | `https://openrouter.ai/api/v1` | OpenAI-compatible endpoint of every llm cell |
-| `MEMORY_TIER0_TOKENS` | `1200` | token budget of the tier-0 bundle |
-| `MEMORY_TIER0_MAX_EPISODES` | `12` | item cap of the bundle's episode leg |
-| `MEMORY_TIER0_MAX_BELIEFS` | `20` | item cap of the bundle's belief leg, and the `limit` of the belief select behind it |
-| `MEMORY_TIER0_MAX_FORESIGHT` | `10` | item cap of the bundle's foresight leg (facts that are about a future the memory has been told about) |
-| `MEMORY_TIER0_EPISODE_CHARS` | `400` | episode truncation inside the bundle (truncate, never delete) |
-| `MEMORY_DREAM_CRON` | `0 0 3 * * *` | 6-field Quartz schedule of the nightly run, **in UTC**. The `timer` cell type plans every occurrence on `DateTime<Utc>` and has no timezone knob (`crates/meclaw-cells/src/timer/io.rs`), so the default fires at 03:00 UTC — 05:00 in Berlin summer time, 04:00 in winter. Pick the field for the UTC hour you want, not for the local one |
 | `MEMORY_EMBED_ENDPOINT` | `https://openrouter.ai/api/v1/embeddings` | OpenAI-compatible embeddings endpoint |
-| `MEMORY_EMBED_MODEL` | `google/gemini-embedding-2` | must match the `model_id` in `seed/emb_models.jsonl` — the seed is NOT variable-substituted, so the two are coupled by hand. Pinned against the seed by `gh204_the_shipped_embedding_generation_agrees`; a disagreement empties the semantic leg silently, it does not raise |
+| `MEMORY_EMBED_MODEL` | `google/gemini-embedding-2` | the embedding model. Must match the `model_id` in `store/seed/emb_models.jsonl` |
 | `MEMORY_EMBED_DIM` | `1024` | requested `dimensions`; must match `emb_models.dim` (1024 bits → 128 packed bytes) |
 | `MEMORY_EMBED_API_KEY` | *(empty → falls back to `OPENROUTER_API_KEY`)* | bearer for the embedder |
-| `MODEL_DIALECTIC` | — (required) | tier-2 synthesis model |
-| `MEMORY_REASONING_CLOSE` | `medium` | `provider_extra.reasoning.effort` of the `closer` cell. **Not `minimal`**: a strong model asked to sharpen a session it is seeing whole is not a shape-filling call |
-| `MEMORY_REASONING_DREAM` | `medium` | `provider_extra.reasoning.effort` of the `dreamer` cell (the nightly change narrative) |
-| `MEMORY_REASONING_DIALECTIC` | `medium` | `provider_extra.reasoning.effort` of the `dialectic` cell (the tier-2 answer with its gap statement) |
-| `MEMORY_REASONING_JUDGE` | `high` | `provider_extra.reasoning.effort` of the `judge` cell — the identity verdicts are written into the store and every later read consumes them, so this is the one lane where thinking is worth paying for |
-| `MEMORY_CANON_JUDGE` | `1` | `0` switches the nightly canonicalisation round's ASK off (no scan, no candidate feed, no model call). A judgement handed to the lane from outside is still applied — applying is arithmetic, asking is what costs. The free scenario classes run with `0`, except the two that measure the QUESTION (`C19`/`C20`): those ask for real with the endpoint pointed at a dead port |
-| `MEMORY_CANON_MAX_PREDICATES` | `60` | relation keys put to the judge per run, busiest first |
-| `MEMORY_CANON_MAX_PAIRS` | `12` | entity candidate pairs put to the judge per run, best score first |
-| `MEMORY_CLOSE_TURN_ROWS` | `512` | page bound of the close pass's session read. Ordered NEWEST first on purpose — a session longer than one page loses its oldest turns rather than its last ones, and the later a turn is, the likelier it is the one that corrects an earlier. The page is re-ordered oldest-first before it reaches the prompt: the order of the READ decides what survives the bound, the order of the RENDERING is a different question |
-| `MEMORY_CLOSE_FACT_ROWS` | `256` | page bound of the close pass's fact read, one dimension over: a session has turns, and the facts those turns left standing are a different count entirely — a short session can carry a long history if its subject has been talked about before. This is also the budget of the replacement window, because the two are the same rows. What the bound left behind is reported on `close_report` as `truncated` |
-| `MEMORY_TIER1_LEG_LIMIT` | `20` | per-leg candidate cap of the tier-1 fan |
-| `MEMORY_TIER1_AXIS_LIMIT` | `200` | page bound of the AXIS reads — the hydration's chain select (`t1-hyd-axis`) **and** the window leg's generous pre-filter share it. Too small truncates a chain, and a candidate whose chain was cut is delivered **without its predecessors** — `history: []` on the record in `recall_diagnostic`, no `previously` key in the payload — rather than with a guessed chain |
-| `MEMORY_CANON_EXTRACT_LOOKBACK_DAYS` | `7` | how far back the nightly round reviews the closures the EXTRACTOR wrote (W4, ruling Q2 guard rail 3). Derived from `delta_to`, so a re-run reads the same window back; a closure older than this has been in front of a round already |
-| `MEMORY_CANON_MAX_AXES` | `8` | axes with more than one open statement put to the judge per run (the currency question of W3, and since W6 the rewording question on the same list). The whole budget, pages included: an axis too big for one page takes one of these slots rather than a slot of its own (GH #66) |
-| `MEMORY_CANON_MAX_PAGED_AXES` | `2` | how many of those slots a night may spend on axes it can only show one PAGE of (GH #66). Such an axis is never truncated blind: it is offered only after its relation was seeded or judged FUNCTIONAL, the page is the most recent statements, and what it leaves behind is stated in the run receipt |
-| `MEMORY_CANON_MAX_CARD` | `8` | relations whose CARDINALITY is put to the judge per run (statement identity W5). Only relations the seed list does not own and the store has not judged yet are offered, so the budget always reaches something the memory has not decided |
-| `MEMORY_CANON_CLOSED_ROWS` | `256` | page bound of the identity questions' own read of the CLOSED rows (GH #73), most recently ended first. Bounded on ROWS and never on a clock: `expired_at` says when a statement stopped being TRUE, not when the closure was written, so a cutoff derived from `delta_to` would drop exactly the closure written last night about a change dated last spring |
-| `MEMORY_CANON_MAX_CLOSED_AXES` | `12` | how many spellings out of that page reach the two identity questions (GH #73). ON TOP of `MEMORY_CANON_MAX_PREDICATES`, not out of it: a spelling a closure just proved belongs to another one is the best-founded question a night has, and the open vocabulary's budget was never sized for it |
-| `MEMORY_SCRATCH_TTL_DAYS` | `7` | retention window of the lane bookkeeping tables (`scratch`, `recall_scratch`), in days before the nightly run's own window end (GH #375). What is older is deleted by the night; nothing else is — no memory table, no provenance, no durable row. Deliberately generous: a parked row is only ever read back inside the run that wrote it (a recall lives seconds, an extraction a round trip, a close pass one model call), so a week is orders of magnitude past the longest-lived parking. A window short enough to fall inside a lane's own round trip **would** delete state a running pass is about to read — this is days, not minutes |
-| `MEMORY_DREAM_AXIS_LIMIT` | `5000` | page bound of the dream lane's axis select. A **full** page means the chain may be incomplete, so the materialisation SKIPS the derivation for that page instead of guessing supersession from half a chain |
-| `MEMORY_TIER1_TOPK` | `20` | how many fused candidates survive the RRF cut into the tier-1 bundle |
-| `MEMORY_TIER1_TOKENS` | `2000` | token budget of the tier-1 bundle; candidates are taken in fused order until the next one does not fit. It measures the **payload** candidate — what travels to the model — never the record in `recall_diagnostic`: the trace pays no prompt budget, so costing it would spend the whole #296 saving on refilling the budget instead of shipping a smaller bundle. `MEMORY_TIER1_TOPK` stays the count cap |
-| `MEMORY_TIER1_ITEM_CHARS` | `400` | per-item truncation inside the tier-1 bundle (a claim, an episode's content, a supersession marker). Truncate, never drop |
-| `MEMORY_BUNDLE_EPISODE_BUDGET` | `6` | the episode share of the fusion cut (P15 O-7): episodes take at most this many of the `TOPK` slots and keep that many against any fact wall. Whichever side cannot fill its share lets the other backfill, so the bundle is never shorter than a plain prefix would be |
-| `MEMORY_TIER1_GRAPH_DEPTH` | `2` | `max_depth` of the graph leg's `traverse` (store cap: 5) |
-| `MEMORY_TIER1_GRAPH_NODES` | `200` | `max_nodes` of the graph leg's `traverse` — the fan-out kill switch, so one hub entity cannot turn a recall into a walk of the whole graph |
-| `MEMORY_TIER1_GRAPH_FACT_NODES` | `64` | how many distinct walked nodes go into the join's `in` filter (GH #520). The walk is already ranked when the cut is taken, so what falls off is the tail of the walk, never its front |
-| `MEMORY_TIER1_GRAPH_FACT_LIMIT` | `100` | page bound of the join's `select facts` (GH #520). Generous on purpose: one popular subject carries a long version chain, and the leg's own `MEMORY_TIER1_LEG_LIMIT` is the cut that decides what votes. A full page marks the leg **capped**, exactly as a full traverse page does |
-| `MEMORY_TIER1_SELF_LIMIT` | `20` | page bound of the **self** leg (GH #536): how many of the asker's own facts it NOMINATES, newest first. Generous, because a member's dossier is a small bounded set (21 live rows on the hive this was measured on) and the leg has no query signal to rank by: what it cannot rank it must not cut early |
-| `MEMORY_TIER1_SELF_BUDGET` | `6` | how many of them may occupy a **bundle slot** while query-driven hits are waiting (GH #536). A different question from the one above: the leg nominates, the composition seats. Without it the dossier ate the fact half of every bundle — two different questions, one identical `FACTS` section. Leftover slots still fall back to the dossier, so it is a ceiling against competition and never a cut |
-| `MEMORY_SELF_LEGACY_SUBJECT` | `user` | the pre-canonicalisation spelling of *the member whose hive this is* (GH #536). The extraction lane writes a PERSON NAME into `facts.subject` today; everything written before it did carries the literal `user` — 23 of 29 self facts on the measured hive — and those rows are about the asker exactly as the new ones are. A **migration artefact**, named as one: the empty string switches it off for a hive that never had them |
-| `MEMORY_SEM_MAX_DISTANCE` | `0.5` | relevance floor of the **semantic** leg (#297), as a fraction of the embedding's BIT WIDTH: a hit at or beyond `0.5 × dim` differing bits is where a random binary vector sits, so at the default the cut removes coin flips and cannot cost a genuine hit. `similar` RANKS and never filters — without this every one of its `MEMORY_TIER1_LEG_LIMIT` rows votes in the fusion as loudly as a real hit. A missing, zero or non-numeric `dim` means no scale, and without a scale there is no cut |
-| `MEMORY_KW_MIN_SCORE_RATIO` | `0.10` | relevance floor of the **keyword** leg (#297), as a fraction of that page's OWN best bm25 rank — so the fact search and the episode search are never measured against each other's scale. bm25 is smaller-is-better, so the floor is `best × ratio` and a row survives at or below it. `0` switches the cut off (the ablation knob), and a page whose best rank is not negative carries no usable signal, so it is left uncut |
-| `MEMORY_RRF_AGREEMENT` | `0.5` | strength of the agreement factor in the fusion (#297): a candidate two VOTING legs found is multiplied once, three legs twice. `0` restores the plain rank sum |
-| `MEMORY_RRF_K` | `60` | RRF constant |
-| `MEMORY_RRF_W_KEYWORD` | `1.0` | fusion weight of the keyword (FTS) leg |
-| `MEMORY_RRF_W_SEMANTIC` | `1.0` | fusion weight of the semantic (embedding) leg |
-| `MEMORY_RRF_W_GRAPH` | `1.0` | fusion weight of the graph (traverse) leg |
-| `MEMORY_QUERY_SAFE_CHARS` | `200` | a query at or below this length reaches the legs untouched. Above it the hygiene guard runs (GH #88) |
-| `MEMORY_QUERY_MAX_CHARS` | `250` | hard clamp of the hygiene guard: whatever survived the question / tail-sentence steps is cut to its last this many characters, so the cost of a recall stops depending on how much context the caller pasted |
-| `MEMORY_QUERY_TOKENS` | `24` | how many tokens of the sanitised query reach the FTS matcher, taken from the TAIL — after the hygiene guard the tail is the question (GH #88) |
-| `MEMORY_RRF_W_TEMPORAL` | `1.0` | weight of the temporal leg **in window mode only** (P15 O-4) |
-| `MEMORY_RRF_W_SELF` | `1.0` | weight of the **self** leg (GH #536). Its rank list is recency, not relevance — it is the one leg the query does not shape — so a hit two query-driven legs agree on outranks it through the agreement factor rather than through a special case. `0` leaves the leg as discovery only, which is the ablation the eval prices |
-| `MEMORY_RRF_W_TEMPORAL_POINT` | `0.0` | weight of the temporal leg in **point** mode. Measured, not chosen: 50 identical LongMemEval extractions, paired — `0.0` gives R@1 **84.0 vs 74.0** and R@5 **98.0 vs 96.0**, flips **11:1** (sign test p=0.0063), and across 100 runs (2×50) the leg never carried a hit **alone**. Set it to `1.0` to restore the pre-O-4 fusion |
 | `OPENROUTER_HTTP_REFERER` / `OPENROUTER_X_TITLE` | `https://meclaw.ai` / `MeClaw` | OpenRouter app attribution headers |
+
+**Why the three embedding lines stayed together, and why they stayed in `.env`.**
+`MEMORY_EMBED_MODEL`, `MEMORY_EMBED_DIM` and the shipped `store/seed/emb_models.jsonl` are ONE
+statement written in three places, and only two of them can move. The seed file is **not**
+variable-substituted -- it is a birth document the store reads verbatim -- so the model id and the
+dimension in it are literals by construction, and a `dim` that disagrees with the requested
+`dimensions` does not raise: it empties the semantic leg silently, which is the failure this
+coupling exists to prevent (`gh204_the_shipped_embedding_generation_agrees` pins the three against
+each other). Moving the model onto `params` while its dimension and its seed row stayed behind
+would have split a statement that has to be changed in one move, so the ruling keeps all three on
+the same surface. `MEMORY_EMBED_MODEL`, `MEMORY_EMBED_ENDPOINT` and `MEMORY_EMBED_API_KEY` are
+provider lane by class anyway; `MEMORY_EMBED_DIM` is the one that was a judgement, and it is named
+one by one in the gate's allowlist (`scripts/check_tree_rules.py` § R6) rather than swept in by a
+category.
+
+### The params of `./recall`
+
+Thirty-one of the forty-nine. Every one is read off the stdin document with the literal below as
+its own fallback. A knob left **absent or null** is *not configured* and falls back to that
+literal, never a crash. A knob left **blank** splits by kind, because the two kinds want opposite
+things: a NUMBER knob (`_int`/`_float` in the script) falls back too — there is no number in a
+blank string — while a STRING knob (`_str`) keeps the empty string as a VALUE. That is not an
+oversight, it is how `self_legacy_subject` below is switched off, and there is no other way to
+say "no legacy subject at all".
+
+| param | default | effect |
+|---|---|---|
+| `tier0_max_episodes` | `12` | Item cap of the bundle's episode leg |
+| `tier0_max_beliefs` | `20` | Item cap of the bundle's belief leg, and the `limit` of the belief select behind it |
+| `tier0_max_foresight` | `10` | Item cap of the bundle's foresight leg (facts that are about a future the memory has been told about) |
+| `tier0_episode_chars` | `400` | Episode truncation inside the bundle (truncate, never delete) |
+| `tier0_tokens` | `1200` | Token budget of the tier-0 bundle |
+| `tier1_leg_limit` | `20` | Per-leg candidate cap of the tier-1 fan |
+| `tier1_axis_limit` | `200` | Page bound of the AXIS reads — the hydration's chain select (`t1-hyd-axis`) **and** the window leg's generous pre-filter share it. Too small truncates a chain, and a candidate whose chain was cut is delivered **without its predecessors** — `history: []` on the record in `recall_diagnostic`, no `previously` key in the payload — rather than with a guessed chain |
+| `tier1_graph_depth` | `2` | `max_depth` of the graph leg's `traverse` (store cap: 5) |
+| `tier1_graph_nodes` | `200` | `max_nodes` of the graph leg's `traverse` — the fan-out kill switch, so one hub entity cannot turn a recall into a walk of the whole graph |
+| `tier1_graph_fact_nodes` | `64` | How many distinct walked nodes go into the join's `in` filter (GH #520). The walk is already ranked when the cut is taken, so what falls off is the tail of the walk, never its front |
+| `tier1_graph_fact_limit` | `100` | Page bound of the join's `select facts` (GH #520). Generous on purpose: one popular subject carries a long version chain, and the leg's own `tier1_leg_limit` is the cut that decides what votes. A full page marks the leg **capped**, exactly as a full traverse page does |
+| `tier1_self_limit` | `20` | Page bound of the **self** leg (GH #536): how many of the asker's own facts it NOMINATES, newest first. Generous, because a member's dossier is a small bounded set (21 live rows on the hive this was measured on) and the leg has no query signal to rank by: what it cannot rank it must not cut early |
+| `tier1_self_budget` | `6` | How many of them may occupy a **bundle slot** while query-driven hits are waiting (GH #536). A different question from the one above: the leg nominates, the composition seats. Without it the dossier ate the fact half of every bundle — two different questions, one identical `FACTS` section. Leftover slots still fall back to the dossier, so it is a ceiling against competition and never a cut |
+| `self_legacy_subject` | `"user"` | The pre-canonicalisation spelling of *the member whose hive this is* (GH #536). The extraction lane writes a PERSON NAME into `facts.subject` today; everything written before it did carries the literal `user` — 23 of 29 self facts on the measured hive — and those rows are about the asker exactly as the new ones are. A **migration artefact**, named as one: the empty string switches it off for a hive that never had them |
+| `tier1_topk` | `20` | How many fused candidates survive the RRF cut into the tier-1 bundle |
+| `sem_max_distance` | `0.5` | Relevance floor of the **semantic** leg (#297), as a fraction of the embedding's BIT WIDTH: a hit at or beyond `0.5 × dim` differing bits is where a random binary vector sits, so at the default the cut removes coin flips and cannot cost a genuine hit. `similar` RANKS and never filters — without this every one of its `tier1_leg_limit` rows votes in the fusion as loudly as a real hit. A missing, zero or non-numeric `dim` means no scale, and without a scale there is no cut |
+| `kw_min_score_ratio` | `0.1` | Relevance floor of the **keyword** leg (#297), as a fraction of that page's OWN best bm25 rank — so the fact search and the episode search are never measured against each other's scale. bm25 is smaller-is-better, so the floor is `best × ratio` and a row survives at or below it. `0` switches the cut off (the ablation knob), and a page whose best rank is not negative carries no usable signal, so it is left uncut |
+| `bundle_episode_budget` | `6` | The episode share of the fusion cut (P15 O-7): episodes take at most this many of the `TOPK` slots and keep that many against any fact wall. Whichever side cannot fill its share lets the other backfill, so the bundle is never shorter than a plain prefix would be |
+| `tier1_tokens` | `2000` | Token budget of the tier-1 bundle; candidates are taken in fused order until the next one does not fit. It measures the **payload** candidate — what travels to the model — never the record in `recall_diagnostic`: the trace pays no prompt budget, so costing it would spend the whole #296 saving on refilling the budget instead of shipping a smaller bundle. `tier1_topk` stays the count cap |
+| `tier1_item_chars` | `400` | Per-item truncation inside the tier-1 bundle (a claim, an episode's content, a supersession marker). Truncate, never drop |
+| `rrf_k` | `60` | RRF constant |
+| `rrf_w_keyword` | `1.0` | Fusion weight of the keyword (FTS) leg |
+| `rrf_w_semantic` | `1.0` | Fusion weight of the semantic (embedding) leg |
+| `rrf_w_graph` | `1.0` | Fusion weight of the graph (traverse) leg |
+| `rrf_w_temporal` | `1.0` | Weight of the temporal leg **in window mode only** (P15 O-4) |
+| `rrf_w_self` | `1.0` | Weight of the **self** leg (GH #536). Its rank list is recency, not relevance — it is the one leg the query does not shape — so a hit two query-driven legs agree on outranks it through the agreement factor rather than through a special case. `0` leaves the leg as discovery only, which is the ablation the eval prices |
+| `rrf_w_temporal_point` | `0.0` | Weight of the temporal leg in **point** mode. Measured, not chosen: 50 identical LongMemEval extractions, paired — `0.0` gives R@1 **84.0 vs 74.0** and R@5 **98.0 vs 96.0**, flips **11:1** (sign test p=0.0063), and across 100 runs (2×50) the leg never carried a hit **alone**. Set it to `1.0` to restore the pre-O-4 fusion |
+| `rrf_agreement` | `0.5` | Strength of the agreement factor in the fusion (#297): a candidate two VOTING legs found is multiplied once, three legs twice. `0` restores the plain rank sum |
+| `query_safe_chars` | `200` | A query at or below this length reaches the legs untouched. Above it the hygiene guard runs (GH #88) |
+| `query_max_chars` | `250` | Hard clamp of the hygiene guard: whatever survived the question / tail-sentence steps is cut to its last this many characters, so the cost of a recall stops depending on how much context the caller pasted |
+| `query_tokens` | `24` | How many tokens of the sanitised query reach the FTS matcher, taken from the TAIL — after the hygiene guard the tail is the question (GH #88) |
+
+### The params of `./dream-glue`
+
+Eleven -- the budgets of the nightly run, all of them bounds on ONE prompt of one night. Ten are
+numbers and fall back on a blank value; `canon_judge` is the one STRING knob, so a blanked line
+there is a value that is not `"1"` and the ask is OFF (the apply half runs either way).
+
+| param | default | effect |
+|---|---|---|
+| `dream_axis_limit` | `5000` | Page bound of the materialisation scan the nightly run reads its axes with. A TRUNCATED axis page is worse than none -- half a chain can look functional where it enumerates (O-3) -- so a full page is skipped rather than derived from half of it, which is why this number is a whole order of magnitude above the judge budgets below. |
+| `canon_judge` | `"1"` | '1' runs the nightly canonicalisation round (one judge call per run), '0' skips the ASK. A judgement handed to the lane from outside is applied either way: applying is arithmetic, asking costs money. |
+| `canon_max_predicates` | `60` | Relation spellings out of the open vocabulary the nightly identity round puts to the judge per run. It is the bound that keeps the ONE prompt of the night bounded on a memory that has been running for years: the scan reads more than it asks about, and this is how much of it reaches the model. |
+| `canon_max_pairs` | `12` | Entity candidate pairs put to the judge per run |
+| `canon_max_axes` | `8` | Axes with more than one open statement put to the judge per run (the currency question). The whole budget, pages included: an axis too big for one page takes one of these slots rather than a slot of its own (GH #66). |
+| `canon_max_paged_axes` | `2` | How many of the canon_max_axes slots a night may spend on axes it can only show one page of (GH #66). Such an axis is never truncated blind: it is offered only after its relation was judged or seeded FUNCTIONAL, the page is the most recent statements, and what the page leaves behind is stated in the run receipt. An ENUMERATING relation ends the question for its axes for good; an undecided one gets the cardinality question first. |
+| `canon_max_card` | `8` | Relations whose CARDINALITY is put to the judge per run (statement identity W5 / ruling Q3 option C). Only relations the seed list does not own and the store has not judged yet are offered, so the budget always reaches something new. |
+| `canon_extract_lookback_days` | `7` | How far back the nightly round reviews the closures the EXTRACTOR wrote at write time, in days from delta_to (statement identity W4 / ruling Q2 guard rail 3) |
+| `canon_closed_rows` | `256` | Page bound of the identity questions' own read of the CLOSED rows (GH #73), most recently ended first. Bounded on ROWS and never on a clock: expired_at says when a statement stopped being TRUE, not when the closure was written, so a cutoff derived from delta_to would drop exactly the closure written last night about a change dated last spring. |
+| `canon_max_closed_axes` | `12` | How many spellings out of that page reach the two identity questions (GH #73). ON TOP of canon_max_predicates rather than out of it: a spelling a closure just proved belongs to another one is the best-founded question a night has, and the open vocabulary's budget was never sized for it. |
+| `scratch_ttl_days` | `7` | Retention window of the lane bookkeeping tables (scratch, recall_scratch), in days before the run's own window end. The nightly run deletes what is older and touches nothing else - no memory table, no provenance, no durable row (GH #375). The default is deliberately generous: a parked row is only ever read back inside the run that wrote it, so a week is orders of magnitude past the longest-lived parking. A window short enough to fall inside a lane's own round trip would delete state a running pass is about to read, which is why this is days and not minutes. |
+
+### The params of `./close-glue`
+
+| param | default | effect |
+|---|---|---|
+| `close_turn_rows` | `512` | Cap of the session page the close pass reads (GH #300). Counts episode rows of ONE session, newest first, so a session longer than the page loses its OLDEST turns rather than its last ones: the later a turn is, the more likely it is the one that corrects an earlier, which is the whole reason the pass exists. A param of this cell since GH #138, so two members are tuned apart |
+| `close_fact_rows` | `256` | Cap of the fact page the close pass reads (GH #300). Counts the OPEN facts of ONE session -- the records the per-turn path already wrote and the only records the pass may name when it supersedes one. A separate knob from close_turn_rows because it counts a different thing: a short session can carry a long history if its subject has been talked about before |
+
+### The nightly tick: `./clock`
+
+The timer is called `clock` since 3.2.0 ([#551](https://github.com/mmeyerlein/meclaw/issues/551),
+ruling R-0904-5: a `timer` whose schedules carry nothing but the tick is named `clock`; a tick
+whose NAME carries the semantics, like `session-keeper/night`, keeps it). It has no top-level
+`cron` param -- a timer's schedule lives inside `params.schedules[]` -- so the value is a literal
+there and an instance retunes the night by overriding the whole `schedules` key, or at runtime
+with a `modify` op by `schedule_id`.
+
+| where | default | effect |
+|---|---|---|
+| `params.schedules[0].cron` | `0 0 3 * * *` | 6-field Quartz schedule of the nightly run, **in UTC**. The `timer` cell type plans every occurrence on `DateTime<Utc>` and has no timezone knob (`crates/meclaw-cells/src/timer/io.rs`), so the default fires at 03:00 UTC — 05:00 in Berlin summer time, 04:00 in winter. Pick the field for the UTC hour you want, not for the local one |
+
+### The deliberation budget of the four model cells
+
+Each of `closer`, `dreamer`, `dialectic` and `judge` sets its own
+`params.provider_extra.reasoning.effort` explicitly -- never inherited from the provider default,
+and never `minimal`. It was `${MEMORY_REASONING_*}` until 3.2.0 and is a literal now.
+
+| cell | `provider_extra.reasoning.effort` | why |
+|---|---|---|
+| `closer` | `medium` | a strong model asked to sharpen a session it is seeing whole is not a shape-filling call |
+| `dreamer` | `medium` | the nightly change narrative |
+| `dialectic` | `medium` | the tier-2 answer with its gap statement |
+| `judge` | `high` | the identity verdicts are written into the store and every later read consumes them, so this is the one lane where thinking is worth paying for |
+
 
 **Model recommendation (P15 R10): put the memory lane on a strong model.** Since 3.0.0 the model
 that mints facts mid-conversation is the FRONT model, not one of this hive's slots (#298) — so
@@ -1078,12 +1255,11 @@ pass runs once per closed SESSION on a top-tier model and is measured at ≈ 0.0
 26-turn conversation that was about 80 % of everything the colony spent. See
 [What a close pass costs](#what-a-close-pass-costs-measured).
 
-Numeric params (`query_timeout_ms`, `external_timeout_ms`, …) are **literals, never `${VAR}`** —
-substitution yields strings and the parsers want integers. Tunables reach the `code` cells
-through `${VAR:-default}` **inside the script literal** (`daily-digest` precedent) — a
-colony-global route. Per-instance knobs go through the stdin `params` object instead
-(`docs/cell-types.md` § `code`); the hive's migration onto that surface has started at the
-embedder's timeouts (below) and continues one knob group at a time.
+Every tunable of this hive now reaches its `code` cell through the stdin `params` object
+(`docs/cell-types.md` § `code`), which is also why the numeric ones can be written as numbers:
+substitution yields strings, and the tables above carry the value the parser wants. The
+embedder's four timeouts below were the first group to make that move (GH #146) and are described
+separately because their bounds have to add up against the cell's own `external_timeout_ms`.
 
 ### `./embed` timeouts and the read-lane retry (params, GH #146)
 
@@ -1404,7 +1580,7 @@ The asker was never missing from the request. `audience_now` carries the partici
 `member:`/`person:` tokens are people — the read path just never read it as an *identity*, only as
 the audience gate's yardstick. The self leg reads it as one: the asker's subjects are
 `memory_holder`, `user_id` and the member tokens of the asking round, plus
-`MEMORY_SELF_LEGACY_SUBJECT` (default `user`), which is what the extraction lane wrote into
+`self_legacy_subject` (default `user`), which is what the extraction lane wrote into
 `facts.subject` before it wrote person names there. `agent:` tokens are deliberately not people:
 the hive belongs to a MEMBER (ADR-0002 E1) and an agent is a lens on it.
 
@@ -1416,7 +1592,7 @@ same to the dossier. And it has a **budget** — see below. What it does *not* d
 disclosure: an anchor decides what is looked up, never what is seen, and every row it nominates is
 measured against `audience_now` by the same gate as every other row.
 
-**The dossier budget (`MEMORY_TIER1_SELF_BUDGET`, default 6).** The leg answers *who is asking*,
+**The dossier budget (`tier1_self_budget`, default 6).** The leg answers *who is asking*,
 which is the same answer whatever is asked — so its rows are not competing on relevance and must
 not be seated as though they were. DOSSIER FLOOD, measured live on the first build of this leg:
 two different questions came back with a **byte-identical `FACTS` section**, because twenty
@@ -1441,7 +1617,7 @@ the retrieval's.
 
 **RRF.** `score(d) = (Σ_legs w_leg / (K + rank_leg(d))) × (1 + A × (agreement(d) − 1))`, `K = 60`,
 weights 1.0 — except the temporal leg, whose weight depends on the mode (O-4, below) — and
-`A = MEMORY_RRF_AGREEMENT`, default **0.5**, `0` restoring the plain sum. A candidate found by two
+`A = rrf_agreement`, default **0.5**, `0` restoring the plain sum. A candidate found by two
 **voting** legs adds both terms *and* is multiplied once for the agreement: two legs that
 independently found the same row is a different kind of evidence than one leg finding it a little
 higher, and the plain sum leaves that difference in the leg tags, which nobody sums. `agreement`
@@ -1455,12 +1631,12 @@ only then kind and id: two identical requests produce byte-identical candidate l
 
 **The temporal leg does not vote in point mode (P15 O-4).** In a point query the leg runs exactly
 as before — it performs the as-of cut, and that cut is its whole value — but its term enters the
-sum with weight `MEMORY_RRF_W_TEMPORAL_POINT`, default **0.0**. The evidence is a paired ablation
+sum with weight `rrf_w_temporal_point`, default **0.0**. The evidence is a paired ablation
 over 50 identical LongMemEval extractions: R@1 **84.0 against 74.0**, R@5 **98.0 against 96.0**,
 **11 flips to 1** in favour of the unweighted arm (sign test p=0.0063), and in 100 runs (2×50) the
 temporal leg was **never** the only leg that found a hit. What it did instead was crowd: an
 as-of-recent fact rode into the top slot on the third leg while a two-leg keyword+semantic hit
-sat below it. In **window** mode the weight stays at `MEMORY_RRF_W_TEMPORAL` — the single paired
+sat below it. In **window** mode the weight stays at `rrf_w_temporal` — the single paired
 win of the weighted arm was a temporal-reasoning question, and window mode is where the temporal
 ordering is the answer rather than a vote (O-2). The tie-break is untouched by all of this: it
 reads the temporal **position**, not the temporal score, so it still decides an exact tie at
@@ -1545,7 +1721,7 @@ them are still true and which was replaced by which. Shape and guard rails:
   statement, and the id offered is the assertion still standing). An axis carrying more open
   statements than one page is never shown as a whole axis -- a judge that sees six of seventy
   plans cannot tell it is a bucket -- and since GitHub #66 it is not dropped either but
-  **triaged** (next section). Busiest axis first, capped by `MEMORY_CANON_MAX_AXES`.
+  **triaged** (next section). Busiest axis first, capped by `canon_max_axes`.
 * **Write surface.** Per YES verdict exactly one `update` on `facts`, setting `expired_at`,
   `superseded_by` and `closure_source = judge:<run_id>`. The `where` pins the row to the axis
   the verdict named AND to `expired_at is_null`: a verdict about an axis it was not shown finds
@@ -1594,8 +1770,8 @@ Three properties make the paging sound without a cursor table:
   of by a second mechanism, and a judgement never compares two statements that were not in one
   prompt together. The closures are what advance the window; an axis worn down under the page
   bound becomes an ordinary entry again, with no rule anywhere noticing the transition.
-* **The pages come OUT of `MEMORY_CANON_MAX_AXES`, never on top of it** (at most
-  `MEMORY_CANON_MAX_PAGED_AXES` of the slots), so the night that finally reaches a bucket axis is
+* **The pages come OUT of `canon_max_axes`, never on top of it** (at most
+  `canon_max_paged_axes` of the slots), so the night that finally reaches a bucket axis is
   not also the night every payload grows.
 * **The judge is told it is looking at a page**, in a paragraph that renders only on the nights
   that carry one (the GitHub #69 section rule) and declares no new answer key. Without that
@@ -1639,7 +1815,7 @@ conversation rather than per batch. The night is the sweeper because the night i
 with a clock, a window and a receipt.
 
 * **Two ops, both bounded**: `delete from scratch where created_at < cutoff` and the same on
-  `recall_scratch`, with `cutoff = delta_to − MEMORY_SCRATCH_TTL_DAYS` days. Nothing else is ever
+  `recall_scratch`, with `cutoff = delta_to − scratch_ttl_days` days. Nothing else is ever
   named — no memory table, no provenance, no durable row. The No-Delete policy keeps standing
   where it belongs, and these two tables are transient by their own definition.
 * **The cutoff comes from `delta_to`, never from the clock**, like every other value a dream run
@@ -1742,7 +1918,7 @@ identically built axes, one closure each, and the cardinality verdict as the onl
 between them.
 
 **The fallback is a candidate without predecessors, never a lost candidate.** If the axis select
-was truncated (`MEMORY_TIER1_AXIS_LIMIT`) or carried no matching `(subject, predicate)` pair, the
+was truncated (`tier1_axis_limit`) or carried no matching `(subject, predicate)` pair, the
 hit is delivered as it came — `history: []` on the record, and therefore no `previously` key in
 the payload. Losing a candidate would be the worse failure.
 
@@ -1986,12 +2162,12 @@ curl -s -X POST http://127.0.0.1:7792/colony/mutations -H 'Content-Type: applica
      "set_context":{"close_pass":"'"'"'1'"'"'"}}},
    {"from":"./memory","to":"./capture","condition":"has(hop.route) && hop.route == \"bundle\""},
    {"from":"./memory","to":"./capture","condition":"has(hop.route) && hop.route == \"reject\""}]}}'
-curl -s http://127.0.0.1:7792/colony/registry     # 13 hive cells active; cron Awake
+curl -s http://127.0.0.1:7792/colony/registry     # 13 hive cells active; clock Awake
 ```
 
 `store`, `closer`, `dreamer` and `dialectic` show `active=true` + `NotYetSpawned` — that is
 the correct hot/cold PASS form for stateful cells, they wake on first delivery. Only the
-long-running `cron` must be `Awake`.
+long-running `clock` must be `Awake`.
 
 **G4** — two negative fixtures in the same workshop tree pin the rejection paths:
 `memory_hive_env_missing` (`env_var_missing`; the four no-default variables) and
@@ -2048,7 +2224,7 @@ DUMP > /tmp/dump1.json   # replay both, then DUMP > /tmp/dump2.json; diff must b
 `pending_extraction`) are append-mostly *inside* their retention window — a replayed run stages
 its payload again — so they are explicitly *not* part of the replay claim. The claim is: **a
 replay changes no memory.** Since GH #375 the first two are also not append-*only*: the nightly
-run deletes what is older than `MEMORY_SCRATCH_TTL_DAYS`, which is lane state and never memory.
+run deletes what is older than `scratch_ttl_days`, which is lane state and never memory.
 `pending_extraction` is deliberately left alone — it is an exception list with a defined meaning
 per row, not lane scratch.
 
@@ -2077,7 +2253,7 @@ emitted for EVERY fact, only differences are written, so a closure the old axis 
 behind is cleared and an attributed one is a no-op. Two selects, not one: the first asks which axes
 are live, the second loads those axes **whole**, because only a full chain can tell a re-assertion
 from a new statement. The second select carries no delta bound on purpose: the window bounds the
-dreamer's LLM payload, not arithmetic. The page bound is `${MEMORY_DREAM_AXIS_LIMIT:-5000}`, and a
+dreamer's LLM payload, not arithmetic. The page bound is `dream_axis_limit` (default `5000`), and a
 **full** page skips the derivation instead of guessing from half a chain. A second run over
 unchanged data emits nothing at all. What still needs the model: the change narrative and the dedup
 verdicts — and, from W3 onwards, the closures themselves.

@@ -1,0 +1,141 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json\n\n# The ADAPTER between a tool round and this hive's own question lane (GH #552).\n#\n# A `memory_recall` call arrives the way every tool call arrives: one\n# `tool_call` turn whose text is the arguments as a JSON string, a\n# `hop.tool_call_id` the asking round is waiting on, and nothing else. This\n# hive's `in_query` lane speaks a different language -- a plain question turn\n# plus seven context keys -- and its answer is a `bundle`, not a result. This\n# cell is the translation, in both directions, and it is a cell of its own\n# rather than a second entrance on `./recall` for two reasons: `./recall` is the\n# largest cell in this tree and a second input shape makes it more expensive to\n# read, and a `bundle` that meant two different things on the way back is\n# exactly the ambiguity #552 removed from the collector.\n#\n# THE TIER IS CONFIGURATION. `params.tier` is what the ask carries; a model that\n# could choose its own depth could ask for one the instance was tuned away from.\n# Empty switches the tool off, and every call is then ANSWERED with a typed\n# error instead of asked into a void -- the same lid the dispatcher holds on its\n# budget refusal, and for the same reason: a call that is not answered stalls\n# the asking round until its idle window runs out.\ndoc = json.load(sys.stdin)\nd = doc[\"body\"]\nenvelope = doc[\"envelope\"]\nP = doc.get(\"params\") or {}\nh = envelope.get(\"header\", {})\nctx = h.get(\"context\", {})\nhop = h.get(\"hop\", {})\nroute = str(hop.get(\"route\", \"\"))\n\n\ndef _knob(key, default):\n    v = P.get(key, default)\n    return default if v is None else v\n\n\nTIER = str(_knob(\"tier\", \"1\"))\nFORM = str(_knob(\"form\", \"readable\")) or \"readable\"\n_raw_chars = _knob(\"chars\", 8000)\nCHARS = int(_raw_chars) if str(_raw_chars).strip() else 8000\n\n\ndef emit(msgs):\n    sys.stdout.write(json.dumps(msgs))\n    sys.exit(0)\n\n\ndef result(call_id, text, error=\"\"):\n    \"\"\"One `tool_result` turn under the ORIGINAL call id.\n\n    ONE cap over the whole text, so `both` bounds the two forms together rather\n    than each of them; `hop.memory_capped` says it happened, because a bundle\n    silently halved is a lie about what the model was shown.\"\"\"\n    capped = \"0\"\n    if len(text) > CHARS:\n        text, capped = text[:CHARS], \"1\"\n    head = {\"route\": \"tool_result\", \"tool_call_id\": call_id,\n            \"memory_capped\": capped}\n    if error:\n        head[\"error_code\"] = error\n    return {\"header\": head,\n            \"messages\": [{\"origin\": \"tool\", \"type\": \"tool_result\",\n                          \"id\": call_id, \"text\": text}]}\n\n\ndef bundle_text(body):\n    \"\"\"A recall bundle as ONE result text, in the configured form. Nothing is\n    rendered here: the readable half is the LAST message the recall cell emitted\n    -- that cell sends the rendered block last, and taking the last one is how\n    the collector has read this body since GH #278 -- and the machine-readable\n    half is its `system.memory` subtree, verbatim. Under `both` the two are\n    joined by a newline.\"\"\"\n    readable = \"\"\n    for m in body.get(\"messages\") or []:\n        readable = str(m.get(\"text\", \"\") or \"\")\n    slot = (body.get(\"system\") or {}).get(\"memory\", {})\n    parts = []\n    if FORM in (\"readable\", \"both\") and readable:\n        parts.append(readable)\n    if FORM in (\"json\", \"both\") and slot:\n        parts.append(json.dumps(slot))\n    if not parts:\n        parts.append(readable or (json.dumps(slot) if slot else\n                                  \"memory recall returned nothing\"))\n    return \"\\n\".join(parts)\n\n\n# ---------------------------------------------------------------- the way in\nif route == \"tool_call\":\n    msgs = d.get(\"messages\") or []\n    call = msgs[0] if msgs else {}\n    # The id comes from the TURN first and the hop second: the turn is what the\n    # asking round built its expectation set from, and the two disagreeing would\n    # leave the fan-in waiting for a call nobody can answer.\n    call_id = str(call.get(\"id\") or hop.get(\"tool_call_id\") or \"\")\n    try:\n        args = json.loads(call.get(\"text\") or \"{}\")\n    except Exception:\n        args = None\n    if not isinstance(args, dict):\n        emit([result(call_id, \"the call carried no readable arguments\",\n                     \"malformed_tool_call\")])\n    query = str(args.get(\"query\", \"\") or \"\")\n    if not query:\n        emit([result(call_id, \"a recall needs a question: `query` is required\",\n                     \"malformed_tool_call\")])\n    if not TIER:\n        emit([result(call_id, \"this memory serves no recall tool: `tier` is empty\",\n                     \"memory_not_configured\")])\n    # Every key is always present and empty rather than absent -- a missing hop\n    # key makes the promoting CEL modifier fail, and a failed modifier SKIPS the\n    # edge. What the model did not name stays empty, and an empty window is a\n    # point query: the hive's own default, not a decision taken here.\n    emit([{\"header\": {\"route\": \"ask\", \"tool_call_id\": call_id,\n                      \"recall_query\": query, \"memory_tier\": TIER,\n                      \"recall_window_from\": str(args.get(\"window_from\", \"\") or \"\"),\n                      \"recall_window_to\": str(args.get(\"window_to\", \"\") or \"\")},\n           \"messages\": [{\"origin\": \"user\", \"type\": \"text\", \"text\": query}]}])\n\n# --------------------------------------------------------------- the way back\ncall_id = str(ctx.get(\"memory_call_id\", \"\") or \"\")\n\nif route == \"reject\":\n    # A refusal is ANSWERED here too, under the hive's OWN reason: a second\n    # vocabulary for the same four refusals would be a translation nobody\n    # maintains, and an unanswered call stalls the round it belongs to.\n    reason = str(hop.get(\"reject_reason\", \"\") or \"store_refused\")\n    said = \"\"\n    for m in d.get(\"messages\") or []:\n        said = str(m.get(\"text\", \"\") or \"\")\n    emit([result(call_id, said or (\"this memory refused the question: \" + reason),\n                 reason)])\n\nemit([result(call_id, bundle_text(d))])\n",
+    "external_timeout_ms": 10000,
+    "sandbox": {
+      "trust": "restricted",
+      "network": "deny",
+      "filesystem": {
+        "runtime": true
+      }
+    }
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {
+      "tier": {
+        "type": "string",
+        "secret": false,
+        "default": "1",
+        "description": "The recall tier a `memory_recall` tool call is served at. CONFIGURATION, never a model argument: a model could otherwise ask for a depth the instance was tuned away from. Empty switches the tool off and every call is answered with a typed `memory_not_configured` result instead of being asked into a void."
+      },
+      "form": {
+        "type": "string",
+        "secret": false,
+        "default": "readable",
+        "description": "Which form of the bundle becomes the tool_result text: `readable` (the rendered block), `json` (the machine-readable subtree), `both` (the two joined by a newline)."
+      },
+      "chars": {
+        "type": "number",
+        "secret": false,
+        "default": 8000,
+        "description": "Character cap on the tool_result text. ONE cap over the whole text, so `both` bounds the two forms together; `hop.memory_capped` says whether it struck."
+      }
+    },
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "ask",
+            "tool_result"
+          ],
+          "required": true
+        },
+        "tool_call_id": {
+          "type": "string",
+          "required": true
+        },
+        "recall_query": {
+          "type": "string",
+          "required": false
+        },
+        "memory_tier": {
+          "type": "string",
+          "required": false
+        },
+        "recall_window_from": {
+          "type": "string",
+          "required": false
+        },
+        "recall_window_to": {
+          "type": "string",
+          "required": false
+        },
+        "memory_capped": {
+          "type": "string",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "values": [
+            "malformed_tool_call",
+            "memory_not_configured",
+            "missing_audience",
+            "missing_channel",
+            "half_open_window",
+            "store_refused"
+          ],
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": false
+        },
+        "system": {
+          "type": "object",
+          "required": false
+        }
+      },
+      "hop": {
+        "tool_call_id": {
+          "type": "string",
+          "required": false
+        },
+        "tool_name": {
+          "type": "string",
+          "required": false
+        },
+        "reject_reason": {
+          "type": "string",
+          "required": false
+        }
+      },
+      "context": {
+        "memory_call_id": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "The translation between a tool round and this hive's own question lane (GH #552). One way it turns a `memory_recall` tool_call -- arguments as a JSON string, one correlation id -- into the ask `./recall` understands, stamping the tier out of its own configuration; the other way it turns the bundle, or the refusal, back into one `tool_result` turn under the original call id.",
+    "use_when": "Reached on this hive's `tool_call` lane and on the way back from `./recall` while `context.memory_call_id` is set. Never on the ambient leg: a per-turn `in_query` goes straight to `./recall` and its bundle leaves the hive as a `bundle`, exactly as before.",
+    "not_in_scope": "No retrieval and no ranking -- `./recall` does all of it. No tier judgement: the depth is this cell's `params.tier` and never an argument. No second meaning for `bundle`: a bundle that came back for a call leaves as a result, a bundle that came back for the ambient leg never reaches this cell at all.",
+    "emits_meaning": "hop.route `ask`: the question for `./recall`, with the model's three values on `hop.recall_query` / `recall_window_from` / `recall_window_to` and the tier on `hop.memory_tier` -- the hive's own edge promotes them into context. hop.route `tool_result`: the answer, under `hop.tool_call_id`, with `hop.memory_capped` saying whether the cap struck and `hop.error_code` naming a refusal -- `malformed_tool_call` and `memory_not_configured` are this cell's own, the other four are the recall cell's `reject_reason` handed on verbatim.",
+    "consumes_meaning": "On the way in: body.messages[0] is the tool_call turn whose `text` holds the arguments and whose `id` is the correlation. On the way back: body.messages / body.system are the bundle, `hop.reject_reason` the refusal, and `context.memory_call_id` the call the answer belongs to.",
+    "examples": [
+      "{\"query\":\"what did we decide?\"} -> hop.route `ask`, hop.recall_query the question, hop.memory_tier the configured tier",
+      "a `reject` carrying `half_open_window` -> one tool_result with hop.error_code `half_open_window`",
+      "`tier` empty -> one tool_result with hop.error_code `memory_not_configured`"
+    ]
+  }
+}

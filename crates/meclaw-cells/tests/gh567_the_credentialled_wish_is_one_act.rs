@@ -228,8 +228,7 @@ fn build_root(root: &std::path::Path) {
          TELEGRAM_BOT_TOKEN=test-token\n\
          TELEGRAM_BOT_TOKEN_2=test-token-2\n\
          TELEGRAM_ALLOWED_USER_ID=0\n\
-         EXAMPLE_CHAT_TOKEN=test-chat-token\n\
-         KEEPER_NIGHT_CRON=0 0 0 1 1 *\n",
+         EXAMPLE_CHAT_TOKEN=test-chat-token\n",
     )
     .unwrap();
 }

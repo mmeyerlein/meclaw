@@ -310,12 +310,13 @@ pub(crate) fn read_relocated_node(
                 cfg_path.display()
             ))
         })?;
-    let contract_view = crate::bootstrap::compile_contract_view(&cfg.contract).map_err(|e| {
-        MutationError::Schema(format!(
-            "move_nodes: {} has an invalid emits schema: {e}",
-            cfg_path.display()
-        ))
-    })?;
+    let contract_view =
+        crate::bootstrap::compile_spawn_view(&cfg.contract, &cfg.params).map_err(|e| {
+            MutationError::Schema(format!(
+                "move_nodes: {} does not compile into a spawn view: {e}",
+                cfg_path.display()
+            ))
+        })?;
     let header_view = crate::mutation::validate::header_view_from_contract(&cfg.contract);
     Ok(RelocatedNode {
         cell_type: cfg.cell.cell_type,

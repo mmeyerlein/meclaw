@@ -506,7 +506,7 @@ async fn one_manifest_builds_the_feed_out_of_four_named_templates() {
         &h,
         json!({"scope": "/", "diff": {
             "add_nodes": [
-                {"name": "tick", "template": "clock@1.0.0",
+                {"name": "tick", "template": "clock@1.0.1",
                  "override_params": {"schedules": [{
                      "schedule_id": "0190a3f2-0000-7000-8000-000000000482",
                      "schedule_name": "tick", "cron": "* * * * * *",

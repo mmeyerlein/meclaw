@@ -1,13 +1,14 @@
-# `colony-view@1.0.2`
+# `colony-view@1.1.0`
 
-The colony, drawn. A timer takes a topology snapshot, a `code` cell turns it
-into one view, and a display holds it and serves the page. The browser owns two
-things and neither of them is the picture: the drag, and where you are looking.
+The colony, drawn. A committed mutation takes a topology snapshot, a `code` cell
+turns it into one view, and a display holds it and serves the page. The browser
+owns two things and neither of them is the picture: the drag, and where you are
+looking.
 
 ```
-refresh (timer)  ->  probe (code)  ->  layout (code)  ->  view
-   every minute       the colony's       one component      out of the hive,
-                      graph endpoint     tree               towards a display
+mutation_committed  ->  probe (code)  ->  layout (code)  ->  view
+   the receipt of        the colony's      one component      out of the hive,
+   a graph change        graph endpoint    tree               towards a display
 ```
 
 ## What an app is here
@@ -30,10 +31,14 @@ one is the picture.
 
 ## The pipeline, pass by pass
 
-**`refresh`** is a `timer` with one schedule and no opinions.
-`COLONY_VIEW_REFRESH_CRON` is the knob -- a six-field Quartz expression, planned
-in **UTC** like every `timer` in the library. It ticks at second zero of every
-minute unless an instance says otherwise.
+**The rim** is where a pass starts. Two lanes arrive there and the hive's own
+edges turn both of them into the same pass: `mutation_committed`, the receipt the
+mutation door leaves when the graph moved (GH #553), and `in_refresh`, the same
+question asked by hand. Since `1.1.0` there is no timer in here at all -- the
+`refresh` cell that ticked every minute is gone, and with it a poll that asked
+whether anything had changed on a schedule with no relationship to when anything
+does. **The boot receipt is the first fill**, so a restarted screen has its
+picture before anybody touches the colony.
 
 **`probe`** asks the colony's read-only graph endpoint and hands the answer on,
 unread. Two passes: a tick becomes a read, a reply becomes a snapshot. It is
@@ -305,7 +310,8 @@ inside it; a caller names the hive and a lane on `hop.route`.
 
 | Lane | Direction | Meaning |
 |---|---|---|
-| `in_refresh` | in | take the topology snapshot now, instead of at the next tick |
+| `mutation_committed` | in | the graph moved -- draw it again. The mutation door leaves this receipt at the hive `colony.json` names, and the levels between carry it down (GH #553) |
+| `in_refresh` | in | take the topology snapshot now, by hand: the operator gesture |
 | `view` | out | the whole picture, ready to be laid on a surface |
 
 Nothing is drawn until somebody is wired to hold it. One edge does that, from
@@ -321,8 +327,9 @@ That edge is the whole integration. Point a second one at another display and
 both show the same picture; point none anywhere and the view dead-letters as
 `no_route`, which is recorded and self-localising rather than silent.
 
-`in_refresh` exists for the case where a mutation has just landed and waiting a
-minute is silly.
+`in_refresh` is the operator gesture: it exists for the case where somebody
+wants the picture redrawn without changing anything, or where a colony has not
+opted into `mutation_receipts` at all.
 
 ### The one absolute lane
 
@@ -365,9 +372,10 @@ that says which browser asked, and a cell has no way to supply the pairing
 afterwards.
 
 An app has no request path for it to be part of anyway, and that is the deeper
-reason. It states the picture on a timer, where **nothing is waiting**. A
-colony's graph changes on mutation, not on mouse movement, which makes a minute
-an honest interval rather than a compromise.
+reason. It states the picture on a receipt, where **nothing is waiting**. A
+colony's graph changes on mutation, not on mouse movement -- which is why the
+mutation is what the picture follows, and why the minute the timer used to wait
+was never an interval anybody had a reason for.
 
 ## What is not here
 

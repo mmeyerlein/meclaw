@@ -415,11 +415,11 @@ fn the_shell_draws_the_edge_no_other_level_could() {
     // (GH #556) and is now the front door's.
     assert_eq!(
         read("templates/meclaw-os/builder/config.json")["cell"]["template"],
-        "builder@1.6.1"
+        "builder@1.7.1"
     );
     assert_eq!(
         read("templates/meclaw-os/operator/config.json")["cell"]["template"],
-        "operator@1.1.0"
+        "operator@1.2.0"
     );
     assert_eq!(
         read("templates/operator/submit/config.json")["cell"]["template"],

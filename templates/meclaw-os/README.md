@@ -1,4 +1,4 @@
-# `meclaw-os@1.7.0`
+# `meclaw-os@1.8.1`
 
 The colony shell: the outermost of the four composition levels, and the tree everything
 else is grown into. It holds no cell of its own. It holds four occupants, one empty
@@ -25,6 +25,19 @@ thing", and two would mean two. A control loop, yes — one colony, one hand on 
 A memory, no: memory belongs to the **member** (GH #122), and a group is an audience, not a
 holder. A persona, a model, a channel: no, no, no. Each of those is owned further down, and
 a shell that grew one would have stopped being a boundary and become a participant.
+
+**And one thing more: the OS hands out what is system-near.** A colony carries many
+organisations and exactly **one** OS, so the OS is what allocates the resources that are
+scarce and colony-wide — a TCP port, a bind address, a socket — where two holders of one
+is a collision rather than a disagreement. An organisation does not hold a port band and
+does not assign a port; it **asks the OS** for one
+(ADR-0022,
+[#543](https://github.com/mmeyerlein/meclaw/issues/543)). The form that has today is the
+`builder` standing at this level: every member it grows gets a screen, and that screen's
+port is `screen_port_base` plus the member's index in its organisation, counted off
+`/colony/graph` before anything is rendered. The builder is part of the OS
+(ADR-0015), so that is this
+level's own responsibility being exercised — never a right the organisation lent it.
 
 ## What is inside
 
@@ -87,9 +100,9 @@ this shell without having promoted the requester somewhere upstream is refused w
 `hive_contract` before anything is staged — a grant issued to whoever asked loudest is the
 one failure the broker cannot recover from afterwards.
 
-## The forty-seven edges
+## The forty-nine edges
 
-Thirty-four of them are a door or an exit, and every declared lane has at least one. The
+Thirty-six of them are a door or an exit, and every declared lane has at least one. The
 broker knows nothing about the loop, the loop asks the colony rather than the broker, and
 neither of them knows an organisation exists.
 
@@ -372,10 +385,11 @@ probe ask `/colony/ledger` for their numbers instead of opening a database they 
 those asks travel with the `ref`, so this level writes no edge for them; it also must not
 seal them away, which is one more reason `params.ports` stays absent here. The virtual
 endpoints are in bounds at every scope, so wrapping the loop one level deeper changes
-nothing about them. Their two settings, `ARGUS_MAX_LEDGER_ROWS` and
-`ARGUS_PROBE_LEDGER_TRIES`, both carry defaults inside the loop's own cells and need no
-pass-through from this level; an operator who wants other values sets them in the
-environment the colony runs in.
+nothing about them. Their two settings, the meter's `max_ledger_rows` and the
+probe's `probe_ledger_tries`, both carry defaults inside the loop's own cells and need no
+pass-through from this level; since `argus@1.1.0` they are PARAMS of those cells
+(GH #138), so an operator who wants other values sets them with `override_params`
+in the manifest that grows the loop, not in an environment every occupant shares.
 
 **No `requires` block.** This template substitutes nothing in its own config values, so it
 declares nothing. The requirements of `access` and `argus` are **not** repeated here:
@@ -395,7 +409,7 @@ in it at all**.
 seed-ref/
 ├── colony.json            substrate defaults. two lines.
 ├── main/config.json       type: "hive", one edge, and not one cell
-└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@1.7.0"}}
+└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@1.8.1"}}
 ```
 
 ```bash
@@ -433,6 +447,17 @@ file is written out.
 occupants and derived from them by test: every `${VAR}` any config value under this shell
 substitutes is named there, with a sentence saying what it binds and why.
 
+**The surface shrank with the knob migration, and it is finished.** Since
+`1.8.1` the three `DISPATCHER_*` names and the four `BUILDER_LIBRARIAN_*` ones
+are gone from the rollup. Since `dispatcher@1.2.0` that cell reads its call
+budget and its two tool classes from its own `params`,
+and since `builder-librarian@2.2.0` the library reads its four windows from
+its own ([#138](https://github.com/mmeyerlein/meclaw/issues/138)), so a key set
+for either in the environment would go nowhere. What tunes them now is an
+`override_params` entry addressed at the cell --
+`{"builder/dispatcher": {"max_calls": 8}}` -- and what stays here is the
+provider lane and nothing else.
+
 Exactly **one** of those keys is required, and it is the only value in the whole shell written
 with no default: `OPENROUTER_API_KEY`, the credential of the control loop's judge. A colony that
 grows this shell without it is refused with `requirement_missing` **before a single byte is
@@ -443,7 +468,15 @@ the first cycle the loop runs.
 
 Everything else has a default in the template it configures and is declared anyway, so that a
 builder learns this shell's environment surface by reading it rather than by watching a cell
-answer nothing. Two of them are worth knowing before you start:
+answer nothing. Since `meclaw-os@1.8.1` that surface is seven keys instead of
+twenty-nine, and every one of them is the provider lane: the authoring dispatcher's
+three knobs, the control loop's seven, the capability broker's six, the two source
+names of the vault inside it and the library's four windows became params
+of the cells that read them (GH #138), so they are set in the manifest that grows the
+shell and are no longer asked for here. A declared key that binds nothing is a
+leaflet, and the roll-up is derived by test rather than transcribed, so it went out
+with them.
+Two of the remaining keys are worth knowing before you start:
 [`MODEL_BUILDER`](../builder/) and `LOCAL_LLM_BASE_URL` are what the composer asks its model
 through, they default to empty, and unset they leave the authoring path inert — the shell boots,
 the front door answers, the submitter gates, and no manifest is ever drafted. **Stage two cannot
@@ -457,7 +490,7 @@ root tree:
 
 ```json
 {"scope": "/",
- "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.7.0"}],
+ "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.8.1"}],
           "add_edges": []}}
 ```
 
@@ -478,7 +511,7 @@ Then one organisation at a time, into the container, each with its transit edges
 
 ```json
 {"scope": "/os",
- "diff": {"add_nodes": [{"name": "orgs/acme", "template": "org@1.3.0"}],
+ "diff": {"add_nodes": [{"name": "orgs/acme", "template": "org@1.4.0"}],
           "add_edges": [{"from": "./orgs", "to": "./orgs/acme",
                          "condition": "has(hop.route) && hop.route == 'in_turn'"},
                         {"from": "./orgs/acme", "to": "./orgs",

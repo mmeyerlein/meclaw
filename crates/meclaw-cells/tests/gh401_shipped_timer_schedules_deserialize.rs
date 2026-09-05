@@ -128,3 +128,124 @@ fn every_shipped_timer_carries_params_the_boot_accepts() {
         broken.join("\n")
     );
 }
+
+/// Names the ruling of GH #551 § 2 leaves alone: a tick whose NAME says which
+/// tick it is (`night`), plus the survivor itself. The ruling named
+/// `menu-clock` here too; it left the tree with GH #553, and the menu is asked
+/// for on the mutation receipt now.
+const RULED_TIMER_NAMES: &[&str] = &["clock", "night"];
+
+/// Directories that still carry an unruled timer name and are known to leave
+/// during the 2026-09-04 wave. Same dated-transition shape the tree gate uses
+/// (`scripts/check_tree_rules.py` § TRANSITIONAL): a row leaves with the commit
+/// that lands its issue, and a row that no longer matches anything is a finding
+/// of its own, so a tolerated exception cannot turn into sediment.
+///
+/// EMPTY since GH #551 landed: `canvy/refresh`, `daily-digest/cron` and
+/// `memory-hive/cron` are all called `clock` now, so the sweep below is the
+/// whole rule again and nothing is excused from it.
+///
+///   (path relative to `templates/`, issue, what lands)
+const PENDING_TIMER_RENAMES: &[(&str, u32, &str)] = &[];
+
+/// A schedule that only ticks: it carries no payload at all, or the one turn it
+/// carries is the schedule's own name spelled out again.
+fn is_pure_tick(schedule: &Value) -> bool {
+    let messages = &schedule["emit_body"]["messages"];
+    let Some(turns) = messages.as_array() else {
+        return false;
+    };
+    match turns.len() {
+        0 => true,
+        1 => {
+            let text = turns[0]["text"].as_str().unwrap_or_default();
+            !text.is_empty() && Some(text) == schedule["schedule_name"].as_str()
+        }
+        _ => false,
+    }
+}
+
+/// GH #551 § 2, ruling R-0904-5 — the pure tick is called `clock`.
+///
+/// The library shipped six spellings of the same cell (`cron`, `refresh`,
+/// `night`, `menu-clock`, `tick`, `clock`), which is why a reader could not tell
+/// a cell's job from its name. The ruling settles the plainest pair: a `timer`
+/// whose schedules carry nothing but the tick is named `clock`; a tick whose
+/// NAME carries the semantics keeps it.
+///
+/// This is a sweep and not a list, for the reason the file's header gives: a
+/// list is a thing somebody has to remember to extend. The exceptions are the
+/// list, and each one is either ruled or dated.
+#[test]
+fn every_pure_tick_is_called_clock() {
+    let root = templates_root();
+    if !root.exists() {
+        return;
+    }
+    for (rel, issue, what) in PENDING_TIMER_RENAMES {
+        assert!(
+            root.join(rel).exists(),
+            "stale exception: templates/{rel} is gone (GH #{issue}, {what}), so \
+             its row in PENDING_TIMER_RENAMES no longer matches anything. \
+             Delete the row in the same commit."
+        );
+    }
+
+    let mut files = Vec::new();
+    config_files(&root, &mut files);
+
+    let mut ticks = 0usize;
+    let mut misnamed: Vec<String> = Vec::new();
+
+    for p in &files {
+        let Ok(raw) = std::fs::read_to_string(p) else {
+            continue;
+        };
+        let Ok(v) = meclaw_core::serde_json::from_str::<Value>(&resolve(&raw)) else {
+            continue;
+        };
+        if v["cell"]["type"].as_str() != Some("timer") {
+            continue;
+        }
+        let Some(schedules) = v["params"]["schedules"].as_array() else {
+            continue;
+        };
+        if schedules.is_empty() || !schedules.iter().all(is_pure_tick) {
+            continue;
+        }
+        ticks += 1;
+
+        let dir = p.parent().unwrap_or(&root);
+        let rel = dir.strip_prefix(&root).unwrap_or(dir);
+        let name = dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .to_string();
+        if RULED_TIMER_NAMES.contains(&name.as_str()) {
+            continue;
+        }
+        if PENDING_TIMER_RENAMES
+            .iter()
+            .any(|(pending, _, _)| Path::new(pending) == rel)
+        {
+            continue;
+        }
+        misnamed.push(format!("  templates/{}: named `{name}`", rel.display()));
+    }
+
+    assert!(
+        ticks > 0,
+        "the sweep found no pure tick in templates/ — it swept nothing and would \
+         have passed for a library that spells the clock six ways. Check the walk \
+         before trusting a green run."
+    );
+    assert!(
+        misnamed.is_empty(),
+        "{} of {ticks} pure tick(s) are not called `clock` (GH #551 § 2, ruling \
+         R-0904-5). A timer that carries no payload beyond its own schedule name \
+         is a clock, and the library spells it one way:\n{}",
+        misnamed.len(),
+        misnamed.join("\n")
+    );
+}

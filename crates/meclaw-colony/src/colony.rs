@@ -1884,34 +1884,15 @@ async fn run_shutdown_teardown(
                         } => {
                             // T3: the real dispatcher — pre-extract every `&ColonyDb` sub-ref
                             // SYNCHRONOUSLY, then await. ColonyDb is !Sync → no
-                            // `&ColonyDb` across an .await boundary. Templates
-                            // snapshot + pre-extracted template rows + rescan-future
-                            // prologue all obtained from the sync borrow.
-                            let templates_rows = colony_db.read_templates().unwrap_or_default();
-                            let templates_snapshot =
-                                crate::templates::TemplatesRegistry::from_entries(
-                                    templates_rows
-                                        .clone()
-                                        .into_iter()
-                                        .map(|r| crate::templates::TemplateEntry {
-                                            template_id: r.template_id,
-                                            name: r.name,
-                                            version: r.version,
-                                            filesystem_path: std::path::PathBuf::from(
-                                                r.filesystem_path,
-                                            ),
-                                        })
-                                        .collect(),
-                                );
-                            // GH #277: the LIBRARY, not the workspace. `root` also holds the
-                            // instantiated trees and the builder's staging history; a name
-                            // repeated down there is not a duplicate class offer, and since
-                            // ruling Q7 it would abort the whole scan.
-                            let rescan_future =
-                                Box::pin(crate::colony_dispatch::handle_rescan_templates(
+                            // `&ColonyDb` across an .await boundary. GH #571: the
+                            // templates half of that prologue is taken only for the
+                            // endpoints that read templates.
+                            let (templates_snapshot, templates_rows, rescan_future) =
+                                crate::colony_dispatch::templates_prologue(
+                                    &endpoint,
                                     &colony_db,
                                     eda_templates_root,
-                                ));
+                                );
                             let db_path = colony_db.db_path().to_path_buf();
                             let follow = crate::colony_dispatch::dispatch_colony_endpoint(
                                 registry,
@@ -1941,6 +1922,12 @@ async fn run_shutdown_teardown(
                                 colony_config.blob_inline_max_bytes,
                                 env_source.as_deref(),
                                 mutation_pulse,
+                                // GH #553: no receipt in the shutdown drain — a
+                                // receipt is new work the drain would then have
+                                // to wait for (GH #47's rule for source
+                                // emissions), and the next boot leaves one
+                                // anyway.
+                                None,
                             )
                             .await;
                             enqueue_dispatch_follow(&mut work, dead_letters, follow);
@@ -2422,6 +2409,13 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
         heartbeat_tx.clone(),
         crate::watchdog::WorkItem::new("mutation"),
     );
+    // GH #553: the receipt target, resolved once. `None` is the default and the
+    // state of every colony that says nothing about receipts — with it nothing
+    // is emitted and no mutation behaves differently.
+    let receipt_target: Option<Path> = colony_config
+        .mutation_receipts
+        .as_ref()
+        .map(|r| Path::new(&r.to));
 
     loop {
         // Deep-Audit F3: emit a liveness tick. `try_send` never blocks the loop; a
@@ -2806,24 +2800,11 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                     }
                                     // T3: the real dispatcher — pre-extract every `&ColonyDb` sub-ref
                                     // SYNCHRONOUSLY, then await. ColonyDb is !Sync → no
-                                    // `&ColonyDb` across an .await boundary. Templates
-                                    // snapshot + pre-extracted template rows + rescan-future
-                                    // prologue all obtained from the sync borrow.
-                                    let templates_rows = colony_db.read_templates().unwrap_or_default();
-                                    let templates_snapshot = crate::templates::TemplatesRegistry::from_entries(
-                                        templates_rows.clone().into_iter()
-                                            .map(|r| crate::templates::TemplateEntry {
-                                                template_id: r.template_id,
-                                                name: r.name,
-                                                version: r.version,
-                                                filesystem_path: std::path::PathBuf::from(r.filesystem_path),
-                                            }).collect(),
-                                    );
-                                    // GH #277: the LIBRARY, not the workspace. `root` also holds the
-                                    // instantiated trees and the builder's staging history; a name
-                                    // repeated down there is not a duplicate class offer, and since
-                                    // ruling Q7 it would abort the whole scan.
-                                    let rescan_future = Box::pin(crate::colony_dispatch::handle_rescan_templates(&colony_db, &eda_templates_root));
+                                    // `&ColonyDb` across an .await boundary. GH #571: the templates
+                                    // half of that prologue is taken only for the endpoints that
+                                    // read templates.
+                                    let (templates_snapshot, templates_rows, rescan_future) =
+                                        crate::colony_dispatch::templates_prologue(&endpoint, &colony_db, &eda_templates_root);
                                     let db_path = colony_db.db_path().to_path_buf();
                                     let follow = crate::colony_dispatch::dispatch_colony_endpoint(
                                         &mut registry, &mut hive_scopes, &mut edges, &mut node_contracts, &mut dead_letters, &mut in_flight,
@@ -2840,6 +2821,9 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                         colony_config.blob_inline_max_bytes,
                                         env_source.as_deref(),
                                         &mutation_pulse,
+                                        // GH #553: the receipt target, or None
+                                        // when this colony asked for none.
+                                        receipt_target.as_ref().map(|t| (t, colony_config.message_default_ttl)),
                                     ).await;
                                     enqueue_dispatch_follow(&mut work, &mut dead_letters, follow);
                                     // GH #285: a cell-emitted mutation may change a slot declaration too.
@@ -2959,6 +2943,22 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                         slot_table_dirty = true;
                         // GH #389: the edge table stands — reopen the outputs arm.
                         initial_apply_pending = false;
+                        // GH #553 (ruling O-0904-2): and the edge table standing
+                        // is exactly what makes this the first routable moment
+                        // of the colony's life — so the boot leaves the first
+                        // receipt. It goes out AFTER the outputs arm reopens
+                        // (GH #389's window is over) and before the ack, so it
+                        // sits in the inbox ahead of anything the caller sends
+                        // next, including a one-shot `--apply`'s shutdown.
+                        if let Some(r) = &colony_config.mutation_receipts {
+                            enqueue_colony_receipt(
+                                &inbox_self_tx,
+                                Some(build_boot_receipt(
+                                    &Path::new(&r.to),
+                                    colony_config.message_default_ttl,
+                                )),
+                            );
+                        }
                         let _ = ack.send(());
                     }
                     ColonyMsg::BeginInitialApply { ack } => {
@@ -3060,6 +3060,11 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                             let _ = ack.send(refuse_because_draining());
                             continue;
                         }
+                        // GH #553: the scope the receipt speaks about, read
+                        // BEFORE the payload is handed on (it is moved). A body
+                        // that names none means the root, exactly as the
+                        // mutation's own guard reads it.
+                        let receipt_scope = receipt_scope_of(&payload);
                         // Phase-11 T16: Templates-Snapshot SYNCHRON vor handle_mutation
                         // (ColonyDb is !Sync → no &ColonyDb across an .await boundary).
                         let templates_snapshot = crate::templates::TemplatesRegistry::from_entries(
@@ -3090,6 +3095,18 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                         // GH #285: a mutation may add a hive, fill a slot, or
                         // rewrite a `params.ports` declaration.
                         slot_table_dirty = true;
+                        // GH #553: the receipt, before the verdict goes back —
+                        // the door's own event, not the caller's answer.
+                        if let Some(r) = &colony_config.mutation_receipts {
+                            enqueue_colony_receipt(&inbox_self_tx, build_mutation_receipt(
+                                &crate::mutation::MutationDoorOutcome::Single(outcome.clone()),
+                                &receipt_scope,
+                                trace_id,
+                                parent_message_id,
+                                &Path::new(&r.to),
+                                colony_config.message_default_ttl,
+                            ));
+                        }
                         let _ = ack.send(outcome);
                     }
                     ColonyMsg::MutationDoor { payload, reply_to, trace_id, parent_message_id, ack } => {
@@ -3106,6 +3123,8 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                             ));
                             continue;
                         }
+                        // GH #553: see the Mutation arm above.
+                        let receipt_scope = receipt_scope_of(&payload);
                         // Phase-11 T16: Templates-Snapshot SYNCHRON (ColonyDb is
                         // !Sync → no &ColonyDb across an .await boundary).
                         let templates_snapshot = crate::templates::TemplatesRegistry::from_entries(
@@ -3136,6 +3155,18 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                         // rewrite a `params.ports` declaration — and a manifest
                         // is a list of mutations.
                         slot_table_dirty = true;
+                        // GH #553: one receipt per committed knock, whichever
+                        // body form knocked.
+                        if let Some(r) = &colony_config.mutation_receipts {
+                            enqueue_colony_receipt(&inbox_self_tx, build_mutation_receipt(
+                                &outcome,
+                                &receipt_scope,
+                                trace_id,
+                                parent_message_id,
+                                &Path::new(&r.to),
+                                colony_config.message_default_ttl,
+                            ));
+                        }
                         let _ = ack.send(outcome);
                     }
                     ColonyMsg::Sleep { path, receiver } => {
@@ -3488,24 +3519,11 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                 }
                                 // T3: the real dispatcher — pre-extract every `&ColonyDb` sub-ref
                                 // SYNCHRONOUSLY, then await. ColonyDb is !Sync → no
-                                // `&ColonyDb` across an .await boundary. Templates
-                                // snapshot + pre-extracted template rows + rescan-future
-                                // prologue all obtained from the sync borrow.
-                                let templates_rows = colony_db.read_templates().unwrap_or_default();
-                                let templates_snapshot = crate::templates::TemplatesRegistry::from_entries(
-                                    templates_rows.clone().into_iter()
-                                        .map(|r| crate::templates::TemplateEntry {
-                                            template_id: r.template_id,
-                                            name: r.name,
-                                            version: r.version,
-                                            filesystem_path: std::path::PathBuf::from(r.filesystem_path),
-                                        }).collect(),
-                                );
-                                // GH #277: the LIBRARY, not the workspace. `root` also holds the
-                                // instantiated trees and the builder's staging history; a name
-                                // repeated down there is not a duplicate class offer, and since
-                                // ruling Q7 it would abort the whole scan.
-                                let rescan_future = Box::pin(crate::colony_dispatch::handle_rescan_templates(&colony_db, &eda_templates_root));
+                                // `&ColonyDb` across an .await boundary. GH #571: the templates
+                                // half of that prologue is taken only for the endpoints that
+                                // read templates.
+                                let (templates_snapshot, templates_rows, rescan_future) =
+                                    crate::colony_dispatch::templates_prologue(&endpoint, &colony_db, &eda_templates_root);
                                 let db_path = colony_db.db_path().to_path_buf();
                                 let follow = crate::colony_dispatch::dispatch_colony_endpoint(
                                     &mut registry, &mut hive_scopes, &mut edges, &mut node_contracts, &mut dead_letters, &mut in_flight,
@@ -3522,6 +3540,9 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                     colony_config.blob_inline_max_bytes,
                                     env_source.as_deref(),
                                     &mutation_pulse,
+                                    // GH #553: the receipt target, or None when
+                                    // this colony asked for none.
+                                    receipt_target.as_ref().map(|t| (t, colony_config.message_default_ttl)),
                                 ).await;
                                 enqueue_dispatch_follow(&mut work, &mut dead_letters, follow);
                                 // GH #285: a cell-emitted mutation may change a slot declaration too.
@@ -4350,6 +4371,20 @@ pub(crate) async fn handle_mutation(
 ) -> crate::mutation::MutationOutcome {
     use crate::mutation::MutationOutcome;
 
+    // GH #581: the door's own form check, BEFORE the id is minted. A manifest
+    // body carries no `diff`, and the `unwrap_or` below reads an absent `diff`
+    // as the empty one — so the manifest form used to walk every step with
+    // nothing to do and be answered `committed` for a colony it never changed.
+    // Refused here rather than one line down, so the refusal is spurless like
+    // the drain refusal: no id, therefore no mutation-log row.
+    if let Err(err) = crate::mutation::validate::refuse_manifest_at_the_single_door(&payload) {
+        return MutationOutcome::Rejected {
+            id: None,
+            error_code: err.error_code().into(),
+            details: err.message(),
+            violations: Vec::new(),
+        };
+    }
     let id = Uuid::now_v7().to_string();
     let diff_raw = payload
         .get("diff")
@@ -5577,13 +5612,25 @@ pub(crate) async fn handle_mutation(
                         )
                     })
                     .unwrap_or_default();
-                let from_template = staged.iter().find(|c| c.hive_path == t3.as_str()).cloned();
                 for c in staged {
                     if already_spoken_for(&c.hive_path, &newborn_contracts) {
                         continue;
                     }
                     newborn_contracts.push(c);
                 }
+                // GH #573: ONE list, ONE reader. Read out of the RAW template
+                // read, the re-anchor verdict collected behind the dedup's back
+                // exactly what the port boundary had just refused to believe: a
+                // declaration for a path that already STANDS, which keeps the
+                // contract it was born with. Reading the deduplicated list
+                // answers both halves in one sentence — what stands keeps what
+                // it has, and what THIS diff gives birth to still counts,
+                // including a successor an earlier `add_nodes` entry of the
+                // same diff contributed (the generation-change form).
+                let from_template = newborn_contracts
+                    .iter()
+                    .find(|c| c.hive_path == t3.as_str())
+                    .cloned();
                 swap_successors.push((t2, t3, from_template));
             }
         }
@@ -5662,38 +5709,27 @@ pub(crate) async fn handle_mutation(
             let doomed =
                 crate::mutation::validate::remove_edges_targets(&diff_subst, guard_scope, &live);
             for (i, e) in adds.iter().enumerate() {
-                let (Some(from), Some(to)) = (
-                    e.get("from").and_then(|v| v.as_str()),
-                    e.get("to").and_then(|v| v.as_str()),
-                ) else {
-                    continue; // a shape earlier stages refuse
+                // GH #574: the five routing terms, read once, by the one reader
+                // both Stage-6 faces share. `None` is the shape earlier stages
+                // refuse.
+                let Some(view) = crate::mutation::validate::add_entry_match_view(guard_scope, e)
+                else {
+                    continue;
                 };
                 let entry_lane = e.get("lane").and_then(|v| v.as_str());
-                let from_abs = crate::mutation::resolve_scoped_path(guard_scope, from);
-                let to_abs = crate::mutation::resolve_scoped_path(guard_scope, to);
-                let modifier_src = crate::mutation::modifier_spec_from_add_entry(e)
-                    .and_then(|spec| meclaw_core::serde_json::to_value(&spec).ok());
-                let is_default = e.get("default").and_then(|v| v.as_bool()).unwrap_or(false);
                 let disagreeing = edges.iter().find(|old| {
                     old.lane.as_deref() != entry_lane
                         && !doomed.contains(&old.id)
-                        && crate::mutation::validate::edge_identity_equal(
+                        && crate::mutation::validate::edge_identity_equal_views(
                             &crate::mutation::validate::EdgeMatchView::from(*old),
-                            from_abs.as_str(),
-                            to_abs.as_str(),
-                            e.get("condition").and_then(|v| v.as_str()),
-                            modifier_src.as_ref(),
-                            is_default,
+                            &view,
                         )
                 });
                 if let Some(old) = disagreeing {
                     // Both halves of the sentence name what they see, because
                     // the caller can see neither: the entry's declaration and
                     // the standing edge's.
-                    let says = entry_lane.map_or_else(
-                        || "declares no lane".to_string(),
-                        |l| format!("declares lane '{l}'"),
-                    );
+                    let says = crate::mutation::validate::lane_says(entry_lane);
                     let standing = old.lane.as_deref().map_or_else(
                         || {
                             "an identical edge without a lane already exists; remove it in the \
@@ -5711,8 +5747,8 @@ pub(crate) async fn handle_mutation(
                         "add_edges[{i}] {says} on '{from_abs}' -> '{to_abs}', but {standing}. \
                          Edge identity is the five routing terms, so the two are the same edge to \
                          the table and this entry would be silently dropped.",
-                        from_abs = from_abs.as_str(),
-                        to_abs = to_abs.as_str()
+                        from_abs = view.from.as_str(),
+                        to_abs = view.to.as_str()
                     ));
                     rejection.push(crate::mutation::rejection::Violation::from_error(
                         crate::mutation::rejection::Stage::ContractLocality,
@@ -5746,51 +5782,23 @@ pub(crate) async fn handle_mutation(
             // and gets one. `remove_edges` is no way out here — it takes
             // standing edges away, and both halves of this collision are being
             // drawn by this very diff.
-            let lane_says = |l: Option<&str>| {
-                l.map_or_else(
-                    || "declares no lane".to_string(),
-                    |l| format!("declares lane '{l}'"),
-                )
-            };
             let mut seen: Vec<(
                 usize,
                 crate::mutation::validate::EdgeMatchView,
                 Option<&str>,
             )> = Vec::new();
             for (j, e) in adds.iter().enumerate() {
-                let (Some(from), Some(to)) = (
-                    e.get("from").and_then(|v| v.as_str()),
-                    e.get("to").and_then(|v| v.as_str()),
-                ) else {
-                    continue; // a shape earlier stages refuse
+                // GH #574: same reader as the standing-edge face above, so the
+                // two faces cannot drift apart on what "the same edge" means.
+                let Some(view) = crate::mutation::validate::add_entry_match_view(guard_scope, e)
+                else {
+                    continue;
                 };
                 let lane = e.get("lane").and_then(|v| v.as_str());
-                let view = crate::mutation::validate::EdgeMatchView {
-                    from: crate::mutation::resolve_scoped_path(guard_scope, from)
-                        .as_str()
-                        .to_string(),
-                    to: crate::mutation::resolve_scoped_path(guard_scope, to)
-                        .as_str()
-                        .to_string(),
-                    condition_source: e
-                        .get("condition")
-                        .and_then(|v| v.as_str())
-                        .map(std::string::ToString::to_string),
-                    modifier_source: crate::mutation::modifier_spec_from_add_entry(e)
-                        .and_then(|spec| meclaw_core::serde_json::to_value(&spec).ok()),
-                    is_default: e.get("default").and_then(|v| v.as_bool()).unwrap_or(false),
-                };
                 if let Some((i, _, earlier_lane)) =
                     seen.iter().find(|(_, earlier, earlier_lane)| {
                         *earlier_lane != lane
-                            && crate::mutation::validate::edge_identity_equal(
-                                earlier,
-                                view.from.as_str(),
-                                view.to.as_str(),
-                                view.condition_source.as_deref(),
-                                view.modifier_source.as_ref(),
-                                view.is_default,
-                            )
+                            && crate::mutation::validate::edge_identity_equal_views(earlier, &view)
                     })
                 {
                     // Both indices and both lanes, because the caller cannot
@@ -5801,8 +5809,8 @@ pub(crate) async fn handle_mutation(
                          '{to_abs}', but the five routing terms are equal. Edge identity is \
                          the five terms, so the second entry would be silently dropped by the \
                          apply arm; keep one lane, or draw two different edges.",
-                        a = lane_says(*earlier_lane),
-                        b = lane_says(lane),
+                        a = crate::mutation::validate::lane_says(*earlier_lane),
+                        b = crate::mutation::validate::lane_says(lane),
                         from_abs = view.from.as_str(),
                         to_abs = view.to.as_str()
                     ));
@@ -8845,6 +8853,175 @@ fn build_ttl_notice(
     Some((Path::new("/colony"), notice))
 }
 
+/// GH #553 — the receipt a committed knock at the mutation door leaves behind.
+///
+/// A committed mutation used to be an event only its own caller could see: the
+/// verdict travels back on `reply_to`, and both `--apply` and
+/// `POST /colony/mutations` set no `reply_to` at all. Everything else in the
+/// tree that wanted to know "the graph moved" had to ask on a timer, which is a
+/// poll in an event-driven substrate. This is the event instead.
+///
+/// **Opt-in** via `colony.json` `mutation_receipts.to` (default absent). With
+/// no entry this is never called and nothing about a mutation changes.
+///
+/// Four properties carry the guarantee, and they are the same four
+/// `build_ttl_notice` carries — the two are siblings by construction:
+///
+/// - **Committed means committed.** A refusal (and a manifest that stopped
+///   part-way, whose reply already says where it stopped) yields `None`. The
+///   receipt's word is `"committed"` and it is never a lie.
+/// - **The receipt is terminal.** No `reply_to` of its own, so it cannot start
+///   a round; and it is not a mutation, so it cannot beget a receipt. The
+///   anti-cascade property is *structural*, exactly the way the one-pass
+///   `colony-view/layout` earns it (GH #161).
+/// - **A live budget.** A fresh `message_default_ttl`, because the receipt is a
+///   source emission in every sense that matters and the mutation's own
+///   envelope is not its parent's.
+/// - **The hop carries everything.** Five keys and no more —
+///   `route`/`mutation_id`|`mutation_ids`/`outcome`/`scope`/`form`. What
+///   changed is a question `/colony/graph` already answers, and a receipt that
+///   tried to answer it too would be a second, staler truth.
+///
+/// `context` is empty: a receipt continues nobody's round, so there is no
+/// correlation to carry. The `trace_id` is the mutation's own, and
+/// `parent_message_id` is the message that knocked — so the audit chain reads
+/// straight from the knock to the receipt.
+///
+/// Returns the `(sender, message)` pair for the caller's routing work. The
+/// sender is the virtual `/colony` address — the receipt has no emitting cell,
+/// exactly as in `build_ttl_notice`.
+///
+/// Panic-free by construction (A1′ Hot-Path class): no `unwrap`/`expect`, no
+/// indexing, no arithmetic.
+pub(crate) fn build_mutation_receipt(
+    outcome: &crate::mutation::MutationDoorOutcome,
+    scope: &str,
+    trace_id: Uuid,
+    parent_message_id: Uuid,
+    target: &Path,
+    ttl: u32,
+) -> Option<(Path, Message)> {
+    use crate::mutation::{ManifestOutcome, MutationDoorOutcome, MutationOutcome};
+    let mut hop = meclaw_core::serde_json::Map::new();
+    match outcome {
+        MutationDoorOutcome::Single(MutationOutcome::Committed { id }) => {
+            hop.insert("mutation_id".into(), id.as_str().into());
+            hop.insert("form".into(), "single".into());
+        }
+        MutationDoorOutcome::Manifest(ManifestOutcome::Committed { ids }) => {
+            hop.insert(
+                "mutation_ids".into(),
+                meclaw_core::serde_json::Value::Array(
+                    ids.iter().map(|i| i.as_str().into()).collect(),
+                ),
+            );
+            hop.insert("form".into(), "manifest".into());
+        }
+        _ => return None,
+    }
+    Some(receipt_message(
+        hop,
+        scope,
+        target,
+        ttl,
+        Some(trace_id),
+        Some(parent_message_id),
+    ))
+}
+
+/// GH #553 — the scope a receipt speaks about, read off the knocking body.
+///
+/// The single form names it (`scope`), and a body that names none means the
+/// root — the same reading `handle_mutation`'s own guard does, so the receipt
+/// and the mutation can never disagree about where it happened. A **manifest**
+/// names no one scope: every entry brings its own, and inventing a common
+/// ancestor here would be a fact the door does not have. It says `/`, which is
+/// the only honest answer for "somewhere in this tree".
+pub(crate) fn receipt_scope_of(payload: &meclaw_core::serde_json::Value) -> String {
+    payload
+        .get("scope")
+        .and_then(|v| v.as_str())
+        .unwrap_or("/")
+        .to_string()
+}
+
+/// GH #553 (ruling O-0904-2) — the boot's own receipt.
+///
+/// The first receipt of a colony's life is not a mutation's: it is the boot's.
+/// `InitialApply` is the moment the edge table stands, and a listener that only
+/// hears about *changes* would sit empty until the first mutation of the day —
+/// on a stable tree that can be hours, and a screen that answers `503` for
+/// hours is a screen nobody trusts. One receipt here fills the same listeners
+/// the same way, and heals the one case a shutdown could eat: an `--apply` run
+/// whose receipt died with the process is repaired by the next boot.
+///
+/// `form: "boot"` and a nil `mutation_id` — a boot is nobody's mutation, and a
+/// consumer that keys on the id must be able to see that at a glance. The scope
+/// is `/`: what the boot declared is the whole tree.
+pub(crate) fn build_boot_receipt(target: &Path, ttl: u32) -> (Path, Message) {
+    let mut hop = meclaw_core::serde_json::Map::new();
+    hop.insert("mutation_id".into(), Uuid::nil().to_string().into());
+    hop.insert("form".into(), "boot".into());
+    // No parent and no trace of its own: a boot continues nothing, so the
+    // builder's own fresh id becomes the trace.
+    receipt_message(hop, "/", target, ttl, None, None)
+}
+
+/// The shared body of the two receipt builders: stamp the three keys every
+/// receipt carries, and build the terminal message around them.
+fn receipt_message(
+    mut hop: meclaw_core::serde_json::Map<String, meclaw_core::serde_json::Value>,
+    scope: &str,
+    target: &Path,
+    ttl: u32,
+    trace_id: Option<Uuid>,
+    parent_message_id: Option<Uuid>,
+) -> (Path, Message) {
+    hop.insert("route".into(), "mutation_committed".into());
+    hop.insert("outcome".into(), "committed".into());
+    hop.insert("scope".into(), scope.into());
+    let mut builder = MessageBuilder::new(target.clone())
+        .ttl(ttl)
+        .parent_message_id_opt(parent_message_id)
+        .headers(Headers::from_parts(
+            meclaw_core::serde_json::Map::new(),
+            hop,
+        ))
+        .body(Body::Inline(
+            meclaw_core::serde_json::json!({"messages": []}),
+        ));
+    if let Some(t) = trace_id {
+        builder = builder.trace_id(t);
+    }
+    (Path::new("/colony"), builder.build())
+}
+
+/// GH #553 — hand a substrate-built receipt back to the loop as its OWN work
+/// item.
+///
+/// `try_send`, never `await`: the loop is the only consumer of this channel and
+/// awaiting it from inside one of its own arms would wedge it (the same rule the
+/// released-park hand-back follows, and the same one the mutation arm's
+/// no-self-send comment states). Going through the inbox rather than the
+/// current routing queue is also what keeps the receipt OUTSIDE the mutation's
+/// work item: a mutation stays one work item (GH #439), and the receipt is the
+/// work that comes after it.
+pub(crate) fn enqueue_colony_receipt(
+    inbox_self_tx: &mpsc::Sender<ColonyMsg>,
+    receipt: Option<(Path, Message)>,
+) {
+    let Some((sender_path, msg)) = receipt else {
+        return;
+    };
+    if let Err(e) = inbox_self_tx.try_send(ColonyMsg::Route { sender_path, msg }) {
+        tracing::warn!(
+            error = %e,
+            reason = "mutation_receipt_undeliverable",
+            "mutation receipt could not be enqueued"
+        );
+    }
+}
+
 /// Push a dead letter into the transient in-memory DLQ buffer.
 ///
 /// **Phase-16 W6d (A6): no eviction.** The DLQ is now persisted in `colony.db`
@@ -8867,7 +9044,11 @@ pub(crate) fn push_dead_letter(queue: &mut VecDeque<DeadLetter>, dl: DeadLetter)
 /// has not drained this period yet, and it needs only one beat per period. A loop
 /// that blocked on saying it was about to block would be the defect it is meant to
 /// report.
-fn beat(tx: &Option<mpsc::Sender<crate::watchdog::Beat>>, phase: crate::watchdog::Beat) {
+///
+/// GH #571: `pub(crate)` so the transport test in
+/// [`crate::watchdog`] can drive the production emitter rather than a copy of it
+/// — the beat the loop actually sends is what the channel capacity has to carry.
+pub(crate) fn beat(tx: &Option<mpsc::Sender<crate::watchdog::Beat>>, phase: crate::watchdog::Beat) {
     if let Some(t) = tx {
         let _ = t.try_send(phase);
     }
@@ -10434,6 +10615,141 @@ mod tests {
         assert!(
             build_ttl_notice(&alive, &Path::new("/"), &on).is_none(),
             "ttl > 0 ⇒ no notice"
+        );
+    }
+
+    /// GH #553 — a refusal leaves no receipt, whichever shape the refusal has:
+    /// a rejected single body, a rejected manifest (even one that committed
+    /// entries before it stopped), and an unreadable manifest. The receipt's
+    /// word is `"committed"`, so the only outcome that produces one is a
+    /// committed one.
+    #[test]
+    fn a_refusal_leaves_no_receipt() {
+        use crate::mutation::{ManifestOutcome, MutationDoorOutcome, MutationOutcome};
+        let target = Path::new("/hive");
+        let build = |o: &MutationDoorOutcome| {
+            build_mutation_receipt(o, "/", Uuid::now_v7(), Uuid::now_v7(), &target, 8)
+        };
+
+        // The shape the DRAIN produces: both doors refuse before they stage
+        // anything, so a mutation during the drain leaves nothing behind.
+        let refused = MutationDoorOutcome::Single(MutationOutcome::Rejected {
+            id: None,
+            error_code: "shutdown_draining".into(),
+            details: "the colony is draining".into(),
+            violations: Vec::new(),
+        });
+        assert!(build(&refused).is_none(), "a refusal is not an event");
+
+        let half = MutationDoorOutcome::Manifest(ManifestOutcome::Rejected {
+            ids: vec!["one".into()],
+            failed_at: 2,
+            id: None,
+            error_code: "schema".into(),
+            details: "entry 2".into(),
+            remaining: 0,
+        });
+        assert!(
+            build(&half).is_none(),
+            "a manifest that stopped part-way is not `committed` — its own reply \
+             already says where it stopped"
+        );
+
+        let unreadable =
+            MutationDoorOutcome::MalformedManifest(crate::mutation::ManifestError::Empty);
+        assert!(build(&unreadable).is_none());
+
+        // Control: the same builder DOES answer for a committed knock.
+        let committed = MutationDoorOutcome::Single(MutationOutcome::Committed {
+            id: "the-id".into(),
+        });
+        assert!(build(&committed).is_some());
+    }
+
+    /// GH #553 — the anti-cascade pin, structural half. A receipt carries no
+    /// `reply_to` and is addressed to the configured target and nowhere else,
+    /// so it can neither start a round nor be mistaken for a mutation. The
+    /// counted half (`n` mutations plus the boot leave `n + 1` receipts) lives
+    /// in `tests/gh553_a_committed_mutation_leaves_a_receipt.rs`.
+    #[test]
+    fn a_receipt_is_terminal_and_says_only_the_five_keys() {
+        use crate::mutation::{MutationDoorOutcome, MutationOutcome};
+        let target = Path::new("/hive");
+        let trace = Uuid::now_v7();
+        let parent = Uuid::now_v7();
+        let (sender, msg) = build_mutation_receipt(
+            &MutationDoorOutcome::Single(MutationOutcome::Committed {
+                id: "the-id".into(),
+            }),
+            "/os",
+            trace,
+            parent,
+            &target,
+            9,
+        )
+        .expect("a committed knock leaves a receipt");
+
+        assert_eq!(
+            sender,
+            Path::new("/colony"),
+            "the receipt has no sending cell"
+        );
+        assert_eq!(msg.target, target);
+        assert!(msg.reply_to.is_none(), "terminal: it answers nobody");
+        assert_eq!(msg.trace_id, trace);
+        assert_eq!(msg.parent_message_id, Some(parent));
+        assert_eq!(msg.ttl, 9, "a fresh budget, like the TTL notice's");
+        assert!(
+            msg.headers.context.is_empty(),
+            "it continues nobody's round"
+        );
+
+        let mut keys: Vec<&String> = msg.headers.hop.keys().collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec!["form", "mutation_id", "outcome", "route", "scope"],
+            "five keys and no more: what CHANGED is `/colony/graph`'s answer"
+        );
+        assert_eq!(msg.headers.hop["route"], "mutation_committed");
+        assert_eq!(msg.headers.hop["scope"], "/os");
+        assert_eq!(
+            msg.body,
+            Body::Inline(meclaw_core::serde_json::json!({"messages": []}))
+        );
+    }
+
+    /// GH #553 (ruling O-0904-2) — the boot receipt says it is a boot, and its
+    /// nil id is how a consumer sees that at a glance.
+    #[test]
+    fn the_boot_receipt_names_the_nil_mutation() {
+        let (sender, msg) = build_boot_receipt(&Path::new("/hive"), 12);
+        assert_eq!(sender, Path::new("/colony"));
+        assert_eq!(msg.headers.hop["form"], "boot");
+        assert_eq!(
+            msg.headers.hop["scope"], "/",
+            "the boot declared the whole tree"
+        );
+        assert_eq!(msg.headers.hop["mutation_id"], Uuid::nil().to_string());
+        assert_eq!(msg.headers.hop["outcome"], "committed");
+        assert!(
+            msg.parent_message_id.is_none(),
+            "a boot continues nothing, so it begins its own trace"
+        );
+        assert_eq!(msg.trace_id, msg.id);
+    }
+
+    /// GH #553 — a manifest names no one scope, and the door does not invent
+    /// one. A single body's scope is read verbatim; an absent one is the root.
+    #[test]
+    fn the_receipt_scope_is_read_and_never_guessed() {
+        use meclaw_core::serde_json::json;
+        assert_eq!(receipt_scope_of(&json!({"scope": "/os/apps"})), "/os/apps");
+        assert_eq!(receipt_scope_of(&json!({"diff": {}})), "/");
+        assert_eq!(
+            receipt_scope_of(&json!({"manifest": [{"scope": "/a"}, {"scope": "/b"}]})),
+            "/",
+            "somewhere in this tree is the only honest answer for a manifest"
         );
     }
 

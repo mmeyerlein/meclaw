@@ -353,7 +353,7 @@ const QUIET_CRON: &str = "0 0 4 * * *";
 
 fn build_tree(td: &tempfile::TempDir, root_template: &std::path::Path, cron: &str) {
     let root = td.path();
-    std::fs::write(root.join(".env"), format!("AFFINITY_PUSH_CRON={cron}\n")).unwrap();
+    std::fs::write(root.join(".env"), "").unwrap();
     write(root, "main/config.json", &main_config());
     write(
         root,
@@ -385,11 +385,13 @@ fn build_tree(td: &tempfile::TempDir, root_template: &std::path::Path, cron: &st
     // `${uuid7:…}` is an INSTANTIATION-side substitution (the mutation path
     // mints it); a raw directory copy bootstrapped from the filesystem has to
     // be handed a literal, exactly as `cogny_template.rs` hands its brains a
-    // base_url. The cron itself is NOT patched -- it comes out of the `.env`
-    // above through the shipped `${AFFINITY_PUSH_CRON:-…}` default, so the
-    // late-binding form is under test rather than bypassed.
+    // base_url. The cron is written here too: since GH #138 it is a literal of
+    // `./clock`'s own params, and this is the form `override_params` takes at
+    // instantiation. An `AFFINITY_PUSH_CRON=` line in the `.env` would be read
+    // by nothing at all and would say nothing about it.
     patch(root, "main/affinity/clock/config.json", |v| {
         v["params"]["schedules"][0]["schedule_id"] = json!("01916f00-0000-7000-8000-0000000000af");
+        v["params"]["schedules"][0]["cron"] = json!(cron);
     });
 }
 

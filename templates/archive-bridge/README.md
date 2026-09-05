@@ -1,4 +1,4 @@
-# `archive-bridge@1.0.0`
+# `archive-bridge@1.1.0`
 
 A generic "archive to store" bridge, as one `code` cell -- no new cell type, no Rust.
 
@@ -12,7 +12,7 @@ This template lifts that pattern into a clean, documented, reusable cell (GH #4)
 ## What it delivers
 
 - **The translation.** The LAST non-empty assistant text turn becomes
-  `{operation: "insert", table: ${ARCHIVE_TABLE:-archive}, row: {id, text, recorded_at}}`
+  `{operation: "insert", table: <params.archive_table>, row: {id, text, recorded_at}}`
   on route `store` -- `id` a fresh uuid4, `recorded_at` an ISO-8601 UTC timestamp,
   `text` the answer verbatim.
 - **A recognizable insert.** The `tool_call` turn id and `hop.tool_call_id` are the
@@ -69,16 +69,23 @@ first.
 
 ## Knobs
 
-**Env knobs are an experimental surface.** Until this template's knobs move onto the `params`
-block of the cells that read them, their names carry no compatibility promise and may change in
-any `0.x` release; provider credentials keep living in `.env` either way. The migration is
-tracked in [#138](https://github.com/mmeyerlein/meclaw/issues/138), with the
-`collector@1.2.0` migration ([#136](https://github.com/mmeyerlein/meclaw/issues/136)) as the
-reference pattern.
+**Since 1.1.0 the target table is a param, not an environment variable**
+([#138](https://github.com/mmeyerlein/meclaw/issues/138), ruling R-0904-6). It exists three
+times with one value: under `params`, as a `contract.settings` entry, and as the literal the
+shipped script falls back to. Two bridges in one colony can now archive into different
+tables, which the environment form made impossible.
 
-| env var | default | meaning |
+| param | default | meaning |
 |---|---|---|
-| `ARCHIVE_TABLE` | `archive` | target table of the insert. Boot-substituted into the shipped script; the store's schema must declare the same table. |
+| `archive_table` | `archive` | target table of the insert. The store behind the store lane must declare the same table, or the insert comes back `unknown_table` and dies here like every other echo. |
+
+```json
+{"add_nodes": [{"name": "archive-bridge", "template": "archive-bridge",
+  "override_params": {"archive_table": "notes"}}]}
+```
+
+A BLANKED `archive_table` keeps the empty string rather than falling back: for a name, `""`
+is a value an operator may mean. `null` is "not configured" and takes the default.
 
 ## Reading the script
 

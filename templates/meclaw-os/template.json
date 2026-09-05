@@ -1,8 +1,8 @@
 {
   "name": "meclaw-os",
-  "version": "1.7.0",
+  "version": "1.8.1",
   "description": {
-    "purpose": "The colony shell: the outermost of the four composition levels, and the tree everything else is grown into. It is authored under one rule that all four levels repeat in the same words -- A LEVEL OWNS WHAT ITS SIBLINGS MUST SHARE. What every organisation of a colony shares is the capability broker, the control loop, -- since R6 -- the ONE authoring path a colony has (the baumeister that drafts a manifest and the submitter that carries it to the mutation door under the requester's own identity), and -- since 1.3.0 -- the ONE front door a person addresses it through (`operator`, GH #446). Those five stood here as refs through 1.6.1; since 1.7.0 there are four, the submitter having moved inside the front door (#556). They are pinned to exact versions; beside them stands `orgs`, a real but empty container hive. The shell holds no cell of its own, no memory, no model and no state: it routes thirteen lanes in, fifteen lanes out, and owns the boundary. Since 1.3.2 the control-loop ref is `argus@1.0.0`, renamed from `steward` (GH #462), and the rename brought ONE lane with it: `alert`, a watched symptom the loop's meter counted deterministically with no model asked. Nothing at this level can act on it, so the shell does the one honest thing it can -- it draws the exit and hands it out, because a level that drains nothing loses every warning. Since 1.4.0 ([#458](https://github.com/mmeyerlein/meclaw/issues/458)) one more lane crosses outward: `pack_ack`, the receipt of an identity pushed into a generation below. Nothing at this level consumes it, so by the union rule it has to be declared and let out -- adding an emitted lane is the second digit (`docs/development-rules.md` § 4/4a). Since 1.5.0 ([#469](https://github.com/mmeyerlein/meclaw/issues/469)) the thirteenth inbound lane is `in_build`, and declaring it RETRACTS half of what this file said through 1.4.0. The sentence was: the builder lane pair is deliberately not at the rim, because `./orgs` raises it and `./builder` takes it, so it crosses nothing -- the lane is invisible from outside precisely because the baumeister stands inside. That reading is still true of `build` and `in_build_result`, which are an assistant's names for the same round. It was wrong about the one case it had to be right about: the FIRST build of a colony, where `./orgs` is empty by construction and no assistant exists to raise anything, so the road the whole argument rested on has no traveller. `in_build` is the operator's name for that round and it reaches the rim; the level's own door stamps `context.build_caller`, and the draft comes back to the front door instead of into the empty container. Adding an inbound lane a caller could never reach before is the second digit (`docs/development-rules.md` § 4/4a). Since 1.6.0 ([#504](https://github.com/mmeyerlein/meclaw/issues/504)) a fifteenth edge wires two occupants to each other and a fourteenth lane crosses outward, and they are one decision. `./submit -> ./builder`, guarded on a receipt that carries no `error_code` and on `hop.registers_class`, re-stamps the round onto `in_ingest`: the submitter is the ONE cell in the tree that knows both that a manifest committed and that its diff registered a class, and the baumeister's corpus is a seed that stops describing the library the moment one does. The documented wiring named `./submit/gate -> ./builder/librarian` and no manifest, operator or hand-written config could draw it -- both endpoints are interior nodes of sealed hives -- so the lane moved to the two hive paths, where it is drawable. `catalogue` is the report coming back out; the baumeister pairs the two in its own `required_drains`, and adding an emitted lane is the second digit (`docs/development-rules.md` § 4/4a), the same reading `pack_ack` got in 1.4.0. Since 1.6.1 the baumeister ref is pinned to `builder@1.5.2`, which renamed two of its own occupants after the templates they reference (#545). Nothing at this level moved but the pin. Since 1.7.0 ([#556](https://github.com/mmeyerlein/meclaw/issues/556)) the shell holds FOUR refs and not five: the submitter stopped being a shell-level hive and became an occupant of the front door (`/os/operator/submit`), and the whole of what this level lost with it is a station. One front, one place a submission lives, and a road readable off the graph -- a submission used to cross `./operator` and then `./submit` for what is one job. Six edges of this level moved: `./operator -> ./submit` on `apply` and `./submit -> ./operator` on `receipt` are INTERIOR to the front door now and are not this level's business at all, while `./submit -> ./access` on `ask`, `./access -> ./submit` on `grant`, `./submit -> .` on `mutate` and the two `./submit -> ./builder` nudges of 1.6.0 are drawn from `./operator` instead -- same guards, same lanes, one hive further out. The requester the ask edge stamps moved with the node it names: `/os/operator/submit`, because R-AC-1 rules the identity of the node whose reach the rule is about, and a rule naming the front door as a whole would permit more than the submitter is. Nothing this level DECLARES changed -- thirteen lanes in, fifteen out -- because the union rule cancels exactly what moved inside: `ask`, `sub_receipt` and `in_verdict` cross the operator rim and are consumed by a sibling of this level, so no lane of them reaches this one. Removing an occupant and rewiring its edges is the second digit (`docs/development-rules.md` § 4/4a). And it does NOT reach a running colony: the `mutate` lane lives in the birth topology, so a colony adopts this with its next instance and keeps its grown form otherwise (no-delete).",
+    "purpose": "The colony shell: the outermost of the four composition levels, and the tree everything else is grown into. It is authored under one rule that all four levels repeat in the same words -- A LEVEL OWNS WHAT ITS SIBLINGS MUST SHARE. What every organisation of a colony shares is the capability broker, the control loop, -- since R6 -- the ONE authoring path a colony has (the baumeister that drafts a manifest and the submitter that carries it to the mutation door under the requester's own identity), and -- since 1.3.0 -- the ONE front door a person addresses it through (`operator`, GH #446). Those five stood here as refs through 1.6.1; since 1.7.0 there are four, the submitter having moved inside the front door (#556). They are pinned to exact versions; beside them stands `orgs`, a real but empty container hive. The shell holds no cell of its own, no memory, no model and no state: it routes fourteen lanes in, sixteen lanes out, and owns the boundary. Since 1.3.2 the control-loop ref is `argus@1.1.0`, renamed from `steward` (GH #462), and the rename brought ONE lane with it: `alert`, a watched symptom the loop's meter counted deterministically with no model asked. Nothing at this level can act on it, so the shell does the one honest thing it can -- it draws the exit and hands it out, because a level that drains nothing loses every warning. Since 1.4.0 ([#458](https://github.com/mmeyerlein/meclaw/issues/458)) one more lane crosses outward: `pack_ack`, the receipt of an identity pushed into a generation below. Nothing at this level consumes it, so by the union rule it has to be declared and let out -- adding an emitted lane is the second digit (`docs/development-rules.md` § 4/4a). Since 1.5.0 ([#469](https://github.com/mmeyerlein/meclaw/issues/469)) the thirteenth inbound lane is `in_build`, and declaring it RETRACTS half of what this file said through 1.4.0. The sentence was: the builder lane pair is deliberately not at the rim, because `./orgs` raises it and `./builder` takes it, so it crosses nothing -- the lane is invisible from outside precisely because the baumeister stands inside. That reading is still true of `build` and `in_build_result`, which are an assistant's names for the same round. It was wrong about the one case it had to be right about: the FIRST build of a colony, where `./orgs` is empty by construction and no assistant exists to raise anything, so the road the whole argument rested on has no traveller. `in_build` is the operator's name for that round and it reaches the rim; the level's own door stamps `context.build_caller`, and the draft comes back to the front door instead of into the empty container. Adding an inbound lane a caller could never reach before is the second digit (`docs/development-rules.md` § 4/4a). Since 1.6.0 ([#504](https://github.com/mmeyerlein/meclaw/issues/504)) a fifteenth edge wires two occupants to each other and a fourteenth lane crosses outward, and they are one decision. `./submit -> ./builder`, guarded on a receipt that carries no `error_code` and on `hop.registers_class`, re-stamps the round onto `in_ingest`: the submitter is the ONE cell in the tree that knows both that a manifest committed and that its diff registered a class, and the baumeister's corpus is a seed that stops describing the library the moment one does. The documented wiring named `./submit/gate -> ./builder/librarian` and no manifest, operator or hand-written config could draw it -- both endpoints are interior nodes of sealed hives -- so the lane moved to the two hive paths, where it is drawable. `catalogue` is the report coming back out; the baumeister pairs the two in its own `required_drains`, and adding an emitted lane is the second digit (`docs/development-rules.md` § 4/4a), the same reading `pack_ack` got in 1.4.0. Since 1.6.1 the baumeister ref is pinned to `builder@1.5.2`, which renamed two of its own occupants after the templates they reference (#545). Nothing at this level moved but the pin. Since 1.7.0 ([#556](https://github.com/mmeyerlein/meclaw/issues/556)) the shell holds FOUR refs and not five: the submitter stopped being a shell-level hive and became an occupant of the front door (`/os/operator/submit`), and the whole of what this level lost with it is a station. One front, one place a submission lives, and a road readable off the graph -- a submission used to cross `./operator` and then `./submit` for what is one job. Six edges of this level moved: `./operator -> ./submit` on `apply` and `./submit -> ./operator` on `receipt` are INTERIOR to the front door now and are not this level's business at all, while `./submit -> ./access` on `ask`, `./access -> ./submit` on `grant`, `./submit -> .` on `mutate` and the two `./submit -> ./builder` nudges of 1.6.0 are drawn from `./operator` instead -- same guards, same lanes, one hive further out. The requester the ask edge stamps moved with the node it names: `/os/operator/submit`, because R-AC-1 rules the identity of the node whose reach the rule is about, and a rule naming the front door as a whole would permit more than the submitter is. Nothing this level DECLARES changed -- thirteen lanes in, fifteen out -- because the union rule cancels exactly what moved inside: `ask`, `sub_receipt` and `in_verdict` cross the operator rim and are consumed by a sibling of this level, so no lane of them reaches this one. Removing an occupant and rewiring its edges is the second digit (`docs/development-rules.md` § 4/4a). And it does NOT reach a running colony: the `mutate` lane lives in the birth topology, so a colony adopts this with its next instance and keeps its grown form otherwise (no-delete). Since 1.8.0 the fourteenth inbound lane is `mutation_committed` (GH #553): the mutation door leaves one receipt per committed knock at the hive `colony.json` names, and this level carries it into `./orgs`. Declaring it is what makes this level a mandatory hop for the lane (ADR-0020) -- the chain is drawn one level at a time, all the way down to the tool menus and the screens that used to poll for the same fact. Since #555 a sixteenth lane crosses outward: `dump`, the receipt of one applied import part on its way out of a member and its organisation. Nothing at this level consumes it, so by the union rule it has to be declared and let out -- it used to end inside the member, in the one cell there that read a transfer document and said nothing about it. Since 1.8.1 the rollup asks the environment for ELEVEN keys instead of twenty-nine: the authoring dispatcher's three knobs, the control loop's seven, the capability broker's six and the two source names of the vault inside it are params of the cells that read them ([#138](https://github.com/mmeyerlein/meclaw/issues/138)) -- `dispatcher@1.2.0`, `argus@1.1.0` and `access@2.5.0` -- so a key set for any of them in the environment would go nowhere, and an `override_params` entry in the manifest that grows the shell is what tunes them now. `requires.env` is derived from what the refs actually substitute, and a key that binds nothing is a leaflet -- so it goes.",
     "use_when": "Once per colony, as the first thing an operator instantiates. Everything else arrives afterwards as an organisation instantiated into `./orgs`, and the mutation that grows one draws that organisation's own edges in the same breath. Do not instantiate a second shell into a colony that already has one: two brokers mean two answers to the same question, and two control loops mean two hands on the same params.",
     "not_in_scope": "No `turn` lane outward: the level declares the UNION of what its occupants emit, minus what a sibling inside consumes itself -- and a member consumes its own turn behind its screen (`./assistants -> ./firewall`), so an exit for it here could never fire. No second vault: `access` carries its own interior one and the standalone `vault` template attests its inbound edges against `params.broker` plus `params.sealed_neighbors`, so a copy at this level would boot locked and inert (ruling Q20, GH #302). No swallowing sink: nothing here accepts a refusal and emits nothing, because the dead-letter queue is the record (ruling Q2, GH #284). No `connect` lane outward: `access` requires that lane to be the ONE edge that reaches a connector cell, and that edge is drawn where the connector stands, not here. No contract on the container: the level declares the transit lanes and its own edges satisfy them from birth (W7-R2). No organisation-level anything -- the shell ships the container, never a tenant. And no slot: the substrate's slot governs an address that does not exist, while `orgs` does exist, so the declaration would have been silent and the `params.ports` it needs would have SEALED this hive. And NO SECOND BAUMEISTER and no second front door: two of either would be two audit trails, and the one audit trail is the whole point of R6. And no submitter of this level's own since 1.7.0: the one that exists lives inside the front door (#556), and a second one here would be the second privileged edge R6 was written to prevent. No authentication either -- the front door supplies an identity and never verifies a claim; that is a reverse proxy's job in front of the API, and the broker's behind it.",
     "examples": [
@@ -19,41 +19,6 @@
   },
   "requires": {
     "env": {
-      "ACCESS_MAX_TTL_MS": {
-        "type": "string",
-        "required": false,
-        "because": "binds `params.max_ttl_ms` of the broker's `policy` cell, written `${ACCESS_MAX_TTL_MS:-86400000}`. The longest life a grant may be issued for; unset, a grant expires after a day. Not required, because the default is a decision and not a placeholder"
-      },
-      "ACCESS_POLICY_ROWS": {
-        "type": "string",
-        "required": false,
-        "because": "binds the row cap of the broker's policy store, written `${ACCESS_POLICY_ROWS:-200}`. Raise it for a colony whose rule set outgrows the default"
-      },
-      "ACCESS_SWEEP_CRON": {
-        "type": "string",
-        "required": false,
-        "because": "binds `params.schedule` of the broker's `clock`, written `${ACCESS_SWEEP_CRON:-0 */5 * * * *}` — how often expired grants are swept. Unset, every five minutes"
-      },
-      "ACCESS_SWEEP_EVENT_ROWS": {
-        "type": "string",
-        "required": false,
-        "because": "binds the event-row cap the broker's `sweep` keeps, written `${ACCESS_SWEEP_EVENT_ROWS:-2000}`"
-      },
-      "ACCESS_SWEEP_ROWS": {
-        "type": "string",
-        "required": false,
-        "because": "binds the grant-row cap the broker's `sweep` keeps, written `${ACCESS_SWEEP_ROWS:-200}`"
-      },
-      "ACCESS_USAGE_ROWS": {
-        "type": "string",
-        "required": false,
-        "because": "binds the usage-row cap of the broker's `invoke` cell, written `${ACCESS_USAGE_ROWS:-500}` — how much spending history a grant carries"
-      },
-      "ARGUS_CYCLE_CRON": {
-        "type": "string",
-        "required": false,
-        "because": "binds `params.schedule` of the control loop's `clock`, written `${ARGUS_CYCLE_CRON:-0 0 */6 * * *}`. It decides how often the loop wakes; it does NOT decide whether the loop acts, because every goal in the shipped charter ships `enabled: 0`"
-      },
       "ARGUS_JUDGE_BASE_URL": {
         "type": "string",
         "required": false,
@@ -68,66 +33,6 @@
         "type": "string",
         "required": false,
         "because": "binds `params.provider` of the loop's `judge`, written `${ARGUS_JUDGE_PROVIDER:-openai}` — the wire protocol the endpoint speaks"
-      },
-      "ARGUS_MAX_LEDGER_ROWS": {
-        "type": "string",
-        "required": false,
-        "because": "binds `params.max_rows` of the loop's `meter`, written `${ARGUS_MAX_LEDGER_ROWS:-200000}` — how much of `/colony/ledger` one cycle reads"
-      },
-      "ARGUS_MAX_NUMERIC_STEP_PCT": {
-        "type": "string",
-        "required": false,
-        "because": "binds the loop's per-step radius, written `${ARGUS_MAX_NUMERIC_STEP_PCT:-50}` — the largest relative change one cycle may propose for a numeric param"
-      },
-      "ARGUS_NUMERIC_PARAM_KEYS": {
-        "type": "string",
-        "required": false,
-        "because": "binds which param keys the loop may touch at all, written `${ARGUS_NUMERIC_PARAM_KEYS:-temperature,max_tokens,external_timeout_ms,attachment_timeout_ms}`. Narrowing it is how an operator shrinks the radius without turning the loop off"
-      },
-      "ARGUS_PROBE_LEDGER_TRIES": {
-        "type": "string",
-        "required": false,
-        "because": "binds how often the loop's `probe` re-reads the ledger before it calls a verification inconclusive, written `${ARGUS_PROBE_LEDGER_TRIES:-3}`"
-      },
-      "ARGUS_PROBE_MAX_ERRORS": {
-        "type": "string",
-        "required": false,
-        "because": "binds how many errors the loop's `probe` tolerates in its verification window before it reverts, written `${ARGUS_PROBE_MAX_ERRORS:-0}`"
-      },
-      "ARGUS_PROBE_WINDOW_SEC": {
-        "type": "string",
-        "required": false,
-        "because": "binds the length of that verification window in seconds, written `${ARGUS_PROBE_WINDOW_SEC:-120}`"
-      },
-      "BUILDER_LIBRARIAN_CATALOGUE_CHARS": {
-        "type": "string",
-        "required": false,
-        "because": "binds how much of ONE CATALOGUE row the briefing carries, written `${BUILDER_LIBRARIAN_CATALOGUE_CHARS:-4000}` -- the corpus generator's own chunk cap, so a template's row travels whole rather than being cut a second time on the way out. It reaches this level through the authoring path: `builder` refs `builder-librarian`"
-      },
-      "BUILDER_LIBRARIAN_ROW_CHARS": {
-        "type": "string",
-        "required": false,
-        "because": "binds the same window for every OTHER corpus chunk, written `${BUILDER_LIBRARIAN_ROW_CHARS:-1200}`. A search hit is a recall question and the round budget draws the line; what does not fit is cut on a word boundary and says so. Reaches this level through the same ref"
-      },
-      "BUILDER_LIBRARIAN_TOPK": {
-        "type": "string",
-        "required": false,
-        "because": "binds how many catalogue entries one library lookup returns, written `${BUILDER_LIBRARIAN_TOPK:-5}`. It reaches this level through the authoring path: `builder` refs `builder-librarian`, and the catalogue is what keeps a drafted manifest naming templates that exist"
-      },
-      "DISPATCHER_ASYNC_TOOLS": {
-        "type": "string",
-        "required": false,
-        "because": "binds which tool names the authoring path's `dispatcher` treats as async, written `${DISPATCHER_ASYNC_TOOLS:-}`. Empty means none, which is the shipped shape of the builder's tool round"
-      },
-      "DISPATCHER_HANDOFF_TOOLS": {
-        "type": "string",
-        "required": false,
-        "because": "binds which tool names hand the answer off to a later turn, written `${DISPATCHER_HANDOFF_TOOLS:-}`. Empty for the same reason as the key above; the builder's round closes with its own sentence"
-      },
-      "DISPATCHER_MAX_CALLS": {
-        "type": "string",
-        "required": false,
-        "because": "binds the tool-call cap of one authoring round, written `${DISPATCHER_MAX_CALLS:-16}`"
       },
       "LOCAL_LLM_API_KEY": {
         "type": "string",
@@ -148,16 +53,6 @@
         "type": "string",
         "required": true,
         "because": "binds `params.api_key` of the control loop's `judge`, and it is the ONE value in this shell written with no default: `${OPENROUTER_API_KEY}`. A colony that grows this shell without it is refused with `requirement_missing` before a single byte is staged, which is the whole point of this block — the alternative is a shell that boots, looks healthy, and fails at the first cycle the loop runs. The token is the name of a secret; no value of it travels in this tree"
-      },
-      "VAULT_CREDENTIAL_NAME": {
-        "type": "string",
-        "required": false,
-        "because": "binds `params.credential_name` of the broker's interior `vault`, written `${VAULT_CREDENTIAL_NAME:-vault_key}` — which row of the key source holds the sealing key. It names a ROW, never key material"
-      },
-      "VAULT_KEY_SOURCE": {
-        "type": "string",
-        "required": false,
-        "because": "binds `params.key_source` of that vault, written `${VAULT_KEY_SOURCE:-auto}` — where the sealing key comes from. It names a SOURCE, never key material, and `auto` is the shipped one"
       }
     }
   },

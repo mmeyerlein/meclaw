@@ -70,47 +70,21 @@
       },
       {
         "from": "./talky",
-        "to": "./talky",
+        "to": "./memory/keep",
         "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'memory_recall'",
         "modifier": {
           "set_hop": {
-            "route": "'in_memory_call'"
-          }
-        }
-      },
-      {
-        "from": "./talky",
-        "to": "./memory/keep",
-        "condition": "has(hop.route) && hop.route == 'recall'",
-        "modifier": {
-          "set_hop": {
-            "route": "'in_recall'"
-          },
-          "set_context": {
-            "recall_query": "hop.recall_query",
-            "memory_tier": "hop.memory_tier",
-            "memory_call_id": "hop.memory_call_id",
-            "recall_window_from": "hop.recall_window_from",
-            "recall_window_to": "hop.recall_window_to",
-            "turn_id": "hop.turn_id",
-            "session_id": "hop.session_id",
-            "iter": "hop.iter"
+            "route": "'in_call'"
           }
         }
       },
       {
         "from": "./memory/keep",
         "to": "./talky",
-        "condition": "has(hop.route) && hop.route == 'bundle'",
+        "condition": "has(hop.route) && hop.route == 'result'",
         "modifier": {
           "set_hop": {
-            "route": "'in_bundle'"
-          },
-          "set_context": {
-            "memory_call_id": "hop.memory_call_id",
-            "turn_id": "hop.turn_id",
-            "session_id": "hop.session_id",
-            "iter": "hop.iter"
+            "route": "'in_tool'"
           }
         }
       },

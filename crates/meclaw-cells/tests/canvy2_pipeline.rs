@@ -53,7 +53,7 @@ const CANVY_FILES: &[&str] = &[
     "config.json",
     "template.json",
     "README.md",
-    "refresh/config.json",
+    "clock/config.json",
     "probe/config.json",
     "probe/probe.py",
     "layout/config.json",
@@ -331,10 +331,12 @@ fn the_shipped_bytes_match_their_sources() {
 /// boot with `env_var_missing`. The client is written with concatenation
 /// instead, and this is what keeps it that way.
 ///
-/// The `refresh` timer is the counter-example that proves the check is not a
-/// blanket ban: it carries two tokens ON PURPOSE (`CANVY_REFRESH_CRON` and the
-/// instance-class `uuid7:`), and they belong to `params` keys rather than to a
-/// script.
+/// The `clock` timer is the counter-example that proves the check is not a
+/// blanket ban: it carries ONE token on purpose, the instance-class
+/// `${uuid7:...}` its schedule key is minted from, which is resolved once at
+/// instantiation and written to disk. Its cadence was the second one until
+/// GH #138 (ruling R-0904-6) made it the literal it declares -- so the check
+/// below asks for a plannable cron rather than for a token.
 #[test]
 fn a_shipped_script_carries_no_environment_token() {
     let Some(root) = shipped_canvy() else { return };
@@ -347,13 +349,22 @@ fn a_shipped_script_carries_no_environment_token() {
              an env token and refuses the cell at boot"
         );
     }
-    let refresh = read_json(&root.join("refresh/config.json"));
-    let cron = refresh["params"]["schedules"][0]["cron"]
+    let clock = read_json(&root.join("clock/config.json"));
+    let cron = clock["params"]["schedules"][0]["cron"]
         .as_str()
         .expect("cron");
+    assert_eq!(
+        cron, "0 * * * * *",
+        "the one knob this template has is a LITERAL since GH #138, not a \
+         `${{CANVY_REFRESH_CRON}}` token an environment fills colony-wide"
+    );
+    let key = clock["params"]["schedules"][0]["schedule_id"]
+        .as_str()
+        .expect("schedule_id");
     assert!(
-        cron.starts_with("${CANVY_REFRESH_CRON:-"),
-        "the one knob this template has is still a knob: {cron}"
+        key.starts_with("${uuid7:"),
+        "the instance class is the counter-example that keeps this check from \
+         being a blanket ban, and it is still here: {key}"
     );
 }
 
@@ -1634,6 +1645,12 @@ fn a_display_that_predates_the_marker_is_given_the_new_vocabulary() {
 // ────────────────────────────────────────── GH #416: an arranged colony
 
 /// The committed arrangement, or `None` where the fixture does not ship.
+///
+/// Its paths still read `/studio/canvy/refresh` after the template's timer was
+/// renamed to `clock` (GH #551 § 2), and that is deliberate: the fixture is a
+/// synthetic GROWN colony, and a grown colony keeps the names it was grown
+/// with -- instantiation copies, and only `move_nodes` changes a path. What is
+/// drawn here is a graph answer, not the shipped template.
 fn arranged_fixture() -> Option<Value> {
     let p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/canvy_arranged_colony.json");

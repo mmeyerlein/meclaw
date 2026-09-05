@@ -106,7 +106,10 @@
         "canonical_name"
       ]
     },
-    "query_timeout_ms": 5000
+    "query_timeout_ms": 5000,
+    "transfer": {
+      "base_path": "/tmp/meclaw-member-export"
+    }
   },
   "contract": {
     "version": "1.0.0",

@@ -67,6 +67,13 @@ pub struct ContractView {
     /// GH #314 — `contract.transfer`: whether this cell's database answers the
     /// `transfer` slot at all. `All` by default, for the same reason.
     pub transfer: meclaw_core::TransferPolicy,
+    /// GH #555 — `params.transfer.base_path`: the one absolute directory this
+    /// cell writes its own seed files into and reads them back from. `None`
+    /// when the cell names none, which is what every cell said before this key
+    /// existed. The only field of this view that comes from `params` rather
+    /// than from the `contract` block — see
+    /// [`crate::bootstrap::compile_spawn_view`] for why.
+    pub transfer_base_path: Option<std::sync::Arc<std::path::Path>>,
 }
 
 impl ContractView {
@@ -74,12 +81,14 @@ impl ContractView {
     /// the one value the spawn helpers carry (GH #260 + GH #314).
     ///
     /// Deliberately not derived from one another: `write_surface` says WHO may
-    /// write, `transfer` says WHETHER the database answers the seam at all. A
-    /// cell that wants both declares both.
+    /// write, `transfer` says WHETHER the database answers the seam at all, and
+    /// `transfer_base_path` says WHERE this cell's own files live (GH #555). A
+    /// cell that wants all three declares all three.
     pub fn transfer_bounds(&self) -> meclaw_core::TransferBounds {
         meclaw_core::TransferBounds {
             write_surface: self.write_surface,
             policy: self.transfer,
+            base_path: self.transfer_base_path.clone(),
         }
     }
 }

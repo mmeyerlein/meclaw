@@ -190,11 +190,7 @@ fn main_config(composite: &str) -> Value {
 
 fn build_tree(td: &tempfile::TempDir, composite: &str, src: &std::path::Path, base_url: &str) {
     let root = td.path();
-    std::fs::write(
-        root.join(".env"),
-        "OPENROUTER_API_KEY=test-key\nKEEPER_IDLE_MS=0\n",
-    )
-    .unwrap();
+    std::fs::write(root.join(".env"), "OPENROUTER_API_KEY=test-key\n").unwrap();
     write(root, "main/config.json", &main_config(composite));
     write(root, "main/sender/config.json", &sender_config());
     copy_cells(src, &root.join(format!("main/{composite}")));
@@ -210,19 +206,17 @@ fn build_tree(td: &tempfile::TempDir, composite: &str, src: &std::path::Path, ba
             },
         );
     }
-    // GH #464 -- the collector's own timer, quiesced the same way and for the
-    // same two reasons: `${uuid7:*}` is an INSTANTIATION substitution, and a
-    // menu tick during a test run would ask a tools hive this colony has not
-    // got. Every composite in this file carries one, because every one of them
-    // carries a collector.
-    patch(
-        root,
-        &format!("main/{composite}/collector/menu-clock/config.json"),
-        |v| {
-            v["params"]["schedules"][0]["schedule_id"] = json!(SCHEDULE_ID);
-            v["params"]["schedules"][0]["cron"] = json!(NEVER);
-        },
-    );
+    // Every open generation is a candidate the moment the sweep runs. It was a
+    // `KEEPER_IDLE_MS=0` line in the `.env` above until GH #138; the knob is a
+    // param of `./close` now, so such a line would be read by NOTHING -- the
+    // sweep would keep the shipped two hours and find no candidate.
+    if keeper.exists() {
+        patch(
+            root,
+            &format!("main/{composite}/session-keeper/close/config.json"),
+            |v| v["params"]["idle_ms"] = json!(0),
+        );
+    }
     for brain in brains_of(composite) {
         patch(
             root,
@@ -492,7 +486,7 @@ async fn the_emitted_pack_carries_slots_and_no_turn() {
     };
     let td = tempfile::TempDir::new().unwrap();
     let root = td.path();
-    std::fs::write(root.join(".env"), "KEEPER_IDLE_MS=0\n").unwrap();
+    std::fs::write(root.join(".env"), "").unwrap();
     write(
         root,
         "main/config.json",
@@ -508,10 +502,6 @@ async fn the_emitted_pack_carries_slots_and_no_turn() {
     );
     write(root, "main/sender/config.json", &sender_config());
     copy_cells(&src, &root.join("main/collector"));
-    patch(root, "main/collector/menu-clock/config.json", |v| {
-        v["params"]["schedules"][0]["schedule_id"] = json!(SCHEDULE_ID);
-        v["params"]["schedules"][0]["cron"] = json!(NEVER);
-    });
     let (h, mut ports) = boot(&td).await;
 
     h.send(pack(

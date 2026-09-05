@@ -724,23 +724,35 @@ fn no_lookup_lane_survives_in_the_shipped_mechanism() {
         "one brain takes one model key: {ctx:?}"
     );
 
-    // And the two knobs the ruling moved, read off the ref marker rather than
-    // off prose: the memory TOOL is on, the ambient leg is not this core's.
+    // And the knobs the ruling moved, read off the ref marker rather than off
+    // prose: the ambient leg is not this core's, and the memory TOOL is not this
+    // core's to switch either.
     let collector: Value = meclaw_core::serde_json::from_str(
         &std::fs::read_to_string(cogny.join("collector/config.json")).unwrap(),
     )
     .unwrap();
-    assert_eq!(
-        collector["override_params"]["assemble"]["memory_call_tier"].as_str(),
-        Some("1"),
-        "the memory tool is declared and answered: {collector:?}"
-    );
     assert!(
         collector["override_params"]["assemble"]
             .get("memory_tier")
             .is_none(),
-        "and the ambient leg is NOT switched on here -- a problem solver asks \
+        "the ambient leg is NOT switched on here -- a problem solver asks \
          on purpose: {collector:?}"
+    );
+    // GH #552: `memory_call_tier` stood here at "1" while this composite served
+    // the call itself. It does not any more -- the member's memory hive declares
+    // the name and answers it -- and this core reaches it the ordinary way: it
+    // declares `["*"]`, so whatever answerers the level wires are asked, the
+    // memory among them.
+    assert!(
+        collector["override_params"]["assemble"]
+            .get("memory_call_tier")
+            .is_none(),
+        "a knob the collector does not have any more: {collector:?}"
+    );
+    assert_eq!(
+        collector["override_params"]["assemble"]["tools"],
+        meclaw_core::serde_json::json!(["*"]),
+        "and the declared list is what reaches the memory's `schemas` cell: {collector:?}"
     );
 }
 

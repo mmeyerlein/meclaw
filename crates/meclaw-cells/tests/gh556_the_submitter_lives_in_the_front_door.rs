@@ -487,7 +487,7 @@ fn context(pairs: &[(&str, Value)]) -> Map<String, Value> {
 fn a_manifest() -> Value {
     json!([
         {"scope": "/os/orgs",
-         "diff": {"add_nodes": [{"name": "acme", "template": "org@1.3.0"}]}}
+         "diff": {"add_nodes": [{"name": "acme", "template": "org@1.4.0"}]}}
     ])
 }
 

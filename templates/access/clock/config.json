@@ -9,7 +9,7 @@
       {
         "schedule_id": "${uuid7:access-sweep}",
         "schedule_name": "access-sweep",
-        "cron": "${ACCESS_SWEEP_CRON:-0 */5 * * * *}",
+        "cron": "0 */5 * * * *",
         "emit_to": "../sweep",
         "emit_body": {
           "messages": [
@@ -32,7 +32,7 @@
         "type": "string",
         "secret": false,
         "default": "0 */5 * * * *",
-        "description": "6-field Quartz cron of the TTL sweep (ACCESS_SWEEP_CRON). Cron runs in UTC."
+        "description": "6-field Quartz cron of the TTL sweep, in UTC. Documentation, not a params field of its own: a timer cell has no top-level `cron` param, the value lives inside the schedule at params.schedules[0].cron. Since GH #138 it is a LITERAL there rather than an environment token, so an instance retunes the sweep by overriding `schedules` (the key exists, which is what GH #294 asks of an override) or at runtime with a modify op by schedule_id -- and not by a colony-wide environment two brokers would have to share."
       }
     },
     "emits": {

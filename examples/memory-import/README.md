@@ -29,13 +29,13 @@ This example is the way in. It is one manifest.
    in_export ──────────▶│        ▸ affinity                    │
    (+ context.assistant)│        ▸ firewall                    │
                         │        ▸ assistants/<gen> ▸ … ▸ keeper│
-                        │        ▸ export-sink                 │
+                        │   (each store writes its OWN files)  │
                         └──────────┬───────────────────────────┘
                                    │  memory-hive/seed/<table>.jsonl
                                    │  affinity/seed/<table>.jsonl
                                    │  firewall/seed/rules.jsonl
                                    │  session-keeper/seed/sessions.jsonl
-                                   ▼  export_final.json (one per hive, one for the member)
+                                   ▼  export_final.json (one per directory)
                             build_import.py
                                    │  one manifest        one message per late part
                                    ▼                      ▼ (--after-boot)
@@ -101,13 +101,15 @@ curl -sS localhost:8080/messages \
   -H 'content-type: application/json' \
   -d '{"target": "/os/orgs/<org>/members/<name>", "header": {"hop": {"route": "in_export"}},
        "body": {"messages": []}}'
-# the sink writes under MEMBER_EXPORT_DIR, one directory per holder; a holder is
-# finished when <hive>/seed/export_final.json is there, and MEMBER_EXPORT_DIR's own
-# export_final.json names every holder that finished
+# since GH #555 each holder's own STORE writes under its params.transfer.base_path,
+# one directory per holder (hop.export_to names the run's directory under it); a
+# holder is finished when <hive>/seed/export_final.json is there, and each holder
+# says `export_done` with hop.seed_dir when it is. There is no member-level marker:
+# a directory says for itself whether it is whole
 
 # 2. turn that directory into one manifest
 python3 examples/memory-import/build_import.py \
-    --export "$MEMBER_EXPORT_DIR" \
+    --export "$EXPORT_DIR" \
     --templates ./templates \
     --scope /os/orgs/<org> \
     --name <name> \
@@ -163,7 +165,7 @@ The check is per holder, because three walks finish independently.
 
 **It reads the pre-#471 flat shape too.** An export directory whose `seed/` sits
 directly under it, with no per-hive level, is read as a memory-hive-only export.
-That is what every document written before the sink learned to file by hive looks
+That is what every document written before the parts were filed by hive looks
 like, and refusing them would strand the backups already on disk.
 
 **It says out loud what it cannot place, and it writes out the way in.**
@@ -247,7 +249,7 @@ table whose rows came out of another colony in
 ## Pinned
 
 `crates/meclaw-cells/tests/gh467_a_member_is_born_with_its_history.rs` boots a
-colony that remembers, walks it out through the shipped sink, runs
+colony that remembers, has its store write the seed set itself, runs
 `build_import.py` on the result, applies the manifest to a colony that never
 heard any of it, and asks that colony's store the question — the lexical leg of
 a recall — that only a memory it never saw written can answer. It also drives
@@ -256,7 +258,8 @@ transfer.
 
 `crates/meclaw-cells/tests/gh475_a_member_reaches_the_keeper_it_holds.rs` drives the
 fourth holder: a member with one generation is told `in_export` with that generation
-named, the sink files `session-keeper/seed/sessions.jsonl` beside the other directories,
+named, the keeper's own store writes `session-keeper/seed/sessions.jsonl` beside the other
+directories,
 `--after-boot` turns it back into one `in_import` message, and the member's own door
 carries it into the keeper's store.
 

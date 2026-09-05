@@ -1,4 +1,4 @@
-//! GH #302 — `meclaw-os@1.7.0`, the outermost level: the colony shell.
+//! GH #302 — `meclaw-os@1.8.1`, the outermost level: the colony shell.
 //!
 //! The four composition templates are authored under one rule, and every one of
 //! their READMEs repeats it in the same words: **a level owns what its siblings
@@ -139,7 +139,7 @@ const NOT_RE_EMITTED: &str = "connect";
 ///
 /// GH #556 SHORTENED this list by two rather than lengthening it. `in_apply`
 /// and `apply` were the `./operator -> ./submit` edge, and that edge is now an
-/// interior edge of `operator@1.1.0`. Neither name is shipped by any occupant
+/// interior edge of `operator@1.2.0`. Neither name is shipped by any occupant
 /// of this level any more, so subtracting them would be subtracting nothing —
 /// and a subtraction with no subject is how a list starts agreeing with itself.
 /// Three names took their place, and all three are the SAME shape: `ask`,
@@ -525,7 +525,7 @@ fn the_shells_contract_is_its_occupants_lanes_minus_the_ones_that_stay_inside() 
 
     // GH #556 — the submitter's contract is deliberately NOT read here, and
     // that is the whole of what the union rule says. It is not an occupant of
-    // this level, so its lanes reach the shell only as far as `operator@1.1.0`
+    // this level, so its lanes reach the shell only as far as `operator@1.2.0`
     // re-declares them: `ask`, `mutate` and `sub_receipt` out, `in_verdict` in.
     // Reading `submit` here as well would produce a union that agrees with the
     // rim by accident, and would go on agreeing with it after the front door
@@ -1387,13 +1387,30 @@ fn the_shells_requires_env_is_the_rollup_of_what_its_refs_substitute() {
     }
 
     let mut used = std::collections::BTreeMap::new();
-    walk(&shell_dir(), &registry, &mut Vec::new(), &mut used);
+    let mut followed = Vec::new();
+    walk(&shell_dir(), &registry, &mut followed, &mut used);
 
-    // Anti-vacuity: a walk that found nothing would agree with an empty block.
+    // Anti-vacuity, and since GH #138 it measures what its own message says.
+    //
+    // The floor used to be a KEY count (`used.len() > 10`), and that number is
+    // not a property of the walk any more: the migration moved every behaviour
+    // knob onto the params surface of the cell that reads it, so this shell's
+    // environment surface shrank from twenty-nine keys to seven while the tree
+    // the walk crosses did not shrink at all. A key floor would now have to be
+    // lowered after every migration until it stopped catching anything.
+    //
+    // What a broken walk actually looks like is a walk that stops at the first
+    // `ref` marker, so that is what is counted: the templates it RESOLVED. That
+    // number does not move with a knob, and a walk that gave up would show it
+    // immediately.
     assert!(
-        used.len() > 10,
-        "the ref walk found only {} keys — it stopped following refs",
-        used.len()
+        followed.len() >= 5,
+        "the ref walk resolved only {} template(s) — it stopped following refs: {followed:?}",
+        followed.len()
+    );
+    assert!(
+        !used.is_empty(),
+        "the ref walk found no environment key at all — the shell cannot need nothing"
     );
 
     let declared = read_requires(&shell_dir()).expect("the shell's `requires` block parses");

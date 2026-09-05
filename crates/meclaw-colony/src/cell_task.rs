@@ -460,7 +460,7 @@ pub async fn cell_task_stateful<C: crate::stateful_cell::StatefulCell>(
                 // requires `messages` — which is every `store` in the library.
                 // AFTER the blob resolution, because a slot is only readable once
                 // the body it sits in is whole.
-                if crate::db_transfer::handle_transfer_slot(&msg, &sink, &mut db, bounds)
+                if crate::db_transfer::handle_transfer_slot(&msg, &sink, &mut db, &bounds)
                 .await
                 {
                     continue;
@@ -782,7 +782,7 @@ async fn handler_loop<L: crate::long_running_cell::LongRunningCell>(
                     // same position — after the blob resolution, before the
                     // consumes gate, never reaching `handle()`.
                     if resolve_blob_for_delivery(&mut msg, &blob_store, &colony_inbox_tx).await
-                        && !crate::db_transfer::handle_transfer_slot(&msg, &sink, &mut db, bounds)
+                        && !crate::db_transfer::handle_transfer_slot(&msg, &sink, &mut db, &bounds)
                             .await
                         && enforce_consumes_for_delivery(
                             &msg,

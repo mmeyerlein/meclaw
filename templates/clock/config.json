@@ -7,9 +7,9 @@
     "query_timeout_ms": 5000,
     "schedules": [
       {
-        "schedule_id": "${CLOCK_SCHEDULE_ID:-0190a3f2-0000-7000-8000-000000000484}",
+        "schedule_id": "0190a3f2-0000-7000-8000-000000000484",
         "schedule_name": "tick",
-        "cron": "${CLOCK_CRON:-0 */5 * * * *}",
+        "cron": "0 */5 * * * *",
         "emit_to": ".",
         "emit_body": {
           "messages": []
@@ -26,13 +26,13 @@
         "type": "string",
         "secret": false,
         "default": "0 */5 * * * *",
-        "description": "6-field Quartz cron of the tick (CLOCK_CRON). Cron runs in UTC, and a missed firing is dropped rather than caught up. Per instance it is an override_params entry on the node itself; colony-wide it is the env knob."
+        "description": "6-field Quartz cron of the tick. Cron runs in UTC, and a missed firing is dropped rather than caught up. It is an `override_params` entry on the node itself -- a FLAT params object, because a single-cell template has no inner cell to address -- or an `op` message at runtime."
       },
       "schedule_id": {
         "type": "string",
         "secret": false,
         "default": "0190a3f2-0000-7000-8000-000000000484",
-        "description": "The key the runtime ops (add/modify/remove/trigger) address this schedule by (CLOCK_SCHEDULE_ID). It is a LITERAL UUID v7 and not a uuid7 substitution token: such a token is resolved at instantiation and has no filesystem-side producer, so a tree written straight to disk would refuse to boot on it, and a config that merely NAMES the token in its prose is refused the same way -- the substitution engine reads the whole file. A timer's key space is its own cell.db and this template ships exactly one schedule, so the token would buy nothing a constant does not."
+        "description": "The key the runtime ops (add/modify/remove/trigger) address this schedule by. It is a LITERAL UUID v7 and not a uuid7 substitution token: such a token is resolved at instantiation and has no filesystem-side producer, so a tree written straight to disk would refuse to boot on it, and a config that merely NAMES the token in its prose is refused the same way -- the substitution engine reads the whole file. A timer's key space is its own cell.db and this template ships exactly one schedule, so a minted id would buy nothing a constant does not. Two clocks in one colony may carry the same key and never meet."
       }
     },
     "emits": {

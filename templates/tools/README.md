@@ -1,4 +1,4 @@
-# `tools@1.4.0`
+# `tools@1.4.1`
 
 The tool surface of one assistant as **one node with one contract**: `tool_call` in,
 `tool_result` out.
@@ -76,9 +76,12 @@ because the contract does not change.
 **Every occupant in this table is reached**, and since 1.3.0 there is no row left saying
 *nothing* in the third column.
 
-`file` and `edit` share ONE root (`TOOLS_FILE_ROOT`, § *The environment surface*), and that
+`file` and `edit` share ONE root (`params.base_path`, § *The environment surface*), and that
 is a decision rather than a convenience: one assistant has one file root, and a tool that
-could edit what its neighbour cannot read would be a boundary nobody could state.
+could edit what its neighbour cannot read would be a boundary nobody could state. Since
+1.4.1 the two carry that root as a LITERAL and a mutation repoints both in one act
+([#138](https://github.com/mmeyerlein/meclaw/issues/138)); it used to be one colony-wide
+environment variable, which meant every assistant in a colony reached the same directory.
 
 `build-draft` and `build-apply` are the two halves of one round -- **and since 1.4.0 they
 are named as one** (§ *What `1.4.0` changed*). They carry the tightest block in the
@@ -500,12 +503,14 @@ written once and read by every turn after it. Asking it AGAIN is how a caller le
 tool was added, and nothing here pushes -- the hive answers questions and raises nothing of
 its own.
 
-That makes the ask a **tick** rather than a birth, and the shipped caller says so out loud:
+That makes the ask an **event** rather than a birth, and the shipped caller says so out loud:
 the substrate hands a cell no message at spawn, so there is no moment called "start-up" at
-which anything could ask. `collector` carries a `timer` for it (`MENU_CRON`), the
-first firing is the first ask, and every later one costs two selects over unchanged data on
-this side -- see [`templates/collector/README.md`](../collector/README.md) § *The menu is
-asked for*.
+which anything could ask. What asks is the MUTATION RECEIPT -- `collector` re-asks on
+`mutation_committed` and the boot receipt is the first one, so the first ask happens at start-up
+after all, and every later one is caused by the very mutation that changed what the answer
+would be. Until `tools@1.4.1` this paragraph named a `timer` (`MENU_CRON`) instead; it is
+gone ([#553](https://github.com/mmeyerlein/meclaw/issues/553)) -- see
+[`templates/collector/README.md`](../collector/README.md) § *The menu is asked for*.
 
 ## The environment surface
 
@@ -516,7 +521,6 @@ and says which value each one fills:
 |---|---|---|
 | `SEARCH_ENDPOINT` | `web_search`'s `params.endpoint`, written `${SEARCH_ENDPOINT:-http://127.0.0.1:8080/search}` | no |
 | `SEARCH_API_KEY` | `web_search`'s `params.api_key`, written `${SEARCH_API_KEY:-}` | no |
-| `TOOLS_FILE_ROOT` | `params.base_path` of BOTH `file` and `edit`, written `${TOOLS_FILE_ROOT:-/tmp}` | no |
 
 Neither is required, and that is a decision worth stating rather than leaving to be
 inferred. Both tokens carry a `:-` default, so an instantiation without them succeeds --
@@ -532,12 +536,22 @@ search occupant at a loopback placeholder, and a machine with no search shim beh
 answers nothing. That is not an error and nothing anywhere reports it -- which is precisely
 why the key is written down here.
 
-**`TOOLS_FILE_ROOT` is the one whose default is a real reach, and that is the honest part.**
-`base_path` must name a directory that EXISTS or the cell refuses to spawn, and the only
-directory that exists on every machine is the scratch one. So unset, this assistant's file
-surface is rooted at `/tmp`: nobody's mistake, nothing anywhere reports it, and the same
-argument as the search endpoint one line up -- which is why it is written down rather than
-discovered. Set it to the directory this assistant may actually touch.
+**The file root is not on this list any more, and that is the point of #138.**
+`TOOLS_FILE_ROOT` bound `params.base_path` of both the `file` and the `edit` occupant until
+1.4.1; since then each carries the literal `/tmp` and a mutation repoints both with
+`override_params`. A sandbox root is per-INSTANCE by nature -- two assistants in one colony
+must not reach the same directory just because they were grown from the same template -- and
+an environment variable could not say that. The shipped default is still a real reach and
+still the honest part: `base_path` must name a directory that EXISTS or the cell refuses to
+spawn, and the only directory that exists on every machine is the scratch one. So an
+assistant nobody repointed is rooted at `/tmp`, nobody's mistake and nothing anywhere
+reports it -- which is why it is written down here rather than discovered:
+
+```json
+{"add_nodes": [{"name": "tools", "template": "tools",
+  "override_params": {"file": {"base_path": "/srv/alex"},
+                      "edit": {"base_path": "/srv/alex"}}}]}
+```
 
 `MCP_ENDPOINT` and `TOOLS_VAULT_BROKER` were declared here until 1.3.0 and are gone with
 the two occupants they configured ([#547](https://github.com/mmeyerlein/meclaw/issues/547)).

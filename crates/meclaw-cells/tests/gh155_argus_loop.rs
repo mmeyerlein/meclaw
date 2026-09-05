@@ -686,12 +686,16 @@ fn a_numeric_cap_with_no_receiver_is_refused_rather_than_receipted_as_applied() 
 
 /// The set is a declaration, not a constant: an operator who has wired a target
 /// that CAN receive another key widens it, and the same decision then travels.
+///
+/// Since `argus@1.1.0` the widening is a PARAM (GH #138). This test used to make
+/// it by string-replacing the shipped script's own literal, which proved the
+/// radius was read but said nothing about whether an operator could reach it --
+/// and after the migration such a replacement would have found nothing to
+/// replace and silently gone on testing the shipped set. Now the widened set
+/// arrives the way a deployment sends it: on the stdin document, where
+/// `override_params` puts it.
 #[test]
 fn the_numeric_key_set_is_an_operator_declaration() {
-    let widened = script(MUTATOR).replace(
-        "temperature,max_tokens,external_timeout_ms,attachment_timeout_ms",
-        "max_iter",
-    );
     let mut args = a_valid_change();
     args["change"] = serde_json::json!({
         "target": "/main/talky/collector", "kind": "numeric_param",
@@ -701,7 +705,9 @@ fn the_numeric_key_set_is_an_operator_declaration() {
         "target": "/main/talky/collector", "kind": "numeric_param",
         "key": "max_iter", "to": 4
     });
-    let out = emit(&widened, decision(args));
+    let mut doc = decision(args);
+    doc["params"] = serde_json::json!({"numeric_param_keys": ["max_iter"]});
+    let out = emit(&script(MUTATOR), doc);
     let m = mutation(&out).expect("the widened set lets it through");
     assert_eq!(m["params"]["max_iter"], serde_json::json!(5));
 }

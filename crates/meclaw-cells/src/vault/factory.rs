@@ -124,7 +124,7 @@ impl CellFactory for VaultCellFactory {
                         db,
                         respawn_blob.clone(),
                         respawn_consumes.clone(),
-                        respawn_bounds,
+                        respawn_bounds.clone(),
                     ),
                     Err(reason) => meclaw_colony::build_stateless_task(
                         respawn_path.clone(),
@@ -181,7 +181,7 @@ impl CellFactory for VaultCellFactory {
                     db,
                     wake_blob.clone(),
                     wake_consumes.clone(),
-                    wake_bounds,
+                    wake_bounds.clone(),
                 ),
                 Err(reason) => meclaw_colony::build_stateless_task(
                     wake_path.clone(),

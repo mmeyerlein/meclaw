@@ -47,43 +47,14 @@ fn config_of(rel: &str) -> Value {
     meclaw_core::serde_json::from_str(&raw).expect("config json")
 }
 
-/// `${VAR:-default}` becomes the default (or the override, when the case names
-/// one), a bare `${VAR}` becomes the empty string -- the same substitution the
-/// colony performs when it instantiates the template.
-fn resolve_vars(script: &str, over: &[(&str, &str)]) -> String {
-    let mut out = String::with_capacity(script.len());
-    let mut rest = script;
-    while let Some(start) = rest.find("${") {
-        out.push_str(&rest[..start]);
-        let tail = &rest[start + 2..];
-        let end = tail
-            .find('}')
-            .expect("unterminated ${...} in script_inline");
-        let inner = &tail[..end];
-        let (name, default) = match inner.split_once(":-") {
-            Some((n, d)) => (n, d),
-            None => (inner, ""),
-        };
-        let value = over
-            .iter()
-            .find(|(k, _)| *k == name)
-            .map(|(_, v)| *v)
-            .unwrap_or(default);
-        out.push_str(value);
-        rest = &tail[end + 1..];
-    }
-    out.push_str(rest);
-    out
-}
-
-fn screen_script(over: &[(&str, &str)]) -> String {
-    let v = config_of("screen/config.json");
-    resolve_vars(
-        v["params"]["script_inline"]
-            .as_str()
-            .expect("script_inline"),
-        over,
-    )
+/// The shipped script, verbatim. Since GH #138 there is nothing to substitute:
+/// the screen's three arithmetic knobs are params of the cell, so the source
+/// that ships is the source that runs.
+fn screen_script() -> String {
+    config_of("screen/config.json")["params"]["script_inline"]
+        .as_str()
+        .expect("script_inline")
+        .to_string()
 }
 
 /// Run a shipped script over a real stdin document, handing the script to
@@ -123,9 +94,17 @@ fn run_script_on_stdin(script: &str, stdin_doc: &str) -> std::process::Output {
 
 /// Runs the real script against a real stdin document and returns the emitted
 /// messages.
-fn emit_with(over: &[(&str, &str)], doc: Value) -> Vec<Value> {
+///
+/// `params` is the instance's own `params` object. Since GH #138 the screen's
+/// size cap and rate window are params of the cell rather than `${FIREWALL_*}`
+/// substitutions, so a case that wants a tight cap hands it down the way an
+/// `override_params` entry would -- and a case that hands down nothing runs on
+/// the shipped defaults.
+fn emit_with(params: Value, doc: Value) -> Vec<Value> {
+    let mut doc = doc;
+    doc["params"] = params;
     let out = run_script_on_stdin(
-        &screen_script(over),
+        &screen_script(),
         &meclaw_testing::code_stdin(&doc).to_string(),
     );
     assert!(
@@ -142,7 +121,7 @@ fn emit_with(over: &[(&str, &str)], doc: Value) -> Vec<Value> {
 }
 
 fn emit(doc: Value) -> Vec<Value> {
-    emit_with(&[], doc)
+    emit_with(json!({}), doc)
 }
 
 fn hop_str(msg: &Value, key: &str) -> String {
@@ -235,7 +214,7 @@ fn assert_reached_rate_phase(out: &[Value]) {
 
 #[test]
 fn a_turn_under_the_size_cap_reaches_the_rule_lookup() {
-    let out = emit_with(&[("FIREWALL_MAX_CHARS", "16")], inbound("hello", "42"));
+    let out = emit_with(json!({"firewall_max_chars": 16}), inbound("hello", "42"));
 
     assert_eq!(out.len(), 1, "{out:?}");
     assert_eq!(hop_str(&out[0], "route"), "fwstore");
@@ -263,7 +242,7 @@ fn a_turn_under_the_size_cap_reaches_the_rule_lookup() {
 #[test]
 fn an_oversized_turn_is_rejected_before_the_first_store_hop() {
     let long = "x".repeat(17);
-    let out = emit_with(&[("FIREWALL_MAX_CHARS", "16")], inbound(&long, "42"));
+    let out = emit_with(json!({"firewall_max_chars": 16}), inbound(&long, "42"));
 
     assert_reject(&out, "oversize", "size-cap");
     // The point of running the cap first: nothing was parked on a header and
@@ -282,10 +261,10 @@ fn the_size_cap_counts_every_text_field_of_the_turn() {
                                           "user_id": "42", "recorded_at": T0}},
         "messages": [user_turn("aaaaaaa"), user_turn("bbbbbbb"), user_turn("ccccccc")]
     });
-    let out = emit_with(&[("FIREWALL_MAX_CHARS", "20")], doc.clone());
+    let out = emit_with(json!({"firewall_max_chars": 20}), doc.clone());
     assert_reject(&out, "oversize", "size-cap");
 
-    let out = emit_with(&[("FIREWALL_MAX_CHARS", "21")], doc);
+    let out = emit_with(json!({"firewall_max_chars": 21}), doc);
     assert_eq!(
         hop_str(&out[0], "route"),
         "fwstore",
@@ -452,10 +431,7 @@ fn a_blocked_prefix_anchors_at_the_beginning_of_the_turn() {
 fn the_rate_window_is_arithmetic_on_the_turns_own_stamp() {
     let rows = json!([rule("r-allow", "sender", "user_id", "42", "allow")]);
     let out = emit_with(
-        &[
-            ("FIREWALL_RATE_MAX", "2"),
-            ("FIREWALL_RATE_WINDOW_MS", "60000"),
-        ],
+        json!({"firewall_rate_max": 2, "firewall_rate_window_ms": 60000}),
         store_reply("rules", probe_body("hi"), rows, "42"),
     );
     assert_reached_rate_phase(&out);
@@ -477,7 +453,7 @@ fn the_rate_window_is_arithmetic_on_the_turns_own_stamp() {
 fn a_full_window_rejects_and_books_nothing() {
     let arrivals = json!([{"recorded_at": T0}, {"recorded_at": T0}]);
     let out = emit_with(
-        &[("FIREWALL_RATE_MAX", "2")],
+        json!({"firewall_rate_max": 2}),
         store_reply("rate", probe_body("hi"), arrivals, "42"),
     );
     assert_reject(&out, "rate_limited", "rate-limit");
@@ -493,7 +469,7 @@ fn a_full_window_rejects_and_books_nothing() {
 fn a_turn_inside_the_budget_books_its_arrival_and_passes() {
     let arrivals = json!([{"recorded_at": T0}]);
     let out = emit_with(
-        &[("FIREWALL_RATE_MAX", "2")],
+        json!({"firewall_rate_max": 2}),
         store_reply("rate", probe_body("hi"), arrivals, "42"),
     );
 
@@ -526,7 +502,7 @@ fn the_pass_lane_carries_the_body_unchanged() {
                      {"origin": "assistant", "type": "text", "text": "second"}]
     });
     let out = emit_with(
-        &[("FIREWALL_RATE_MAX", "9")],
+        json!({"firewall_rate_max": 9}),
         store_reply("rate", body.clone(), json!([]), "42"),
     );
 
@@ -616,9 +592,15 @@ fn main_config() -> Value {
 
 /// `seed` = the rule rows (without the schema line); `None` keeps the SHIPPED
 /// seed, which is how the inert-by-default claim gets tested.
-fn build_tree(td: &tempfile::TempDir, env: &str, seed: Option<&[Value]>) {
+/// `screen_params` tunes the copied `./screen` the way `override_params` does
+/// at instantiation: since GH #138 the size cap and the rate window are keys of
+/// that cell's own `params`, so a colony that wants a two-turn budget writes it
+/// into the config of ITS screen. A `FIREWALL_RATE_MAX=` line in the `.env`
+/// would be read by nothing at all now -- and it would be silent about it,
+/// which is why the file below is written empty rather than left out.
+fn build_tree(td: &tempfile::TempDir, screen_params: Value, seed: Option<&[Value]>) {
     let root = td.path();
-    std::fs::write(root.join(".env"), env).unwrap();
+    std::fs::write(root.join(".env"), "").unwrap();
     let main = root.join("main");
     std::fs::create_dir_all(&main).unwrap();
     std::fs::write(
@@ -627,6 +609,23 @@ fn build_tree(td: &tempfile::TempDir, env: &str, seed: Option<&[Value]>) {
     )
     .unwrap();
     copy_template(&template_dir(), &main.join("fw"));
+    if let Value::Object(over) = screen_params {
+        let path = main.join("fw/screen/config.json");
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let mut cfg: Value = meclaw_core::serde_json::from_str(&raw).unwrap();
+        for (k, v) in over {
+            assert!(
+                cfg["params"].get(&k).is_some(),
+                "screen has no param {k} to override (GH #294 refuses one that does not exist)"
+            );
+            cfg["params"][k] = v;
+        }
+        std::fs::write(
+            &path,
+            meclaw_core::serde_json::to_string_pretty(&cfg).unwrap(),
+        )
+        .unwrap();
+    }
     if let Some(rows) = seed {
         let mut out = String::from(RULE_SCHEMA);
         for r in rows {
@@ -750,7 +749,7 @@ async fn the_shipped_seed_admits_a_clean_turn_unchanged() {
     // firewall must screen something on its first turn without bricking the
     // tree it was dropped into. This is the second half of that -- an ordinary
     // turn is untouched by the row that fires for the injection literal.
-    build_tree(&td, "", None);
+    build_tree(&td, json!({}), None);
     let (h, mut sink_rx, mut park_rx) = boot(&td).await;
 
     let msg = turn_at("hello there", "42", &t_plus(0));
@@ -783,7 +782,7 @@ async fn a_blocked_pattern_never_reaches_the_agent() {
     let td = tempfile::TempDir::new().unwrap();
     build_tree(
         &td,
-        "",
+        json!({}),
         Some(&[seed_row(
             "block-injection",
             "substring",
@@ -831,7 +830,7 @@ async fn the_rule_set_is_editable_without_touching_cell_code() {
     // only the row changes between the two verdicts below.
     build_tree(
         &td,
-        "",
+        json!({}),
         Some(&[seed_row("ban-999", "sender", "user_id", "999", "reject", 0)]),
     );
     let (h, mut sink_rx, mut park_rx) = boot(&td).await;
@@ -876,7 +875,7 @@ async fn the_rate_limit_counts_stamped_arrivals_and_the_window_expires() {
     let td = tempfile::TempDir::new().unwrap();
     build_tree(
         &td,
-        "FIREWALL_RATE_MAX=2\nFIREWALL_RATE_WINDOW_MS=60000\n",
+        json!({"firewall_rate_max": 2, "firewall_rate_window_ms": 60000}),
         Some(&[]),
     );
     let (h, mut sink_rx, mut park_rx) = boot(&td).await;
@@ -1097,7 +1096,7 @@ fn the_size_cap_still_counts_raw_characters() {
     // padded to 30 characters costs 30, whatever it collapses to. Measuring
     // the collapsed form would let a padded body buy budget it did not pay for.
     let padded = format!("hi{}", " ".repeat(28));
-    let out = emit_with(&[("FIREWALL_MAX_CHARS", "20")], inbound(&padded, "42"));
+    let out = emit_with(json!({"firewall_max_chars": 20}), inbound(&padded, "42"));
     assert_reject(&out, "oversize", "size-cap");
 }
 
@@ -1310,7 +1309,7 @@ async fn the_live_seed_rule_blocks_its_pattern_in_a_booted_colony() {
     // with the SHIPPED seed and watches the intake stay silent. Nothing is
     // seeded by the test -- the rejection comes out of the file that ships.
     let td = tempfile::TempDir::new().unwrap();
-    build_tree(&td, "", None);
+    build_tree(&td, json!({}), None);
     let (h, mut sink_rx, mut park_rx) = boot(&td).await;
 
     h.send(turn_at(

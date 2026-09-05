@@ -218,8 +218,7 @@ fn build_root(root: &std::path::Path) {
          TELEGRAM_BOT_TOKEN=test-token\n\
          TELEGRAM_BOT_TOKEN_2=test-token-2\n\
          TELEGRAM_ALLOWED_USER_ID=0\n\
-         EXAMPLE_CHAT_TOKEN=test-chat-token\n\
-         KEEPER_NIGHT_CRON=0 0 0 1 1 *\n",
+         EXAMPLE_CHAT_TOKEN=test-chat-token\n",
     )
     .unwrap();
 }
@@ -429,17 +428,25 @@ fn rendered_levels() -> Vec<Value> {
     wishes
         .into_iter()
         .map(|params| {
-            let out = meclaw_testing::emit_one(
+            // The FIRST manifest. Since GH #543 a member wish renders two —
+            // the level, and then the screen and the app that member always
+            // gets — and what this file compares against the four shipped
+            // declarations is the level.
+            let out = meclaw_testing::emit_all(
                 &script,
                 &json!({
                     "target": "/os/builder/recipes",
-                    "header": {"hop": {"route": "recipe"}, "context": {}},
+                    "header": {"hop": {"route": "recipe", "member_index": "0"},
+                               "context": {}},
                     "ttl": 64,
                     "messages": [{"origin": "tool", "type": "tool_result", "id": "",
                         "text": json!({"recipe": "grow_level", "request": "…",
                                        "params": params}).to_string()}],
                 }),
-            );
+            )
+            .into_iter()
+            .find(|m| m["header"]["operation"] == json!("recipe"))
+            .expect("the fast lane answered no manifest at all");
             assert!(
                 out["header"]["error_code"].is_null(),
                 "the fast lane refused a level it is supposed to render: {out}"
@@ -578,8 +585,8 @@ async fn a_rendered_level_is_addressable_from_its_container_and_answers_back() {
         .count();
     assert_eq!(
         (down, up),
-        (6, 12),
-        "the person is not wired the way the level wires one — six doors down          (in_turn, in_recall, in_brief, in_propose, in_build_result, in_export),          twelve exits back up — `bundle` since GH #533, the answer to the question the second of those doors takes; a level reached by a door with no exit is a level          that answers into nothing, and a level with no in_export door cannot be          asked for its memory at all (GH #470)"
+        (7, 13),
+        "the person is not wired the way the level wires one — seven doors down          (in_turn, in_recall, in_brief, in_propose, in_build_result, in_export and,          since GH #553, mutation_committed — the mutation door's receipt, which          every child of a container hears because it carries no context to be          addressed by), thirteen exits back up — `bundle` since GH #533, the answer to the question the second of those doors takes, and `dump` since GH #555, the receipt of an applied import part, which used to end inside the member in a cell that read it and said nothing; a level reached by a door with no exit is a level          that answers into nothing, and a level with no in_export door cannot be          asked for its memory at all (GH #470)"
     );
     assert!(
         drawn.rows.iter().any(|r| r.path.starts_with(&alex)),

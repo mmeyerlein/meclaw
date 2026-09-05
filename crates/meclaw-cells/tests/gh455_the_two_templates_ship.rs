@@ -51,7 +51,6 @@ const COLONY_VIEW_FILES: &[&str] = &[
     "config.json",
     "template.json",
     "README.md",
-    "refresh/config.json",
     "probe/config.json",
     "probe/probe.py",
     "layout/config.json",
@@ -168,8 +167,12 @@ fn the_app_is_sealed_and_states_two_lanes() {
     assert_eq!(cfg["cell"]["type"], "hive");
     assert_eq!(cfg["params"]["ports"], meclaw_core::serde_json::json!([]));
 
+    // Two ways in since GH #553, and they are not the same statement: the app
+    // is ASKED to redraw (`in_refresh`, an operator gesture), or it HEARS that
+    // the graph moved (`mutation_committed`, the receipt that replaced the
+    // one-minute poll). One way out, unchanged.
     let (accepts, emits) = lanes(&cfg);
-    assert_eq!(accepts, vec!["in_refresh"]);
+    assert_eq!(accepts, vec!["in_refresh", "mutation_committed"]);
     assert_eq!(emits, vec!["view"]);
 }
 

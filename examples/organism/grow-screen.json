@@ -5,31 +5,31 @@
       "diff": {
         "add_nodes": [
           {
-            "name": "display-desk",
+            "name": "display",
             "template": "display@1.0.2",
             "override_params": {
               "web": {
-                "port": 7902
+                "port": 7900
               }
             }
           }
         ],
         "add_edges": [
           {
-            "from": "./display-desk",
+            "from": "./display",
             "to": ".",
             "condition": "has(hop.route) && (hop.route == 'event' || hop.route == 'receipt')",
             "modifier": {
               "set_context": {
-                "channel_node": "'display-desk'",
-                "channel": "'display-desk'"
+                "channel_node": "'display'",
+                "channel": "'display'"
               }
             }
           },
           {
             "from": ".",
-            "to": "./display-desk",
-            "condition": "has(hop.route) && (hop.route == 'answer' || hop.route == 'view') && has(context.channel_node) && context.channel_node == 'display-desk'",
+            "to": "./display",
+            "condition": "has(hop.route) && (hop.route == 'answer' || hop.route == 'view') && has(context.channel_node) && context.channel_node == 'display'",
             "modifier": {
               "set_hop": {
                 "route": "'in_view'"
@@ -45,7 +45,7 @@
         "add_nodes": [
           {
             "name": "colony-view",
-            "template": "colony-view@1.0.2"
+            "template": "colony-view@1.1.0"
           }
         ],
         "add_edges": [
@@ -55,8 +55,8 @@
             "condition": "has(hop.route) && (hop.route == 'view' || hop.route == 'error')",
             "modifier": {
               "set_context": {
-                "channel_node": "'display-desk'",
-                "channel": "'display-desk'"
+                "channel_node": "'display'",
+                "channel": "'display'"
               }
             }
           },
@@ -64,18 +64,11 @@
             "from": ".",
             "to": "./colony-view",
             "condition": "has(hop.route) && (hop.route == 'event' || hop.route == 'receipt') && has(hop.owner) && hop.owner.contains('/apps/colony-view/')"
-          }
-        ]
-      }
-    },
-    {
-      "scope": "/os/orgs/acme/members/alex/assistants",
-      "diff": {
-        "add_edges": [
+          },
           {
             "from": ".",
-            "to": "./scribe",
-            "condition": "has(hop.route) && hop.route == 'in_turn' && has(hop.owner) && hop.owner.contains('/assistants/scribe/')"
+            "to": "./colony-view",
+            "condition": "has(hop.route) && hop.route == 'mutation_committed'"
           }
         ]
       }

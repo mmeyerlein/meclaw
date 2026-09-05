@@ -71,6 +71,48 @@ pub fn refuse_unknown_diff_keys(diff: &JsonValue) -> Result<(), MutationError> {
     )))
 }
 
+/// GH #581 — the single-declaration door refuses a MANIFEST body by name.
+///
+/// `handle_mutation` reads its work from `payload["diff"]` and treats an absent
+/// key as the EMPTY diff. A manifest body — `{"manifest": [ … ]}` — carries no
+/// `diff`, so every step below had nothing to do and the door answered
+/// `committed` for a colony it never changed. `refuse_unknown_diff_keys` could
+/// not catch it: that check looks INSIDE the diff and never sees a top-level
+/// key.
+///
+/// The discriminator is the same one [`crate::mutation::ManifestBody::detect`]
+/// uses on the other side of the same wall — the presence of `manifest`, and
+/// nothing else. Any other top-level key stays ignored exactly as it always was
+/// (pinned by `gh422_the_single_mutation_body_does_not_move`); only `manifest`
+/// discriminates, here as there.
+///
+/// A body carrying `manifest` BESIDE `diff`/`scope` is refused too, and for the
+/// reason [`crate::mutation::ManifestError::BothForms`] already gives it: two
+/// intentions in one document, where guessing which one wins is how a mutation
+/// lands somewhere nobody asked for. The single door used to apply the `diff`
+/// half and drop the other without a word.
+///
+/// The token is `schema` — never a new `error_code` (README § Stability). A
+/// body form a door will not apply is what `schema` has always meant, and
+/// `ManifestError::error_code` says the same from the other side.
+///
+/// Pre-destructive by position AND spurless: the caller runs this BEFORE the
+/// mutation id is minted, so the refusal opens no mutation-log row.
+pub fn refuse_manifest_at_the_single_door(payload: &JsonValue) -> Result<(), MutationError> {
+    if payload.get("manifest").is_none() {
+        return Ok(());
+    }
+    Err(MutationError::Schema(
+        "this body carries a top-level `manifest` key, and this is the \
+         single-declaration door, which applies one `diff` and would have \
+         applied none of the manifest's entries. Send a manifest to the \
+         mutation door (`/colony/mutations`), or drop the key and send one \
+         declaration. Refused rather than ignored — a body nothing reads would \
+         have committed without effect."
+            .into(),
+    ))
+}
+
 /// T10 — schema check + template existence.
 ///
 /// T11 extends this with match patterns and naming uniqueness; T11b adds
@@ -1390,6 +1432,7 @@ pub fn validate_post_state_with_templates_scoped(
                 scope,
                 deep_registry_paths,
                 &add_paths,
+                &ct_map,
             )?;
         }
     }
@@ -1629,6 +1672,14 @@ fn collect_add_node_addresses(
     if *cell_type != "hive" && !factories.contains_key(*cell_type) {
         out.push(MutationError::UnknownCellType((*cell_type).into()));
     }
+    // GH #572: the exception above is for a SUBTREE root. A hive-rooted
+    // template with nothing under it is not a subtree — `parse_subtree` says
+    // one cell, so the staging door takes the single-cell path and the apply
+    // arm looks up a factory for `hive` that by design does not exist. Same
+    // fact, same code, the other door.
+    if let Err(error) = reject_if_single_cell_hive_template(entry, template, templates, ct_map) {
+        out.push(error);
+    }
 }
 
 /// GH #293 — stage 4 ([`Stage::PostStateAddresses`]) as a COLLECTING check:
@@ -1802,6 +1853,7 @@ pub fn collect_post_state_addresses(
                 scope,
                 deep_registry_paths,
                 &add_paths,
+                &ct_map,
             ) {
                 refuse(&error, Some(match_name.to_string()));
             }
@@ -1899,6 +1951,59 @@ pub fn collect_template_resolution(
     }
 }
 
+/// GH #572 (ruling O-0904-1) — may this template be instantiated at an address?
+///
+/// A hive is a scope marker in the filesystem, not an actor: it owns no task,
+/// no mailbox and no `cell.db`, and there is no `CellFactory` registered for
+/// the type `"hive"` — by design. Every door that stages a SINGLE cell ends at
+/// that fact, and until this predicate it ended there LATE: the diff validated
+/// clean, a directory was staged, and the apply arm answered
+/// `spawn: factory missing for hive` — an unnamed refusal from the half of the
+/// mutation that is past deciding.
+///
+/// A hive with cells under it is a different thing entirely: the subtree door
+/// stages the whole unit, registers its hive scope, and spawns the cells. So
+/// the refusal is not "no hives" but "no hive ALONE" — a scope marking nothing,
+/// which is why the message names the shape that works.
+///
+/// One predicate serves both instantiating doors (`add_nodes[].template` and
+/// the instantiate form of `swap_nodes[].with`) because it is one question, and
+/// two codes for one fact would be two public surfaces. Stage 4
+/// ([`crate::mutation::rejection::Stage::PostStateAddresses`]): what class the
+/// post-state's address would carry, decided where the door already decides
+/// existence, collision and template form.
+///
+/// `ct_map` is keyed by the RESOLVED template name (`entry.name`), the same key
+/// the level-2 factory check uses. "Alone" is measured the way the staging door
+/// measures it — [`crate::mutation::subtree::parse_subtree`] with `ref` markers
+/// resolved — so the predicate and the machinery it protects cannot disagree
+/// about what a subtree is.
+pub(crate) fn reject_if_single_cell_hive_template(
+    entry: &crate::templates::TemplateEntry,
+    tpl_ref: &str,
+    templates: &crate::templates::TemplatesRegistry,
+    ct_map: &std::collections::HashMap<&str, &str>,
+) -> Result<(), MutationError> {
+    if ct_map.get(entry.name.as_str()).copied() != Some("hive") {
+        return Ok(());
+    }
+    if crate::mutation::subtree::parse_subtree(&entry.filesystem_path, templates)?
+        .cells
+        .len()
+        > 1
+    {
+        return Ok(()); // a subtree: the hive enters as its root, which is the way in
+    }
+    Err(MutationError::HiveTemplateSingleCell(format!(
+        "template '{tpl_ref}': its root is a hive and it has no cells under it, so nothing \
+         about it can be spawned — a hive is a scope marker, not an actor, and no factory \
+         serves the type 'hive'. A hive enters the world as the ROOT of a multi-cell subtree: \
+         put the cells the scope is for into the template and grow it with an `add_nodes` \
+         entry, which stages the subtree and registers its hive scope (a generation change \
+         then names it in `swap_nodes[].with: {{\"name\": …}}`, GH #256). Nothing was staged."
+    )))
+}
+
 /// Paket-2 T1 — Validate a `swap_nodes[].with` object.
 ///
 /// Discriminator: presence of the `template` key.
@@ -1946,6 +2051,7 @@ fn validate_swap_with_entry_full(
     scope: &str,
     deep_registry_paths: &[String],
     add_paths: &[String],
+    ct_map: &std::collections::HashMap<&str, &str>,
 ) -> Result<(), MutationError> {
     let with_obj = with_val
         .as_object()
@@ -1994,6 +2100,12 @@ fn validate_swap_with_entry_full(
 
         // Rule 5b (A6): subtree templates not allowed.
         crate::mutation::stage::reject_if_subtree_template(&entry.filesystem_path, template)?;
+
+        // GH #572: and what is left after that guard may still be a hive with
+        // nothing under it. BEHIND the subtree reject on purpose — a template
+        // whose root is a hive AND which has nested cells is refused here as
+        // `schema` by the line above, and that verdict does not change.
+        reject_if_single_cell_hive_template(entry, template, templates, ct_map)?;
     } else if has_template {
         // ── `template` without `name` ────────────────────────────────────
         // The instantiate form REQUIRES `name` (paket-2 graph-swap: t3 needs an
@@ -2193,6 +2305,78 @@ pub fn remove_edges_targets(
         }
     }
     out
+}
+
+/// GH #574 — the five routing terms of ONE `add_edges[]` diff entry, read
+/// exactly once.
+///
+/// Every door that has to decide whether two edges are "the same edge to the
+/// table" reads the same five terms off the same diff entry: the two endpoints
+/// resolved against the mutation scope, the raw condition string, the modifier
+/// spec reconstructed by [`crate::mutation::modifier_spec_from_add_entry`] and
+/// serialised the way the stored edge carries it, and the routing phase. Before
+/// this function each door spelled that reading out by hand, so a change to one
+/// term (the phase joined the identity in GH #283) had to be made in every copy
+/// or the doors quietly disagreed.
+///
+/// `None` means the entry has no usable `from`/`to` pair — a shape earlier
+/// stages refuse — and is what the callers used to express as `continue`.
+#[must_use]
+pub fn add_entry_match_view(scope: &str, entry: &JsonValue) -> Option<EdgeMatchView> {
+    let from = entry.get("from").and_then(|v| v.as_str())?;
+    let to = entry.get("to").and_then(|v| v.as_str())?;
+    Some(EdgeMatchView {
+        from: crate::mutation::resolve_scoped_path(scope, from)
+            .as_str()
+            .to_string(),
+        to: crate::mutation::resolve_scoped_path(scope, to)
+            .as_str()
+            .to_string(),
+        condition_source: entry
+            .get("condition")
+            .and_then(|v| v.as_str())
+            .map(std::string::ToString::to_string),
+        modifier_source: crate::mutation::modifier_spec_from_add_entry(entry)
+            .and_then(|spec| meclaw_core::serde_json::to_value(&spec).ok()),
+        is_default: entry
+            .get("default")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+    })
+}
+
+/// GH #574 — the sentence fragment with which every lane refusal names what a
+/// side declared.
+///
+/// Both Stage-6 lane checks build the same half-sentence, and the wording is
+/// asserted verbatim by `gh559_a_v_lane_is_a_declared_deep_edge`: a caller
+/// cannot see from the outside which of two identical-looking edges carries
+/// which lane, so the refusal says it for both sides in the same words.
+#[must_use]
+pub fn lane_says(lane: Option<&str>) -> String {
+    lane.map_or_else(
+        || "declares no lane".to_string(),
+        |l| format!("declares lane '{l}'"),
+    )
+}
+
+/// GH #574 — [`edge_identity_equal`] with both sides already read into a view.
+///
+/// The six-argument form exists because one side is usually a live edge and the
+/// other a set of loose terms. Where both sides are views — a diff entry against
+/// a standing edge, or two entries of the same diff — this is the same predicate
+/// without the caller having to unpack one of them term by term, which is
+/// precisely where a term used to get dropped.
+#[must_use]
+pub fn edge_identity_equal_views(a: &EdgeMatchView, b: &EdgeMatchView) -> bool {
+    edge_identity_equal(
+        a,
+        b.from.as_str(),
+        b.to.as_str(),
+        b.condition_source.as_deref(),
+        b.modifier_source.as_ref(),
+        b.is_default,
+    )
 }
 
 /// GH #559 — the same F6 comparison with EVERY term constrained: the identity
@@ -4847,6 +5031,57 @@ mod tests {
         );
     }
 
+    /// GH #572 (ruling O-0904-1): instantiate form whose template is a hive
+    /// with NOTHING under it → refused by name, at stage 4.
+    ///
+    /// The template dir carries a hive root and no nested cell directory, so
+    /// the subtree guard one line above lets it through: this is the shape that
+    /// used to validate clean and die in the apply arm as
+    /// `spawn: factory missing for hive`.
+    #[test]
+    fn swap_nodes_instantiate_hive_template_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tpl_dir = tmp.path().to_path_buf();
+        std::fs::write(tpl_dir.join("template.json"), r#"{"name":"hive_tpl"}"#).unwrap();
+        std::fs::write(
+            tpl_dir.join("config.json"),
+            r#"{"cell":{"type":"hive"},"params":{}}"#,
+        )
+        .unwrap();
+
+        let templates = crate::templates::TemplatesRegistry::from_entries(vec![
+            crate::templates::TemplateEntry {
+                template_id: "h1".into(),
+                name: "hive_tpl".into(),
+                version: None,
+                filesystem_path: tpl_dir,
+            },
+        ]);
+        let factories = CellFactoryRegistry::new();
+        let diff = json!({"swap_nodes": [
+            {"match": {"name": "t2"}, "with": {"template": "hive_tpl", "name": "t3_fresh"}}
+        ]});
+        let registry_names: Vec<String> = vec!["t2".into()];
+        let err = validate_post_state_with_templates(
+            &diff,
+            &templates,
+            &factories,
+            &registry_names,
+            &[],
+            &[("hive_tpl".into(), "hive".into())],
+            &[],
+            &[],
+            &[],
+            &[],
+        )
+        .unwrap_err();
+        assert_eq!(
+            err.error_code(),
+            "hive_template_single_cell",
+            "a hive alone has no factory and no way in, got {err:?}"
+        );
+    }
+
     /// Rule 5 (A6 subtree-guard): instantiate form whose template resolves to a
     /// SUBTREE template → schema error.
     ///
@@ -4955,6 +5190,7 @@ mod tests {
             "/",
             &[],
             &[],
+            &std::collections::HashMap::new(),
         );
         assert!(
             result.is_ok(),
@@ -4972,6 +5208,7 @@ mod tests {
             "/",
             &[],
             &[],
+            &std::collections::HashMap::new(),
         )
         .unwrap_err();
         assert_eq!(
@@ -6648,5 +6885,76 @@ mod tests {
             panic!("expected RequirementMissing, got {err:?}");
         };
         assert!(msg.contains("api_key"), "refusal must name the key: {msg}");
+    }
+    /// GH #574 — `add_entry_match_view` reads the five routing terms of an
+    /// `add_edges[]` entry exactly like the two Stage-6 sites used to read them
+    /// by hand: scope-resolved endpoints, the raw condition string, the
+    /// reconstructed modifier spec as JSON, and the routing phase.
+    #[test]
+    fn add_entry_match_view_reads_the_five_routing_terms() {
+        let entry = json!({
+            "from": "a",
+            "to": "b",
+            "condition": "body.kind == 'x'",
+            "modifier": {"set_route": "recall"},
+            "default": true,
+            "lane": "recall"
+        });
+        let view = add_entry_match_view("/org", &entry).expect("from and to are present");
+        assert_eq!(view.from, "/org/a");
+        assert_eq!(view.to, "/org/b");
+        assert_eq!(view.condition_source.as_deref(), Some("body.kind == 'x'"));
+        assert!(view.is_default);
+        let expected = crate::mutation::modifier_spec_from_add_entry(&entry)
+            .and_then(|spec| meclaw_core::serde_json::to_value(&spec).ok());
+        assert_eq!(
+            view.modifier_source, expected,
+            "the view must carry the SAME modifier reading the apply arm uses"
+        );
+    }
+
+    /// GH #574 — an entry without `from`/`to` yields `None`, which is what the
+    /// two Stage-6 loops used to express as `continue` ("a shape earlier stages
+    /// refuse").
+    #[test]
+    fn add_entry_match_view_is_none_without_endpoints() {
+        assert!(add_entry_match_view("/", &json!({"to": "b"})).is_none());
+        assert!(add_entry_match_view("/", &json!({"from": "a"})).is_none());
+        assert!(add_entry_match_view("/", &json!({"from": 1, "to": "b"})).is_none());
+    }
+
+    /// GH #574 — `lane_says` is the ONE wording both Stage-6 refusals speak.
+    /// The exact strings are pinned by `gh559_a_v_lane_is_a_declared_deep_edge`.
+    #[test]
+    fn lane_says_speaks_one_wording() {
+        assert_eq!(lane_says(None), "declares no lane");
+        assert_eq!(lane_says(Some("recall")), "declares lane 'recall'");
+    }
+
+    /// GH #574 — the two-view form of the identity agrees term by term with the
+    /// six-argument form it wraps.
+    #[test]
+    fn edge_identity_equal_views_agrees_with_the_term_form() {
+        let a = add_entry_match_view("/", &json!({"from": "a", "to": "b"})).unwrap();
+        let same = add_entry_match_view("/", &json!({"from": "a", "to": "b"})).unwrap();
+        let other_phase =
+            add_entry_match_view("/", &json!({"from": "a", "to": "b", "default": true})).unwrap();
+        let other_cond =
+            add_entry_match_view("/", &json!({"from": "a", "to": "b", "condition": "x"})).unwrap();
+        assert!(edge_identity_equal_views(&a, &same));
+        assert!(!edge_identity_equal_views(&a, &other_phase));
+        assert!(!edge_identity_equal_views(&a, &other_cond));
+        assert_eq!(
+            edge_identity_equal_views(&a, &other_cond),
+            edge_identity_equal(
+                &a,
+                other_cond.from.as_str(),
+                other_cond.to.as_str(),
+                other_cond.condition_source.as_deref(),
+                other_cond.modifier_source.as_ref(),
+                other_cond.is_default,
+            ),
+            "the wrapper must not invent a second identity"
+        );
     }
 }

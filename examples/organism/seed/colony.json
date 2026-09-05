@@ -1,4 +1,7 @@
 {
   "schema_version": 1,
-  "message_default_ttl": 64
+  "message_default_ttl": 64,
+  "mutation_receipts": {
+    "to": "/os"
+  }
 }

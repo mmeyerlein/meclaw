@@ -10,8 +10,14 @@
 //! template lifts it into a clean, reusable cell. Three claims are pinned:
 //!
 //! 1. TRANSLATION -- the LAST non-empty assistant text turn becomes
-//!    `{operation: insert, table: ${ARCHIVE_TABLE:-archive}, row: {id, text,
+//!    `{operation: insert, table: <params.archive_table>, row: {id, text,
 //!    recorded_at}}` on route 'store', with a fresh `archive-` tool_call id.
+//!    Since `archive-bridge@1.1.0` that table is a PARAM and not an
+//!    `${ARCHIVE_TABLE}` token (GH #138, ruling R-0904-6), so the knob half of
+//!    this file hands it down the way a mutation does -- on the stdin
+//!    document's `params` object for the script half, in the instance
+//!    `config.json` for the colony half. A `.env` line would be read by
+//!    nothing and would say nothing about it.
 //! 2. THE ECHO DIES HERE, QUIETLY AND ON PURPOSE -- the store answers every
 //!    insert with a tool_result under the same id; that echo has nowhere to go
 //!    and would dead-letter (or loop) in every wiring that does not drain it.
@@ -39,43 +45,16 @@ const BRIDGE_CONFIG: &str = "../../templates/archive-bridge/config.json";
 
 // ======================================================================= SCRIPT
 
-/// `${VAR:-default}` becomes the default (or the override, when the case names
-/// one) -- the same substitution the colony performs at boot.
-fn resolve_vars(script: &str, over: &[(&str, &str)]) -> String {
-    let mut out = String::with_capacity(script.len());
-    let mut rest = script;
-    while let Some(start) = rest.find("${") {
-        out.push_str(&rest[..start]);
-        let tail = &rest[start + 2..];
-        let end = tail
-            .find('}')
-            .expect("unterminated ${...} in script_inline");
-        let inner = &tail[..end];
-        let (name, default) = match inner.split_once(":-") {
-            Some((n, d)) => (n, d),
-            None => (inner, ""),
-        };
-        let value = over
-            .iter()
-            .find(|(k, _)| *k == name)
-            .map(|(_, v)| *v)
-            .unwrap_or(default);
-        out.push_str(value);
-        rest = &tail[end + 1..];
-    }
-    out.push_str(rest);
-    out
-}
-
-fn bridge_script(over: &[(&str, &str)]) -> String {
+/// The shipped script, verbatim. There is nothing left to resolve: since
+/// GH #138 the one knob is a param, so the script that runs here is the script
+/// on disk, byte for byte.
+fn bridge_script() -> String {
     let raw = std::fs::read_to_string(BRIDGE_CONFIG).expect("archive-bridge config");
     let v: Value = meclaw_core::serde_json::from_str(&raw).expect("config json");
-    resolve_vars(
-        v["params"]["script_inline"]
-            .as_str()
-            .expect("script_inline"),
-        over,
-    )
+    v["params"]["script_inline"]
+        .as_str()
+        .expect("script_inline")
+        .to_string()
 }
 
 /// Run a shipped script over a real stdin document, handing the script to
@@ -113,9 +92,14 @@ fn run_script_on_stdin(script: &str, stdin_doc: &str) -> std::process::Output {
     child.wait_with_output().expect("wait")
 }
 
-fn emit_with(over: &[(&str, &str)], doc: Value) -> Vec<Value> {
+/// Run the shipped script over `doc`, with `params` as the cell's own
+/// configuration -- exactly the object the substrate hands a `code` cell beside
+/// the envelope and the body.
+fn emit_with(params: Value, doc: Value) -> Vec<Value> {
+    let mut doc = doc;
+    doc["params"] = params;
     let out = run_script_on_stdin(
-        &bridge_script(over),
+        &bridge_script(),
         &meclaw_testing::code_stdin(&doc).to_string(),
     );
     assert!(
@@ -132,7 +116,7 @@ fn emit_with(over: &[(&str, &str)], doc: Value) -> Vec<Value> {
 }
 
 fn emit(doc: Value) -> Vec<Value> {
-    emit_with(&[], doc)
+    emit_with(json!({}), doc)
 }
 
 fn doc(messages: Vec<Value>) -> Value {
@@ -192,13 +176,25 @@ fn the_last_assistant_text_turn_wins() {
     assert_eq!(args["row"]["text"], "The answer is 42.");
 }
 
+/// The knob is a PARAM, both ways round: with no params object at all the
+/// shipped default stands (proved by `a_final_answer_becomes_a_store_native_insert`
+/// above), and with one the cell inserts where that one says. Two bridges in
+/// one colony can archive into different tables, which the environment form
+/// could not express (GH #138).
 #[test]
 fn the_table_is_a_knob() {
     let out = emit_with(
-        &[("ARCHIVE_TABLE", "notes")],
+        json!({"archive_table": "notes"}),
         doc(vec![assistant_text("remember this")]),
     );
     assert_eq!(insert_args(&out)["table"], "notes");
+
+    // A blanked name knob keeps the empty string; `null` is "not configured".
+    let out = emit_with(
+        json!({"archive_table": null}),
+        doc(vec![assistant_text("remember this")]),
+    );
+    assert_eq!(insert_args(&out)["table"], "archive");
 }
 
 #[test]
@@ -299,11 +295,23 @@ fn write(root: &std::path::Path, rel: &str, v: &Value) {
     std::fs::write(p, meclaw_core::serde_json::to_string_pretty(v).unwrap()).unwrap();
 }
 
-fn build_tree(td: &tempfile::TempDir, env: &str, table: &str) {
+/// Grow the colony. `table` is the store's table AND the bridge's
+/// `params.archive_table` -- since GH #138 the second is written into the
+/// instance `config.json`, which is what a mutation's `override_params` leaves
+/// behind on disk. A `.env` line would be read by nothing.
+fn build_tree(td: &tempfile::TempDir, table: &str) {
     let root = td.path();
-    std::fs::write(root.join(".env"), env).unwrap();
     write(root, "main/config.json", &main_config());
     copy_cells(&template_dir(), &root.join("main/archive"));
+    let bridge = root.join("main/archive/config.json");
+    let mut cfg: Value =
+        meclaw_core::serde_json::from_str(&std::fs::read_to_string(&bridge).unwrap()).unwrap();
+    cfg["params"]["archive_table"] = json!(table);
+    std::fs::write(
+        &bridge,
+        meclaw_core::serde_json::to_string_pretty(&cfg).unwrap(),
+    )
+    .unwrap();
     write(root, "main/keep/config.json", &store_config(table));
 }
 
@@ -345,7 +353,7 @@ fn dlq_count(root: &std::path::Path) -> i64 {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_answer_is_archived_and_the_echo_leaves_no_dead_letter() {
     let td = tempfile::TempDir::new().unwrap();
-    build_tree(&td, "", "archive");
+    build_tree(&td, "archive");
     let (h, _sink_rx, _park_rx) = boot(&td).await;
 
     h.send(answer_message("The answer is 42.")).await;
@@ -375,9 +383,9 @@ async fn an_answer_is_archived_and_the_echo_leaves_no_dead_letter() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_archive_table_knob_reaches_the_store_args() {
     let td = tempfile::TempDir::new().unwrap();
-    // ARCHIVE_TABLE=notes, and the store owns a `notes` table: the knob is
-    // boot-substituted into the shipped script.
-    build_tree(&td, "ARCHIVE_TABLE=notes\n", "notes");
+    // `params.archive_table` is `notes` and the store owns a `notes` table:
+    // the value the cell acts on is the one its own params carry.
+    build_tree(&td, "notes");
     let (h, _sink_rx, _park_rx) = boot(&td).await;
 
     h.send(answer_message("remember this")).await;

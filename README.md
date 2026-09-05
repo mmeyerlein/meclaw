@@ -7,7 +7,7 @@
 **An agentic build system for agentic systems. Ontology-grounded, auditable, one Rust binary.**
 
 [![ci](https://github.com/mmeyerlein/meclaw/actions/workflows/ci.yml/badge.svg)](https://github.com/mmeyerlein/meclaw/actions/workflows/ci.yml)
-[![tests](https://img.shields.io/badge/tests-6500%2B%20passing-brightgreen)](#)
+[![tests](https://img.shields.io/badge/tests-6600%2B%20passing-brightgreen)](#)
 [![rust](https://img.shields.io/badge/rust-edition%202024-orange)](#)
 [![license](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](#license)
 
@@ -170,7 +170,7 @@ colony: 0.32 EUR per day in conversation, method and pinned window in
 
 meclaw is not finished, and it is open source so it does not have to be finished alone.
 Good first contributions: example colonies, template cells, docs drift-fixes — see
-[CONTRIBUTING.md](CONTRIBUTING.md) and the `good first issue` label. **6500+ tests,
+[CONTRIBUTING.md](CONTRIBUTING.md) and the `good first issue` label. **6600+ tests,
 0 fail**; release truth lives in [CHANGELOG.md](CHANGELOG.md).
 
 ## Stability
@@ -196,10 +196,17 @@ While meclaw is on `0.x`, changes to those five are **additive**. A change that 
 existing topology gets its own **Breaking** section in [CHANGELOG.md](CHANGELOG.md),
 naming what breaks and what to do about it — if it is not in that section, it was not
 meant to break you: file an issue. Two carve-outs: the `${KNOB}` environment variables
-the shipped templates read are a declared **experimental** surface migrating onto
-`params` ([#138](https://github.com/mmeyerlein/meclaw/issues/138)), and **the Rust crates
-are internals** — nothing under `crates/` carries a SemVer guarantee, and there is no
-`meclaw` library API.
+the shipped templates read were a declared **experimental** surface, and their migration
+onto `params` is finished in this release
+([#138](https://github.com/mmeyerlein/meclaw/issues/138)) — a behaviour knob is a
+`params` entry now, declared in `contract.settings` and overridable per instance with
+`override_params`, and what stays in `.env` is the provider lane: secrets, model ids and
+endpoints. Two remainders are named rather than hidden: `steward` is deprecated and ships
+one more release unmigrated, and `templates/_cell-types/edit-min` keeps `EDIT_BASE_PATH`,
+which is out of scope by the `_`-prefix rule the tree gate runs under. Both are written
+down in that gate, `scripts/check_tree_rules.py` R6. The second carve-out: **the Rust
+crates are internals** — nothing under `crates/` carries a SemVer guarantee, and there is
+no `meclaw` library API.
 
 ## Docs
 

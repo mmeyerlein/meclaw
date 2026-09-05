@@ -112,7 +112,7 @@ fn the_one_schedule() -> Value {
 fn the_library_holds_a_clock_and_it_is_one_timer_cell() {
     let tpl = json_at("template.json");
     assert_eq!(tpl["name"], json!(TEMPLATE));
-    assert_eq!(tpl["version"], json!("1.0.0"));
+    assert_eq!(tpl["version"], json!("1.0.1"));
     for slot in ["purpose", "use_when", "not_in_scope", "examples"] {
         assert!(
             !tpl["description"][slot].is_null(),
@@ -385,7 +385,7 @@ async fn a_manifest_can_give_a_running_colony_a_periodic_tick() {
     let outcome = mutate(
         &h,
         json!({"scope": "/", "diff": {
-            "add_nodes": [{"name": "sweeper", "template": "clock@1.0.0",
+            "add_nodes": [{"name": "sweeper", "template": "clock@1.0.1",
                 "override_params": {"schedules": [{
                     "schedule_id": schedule_key(), "schedule_name": "tick",
                     "cron": "* * * * * *", "emit_to": ".",

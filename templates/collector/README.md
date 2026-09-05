@@ -1,8 +1,9 @@
-# `collector@3.5.0`
+# `collector@4.0.0`
 
-Context assembly as a hive of existing cell types -- no new cell type, no Rust. Three cells:
-`assemble` (a `code` cell, the state machine), `window` (a `store` cell, the state) and,
-since `3.3.0`, `menu-clock` (a `timer`, the one question this hive asks of its own accord).
+Context assembly as a hive of existing cell types -- no new cell type, no Rust. Two cells:
+`assemble` (a `code` cell, the state machine) and `window` (a `store` cell, the state). The
+one question this hive asks of its own accord -- the tool menu -- is asked on `mutation_committed`,
+the mutation receipt the level above carries in; since `4.0.0` there is no timer in here.
 
 The collector is the orchestrator of one agent's context window. It decides **what enters
 the window and what leaves it**, in one place, and hands the result to the brain over
@@ -28,12 +29,16 @@ the window and what leaves it**, in one place, and hands the result to the brain
   `system.memory` is the **revocation** of the slot the bundle used to occupy, and nothing
   else. The collector renders nothing of its own; it only chooses which of the two forms
   the memory hive emitted travels on, and how much of it.
-- **A memory the model can ask itself.** That ambient leg is fired before the model has
-  seen the turn, so nothing in an agent could ever *decide* to ask about a **time range**
-  (GH #78). The `in_memory_call` lane closes it: the brain emits a `memory_recall`
-  `tool_call`, the dispatcher routes it by name like any other tool, and the cell behind
-  that edge is the collector -- which serves the call on the recall port it already owns
-  and answers it under the original `tool_call_id`. The round ends where it began.
+- **A memory the model can ask itself -- and it is not this cell's to answer** (`4.0.0`,
+  [#552](https://github.com/mmeyerlein/meclaw/issues/552)). The ambient leg is fired before
+  the model has seen the turn, so nothing in an agent could ever *decide* to ask about a
+  **time range** (GH #78). A `memory_recall` tool call closes that half. It was served
+  HERE from GH #78 to `collector@3.5.0`, on the recall port this cell already owns, under a
+  schema this cell had typed by hand as a projection of the memory hive's own `in_query`
+  contract -- and a cell that answers a call whose rules it cannot enforce will drift from
+  them. The hive declares and answers the name now; the lane `in_memory_call` and the
+  setting `memory_call_tier` are gone, and what is left here is the ambient leg, which asks
+  a different question at a different time.
 - **The tool round, fanned back in.** The store-backed fan-in of the example pattern, with
   one difference that matters: the re-entry carries the conversation window and the memory
   bundle with it, because the round is assembled at the same place the context is.
@@ -72,7 +77,6 @@ the window and what leaves it**, in one place, and hands the result to the brain
 |---|---|---|
 | `assemble` | `code` | the whole state machine: thirteen entry lanes plus the internal `in_menu_tick`, the fan-in gate, the eviction policy, the seam, the round-robustness exits, the prune chain |
 | `window` | `store` | `turns` (the rolling conversation) and `round` (the per-turn slate: the assembled legs plus the tool round) -- both carry `session_id`, which is what makes them readable as a whole session at close time, and write times, which is what makes them prunable. Plus `batched`, the delivery ledger of the close lane, and -- since `3.4.0` -- `menu`, one row per answerer, which is the memory the tool menu is merged out of (GH #529). |
-| `menu-clock` | `timer` | the one question this hive asks of its own accord (GH #464): a tick into `./assemble` that makes it ask the tools hive for the declarations of the tools `params.tools` names. It sends, it decides nothing. |
 
 ## Ports
 
@@ -90,10 +94,9 @@ message context.
 |---|---|---|
 | `in_turn` | the inbound surface (proxy, intake) | writes the turn, opens the assembly, asks memory |
 | `in_advice` | an async tool's return lane (an advisor core), carrying `context.consult_id` | the SAME chain as `in_turn`, filed under role `advice`: an event that arrives after its turn ended and opens a fresh round |
-| `in_bundle` | the memory hive's recall port | becomes the memory leg of this turn -- **or**, when the request carried a `memory_call_id`, the tool result of a `memory_recall` call |
+| `in_bundle` | the memory hive's recall port | becomes the memory leg of this turn. ONE meaning since `4.0.0` -- it carried a second, the tool result of a `memory_recall` call, told apart by a `memory_call_id` the request carried out ([#552](https://github.com/mmeyerlein/meclaw/issues/552)) |
 | `in_calls` | the tool dispatcher | the assistant `tool_call` turn of the round; `hop.async_calls` names the ids this fan-in must **not** wait for |
 | `in_tool` | a tool cell | one tool result: **every** `tool_result` turn of its `messages[]`, each filed under the call id it answers. See "What a tool result may carry" below |
-| `in_memory_call` | the tool dispatcher, on `hop.tool_name == 'memory_recall'` | the memory tool: the collector serves the call itself (GH #78) |
 | `in_thread_call` | the tool dispatcher, on `hop.tool_name == 'thread_recall'` | the thread tool: brings an elided payload of THIS turn back, uncapped, out of the collector's own slate (wave 11) |
 | `in_answer` | the brain, on `finish_reason == 'stop'` | writes the answer into the window and lets it out |
 | `in_close` | the session keeper, on `hop.route == 'close'` | reads the whole session back and batches it out |
@@ -101,6 +104,7 @@ message context.
 | `in_round_sweep` | a timer or an operator, on `hop.route == 'sweep'` | re-checks every open tool round and closes the stale ones; equally **never fired by the template itself** |
 | `in_pack` | whatever curates this agent's identity -- `affinity`'s push lane is the worked example | a durable `system.*` slot for the brain: `identity`, `persona`, `handover` or `instructions`, and nothing else. The one lane that carries state meant to OUTLIVE the round. See "The door in the wall" below |
 | `in_menu` | the tools hive this agent's tools live in, answering on `tool_schemas` | the declarations of the tools this agent DECLARED it uses: `schemas[]` and the names the hive had nothing under. Since `3.4.0` the answer is filed under `context.tool_answerer` as ONE row of the `menu` table and the menu is re-derived as the union over every answerer's row (GH #529). See "The menu is asked for" below |
+| `mutation_committed` | the level above, carrying the mutation door's receipt (GH #553) | the occasion to ask for the menu again. The hive's own door turns it into the internal `in_menu_tick`, which is why nothing outside ever names that lane. It replaced `./menu-clock`, a five-minute poll |
 
 Exits leave **from the hive path** on `hop.route`:
 
@@ -108,7 +112,7 @@ Exits leave **from the hive path** on `hop.route`:
 |---|---|---|
 | `brain` | the agent LLM | THE seam. Promote `hop.turn_id`, `hop.session_id` and `hop.iter` to context on this edge. `system.consult.open` carries the correlation ids of the advice turns still in the window -- **always**, empty included (`collector@2.0.3`): the `llm` cell upserts `system.*` per slot path, so a path that is not sent is a path that is not touched, and a slot that is only ever set keeps naming a consultation that closed long ago. `system.memory` follows the same rule and, since `collector@2.1.0`, carries nothing but that rule: the bundle itself is no longer anywhere in that subtree (GH #278) -- it travels as the `memory_recall` tool result at the end of `messages[]`. What the collector still sends there on every turn is the revocation, unconditionally and no longer tied to `memory_form`: an empty `text` on the FIXED path `system.memory.recall`, which clears a bundle an older collector may have left standing and contributes nothing to the system prompt, plus the `"$replace": true` marker on the whole `system.memory` node (`collector@2.0.4`, GH #264), which is what lets it revoke the `json` form's keys -- named by the memory hive per bundle, and therefore nameable by no fixed path. **Consequence for an `llm` cell with a `system_writable` allowlist, unchanged by the move**: the allowlist must carry `memory` as a prefix -- the replace ROOT is checked too, and `memory.recall` alone does not suffice. Since wave 11 it also reports what the curator did: `hop.tokens_window`, `hop.tokens_projected`, `hop.tokens_estimated`, `hop.curate_mark`, `hop.curate_stage`, `hop.curate_elided`, `hop.curate_saved`. |
 | `answer` | the reply sink | the brain's final turn, after it is in the window -- **or** a turn that reached `max_iter`, marked `hop.round_capped=1` **and**, since `collector@3.5.0`, `hop.partial=1`, whose last turn is a named PARTIAL ANSWER rather than the raw end of the tool round (see "A capped round is a partial answer") -- **or**, since `collector@2.1.1`, a turn that could not be assembled because the store refused, marked `hop.degraded=1` with `hop.store_error` and `hop.store_operation` beside it (see "When the store says no") |
-| `recall` | the memory hive's recall port | the per-turn leg (only when `memory_tier` is set) **and** every `memory_recall` call; promote `recall_query`, `memory_tier`, `memory_call_id`, `recall_window_from`, `recall_window_to`, `session_id`, `turn_id`, `iter` |
+| `recall` | the memory hive's recall port | the per-turn leg, and only that (`memory_tier` set); promote `recall_query`, `memory_tier`, `recall_window_from`, `recall_window_to`, `session_id`, `turn_id`, `iter`. A `memory_recall` CALL does not travel here since `4.0.0` -- it leaves the composite on the ordinary `tool` lane and the memory answers it ([#552](https://github.com/mmeyerlein/meclaw/issues/552)) |
 | `write` | wherever a closed session belongs | one batch per close: `messages[]` the whole conversation, the raw round rows in the top-level slot `rounds`. `messages[]` is what a PARTICIPANT said and nothing else (GH #282) -- interim answers, `advice` rows and any other role stay in the window; `origin` comes from an explicit `user`/`assistant` mapping, never from a fallback. See "Per-turn episodes" below. |
 | `turn_write` | a memory hive's episode lane | **one message per turn, never a batch** (GH #298): after every stored turn and every stored answer, every turn of the session that has not been written yet leaves as its own message -- one `user`/`assistant` turn in `messages[]`, `hop.turn_id` = `<session_id>#<index>`, `hop.turn_index` and `hop.happened_at` beside it. Filtered and attributed by the same rule as `write`, but **not the same document**: `write` is a closed day with its `rounds`, this is a turn. On by default. See "Per-turn episodes" below. |
 | `prune` | a log sink or the operator surface | one report per pruned session (`hop.session_id`, `hop.pruned_turns`, `hop.pruned_rounds`, `hop.prune_boundary`) -- or a single zero report when nothing was eligible -- or, since `collector@2.1.1`, a zero report marked `hop.degraded=1` because the store refused one of the prune chain's own reads or deletes |
@@ -185,8 +189,9 @@ Two consequences, both deliberate:
   stopped answering -- and nothing in the prompt says so; and `system.*` is out of the
   curator's reach, so the bytes of the one payload that grows with an agent's memory were
   counted as an anonymous lump of `sys_chars` that no stage could attribute to anything.
-  The bundle now travels as the `memory_recall` `tool_result` of its own round -- the
-  channel this hive already served on `in_memory_call` (GH #78) -- where it is evidence
+  The bundle now travels as the `memory_recall` `tool_result` of its own round -- under the
+  name the member's own memory serves since [#552](https://github.com/mmeyerlein/meclaw/issues/552),
+  so a model that reacts to it by calling the tool itself reaches a real cell -- where it is evidence
   under a name, expires with the round it was fetched for, and is counted item by item
   beside every other result. The `in_bundle` lane still keeps `system`, because that is how
   the bundle reaches this cell at all; what changed is where it goes from here.
@@ -217,13 +222,12 @@ for how to retune one, and for what `override_params` can and cannot do).
 | `turn_chars` | `4000` | per-turn character cap applied before the byte cap, so one pathological turn cannot eat the window. |
 | `tool_chars` | `4000` | per-item character cap on tool **result** texts before they enter the seam. |
 | `round_bytes` | `16000` | byte cap over the whole tool round, counted from the newest iteration backwards. What does not fit falls as a whole **iteration**. |
-| `memory_chars` | `8000` | character cap on the memory bundle **where the bundle travels**: the synthetic `memory_recall` tool result. ONE cap over the whole result text, so under `memory_form: both` it bounds the readable block and the machine-readable form *together* rather than each of them separately. `hop.memory_capped` is measured on that result. |
+| `memory_chars` | `8000` | character cap on the memory bundle **where the bundle travels**: the synthetic `memory_recall` tool result of the AMBIENT leg. ONE cap over the whole result text, so under `memory_form: both` it bounds the readable block and the machine-readable form *together* rather than each of them separately. `hop.memory_capped` is measured on that result. The tool leg has a cap of its own, on `memory-hive/tool` (#552). |
 | `max_iter` | `8` | how often a turn may re-enter the brain with a tool round. At the cap the seam leaves on `answer` instead, with `hop.partial=1` and a named partial answer as its last turn (`collector@3.5.0`, GH #570). The count belongs to ONE round, and a turn opens one: since [#541](https://github.com/mmeyerlein/meclaw/issues/541) the two turn-opening lanes (`in_turn`, `in_advice`) start at zero whatever `iter` the arrival carried. `in_advice` is the answer lane of another hive's round and carries ITS count -- a core that spent nine iterations used to hand the surface a turn that was over before it began, and the seam left on `answer` with the raw assembled round where the answer belonged, no brain call at all. |
 | `round_idle_ms` | `120000` | idle window of one tool round (two minutes). A round whose last progress is older **and** whose fan-in is incomplete is closed at the next occasion with synthetic error results and fires with `hop.round_stale=1`. |
 | `memory_tier` | `""` | empty = no memory leg at all, and the assembly waits for the window leg alone. `"0"` / `"1"` / `"2"` request that recall tier once per turn, and **the ambient leg arrives as a synthetic `memory_recall` result** at the end of the round -- never as durable system state (`collector@2.1.0`, GH #278). |
-| `memory_form` | `"readable"` | which form of the bundle reaches the brain **in that tool result**: `readable` (the rendered block a model reads), `json` (the machine-readable bundle), `both` (the two joined by a newline, under one call id and one cap). Applies to the ambient leg and to a model's own `memory_recall` call alike. Whatever the form, `system.memory` carries only the revocation -- the empty leaf on the fixed path `recall` plus the `$replace` marker on the node above it (see the `brain` lane, `collector@2.0.4`) -- and both halves are sent unconditionally, no longer chosen by this knob: an instance retuned from `readable` to `json` would otherwise carry its last leaf, or its last keys, for the rest of its life. |
-| `memory_call_tier` | `"1"` | recall tier of the **memory tool** (GH #78). Configuration, never a model argument. Empty switches the tool off: a call is then answered with a typed error result instead of being asked into a void. |
-| `async_tools` | -- | **not a collector knob.** The async class is declared once, at the dispatcher (`DISPATCHER_ASYNC_TOOLS`), and travels as `hop.async_calls`. |
+| `memory_form` | `"readable"` | which form of the bundle reaches the brain **in that tool result**: `readable` (the rendered block a model reads), `json` (the machine-readable bundle), `both` (the two joined by a newline, under one call id and one cap). Applies to the AMBIENT leg alone since `4.0.0` -- a model's own `memory_recall` call is rendered by `memory-hive/tool`, which has a `form` of its own ([#552](https://github.com/mmeyerlein/meclaw/issues/552)). Whatever the form, `system.memory` carries only the revocation -- the empty leaf on the fixed path `recall` plus the `$replace` marker on the node above it (see the `brain` lane, `collector@2.0.4`) -- and both halves are sent unconditionally, no longer chosen by this knob: an instance retuned from `readable` to `json` would otherwise carry its last leaf, or its last keys, for the rest of its life. |
+| `async_tools` | -- | **not a collector knob.** The async class is declared once, at the dispatcher (its own `async_tools` param since `dispatcher@1.2.0`), and travels as `hop.async_calls`. |
 | `prune_after_ms` | `604800000` | age gate on the prune lane (seven days). A session is pruned only when its close batch left **and** that delivery is older than this. |
 | `turn_write` | `"1"` | **on by default since GH #298** -- it is the only path from a conversation into an episodes table, and a shipped "off" would be a shipped agent that remembers nothing. Every stored turn hands out one message per unwritten turn on route `turn_write`. `""` or `"0"` switch it off, and off means nothing said in this session reaches a memory *at all*, not that it reaches one later. Switch it off only where that route is unwired: an unrouted emission per turn is a dead letter per turn. |
 | `inline_extraction` | `""` | **the inline extraction contract** (GH #525). Non-empty writes the shipped block to `system.instructions.sidecar` on every turn assembly -- which is what asks the brain for the ```` ```memory ```` block a memory hive's `in_remember` lane reads. It ships OFF, and that is the one place it differs from `turn_write` one row up: what takes the block back OUT of the answer is a `splitter` between the brain and the dispatcher, and this cell cannot see whether one stands behind it -- asking with nothing cutting leaves a json block in the reader's face on every turn. So the COMPOSITE decides: `talky` cuts the block and switches it on, `cogny` has no splitter and leaves it off. The write carries no `$replace` marker, so a person's charter in `instructions.reply` is untouched, and the leaf name sorts AFTER it on purpose -- an `llm` cell walks a family's leaves alphabetically and the block belongs after the answer it follows. The text is byte-identical to the fence of `templates/memory-hive/inline-contract.md`, which stays the authority. |
@@ -347,7 +351,7 @@ caller that may use it, and no caller can offer a model anything nobody typed.
 own template says it uses -- and the schemas behind those names are **asked for**:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "collector@3.5.0",
+{"add_nodes": [{"name": "scribe", "template": "collector@4.0.0",
                 "override_params": {"assemble": {"tools": ["web_search", "web_fetch"]}}}]}
 ```
 
@@ -371,19 +375,28 @@ a first thing it would be wrong about. This cell knows its provider, so it produ
 `{"type": "function", "function": {...}}` -- the same shape a typed `tool_menu` carries, read
 by the same `fn_of` the curator's stage 4 reads.
 
-**The tick, and why it is a tick.** The substrate hands a cell no message at spawn, so
-nothing can ask "at boot": the first ask is the first firing of `./menu-clock`, a `timer`
-inside this hive whose cadence is `MENU_CRON` (default: every five minutes, UTC). That is
-the honest form and it is also the useful one -- a tool ADDED to the hive by mutation
-reaches this agent at the next tick, and nothing over there had to push, which is exactly
-what that hive's contract says about asking again. An operator who does not want to wait
-sends the timer `{"op": "trigger", "schedule_id": "..."}`.
+**The ask has a cause, and the cause is a mutation.** The substrate hands a cell no message
+at spawn, so nothing can ask "at boot" by itself. What asks is `mutation_committed` -- the receipt
+the mutation door leaves at a hive named in `colony.json` (`mutation_receipts.to`), carried
+down one level at a time until it docks at this hive; the hive's own door turns it into the
+internal `in_menu_tick` and `./assemble` asks the tools hive for the declarations of the
+tools `params.tools` names. **The boot receipt is the first one** (ruling O-0904-2), so an
+agent has its menu before its first turn, and a tool ADDED to the hive by mutation reaches
+this agent with the receipt of that very mutation -- nothing over there has to push, which
+is exactly what that hive's contract says about asking again.
 
-**It is the one schedule this hive has, and that is not a reversal.** The two schedules it
-still refuses -- the prune and the stale-round exit -- would DESTROY or CLOSE somebody's
-turns, and deciding when that happens is an operator's business, not a template's. A menu
-tick creates nothing and destroys nothing: it asks a question whose answer overwrites one
-slot with the same value until something over there changes.
+Until `4.0.0` this was a `timer` inside the hive, `./menu-clock`, ticking every five minutes
+(`MENU_CRON`). It worked, and it was a poll: in an event-driven substrate a question asked
+on a schedule spends availability on an answer that is already known
+([#553](https://github.com/mmeyerlein/meclaw/issues/553)). An operator who wants the menu
+re-asked without changing anything still has a gesture -- a message on `mutation_committed` at this
+hive's own path.
+
+**It is still the one occasion this hive acts on, and that is not a reversal.** The two
+schedules it refuses -- the prune and the stale-round exit -- would DESTROY or CLOSE
+somebody's turns, and deciding when that happens is an operator's business, not a
+template's. A menu ask creates nothing and destroys nothing: it asks a question whose answer
+overwrites one slot with the same value until something over there changes.
 
 **An unknown name is named.** A declared name the hive has nothing under comes back in
 `unknown[]`, lands in `hop.menu_unknown` on the `menu` message, and is written to stderr --
@@ -402,18 +415,24 @@ every round, and the knob is the manual override rather than a second source.
 **And the menu keeps the two tools this hive answers itself** (`3.3.1`, GH #512). Two names
 on a collector's menu are not the parent's: `memory_recall` is served out of this hive's own
 recall port and `thread_recall` out of its own slate, the composite around it routes both
-here BY NAME, and no tools hive has -- or could have -- a declaration for either. They used
-to ship as SEED rows in the brain's `cell.db`. A seed is written once, at birth; the menu
-write is a `$replace`; so the first tick deleted both, and a grown agent lost its memory tool
-minutes into its life while the whole recall chain below it stayed wired and idle.
+here BY NAME, and no tools hive has -- or could have -- a declaration for it. It used
+to ship as a SEED row in the brain's `cell.db`. A seed is written once, at birth; the menu
+write is a `$replace`; so the first tick deleted it, and a grown agent lost its tool
+minutes into its life while the chain below it stayed wired and idle.
 
-The declarations belong to the cell that answers the calls, so this one holds them and adds
-them to every menu it writes. **Which** of the two is not a new knob: it is the two switches
-that already decide whether the lane is answered at all instead of refused with a typed
-error -- `memory_call_tier` (empty = off) and `thread_recall`. A collector that declares a
-tool it would refuse, and one that refuses a tool it declared, are the same defect from two
-sides, and the shipped `cogny` is the worked example of the other side: it routes no
-`memory_recall` edge, so it sets `memory_call_tier` to `""`.
+The declaration belongs to the cell that answers the call, so this one holds it and adds
+it to every menu it writes. **Whether** it does is not a new knob: it is the switch that
+already decides whether the lane is answered at all instead of refused with a typed
+error -- `thread_recall`. A collector that declares a tool it would refuse, and one that
+refuses a tool it declared, are the same defect from two sides.
+
+**`memory_recall` was the second name and left with `collector@4.0.0`**
+([#552](https://github.com/mmeyerlein/meclaw/issues/552)), and it left for exactly the rule
+above read one level out: the schema this cell typed was a projection of the MEMORY HIVE's
+`in_query` contract, and this cell enforces none of the rules that contract states. The hive
+declares it now, on an `in_schemas` lane of its own, and the same menu merge one section
+down files it under a third answerer. Both halves went at once, the switch with the edge, or
+the tree would have had exactly the defect this paragraph names.
 
 Two properties keep the addition honest. It happens **after** the empty-menu guard and never
 instead of it -- the self-served names are not evidence that the hive answered, and a menu
@@ -1009,88 +1028,62 @@ undefined order. Decided behaviour now:
 The check costs the first assembly of every turn one extra store round-trip (open-round
 select), two routing hops -- the tool round itself is unchanged.
 
-### The memory tool (GH #78)
+### The memory tool left this hive (`4.0.0`, [#552](https://github.com/mmeyerlein/meclaw/issues/552))
 
 The per-turn leg above is the **free floor**: it is fired the moment a turn arrives, at a
 fixed tier, before the model has read a word of it. That covers the ambient case and it
 cannot cover the other one -- a question about a **time range**. The recall cell has
 understood `recall_window_from` / `recall_window_to` since P15, but nothing in an agent
 could ever *decide* to send them, because nobody who had seen the turn was ever the one
-asking. The memory tool is that missing producer, and it sits at the **consumer**.
+asking. A `memory_recall` tool call is that missing producer.
 
-**From the dispatcher's side it is a tool like any other.** The brain emits a `tool_call`
-named `memory_recall`, the dispatcher routes it by `hop.tool_name`, and an edge knows the
-cell -- exactly as for a web search. The dispatcher learns nothing: routing is fan-out,
-and this is fan-out. **From the collector's side it is the one tool it serves itself**,
-because it is the memory specialist of this hive already (it owns the recall port for the
-per-turn leg, R-OS-5). So the round ends in the collector and memory never learns a word
-of dispatcher vocabulary (R-OS-2).
+**It was served here from GH #78 to `collector@3.5.0`, and that was the wrong hive.** The
+argument was that this cell is the memory specialist of its composite -- it owns the recall
+port for the per-turn leg (R-OS-5) -- so the round could end where it began (R-OS-2). What
+that argument left out is that the RULES a recall obeys are not this cell's: who was present
+when a fact was learned, what a half-open window means, how deep a tier goes. All of them
+are enforced in the memory hive. Serving the call here meant typing that hive's `in_query`
+contract out by hand, in a template that answers no recall, and a second time as a seed row
+in a brain -- three artefacts for one contract, each free to drift, held together by a test.
 
-Two edges, and neither of them is new machinery:
+**Now the hive declares it and answers it.** `templates/memory-hive/schemas` hands out the
+declaration on the hive's own `in_schemas` lane, and `templates/memory-hive/tool` turns the
+call into the hive's own question and the bundle -- or the refusal -- back into one
+`tool_result`. From this cell's side nothing about that is special: the dispatcher names the
+tool, an edge OUTSIDE the composite knows the cell, and the result arrives on `in_tool` like
+any other. The lane `in_memory_call` and the setting `memory_call_tier` are gone with it,
+which is the first version digit this cell has ever spent.
+
+**What is left here is the ambient leg**, and it is unchanged:
 
 ```jsonc
-// 1. the dispatcher's memory lane -- the same shape as any tool edge
-{"from": "./dispatcher", "to": "./collector",
- "condition": "hop.route == 'tool' && hop.tool_name == 'memory_recall'",
- "modifier": {"set_hop": {"route": "'in_memory_call'"}}}
-
-// 2. the recall port the per-turn leg already used, carrying five keys now
-{"from": "./collector", "to": "<memory hive>/recall",
+// the recall port, carrying four keys -- and no correlation, because the lane
+// has ONE meaning again
+{"from": "./collector", "to": "<memory hive>",
  "condition": "hop.route == 'recall'",
- "modifier": {"set_context": {"recall_query": "hop.recall_query",
+ "modifier": {"set_hop": {"route": "'in_query'"},
+              "set_context": {"recall_query": "hop.recall_query",
                               "memory_tier": "hop.memory_tier",
-                              "memory_call_id": "hop.memory_call_id",
                               "recall_window_from": "hop.recall_window_from",
                               "recall_window_to": "hop.recall_window_to"}}}
 ```
 
-`memory_call_id` is the whole correlation: the ambient leg travels the same edge with the
-key **empty**, and the returning bundle is filed as the memory leg of the turn; a bundle
-that comes back with the key set is filed as the `tool_result` of that call, under the
-original `tool_call_id`, on the ordinary `round-w` phase. One port, two meanings, told
-apart by what the request carried out. Every key is always present and empty rather than
-absent -- a missing hop key makes the promoting CEL modifier fail, and a failed modifier
-skips the edge.
-
-The tool schema is a **seed**, not a contract of this template -- what the brain may ask
-for is decided where the brain's `system.tools` is written:
-
-```jsonc
-"memory_recall": {
-  "description": "Ask long-term memory about something, optionally restricted to a time range.",
-  "parameters": {
-    "type": "object",
-    "properties": {
-      "query":       {"type": "string", "description": "what to look for"},
-      "window_from": {"type": "string", "description": "ISO-8601 start of the time range (optional)"},
-      "window_to":   {"type": "string", "description": "ISO-8601 end of the time range (optional)"}
-    },
-    "required": ["query"]
-  }
-}
-```
-
-The block above is prose; the **canonical copy of that schema is shipped**, in
-`templates/talky/brain/seed/system.jsonl` ([#55](https://github.com/mmeyerlein/meclaw/issues/55)) --
-a talky instantiated from the library carries it already, and anyone writing the schema into
-another brain's `system.tools` should copy the seeded bytes rather than retype this paragraph.
-
-The collector reads exactly those three argument names, passes the window through as the
-recall port's own keys, and takes the **tier** from `memory_call_tier`. A tier
-is a cost decision of the tree, not something a model gets to raise from inside a prompt.
+Every key is always present and empty rather than absent -- a missing hop key makes the
+promoting CEL modifier fail, and a failed modifier skips the edge. The ambient bundle comes
+back on `in_bundle` and reaches the brain as a SYNTHETIC `memory_recall` tool result at the
+end of the round (GH #278), under the name the member's memory now really serves: a model
+that reacts to it by calling the tool itself reaches a real cell instead of a void.
 
 Discipline, unchanged in every direction:
 
-- **It counts as a normal call.** The `memory_recall` id is a member of the round's
-  expectation set like any other, `tool_chars` cuts its result like any other,
-  `round_bytes` and `max_iter` bound the round it belongs to.
-- **A call that cannot be served is answered, never parked.** With
-  `memory_call_tier` empty the collector answers the call itself with a typed
-  error result -- the dispatcher-lid pattern, one lane further in.
-- **A port that is not wired ends in the idle exit.** Without the `recall` edge the
-  request is unroutable and no answer ever comes; the round then parks and is closed by
-  the round idle window of GH #103 (synthetic result, `hop.round_stale=1`) -- the same
-  exit a tool that died mid-flight gets. No second machinery for a memory tool.
+- **The memory result counts as a normal call.** Whatever answers `memory_recall` hands
+  back is a member of the round's expectation set like any other, `tool_chars` cuts it like
+  any other, `round_bytes` and `max_iter` bound the round it belongs to.
+- **A call nothing answers ends in the idle exit.** Without an edge from the composite to a
+  memory the call is unroutable and no answer ever comes; the round then parks and is closed
+  by the round idle window of GH #103 (synthetic result, `hop.round_stale=1`) -- the same
+  exit a tool that died mid-flight gets. No second machinery for a memory tool, which is
+  what made giving the name back cheap.
 - **The ambient tier-0 bundle stays the free floor.** It does not step aside when the
   model asks for itself: the two are different questions (what is always true about this
   person vs. what happened between these two dates), and a turn that pays for both is a
@@ -1278,10 +1271,6 @@ in_advice -> insert turns(advice)        phase turn-w       <- the return lane, 
 in_tool   -> insert round(tool)          phase round-w      <- the WHOLE messages[]:
                                                                one result may answer
                                                                several calls (#252)
-in_memory_call -> ROUTE recall           (memory_call_id = the tool_call_id,  <- GH #78
-                                          recall_window_from/_to = the args)
-in_bundle (with a memory_call_id)
-          -> insert round(tool)          phase round-w      <- back in the regular fan-in
 round-check-> complete: ROUTE brain (iter + 1)              <- the same seam
              + update round set fired=1  phase round-done   <- per ITERATION
           -> ROUTE answer (round_capped,   <- at max_iter, instead of the brain,
@@ -1365,9 +1354,9 @@ time, and losing that bet writes "tool result lost" into the transcript. So the 
 does not wait at all:
 
 1. **The dispatcher classifies, on two lists.**
-   `DISPATCHER_HANDOFF_TOOLS=consult_cogny` makes the dispatcher name the affected
+   `consult_cogny` in the dispatcher's `handoff_tools` makes it name the affected
    `tool_call_id`s in `hop.async_calls` **and** in `hop.handoff_calls` on the `calls` lane;
-   a tool on `DISPATCHER_ASYNC_TOOLS` alone (`remember`) is named on the first only. One
+   a tool in `async_tools` alone (`remember`) is named on the first only. One
    declaration per tool, in the one cell that sees the whole bundle. The second list is
    what says the answer comes from a **later turn** rather than from this one -- step 2
    reads it, and the classification itself is never this cell's.
@@ -1384,7 +1373,7 @@ does not wait at all:
    | | what says so | who answers the turn |
    |---|---|---|
    | the model spoke beside the bundle | a non-empty text turn in `messages[]` -- the same reading the dispatcher used when it sent the interim answer | the interim answer, already on the channel |
-   | a **handoff** call took the turn with it | `hop.handoff_calls` names it (`DISPATCHER_HANDOFF_TOOLS`) | a later turn: an advisor's event, an escalation re-entering the seam |
+   | a **handoff** call took the turn with it | `hop.handoff_calls` names it (the dispatcher's `handoff_tools`) | a later turn: an advisor's event, an escalation re-entering the seam |
 
    **Neither, and the round stays open.** A bare fire-and-forget call -- `remember` with no
    sentence beside it -- used to be filed as fired, and the channel then got *nothing*: no

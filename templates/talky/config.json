@@ -31,10 +31,6 @@
           "because": "a memory bundle, coming back from whatever keeps this agent's memory"
         },
         {
-          "route": "in_memory_call",
-          "because": "a memory tool call the front model made. Since talky@4.2.1 the composite routes this itself (GH #55): ./dispatcher -> ./collector on hop.tool_name == 'memory_recall'. The lane stays declared because it is still a real door -- a parent MAY hand a memory_recall call in from outside -- but no parent has to draw the self-loop any more"
-        },
-        {
           "route": "in_thread_call",
           "because": "a thread_recall tool call the front model made: the collector serves it out of this turn's own round table, and without the lane every stub its curator leaves is a dead end. Since talky@4.2.1 the composite routes this itself too (GH #55, GH #245), on the same shape as the memory lane one row up"
         },
@@ -52,7 +48,7 @@
         },
         {
           "route": "in_menu",
-          "because": "the tool declarations coming back from a tools hive the parent wired (GH #464). Since talky@4.5.1 this composite ASKS what its tools look like instead of carrying a menu somebody typed: `./collector`'s `params.tools` is the list of names this agent declares it uses, `./menu-clock` ticks, the request leaves on `schemas`, and what arrives here is the answer -- `schemas[]` plus the names the hive had nothing under. The collector wraps each declaration in the provider envelope and writes the result into `./brain` as durable `system.tools`, so the menu costs one write per change and nothing per turn. PAIRED with `schemas`: a parent that draws one half of the pair and not the other has a composite that asks into nothing, or one that is answered at a door it does not have"
+          "because": "the tool declarations coming back from a tools hive the parent wired (GH #464). Since talky@4.5.1 this composite ASKS what its tools look like instead of carrying a menu somebody typed: `./collector`'s `params.tools` is the list of names this agent declares it uses, the request leaves on `schemas`, and what arrives here is the answer -- `schemas[]` plus the names the hive had nothing under. The collector wraps each declaration in the provider envelope and writes the result into `./brain` as durable `system.tools`, so the menu costs one write per change and nothing per turn. PAIRED with `schemas`: a parent that draws one half of the pair and not the other has a composite that asks into nothing, or one that is answered at a door it does not have"
         },
         {
           "route": "in_export",
@@ -70,6 +66,10 @@
             "./brain"
           ],
           "because": "the answer half of the same lane (GH #560): the broker's `ack` for `vault.deliver` carrying the sealed box, renamed at the boundary to the name this rim knows it by. It lands on `./brain` and on nothing else -- the box is sealed against the ephemeral key of the cell that asked, so a delivery anywhere else is a box nobody can open plus a receipt the asker never gets. Address the edge with `hop.grant_id`, which the broker stamps: one grant per consumer, or two brains are handed each other's rounds"
+        },
+        {
+          "route": "mutation_committed",
+          "because": "the mutation receipt on its last hop, GH #553: the graph moved, and the collector inside this composite is what has to hear it -- the tool menu is re-asked on it. The lane keeps ONE name from the mutation door down to here, and this rim is a plain door for it: the composite's own edge carries it to `./collector`, which turns it into its internal `in_menu_tick`. It replaces a five-minute poll timer that used to sit inside the collector, and the boot receipt is the first ask, so an agent has its menu before its first turn. Derived from collector@4.0.0"
         }
       ],
       "emits": [
@@ -95,7 +95,7 @@
         },
         {
           "route": "tool",
-          "because": "a tool call for a cell the parent wired; hop.tool_name says which one. Since talky@4.2.1 the exit is a GUARDED DEFAULT edge (GH #283, ruling Q1): `{\"from\": \"./dispatcher\", \"to\": \".\", \"default\": true, \"condition\": \"has(hop.route) && hop.route == 'tool'\"}`. It is consulted only when NO ordinary edge out of ./dispatcher fired for the message, which is what lets the two reserved names -- memory_recall and thread_recall -- be claimed by ordinary edges into ./collector without a single term of exclusion on this one. Two properties keep it honest, and both were measured against this tree rather than assumed. FIRST, the guard is not decoration: ./dispatcher emits four sorts (calls, result, answer, tool) and suppression is SENDER-WIDE, so an unguarded default would try to carry calls/result/answer outward whenever nothing ordinary happened to fire for them; the condition names the one lane this default consumes and leaves the rest to no_route. SECOND, the no-tee requirement: ./dispatcher has six out-edges here (calls, result, answer and the two reserved names into ./collector, plus this one) and every ordinary one of them is conditioned on its own lane -- there is NO unconditional tee. If the set ever grows one (a logger, a tap, a mirror), it must be conditioned on its own routes, or it silences this default for every tool call and the parent's tool cells go dark. The sender inventory of the whole composite, for the same reason: seven senders (., ./session-keeper, ./collector, ./brain, ./splitter, ./dispatcher, ./errors) over 28 edges, four of which reach `.` (./collector seven times since 4.5.0 -- the schemas request is the seventh -- ./splitter for extraction, ./dispatcher for this default, ./errors for error) -- and the sender-wide rule means an edge a PARENT draws from ./talky/dispatcher counts here too"
+          "because": "a tool call for a cell the parent wired; hop.tool_name says which one. Since talky@4.2.1 the exit is a GUARDED DEFAULT edge (GH #283, ruling Q1): `{\"from\": \"./dispatcher\", \"to\": \".\", \"default\": true, \"condition\": \"has(hop.route) && hop.route == 'tool'\"}`. It is consulted only when NO ordinary edge out of ./dispatcher fired for the message, which is what lets the ONE reserved name -- thread_recall -- be claimed by an ordinary edge into ./collector without a single term of exclusion on this one. `memory_recall` was the second until talky@5.0.0: this composite served it out of its own collector and declared its schema by hand, and since GH #552 it is an ORDINARY tool name -- the member's memory hive declares it, answers it, and this default edge carries the call out like any other. Two properties keep it honest, and both were measured against this tree rather than assumed. FIRST, the guard is not decoration: ./dispatcher emits four sorts (calls, result, answer, tool) and suppression is SENDER-WIDE, so an unguarded default would try to carry calls/result/answer outward whenever nothing ordinary happened to fire for them; the condition names the one lane this default consumes and leaves the rest to no_route. SECOND, the no-tee requirement: ./dispatcher has five out-edges here (calls, result, answer and the one reserved name into ./collector, plus this one) and every ordinary one of them is conditioned on its own lane -- there is NO unconditional tee. If the set ever grows one (a logger, a tap, a mirror), it must be conditioned on its own routes, or it silences this default for every tool call and the parent's tool cells go dark. The sender inventory of the whole composite, for the same reason: seven senders (., ./session-keeper, ./collector, ./brain, ./splitter, ./dispatcher, ./errors) over 30 edges, four of which reach `.` (./collector seven times since 4.5.0 -- the schemas request is the seventh -- ./splitter for extraction, ./dispatcher for this default, ./errors for error) -- and the sender-wide rule means an edge a PARENT draws from ./talky/dispatcher counts here too"
         },
         {
           "route": "prune",
@@ -114,8 +114,12 @@
           "because": "the tool names this agent declares it uses, for a tools hive's `in_schemas` door (GH #464). The body is `{\"tools\": [...]}` and nothing else; `[\"*\"]` asks for everything that hive has. It leaves on a tick rather than per turn, and the hive keeps no record of who asked -- whoever designed this composite's instance decided what it uses, and that decision lives in `./collector`'s `params.tools` where the rest of its contract is. Unwired it dead-letters once per tick, which is why the pair with `in_menu` is one decision and not two"
         },
         {
+          "route": "export_done",
+          "because": "the keeper inside this composite has written its session ledger out completely, and says so itself (GH #555): `hop.export_hive` names the hive, `hop.seed_dir` the directory relative to the fence its store declares. Carried out of this composite unchanged -- this level owns no part of the document and never did"
+        },
+        {
           "route": "dump",
-          "because": "what the two transfer lanes produce, raised by `./session-keeper` and carried out of this composite unchanged: `hop.dump_kind == 'export_part'` is one part of the session document (`hop.port_hive` names the hive it came out of, `hop.export_final` marks the last one), `hop.dump_kind == 'import_receipt'` says what one applied part wrote. Drain it with a PLAIN `hop.route == 'dump'` edge -- an edge that also tested `dump_kind` reads as no drain under the required_drains probe, and undrained an export walks the whole ledger and reaches nobody (session-keeper@2.1.0, GH #475). A REFUSAL does not travel here: the porter refuses on the keeper's `reject` lane, which this composite already drains into `./errors` and re-emits as one normalised `error` beside every other failure of the unit"
+          "because": "the receipt of one applied import part, raised by `./session-keeper` and carried out of this composite unchanged: `hop.rows_written` counts the inserts it dispatched, so zero means the target already had every row. Since 0.30.0 the lane carries NOTHING ELSE -- an export writes its own files and reports on `export_done` (GH #555), so the `dump_kind` key that told the two apart is gone with the distinction. Drain it with a PLAIN `hop.route == 'dump'` edge -- an edge that tests a second key reads as no drain under the required_drains probe"
         },
         {
           "route": "credential_request",
@@ -139,8 +143,8 @@
       },
       {
         "accepts": "in_export",
-        "emits": "dump",
-        "because": "the export IS the dump lane -- wired without it, the walk runs, reads the whole session ledger and delivers the document to nobody. Taken from session-keeper@2.1.0, which pairs the same two lanes one level down"
+        "emits": "export_done",
+        "because": "the export IS this lane -- wired without it, the keeper's store writes its seed set and nobody is ever told where, or that it finished at all. Taken from the level below, which pairs the same two"
       },
       {
         "accepts": "in_import",
@@ -163,7 +167,7 @@
         {
           "from": ".",
           "to": "./collector",
-          "condition": "has(hop.route) && (hop.route == 'in_tool' || hop.route == 'in_advice' || hop.route == 'in_bundle' || hop.route == 'in_memory_call' || hop.route == 'in_thread_call' || hop.route == 'in_prune' || hop.route == 'in_round_sweep' || hop.route == 'in_pack' || hop.route == 'in_menu')"
+          "condition": "has(hop.route) && (hop.route == 'in_tool' || hop.route == 'in_advice' || hop.route == 'in_bundle' || hop.route == 'in_thread_call' || hop.route == 'in_prune' || hop.route == 'in_round_sweep' || hop.route == 'in_pack' || hop.route == 'in_menu')"
         },
         {
           "from": "./session-keeper",
@@ -284,16 +288,6 @@
         {
           "from": "./dispatcher",
           "to": "./collector",
-          "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'memory_recall'",
-          "modifier": {
-            "set_hop": {
-              "route": "'in_memory_call'"
-            }
-          }
-        },
-        {
-          "from": "./dispatcher",
-          "to": "./collector",
           "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'thread_recall'",
           "modifier": {
             "set_hop": {
@@ -360,13 +354,23 @@
         {
           "from": "./session-keeper",
           "to": ".",
+          "condition": "has(hop.route) && hop.route == 'export_done'"
+        },
+        {
+          "from": "./session-keeper",
+          "to": ".",
           "condition": "has(hop.route) && hop.route == 'dump'"
+        },
+        {
+          "from": ".",
+          "to": "./collector",
+          "condition": "has(hop.route) && hop.route == 'mutation_committed'"
         }
       ]
     }
   },
   "description": {
-    "purpose": "Scope marker of the talky composite: bundles the session keeper, the context collector, the brain and the tool dispatcher behind ONE ingress, ONE reply exit, ONE write exit and ONE error drain. Everything the Egon rollout wired by hand -- the stamp, the seam, the dispatcher lanes, the loopback with restore_ttl, the close path -- is an internal edge here. Since talky@4.3.0 (GH #447) the close batch leaves on the write port and nothing summarises it in here: the member above the talky turns it into the memory hive's close pass, and what the next generation needs of it comes back through the recall bundle. Since talky@4.5.1 (GH #458) it has ONE more door and it is the one it never had: `in_pack`, through which a durable `system.*` slot -- an identity, a persona, a handover -- reaches the brain from outside a composite that is otherwise sealed against exactly that. Since talky@4.5.1 (GH #464) it also stops carrying a tool menu somebody typed: `./collector`'s `params.tools` names the tools this agent uses, the collector's own `./menu-clock` ticks, the names leave on `schemas` and the declarations come back on `in_menu` to be written into the brain as durable `system.tools`. Since talky@4.5.1 (GH #475) it passes two more doors straight through to that keeper -- `in_export` and `in_import` -- and carries the keeper's `dump` back out: the sessions are the one thing in here a member cannot recompute, and until this the lane stopped at a hive nothing above it forwarded to.",
+    "purpose": "Scope marker of the talky composite: bundles the session keeper, the context collector, the brain and the tool dispatcher behind ONE ingress, ONE reply exit, ONE write exit and ONE error drain. Everything the Egon rollout wired by hand -- the stamp, the seam, the dispatcher lanes, the loopback with restore_ttl, the close path -- is an internal edge here. Since talky@4.3.0 (GH #447) the close batch leaves on the write port and nothing summarises it in here: the member above the talky turns it into the memory hive's close pass, and what the next generation needs of it comes back through the recall bundle. Since talky@4.5.1 (GH #458) it has ONE more door and it is the one it never had: `in_pack`, through which a durable `system.*` slot -- an identity, a persona, a handover -- reaches the brain from outside a composite that is otherwise sealed against exactly that. Since talky@4.5.1 (GH #464) it also stops carrying a tool menu somebody typed: `./collector`'s `params.tools` names the tools this agent uses, the names leave on `schemas` and the declarations come back on `in_menu` to be written into the brain as durable `system.tools`. Since talky@4.5.1 (GH #475) it passes two more doors straight through to that keeper -- `in_export` and `in_import` -- and carries the keeper's `dump` back out: the sessions are the one thing in here a member cannot recompute, and until this the lane stopped at a hive nothing above it forwarded to.",
     "use_when": "One per conversational agent. Instantiate it in the same mutation that wires the four ports plus the per-instance tool lanes; the composite is an island until an edge crosses into it.",
     "not_in_scope": "No tool cells (they are wired per instance on hop.tool_name), no memory hive, no surface proxy, no drain cell -- with ONE exception since 4.2.0, and it is a boundary rather than a gap: the two tools this composite IMPLEMENTS, memory_recall and thread_recall, are served by the collector inside it and routed by this template's own edges (GH #55). RETRACTED with the same bump: up to 4.1.1 this line read `The brain's identity, instructions and tool schemas live in its own cell.db -- the composite carries the topology, never the persona`. The schema half no longer holds. A tool the composite IMPLEMENTS is topology, and its schema ships with the composite; a tool the PARENT wires is the agent, and the composite carries neither its schema nor its lane. So the composite carries the schemas of those two tools and of no others. Identity, instructions and every per-agent tool stay the brain's own cell.db -- the composite still carries no persona."
   }

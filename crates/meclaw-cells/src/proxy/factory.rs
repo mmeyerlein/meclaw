@@ -347,7 +347,7 @@ fn make_build(
             Some(colony_inbox_cap.clone()),
             blob_cap.clone(),
             consumes_cap.clone(),
-            bounds_cap,
+            bounds_cap.clone(),
         );
         (tx, join, peace_rx, stop_tx, death_ack_rx, backstop_rx)
     })
@@ -416,7 +416,7 @@ fn make_build_slack(
             Some(colony_inbox_cap.clone()),
             blob_cap.clone(),
             consumes_cap.clone(),
-            bounds_cap,
+            bounds_cap.clone(),
         );
         (tx, join, peace_rx, stop_tx, death_ack_rx, backstop_rx)
     })

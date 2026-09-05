@@ -30,15 +30,21 @@
 //! 3. **The `dump` drain is plain too, and for the same probe.** An edge that
 //!    additionally tested `hop.dump_kind` evaluates false under the probe and
 //!    reads as no drain at all, so the mutation that wires the ingress is
-//!    refused. That is a rule with a measurement behind it, not a style.
+//!    refused. That is a rule with a measurement behind it, not a style. At the
+//!    MEMBER level the drain is gone entirely since GH #555 — see (4).
 //! 4. **The member NAMES the generation instead of fanning out to it.** The
 //!    fourth export target is guarded on `context.assistant`. Two measurable
 //!    reasons: a member with two generations holds two ledgers and they are not
-//!    one document, and the export sink files a part under the hive it came out
-//!    of, so two keepers would both claim `<export_dir>/session-keeper/` and the
-//!    directory would keep whichever walk finished last. The guard is also what
-//!    keeps an ordinary export of a member with no generation from dead-lettering
-//!    into an empty container.
+//!    one document, and a part is filed under the hive it came out of, so two
+//!    keepers would both claim `<fence>/session-keeper/` and the directory would
+//!    keep whichever walk finished last. The guard is also what keeps an
+//!    ordinary export of a member with no generation from dead-lettering into an
+//!    empty container. **What the member does NOT do any more is take the parts
+//!    back:** GH #555 removed the one cell of that level that turned a walk into
+//!    files, because the three holders now write their own — and the keeper,
+//!    four levels down, still walks. Its parts therefore end in the dead-letter
+//!    queue (GH #284 state 2) until the keeper writes its own too. The loss is
+//!    asserted rather than assumed, so nobody re-adds a silent consumer.
 //!
 //! Guarded like every template-reading test (GH #49): a tree that does not carry
 //! the library is skipped, never judged.
@@ -215,13 +221,18 @@ fn the_two_transit_levels_pair_the_lanes_they_forward() {
                     .collect()
             })
             .unwrap_or_default();
-        for lane in ["in_export", "in_import"] {
+        // Since GH #555 the two halves pair with DIFFERENT exits: the export
+        // writes its own files and reports on `export_done`, the import still
+        // answers with a receipt on `dump`. A level that forwards one half and
+        // carries the wrong pairing lets a caller wire a transfer whose answer
+        // has nowhere to go.
+        for (lane, exit) in [("in_export", "export_done"), ("in_import", "dump")] {
             assert!(
-                pairs.iter().any(|(a, e)| a == lane && e == "dump"),
-                "{rel} forwards `{lane}` and does not pair it with `dump`. The hive \
+                pairs.iter().any(|(a, e)| a == lane && e == exit),
+                "{rel} forwards `{lane}` and does not pair it with `{exit}`. The hive \
                  two levels down pairs both of its transfer lanes with both of their \
                  exits, and a level that forwards a paired lane without carrying the \
-                 pairing lets a caller wire an export whose parts have nowhere to \
+                 pairing lets a caller wire an export whose answer has nowhere to \
                  go: {pairs:?}"
             );
         }
@@ -249,9 +260,9 @@ fn the_member_names_the_generation_whose_ledger_it_wants() {
             && condition.contains("context.assistant != ''"),
         "the fourth export target is UNGUARDED. Two things break at once: a member \
          with two generations holds two session ledgers and they are not one \
-         document — and the export sink files a part under the hive it came out of, \
-         so both keepers would claim `<export_dir>/session-keeper/` and the \
-         directory would hold whichever walk finished last, silently. The guard is \
+         document — and a part is filed under the hive it came out of, so both \
+         keepers would claim `<fence>/session-keeper/` and the directory would \
+         hold whichever walk finished last, silently. The guard is \
          also what keeps an ordinary export of a member with no generation at all \
          from dead-lettering into an empty container: {condition}"
     );
@@ -275,8 +286,8 @@ fn the_member_names_the_generation_whose_ledger_it_wants() {
         "the import door reads the holder off the BODY. A body is model-writable \
          and an edge is not, which is why the other two holders are named on \
          `hop.import_hive` and this one has to be as well — and the name is the \
-         hive's (`session-keeper`), not the endpoint's, because the sink files a \
-         part under the hive it came out of: {condition}"
+         hive's (`session-keeper`), not the endpoint's, because a part is filed \
+         under the hive it came out of: {condition}"
     );
     assert!(
         import[0]["modifier"].is_null(),
@@ -284,21 +295,29 @@ fn the_member_names_the_generation_whose_ledger_it_wants() {
         import[0]["modifier"]
     );
 
-    let sink = carrying(&member, "./assistants", "./export-sink", "dump");
-    assert_eq!(
-        sink.len(),
-        1,
-        "the parts a generation's keeper walks out have no drain at this level. \
-         Undrained, an export of the fourth holder runs and reaches nobody — and \
-         the pairing every level between here and the keeper declares makes the \
-         instantiating mutation refuse rather than the message vanish: {sink:?}"
-    );
-    let condition = sink[0]["condition"].as_str().unwrap_or_default();
-    assert!(
-        !condition.contains("dump_kind"),
-        "the sink edge additionally tests `hop.dump_kind` and therefore reads as no \
-         drain under the probe: {condition}"
-    );
+    // And what comes back leaves the level. Since GH #555 the keeper writes its
+    // own ledger and says `export_done`; what still travels on `dump` is the
+    // receipt of an applied IMPORT part, and it crosses the member the way
+    // every other receipt of this level does. Until then both ended inside the
+    // member, in a cell that read a receipt and said nothing about it — the one
+    // arrangement GH #284 forbids, and it only ever ended there because that
+    // cell existed for the export half.
+    for lane in ["export_done", "dump"] {
+        let exits = carrying(&member, "./assistants", ".", lane);
+        assert_eq!(
+            exits.len(),
+            1,
+            "the member owes `{lane}` exactly one exit off ./assistants; a \
+             receipt that reaches nobody reads exactly like an export that \
+             never ran: {exits:?}"
+        );
+        let condition = exits[0]["condition"].as_str().unwrap_or_default();
+        assert!(
+            !condition.contains("dump_kind"),
+            "the `{lane}` exit additionally tests `hop.dump_kind` and therefore \
+             reads as no drain under the probe: {condition}"
+        );
+    }
 }
 
 /// The keeper's document is filed under a name, and that name is what the sink
@@ -317,9 +336,9 @@ fn the_name_the_keeper_stamps_is_the_name_the_import_door_and_the_example_use() 
     assert!(
         porter.contains(r#"HIVE = \"session-keeper\""#),
         "the keeper's porter no longer stamps `session-keeper` as its hive. That \
-         string is the directory the member's export sink files its parts under and \
-         the word `hop.import_hive` carries on the way back; changing it in one \
-         place files a document where nothing looks for it"
+         string is the directory a part of its walk is filed under and the word \
+         `hop.import_hive` carries on the way back; changing it in one place \
+         files a document where nothing looks for it"
     );
 
     let import = carrying(&member, ".", "./assistants", "in_import");

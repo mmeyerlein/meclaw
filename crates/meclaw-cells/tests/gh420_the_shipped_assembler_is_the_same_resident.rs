@@ -148,11 +148,6 @@ fn stream() -> Vec<meclaw_core::Message> {
             json!([{"origin":"tool","type":"tool_result","id":"m1","text":"{}"}]),
         ),
         lane(
-            "in_memory_call",
-            json!([{"origin":"assistant","type":"tool_call","id":"mc1",
-                    "text":"{\"name\":\"memory_recall\",\"arguments\":{}}"}]),
-        ),
-        lane(
             "in_thread_call",
             json!([{"origin":"assistant","type":"tool_call","id":"tc1",
                     "text":"{\"name\":\"thread_recall\",\"arguments\":{}}"}]),

@@ -1,6 +1,6 @@
 {
   "cell": {
     "type": "ref",
-    "template": "firewall@2.2.0"
+    "template": "firewall@2.3.0"
   }
 }

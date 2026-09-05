@@ -7,7 +7,7 @@
     "provider": "openai",
     "model": "${ctx.model}",
     "api_key": "${OPENROUTER_API_KEY}",
-    "credential_grant_id": "${TALKY_CREDENTIAL_GRANT_ID:-}",
+    "credential_grant_id": "",
     "credential_wait_ms": 30000,
     "base_url": "https://openrouter.ai/api/v1",
     "temperature": 0.3,
@@ -37,8 +37,8 @@
       "credential_grant_id": {
         "type": "string",
         "secret": false,
-        "default": "${TALKY_CREDENTIAL_GRANT_ID:-}",
-        "description": "GH #560: the grant this brain presents to get its bearer credential SEALED from an access hive, instead of carrying it in `api_key`. Unset it resolves to the empty string, which is no grant at all -- the cell then behaves exactly as it did before and spends `api_key`. Set it (normally through `override_params` of the manifest that grows the generation) and the member's own broker answers: the credential arrives over the credential v-lane, is opened in this task's RAM and is written nowhere. WHICH credential is named by the grant and never here, so a cell cannot ask for a secret it was not granted (R-AC-2)."
+        "default": "",
+        "description": "GH #560: the grant this brain presents to get its bearer credential SEALED from an access hive, instead of carrying it in `api_key`. It ships EMPTY, which is no grant at all -- the cell then behaves exactly as it did before and spends `api_key`. Set it (normally through `override_params` of the manifest that grows the generation) and the member's own broker answers: the credential arrives over the credential v-lane, is opened in this task's RAM and is written nowhere. WHICH credential is named by the grant and never here, so a cell cannot ask for a secret it was not granted (R-AC-2). Since GH #138 it is a plain param and not an environment token: a grant id is a REFERENCE, and two generations in one colony present different ones."
       },
       "credential_wait_ms": {
         "type": "number",

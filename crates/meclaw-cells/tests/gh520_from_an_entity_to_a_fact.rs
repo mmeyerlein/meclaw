@@ -496,10 +496,9 @@ fn the_readme_says_what_the_graph_leg_yields() {
         script.contains("def graph_leg_of("),
         "the leg that joins is what the sentence describes"
     );
-    for knob in [
-        "MEMORY_TIER1_GRAPH_FACT_NODES",
-        "MEMORY_TIER1_GRAPH_FACT_LIMIT",
-    ] {
+    // Params of `./recall` since GH #138, so the README documents them under the
+    // name an `override_params` entry has to use.
+    for knob in ["tier1_graph_fact_nodes", "tier1_graph_fact_limit"] {
         assert!(
             readme.contains(knob),
             "the join's cap `{knob}` is an undocumented knob"

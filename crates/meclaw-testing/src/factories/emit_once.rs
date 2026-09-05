@@ -120,7 +120,7 @@ impl CellFactory for EmitOnceMockCellFactory {
                 db,
                 blob_store_for_build.clone(),
                 consumes_for_build.clone(),
-                bounds_for_build,
+                bounds_for_build.clone(),
             )
         });
 

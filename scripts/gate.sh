@@ -19,7 +19,7 @@
 #     --log-dir DIR  additionally copy receipt and logs into DIR
 #     --no-nice      do not wrap cargo stations in nice/ionice, and do not
 #                    cap the build width
-#     --resync       force a full touch of the integration test sources
+#     --resync       force a full touch of every build input (see GHOST BINARIES)
 #
 # MODES
 # =====
@@ -46,7 +46,12 @@
 #
 # Verdicts: GREEN the station passed. RED it failed. SKIP it could not run
 # (missing tool, or planned elsewhere) -- never a failure. NOTE a finding to
-# read, not a judgement on the commit (advisories, tree-sync).
+# read, not a judgement on the commit (advisories, tree-sync, lock-wait).
+#
+# `lock-wait` is the queue in front of the shared cargo lock, reported before
+# the first cargo station whenever it was a second or more -- so a station's
+# `secs` is the station, not the wait. The receipt carries it as
+# `lock_wait_secs` (0 when the run never waited).
 #
 # `<green>/<total>` counts the stations that were JUDGED: GREEN and RED only.
 # SKIP and NOTE appear in neither half -- they are on their own GATE line and
@@ -201,6 +206,30 @@ else
 fi
 echo "gate: target = $target_dir"
 
+# --- the .env the scenario stations expect ----------------------------------
+# The runners under `workshop/evals/**` read `<repo>/.env` and copy the keys
+# they need into every colony they boot. A LINKED worktree has no `.env` (the
+# file is gitignored and lives in the main tree only), so those stations came
+# back RED with 0 cases and a `FileNotFoundError .../wt-t7/.env` -- a run
+# failing on a file the tree cannot have (measured 2026-09-04). The runner
+# links it. It never READS it: a symlink is made from the path alone.
+link_main_env() {
+    local common main_env
+    [ "$(git rev-parse --git-common-dir 2>/dev/null || echo .git)" = ".git" ] && return 0
+    common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || echo "")
+    [ -n "$common" ] || return 0
+    main_env="$(dirname -- "$common")/.env"
+    [ "$main_env" = "$root/.env" ] && return 0
+    [ -f "$main_env" ] || return 0          # no source: the stations may say so
+    if [ ! -e "$root/.env" ] && [ ! -L "$root/.env" ]; then
+        ln -s "$main_env" "$root/.env" 2>/dev/null || return 0
+    fi
+    # Only a link is reported as one -- a tree with its own real `.env` keeps it.
+    [ -L "$root/.env" ] && [ -e "$root/.env" ] && echo "gate: env = $main_env (linked)"
+    return 0
+}
+link_main_env
+
 # Everything this run writes is namespaced by the tree it runs in -- see
 # ARTEFACTS. Worktrees have distinct directory names (the main tree is
 # `meclaw-core`), which is all the identity a receipt needs.
@@ -219,9 +248,41 @@ fi
 EMPTY_TREE=4b825dc642cb6eb9a060e54bf8d69288fbee4904
 
 rev=$(git rev-parse HEAD 2>/dev/null || echo "")
+
+# Porcelain is NOT one path per line. `sed 's/^...//'` over it was wrong twice:
+# a rename or copy reads `R  old -> new`, so the arrow travelled INSIDE a single
+# "path" all the way into the nextest filterset (`failed to parse filterset`,
+# the tests station RED with 0 tests run, measured 2026-09-04); and a path with
+# a space comes back quoted (`"two words.rs"`). `-z` has neither problem: every
+# field is NUL-terminated and never quoted, and a rename/copy entry carries the
+# ORIGIN as a second field right after the destination.
+#
+# Both halves of a rename are emitted, as separate paths. The old one is a
+# deletion -- the resolver drops test targets that no longer exist by itself --
+# and the new one is the file to touch and to select.
+#
+# Reads `git status --porcelain=v1 -z` on stdin, prints one path per line.
+# $1 = "tracked" drops the untracked (`??`) entries.
+porcelain_paths() {
+    local only="${1:-all}" entry x path orig
+    while IFS= read -r -d '' entry; do
+        [ "${#entry}" -ge 4 ] || continue
+        x=${entry:0:1}; path=${entry:3}
+        orig=""
+        case "$entry" in
+            R*|C*|?R*|?C*) IFS= read -r -d '' orig || orig="" ;;
+        esac
+        [ "$only" = tracked ] && [ "$x" = "?" ] && continue
+        printf '%s\n' "$path"
+        [ -n "$orig" ] && printf '%s\n' "$orig"
+    done
+    return 0
+}
+
 # The full list -- tracked AND untracked. It feeds the diff and the tree stamp,
 # where the question is "which files must look newer than the artefacts".
-dirty_files=$(git status --porcelain --untracked-files=all 2>/dev/null | sed 's/^...//')
+dirty_files=$(git status --porcelain=v1 -z --untracked-files=all 2>/dev/null \
+    | porcelain_paths)
 dirty_any=0
 [ -n "$dirty_files" ] && dirty_any=1
 
@@ -237,8 +298,8 @@ dirty_any=0
 #
 # The tree stamp keeps the full list on purpose: a rewritten run artefact still
 # has to be touched, whatever the export thinks of it.
-dirty_tracked=$(git status --porcelain 2>/dev/null \
-    | grep -v '^??' | sed 's/^...//' | sed '/^$/d')
+dirty_tracked=$(git status --porcelain=v1 -z 2>/dev/null \
+    | porcelain_paths tracked | sed '/^$/d')
 gate_ignored=$(python3 "$root/scripts/gate_plan.py" --print ignored 2>/dev/null || true)
 if [ -n "$dirty_tracked" ] && [ -n "$gate_ignored" ]; then
     dirty_tracked=$(printf '%s\n' "$dirty_tracked" | grep -vxF "$gate_ignored" || true)
@@ -417,7 +478,15 @@ if [ "$mode" != ci ]; then
 fi
 
 # The lock is taken at most once per run and released when the run ends.
+#
+# The QUEUE in front of it is reported, not swallowed. A wave once measured
+# 3211 s for `fmt` and almost all of it was the wait for another run's lock --
+# invisible, because nothing named it. The wait is its own NOTE line before the
+# first cargo station (`GATE lock-wait [<n>s behind other runs] <n>s NOTE`) and
+# its own `lock_wait_secs` field in the receipt. A NOTE is not a judgement, so
+# the summary count is unchanged.
 run_lock=0
+lock_wait_secs=0
 take_run_lock() {
     [ "$run_lock" = 1 ] && return 0
     [ -z "$lock_path" ] && return 0        # ci: the runner owns the machine
@@ -425,12 +494,20 @@ take_run_lock() {
         echo "gate: cannot open the cargo lock $lock_path" >&2
         exit 2
     }
+    local w_start
+    w_start=$(date +%s)
     flock 9
+    lock_wait_secs=$(( $(date +%s) - w_start ))
     run_lock=1
     # scripts/test-tier.sh takes this same lock when it runs on its own. Inside
     # the gate the run already holds it, and a second flock would deadlock the
     # runner against its own child.
     export MECLAW_CARGO_LOCK_HELD=1
+    # Sub-second queues are noise; `report` is defined below and this runs from
+    # the station loop, long after both definitions.
+    [ "$lock_wait_secs" -ge 1 ] && \
+        report lock-wait "${lock_wait_secs}s behind other runs" "$lock_wait_secs" NOTE ""
+    return 0
 }
 release_run_lock() {
     [ "$run_lock" = 1 ] || return 0
@@ -457,6 +534,7 @@ write_receipt() {
     [ "${2:-}" = final ] && finished=$(date -Is)
     MECLAW_R_MODE="$mode" MECLAW_R_REV="$rev" MECLAW_R_BASE="$base" \
     MECLAW_R_DIRTY="$dirty" MECLAW_R_STARTED="$started" \
+    MECLAW_R_LOCK_WAIT="$lock_wait_secs" \
     MECLAW_R_FINISHED="$finished" MECLAW_R_VERDICT="$1" \
     MECLAW_R_ROWS="$rows_file" MECLAW_R_OUT="$receipt" \
     python3 - <<'PY'
@@ -475,6 +553,9 @@ doc = {
     "rev": os.environ["MECLAW_R_REV"],
     "base": os.environ["MECLAW_R_BASE"],
     "dirty": os.environ["MECLAW_R_DIRTY"] == "1",
+    # How long this run sat in the queue for the shared cargo lock. 0 = it did
+    # not wait. The station seconds never carried it; nothing did, until now.
+    "lock_wait_secs": int(os.environ.get("MECLAW_R_LOCK_WAIT") or 0),
     "started": os.environ["MECLAW_R_STARTED"],
     "finished": os.environ["MECLAW_R_FINISHED"] or None,
     "stations": rows,
@@ -507,11 +588,51 @@ report() {   # name scope secs verdict log [reason]
 
 # --- ghost binaries ---------------------------------------------------------
 # Several worktrees share one target/. cargo decides freshness by mtime and
-# gives workspace members the same metadata hash in every tree, so a test
-# binary built in tree A is handed back as fresh in tree B. The stamp records
-# which tree filled target/ last; a mismatch means the sources that differ
-# between the two trees must look newer than the artefacts.
+# gives workspace members the same metadata hash in every tree, so an artefact
+# built in tree A is handed back as fresh in tree B. The stamp records which
+# tree filled target/ last; a mismatch means the sources that differ between
+# the two trees must look newer than the artefacts.
+#
+# A GHOST IS NOT ONLY A TEST BINARY. The full touch used to cover the
+# integration test sources alone (`crates/**/tests/*.rs`), which leaves every
+# library rlib, every build script output and every binary of the workspace
+# untouched -- and those are compiled from `src/`, from `build.rs` and from the
+# manifests. Measured 2026-09-04, integration pass: target/ still held a
+# `meclaw-core` rlib compiled in a worktree that had since been DELETED, its
+# mtime newer than the master sources, so cargo took it for fresh and linked
+# every member against it; `cargo nextest run -p meclaw-cells` came back
+# `error[E0560]: TransferBounds has no field base_path` and 654 of 6495 tests
+# were red. A tests-only touch could not have invalidated that rlib -- no test
+# source is an input to it.
+#
+# So a FULL touch means every build input of every workspace member: all
+# `crates/**/*.rs` (src, tests, benches, examples, build.rs), every
+# `crates/*/Cargo.toml`, the root `Cargo.toml` and `Cargo.lock`. It is the
+# answer to "this target/ was filled by a tree I cannot diff against", and it
+# is cheap next to the alternative -- a gate grading a build it did not
+# produce. The TARGETED touch on a tree switch stays narrow on purpose: there
+# the stamp names a commit that still exists, so the diff between it and HEAD
+# plus both dirty lists is the exact set that can differ.
 stamp="$target_dir/.gate-tree"
+
+# Touch every build input of every workspace member and report the count.
+# `find crates -name '*.rs'` covers src, tests, benches, examples and build.rs
+# in one sweep; the manifests sit one level below `crates/`, and the root
+# manifest plus the lock file are inputs to every member as well.
+full_touch() {
+    local reason="$1" list n=0
+    list=$( { find crates -type f -name '*.rs' 2>/dev/null
+              find crates -mindepth 2 -maxdepth 2 -type f -name Cargo.toml 2>/dev/null
+              [ -f Cargo.toml ] && printf 'Cargo.toml\n'
+              [ -f Cargo.lock ] && printf 'Cargo.lock\n'
+              true; } | sed '/^$/d' | sort -u)
+    if [ -n "$list" ]; then
+        n=$(printf '%s\n' "$list" | wc -l | tr -d ' ')
+        printf '%s\n' "$list" | tr '\n' '\0' | xargs -0 touch 2>/dev/null
+    fi
+    report tree-sync "full touch: $reason, $n files" 0 NOTE ""
+}
+
 tree_synced=0
 tree_sync() {
     [ "$tree_synced" = 1 ] && return 0
@@ -523,11 +644,10 @@ tree_sync() {
     mkdir -p "$target_dir"
     local s_path s_sha s_dirty list n=0 f
     if [ "$resync" = 1 ] || [ ! -f "$stamp" ]; then
-        find crates -path '*/tests/*.rs' -exec touch {} + 2>/dev/null
         if [ "$resync" = 1 ]; then
-            report tree-sync "full touch: --resync" 0 NOTE ""
+            full_touch "--resync"
         else
-            report tree-sync "full touch: no stamp" 0 NOTE ""
+            full_touch "no stamp"
         fi
     else
         s_path=$(sed -n 1p "$stamp"); s_sha=$(sed -n 2p "$stamp"); s_dirty=$(sed -n 3p "$stamp")
@@ -536,8 +656,7 @@ tree_sync() {
             # `git diff <gone-sha>` fails and the union would be just the dirty
             # files -- a silent UNDER-touch, and ghost binaries survive it. The
             # only honest answer is the full touch.
-            find crates -path '*/tests/*.rs' -exec touch {} + 2>/dev/null
-            report tree-sync "full touch: stale stamp ${s_sha:0:7}" 0 NOTE ""
+            full_touch "stale stamp ${s_sha:0:7}"
         elif [ "$s_path" != "$root" ] || [ "$s_sha" != "$rev" ]; then
             list=$( { git diff --name-only "$s_sha" HEAD 2>/dev/null
                       printf '%s\n' "${s_dirty//,/$'\n'}"

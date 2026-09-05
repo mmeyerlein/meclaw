@@ -219,7 +219,7 @@ fn walk(table: &EdgeTable, from: &str, headers: Headers) -> (Vec<String>, Header
 /// The request an asker inside the generation raises: the shape
 /// `collector/assemble`'s `recall_ask` builds, with every key present and empty
 /// rather than absent.
-fn recall_request(call_id: &str) -> Headers {
+fn recall_request() -> Headers {
     headers(
         &[
             ("assistant", "scribe"),
@@ -232,7 +232,6 @@ fn recall_request(call_id: &str) -> Headers {
             ("route", "recall"),
             ("recall_query", "what did we decide"),
             ("memory_tier", "1"),
-            ("memory_call_id", call_id),
             ("recall_window_from", ""),
             ("recall_window_to", ""),
             ("turn_id", "S-42#7"),
@@ -390,7 +389,7 @@ fn the_members_recall_doors_leave_the_session_alone() {
 #[test]
 fn a_core_recall_reaches_the_hive_carrying_its_own_name() {
     let t = shipped_table();
-    let (trace, arrived) = walk(&t, &format!("{GEN}/cogny"), recall_request("c-core-1"));
+    let (trace, arrived) = walk(&t, &format!("{GEN}/cogny"), recall_request());
     assert_eq!(
         trace.last().map(String::as_str),
         Some("/m/memory-hive/recall"),
@@ -402,7 +401,6 @@ fn a_core_recall_reaches_the_hive_carrying_its_own_name() {
         "S-42",
         "the session the core is asking about survives the four levels untouched"
     );
-    assert_eq!(ctx_of(&arrived, "memory_call_id"), "c-core-1");
     assert_eq!(ctx_of(&arrived, "recall_query"), "what did we decide");
     assert_eq!(hop_of(&arrived, "route"), "in_query");
 }
@@ -414,8 +412,8 @@ fn two_simultaneous_recalls_come_home_to_the_two_askers() {
     // Both legs leave at the same time, from the two occupants of ONE generation,
     // and neither knows about the other. Routing is per message, so "at the same
     // time" is exactly this: two chains, two contexts, one table.
-    let (_, core_at_hive) = walk(&t, &format!("{GEN}/cogny"), recall_request("c-core"));
-    let (_, surface_at_hive) = walk(&t, &format!("{GEN}/talky"), recall_request("c-surface"));
+    let (_, core_at_hive) = walk(&t, &format!("{GEN}/cogny"), recall_request());
+    let (_, surface_at_hive) = walk(&t, &format!("{GEN}/talky"), recall_request());
     assert_eq!(ctx_of(&core_at_hive, "recall_caller"), "cogny");
     assert_eq!(ctx_of(&surface_at_hive, "recall_caller"), "talky");
 
@@ -424,24 +422,19 @@ fn two_simultaneous_recalls_come_home_to_the_two_askers() {
     // its own hop (`Headers::carry_context_with_hop`). So the bundle starts with
     // the request's context and a hop of the cell's own making — which is
     // precisely why a correlation key on the hop would be lost here.
-    let answer = |at_hive: &Headers, call_id: &str| -> Headers {
+    let answer = |at_hive: &Headers| -> Headers {
         Headers::from_parts(
             at_hive.context.clone(),
-            [
-                ("route", "bundle"),
-                ("memory_call_id", call_id),
-                ("turn_id", "S-42#7"),
-            ]
-            .iter()
-            .map(|(k, v)| ((*k).to_string(), Value::String((*v).to_string())))
-            .collect(),
+            [("route", "bundle"), ("turn_id", "S-42#7")]
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), Value::String((*v).to_string())))
+                .collect(),
         )
     };
 
     let hive_recall = format!("{HIVE}/recall");
-    let (core_trace, core_home) = walk(&t, &hive_recall, answer(&core_at_hive, "c-core"));
-    let (surface_trace, surface_home) =
-        walk(&t, &hive_recall, answer(&surface_at_hive, "c-surface"));
+    let (core_trace, core_home) = walk(&t, &hive_recall, answer(&core_at_hive));
+    let (surface_trace, surface_home) = walk(&t, &hive_recall, answer(&surface_at_hive));
 
     assert_eq!(
         core_trace.last().map(String::as_str),
@@ -455,13 +448,10 @@ fn two_simultaneous_recalls_come_home_to_the_two_askers() {
     );
     assert_eq!(hop_of(&core_home, "route"), "in_bundle");
     assert_eq!(hop_of(&surface_home, "route"), "in_bundle");
-    assert_eq!(
-        hop_of(&core_home, "memory_call_id"),
-        "c-core",
-        "and each carries its own call id, which is what makes it a tool RESULT rather than the \
-         ambient leg of some other turn (GH #78, GH #411)"
-    );
-    assert_eq!(hop_of(&surface_home, "memory_call_id"), "c-surface");
+    // A correlation key used to ride here too: `memory_call_id` told a bundle that
+    // answered a `memory_recall` CALL apart from the ambient leg of a turn. Both
+    // halves of that live in the memory hive since GH #552, so this road carries
+    // one meaning again and the asker's own token is the whole of the addressing.
 }
 
 #[test]

@@ -643,6 +643,665 @@ fn json_to_sql(v: Option<&Value>) -> rusqlite::types::Value {
 }
 
 // ---------------------------------------------------------------------------
+// GH #555 — the file half: the slot writes and reads its own seed set.
+// ---------------------------------------------------------------------------
+
+/// The completion marker a finished `export … to:` leaves in the directory it
+/// filled. Written LAST and through the same rename as the data files, so a
+/// reader that watches this name never finds a directory that is still
+/// filling.
+pub const EXPORT_MARKER: &str = "export_final.json";
+
+/// The subdirectory a transfer writes into and reads from, under whatever
+/// `to`/`from` named. It is `seed/` because that is the name the birth path
+/// already watches (`mutation::stage::seed_cell_db_if_present`): a directory
+/// this slot filled can be handed to a staging without renaming anything.
+const SEED_DIR: &str = "seed";
+
+/// Where one transfer call touches the filesystem.
+///
+/// [`TransferSite::Message`] is the form that has always existed and stays the
+/// default: no path named, no file written or read, the document travels as the
+/// reply body. A `to` (export) or `from` (import) switches to
+/// [`TransferSite::File`] — and NOTHING else does. A caller that names no path
+/// cannot accidentally write one.
+#[derive(Debug, PartialEq, Eq)]
+pub enum TransferSite {
+    /// The document travels as the reply body.
+    Message,
+    /// A directory RELATIVE to `params.transfer.base_path`. `""` and `"."` are
+    /// the base itself.
+    File {
+        /// The relative path exactly as the caller wrote it — the string a
+        /// repair takes, and the one the receipt names back.
+        rel: String,
+    },
+}
+
+/// Read `to`/`from` out of the arguments of one call.
+///
+/// `export` looks at `to`, `import` at `from`; each is optional, and a value
+/// that is not a string is an args-level fault (`invalid_input`), never a
+/// silent fall back to the message form.
+fn transfer_site(args: &Map<String, Value>, operation: &str) -> Result<TransferSite, String> {
+    let key = match operation {
+        "export" => "to",
+        "import" => "from",
+        // An unknown operation has no file half; `dispatch` refuses it by name.
+        _ => return Ok(TransferSite::Message),
+    };
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(TransferSite::Message),
+        Some(Value::String(rel)) => Ok(TransferSite::File { rel: rel.clone() }),
+        Some(other) => Err(format!(
+            "{operation}: {key} must be a string naming a directory relative to \
+             params.transfer.base_path, got: {other}"
+        )),
+    }
+}
+
+/// Does `rel` climb above the fence **lexically** — without asking the
+/// filesystem anything?
+///
+/// A local copy of the rule `meclaw_cells::boundary::lexically_escapes` states
+/// for the `file` cell, for the same reason [`json_to_sql`]'s sibling in
+/// `mutation::stage` is a local copy: meclaw-colony MUST NOT import
+/// meclaw-cells. The rule is a plain component walk — `.` is nothing, a name
+/// descends, `..` ascends, and popping past the base is an escape even if a
+/// later component would come back in.
+///
+/// Running BEFORE any filesystem call is the whole point (GH #107):
+/// `canonicalize` fails `NotFound` on a missing target, so the other order
+/// would let `../missing` answer one way and `../existing` another — a (weak)
+/// existence oracle for the world outside the fence. With the pre-check every
+/// escape attempt answers identically, whatever is or is not out there.
+fn lexically_escapes(rel: &std::path::Path) -> bool {
+    use std::path::Component;
+    let mut depth: usize = 0;
+    for c in rel.components() {
+        match c {
+            Component::CurDir => {}
+            Component::Normal(_) => depth += 1,
+            Component::ParentDir => {
+                if depth == 0 {
+                    return true;
+                }
+                depth -= 1;
+            }
+            Component::RootDir | Component::Prefix(_) => return true,
+        }
+    }
+    false
+}
+
+/// Resolve one `to`/`from` against the cell's own fence.
+///
+/// The ONE boundary function of the file half, and the only place a caller
+/// string becomes a path. `rel` is the path of the directory that will actually
+/// be written or read — `<to>/seed`, not `<to>` — because a check that stops
+/// one component short of the write is not a check. Four refusals, in this
+/// order:
+///
+/// 1. **no fence** — this cell declared no `params.transfer.base_path`, so it
+///    has nowhere of its own to write. It does not fall back to the cell's tree,
+///    to a temp directory or to the working directory: every one of those would
+///    be a second output channel no edge carries and no drain sees.
+/// 2. **absolute** — a path outside the fence by construction.
+/// 3. **lexical escape** — refused before the filesystem is touched at all.
+/// 4. **symlink escape** — the deepest existing ancestor of the target is
+///    canonicalised and must still lie under the canonical fence.
+///
+/// (1)–(3) answer `transfer_path_out_of_bounds`; a fence that cannot be opened
+/// — missing, not a directory, unreadable — answers `transfer_io_error`,
+/// because that is a fact about the filesystem and not about the caller's path.
+fn resolve_transfer_dir(
+    base: Option<&std::path::Path>,
+    rel: &str,
+) -> Result<std::path::PathBuf, TransferOutcome> {
+    let out_of_bounds = |detail: String| TransferOutcome::Refused {
+        code: "transfer_path_out_of_bounds",
+        detail,
+    };
+    let Some(base) = base else {
+        return Err(out_of_bounds(format!(
+            "transfer refused: {rel:?} names a directory, but this cell declares no \
+             params.transfer.base_path — a cell writes files only inside a fence it \
+             declared for itself"
+        )));
+    };
+    let rel_path = std::path::Path::new(rel);
+    if rel_path.is_absolute() || lexically_escapes(rel_path) {
+        return Err(out_of_bounds(format!(
+            "transfer refused: {rel:?} does not stay inside this cell's \
+             params.transfer.base_path — the path is refused by name, and the answer is \
+             the same whether anything exists out there or not"
+        )));
+    }
+    let canon_base = base.canonicalize().map_err(|e| TransferOutcome::Refused {
+        code: "transfer_io_error",
+        detail: format!(
+            "transfer refused: params.transfer.base_path could not be opened ({e}) — \
+             the fence is not created here, it is declared, and it has to exist by the \
+             time a path is named"
+        ),
+    })?;
+    let joined = canon_base.join(rel_path);
+    // The target need not exist yet (an export creates it), so canonicalise the
+    // deepest ancestor that does. The walk terminates: `canon_base` itself is
+    // canonical and exists.
+    let mut probe = joined.as_path();
+    loop {
+        match probe.canonicalize() {
+            Ok(canon) => {
+                if !canon.starts_with(&canon_base) {
+                    return Err(out_of_bounds(format!(
+                        "transfer refused: {rel:?} resolves outside this cell's \
+                         params.transfer.base_path"
+                    )));
+                }
+                break;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => match probe.parent() {
+                Some(parent) => probe = parent,
+                None => break,
+            },
+            Err(e) => {
+                return Err(TransferOutcome::Refused {
+                    code: "transfer_io_error",
+                    detail: format!("transfer refused: {rel:?} could not be resolved ({e})"),
+                });
+            }
+        }
+    }
+    Ok(joined)
+}
+
+/// A table name that may become a file name: one plain component, no leading
+/// dot.
+///
+/// SQLite will happily hold a table called `../evil` if somebody quoted it into
+/// existence, and `<seed_dir>/<table>.jsonl` would then leave the fence without
+/// any of the checks above ever seeing a caller string. The names this function
+/// accepts are exactly the ones the seed loader can derive a table from, so the
+/// rule costs nothing that was ever reachable.
+fn plain_table_name(table: &str) -> bool {
+    !table.is_empty()
+        && !table.starts_with('.')
+        && !table.contains('/')
+        && !table.contains('\\')
+        && !table.contains('\0')
+}
+
+/// Write one table as `<seed_dir>/<table>.jsonl` and return the row count.
+///
+/// The document form is the one [`export_document`] was written as the inverse
+/// of, and the one `apply_seed_jsonl` reads: the `schema` object on line 1, one
+/// row per line after it, a trailing newline. Keys are sorted — `serde_json`'s
+/// `Map` is a `BTreeMap` here, which is the same ordering Python's
+/// `sort_keys=True` produced for the interim sink. Byte identity with that sink
+/// was never the goal (its separators carry spaces); format identity is, and
+/// the round trip is proven against the loader itself.
+///
+/// Staged as `<table>.jsonl.part` in the SAME directory, flushed with
+/// `sync_all`, then moved with one `rename(2)`: a reader of the name a seed
+/// loader watches finds the old file or the new one, never half of one. The
+/// `fsync` is deliberately stronger than the interim sink's — that one bought a
+/// concurrent *reader*, and a substrate writer that a backup depends on owes
+/// durability too. `.part` is invisible to the loader, which takes only
+/// `*.jsonl`.
+async fn write_seed_file(
+    seed_dir: &std::path::Path,
+    table: &str,
+    schema: &Value,
+    rows: &[Value],
+) -> std::io::Result<i64> {
+    let mut text =
+        meclaw_core::serde_json::to_string(&meclaw_core::serde_json::json!({ "schema": schema }))
+            .unwrap_or_else(|_| "{\"schema\":{}}".to_string());
+    for row in rows {
+        text.push('\n');
+        text.push_str(&meclaw_core::serde_json::to_string(row).unwrap_or_else(|_| "{}".into()));
+    }
+    text.push('\n');
+    write_whole(&seed_dir.join(format!("{table}.jsonl")), &text).await?;
+    Ok(rows.len() as i64)
+}
+
+/// Put a document under the name a reader watches — whole, or not at all.
+///
+/// `<name>.part` in the same directory, `sync_all`, one `rename(2)`. A failure
+/// can leave the `.part` standing; that is the same known limitation
+/// `mutation::rename`'s `targeted_overwrite_config` documents, and it is
+/// harmless because nothing reads a `.part`.
+async fn write_whole(path: &std::path::Path, text: &str) -> std::io::Result<()> {
+    let part = path.with_extension(match path.extension().and_then(|e| e.to_str()) {
+        Some(ext) => format!("{ext}.part"),
+        None => "part".to_string(),
+    });
+    let mut file = tokio::fs::File::create(&part).await?;
+    tokio::io::AsyncWriteExt::write_all(&mut file, text.as_bytes()).await?;
+    file.sync_all().await?;
+    drop(file);
+    tokio::fs::rename(&part, path).await
+}
+
+/// One `seed/<table>.jsonl` read back into the pair an `import` takes.
+///
+/// The reader half of [`write_seed_file`], and deliberately as strict as
+/// `apply_seed_jsonl` is on the birth path: a file whose first line is not a
+/// `{"schema": {…}}` object describes nothing, and a data line that is not a
+/// JSON object cannot be a row. Both are `transfer_seed_malformed`, both name
+/// the file, and the second names the LINE, because that is the part an
+/// operator repairs. Blank lines are skipped, exactly as the loader skips them.
+async fn read_seed_file(path: &std::path::Path) -> Result<(Value, Vec<Value>), TransferOutcome> {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let malformed = |detail: String| TransferOutcome::Refused {
+        code: "transfer_seed_malformed",
+        detail,
+    };
+    let content = tokio::fs::read_to_string(path)
+        .await
+        .map_err(|e| TransferOutcome::Refused {
+            code: "transfer_io_error",
+            detail: format!("transfer refused: seed/{name} could not be read ({e})"),
+        })?;
+    let mut lines = content.lines();
+    let header_line = lines
+        .next()
+        .ok_or_else(|| malformed(format!("transfer refused: seed/{name} is empty")))?;
+    let header: Value = meclaw_core::serde_json::from_str(header_line).map_err(|e| {
+        malformed(format!(
+            "transfer refused: seed/{name} line 1 does not parse ({e}) — line 1 is the \
+             {{\"schema\": …}} header"
+        ))
+    })?;
+    let schema = header
+        .get("schema")
+        .filter(|v| v.is_object())
+        .ok_or_else(|| {
+            malformed(format!(
+                "transfer refused: seed/{name} line 1 carries no schema object — a row list \
+                 without a header is a guess"
+            ))
+        })?
+        .clone();
+    let mut rows = Vec::new();
+    for (idx, raw) in lines.enumerate() {
+        if raw.trim().is_empty() {
+            continue;
+        }
+        let row: Value = meclaw_core::serde_json::from_str(raw).map_err(|e| {
+            malformed(format!(
+                "transfer refused: seed/{name} line {}: {e}",
+                idx + 2
+            ))
+        })?;
+        if !row.is_object() {
+            return Err(malformed(format!(
+                "transfer refused: seed/{name} line {}: not an object",
+                idx + 2
+            )));
+        }
+        rows.push(row);
+    }
+    Ok((schema, rows))
+}
+
+/// The `*.jsonl` table names lying in `<dir>/seed`, in name order.
+///
+/// The marker is not one of them (it is `.json`, not `.jsonl`), and neither is
+/// a `.part` left over from a failed write — the same extension rule the seed
+/// loader applies, which is why a directory this slot filled can be handed to a
+/// staging unchanged.
+async fn seed_tables_in(dir: &std::path::Path) -> Result<Vec<String>, TransferOutcome> {
+    let mut read = tokio::fs::read_dir(dir)
+        .await
+        .map_err(|e| TransferOutcome::Refused {
+            code: "transfer_io_error",
+            detail: format!(
+                "transfer refused: {} could not be listed ({e})",
+                dir.display()
+            ),
+        })?;
+    let mut out = Vec::new();
+    loop {
+        let entry = read
+            .next_entry()
+            .await
+            .map_err(|e| TransferOutcome::Refused {
+                code: "transfer_io_error",
+                detail: format!(
+                    "transfer refused: {} could not be walked ({e})",
+                    dir.display()
+                ),
+            })?;
+        let Some(entry) = entry else { break };
+        let path = entry.path();
+        if path.extension().is_some_and(|x| x == "jsonl")
+            && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+        {
+            out.push(stem.to_string());
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// What one transfer call ended as, in the four fields the reply carries.
+type SlotAnswer = (i64, Value, Option<&'static str>, Option<String>);
+
+/// Turn one refusal into the reply fields, so every exit of the file half
+/// speaks the same shape.
+fn answer_from(outcome: TransferOutcome) -> SlotAnswer {
+    match outcome {
+        TransferOutcome::Done {
+            rows_affected,
+            payload,
+        } => (rows_affected, payload, None, None),
+        TransferOutcome::Refused { code, detail } => (0, Value::Null, Some(code), Some(detail)),
+        TransferOutcome::Sql(e) => (0, Value::Null, Some("sql_error"), Some(e.to_string())),
+    }
+}
+
+fn io_refusal(what: &str, e: &std::io::Error) -> SlotAnswer {
+    (
+        0,
+        Value::Null,
+        Some("transfer_io_error"),
+        Some(format!("transfer refused: {what} ({e})")),
+    )
+}
+
+/// GH #555 — the file half of one call: resolve the fence, then run the
+/// operation against the directory behind it.
+///
+/// The filesystem work lives HERE and not inside [`dispatch`], which means
+/// above the `db.call` boundary: `db.call` runs a `move` closure on the
+/// database task, and a task that exists to own one SQLite connection is not
+/// where a `rename(2)` belongs. Each table's SQL half is its own `db.call`; the
+/// bytes are written between them.
+async fn run_file_transfer(
+    operation: &str,
+    rel: &str,
+    args: &Map<String, Value>,
+    db: &mut crate::DbConn,
+    base: Option<&std::path::Path>,
+    own_path: &meclaw_core::Path,
+) -> SlotAnswer {
+    // The path the receipt names back: what the CALLER wrote, never the host
+    // prefix. A receipt travels further than the fence does, and the fence is
+    // in this cell's own config anyway (the same reason `refusal_name` trims a
+    // staging path, GH #507).
+    let named = match rel.trim_matches('/') {
+        "" | "." => SEED_DIR.to_string(),
+        r => format!("{r}/{SEED_DIR}"),
+    };
+    // The fence check has to see the directory the bytes actually land in, so
+    // `seed/` is appended BEFORE the resolve and not after it. Resolving `rel`
+    // alone and joining afterwards left one hole open: with `<fence>/<rel>/seed`
+    // a symlink, `create_dir_all` follows it and every file plus the marker
+    // lands outside a fence the check said was intact. The join is done on the
+    // caller's string as written — `Path::join` keeps an absolute `rel`
+    // absolute, so `/etc` stays `/etc/seed` and is still refused by name.
+    let rel_seed = std::path::Path::new(rel).join(SEED_DIR);
+    let seed_dir = match resolve_transfer_dir(base, &rel_seed.to_string_lossy()) {
+        Ok(d) => d,
+        Err(refusal) => return answer_from(refusal),
+    };
+    match operation {
+        "export" => export_to_dir(args, db, &seed_dir, &named, own_path).await,
+        "import" => import_from_dir(args, db, &seed_dir, &named).await,
+        other => (
+            0,
+            Value::Null,
+            Some("invalid_input"),
+            Some(format!(
+                "transfer: unknown operation {other:?} (known: export, import)"
+            )),
+        ),
+    }
+}
+
+/// The tables one file-half call addresses, in the order it will touch them.
+///
+/// `table` names exactly one. `tables` names a list AND its order — which is
+/// what a schema with insert-order dependencies needs, because name order is
+/// not that order. Neither: `fallback`, which is the cell's whole content
+/// inventory on the way out and the whole directory on the way in.
+fn addressed_tables(
+    args: &Map<String, Value>,
+    fallback: Vec<String>,
+) -> Result<Vec<String>, String> {
+    if let Some(one) = args.get("table") {
+        let name = one
+            .as_str()
+            .ok_or("transfer: table must be a string".to_string())?;
+        return Ok(vec![name.to_string()]);
+    }
+    let Some(list) = args.get("tables") else {
+        return Ok(fallback);
+    };
+    let arr = list
+        .as_array()
+        .ok_or("transfer: tables must be an array of table names".to_string())?;
+    arr.iter()
+        .map(|v| {
+            v.as_str()
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .ok_or("transfer: tables entry must be a non-empty table name".to_string())
+        })
+        .collect()
+}
+
+/// `export … to:` — one `seed/<table>.jsonl` per table, then the marker.
+async fn export_to_dir(
+    args: &Map<String, Value>,
+    db: &mut crate::DbConn,
+    seed_dir: &std::path::Path,
+    named: &str,
+    own_path: &meclaw_core::Path,
+) -> SlotAnswer {
+    // Without `table` and without `tables`: every content table of this cell.
+    // That is the form a whole-cell backup takes, and it is why an export walk
+    // no longer needs a script that knows the schema.
+    let inventory = if args.contains_key("table") || args.contains_key("tables") {
+        Vec::new()
+    } else {
+        let probe = Map::from_iter([("operation".to_string(), Value::from("export"))]);
+        match db.call(move |c| export_document(c, &probe)).await {
+            Ok(TransferOutcome::Done { payload, .. }) => payload["tables"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            Ok(other) => return answer_from(other),
+            Err(detail) => return (0, Value::Null, Some("invalid_input"), Some(detail)),
+        }
+    };
+    let tables = match addressed_tables(args, inventory) {
+        Ok(t) => t,
+        Err(detail) => return (0, Value::Null, Some("invalid_input"), Some(detail)),
+    };
+    for table in &tables {
+        if !plain_table_name(table) {
+            return (
+                0,
+                Value::Null,
+                Some("transfer_path_out_of_bounds"),
+                Some(format!(
+                    "transfer refused: {table:?} cannot be a file name, so it cannot leave \
+                     as one — a seed file is <table>.jsonl and nothing else"
+                )),
+            );
+        }
+    }
+    if let Err(e) = tokio::fs::create_dir_all(seed_dir).await {
+        return io_refusal(&format!("{named} could not be created"), &e);
+    }
+
+    // A `key` belongs to ONE table's identity, so it only travels when the call
+    // named one table. A whole-cell export uses each table's own primary key.
+    let single_key = if tables.len() == 1 {
+        args.get("key")
+    } else {
+        None
+    };
+    let mut rows = Map::new();
+    let mut total = 0i64;
+    for table in &tables {
+        let mut call = Map::new();
+        call.insert("operation".into(), Value::from("export"));
+        call.insert("table".into(), Value::from(table.as_str()));
+        if let Some(k) = single_key {
+            call.insert("key".into(), k.clone());
+        }
+        let doc = match db.call(move |c| export_document(c, &call)).await {
+            Ok(TransferOutcome::Done { payload, .. }) => payload,
+            Ok(other) => return answer_from(other),
+            Err(detail) => return (0, Value::Null, Some("invalid_input"), Some(detail)),
+        };
+        let empty = Vec::new();
+        let table_rows = doc["rows"].as_array().unwrap_or(&empty);
+        match write_seed_file(seed_dir, table, &doc["schema"], table_rows).await {
+            Ok(n) => {
+                total += n;
+                rows.insert(table.clone(), Value::from(n));
+            }
+            Err(e) => {
+                return io_refusal(&format!("{named}/{table}.jsonl could not be written"), &e);
+            }
+        }
+    }
+
+    // The marker LAST, and by the same rename: a reader that watches it never
+    // sees a directory that is still filling.
+    let mut marker = Map::new();
+    marker.insert("format".into(), Value::from(TRANSFER_FORMAT));
+    marker.insert("cell".into(), Value::from(own_path.as_str()));
+    marker.insert("exported_at".into(), Value::from(unix_seconds()));
+    marker.insert(
+        "tables".into(),
+        Value::Array(tables.iter().map(|t| Value::from(t.as_str())).collect()),
+    );
+    marker.insert("rows".into(), Value::Object(rows));
+    let text = meclaw_core::serde_json::to_string(&Value::Object(marker.clone()))
+        .unwrap_or_else(|_| "{}".into())
+        + "\n";
+    if let Err(e) = write_whole(&seed_dir.join(EXPORT_MARKER), &text).await {
+        return io_refusal(&format!("{named}/{EXPORT_MARKER} could not be written"), &e);
+    }
+
+    // The receipt is the marker plus the one thing the marker cannot carry:
+    // where the caller will find it.
+    let mut payload = marker;
+    payload.insert("seed_dir".into(), Value::from(named));
+    (total, Value::Object(payload), None, None)
+}
+
+/// Seconds since the epoch — the same stamp the blob store writes, and for the
+/// same reason: a marker needs an ordering, not a calendar.
+fn unix_seconds() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or_default()
+}
+
+/// `import … from:` — every part of one directory, one transaction per table.
+///
+/// Every file is PARSED before the first one is applied. A malformed file in
+/// the set therefore writes nothing at all, rather than leaving the prefix that
+/// a per-file walk would: the parse is checkable ahead of time, so it is
+/// checked ahead of time — the same discipline `import_document` applies inside
+/// one part.
+async fn import_from_dir(
+    args: &Map<String, Value>,
+    db: &mut crate::DbConn,
+    seed_dir: &std::path::Path,
+    named: &str,
+) -> SlotAnswer {
+    let walked = if args.contains_key("table") || args.contains_key("tables") {
+        Vec::new()
+    } else {
+        match seed_tables_in(seed_dir).await {
+            Ok(t) => t,
+            Err(refusal) => return answer_from(refusal),
+        }
+    };
+    let tables = match addressed_tables(args, walked) {
+        Ok(t) => t,
+        Err(detail) => return (0, Value::Null, Some("invalid_input"), Some(detail)),
+    };
+
+    let mut parts = Vec::with_capacity(tables.len());
+    for table in &tables {
+        if !plain_table_name(table) {
+            return (
+                0,
+                Value::Null,
+                Some("transfer_path_out_of_bounds"),
+                Some(format!(
+                    "transfer refused: {table:?} cannot be a file name, so there is no \
+                     seed file it could name"
+                )),
+            );
+        }
+        match read_seed_file(&seed_dir.join(format!("{table}.jsonl"))).await {
+            Ok((schema, rows)) => parts.push((table.clone(), schema, rows)),
+            Err(refusal) => return answer_from(refusal),
+        }
+    }
+
+    let single_key = if parts.len() == 1 {
+        args.get("key")
+    } else {
+        None
+    };
+    let mut receipts = Vec::with_capacity(parts.len());
+    let mut written = 0i64;
+    let mut skipped = 0i64;
+    for (table, schema, rows) in parts {
+        let mut call = Map::new();
+        call.insert("operation".into(), Value::from("import"));
+        call.insert("table".into(), Value::from(table.as_str()));
+        call.insert("schema".into(), schema);
+        call.insert("rows".into(), Value::Array(rows));
+        if let Some(k) = single_key {
+            call.insert("key".into(), k.clone());
+        }
+        match db.call(move |c| import_document(c, &call)).await {
+            Ok(TransferOutcome::Done { payload, .. }) => {
+                written += payload["rows_written"].as_i64().unwrap_or(0);
+                skipped += payload["rows_skipped"].as_i64().unwrap_or(0);
+                let mut one = Map::new();
+                one.insert("table".into(), Value::from(table.as_str()));
+                for k in ["rows_in_part", "rows_written", "rows_skipped"] {
+                    one.insert(k.into(), payload[k].clone());
+                }
+                receipts.push(Value::Object(one));
+            }
+            Ok(other) => return answer_from(other),
+            Err(detail) => return (0, Value::Null, Some("invalid_input"), Some(detail)),
+        }
+    }
+
+    let mut payload = Map::new();
+    payload.insert("format".into(), Value::from(TRANSFER_FORMAT));
+    payload.insert("seed_dir".into(), Value::from(named));
+    payload.insert("tables".into(), Value::Array(receipts));
+    payload.insert("rows_written".into(), Value::from(written));
+    payload.insert("rows_skipped".into(), Value::from(skipped));
+    (written, Value::Object(payload), None, None)
+}
+
+// ---------------------------------------------------------------------------
 // The substrate seam: one body slot, every cell type with a `cell.db`.
 // ---------------------------------------------------------------------------
 
@@ -740,16 +1399,18 @@ fn write_surface_violation(
 /// no cell type has to know the operation exists, and none can accidentally
 /// shadow it with a slot of its own.
 ///
-/// `bounds` are the cell's own two declarations about this seam
-/// (`contract.write_surface`, GH #260, and `contract.transfer`, GH #314). They
-/// are the reason the position above `handle()` no longer costs a boundary: the
-/// first bounds WHO may write, the second whether this cell's database answers
-/// the seam at all.
+/// `bounds` are the cell's own three declarations about this seam
+/// (`contract.write_surface`, GH #260; `contract.transfer`, GH #314;
+/// `params.transfer.base_path`, GH #555). They are the reason the position
+/// above `handle()` costs no boundary: the first bounds WHO may write, the
+/// second whether this cell's database answers the seam at all, and the third
+/// WHERE this cell's own files live — taken by reference because a path is not
+/// a machine word.
 pub(crate) async fn handle_transfer_slot(
     msg: &meclaw_core::Message,
     sink: &meclaw_core::OutputSink,
     db: &mut crate::DbConn,
-    bounds: meclaw_core::TransferBounds,
+    bounds: &meclaw_core::TransferBounds,
 ) -> bool {
     let meclaw_core::Body::Inline(body) = &msg.body else {
         return false;
@@ -837,16 +1498,43 @@ pub(crate) async fn handle_transfer_slot(
         .await;
         return true;
     }
-    let outcome = db.call(move |c| dispatch(c, &args)).await;
-
-    let (rows, payload, code, text) = match outcome {
-        Ok(TransferOutcome::Done {
-            rows_affected,
-            payload,
-        }) => (rows_affected, payload, None, None),
-        Ok(TransferOutcome::Refused { code, detail }) => (0, Value::Null, Some(code), Some(detail)),
-        Ok(TransferOutcome::Sql(e)) => (0, Value::Null, Some("sql_error"), Some(e.to_string())),
-        Err(detail) => (0, Value::Null, Some("invalid_input"), Some(detail)),
+    // GH #555: `to`/`from` decide WHERE the document goes, and nothing else
+    // does. A call that names no path takes the path it always took — the
+    // message form is the default, not a fallback.
+    let site = match transfer_site(&args, &operation) {
+        Ok(s) => s,
+        Err(detail) => {
+            emit_transfer_reply(
+                sink,
+                &target,
+                reply_to.is_some(),
+                &operation,
+                0,
+                Value::Null,
+                Some("invalid_input"),
+                Some(detail),
+                started,
+            )
+            .await;
+            return true;
+        }
+    };
+    let (rows, payload, code, text) = match site {
+        TransferSite::Message => match db.call(move |c| dispatch(c, &args)).await {
+            Ok(outcome) => answer_from(outcome),
+            Err(detail) => (0, Value::Null, Some("invalid_input"), Some(detail)),
+        },
+        TransferSite::File { rel } => {
+            run_file_transfer(
+                &operation,
+                &rel,
+                &args,
+                db,
+                bounds.base_path.as_deref(),
+                sink.sender_path(),
+            )
+            .await
+        }
     };
     emit_transfer_reply(
         sink,
@@ -1013,8 +1701,13 @@ mod tests {
             .build();
 
         assert!(
-            handle_transfer_slot(&msg, &sink, &mut db, meclaw_core::TransferBounds::default())
-                .await,
+            handle_transfer_slot(
+                &msg,
+                &sink,
+                &mut db,
+                &meclaw_core::TransferBounds::default()
+            )
+            .await,
             "a message carrying the slot is answered here and never reaches handle()"
         );
         drop(sink);
@@ -1068,7 +1761,7 @@ mod tests {
         let msg = b.build();
 
         assert!(
-            handle_transfer_slot(&msg, &sink, &mut db, bounds).await,
+            handle_transfer_slot(&msg, &sink, &mut db, &bounds).await,
             "a message carrying the slot is always consumed here, refused or not"
         );
         drop(sink);
@@ -1088,6 +1781,7 @@ mod tests {
         meclaw_core::TransferBounds {
             write_surface: meclaw_core::WriteSurface::Internal,
             policy: meclaw_core::TransferPolicy::All,
+            base_path: None,
         }
     }
 
@@ -1287,8 +1981,13 @@ mod tests {
             .body(meclaw_core::Body::Inline(json!({"messages": []})))
             .build();
         assert!(
-            !handle_transfer_slot(&msg, &sink, &mut db, meclaw_core::TransferBounds::default())
-                .await
+            !handle_transfer_slot(
+                &msg,
+                &sink,
+                &mut db,
+                &meclaw_core::TransferBounds::default()
+            )
+            .await
         );
     }
 }

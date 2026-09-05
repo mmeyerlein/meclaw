@@ -219,11 +219,7 @@ async fn boot(
 ) -> (tempfile::TempDir, ColonyHandle, mpsc::Receiver<Message>) {
     let td = tempfile::TempDir::new().unwrap();
     let root = td.path();
-    std::fs::write(
-        root.join(".env"),
-        format!("AFFINITY_PUSH_CRON={FAST_CRON}\n"),
-    )
-    .unwrap();
+    std::fs::write(root.join(".env"), "").unwrap();
     write(root, "main/config.json", &main_config());
     write(
         root,
@@ -250,6 +246,12 @@ async fn boot(
     // bootstrap has to be handed a literal.
     patch(root, "main/affinity/clock/config.json", |v| {
         v["params"]["schedules"][0]["schedule_id"] = json!("01916f00-0000-7000-8000-000000000263");
+        // The cadence used to come out of the `.env` through a
+        // `${AFFINITY_PUSH_CRON:-…}` token. Since GH #138 it is a literal of
+        // `./clock`'s own params, so it is written here beside the
+        // schedule_id -- an `.env` line would be read by nothing at all and
+        // would say nothing about it.
+        v["params"]["schedules"][0]["cron"] = json!(FAST_CRON);
     });
 
     let factories = || -> Vec<(String, Arc<dyn CellFactory>)> {

@@ -59,6 +59,10 @@ fn config_of(rel: &str) -> Value {
 /// `${VAR:-default}` becomes the default (or the override, when the case names
 /// one), a bare `${VAR}` becomes the empty string -- the same substitution the
 /// colony performs when it reads the config.
+///
+/// Since `receptionist@2.1.0` there is exactly ONE token left for it to resolve
+/// (GH #138): the model id, which belongs to the deployment. Every other knob
+/// of `greet` is a param and reaches the script on the stdin document.
 fn resolve_vars(script: &str, over: &[(&str, &str)]) -> String {
     let mut out = String::with_capacity(script.len());
     let mut rest = script;
@@ -131,9 +135,17 @@ fn run_script_on_stdin(script: &str, stdin_doc: &str) -> std::process::Output {
 }
 
 /// Run the real script against a real stdin document and return the emissions.
-fn greet(over: &[(&str, &str)], doc: Value) -> Vec<Value> {
+///
+/// `params` is this cell's own configuration and travels on the SAME document
+/// as the message, which is where the shipped script reads it from (GH #138).
+/// It used to be a `.env` the harness substituted into the source; a case that
+/// kept doing that would have gone on being green while the value it names
+/// reached nothing.
+fn greet(params: &Value, doc: Value) -> Vec<Value> {
+    let mut doc = doc;
+    doc["params"] = params.clone();
     let out = run_script_on_stdin(
-        &script_of("greet", over),
+        &script_of("greet", ENV),
         &meclaw_testing::code_stdin(&doc).to_string(),
     );
     assert!(
@@ -149,14 +161,15 @@ fn greet(over: &[(&str, &str)], doc: Value) -> Vec<Value> {
     })
 }
 
-/// The default wiring the colony group also uses.
-fn knobs() -> Vec<(&'static str, &'static str)> {
-    vec![
-        ("RECEPTIONIST_MODEL", "gpt-4o-mock"),
-        ("RECEPTIONIST_REPLY_TO", "./sink"),
-        ("RECEPTIONIST_WRITE_TO", "./archive"),
-        ("RECEPTIONIST_ERROR_TO", "./park"),
-    ]
+/// The provider lane, and the only thing the script still reads out of the
+/// environment: one model id (GH #138, ruling R-0904-6).
+const ENV: &[(&str, &str)] = &[("RECEPTIONIST_MODEL", "gpt-4o-mock")];
+
+/// The default wiring the colony group also uses -- three addresses, as PARAMS
+/// of `greet` (GH #138). Two receptions of one colony can now be wired apart,
+/// which is the whole point of the move.
+fn knobs() -> Value {
+    json!({"reply_to": "./sink", "write_to": "./archive", "error_to": "./park"})
 }
 
 /// An inbound turn as it reaches `greet`: the parent edge named the lane and
@@ -284,7 +297,7 @@ fn an_unknown_channel_instantiates_a_talky_and_wires_it_in_one_mutation() {
     assert_eq!(edges[0]["from"], json!("./reception"));
     // The composite's own path, never a cell inside it: `talky@3` is sealed
     // (GH #228), so the lane the edge sets is what selects the cell behind the
-    // door and `RECEPTIONIST_INGRESS` defaults to empty.
+    // door and `params.ingress` defaults to empty.
     assert_eq!(edges[0]["to"], json!("./talky-c-42"));
     let cond = edges[0]["condition"].as_str().unwrap();
     assert!(
@@ -416,10 +429,7 @@ fn the_race_resolves_on_the_channel_key() {
 fn unconfigured_ports_are_left_unwired() {
     let keep = json!({"messages": []});
     let out = greet(
-        &[
-            ("RECEPTIONIST_MODEL", "gpt-4o-mock"),
-            ("RECEPTIONIST_REPLY_TO", "./sink"),
-        ],
+        &json!({"reply_to": "./sink"}),
         look_reply("c-42", &keep, json!([])),
     );
     let edges = out[0]["diff"]["add_edges"].as_array().expect("add_edges");
@@ -715,12 +725,12 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str) {
     std::fs::write(
         root.join(".env"),
         concat!(
+            // The provider lane, and all of it, since GH #138: the keeper's
+            // night and the three addresses this reception answers onto are
+            // params of their own cells now and are patched onto the copied
+            // configs below.
             "OPENROUTER_API_KEY=test-key\n",
-            "KEEPER_NIGHT_CRON=0 0 0 1 1 *\n",
             "RECEPTIONIST_MODEL=gpt-4o-mock\n",
-            "RECEPTIONIST_REPLY_TO=./sink\n",
-            "RECEPTIONIST_WRITE_TO=./archive\n",
-            "RECEPTIONIST_ERROR_TO=./park\n",
         ),
     )
     .unwrap();
@@ -743,6 +753,15 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str) {
         &templates_root().join("receptionist"),
         &root.join("main/reception"),
     );
+    // The wiring this reception was given, as its own params. A tree assembled
+    // by hand has no mutation to carry `override_params`, so the values are
+    // written where a mutation would have merged them -- and they are the only
+    // reason the three outbound edges below get drawn at all.
+    patch(root, "main/reception/greet/config.json", |v| {
+        v["params"]["reply_to"] = json!("./sink");
+        v["params"]["write_to"] = json!("./archive");
+        v["params"]["error_to"] = json!("./park");
+    });
 
     // The talky the receptionist instantiates lives in the TEMPLATE directory,
     // which is where a mutation looks for it.
@@ -750,6 +769,15 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str) {
     patch(root, "templates/talky/brain/config.json", |v| {
         v["params"]["base_url"] = json!(base_url)
     });
+    // The keeper's nightly close sweep, pushed past this run. It was a
+    // `KEEPER_NIGHT_CRON` line in the `.env` above until GH #138; the schedule
+    // is a literal of the timer's own params now, so such a line would be read
+    // by NOTHING and the shipped night would fire into whichever run happens to
+    // start in it -- a flake, not a failure.
+    // `templates/talky/session-keeper` is a `ref` MARKER: the keeper travels
+    // beside the composite and is resolved at instantiation, so that is the copy
+    // an instance reads.
+    meclaw_testing::quiet_keeper_night(&root.join("templates/session-keeper"));
 }
 
 async fn boot(

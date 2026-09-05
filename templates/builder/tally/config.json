@@ -1,0 +1,151 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json, hashlib, datetime\n\n# GH #543 -- the one thing the fast lane has to LOOK UP.\n#\n# A member always gets a screen, and a screen owns a TCP port. One socket is one\n# screen, so the number cannot be the same for two members of one organisation --\n# and it cannot be a claim either: a coordinate somebody asserted instead of\n# measuring is the class of defect GH #517 made expensive, and here the failure\n# would be silent in the same way (two screens, one bound, one degraded).\n#\n# So it is COUNTED, off `/colony/graph`, and it is counted HERE rather than in\n# `recipes`. That cell renders and reads nothing -- `network: deny`, \"No\n# inference, no retrieval\" -- and it stays that way: what reaches it is a wish\n# with `hop.member_index` already on it.\n#\n# THE ROUND, and why there is a round table in it. A `/colony` answer starts a\n# FRESH trace: new trace_id, no parent, and an EMPTY context. Nothing of the wish\n# survives the question except what travelled inside it, and what can travel is\n# `query.tag` -- 64 characters, hard-truncated. So the wish is PARKED in the\n# builder's own round table before the colony is asked, the tag is the key it is\n# parked under, and the answer comes back to a cell that reads it out again. It\n# is the road `templates/builder/eyes` already takes for the composer's two eyes;\n# this is the same road with one reader instead of a model.\n#\n# Three legs, and they are ORDERED rather than concurrent where it matters:\n#\n#   A  the wish arrives  -> park it, and ask /colony/graph (one message each)\n#   B  the graph answers -> count the direct children, read the round back\n#   C  the round answers -> the wish leaves for `recipes`, index stamped\n#\n# The park and the question leave together, and the ordering that makes it safe\n# is the store's own mailbox: the insert is routed before the question is, and\n# the select of leg B is emitted only after the answer came back. A mailbox is\n# FIFO, so the select can never overtake the insert.\n\n# The container a member stands in. Not a parameter, for the reason\n# `recipes.LEVELS` gives: a member does not stand in `./people` in one colony and\n# `./members` in another.\nMEMBERS = \"members\"\n\n# The role a parked wish wears in the round table. `thread` is the builder's one\n# table and its columns are generic on purpose (`build_id`, `iter`, `role`,\n# `turn`); a role of its own is what keeps this round out of a rebuilt thread.\nWISH_ROLE = \"wish\"\n\n# The one leg id of the read-back. The store answers a bundle with one\n# `tool_result` per leg, keyed by that leg's id.\nREAD_SLOT = \"t-round\"\n\n# The six coordinates a refusal needs to find its way home (GH #480), verbatim\n# from `recipes`. They are parked WITH the wish because the colony answer drops\n# the context they arrived in, and a caller nobody wrote down is a caller gone.\nCALLER_KEYS = (\"build_call_id\", \"agent\", \"build_op\", \"build_scope\",\n               \"build_caller\", \"build_auto_submit\")\n\ndoc = json.load(sys.stdin)\nenv = doc.get(\"envelope\") or {}\nheader = env.get(\"header\") or {}\nctx = header.get(\"context\") or {}\nbody = doc.get(\"body\") or {}\n\n\ndef emit(out):\n    sys.stdout.write(json.dumps(out))\n    sys.exit(0)\n\n\ndef park():\n    \"\"\"Terminal by design. The store's ack for the parking insert is an answer\n    to nothing: it is drained here rather than left to dead-letter, and it emits\n    NOTHING, because a second question would be a second round.\"\"\"\n    emit([])\n\n\ndef refuse(why):\n    \"\"\"A count that could not be taken is NAMED. It is not repaired by falling\n    back to the base port: two members on one socket is one screen and one\n    silent degradation, which is the failure this cell exists to prevent.\"\"\"\n    emit([{\"header\": {\"operation\": \"tally\", \"route\": \"error\",\n                      \"error_code\": \"count_unavailable\"},\n           \"messages\": [{\"origin\": \"tool\", \"type\": \"tool_result\", \"id\": \"\",\n                         \"text\": json.dumps({\"reason\": why})}]}])\n\n\ndef head(route, tag, index, caller):\n    \"\"\"Every emission carries the full key set the edges read. A hop key a CEL\n    modifier reads and does not find makes the modifier fail and SKIPS the whole\n    edge -- so keys are present and EMPTY rather than absent.\"\"\"\n    out = {\"operation\": \"tally\", \"route\": route, \"tally_tag\": tag,\n           \"member_index\": index}\n    out.update({k: str((caller or {}).get(k) or \"\") for k in CALLER_KEYS})\n    return out\n\n\ndef store_leg(slot, op):\n    return {\"origin\": \"assistant\", \"type\": \"tool_call\", \"id\": slot,\n            \"text\": json.dumps(op)}\n\n\ndef rows_of(slot):\n    \"\"\"The rows one leg of a bundle came back with. The store answers a bundle\n    with one `tool_result` turn per leg in `messages[]`, keyed by that leg's id;\n    the top-level `results[]` slot carries per-op METADATA only.\"\"\"\n    for m in (body.get(\"messages\") or []):\n        if m.get(\"id\") == slot and m.get(\"text\"):\n            try:\n                r = json.loads(m[\"text\"])\n            except ValueError:\n                return []\n            return r if isinstance(r, list) else []\n    return []\n\n\n# ---- Leg C: the round table answered. Checked FIRST and POSITIVELY, on a key\n# that only this leg carries: a store reply carries no hop of ours, and read as\n# a fresh wish it would start the round again.\nif str(ctx.get(\"member_index\") or \"\") != \"\":\n    tag = str(ctx.get(\"tally_tag\") or \"\")\n    parked_row = None\n    for r in rows_of(READ_SLOT):\n        if r.get(\"role\") == WISH_ROLE and str(r.get(\"build_id\") or \"\") == tag:\n            parked_row = r\n    if parked_row is None:\n        refuse(\"the parked wish is gone from the round table under %r\" % tag)\n    try:\n        held = json.loads(parked_row.get(\"turn\") or \"null\")\n    except ValueError:\n        held = None\n    if not isinstance(held, dict) or not isinstance(held.get(\"payload\"), dict):\n        refuse(\"the parked wish under %r is not a wish\" % tag)\n    emit([{\"header\": head(\"recipe\", tag, str(ctx[\"member_index\"]),\n                          held.get(\"caller\")),\n           \"messages\": [{\"origin\": \"tool\", \"type\": \"tool_result\", \"id\": \"\",\n                         \"text\": json.dumps(held[\"payload\"])}]}])\n\n# ---- The parking ack. The round table answers every write, and the answer to\n# leg A's insert is an answer to nothing: it carries the round's own context with\n# an EMPTY index, which is the one shape neither of the other two legs has.\nif str(ctx.get(\"store_origin\") or \"\") == \"tally\":\n    park()\n\n# ---- Leg B: the colony answered. Also positive, also before the fresh-wish\n# lane: the reply arrives with an empty context and no hop at all.\ngraph = body.get(\"graph\")\nif isinstance(graph, dict):\n    if str(graph.get(\"status\") or \"\") == \"error\":\n        refuse(\"the graph read was refused: %s\"\n               % (graph.get(\"error_code\") or \"invalid_query\"))\n    tag = str(graph.get(\"tag\") or \"\")\n    if not tag:\n        refuse(\"the graph answer carried no tag, so the round it belongs to is \"\n               \"unknowable\")\n    scope = str(graph.get(\"scope\") or \"\").rstrip(\"/\")\n    # DIRECT children only. `/colony/graph` answers with every node under the\n    # prefix, so a member's own furniture -- its brains, its containers, its\n    # store -- would otherwise be counted as people.\n    prefix = scope + \"/\"\n    seen = set()\n    for n in (graph.get(\"nodes\") or []):\n        path = str(n.get(\"path\") or \"\")\n        if path.startswith(prefix):\n            seen.add(path[len(prefix):].split(\"/\")[0])\n    index = str(len(seen))\n    emit([{\"header\": head(\"cstore\", tag, index, {}),\n           \"messages\": [store_leg(READ_SLOT, {\n               \"operation\": \"select\", \"table\": \"thread\",\n               \"columns\": [\"build_id\", \"iter\", \"role\", \"turn\", \"fired\",\n                           \"recorded_at\"],\n               \"where\": {\"build_id\": tag}})]}])\n\n# ---- Leg A: a fresh wish. Park it, then ask.\nraw = \"\"\nfor m in (body.get(\"messages\") or []):\n    if m.get(\"text\"):\n        raw = m[\"text\"]\ntry:\n    payload = json.loads(raw or \"{}\")\nexcept ValueError:\n    payload = {}\nif not isinstance(payload, dict) or not isinstance(payload.get(\"params\"), dict):\n    refuse(\"no wish to count for\")\n\nscope = str(payload[\"params\"].get(\"scope\") or \"\").rstrip(\"/\")\nif not scope:\n    refuse(\"the wish names no organisation to count the members of\")\n\nnow = datetime.datetime.now(datetime.timezone.utc).strftime(\n    \"%Y-%m-%dT%H:%M:%S.%fZ\")\ncaller = {k: str(ctx.get(k) or \"\") for k in CALLER_KEYS}\n# The key of the round. It has to fit in `query.tag`, which the colony truncates\n# to 64 characters WITHOUT saying so, so it is a fixed-width digest rather than\n# anything readable: a tag that lost its tail comes back as a round nobody can\n# find, which is a lost build wearing the face of an empty one.\ntag = hashlib.sha256(\n    (\"%s|%s|%s\" % (now, raw, json.dumps(caller, sort_keys=True)))\n    .encode(\"utf-8\")).hexdigest()[:32]\n\nemit([\n    {\"header\": head(\"cstore\", tag, \"\", caller),\n     \"messages\": [store_leg(\"t-park\", {\n         \"operation\": \"insert\", \"table\": \"thread\",\n         \"row\": {\"build_id\": tag, \"iter\": 0, \"role\": WISH_ROLE,\n                 \"turn\": json.dumps({\"payload\": payload, \"caller\": caller}),\n                 \"fired\": 0, \"recorded_at\": now}})]},\n    {\"header\": {\"operation\": \"tally\", \"route\": \"graph\", \"tally_tag\": tag},\n     \"messages\": [],\n     \"query\": {\"scope\": \"%s/%s\" % (scope, MEMBERS), \"tag\": tag}},\n])\n",
+    "external_timeout_ms": 5000,
+    "sandbox": {
+      "trust": "restricted",
+      "network": "deny",
+      "filesystem": {
+        "runtime": true
+      }
+    }
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "capabilities": [
+      "shell:exec"
+    ],
+    "multi_send_capable": true,
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "query": {
+          "type": "object",
+          "required": false
+        }
+      },
+      "hop": {
+        "operation": {
+          "type": "string",
+          "values": [
+            "tally"
+          ],
+          "required": true
+        },
+        "route": {
+          "type": "string",
+          "values": [
+            "cstore",
+            "graph",
+            "recipe",
+            "error"
+          ],
+          "required": true
+        },
+        "tally_tag": {
+          "type": "string",
+          "required": false,
+          "description": "The key the wish is parked under in the round table, and the same string the colony echoes back in `graph.tag`. It is a 32-character digest rather than anything readable because `query.tag` is truncated to 64 characters without saying so."
+        },
+        "member_index": {
+          "type": "string",
+          "required": false,
+          "description": "How many members the organisation already carries, counted off the graph answer. Present and EMPTY on the way out to the colony and present with the number on the way back -- a hop key a CEL modifier reads and does not find makes the modifier fail and skips the edge."
+        },
+        "build_call_id": {
+          "type": "string",
+          "required": false
+        },
+        "agent": {
+          "type": "string",
+          "required": false
+        },
+        "build_op": {
+          "type": "string",
+          "required": false
+        },
+        "build_scope": {
+          "type": "string",
+          "required": false
+        },
+        "build_caller": {
+          "type": "string",
+          "required": false
+        },
+        "build_auto_submit": {
+          "type": "string",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "values": [
+            "count_unavailable"
+          ],
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {},
+      "context": {
+        "store_origin": {
+          "type": "string",
+          "required": false
+        },
+        "tally_tag": {
+          "type": "string",
+          "required": false
+        },
+        "member_index": {
+          "type": "string",
+          "required": false
+        },
+        "build_call_id": {
+          "type": "string",
+          "required": false
+        },
+        "agent": {
+          "type": "string",
+          "required": false
+        },
+        "build_op": {
+          "type": "string",
+          "required": false
+        },
+        "build_scope": {
+          "type": "string",
+          "required": false
+        },
+        "build_caller": {
+          "type": "string",
+          "required": false
+        },
+        "build_auto_submit": {
+          "type": "string",
+          "required": false
+        }
+      }
+    }
+  },
+  "description": {
+    "purpose": "The one thing the fast lane has to look up: how many members an organisation already carries, so the screen every member gets (GH #543) can be given a port nobody else holds. It asks `/colony/graph`, counts the DIRECT children of the members container, and stamps `hop.member_index` on the wish before `recipes` renders it -- which is what keeps the renderer's own promise (`no inference, no retrieval`) literally true.",
+    "use_when": "Behind `classify` on hop.route == 'count', which is the route a complete `grow_level` wish for the MEMBER level takes. Every other level goes straight to `recipes`: nothing else needs a number that has to be read off the tree.",
+    "not_in_scope": "It renders nothing -- no declaration, no manifest, no digest -- and it decides nothing about the wish it carries: a wish that arrives incomplete arrives incomplete at the renderer too. It reads no database: the count comes back by message, and the round it parks lives in the builder's own round table, which is the one store in this hive. And it does not GUESS: a count that could not be taken is `count_unavailable`, never a quiet fall-back to the base port, because two screens on one socket is one screen and one silent degradation.",
+    "emits_meaning": "route cstore is the round table, twice: on the way out it PARKS the wish (a `/colony` answer starts a fresh trace with an empty context, so the wish would otherwise be gone by the time the count arrives), and on the way back it reads that row again. route graph is the question, spelled the way a `code` cell asks a colony endpoint -- a header, an EMPTY messages[] and the question under `query`, with `query.tag` carrying the round because the echo is the only thing that survives. route recipe is the wish leaving for the renderer with `hop.member_index` stamped and the six caller coordinates put back on the hop, so the edge into `recipes` can restore them into the context. route error with hop.error_code 'count_unavailable' is a count that could not be taken -- a refused read, a tagless answer, or a round the table no longer holds.",
+    "consumes_meaning": "On the first leg the wish itself, as the `tool_result` turn `classify` passed on, plus the caller coordinates off the context. On the second the colony's own `graph` object beside its `tag`; that leg carries NO context at all, which is why the round travels in the tag. On the third the parked row, keyed by `context.tally_tag`, with `context.member_index` telling it apart from the store's ack for the parking write -- present and empty is the ack, present with a number is the round. `consumes.body` is deliberately EMPTY: every declared key is a demand the substrate enforces on ingress, and a colony answer carries no messages[].",
+    "examples": [
+      "a member wish under /os/orgs/acme -> two messages: an insert into `thread` under a fresh tag, and a graph question { scope: '/os/orgs/acme/members', tag: '<32 hex>' }",
+      "a graph answer with nodes /os/orgs/acme/members/blake and /os/orgs/acme/members/blake/talky -> ONE member, so the round is read back with hop.member_index '1'",
+      "the parked row coming back -> the wish leaves on route recipe with hop.member_index '1' and hop.build_caller restored from the row",
+      "a graph answer { status: 'error', error_code: 'invalid_query' } -> route error, hop.error_code 'count_unavailable': a port that was never counted is not a port anybody may hand out"
+    ]
+  }
+}

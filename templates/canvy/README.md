@@ -1,4 +1,4 @@
-# `canvy@2.1.10`
+# `canvy@2.2.0`
 
 > **Deprecated since GH #455.** This template fuses two things the library now keeps apart: a SURFACE (a screen, which belongs to a person and is shared by everybody who writes to it) and a VIEW of the colony (which is one application among many). Those are `display` and `colony-view` in the table next door. `canvy` is not removed and not going to break -- an instance grown from it keeps running, because instantiation copies -- but it takes no further work, and a new screen should be a `display` with `colony-view` writing onto it.
 
@@ -10,7 +10,7 @@ neither of them is the picture: the drag, and where you are looking.
 The first — and so far only — thing it draws is the colony itself.
 
 ```
-refresh (timer)  ->  probe (code)  ->  layout (code)  ->  web (display)
+clock (timer)    ->  probe (code)  ->  layout (code)  ->  web (display)
      every minute        the colony's       objects,          the page,
                          graph endpoint     not markup        on its own port
 ```
@@ -35,11 +35,43 @@ not upgraded in place — it is instantiated fresh beside the old one, its saved
 positions replayed as object patches, and the old hive retired by disconnect.
 Running that is an operator's act and this repository only ships the recipe.
 
+## Since 2.2.0: the timer is called `clock`, and its cadence is a param
+
+The cell that used to be `refresh` is `clock`. Nothing about it moved — the same
+schedule, the same one-minute default, the same single out-edge to
+`probe`. Only the name did, because the library shipped six spellings of one
+cell (`cron`, `refresh`, `night`, `menu-clock`, `tick`, `clock`) and a reader
+could not tell a timer's job from its name
+([#551](https://github.com/mmeyerlein/meclaw/issues/551) § 2). A `timer` that
+carries nothing but the tick is a `clock`; a tick whose NAME says which tick it
+is keeps it. That is a rename inside a sealed hive — `params.ports` is empty, so
+no caller could ever name the cell — which is why the second digit moved rather
+than the first.
+
+**A standing instance keeps the name it was grown with.** Instantiation copied
+the subtree, so a colony running `canvy` from an earlier version still holds a
+`refresh` directory and still works; a path IS a cell's identity, and the only
+operation that changes one is `move_nodes`. Renaming it is an operator's act, is
+never required, and buys nothing but the tidier name.
+
 ## The pipeline, pass by pass
 
-**`refresh`** is a `timer` with one schedule and no opinions.
-`${CANVY_REFRESH_CRON:-0 * * * * *}` — a 6-field Quartz expression, planned in
-**UTC** like every `timer` in the library. Default: second 0 of every minute.
+**`clock`** is a `timer` with one schedule and no opinions. `0 * * * * *` — a
+6-field Quartz expression, planned in **UTC** like every `timer` in the library:
+second 0 of every minute. **Since 2.2.0 that expression is a literal in
+`params.schedules` and not a `CANVY_REFRESH_CRON` token**
+([#138](https://github.com/mmeyerlein/meclaw/issues/138), ruling R-0904-6), so
+two canvases in one colony can refresh at different cadences — the environment
+form had one value for all of them. An instance retunes it by naming
+`schedules`, which is the key that holds the whole list:
+
+```json
+{"add_nodes": [{"name": "canvy", "template": "canvy",
+  "override_params": {"clock": {"schedules": [{
+    "schedule_id": "0190a3f2-0000-7000-8000-0000000004c1",
+    "schedule_name": "canvy-topology-refresh", "cron": "0 */5 * * * *",
+    "emit_to": "../probe", "emit_body": {"messages": []}}]}}}]}
+```
 
 **`probe`** asks the colony's read-only graph endpoint and hands the answer on,
 unread. Two passes: a tick becomes a read, a reply becomes a snapshot. It is
@@ -185,7 +217,7 @@ ships `7810`; a second canvas in the same colony needs a different one, because
 two displays sharing a port is a bind race rather than a configuration.
 
 ```json
-{"add_nodes": [{"path": "/ops", "name": "canvy", "template": "canvy@2.1.10",
+{"add_nodes": [{"path": "/ops", "name": "canvy", "template": "canvy@2.2.0",
                 "override_params": {"web": {"port": 7900}}}]}
 ```
 

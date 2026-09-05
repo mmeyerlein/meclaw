@@ -19,14 +19,15 @@ different owner is refused rather than believed.
 ```
 display-colony-view/
 ├── seed/                            the --root of the colony
-│   ├── colony.json                  substrate defaults. two lines.
+│   ├── colony.json                  substrate defaults, plus the one line that
+│   │                                opts into `mutation_receipts` (GH #553)
 │   └── main/
 │       ├── config.json              type: "hive", and its graph is EMPTY
 │       ├── tick/config.json         a timer, once a minute
 │       └── scribe/
 │           ├── config.json          the second owner: one code cell
 │           └── scribe.py            its source, copied into script_inline
-├── grow.json                        the declaration. three nodes, five edges.
+├── grow.json                        the declaration. three nodes, six edges.
 └── README.md
 ```
 
@@ -37,10 +38,15 @@ producer with something to say, so that is the part that is checked in.
 
 ## The two producers
 
-**`colony-view`** is an app. It ticks, asks the colony's read-only graph endpoint,
-and emits one view whose content is a component tree — plus the components that
-draw it, declared in the same body. It has no port and no display of its own; which
-screen it lands on is the edge's decision, not its own.
+**`colony-view`** is an app. It hears that the graph moved, asks the colony's
+read-only graph endpoint, and emits one view whose content is a component tree —
+plus the components that draw it, declared in the same body. It has no port and no
+display of its own; which screen it lands on is the edge's decision, not its own.
+What tells it the graph moved is the **mutation receipt** (GH #553): `colony.json`
+opts in with `"mutation_receipts": {"to": "/"}`, `grow.json` draws
+`. -> ./colony-view` on `hop.route == 'mutation_committed'`, and the receipt of
+that very mutation is what puts the first picture up. Until `colony-view@1.1.0`
+this was a one-minute poll timer inside the app.
 
 **`scribe`** is the floor of the same model. `kind: "prose"`, a title and a
 paragraph, no components, no port, no markup. That is what an ordinary agent's view
@@ -91,13 +97,18 @@ dead-letters. Neither is silent, which is the point.
 http://127.0.0.1:7899/
 ```
 
-Within a minute both views stand there, newest first. Drag a node of the topology
-picture: nothing enters the router — the write lands in the screen's own database
-and is diffed to every open browser — and it is still where you put it after the
-next tick, because the application's node declares `keep` and the screen leaves
-those props alone on an object it already holds.
+The topology picture is there at once: `colony.json` opts this colony into
+`mutation_receipts`, so the mutation that grew the screen left a receipt at the
+root hive, the root hive carried it into `./colony-view`, and the app drew the
+colony it had just become part of. The scribe's own view follows within a minute
+— that one really is a timer, and it is the example's PRODUCER, not the app.
+Drag a node of the topology picture: nothing enters the router — the write lands
+in the screen's own database and is diffed to every open browser — and it is
+still where you put it after the next redraw, because the application's node
+declares `keep` and the screen leaves those props alone on an object it already
+holds.
 
-**Ask for a fresh picture instead of waiting:**
+**Ask for a fresh picture without changing anything:**
 
 ```bash
 curl -s -X POST http://127.0.0.1:7788/messages \

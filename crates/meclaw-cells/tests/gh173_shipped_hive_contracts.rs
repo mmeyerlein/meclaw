@@ -281,10 +281,17 @@ fn condition_reads_a_hop_key_the_probe_cannot_carry(
     false
 }
 
-/// GH #469 — the outward mirror of
-/// [`condition_reads_a_hop_key_the_probe_cannot_carry`]: an exit that narrows
-/// WITHIN a declared lane on a PROMOTED `context` key the bare probe cannot
-/// carry.
+/// GH #469 — the mirror of
+/// [`condition_reads_a_hop_key_the_probe_cannot_carry`] one compartment over: an
+/// edge that narrows WITHIN a declared lane on a PROMOTED `context` key the bare
+/// probe cannot carry.
+///
+/// GH #552 gave it the second direction as well. `assistant` takes `in_tool` and
+/// `in_menu` at its rim and hands each one to the occupant that ASKED, told apart
+/// by `context.tool_caller` — the same discriminator `./tools -> ./cogny` against
+/// `./tools -> ./talky` already uses one storey down. The door into `./cogny`
+/// can never fire under a route-only probe, and reading that as "opens on a lane
+/// no `accepts` entry names" is the identical false positive, on the way in.
 ///
 /// `probe(route)` builds an EMPTY context compartment. An exit conditioned on
 /// `has(context.build_caller) && context.build_caller == 'operator'` can
@@ -388,7 +395,8 @@ fn every_lane_the_graph_opens_is_declared() {
                     .any(|d| {
                         d.target.as_str() == format!("{HIVE}/{}", spec.to.trim_start_matches("./"))
                     })
-            }) || condition_reads_a_hop_key_the_probe_cannot_carry(spec);
+            }) || condition_reads_a_hop_key_the_probe_cannot_carry(spec)
+                || condition_reads_a_context_key(spec);
             assert!(
                 covered,
                 "{name}: the door {} -> {} opens on a lane no `accepts` entry names",

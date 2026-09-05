@@ -422,20 +422,29 @@ fn a_full_page_is_recognised_as_one_rather_than_guessed() {
 
 #[test]
 fn the_facts_bound_has_one_declared_default() {
-    // The knob task 16 adds. GH #204's convention: the description opens with
-    // the env var, the declared default and the inline `${VAR:-…}` are the same
-    // value -- that test compares them, this one only insists the knob exists,
-    // because a bound nobody declared is a bound nobody can change.
-    let settings = config(GLUE_CONFIG)["contract"]["settings"].clone();
+    // The knob task 16 adds. Since GH #138 it is a PARAM of this cell rather
+    // than a `${MEMORY_CLOSE_FACT_ROWS}` substitution, so the pair the old
+    // gh204 convention compared (a declaration and its env twin) is a triple:
+    // `params`, `contract.settings` and the script's own fallback literal.
+    // `gh204_declared_defaults_match_the_inline` compares all three; this one
+    // only insists the knob exists and is reachable, because a bound nobody
+    // declared is a bound nobody can change -- and an `override_params` entry
+    // may only name a key that is under `params` at all (GH #294).
+    let cfg = config(GLUE_CONFIG);
+    let settings = cfg["contract"]["settings"].clone();
     let fact_rows = &settings["close_fact_rows"];
     assert_eq!(
         fact_rows["default"], 256,
         "the facts page bound is declared: {settings}"
     );
+    assert_eq!(
+        cfg["params"]["close_fact_rows"], 256,
+        "and it is a param, so an instance can be given a different one"
+    );
     assert!(
-        fact_rows["description"]
+        cfg["params"]["script_inline"]
             .as_str()
-            .is_some_and(|d| d.starts_with("MEMORY_CLOSE_FACT_ROWS")),
-        "and names its env twin first, the gh204 convention: {fact_rows}"
+            .is_some_and(|s| s.contains("_int(\"close_fact_rows\", 256)")),
+        "and the script spends the same number as its own fallback"
     );
 }

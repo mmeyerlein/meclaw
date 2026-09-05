@@ -220,14 +220,7 @@ const NEVER: &str = "0 0 0 1 1 *";
 
 fn build_tree(td: &tempfile::TempDir, affinity: &std::path::Path, talky: &std::path::Path) {
     let root = td.path();
-    // Two seconds, so the push tick fires several times inside the test's own
-    // budget. The cron comes out of the `.env` through the shipped
-    // `${AFFINITY_PUSH_CRON:-…}` default, so late binding is under test too.
-    std::fs::write(
-        root.join(".env"),
-        "AFFINITY_PUSH_CRON=*/2 * * * * *\nOPENROUTER_API_KEY=test-key\nKEEPER_IDLE_MS=0\n",
-    )
-    .unwrap();
+    std::fs::write(root.join(".env"), "OPENROUTER_API_KEY=test-key\n").unwrap();
     write(root, "main/config.json", &main_config());
     write(
         root,
@@ -243,19 +236,26 @@ fn build_tree(td: &tempfile::TempDir, affinity: &std::path::Path, talky: &std::p
     copy_cells(talky, &root.join("main/talky"));
     patch(root, "main/affinity/clock/config.json", |v| {
         v["params"]["schedules"][0]["schedule_id"] = json!(CLOCK_ID);
+        // Since GH #138 the cadence is a literal of `./clock`'s own params, so
+        // it is written here beside the schedule_id -- the form an
+        // `override_params` entry takes at instantiation. An
+        // `AFFINITY_PUSH_CRON=` line in the `.env` would be read by nothing at
+        // all and would say nothing about it.
+        // Two seconds, so the push tick fires several times inside the
+        // test's own budget.
+        v["params"]["schedules"][0]["cron"] = json!("*/2 * * * * *");
     });
     patch(root, "main/talky/session-keeper/night/config.json", |v| {
         v["params"]["schedules"][0]["schedule_id"] = json!(KEEPER_ID);
         v["params"]["schedules"][0]["cron"] = json!(NEVER);
     });
-    // GH #464 -- the second timer of a shipped composite, and the same two
-    // patches for the same two reasons: `${uuid7:*}` is an INSTANTIATION
-    // substitution and a tree written straight to disk carries a literal, and a
-    // menu tick during a test run would ask a tools hive this colony does not
-    // have.
-    patch(root, "main/talky/collector/menu-clock/config.json", |v| {
-        v["params"]["schedules"][0]["schedule_id"] = json!(KEEPER_ID);
-        v["params"]["schedules"][0]["cron"] = json!(NEVER);
+    // Every open generation is a candidate the moment a sweep runs. It was a
+    // `KEEPER_IDLE_MS=0` line in the `.env` above until GH #138; the knob is a
+    // param of `./close` now, so such a line would be read by NOTHING, and the
+    // shipped two-hour window would be back without anybody saying so. Patching
+    // the copied config is what an `override_params` entry does to a staged one.
+    patch(root, "main/talky/session-keeper/close/config.json", |v| {
+        v["params"]["idle_ms"] = json!(0);
     });
     // The brain never has to answer on this lane — a pack costs a write and no
     // inference — but a `base_url` pointing at the real provider is a network

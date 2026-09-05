@@ -1,4 +1,4 @@
-# `operator@1.1.0`
+# `operator@1.2.0`
 
 **One front door into the OS, and one place a submission lives.** A sealed hive at the
 colony shell with one occupant per subject, reached by naming a lane and never a cell. It
@@ -52,12 +52,12 @@ question this template does not ask.
 | direction | lane | what it carries |
 |---|---|---|
 | in | `in_submit` | a manifest to apply: `manifest[]`, optionally pinned by `hop.manifest_sha256` — **or** the digest of a parked draft and no manifest at all. Two callers: a person at the rim, and an assistant inside the colony (`context.operator_caller == 'agent'`) |
-| in | `in_dump` | `{target: <member path>}` — produce a dump of that member's memory |
+| in | `in_dump` | `{target: <member path>, export_to?: <run dir>}` — produce a dump of that member's memory. `export_to` names the directory of ONE run, relative to the fence each holder's own store declares in `params.transfer.base_path`; without it every holder writes into its own name directly (GH #555, since 1.2.0) |
 | in | `in_lifecycle` | `{op: 'birth' \| 'sleep' \| 'wake', scope, node?, edges?}` |
 | in | `in_draft` | a manifest the baumeister drew for an operator. Parked, answered, **not applied** — the only sender is the level's own `./builder -> ./operator` edge |
 | in | `in_verdict` | the broker's answer to the one capability question a submission asks — the only sender is the level's own `./access -> ./operator` edge |
 | in | `export_done` | what the export lane answered |
-| out | `export` | the export request on its way down, carrying `hop.target` |
+| out | `export` | the export request on its way down, carrying `hop.target` and — when the caller named one — `hop.export_to` |
 | out | `receipt` | what happened — **four senders, one lane** |
 | out | `ask` | the capability question, raised by `./submit` and answered back in on `in_verdict` |
 | out | `mutate` | the checked, attributed manifest, on its way to a door the colony's root draws or nobody does |
@@ -92,7 +92,7 @@ learns which one they typed instead of reading a queue.
 |---|---|---|
 | `intake/` | `in_submit`, `in_draft`, the submitter's `in_receipt` | draws the digest, emits `apply` next door, parks a draft and renders the receipt |
 | `submit/` | `in_apply`, `in_verdict` | a **ref** onto the `submit` template: the gate that asks the broker and the one node in the tree with a reach onto the mutation door |
-| `export/` | `in_dump`, `export_done` | turns `{target}` into a request on the lane the memory accepts |
+| `export/` | `in_dump`, `export_done` | turns `{target, export_to?}` into a request on the lane the memory accepts, and renders `hop.export_hive` / `hop.seed_dir` out of what comes back |
 | `lifecycle/` | `in_lifecycle` | composes a birth / sleep / wake manifest and hands it to `intake` next door |
 | `unknown/` | nothing else fired | one receipt, `unknown_route` |
 | `drafts/` | only `./intake` | a `store`: one row per parked draft, keyed by its digest |
@@ -228,6 +228,7 @@ baumeister and the organisation container are its siblings only there.
                                                  set_hop route 'in_ingest'             (GH #504)
 
 ./operator   --export-->       ./orgs            set_hop route 'in_export', carries hop.target
+                                                 and hop.export_to                     (GH #555)
 ./orgs       --export_done-->  ./operator
 ```
 
@@ -302,8 +303,10 @@ and an exit would have made the hive's default door catch its own answer.
 **For whoever builds the export pass-through.** The shell re-stamps this hive's `export`
 lane onto `in_export` — the standard shape this file already uses twice — and from there
 `in_export` and `export_done` are the two names to relay **unchanged** at every level down
-to the memory that answers: `{route: 'in_export', target: <member path>}` down,
-`export_done` up. The trigger is
+to the memory that answers: `{route: 'in_export', target: <member path>, export_to?: <run>}`
+down, `export_done` up — one per holder since GH #555, carrying `hop.export_hive` and
+`hop.seed_dir`. This hive resolves neither address and never sees a file: a path canonicalised
+here would be a claim about a filesystem the operator does not stand on. The trigger is
 `/os/operator/export` and nothing else, so an export is one thing an operator asks for
 rather than a lane every level offers separately.
 

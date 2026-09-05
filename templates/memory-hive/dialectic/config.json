@@ -18,7 +18,7 @@
     "x_title": "${OPENROUTER_X_TITLE:-MeClaw}",
     "provider_extra": {
       "reasoning": {
-        "effort": "${MEMORY_REASONING_DIALECTIC:-medium}"
+        "effort": "medium"
       }
     }
   },
@@ -38,7 +38,7 @@
             "effort": "medium"
           }
         },
-        "description": "The provider overlay of this cell. Its one knob is the deliberation budget at provider_extra.reasoning.effort (MEMORY_REASONING_DIALECTIC) — set explicitly, never inherited from the provider default. Declared as the overlay rather than as the flat `reasoning_effort` param because the overlay is applied last and wins over that param anyway; a setting named after the flat param would name a field this cell does not set."
+        "description": "The provider overlay of this cell. Its one knob is the deliberation budget at provider_extra.reasoning.effort, a LITERAL of this cell's own `params` since GH #138 and no longer the colony-wide `MEMORY_REASONING_DIALECTIC` — set explicitly, never inherited from the provider default. Declared as the overlay rather than as the flat `reasoning_effort` param because the overlay is applied last and wins over that param anyway; a setting named after the flat param would name a field this cell does not set."
       }
     },
     "emits": {

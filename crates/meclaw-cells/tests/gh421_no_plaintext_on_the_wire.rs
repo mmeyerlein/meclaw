@@ -260,9 +260,6 @@ fn main_config() -> Value {
 /// how the secret gets into the vault, which is the whole point of the pair.
 fn build_tree(td: &tempfile::TempDir, access: &std::path::Path, base_url: &str) {
     let root = td.path();
-    // The shipped `invoke` script late-binds `${ACCESS_USAGE_ROWS:-500}`, so the
-    // tree needs an env source for the substitution to run against.
-    std::fs::write(root.join(".env"), "ACCESS_USAGE_ROWS=500\n").unwrap();
     // A deliberately tiny inline bound. At the 64 KiB default nothing in this
     // round is big enough to offload, and the blob half of the sweep would
     // measure an empty directory. At 256 bytes most of the round — the grant

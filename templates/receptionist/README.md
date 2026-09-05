@@ -1,4 +1,4 @@
-# `receptionist@2.0.5`
+# `receptionist@2.1.0`
 
 One agent per channel, built the moment a channel first speaks. Two cells under
 one hive: `greet` (a `code` cell) and `ledger` (a `store`). No new cell type, no
@@ -122,7 +122,8 @@ owns `hop.chan` and always writes it as a string.
 
 ### What the reception draws per channel
 
-One mutation, `scope` = the hive's parent, `ctx.model` = `RECEPTIONIST_MODEL`:
+One mutation, `scope` = the hive's parent, `ctx.model` = `RECEPTIONIST_MODEL`
+(the one env knob left):
 
 ```json
 {"scope": "/", "ctx": {"model": "openai/gpt-4o-mini"}, "diff": {
@@ -133,12 +134,12 @@ One mutation, `scope` = the hive's parent, `ctx.model` = `RECEPTIONIST_MODEL`:
      "modifier": {"set_hop": {"route": "'in_turn'"},
                   "set_context": {"channel": "hop.chan_raw",
                                   "audience_set": "hop.aud"}}},
-    {"from": "./talky-<key>", "to": "<RECEPTIONIST_REPLY_TO>",
+    {"from": "./talky-<key>", "to": "<params.reply_to>",
      "condition": "has(hop.route) && hop.route == 'answer' && !has(hop.round_capped) && !has(hop.degraded)"},
-    {"from": "./talky-<key>", "to": "<RECEPTIONIST_WRITE_TO>",
+    {"from": "./talky-<key>", "to": "<params.write_to>",
      "condition": "has(hop.route) && hop.route == 'write'",
      "modifier": {"set_hop": {"route": "'in_batch'"}}},
-    {"from": "./talky-<key>", "to": "<RECEPTIONIST_ERROR_TO>",
+    {"from": "./talky-<key>", "to": "<params.error_to>",
      "condition": "has(hop.route) && hop.route == 'error'"}]}}
 ```
 
@@ -177,36 +178,70 @@ one agent.
 
 ## Knobs
 
-**Env knobs are an experimental surface.** Until this template's knobs move onto the `params`
-block of the cells that read them, their names carry no compatibility promise and may change in
-any `0.x` release; provider credentials keep living in `.env` either way. The migration is
-tracked in [#138](https://github.com/mmeyerlein/meclaw/issues/138), with the
-`collector@1.2.0` migration ([#136](https://github.com/mmeyerlein/meclaw/issues/136)) as the
-reference pattern.
+Two lanes, and the line between them is the ruling of
+[#138](https://github.com/mmeyerlein/meclaw/issues/138) (R-0904-6): a behaviour
+knob is a **param** of the cell that reads it; only the provider lane stays in
+`.env`, because a secret in a `config.json` is a secret in the repository.
 
-All `${VAR:-default}`, environment class, bound late at every read.
+Since `receptionist@2.1.0` the seven knobs below are params of `./greet`. Two
+receptions in one colony can therefore build different composites onto different
+lanes -- which an environment they share could not say -- and the manifest that
+grows one sets them with `override_params`, keyed by cell path:
+
+```json
+{"op": "add_nodes", "scope": "/",
+ "nodes": [{"name": "reception", "template": "receptionist@2.1.0",
+            "override_params": {
+              "greet": {"template": "cogny",
+                        "reply_to": "./sink",
+                        "write_to": "./archive",
+                        "error_to": "./park"}}}]}
+```
+
+The mutation door accepts those keys precisely because they EXIST under `params`
+([#294](https://github.com/mmeyerlein/meclaw/issues/294) ruling Q6: an override
+names a param the addressed cell has, and a cell with no `params` block has the
+empty set). While a knob was a `${...}` token inside `script_inline` it was not a
+param key at all, and no override could name it.
+
+A knob left out means the shipped default, and so does `null`. A **blank string**
+is different here, and deliberately: all seven are addresses, read with `_str`,
+and for an address the empty string is a VALUE -- six of them SHIP empty and mean
+something by it. Blanking `ingress` says "the instance path itself"; blanking
+`reply_to` says "draw no answer edge". A fallback would make the shipped default
+unsayable.
+
+| cell | param | default | meaning |
+|---|---|---|---|
+| `./greet` | `template` | `talky` | the composite to instantiate; also the instance name prefix |
+| `./greet` | `ingress` | *(empty)* | where the turn enters the composite, relative to the instance root. Empty is the instance path itself -- what a sealed composite wants, since the lane and not the path selects the cell |
+| `./greet` | `reply_from` | *(empty)* | where answers and write batches leave the composite. Empty is the instance path itself |
+| `./greet` | `error_from` | *(empty)* | where the error lane leaves the composite. Empty is the instance path itself |
+| `./greet` | `reply_to` | *(empty)* | scope-relative answer target; empty = no edge |
+| `./greet` | `write_to` | *(empty)* | scope-relative batch target; empty = no edge |
+| `./greet` | `error_to` | *(empty)* | scope-relative drain target; empty = no edge |
+
+The six talky-shaped defaults are how another composite plugs in: point them at
+its ports and the reception instantiates that instead.
+
+The provider lane, in `.env`, and all of it:
 
 | env var | default | meaning |
 |---|---|---|
-| `RECEPTIONIST_MODEL` | `openai/gpt-4o-mini` | the `ctx.model` handed to every instance. Convention K-H2 (Lane B): put the RESOLVED literal in `.env` |
-| `RECEPTIONIST_TEMPLATE` | `talky` | the composite to instantiate; also the instance name prefix |
-| `RECEPTIONIST_INGRESS` | *(empty)* | where the turn enters the composite, relative to the instance root. Empty is the instance path itself -- what a sealed composite wants, since the lane and not the path selects the cell |
-| `RECEPTIONIST_REPLY_FROM` | *(empty)* | where answers and write batches leave the composite. Empty is the instance path itself |
-| `RECEPTIONIST_ERROR_FROM` | *(empty)* | where the error lane leaves the composite. Empty is the instance path itself |
-| `RECEPTIONIST_REPLY_TO` | (empty) | scope-relative answer target; empty = no edge |
-| `RECEPTIONIST_WRITE_TO` | (empty) | scope-relative batch target; empty = no edge |
-| `RECEPTIONIST_ERROR_TO` | (empty) | scope-relative drain target; empty = no edge |
+| `RECEPTIONIST_MODEL` | `openai/gpt-4o-mini` | the `ctx.model` handed to every instance. A model id belongs to the deployment, so it stays here. Convention K-H2 (Lane B): put the RESOLVED literal in `.env`, never a nested token |
 
-The five talky-shaped defaults are how another composite plugs in: point them at
-its ports and the reception instantiates that instead.
-
-**Every knob the INSTANCES take is theirs, not the reception's.** The env-class ones --
-`KEEPER_IDLE_MS`, `SUMMARIZER_*`, `DISPATCHER_*` -- live in the same `.env` and reach every
-instance verbatim, which also means every channel gets the same ones. The collector's knobs
-are params since `collector@1.2.0` and could in principle differ per channel, but this
-template writes the same mutation for every new channel and therefore ships the same
-defaults to all of them. Per-channel tuning is not a knob of the reception; it is a
+**Every knob the INSTANCES take is theirs, not the reception's.**
+Since `collector@1.2.0` and since `session-keeper@2.2.0`, `summarizer@2.1.0` and `dispatcher@1.2.0`,
+they are all params of the cells that read them ([#138](https://github.com/mmeyerlein/meclaw/issues/138)),
+so they *could* differ per channel -- but this template writes the same mutation
+for every new channel and therefore ships the same defaults to all of them. The
+reception's own knobs are still env-class and still in `.env`. Per-channel tuning is not a knob of the reception; it is a
 follow-up mutation on the instance, or a different template.
+
+**A standing instance keeps what it was grown with.** Instantiation is a COPY, so
+a reception grown before `2.1.0` still carries the old `${RECEPTIONIST_*}` tokens
+in its own `config.json` and still reads them out of the environment. Nothing
+here reaches it.
 
 ## Two things it deliberately does not do
 
@@ -242,7 +277,7 @@ winner's edge answers the same key.
   silent keeps its row and its agent, cold, at the cost of a registry entry and
   a `cell.db`. There is no eviction, no quota and no fairness.
 - **Not a migration.** Instances already created keep the topology and the
-  `ctx.model` they were born with; changing `RECEPTIONIST_*` moves only the
+  `ctx.model` they were born with; retuning this reception moves only the
   channels that arrive AFTER it.
 
 ## Pins

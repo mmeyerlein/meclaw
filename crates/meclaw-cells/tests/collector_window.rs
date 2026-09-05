@@ -2577,93 +2577,26 @@ fn the_prune_chain_cuts_rounds_with_the_same_boundary_and_reports_the_cut() {
     );
 }
 
-// ==================================================== THE MEMORY TOOL (GH #78)
+// ================================== THE MEMORY LEG (GH #78, narrowed by #552)
 //
 // The ambient leg is fired before the model has seen the turn, so nothing in an
 // agent can DECIDE to ask memory about a TIME RANGE -- the half of #27 that did
-// not fall out naturally. The tool closes it, and it closes it INSIDE the
-// collector: from the dispatcher's side `memory_recall` is a tool like any
-// other (it names the tool, an edge knows the cell), and the cell behind that
-// edge is the collector itself, because the collector already owns the recall
-// port (R-OS-5). The round therefore ends where it began (R-OS-2), and memory
-// never learns a word of dispatcher vocabulary.
-
-/// The tool call as `dispatcher@1` hands it on: ONE tool_call turn whose `text`
-/// is the raw arguments string and whose id is the one the round's expectation
-/// set was built from.
-fn memory_call(args: serde_json::Value) -> serde_json::Value {
-    lane_doc(
-        "in_memory_call",
-        serde_json::json!([{"origin": "assistant", "type": "tool_call", "id": "m1",
-                            "text": args.to_string()}]),
-    )
-}
-
-/// A recall bundle on its way back, correlated to the call that asked for it.
-fn memory_answer(call_id: &str, readable: &str) -> serde_json::Value {
-    serde_json::json!({
-        "header": {"context": {"session_id": "s1", "turn_id": "t1", "iter": "0",
-                               "memory_call_id": call_id},
-                   "hop": {"route": "in_bundle"}},
-        "system": {"memory": {"bundle": {"text": "{\"beliefs\":[]}"}}},
-        "messages": [{"origin": "tool", "type": "tool_result", "id": "recall",
-                      "text": readable}]
-    })
-}
+// not fall out naturally. The TOOL closes that half, and until #552 it closed it
+// inside this cell: the collector owned the recall port, so it answered the call
+// as well and typed the schema by hand. It does not any more -- the memory hive
+// declares the name and answers it, because the hive is where the rules a recall
+// obeys are enforced. What is measured below is the AMBIENT leg, and the round
+// fan-in a memory result joins like any other tool result.
 
 #[test]
-fn a_memory_recall_call_is_served_on_the_collectors_own_recall_port() {
-    let out = emit(memory_call(
-        serde_json::json!({"query": "what did I say about the roof?"}),
-    ));
-    assert_eq!(
-        emitted(&out),
-        1,
-        "one request, no store round-trip: {out:?}"
-    );
-    let ask = &out[0];
-    assert_eq!(
-        ask["header"]["route"], "recall",
-        "the same port the per-turn leg uses -- no second door into memory"
-    );
-    assert_eq!(
-        ask["header"]["recall_query"],
-        "what did I say about the roof?"
-    );
-    assert_eq!(
-        ask["header"]["memory_tier"], "1",
-        "the tier is configuration, never a model argument"
-    );
-    assert_eq!(
-        ask["header"]["memory_call_id"], "m1",
-        "the correlation key that turns the answer back into THIS call's result"
-    );
-    assert_eq!(
-        ask["header"]["turn_id"], "t1",
-        "and it belongs to the running turn, like every other leg"
-    );
-    assert_eq!(texts_of(ask), vec!["what did I say about the roof?"]);
-}
-
-#[test]
-fn the_window_arguments_of_the_call_reach_the_recall_request() {
+fn the_ambient_ask_names_no_window_and_says_so() {
     // The P15 finding was that the recall cell has understood
-    // recall_window_from/_to for a long time and nobody ever DERIVES one. This
-    // is the first producer, and it sits at the consumer: the model asked.
-    let out = emit(memory_call(serde_json::json!({
-        "query": "what did we decide?",
-        "window_from": "2026-08-01T00:00:00Z",
-        "window_to": "2026-08-02T00:00:00Z"
-    })));
-    assert_eq!(
-        out[0]["header"]["recall_window_from"],
-        "2026-08-01T00:00:00Z"
-    );
-    assert_eq!(out[0]["header"]["recall_window_to"], "2026-08-02T00:00:00Z");
-
-    // The ambient ask travels the SAME edge, so it carries the same keys --
-    // empty rather than absent, because a missing hop key makes the promoting
-    // CEL modifier fail and a failed modifier skips the edge.
+    // recall_window_from/_to for a long time and nobody ever DERIVES one. The
+    // producer is the MODEL, and since GH #552 it names them to the memory hive
+    // directly (`memory-hive/tool`), not to this cell. What is left here is the
+    // ambient leg, which asks no window at all -- and it still carries both keys,
+    // empty rather than absent, because a missing hop key makes the promoting CEL
+    // modifier fail and a failed modifier skips the edge.
     let out = emit_with(
         &[("memory_tier", "0")],
         lane_doc(
@@ -2677,46 +2610,11 @@ fn the_window_arguments_of_the_call_reach_the_recall_request() {
         .expect("the ambient request");
     assert_eq!(ask["header"]["recall_window_from"], "");
     assert_eq!(ask["header"]["recall_window_to"], "");
-    assert_eq!(
-        ask["header"]["memory_call_id"], "",
-        "no call asked for it: the ambient leg is the free floor under every turn"
+    assert!(
+        ask["header"]["memory_call_id"].is_null(),
+        "the port has ONE meaning again: no call asked for this, and no \
+         correlation key rides along to say a call might have: {ask:#?}"
     );
-}
-
-#[test]
-fn the_bundle_of_a_tool_call_becomes_a_tool_result_of_the_round() {
-    let out = emit(memory_answer(
-        "m1",
-        "MEMORY (tier 1)\n- the roof was fixed in May",
-    ));
-    assert_eq!(emitted(&out), 1);
-    let op = op_of(&out[0]);
-    assert_eq!(op["table"], "round");
-    assert_eq!(
-        op["row"]["role"], "tool",
-        "an answered call is a tool RESULT of the round, not a leg of the turn"
-    );
-    assert_eq!(
-        out[0]["header"]["phase"], "round-check",
-        "the ordinary fan-in"
-    );
-    let turn: serde_json::Value =
-        serde_json::from_str(op["row"]["turn"].as_str().expect("turn")).expect("turn json");
-    assert_eq!(turn["type"], "tool_result");
-    assert_eq!(
-        turn["id"], "m1",
-        "under the ORIGINAL tool_call_id, or the round could never complete"
-    );
-    assert_eq!(turn["text"], "MEMORY (tier 1)\n- the roof was fixed in May");
-
-    // And the ambient bundle is untouched by all of this: no call id, no round.
-    let mut ambient = memory_answer("", "MEMORY (tier 0)\n- the editor is helix");
-    ambient["header"]["context"]
-        .as_object_mut()
-        .expect("ctx")
-        .remove("memory_call_id");
-    let out = emit(ambient);
-    assert_eq!(op_of(&out[0])["row"]["role"], "leg-memory");
 }
 
 #[test]
@@ -2782,34 +2680,6 @@ fn a_memory_result_fans_in_beside_a_normal_tool_result_and_the_round_fires() {
 }
 
 #[test]
-fn a_memory_call_without_a_configured_tier_is_answered_instead_of_parked() {
-    // The tool switched off is a FAILED call, not a hung round: asking into a
-    // void would park the fan-in until the idle exit. The lid pattern again --
-    // the brain sees the failure and has to answer it.
-    let out = emit_with(
-        &[("memory_call_tier", "")],
-        memory_call(serde_json::json!({"query": "anything?"})),
-    );
-    assert_eq!(emitted(&out), 1);
-    assert_eq!(
-        out[0]["header"]["route"], "cstore",
-        "no request leaves for a port that would not answer it"
-    );
-    let op = op_of(&out[0]);
-    assert_eq!(op["row"]["role"], "tool");
-    let turn: serde_json::Value =
-        serde_json::from_str(op["row"]["turn"].as_str().expect("turn")).expect("turn json");
-    assert_eq!(turn["id"], "m1");
-    assert!(
-        turn["text"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("not configured"),
-        "and it says why: {turn}"
-    );
-}
-
-#[test]
 fn the_memory_result_is_capped_like_every_other_tool_result() {
     // GH #91's discipline, unchanged: the recall bundle of a TOOL call enters
     // the window through the round, so the round's per-item cap runs on it.
@@ -2836,21 +2706,6 @@ fn the_memory_result_is_capped_like_every_other_tool_result() {
     assert_eq!(
         out[0]["header"]["round_capped"], "1",
         "and the cut is reported"
-    );
-}
-
-#[test]
-fn the_machine_readable_form_of_a_called_bundle_is_a_configuration_choice() {
-    let out = emit_with(
-        &[("memory_form", "json")],
-        memory_answer("m1", "MEMORY (tier 1)\n- the roof"),
-    );
-    let turn: serde_json::Value =
-        serde_json::from_str(op_of(&out[0])["row"]["turn"].as_str().expect("turn"))
-            .expect("turn json");
-    assert_eq!(
-        turn["text"], "{\"bundle\": {\"text\": \"{\\\"beliefs\\\":[]}\"}}",
-        "the collector renders nothing of its own; it chooses a form"
     );
 }
 

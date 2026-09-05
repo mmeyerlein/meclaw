@@ -405,6 +405,30 @@ fn schedule_rows(cell_dir: &std::path::Path) -> Vec<(String, String, String)> {
     rows.collect::<Result<_, _>>().unwrap()
 }
 
+/// The first schedule's cron expression as a sidecar-less copy of `cell.db`
+/// sees it (GH #582).
+///
+/// A WAL database is two files, and a backup that takes only the `*.db` half
+/// sees whatever was last checkpointed into it. `c5` needs the birth state to
+/// have landed there before it stages the un-checkpointed write, and this is
+/// the positive receipt for that: copy the base file alone into a scratch
+/// directory — the same artefact `copy_filtered` produces — and read the row
+/// out of it. Every way the copy can fail to answer (no file yet, a header
+/// without content, a page torn by a concurrent write) comes back as `Err` and
+/// is retried by the caller, never mistaken for a state.
+fn birth_state_in_the_base_file(cell_dir: &std::path::Path) -> Result<String, String> {
+    let scratch = tempfile::TempDir::new().map_err(|e| e.to_string())?;
+    let copy = scratch.path().join("cell.db");
+    std::fs::copy(cell_dir.join("cell.db"), &copy).map_err(|e| e.to_string())?;
+    let conn = rusqlite::Connection::open(&copy).map_err(|e| e.to_string())?;
+    conn.query_row(
+        "SELECT COALESCE(cron_expr,'') FROM schedules ORDER BY schedule_id LIMIT 1",
+        [],
+        |r| r.get::<_, String>(0),
+    )
+    .map_err(|e| e.to_string())
+}
+
 /// `(path, cell_id)` for every registry row in a `colony.db`.
 fn registry_ids(db_path: &std::path::Path) -> Vec<(String, String)> {
     let conn = rusqlite::Connection::open(db_path).unwrap();
@@ -1181,14 +1205,32 @@ async fn c5_db_copy_without_wal_sidecars_silently_restores_stale_state() {
     // trail the shutdown await. If the holder below opens BEFORE that last
     // drop, the birth state never checkpoints into the main db file and the
     // sidecar-less copy is corrupt instead of stale (seen once in 13 loaded
-    // runs). Wait for the checkpoint receipt: the WAL sidecar disappearing.
-    let birth_wal = tick.join("cell.db-wal");
+    // runs).
+    //
+    // What this setup needs is exactly one property: the BIRTH state is
+    // readable from `cell.db` alone. So that is what is measured — the row is
+    // read out of a sidecar-less copy of the file, which is precisely the
+    // artefact `copy_filtered` will produce below. The earlier spelling waited
+    // for `cell.db-wal` to disappear, an absence, and an absence has no
+    // deadline it can defend: on a host saturated with parallel test fsyncs the
+    // trailing drop landed after the 30 s failure marker and the test read host
+    // IO contention as a broken checkpoint (GH #582).
+    //
+    // **Why a real defect still fails this.** The wait ends only on the
+    // positive receipt — the birth cron expression read back from a `cell.db`
+    // with no `-wal` beside it. A shutdown that stopped checkpointing at all,
+    // or one that wrote the birth state nowhere, never produces that row, and
+    // the wait ends red at the marker with the last thing the copy said.
     let deadline = std::time::Instant::now() + MARKER;
-    while birth_wal.exists() {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "birth checkpoint did not land within the failure marker"
-        );
+    loop {
+        match birth_state_in_the_base_file(&tick) {
+            Ok(cron) if cron == "0 0 5 * * *" => break,
+            other => assert!(
+                std::time::Instant::now() < deadline,
+                "the birth checkpoint never reached cell.db itself within the \
+                 failure marker; a sidecar-less copy last read {other:?}"
+            ),
+        }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
 

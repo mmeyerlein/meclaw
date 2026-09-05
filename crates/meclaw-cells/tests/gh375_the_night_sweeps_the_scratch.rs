@@ -288,24 +288,23 @@ fn the_retention_window_is_a_declared_knob_with_a_generous_default() {
         .expect("script_inline")
         .to_string();
     assert!(
-        raw.contains("${MEMORY_SCRATCH_TTL_DAYS:-7}"),
+        raw.contains("_int(\"scratch_ttl_days\", 7)"),
         "the script does not spend the knob with its default"
     );
     let setting = &config_of(GLUE_CONFIG)["contract"]["settings"]["scratch_ttl_days"];
     assert_eq!(setting["type"], "number", "undeclared knob: {setting}");
     assert_eq!(setting["default"], 7);
     assert_eq!(setting["secret"], false);
-    assert!(
-        setting["description"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("MEMORY_SCRATCH_TTL_DAYS"),
-        "the declaration does not name the environment spelling: {setting}"
+    assert_eq!(
+        config_of(GLUE_CONFIG)["params"]["scratch_ttl_days"],
+        7,
+        "the knob is not a param, so no instance could be given its own window \
+         (GH #138: an override may only name a key that exists under `params`)"
     );
     let readme = std::fs::read_to_string(HIVE_README).expect("hive README");
     assert!(
-        readme.contains("| `MEMORY_SCRATCH_TTL_DAYS` | `7` |"),
-        "the knob is missing from the README's variable table"
+        readme.contains("| `scratch_ttl_days` | `7` |"),
+        "the knob is missing from the README's params table"
     );
 }
 

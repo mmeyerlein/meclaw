@@ -305,16 +305,7 @@ fn main_config(silent_advisor: bool) -> Value {
 
 fn build_tree(td: &tempfile::TempDir, base_url: &str, silent_advisor: bool, idle_ms: &str) {
     let root = td.path();
-    std::fs::write(
-        root.join(".env"),
-        // A consult is a HANDOFF, not merely async (GH #372): the advisor's
-        // answer comes back as its own turn, so the round the call leaves
-        // behind is over even when no sentence stood beside it. The handoff
-        // list declares the async class too -- the dispatcher unions the two.
-        "OPENROUTER_API_KEY=test-key\nKEEPER_IDLE_MS=3600000\n\
-         DISPATCHER_HANDOFF_TOOLS=consult_cogny\n",
-    )
-    .unwrap();
+    std::fs::write(root.join(".env"), "OPENROUTER_API_KEY=test-key\n").unwrap();
     write(root, "main/config.json", &main_config(silent_advisor));
     write(
         root,
@@ -336,14 +327,25 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str, silent_advisor: bool, idle
         v["params"]["schedules"][0]["schedule_id"] = json!(SCHEDULE_ID);
         v["params"]["schedules"][0]["cron"] = json!(NEVER);
     });
-    // GH #464 -- the second timer of a shipped composite, and the same two
-    // patches for the same two reasons: `${uuid7:*}` is an INSTANTIATION
-    // substitution and a tree written straight to disk carries a literal, and a
-    // menu tick during a test run would ask a tools hive this colony does not
-    // have.
-    patch(root, "main/talky/collector/menu-clock/config.json", |v| {
-        v["params"]["schedules"][0]["schedule_id"] = json!(SCHEDULE_ID);
-        v["params"]["schedules"][0]["cron"] = json!(NEVER);
+    // An hour of silence before a generation may end -- long enough that no
+    // sweep in this run reaches the consultation it is about to measure. It was
+    // a `KEEPER_IDLE_MS` line in the `.env` above until GH #138; the knob is a
+    // param of `./close` now, so such a line would be read by NOTHING.
+    // Patching the copied config is what an `override_params` entry does to a
+    // staged one.
+    patch(root, "main/talky/session-keeper/close/config.json", |v| {
+        v["params"]["idle_ms"] = json!(3600000);
+    });
+    // A consult is a HANDOFF, not merely async (GH #372): the advisor's answer
+    // comes back as its own turn, so the round the call leaves behind is over
+    // even when no sentence stood beside it. The handoff list declares the async
+    // class too -- the dispatcher unions the two. It was a
+    // `DISPATCHER_HANDOFF_TOOLS` line in the `.env` above until GH #138; the
+    // class is a param of THIS dispatcher now, which is the point of the move:
+    // the asking surface declares `consult_cogny` and the answering core does
+    // not, and one colony-wide key could not say that.
+    patch(root, "main/talky/dispatcher/config.json", |v| {
+        v["params"]["handoff_tools"] = json!(["consult_cogny"]);
     });
     patch(root, "main/talky/brain/config.json", |v| {
         v["params"]["base_url"] = json!(base_url);
@@ -365,10 +367,6 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str, silent_advisor: bool, idle
     );
     patch(root, "main/cogny/collector/assemble/config.json", |v| {
         v["params"]["round_idle_ms"] = json!(idle_ms);
-    });
-    patch(root, "main/cogny/collector/menu-clock/config.json", |v| {
-        v["params"]["schedules"][0]["schedule_id"] = json!(SCHEDULE_ID);
-        v["params"]["schedules"][0]["cron"] = json!(NEVER);
     });
     std::fs::create_dir_all(root.join("main/cogny/dispatcher")).unwrap();
     std::fs::copy(

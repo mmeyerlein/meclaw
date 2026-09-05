@@ -1,4 +1,4 @@
-//! GH #446 / GH #556 — `operator@1.1.0`: one front door into the OS, and the
+//! GH #446 / GH #556 — `operator@1.2.0`: one front door into the OS, and the
 //! one thing it adds is IDENTITY.
 //!
 //! The substrate stamps `envelope.reply_to` on a **cell's** emission, and the
@@ -664,7 +664,7 @@ fn the_shell_doors_every_caller_lane_to_the_front_door_and_takes_the_answer_out(
             env!("CARGO_MANIFEST_DIR"),
             "/../../templates/meclaw-os/operator/config.json"
         ))["cell"]["template"],
-        "operator@1.1.0",
+        "operator@1.2.0",
         "pinned exactly: a bare name would adopt a new front door on a bump"
     );
     assert!(
@@ -731,7 +731,7 @@ fn nothing_in_this_hive_authenticates_anything() {
         not_in_scope.contains("NEVER AUTHENTICATION"),
         "the prose and the mechanism are one drift lock, not two"
     );
-    assert_eq!(tpl["version"], "1.1.0");
+    assert_eq!(tpl["version"], "1.2.0");
     assert_eq!(
         tpl["sandbox_union"]["trust"], "restricted",
         "the widest axis over every occupant, and here they are all the same"

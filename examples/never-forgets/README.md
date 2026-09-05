@@ -62,7 +62,7 @@ cannot decide which database your life goes into.
 | node | from template | what it brings |
 |---|---|---|
 | `/door` | [`door@1.0.2`](../../templates/door/) | 1 cell. `POST /messages` becomes a turn on the ingress lane. |
-| `/talky` | [`talky`](../../templates/talky/) | 10 cells. Session keeper, context collector, tool dispatcher, sidecar splitter and an `llm` brain, thirteen internal edges pre-wired. |
+| `/talky` | [`talky`](../../templates/talky/) | 11 cells. Session keeper, context collector, tool dispatcher, sidecar splitter and an `llm` brain, with every internal edge pre-wired. |
 | `/sink` | [`terminal@1.0.1`](../../templates/terminal/) | 1 cell. The stop for the answer lane, which this example does not decide. The `error` lane is deliberately unwired (GH #284): a refusal that ends in a swallowing cell is one nobody reads, so it dead-letters instead. |
 
 Fifteen cells in the registry, three of them checked in -- the hive marker is a
@@ -124,25 +124,24 @@ was the one asking.
 machinery:
 
 ```jsonc
-// the dispatcher's memory lane -- the same shape as any tool edge
-{"from": "./talky", "to": "./talky",
- "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'memory_recall'",
- "modifier": {"set_hop": {"route": "'in_memory_call'"}}},
-
-// the recall port, carrying the window the model named
+// the tool lane -- the same shape as any tool edge
 {"from": "./talky", "to": "./memory/keep",
- "condition": "has(hop.route) && hop.route == 'recall'",
- "modifier": {"set_hop": {"route": "'in_recall'"},
-              "set_context": {"recall_query": "hop.recall_query",
-                              "recall_window_from": "hop.recall_window_from",
-                              "recall_window_to": "hop.recall_window_to",
-                              "memory_call_id": "hop.memory_call_id", ...}}}
+ "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'memory_recall'",
+ "modifier": {"set_hop": {"route": "'in_call'"}}},
+
+// the way back -- an ordinary tool result, under the id the round waits on
+{"from": "./memory/keep", "to": "./talky",
+ "condition": "has(hop.route) && hop.route == 'result'",
+ "modifier": {"set_hop": {"route": "'in_tool'"}}}
 ```
 
 From the dispatcher's side this is a tool like any other: it names the tool, an
-edge knows the cell. From the collector's side it is the one tool it serves
-itself, because it already owns the recall port. So the round ends where it
-began and memory never learns a word of dispatcher vocabulary.
+edge knows the cell. Since
+[#552](https://github.com/mmeyerlein/meclaw/issues/552) the cell is the MEMORY --
+whoever answers a call declares it, and the rules a recall obeys are the memory's.
+The composite served the name itself until `talky@5.0.0`, on a private lane and
+under a schema typed into its own brain; two edges is what it costs now, and they
+are the two every tool costs.
 
 The tool schema is a **seed**, not a contract of the topology -- what the model
 may ask for is decided where the brain's `system.tools` is written, in
@@ -269,7 +268,9 @@ a question about the last exchange gets answered out of an empty store. **Since
 lane ON**, so the override above no longer *turns it on* -- it says out loud, in
 the declaration a reader reads, which knob this example depends on. Setting it to
 `"0"` is what would switch the lane off, and this example would lose its point.
-`memory_call_tier` needs no setting at all -- the shipped default is `"1"`.
+Nothing has to be switched on for it: the call leaves the composite on the
+ordinary tool exit, and the only thing that decides whether the model makes one is
+whether it can see the schema.
 
 Grow it:
 

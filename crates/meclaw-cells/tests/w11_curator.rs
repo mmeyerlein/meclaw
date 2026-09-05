@@ -939,7 +939,7 @@ fn the_shipped_contract_declares_every_new_knob_and_key() {
          does not describe the cell"
     );
     assert_eq!(
-        v["contract"]["version"], "1.6.0",
+        v["contract"]["version"], "2.0.0",
         "wave 11 added a lane and seven hop keys; wave 13 moved every setting \
          off the environment onto params; GH #372 added `consumes.hop.handoff_calls`; \
          GH #458 made `messages` optional in BOTH directions and added the `pack` / \
@@ -956,7 +956,15 @@ fn the_shipped_contract_declares_every_new_knob_and_key() {
          is the eighth and back to the SECOND digit: the cell reads a new context key \
          (`tool_answerer`) and emits a new hop key (`menu_answerers`), because the menu \
          became a union over answerers instead of one answer -- an addition on both \
-         faces of the contract, and nothing taken away"
+         faces of the contract, and nothing taken away. GH #552 is the ninth and the \
+         FIRST digit, the first time this cell has spent one: an accepted lane \
+         (`in_memory_call`) and a setting (`memory_call_tier`) are GONE. The memory \
+         tool was served here, out of this cell's own recall port, under a schema it \
+         had typed by hand as a projection of the memory hive's `in_query` contract -- \
+         and a cell that answers a call whose rules it cannot enforce will drift from \
+         them. The hive declares and answers the name now. A caller that sent the lane \
+         or set the knob breaks, which is what the first digit says out loud; nothing \
+         shipped sends it, so the migration is empty (`CHANGELOG.md` § Breaking)"
     );
 }
 

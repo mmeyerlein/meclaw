@@ -25,7 +25,7 @@
 //! its own call site; this test holds it to it.
 
 use meclaw_core::serde_json::{Value, json};
-use meclaw_testing::{emit_one, shipped_script};
+use meclaw_testing::{emit_all, shipped_script};
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -41,18 +41,26 @@ fn repo(rel: &str) -> PathBuf {
 }
 
 /// The `add_edges` of one rendered level, as the shipped script produces them.
+///
+/// The FIRST manifest, because since GH #543 a member wish renders two — the
+/// level, and then the screen and the app that member always gets. This file is
+/// about the level's own export lanes, which are in the first one.
 fn rendered_edges(params: Value) -> Vec<Value> {
-    let out = emit_one(
+    let out = emit_all(
         &shipped_script(RECIPES),
         &json!({
             "target": "/os/builder/recipes",
-            "header": {"hop": {"route": "recipe"}, "context": {}},
+            "header": {"hop": {"route": "recipe", "member_index": "0"},
+                       "context": {}},
             "ttl": 64,
             "messages": [{"origin": "tool", "type": "tool_result", "id": "",
                           "text": json!({"recipe": "grow_level", "request": "…",
                                          "params": params}).to_string()}],
         }),
-    );
+    )
+    .into_iter()
+    .find(|m| m["header"]["operation"] == json!("recipe"))
+    .expect("a first manifest");
     out["manifest"][0]["diff"]["add_edges"]
         .as_array()
         .unwrap_or_else(|| panic!("no rendered edges: {out}"))
@@ -162,8 +170,8 @@ fn the_recipe_and_the_import_tool_render_the_same_member_edges() {
     let want = want.as_array().expect("a list of edges").clone();
     assert_eq!(
         want.len(),
-        18,
-        "the import tool stopped writing eighteen edges — re-read it before \
+        20,
+        "the import tool stopped writing twenty edges — re-read it before \
          trusting this comparison"
     );
     assert_eq!(
@@ -179,7 +187,7 @@ fn the_recipe_and_the_import_tool_render_the_same_member_edges() {
 #[test]
 fn the_two_container_levels_are_still_the_same_shape_one_level_apart() {
     // `_container_level` renders `org` and `member` from ONE table. That is a
-    // claim about the two contracts, not a convenience: org@1.3.0 and
+    // claim about the two contracts, not a convenience: org@1.4.0 and
     // member@1.5.0 declare the same seven accepts and the same eleven emits,
     // and each one's parent carries every one of those lanes into the container
     // the child is grown into. The day they diverge, the renderers split — so

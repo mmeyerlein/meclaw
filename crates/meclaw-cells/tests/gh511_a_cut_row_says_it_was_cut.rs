@@ -23,7 +23,7 @@
 //! ```text
 //! ### templates/clock/template.json -- clock (template) [d0306]
 //! CONTRACT — …
-//! { "name": "clock", … "use_when": "… the `CLOCK_CRON` knob colony-wi
+//! { "name": "clock", … "use_when": "… the cadence a param colony-wi
 //!
 //! ### templates/session-keeper/template.json -- …
 //! ```
@@ -80,27 +80,29 @@ fn retrieve_script(r: &Path) -> String {
 }
 
 /// The value of one window knob, read out of the SHIPPED script rather than
-/// written down here. `shipped_script` resolves `${NAME:-<default>}` to its
-/// default, so what comes back is the number an operator who sets nothing gets.
-fn knob(r: &Path, name: &str) -> usize {
+/// written down here. Since `builder-librarian@2.2.0` (GH #138) the script says
+/// `ROW_CHARS = _int("row_chars", 1200)`, so the number is the LITERAL the
+/// accessor falls back to -- which is exactly what an operator who sets nothing
+/// gets, the same claim the old `${NAME:-1200}` form made.
+fn knob(r: &Path, upper: &str, key: &str) -> usize {
     let script = retrieve_script(r);
-    let needle = format!("{name} = ");
+    let needle = format!("{upper} = _int(\"{key}\", ");
     let at = script
         .find(&needle)
-        .unwrap_or_else(|| panic!("the shipped retriever has no `{name}` — GH #511 named it"));
+        .unwrap_or_else(|| panic!("the shipped retriever has no `{upper}` — GH #511 named it"));
     let rest = &script[at + needle.len()..];
     let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
     digits
         .parse()
-        .unwrap_or_else(|_| panic!("`{name}` is not a literal number: {rest:.40}"))
+        .unwrap_or_else(|_| panic!("`{upper}` is not a literal number: {rest:.40}"))
 }
 
 fn row_chars(r: &Path) -> usize {
-    knob(r, "ROW_CHARS")
+    knob(r, "ROW_CHARS", "row_chars")
 }
 
 fn catalogue_chars(r: &Path) -> usize {
-    knob(r, "CATALOGUE_CHARS")
+    knob(r, "CATALOGUE_CHARS", "catalogue_chars")
 }
 
 /// Phase B, driven the way the store's return edge drives it: one `tool_result`
@@ -379,41 +381,47 @@ fn the_window_is_decided_per_row_and_not_per_call() {
 fn the_two_windows_are_published_with_the_numbers_the_script_uses() {
     let Some(r) = shipped() else { return };
     let readme = std::fs::read_to_string(r.join("README.md")).expect("the librarian README");
-    for (env, value) in [
-        ("BUILDER_LIBRARIAN_ROW_CHARS", row_chars(&r)),
-        ("BUILDER_LIBRARIAN_CATALOGUE_CHARS", catalogue_chars(&r)),
+    let cfg: Value = meclaw_core::serde_json::from_str(
+        &std::fs::read_to_string(r.join("retrieve/config.json")).expect("the retriever"),
+    )
+    .expect("the retriever config parses");
+    for (knob, value) in [
+        ("row_chars", row_chars(&r)),
+        ("catalogue_chars", catalogue_chars(&r)),
     ] {
         assert!(
-            readme.contains(env),
-            "`{env}` is a knob of this template and its README does not name it"
+            readme.contains(knob),
+            "`{knob}` is a knob of this template and its README does not name it"
         );
         assert!(
-            readme.contains(&format!("`{env}` | `{value}`")),
-            "the README publishes `{env}` with a default the script does not \
+            readme.contains(&format!("`{knob}` | `{value}`")),
+            "the README publishes `{knob}` with a default the script does not \
              use — the script says {value}"
         );
-        // A number in template prose stands exactly once, or it is derived.
-        // Here it is derived, and the second surface therefore carries the NAME
-        // and no second copy of the number.
-        assert!(
-            std::fs::read_to_string(r.join("retrieve/config.json"))
-                .expect("the retriever")
-                .contains(&format!("${{{env}:-{value}}}")),
-            "the knob is not written as `${{{env}:-{value}}}` in the shipped \
-             config, so an operator cannot set it at all"
+        // Since GH #138 the knob is a PARAM, so the second surface is
+        // `params` + `contract.settings` rather than a `${...}` token, and the
+        // number stands in the config exactly as the script falls back to it.
+        assert_eq!(
+            cfg["params"][knob].as_u64(),
+            Some(value as u64),
+            "params.{knob} is not the number the script falls back to, so an \
+             instance that sets nothing runs on a different value than the \
+             config publishes"
+        );
+        assert_eq!(
+            cfg["contract"]["settings"][knob]["default"].as_u64(),
+            Some(value as u64),
+            "contract.settings.{knob}.default disagrees with the shipped param"
         );
     }
     let builder = builder_root().join("README.md");
     if builder.exists() {
         let builder = std::fs::read_to_string(builder).expect("the builder README");
-        for env in [
-            "BUILDER_LIBRARIAN_ROW_CHARS",
-            "BUILDER_LIBRARIAN_CATALOGUE_CHARS",
-        ] {
+        for knob in ["row_chars", "catalogue_chars"] {
             assert!(
-                builder.contains(env),
+                builder.contains(knob),
                 "the builder publishes the librarian's knobs beside its own and \
-                 `{env}` is missing"
+                 `{knob}` is missing"
             );
         }
     }

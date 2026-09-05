@@ -310,7 +310,14 @@ const REMAP_TO: &str = "provider-b/model-large";
 
 fn build_tree(td: &tempfile::TempDir, root_template: &std::path::Path, base_url: &str) {
     let root = td.path();
-    std::fs::write(root.join(".env"), "LLM_REGISTRY_SUBSCRIBER_ROWS=200\n").unwrap();
+    // No `.env`. Until `llm-registry@2.1.0` this wrote
+    // `LLM_REGISTRY_SUBSCRIBER_ROWS=200` -- the shipped default, spelled out so
+    // the fan-out bound was visible in the setup. Since GH #138 (ruling
+    // R-0904-6) the bound is `params.subscriber_rows` of `./hand`, and such a
+    // line would be read by nothing and would say nothing about it. The copied
+    // template carries the value, and
+    // `crates/meclaw-cells/tests/gh138_long_tail_params.rs` pins that the cells
+    // act on their params rather than on an environment.
     write(root, "main/config.json", &main_config());
     write(
         root,

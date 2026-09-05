@@ -1,16 +1,25 @@
-//! GH #55 — a talky instantiated from the shipped library answers a time-range
-//! question without its owner hand-writing a tool schema first.
+//! GH #55 — a talky instantiated from the shipped library carries the schema of
+//! the tool it serves, and the model's time-range arguments survive the trip.
 //!
-//! The issue's done-when has two halves. The edge half (Task 14) is that the
-//! composite serves `memory_recall` itself; this file carries the SCHEMA half:
-//! `templates/talky/brain/seed/system.jsonl` ships the two tool schemas the
-//! composite implements, so the model is told the tool exists — and is told the
-//! two window arguments exist, which is the whole of the time-range question.
+//! The issue's done-when had two halves. The edge half (Task 14) was that the
+//! composite serves its reserved names itself; this file carries the SCHEMA
+//! half: `templates/talky/brain/seed/system.jsonl` ships the schema of the tool
+//! the composite implements, so the model is told the tool exists before any
+//! menu tick has run.
 //!
-//! Without the seed the brain arrives at the provider with no `tools[]` at all.
-//! A model that is never shown `memory_recall` cannot call it, so every edge
-//! Task 14 draws is unreachable and the owner is back to hand-writing a schema
-//! into `system.tools` before the agent can answer "what did we say last week".
+//! **Since `talky@5.0.0` that is ONE tool, not two** (GH #552). `memory_recall`
+//! was the other, and it was seeded here as a hand-typed projection of the memory
+//! hive's own contract — a template that answers no recall declaring the schema of
+//! one. The hive declares it now, and a standalone talky (which is what this file
+//! boots) has no memory beside it and is right not to offer the name at all. What
+//! is left to measure here is the seed that DOES ship, and the other half of the
+//! time-range question: the two window arguments the model produced leave the
+//! composite intact, on the ordinary tool lane, addressed to whoever wired the
+//! memory. `gh552_the_memory_hive_declares_the_recall_it_answers.rs` carries the
+//! declaration half from the hive's side.
+//!
+//! Without the seed the brain arrives at the provider with no `tools[]` at all,
+//! and a model that is never shown a tool cannot call it.
 //!
 //! # Why this goes to the wire and reads the shipped bytes
 //!
@@ -123,7 +132,7 @@ const AUDIENCE_CEL: &str = r#"'["member:alex","agent:scribe"]'"#;
 
 /// The two tools the composite serves itself, in the alphabetical order
 /// `extract_tools` puts them on the wire in.
-const SERVED_TOOLS: [&str; 2] = ["memory_recall", "thread_recall"];
+const SERVED_TOOLS: [&str; 1] = ["thread_recall"];
 
 /// The time range the model asks about. These are the MODEL's own argument
 /// values: they exist nowhere in the tree, so seeing them come out of the
@@ -205,11 +214,7 @@ fn main_config() -> Value {
 
 fn build_tree(td: &tempfile::TempDir, base_url: &str) {
     let root = td.path();
-    std::fs::write(
-        root.join(".env"),
-        "OPENROUTER_API_KEY=test-key\nKEEPER_IDLE_MS=0\n",
-    )
-    .unwrap();
+    std::fs::write(root.join(".env"), "OPENROUTER_API_KEY=test-key\n").unwrap();
     write(root, "main/config.json", &main_config());
     write(
         root,
@@ -230,14 +235,14 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str) {
         v["params"]["schedules"][0]["schedule_id"] = json!(SCHEDULE_ID);
         v["params"]["schedules"][0]["cron"] = json!(NEVER);
     });
-    // GH #464 -- the second timer of a shipped composite, and the same two
-    // patches for the same two reasons: `${uuid7:*}` is an INSTANTIATION
-    // substitution and a tree written straight to disk carries a literal, and a
-    // menu tick during a test run would ask a tools hive this colony does not
-    // have.
-    patch(root, "main/talky/collector/menu-clock/config.json", |v| {
-        v["params"]["schedules"][0]["schedule_id"] = json!(SCHEDULE_ID);
-        v["params"]["schedules"][0]["cron"] = json!(NEVER);
+    // Every open generation is a candidate the moment the sweep runs. It was a
+    // `KEEPER_IDLE_MS=0` line in the `.env` above until GH #138; the knob is a
+    // param of `./close` now, so such a line would be read by NOTHING -- the
+    // sweep would keep the shipped two hours, find no candidate, and this test
+    // would wait for a close that cannot come. Patching the copied config is
+    // what an `override_params` entry does to a staged one.
+    patch(root, "main/talky/session-keeper/close/config.json", |v| {
+        v["params"]["idle_ms"] = json!(0);
     });
     patch(root, "main/talky/brain/config.json", |v| {
         v["params"]["base_url"] = json!(base_url);
@@ -293,20 +298,29 @@ fn turn(text: &str) -> Message {
         .build()
 }
 
-async fn recv_bounded(rx: &mut mpsc::Receiver<Message>) -> Option<Message> {
-    tokio::time::timeout(Duration::from_secs(30), rx.recv())
-        .await
-        .ok()
-        .flatten()
+/// The first message the parent's drain sees on the composite's `tool` lane. The
+/// drain takes every declared exit, so the lane has to be picked out of what
+/// arrives rather than assumed to be first.
+async fn leaving_on_the_tool_lane(rx: &mut mpsc::Receiver<Message>) -> Option<Message> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let msg = tokio::time::timeout_at(deadline, rx.recv()).await.ok()??;
+        if msg.headers.hop.get("route").and_then(Value::as_str) == Some("tool") {
+            return Some(msg);
+        }
+    }
 }
 
-fn context_of(m: &Message, key: &str) -> String {
-    m.headers
-        .context
-        .get(key)
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_string()
+/// The arguments of the one tool_call turn a message carries — a JSON string in
+/// the turn's `text`, which is the shape `dispatcher` splits a call into.
+fn tool_call_arguments(msg: &Message) -> Value {
+    let Body::Inline(body) = &msg.body else {
+        panic!("a tool call travels inline: {:?}", msg.body)
+    };
+    let raw = body["messages"][0]["text"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the tool_call turn carries its arguments as text: {body}"));
+    meclaw_core::serde_json::from_str(raw).unwrap_or_else(|e| panic!("{raw}: {e}"))
 }
 
 /// The model's answer to the time-range question: one `memory_recall` call
@@ -325,23 +339,23 @@ fn asks_about_the_window() -> meclaw_testing::mock_http::MockResponse {
 // ═══════════════════════════════════════════════════════════════════════ pins
 
 /// **The assertion GH #55 turns on.** The shipped tree, booted as shipped: the
-/// very first request the brain makes carries a `tools[]` array in which
-/// `memory_recall` is declared. Nobody wrote a schema — the seed did.
+/// very first request the brain makes carries a `tools[]` array in which the tool
+/// this composite serves is declared. Nobody wrote a schema — the seed did.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_shipped_talky_declares_memory_recall_to_the_provider() {
+async fn the_shipped_talky_declares_the_tool_it_serves_to_the_provider() {
     if !shipped() {
         return;
     }
     let mock = MockOpenAI::start(vec![asks_about_the_window()]).await;
     let td = tempfile::TempDir::new().unwrap();
     build_tree(&td, &mock.base_url);
-    let (h, mut recall_rx, _park_rx) = boot(&td).await;
+    let (h, _recall_rx, mut park_rx) = boot(&td).await;
 
     h.send(turn("what did we talk about in the first week of august?"))
         .await;
-    // The recall is what proves the round got as far as the provider AND back;
-    // it is asserted properly in the sibling test below.
-    let _ = recv_bounded(&mut recall_rx).await;
+    // The tool call leaving the composite is what proves the round got as far as
+    // the provider AND back; it is asserted properly in the sibling test below.
+    let _ = leaving_on_the_tool_lane(&mut park_rx).await;
 
     let reqs = mock.recorded_requests().await;
     assert!(
@@ -350,7 +364,8 @@ async fn the_shipped_talky_declares_memory_recall_to_the_provider() {
     );
     let tools = reqs[0].tools().expect(
         "the shipped talky's request must carry tools[] — without it the model is never \
-                 shown the memory tool and the owner is back to hand-writing a schema",
+                 shown the tool this composite serves and the owner is back to \
+                 hand-writing a schema",
     );
     let names: Vec<&str> = tools
         .iter()
@@ -358,60 +373,67 @@ async fn the_shipped_talky_declares_memory_recall_to_the_provider() {
         .collect();
     assert_eq!(
         names, SERVED_TOOLS,
-        "the composite declares exactly the two tools it serves itself: {tools:?}"
+        "the composite declares exactly the tool it serves itself. `memory_recall` is \
+         NOT among them since GH #552: a standalone talky has no member beside it, so \
+         there is no memory to answer the call and no declaration to offer: {tools:?}"
     );
 
     h.shutdown().await;
 }
 
-/// The other half of the time-range question: the two window ARGUMENTS the
-/// model produced reach the recall port as its own context keys. A schema that
-/// declared `memory_recall` without `window_from`/`window_to` would pass the
-/// test above and still leave every time-range question answered out of a point
-/// query — so the values are asserted, not the shape.
+/// The other half of the time-range question: the two window ARGUMENTS the model
+/// produced leave the composite intact. A schema that declared `memory_recall`
+/// without `window_from`/`window_to` would pass the test above and still leave
+/// every time-range question answered out of a point query — so the values are
+/// asserted, not the shape.
 ///
-/// This is the assertion that also needs Task 14's internal edge: the call has
-/// to reach the collector INSIDE the composite for the collector to translate
-/// it into a recall.
+/// Since GH #552 the call leaves on the ORDINARY tool lane, which is the entire
+/// change: the dispatcher names the tool, an edge OUTSIDE this composite knows
+/// the cell, and the arguments travel in the tool_call turn exactly as they do
+/// for `web_search`. Nothing in here rewrites them, and nothing in here has to
+/// know what the memory will do with them.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_models_own_window_reaches_the_recall_port() {
+async fn the_models_own_window_leaves_the_composite_intact() {
     if !shipped() {
         return;
     }
     let mock = MockOpenAI::start(vec![asks_about_the_window()]).await;
     let td = tempfile::TempDir::new().unwrap();
     build_tree(&td, &mock.base_url);
-    let (h, mut recall_rx, _park_rx) = boot(&td).await;
+    let (h, _recall_rx, mut park_rx) = boot(&td).await;
 
     h.send(turn("what did we talk about in the first week of august?"))
         .await;
-    let recall = recv_bounded(&mut recall_rx)
+    let call = leaving_on_the_tool_lane(&mut park_rx)
         .await
-        .expect("the memory tool call must leave on the recall port");
+        .expect("the memory tool call must leave on the tool lane");
 
     assert_eq!(
-        context_of(&recall, "recall_window_from"),
-        WINDOW_FROM,
-        "the model's own window start must reach the memory hive: {:?}",
-        recall.headers.context
+        call.headers.hop.get("tool_name").and_then(Value::as_str),
+        Some("memory_recall"),
+        "the dispatcher names the tool and the guarded default carries it out: {:?}",
+        call.headers.hop
     );
     assert_eq!(
-        context_of(&recall, "recall_window_to"),
-        WINDOW_TO,
-        "the model's own window end must reach the memory hive: {:?}",
-        recall.headers.context
+        call.headers.hop.get("tool_call_id").and_then(Value::as_str),
+        Some("call-window"),
+        "under the id the round is waiting on: {:?}",
+        call.headers.hop
+    );
+    let args = tool_call_arguments(&call);
+    assert_eq!(
+        args["window_from"], WINDOW_FROM,
+        "the model's own window start must survive the trip: {args}"
     );
     assert_eq!(
-        context_of(&recall, "memory_call_id"),
-        "call-window",
-        "a recall answering a CALL carries the call id; empty would be the ambient leg: {:?}",
-        recall.headers.context
+        args["window_to"], WINDOW_TO,
+        "the model's own window end must survive the trip: {args}"
     );
 
     h.shutdown().await;
 }
 
-/// GH #55 Step 3: the seed carries the two tools the composite serves itself
+/// GH #55 Step 3: the seed carries the tool the composite serves itself
 /// and **nothing else**. No identity, no instructions, no persona — the
 /// retraction the README carries draws the line at tools the composite serves,
 /// and a seeded persona would cross it: the composite carries the topology, the
@@ -426,8 +448,11 @@ fn the_brain_seed_carries_tools_and_nothing_else() {
     let rows: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
     assert_eq!(
         rows.len(),
-        3,
-        "the schema header plus exactly two tool rows: {rows:?}"
+        2,
+        "the schema header plus exactly one tool row. It was two until GH #552: the \
+         second was `memory_recall`, seeded here as a hand-typed copy of a contract \
+         one level up, and a seed is written once at birth so the first menu tick \
+         replaced it anyway: {rows:?}"
     );
 
     let header: Value = meclaw_core::serde_json::from_str(rows[0]).expect("line 1 parses");
@@ -451,5 +476,5 @@ fn the_brain_seed_carries_tools_and_nothing_else() {
         );
     }
     let expected: Vec<String> = SERVED_TOOLS.iter().map(|t| format!("tools.{t}")).collect();
-    assert_eq!(slots, expected, "the two tools the composite serves itself");
+    assert_eq!(slots, expected, "the one tool the composite serves itself");
 }

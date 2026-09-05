@@ -1099,26 +1099,35 @@ else:
 sys.stdout.write(json.dumps(out))
 "#;
 
-/// A memory hive's recall port, reduced to the one thing this test asks of it:
-/// it REPORTS the request it received. Nothing is retrieved, so nothing has to
-/// be believed -- what the bundle says is what the collector asked for.
+/// A memory hive's TOOL adapter, reduced to the one thing this test asks of it:
+/// it REPORTS the call it received, as a `tool_result` under the original id.
+/// Nothing is retrieved, so nothing has to be believed -- what the result says
+/// is what the model asked for.
+///
+/// Since GH #552 this is where a `memory_recall` call is served: the dispatcher
+/// names the tool, an edge knows the cell, and the cell is in the member's
+/// memory rather than in this collector. From the collector's side the answer is
+/// an ordinary `in_tool` result, which is the whole point of the change.
 const MEMO: &str = r#"
 import sys, json
 doc = json.load(sys.stdin)
 d = doc["body"]
-envelope = doc["envelope"]
-ctx = (envelope.get("header") or {}).get("context") or {}
+msgs = d.get("messages") or []
+call = msgs[0] if msgs else {}
+args = json.loads(call.get("text") or "{}")
 sys.stdout.write(json.dumps(
     {"header": {"route": "bundle"},
-     "messages": [{"origin": "tool", "type": "tool_result", "id": "recall",
-                   "text": "MEMORY[tier=%s,from=%s,to=%s,q=%s]" % (
-                       ctx.get("memory_tier", ""), ctx.get("recall_window_from", ""),
-                       ctx.get("recall_window_to", ""), ctx.get("recall_query", ""))}]}))
+     "messages": [{"origin": "tool", "type": "tool_result",
+                   "id": call.get("id", ""),
+                   "text": "MEMORY[tier=1,from=%s,to=%s,q=%s]" % (
+                       args.get("window_from", ""), args.get("window_to", ""),
+                       args.get("query", ""))}]}))
 "#;
 
-/// The wiring a parent draws for an agent with a memory tool. Exactly TWO edges
-/// are new next to an ordinary tool: the dispatcher's `memory_recall` lane into
-/// the collector, and the recall port it already had for the per-turn leg.
+/// The wiring a parent draws for an agent with a memory tool. Since GH #552 it
+/// is exactly what an ORDINARY tool costs -- the dispatcher names the tool, an
+/// edge knows the cell, and the result comes back on `in_tool`. The collector
+/// has no second lane and no correlation key of its own any more.
 fn memory_main_config(with_memo: bool) -> Value {
     let mut edges = vec![
         json!({"from": "./probe", "to": "./collector",
@@ -1148,24 +1157,15 @@ fn memory_main_config(with_memo: bool) -> Value {
         json!({"from": "./tool", "to": "./collector",
                "condition": "hop.route == 'res'",
                "modifier": {"set_hop": {"route": "'in_tool'"}}}),
-        // THE new edge (GH #78). Same form, same condition key -- the tool
-        // whose cell happens to be the collector itself.
-        json!({"from": "./dispatcher", "to": "./collector",
-               "condition": "hop.route == 'tool' && hop.tool_name == 'memory_recall'",
-               "modifier": {"set_hop": {"route": "'in_memory_call'"}}}),
     ];
     if with_memo {
-        edges.push(json!({"from": "./collector", "to": "./memo",
-                          "condition": "hop.route == 'recall'",
-                          "modifier": {"set_context": {
-                              "recall_query": "hop.recall_query",
-                              "memory_tier": "hop.memory_tier",
-                              "memory_call_id": "hop.memory_call_id",
-                              "recall_window_from": "hop.recall_window_from",
-                              "recall_window_to": "hop.recall_window_to"}}}));
+        // The memory tool, in the shape GH #552 gave it: the SAME two edges an
+        // ordinary tool costs, pointing at a cell that is not this collector.
+        edges.push(json!({"from": "./dispatcher", "to": "./memo",
+                          "condition": "hop.route == 'tool' && hop.tool_name == 'memory_recall'"}));
         edges.push(json!({"from": "./memo", "to": "./collector",
                           "condition": "hop.route == 'bundle'",
-                          "modifier": {"set_hop": {"route": "'in_bundle'"}}}));
+                          "modifier": {"set_hop": {"route": "'in_tool'"}}}));
     }
     json!({"cell": {"type": "hive"}, "params": {"graph": {"edges": edges}}})
 }
@@ -1202,7 +1202,7 @@ fn build_memory_tree(td: &tempfile::TempDir, knobs: &[(&str, &str)], with_memo: 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_memory_recall_call_is_served_by_the_collector_and_completes_the_round() {
+async fn a_memory_recall_call_is_answered_elsewhere_and_completes_the_round() {
     let td = tempfile::TempDir::new().unwrap();
     build_memory_tree(&td, &[], true);
     let (h, mut sink_rx, _park_rx) = boot(&td).await;
@@ -1222,7 +1222,7 @@ async fn a_memory_recall_call_is_served_by_the_collector_and_completes_the_round
         ans.contains(
             "MEMORY[tier=1,from=2026-08-01T00:00:00Z,to=2026-08-02T00:00:00Z,q=what did we decide?]"
         ),
-        "the call's arguments reached memory as its own keys: {ans}"
+        "the call's arguments reached the memory as the model named them: {ans}"
     );
     assert!(
         ans.contains("first=what did we decide on the first?"),
@@ -1238,8 +1238,8 @@ async fn a_memory_recall_call_is_served_by_the_collector_and_completes_the_round
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_memory_call_without_a_wired_port_ends_in_the_rounds_idle_exit() {
-    // The documented failure path. Without the recall edge the request is
-    // unroutable and nothing ever answers the call -- but the round must not
+    // The documented failure path. Without the tool edge the call is
+    // unroutable and nothing ever answers it -- but the round must not
     // park forever: the idle exit of GH #103 owns this case exactly as it owns
     // a tool that died mid-flight. No new machinery for a memory tool.
     let td = tempfile::TempDir::new().unwrap();

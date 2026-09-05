@@ -283,9 +283,10 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str, marker: &std::path::Path) 
         // No GH372_MARKER here, and that is the repair of GH #526: the
         // barrier's path is substituted into its SCRIPT below, because `.env`
         // feeds `${VAR}` substitution in config values and not the environment
-        // a `code` cell's subprocess sees.
-        "OPENROUTER_API_KEY=test-key\nKEEPER_IDLE_MS=0\n\
-         DISPATCHER_ASYNC_TOOLS=remember\n",
+        // a `code` cell's subprocess sees. The keeper's idle window and the
+        // async class left this file with GH #138 -- both are params of the
+        // cells that read them now, and both are patched below.
+        "OPENROUTER_API_KEY=test-key\n",
     )
     .unwrap();
     write(root, "main/config.json", &main_config());
@@ -322,14 +323,23 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str, marker: &std::path::Path) 
         v["params"]["schedules"][0]["schedule_id"] = json!(SCHEDULE_ID);
         v["params"]["schedules"][0]["cron"] = json!(NEVER);
     });
-    // GH #464 -- the second timer of a shipped composite, and the same two
-    // patches for the same two reasons: `${uuid7:*}` is an INSTANTIATION
-    // substitution and a tree written straight to disk carries a literal, and a
-    // menu tick during a test run would ask a tools hive this colony does not
-    // have.
-    patch(root, "main/talky/collector/menu-clock/config.json", |v| {
-        v["params"]["schedules"][0]["schedule_id"] = json!(SCHEDULE_ID);
-        v["params"]["schedules"][0]["cron"] = json!(NEVER);
+    // Every open generation is a candidate the moment the sweep runs. It was a
+    // `KEEPER_IDLE_MS=0` line in the `.env` above until GH #138; the knob is a
+    // param of `./close` now, so such a line would be read by NOTHING -- the
+    // sweep would keep the shipped two hours, find no candidate, and this test
+    // would wait for a close that cannot come. Patching the copied config is
+    // what an `override_params` entry does to a staged one.
+    patch(root, "main/talky/session-keeper/close/config.json", |v| {
+        v["params"]["idle_ms"] = json!(0);
+    });
+    // `remember` is the async class of this run: it answers on a lane of its
+    // own, so the fan-in must open no expectation for it. It was a
+    // `DISPATCHER_ASYNC_TOOLS` line in the `.env` above until GH #138; the class
+    // is a param of the dispatcher now, and an environment line of that name
+    // would be read by NOTHING -- the round would wait for a write that never
+    // answers, which is the exact failure this file was written about.
+    patch(root, "main/talky/dispatcher/config.json", |v| {
+        v["params"]["async_tools"] = json!(["remember"]);
     });
     patch(root, "main/talky/brain/config.json", |v| {
         v["params"]["base_url"] = json!(base_url);

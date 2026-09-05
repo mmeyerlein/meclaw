@@ -523,6 +523,15 @@ async fn boot_organism(td: &tempfile::TempDir) -> ColonyHandle {
     let root = td.path();
     copy_tree(&repo("examples/organism/seed"), root);
     copy_tree(&repo("templates"), &root.join("templates"));
+    // The keeper's nightly close sweep, pushed to a date this run cannot reach.
+    // It was a `KEEPER_NIGHT_CRON` line in the `.env` below until GH #138: the
+    // schedule is a LITERAL of `session-keeper/night`'s own params now, so such
+    // a line is read by nothing at all -- the sweep would fire into this run and
+    // nobody would say so. The library copy is this tree's own, so writing the
+    // key into it is what an `override_params` entry does to a staged config
+    // (`crates/meclaw-cells/tests/gh138_keeper_summarizer_dispatcher_params.rs`
+    // is the proof that the timer plans on what it finds there).
+    meclaw_testing::quiet_keeper_night(&root.join("templates/session-keeper"));
     std::fs::write(
         root.join(".env"),
         "OPENROUTER_API_KEY=test-key\n\
@@ -536,8 +545,7 @@ async fn boot_organism(td: &tempfile::TempDir) -> ColonyHandle {
          TELEGRAM_BOT_TOKEN=test-token\n\
          TELEGRAM_BOT_TOKEN_2=test-token-2\n\
          TELEGRAM_ALLOWED_USER_ID=0\n\
-         EXAMPLE_CHAT_TOKEN=test-chat-token\n\
-         KEEPER_NIGHT_CRON=0 0 0 1 1 *\n",
+         EXAMPLE_CHAT_TOKEN=test-chat-token\n",
     )
     .unwrap();
     let fs: Vec<(String, Arc<dyn CellFactory>)> = cell_types_in(&root.join("templates"))
@@ -829,14 +837,7 @@ fn build_tree(
     base_url: &str,
 ) -> String {
     let root = td.path();
-    // Two seconds, so several push ticks fit inside the test's own budget. The
-    // cron comes out of the `.env` through the shipped `${AFFINITY_PUSH_CRON:-…}`
-    // default, so late binding is under test too.
-    std::fs::write(
-        root.join(".env"),
-        "AFFINITY_PUSH_CRON=*/2 * * * * *\nOPENROUTER_API_KEY=test-key\nKEEPER_IDLE_MS=0\n",
-    )
-    .unwrap();
+    std::fs::write(root.join(".env"), "OPENROUTER_API_KEY=test-key\n").unwrap();
     write(root, "main/config.json", &main_config(level_edges));
     write(
         root,
@@ -871,6 +872,14 @@ fn build_tree(
 
     patch(root, "main/affinity/clock/config.json", |v| {
         v["params"]["schedules"][0]["schedule_id"] = json!(CLOCK_ID);
+        // Since GH #138 the cadence is a literal of `./clock`'s own params, so
+        // it is written here beside the schedule_id -- the form an
+        // `override_params` entry takes at instantiation. An
+        // `AFFINITY_PUSH_CRON=` line in the `.env` would be read by nothing at
+        // all and would say nothing about it.
+        // Two seconds, so the push tick fires several times inside the
+        // test's own budget.
+        v["params"]["schedules"][0]["cron"] = json!("*/2 * * * * *");
     });
     // Every timer and every brain of the generation, WALKED rather than listed
     // (GH #561 — a generation has three timers and two brains, and a list here

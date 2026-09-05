@@ -137,6 +137,11 @@ fn copy_tree(src: &std::path::Path, dst: &std::path::Path) {
 fn write_json(root: &std::path::Path, rel: &str, v: &Value) {
     let p = root.join(rel);
     std::fs::create_dir_all(p.parent().expect("a parent")).expect("create the directory");
+    write_json_at(&p, v);
+}
+
+/// The same write, to a path the caller already holds.
+fn write_json_at(p: &std::path::Path, v: &Value) {
     std::fs::write(
         p,
         meclaw_core::serde_json::to_string_pretty(v).expect("serialise"),
@@ -351,16 +356,21 @@ fn build_tree(td: &tempfile::TempDir, judge_url: &str, target_url: &str, charter
     // mutation that grows a template. This test boots the template directly, so
     // the id is written out here — the same value a growth would have minted,
     // just minted by the fixture instead.
+    //
+    // The cron is written out for a different reason: since GH #138 the
+    // schedule is a LITERAL inside `params.schedules[0].cron`, so a case that
+    // wants the cycle driven by hand rather than by the six-hourly tick says so
+    // where a mutation's `override_params` would have merged it. It used to be
+    // an `ARGUS_CYCLE_CRON` line in the `.env` below, and after the migration
+    // that line would have reached nothing at all — this case would have kept
+    // the shipped six-hour tick with nothing saying so.
     let clock_path = root.join("main/argus/clock/config.json");
     let raw = std::fs::read_to_string(&clock_path).expect("the shipped clock is on disk");
-    std::fs::write(
-        &clock_path,
-        raw.replace(
-            "${uuid7:argus-cycle}",
-            "01930000-0000-7000-8000-000000000462",
-        ),
-    )
-    .expect("write the clock config");
+    let mut clock: Value =
+        meclaw_core::serde_json::from_str(&raw).expect("the shipped clock is json");
+    clock["params"]["schedules"][0]["schedule_id"] = json!("01930000-0000-7000-8000-000000000462");
+    clock["params"]["schedules"][0]["cron"] = json!("0 0 0 1 1 *");
+    write_json_at(&clock_path, &clock);
 
     // The charter, as this case wants it. Every edit is to the COPY.
     let goals_path = root.join("main/argus/charter/seed/goals.jsonl");
@@ -439,8 +449,7 @@ fn build_tree(td: &tempfile::TempDir, judge_url: &str, target_url: &str, charter
             "OPENROUTER_API_KEY=test-key\n\
              ARGUS_JUDGE_BASE_URL={judge_url}\n\
              ARGUS_JUDGE_MODEL={MODEL_JUDGE}\n\
-             ARGUS_JUDGE_PROVIDER=openai\n\
-             ARGUS_CYCLE_CRON=0 0 0 1 1 *\n"
+             ARGUS_JUDGE_PROVIDER=openai\n"
         ),
     )
     .expect("write .env");

@@ -1,13 +1,13 @@
 {
   "name": "receptionist",
-  "version": "2.0.5",
+  "version": "2.1.0",
   "description": {
-    "purpose": "One agent per channel, built on demand: the first turn of a channel nobody has met makes the reception instantiate a fresh talky for exactly that channel -- one mutation carrying the node AND its four port edges -- and hands the triggering turn straight into it. Every later turn of that channel takes the lane that mutation drew.",
+    "purpose": "One agent per channel, built on demand: the first turn of a channel nobody has met makes the reception instantiate a fresh talky for exactly that channel -- one mutation carrying the node AND its four port edges -- and hands the triggering turn straight into it. Every later turn of that channel takes the lane that mutation drew. Since 2.1.0 the reception's seven knobs -- the composite it builds and the six addresses it wires -- are PARAMS of `./greet` rather than substitution tokens out of the colony's environment (GH #138, ruling R-0904-6). Two receptions in one colony can therefore build different composites onto different lanes, and the manifest that grows one says so with `override_params`, which the mutation door accepts precisely because the key exists under `params` (GH #294). The model id stays in `.env`: it belongs to the deployment.",
     "use_when": "In front of a surface that serves many chats, rooms or callers with the same kind of agent. One per colony. The parent writes two edges, both at the HIVE path (`params.ports` is empty since GH #228; an edge naming ./greet is refused with hive_port_boundary): the ingress on lane in_turn (promoting both the channel identity and the round), and the PRIVILEGED mutate lane out to /colony/mutations, which only a bootstrap config.json can grant -- no mutation can create it at any scope.",
     "not_in_scope": "No conversation, no persona, no tools: the agent is the composite this instantiates, not the reception. No tool lanes for the instances it creates (a fresh talky has no tools -- the parent tree wires them). No teardown: instances are never removed, and a channel that fell silent keeps its row and its agent. No fairness, no quota, no allowlist -- who may talk is a condition on the ingress edge.",
     "examples": [
       "PORTS - every endpoint is the HIVE path (`params.ports` is empty). Entry: lane in_turn, with context.channel AND context.audience_set promoted by the parent's ingress edge -- the reception hands both on to the edge it draws into the composite, and derives neither. Exits: 'turn' (the turn on the lane its own agent answers to) and the bootstrap-only 'mutate' lane on to /colony/mutations, plus the per-channel lanes the reception draws itself.",
-      "two Telegram chats reach the same bot: chat 42 gets /talky-42, chat 99 gets /talky-99, both from ONE template and one shared .env",
+      "two Telegram chats reach the same bot: chat 42 gets /talky-42, chat 99 gets /talky-99, both from ONE template and one reception whose wiring is its own params",
       "the second turn of chat 42: one ledger select, no mutation, straight through to /talky-42/session-keeper"
     ]
   },

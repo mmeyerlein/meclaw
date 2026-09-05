@@ -73,7 +73,9 @@ impl EdgeTable {
     /// strings match AND their `modifier.source` serde-JSON values match AND
     /// they run in the same routing phase. This mirrors the F6 equality used by
     /// `remove_edges_pattern_hits` / `EdgeMatchView` (string-eq on condition
-    /// source, serde-JSON-eq on modifier source, bool-eq on the phase).
+    /// source, serde-JSON-eq on modifier source, bool-eq on the phase) — and
+    /// since GH #574 it does not mirror it, it IS it: the body calls
+    /// [`crate::mutation::validate::edge_identity_equal_views`].
     ///
     /// GH #283 — the phase is a full identity term, not a decoration: a
     /// migration lays the default edge BESIDE the unconditional edge it
@@ -86,19 +88,17 @@ impl EdgeTable {
     /// insert to make re-applied diffs idempotent — a duplicate insert would
     /// otherwise mean DOUBLE delivery on the routing cascade.
     pub fn contains_equal(&self, candidate: &Edge) -> bool {
-        let cand_cond = candidate.condition.as_ref().map(|c| c.source.as_str());
-        let cand_mod = candidate
-            .modifier
-            .as_ref()
-            .and_then(|m| meclaw_core::serde_json::to_value(&m.source).ok());
+        // GH #574: this used to spell the five-term comparison out a fourth
+        // time, in its own words. It now asks the same predicate the two
+        // Stage-6 lane checks ask, through the same view of a stored edge, so
+        // the apply-time dedup and the pre-destructive refusals cannot come to
+        // different conclusions about what "the same edge" is.
+        let cand = crate::mutation::validate::EdgeMatchView::from(candidate);
         self.edges_from(&candidate.from).iter().any(|e| {
-            e.to == candidate.to
-                && e.is_default == candidate.is_default
-                && e.condition.as_ref().map(|c| c.source.as_str()) == cand_cond
-                && e.modifier
-                    .as_ref()
-                    .and_then(|m| meclaw_core::serde_json::to_value(&m.source).ok())
-                    == cand_mod
+            crate::mutation::validate::edge_identity_equal_views(
+                &crate::mutation::validate::EdgeMatchView::from(e),
+                &cand,
+            )
         })
     }
 

@@ -72,12 +72,14 @@ const GROWN_FROM: [(&str, &str); 3] = [
 ];
 
 /// Three checked-in cells (the import lane plus the memory's two -- the hive
-/// marker is a scope, not a cell) and fourteen grown ones: one from `door@1`,
-/// twelve from `talky` (the tenth is the sidecar splitter, talky@4.1.0, GH #379;
+/// marker is a scope, not a cell) and thirteen grown ones: one from `door@1`,
+/// eleven from `talky` (the tenth is the sidecar splitter, talky@4.1.0, GH #379;
 /// the summarizer's two left with talky@4.3.0, GH #447; the eleventh is the
-/// collector's `menu-clock`, collector@3.3.0, GH #464; the twelfth is the
 /// keeper's own `porter`, session-keeper@2.1.0, GH #471), one from `terminal@1`.
-const CELLS_AFTER_GROW: usize = 17;
+/// The collector's `menu-clock` was the twelfth from `talky` between
+/// collector@3.3.0 (GH #464) and collector@4.0.0 (GH #553), which asks the menu
+/// on the mutation receipt instead. MEASURED.
+const CELLS_AFTER_GROW: usize = 16;
 
 /// GH #277: `talky` REFERENCES its three sub-units instead of carrying copies
 /// of them, so the library the colony scans has to hold them next to it. They
@@ -225,36 +227,34 @@ fn grow_json_only_names_templates_that_ship() {
         );
     }
 
-    // The two edges GH #78 is made of. Without the first the model's call is
-    // routed nowhere; without the second the collector asks into a void and the
-    // round parks until the idle exit. Both are the PARENT's job -- `talky`
-    // ships neither, on purpose.
+    // The two edges the memory TOOL is made of. Since GH #552 they are the two
+    // edges every ordinary tool costs: the dispatcher names the tool, this edge
+    // knows the cell, and the result comes back on `in_tool`. Both are the
+    // PARENT's job -- `talky` ships neither, on purpose, because the memory is
+    // not part of the composite.
     let edges = grow["diff"]["add_edges"].as_array().expect("add_edges");
-    // Since GH #228 sealed `talky`, both ends of that loopback are the hive
-    // path: the tool call leaves on the `tool` lane and comes back in on
-    // `in_memory_call`. Which cell made the call and which one takes it is no
-    // longer anything this example knows.
     assert!(
         edges.iter().any(|e| e["from"] == json!("./talky")
-            && e["to"] == json!("./talky")
-            && e["modifier"]["set_hop"]["route"] == json!("'in_memory_call'")),
-        "the memory tool loopback is not wired"
-    );
-    let recall = edges
-        .iter()
-        .find(|e| {
-            e["condition"]
+            && e["to"] == json!("./memory/keep")
+            && e["condition"]
                 .as_str()
-                .is_some_and(|c| c.contains("hop.route == 'recall'"))
-        })
-        .expect("the recall port is not wired");
-    for key in ["recall_window_from", "recall_window_to", "memory_call_id"] {
-        assert_eq!(
-            recall["modifier"]["set_context"][key],
-            json!(format!("hop.{key}")),
-            "the recall edge drops {key}, so the window never reaches the memory"
-        );
-    }
+                .is_some_and(|c| c.contains("hop.tool_name == 'memory_recall'"))
+            && e["modifier"]["set_hop"]["route"] == json!("'in_call'")),
+        "the memory tool call is not routed to the memory"
+    );
+    assert!(
+        edges.iter().any(|e| e["from"] == json!("./memory/keep")
+            && e["to"] == json!("./talky")
+            && e["modifier"]["set_hop"]["route"] == json!("'in_tool'")),
+        "the answer has no way back into the round that asked"
+    );
+    assert!(
+        !edges
+            .iter()
+            .any(|e| e["from"] == json!("./talky") && e["to"] == json!("./talky")),
+        "the composite loopback of GH #78 is gone with `talky@5.0.0`: the collector \
+         does not serve `memory_recall` any more, so a call handed back in would park"
+    );
 }
 
 /// GH #220: the per-turn lane is named IN the declaration, not by forking the
@@ -376,12 +376,6 @@ fn factories() -> Vec<(String, Arc<dyn CellFactory>)> {
     ]
 }
 
-/// Never during a test run: the shipped keeper default is the real night, and
-/// the shipped menu tick (GH #464) would ask a tools hive this example has not
-/// got -- one dead letter every five minutes, against an example whose whole
-/// claim is an empty queue.
-const NEVER: &str = "0 0 0 1 1 *";
-
 /// The seed as the reader gets it, plus the template library next to it and the
 /// `.env` the README asks for. Only the provider endpoint is bent -- towards
 /// the mock wire, so the run costs nothing.
@@ -391,6 +385,12 @@ fn build_root(td: &tempfile::TempDir, base_url: &str) {
     for (name, dir) in GROWN_FROM.iter().chain(REFERENCED_SUB_UNITS.iter()) {
         copy_tree(&repo_path(dir), &root.join("templates").join(name));
     }
+    // The keeper's nightly close sweep, pushed to a date this run cannot reach.
+    // It was a `KEEPER_NIGHT_CRON` line in the `.env` below until GH #138: the
+    // schedule is a LITERAL of `session-keeper/night`'s own params now, so such
+    // a line is read by nothing at all -- the sweep would fire into this run and
+    // close the very generation the walkthrough opens, and nobody would say so.
+    meclaw_testing::quiet_keeper_night(&root.join("templates/session-keeper"));
     patch(&root.join("templates/talky/brain/config.json"), |v| {
         v["params"]["base_url"] = json!(base_url)
     });
@@ -412,10 +412,7 @@ fn build_root(td: &tempfile::TempDir, base_url: &str) {
     seed_the_recall_tool(root);
     std::fs::write(
         root.join(".env"),
-        format!(
-            "OPENROUTER_API_KEY=test-key\nMODEL_BRAIN=gpt-4o-mock\n\
-             KEEPER_NIGHT_CRON={NEVER}\nMENU_CRON={NEVER}\n"
-        ),
+        "OPENROUTER_API_KEY=test-key\nMODEL_BRAIN=gpt-4o-mock\n",
     )
     .unwrap();
 }

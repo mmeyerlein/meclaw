@@ -26,7 +26,7 @@
           "condition": "has(hop.route) && hop.route == 'in_refresh'"
         },
         {
-          "from": "./refresh",
+          "from": "./clock",
           "to": "./probe"
         },
         {

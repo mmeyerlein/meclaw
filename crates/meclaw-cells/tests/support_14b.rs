@@ -104,9 +104,10 @@ async fn boot_inner(
     registry.insert("llm".to_string(), llm_f);
     registry.insert("code".to_string(), code_f);
     registry.insert("store".to_string(), store_f);
-    // GH #464: `collector` ships a `menu-clock`, so every tree that carries the
-    // shipped hive carries a `timer` cell -- a boot without the factory is an
-    // `UnknownCellType`, not a quiet skip.
+    // The shipped `session-keeper` carries a `night` timer, so a tree built out
+    // of the library carries a `timer` cell -- a boot without the factory is an
+    // `UnknownCellType`, not a quiet skip. `collector` no longer contributes one:
+    // its `menu-clock` left with GH #553.
     registry.insert(
         "timer".to_string(),
         Arc::new(TimerCellFactory) as Arc<dyn CellFactory>,
