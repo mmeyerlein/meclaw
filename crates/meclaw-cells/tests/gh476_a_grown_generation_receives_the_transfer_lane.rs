@@ -402,6 +402,21 @@ fn quiet_push() -> Value {
 
 /// A code cell that appends every message it is handed to one file per lane, so
 /// a wait can be a wait for something that HAD to arrive.
+///
+/// **One line per message, appended — never a rewritten document.** A `code`
+/// cell is a stateless dispatcher whose default `max_concurrency` is 4
+/// (`CodeParams::effective_max_concurrency`), so two arrivals close enough
+/// together run as two overlapping subprocesses. The earlier body read the
+/// whole lane file, appended to what it had read and wrote it back — the last
+/// writer then erased every receipt that had arrived while it was working, and
+/// a wait on that lane spent its whole window on a lane that had in fact
+/// delivered (GH #587, measured there; GH #588, the same form here).
+///
+/// A single `O_APPEND` write places each line whole and at the end instead, so
+/// no execution can observe — let alone overwrite — another one's, and the
+/// return value is checked so a short write falls loudly rather than leaving
+/// half a line lying there. A reader that meets a line mid-flight fails to
+/// parse it and retries, which is why an arrival can never be miscounted.
 fn flag_cell(dir: &str) -> Value {
     json!({
         "cell": {"type": "code"},
@@ -410,14 +425,15 @@ fn flag_cell(dir: &str) -> Value {
 import sys, json, os
 doc = json.load(sys.stdin)
 hop = (doc["envelope"].get("header") or {}).get("hop") or {}
-path = os.path.join(doc["params"]["flag_dir"], str(hop.get("route") or "unknown") + ".json")
-seen = []
-if os.path.exists(path):
-    with open(path) as fh:
-        seen = json.load(fh)
-seen.append({"hop": hop})
-with open(path, "w") as fh:
-    fh.write(json.dumps(seen))
+path = os.path.join(doc["params"]["flag_dir"], str(hop.get("route") or "unknown") + ".jsonl")
+blob = (json.dumps({"hop": hop}) + "\n").encode("utf-8")
+fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+try:
+    written = os.write(fd, blob)
+finally:
+    os.close(fd)
+if written != len(blob):
+    sys.exit("short write: %d of %d bytes" % (written, len(blob)))
 sys.stdout.write(json.dumps([]))
 "#},
         "contract": {"version": "1.0.0", "settings": {}, "multi_send_capable": true,
@@ -629,6 +645,21 @@ async fn wait_for(p: &std::path::Path, what: &str, h: &ColonyHandle) {
         p.display(),
         dead_letters(h).await
     );
+}
+
+/// The recorder's append log for one lane.
+fn lane_file(flags: &std::path::Path, lane: &str) -> std::path::PathBuf {
+    flags.join(format!("{lane}.jsonl"))
+}
+
+/// Every message the recorder has finished placing on that lane. A line that is
+/// still being placed does not parse and is simply not there yet.
+fn lane_entries(p: &std::path::Path) -> Vec<Value> {
+    std::fs::read_to_string(p)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| from_str::<Value>(l).ok())
+        .collect()
 }
 
 /// Poll one store's own `cell.db` until it holds what the run is waiting for.
@@ -888,9 +919,9 @@ async fn a_generation_grown_from_a_wish_receives_the_export_that_names_it() {
          guard the recipe renders makes the name an address, not a fan-out"
     );
     assert!(
-        !flags.join("reject.json").exists(),
+        !lane_file(&flags, "reject").exists(),
         "a walk refused something: {:?}",
-        std::fs::read_to_string(flags.join("reject.json"))
+        lane_entries(&lane_file(&flags, "reject"))
     );
     let dl = dead_letters(&h).await;
     assert!(

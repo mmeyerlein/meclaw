@@ -63,6 +63,7 @@ pub use bootstrap_apply::{
     BootstrapReport, apply_bootstrap_plan, boot_edges_from_graph, bootstrap_from_filesystem,
     bootstrap_from_filesystem_with_env, declared_slot_endpoints, unresolved_boot_endpoints,
 };
+pub use bootstrap_grow::check_growth_overrides;
 pub use build_task::{
     build_long_running_task, build_stateful_task_with_peace, build_stateless_boot_inactive_respawn,
     build_stateless_task, renotify_stop_wiring,

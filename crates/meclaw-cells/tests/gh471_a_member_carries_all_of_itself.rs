@@ -240,6 +240,21 @@ fn quiet_push() -> Value {
 
 /// A code cell that appends every message it is handed to one file per lane, so
 /// a wait can be a wait for something that HAD to arrive.
+///
+/// **One line per message, appended — never a rewritten document.** A `code`
+/// cell is a stateless dispatcher whose default `max_concurrency` is 4
+/// (`CodeParams::effective_max_concurrency`), so two arrivals close enough
+/// together run as two overlapping subprocesses. The earlier body read the
+/// whole lane file, appended to what it had read and wrote it back — the last
+/// writer then erased every receipt that had arrived while it was working, and
+/// a wait on that lane spent its whole window on a lane that had in fact
+/// delivered (GH #587, measured there; GH #588, the same form here).
+///
+/// A single `O_APPEND` write places each line whole and at the end instead, so
+/// no execution can observe — let alone overwrite — another one's, and the
+/// return value is checked so a short write falls loudly rather than leaving
+/// half a line lying there. A reader that meets a line mid-flight fails to
+/// parse it and retries, which is why an arrival can never be miscounted.
 fn flag_cell(dir: &str) -> Value {
     json!({
         "cell": {"type": "code"},
@@ -248,14 +263,15 @@ fn flag_cell(dir: &str) -> Value {
 import sys, json, os
 doc = json.load(sys.stdin)
 hop = (doc["envelope"].get("header") or {}).get("hop") or {}
-path = os.path.join(doc["params"]["flag_dir"], str(hop.get("route") or "unknown") + ".json")
-seen = []
-if os.path.exists(path):
-    with open(path) as fh:
-        seen = json.load(fh)
-seen.append({"hop": hop})
-with open(path, "w") as fh:
-    fh.write(json.dumps(seen))
+path = os.path.join(doc["params"]["flag_dir"], str(hop.get("route") or "unknown") + ".jsonl")
+blob = (json.dumps({"hop": hop}) + "\n").encode("utf-8")
+fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+try:
+    written = os.write(fd, blob)
+finally:
+    os.close(fd)
+if written != len(blob):
+    sys.exit("short write: %d of %d bytes" % (written, len(blob)))
 sys.stdout.write(json.dumps([]))
 "#},
         "contract": {"version": "1.0.0", "settings": {}, "multi_send_capable": true,
@@ -435,6 +451,53 @@ async fn wait_for(p: &std::path::Path, what: &str, h: &ColonyHandle) {
     );
 }
 
+/// The recorder's append log for one lane.
+fn lane_file(flags: &std::path::Path, lane: &str) -> std::path::PathBuf {
+    flags.join(format!("{lane}.jsonl"))
+}
+
+/// Every message the recorder has finished placing on that lane. A line that is
+/// still being placed does not parse and is simply not there yet.
+fn lane_entries(p: &std::path::Path) -> Vec<Value> {
+    std::fs::read_to_string(p)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| from_str::<Value>(l).ok())
+        .collect()
+}
+
+/// Poll one lane's append log until `want` messages have arrived on it.
+async fn wait_lane(
+    flags: &std::path::Path,
+    lane: &str,
+    want: usize,
+    h: &ColonyHandle,
+) -> Vec<Value> {
+    let p = lane_file(flags, lane);
+    let deadline = std::time::Instant::now() + RECV_TIMEOUT;
+    loop {
+        let seen = lane_entries(&p);
+        if seen.len() >= want {
+            return seen;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "only {} of {want} messages reached `{lane}` -- dead letters: {:?}",
+            seen.len(),
+            h.drain_dead_letters()
+                .await
+                .iter()
+                .map(|d| (
+                    d.sender_path.as_str().to_string(),
+                    d.resolved_target.as_str().to_string(),
+                    d.reason.as_code()
+                ))
+                .collect::<Vec<_>>()
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 fn member_manifest(export_dir: Option<&std::path::Path>) -> Value {
     // Since GH #555 an instance says ONE thing about files: the fence each
     // holder's own store writes inside. There is no cell to relax and no
@@ -600,9 +663,9 @@ async fn an_export_carries_memory_record_and_screen_and_a_member_is_born_with_al
         assert!(marker["tables"].as_array().map(Vec::len).unwrap_or(0) > 0);
     }
     assert!(
-        !a_flags.join("reject.json").exists(),
+        !lane_file(&a_flags, "reject").exists(),
         "a walk refused something: {:?}",
-        std::fs::read_to_string(a_flags.join("reject.json"))
+        lane_entries(&lane_file(&a_flags, "reject"))
     );
     // and every part is filed under its own hive, so the two `entities` tables
     // in this export -- the memory hive's and affinity's -- are two files
@@ -698,9 +761,7 @@ async fn an_export_carries_memory_record_and_screen_and_a_member_is_born_with_al
             .build(),
     )
     .await;
-    wait_for(&b_flags.join("reject.json"), "the screened turn", &b).await;
-    let refusals: Value =
-        from_str(&std::fs::read_to_string(b_flags.join("reject.json")).unwrap()).unwrap();
+    let refusals = wait_lane(&b_flags, "reject", 1, &b).await;
     assert_eq!(
         refusals[0]["hop"]["rule_id"], RULE,
         "the turn was refused by some other rule, or not by the imported one. A \

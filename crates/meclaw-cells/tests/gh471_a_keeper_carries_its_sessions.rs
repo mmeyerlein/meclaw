@@ -173,6 +173,21 @@ fn keeper(root: &std::path::Path, name: &str, seeded: bool, fence: &std::path::P
 /// A code cell that writes one file per lane it is handed, so a wait can be a
 /// wait for something that HAD to arrive rather than for the absence of a dead
 /// letter.
+///
+/// **One line per message, appended — never a rewritten document.** A `code`
+/// cell is a stateless dispatcher whose default `max_concurrency` is 4
+/// (`CodeParams::effective_max_concurrency`), so two arrivals close enough
+/// together run as two overlapping subprocesses. The earlier body read the
+/// whole lane file, appended to what it had read and wrote it back — the last
+/// writer then erased every receipt that had arrived while it was working, and
+/// a wait on that lane spent its whole window on a lane that had in fact
+/// delivered (GH #587, measured there; GH #588, the same form here).
+///
+/// A single `O_APPEND` write places each line whole and at the end instead, so
+/// no execution can observe — let alone overwrite — another one's, and the
+/// return value is checked so a short write falls loudly rather than leaving
+/// half a line lying there. A reader that meets a line mid-flight fails to
+/// parse it and retries, which is why an arrival can never be miscounted.
 fn flag_cell(dir: &str) -> Value {
     json!({
         "cell": {"type": "code"},
@@ -182,14 +197,16 @@ import sys, json, os
 doc = json.load(sys.stdin)
 hop = (doc["envelope"].get("header") or {}).get("hop") or {}
 name = str(hop.get("dump_kind") or hop.get("route") or "unknown")
-path = os.path.join(doc["params"]["flag_dir"], name + ".json")
-seen = []
-if os.path.exists(path):
-    with open(path) as fh:
-        seen = json.load(fh)
-seen.append({"hop": hop, "text": (doc["body"].get("messages") or [{}])[0].get("text", "")})
-with open(path, "w") as fh:
-    fh.write(json.dumps(seen))
+path = os.path.join(doc["params"]["flag_dir"], name + ".jsonl")
+entry = {"hop": hop, "text": (doc["body"].get("messages") or [{}])[0].get("text", "")}
+blob = (json.dumps(entry) + "\n").encode("utf-8")
+fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+try:
+    written = os.write(fd, blob)
+finally:
+    os.close(fd)
+if written != len(blob):
+    sys.exit("short write: %d of %d bytes" % (written, len(blob)))
 sys.stdout.write(json.dumps([]))
 "#},
         "contract": {"version": "1.0.0", "settings": {}, "multi_send_capable": true,
@@ -227,35 +244,56 @@ async fn nudge(h: &ColonyHandle, target: &str, route: &str, hop_extra: &[(&str, 
     .await;
 }
 
-async fn wait_for(
-    p: &std::path::Path,
+/// The recorder's append log for one lane.
+fn lane_file(flags: &std::path::Path, lane: &str) -> std::path::PathBuf {
+    flags.join(format!("{lane}.jsonl"))
+}
+
+/// Every message the recorder has finished placing on that lane. A line that is
+/// still being placed does not parse and is simply not there yet.
+fn lane_entries(p: &std::path::Path) -> Vec<Value> {
+    std::fs::read_to_string(p)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| from_str::<Value>(l).ok())
+        .collect()
+}
+
+/// Poll one lane's append log until `want` messages have arrived on it.
+///
+/// What ends the wait is the count of messages that reached the lane, and
+/// nothing that arrived can go missing again — so reaching the marker means the
+/// lane did not deliver, never that the record of a delivery was overwritten.
+async fn wait_lane(
+    flags: &std::path::Path,
+    lane: &str,
+    want: usize,
     what: &str,
     h: &ColonyHandle,
-    predicate: impl Fn(&Value) -> bool,
-) -> Value {
+) -> Vec<Value> {
+    let p = lane_file(flags, lane);
     let deadline = std::time::Instant::now() + RECV_TIMEOUT;
-    while std::time::Instant::now() < deadline {
-        if let Ok(raw) = std::fs::read_to_string(p)
-            && let Ok(v) = from_str::<Value>(&raw)
-            && predicate(&v)
-        {
-            return v;
+    loop {
+        let seen = lane_entries(&p);
+        if seen.len() >= want {
+            return seen;
         }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{what}: only {} of {want} reached `{lane}` -- dead letters: {:?}",
+            seen.len(),
+            h.drain_dead_letters()
+                .await
+                .iter()
+                .map(|d| (
+                    d.sender_path.as_str().to_string(),
+                    d.resolved_target.as_str().to_string(),
+                    d.reason.as_code()
+                ))
+                .collect::<Vec<_>>()
+        );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    panic!(
-        "{what} never arrived at {} -- dead letters: {:?}",
-        p.display(),
-        h.drain_dead_letters()
-            .await
-            .iter()
-            .map(|d| (
-                d.sender_path.as_str().to_string(),
-                d.resolved_target.as_str().to_string(),
-                d.reason.as_code()
-            ))
-            .collect::<Vec<_>>()
-    )
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -301,14 +339,14 @@ async fn a_session_ledger_crosses_and_the_new_keeper_continues_the_conversation(
 
     // ── 1. the walk leaves, as a file ───────────────────────────────────────
     nudge(&h, "/old", "in_export", &[]).await;
-    let done = wait_for(
-        &flag_dir.join("export_done.json"),
+    let done = wait_lane(
+        &flag_dir,
+        "export_done",
+        1,
         "the keeper's own completion word",
         &h,
-        |v| !v.as_array().unwrap_or(&vec![]).is_empty(),
     )
     .await;
-    let done = done.as_array().unwrap().clone();
     assert_eq!(done[0]["hop"]["export_hive"], "session-keeper");
     assert_eq!(
         done[0]["hop"]["seed_dir"], "session-keeper/seed",
@@ -335,9 +373,9 @@ async fn a_session_ledger_crosses_and_the_new_keeper_continues_the_conversation(
         "the completeness marker is what tells a whole document from a prefix"
     );
     assert!(
-        !flag_dir.join("reject.json").exists(),
+        !lane_file(&flag_dir, "reject").exists(),
         "the walk refused something: {:?}",
-        std::fs::read_to_string(flag_dir.join("reject.json"))
+        lane_entries(&lane_file(&flag_dir, "reject"))
     );
 
     // ── 2. the row arrives, and a second application changes nothing ────────
@@ -371,21 +409,12 @@ async fn a_session_ledger_crosses_and_the_new_keeper_continues_the_conversation(
         ]],
         "the transferred generation is not in the receiving keeper"
     );
-    let receipts = wait_for(&flag_dir.join("dump.json"), "the import receipt", &h, |v| {
-        !v.as_array().unwrap_or(&vec![]).is_empty()
-    })
-    .await;
+    let receipts = wait_lane(&flag_dir, "dump", 1, "the import receipt", &h).await;
     assert_eq!(receipts[0]["hop"]["rows_written"], 1);
 
     // the same document again
     import(&h, &part).await;
-    let receipts = wait_for(
-        &flag_dir.join("dump.json"),
-        "the second import receipt",
-        &h,
-        |v| v.as_array().map(Vec::len).unwrap_or(0) >= 2,
-    )
-    .await;
+    let receipts = wait_lane(&flag_dir, "dump", 2, "the second import receipt", &h).await;
     assert_eq!(
         receipts[1]["hop"]["rows_written"], 0,
         "applying the same document twice wrote a second row -- the probe \
@@ -413,10 +442,7 @@ async fn a_session_ledger_crosses_and_the_new_keeper_continues_the_conversation(
             .build(),
     )
     .await;
-    let turns = wait_for(&flag_dir.join("turn.json"), "the stamped turn", &h, |v| {
-        !v.as_array().unwrap_or(&vec![]).is_empty()
-    })
-    .await;
+    let turns = wait_lane(&flag_dir, "turn", 1, "the stamped turn", &h).await;
     assert_eq!(
         turns[0]["hop"]["session_id"], SESSION,
         "the turn opened a NEW generation. The ledger arrived and was not read: \

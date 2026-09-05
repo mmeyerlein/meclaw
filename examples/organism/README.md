@@ -48,14 +48,14 @@ organism/
 │   ├── colony.json            byte-identical to seed/colony.json
 │   └── main/
 │       ├── config.json        byte-identical to seed/main/config.json
-│       └── os/config.json     type: "ref", template: "meclaw-os@1.8.1"
+│       └── os/config.json     type: "ref", template: "meclaw-os@1.8.2"
 ├── grow-os.json               1. the shell.        1 node,  0 edges
 ├── grow-org.json              2. an organisation.  1 node, 18 edges
 ├── grow-member.json           3. a person.         1 node, 18 edges
 ├── grow-assistant.json        4. one generation.   1 node, 14 edges
 ├── grow-channel.json          5. a Telegram channel. 1 node, 3 edges, born asleep
 ├── grow-credentials.json      6. the credential v-lanes. 0 nodes, 4 edges, 2 grants
-├── grow-screen.json           beyond the six: a screen and an app. 3 declarations,
+├── grow-screen.json           beyond the six: a screen and an app. 2 declarations,
 │                              2 nodes, 5 edges — one storey each, so one manifest
 └── grow.manifest.json         all six, in one body, in that order
 ```
@@ -67,7 +67,7 @@ principle of GH #26: a tree is grown, not checked in.
 ## What grows
 
 ```
-/os                                 meclaw-os@1.8.1   the shell
+/os                                 meclaw-os@1.8.2   the shell
 ├── access                            → access@2.5.0        the capability broker
 ├── argus                             → argus@1.1.0         the control loop
 └── orgs                              (empty container)
@@ -83,7 +83,7 @@ principle of GH #26: a tree is grown, not checked in.
                     └── scribe    assistant@2.5.0   one generation of an agent
                         ├── talky     → talky@5.0.0         the conversation surface
                         ├── cogny     → cogny@5.0.0         the reasoning core
-                        └── tools     → tools@1.4.1         the tool surface
+                        └── tools     → tools@1.4.2         the tool surface
 ```
 
 Five `add_nodes` entries name five templates, and **seventeen** distinct templates end up stamped
@@ -114,7 +114,7 @@ is a separate act.
 
 ```json
 {"scope": "/",
- "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.8.1"}],
+ "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.8.2"}],
           "add_edges": []}}
 ```
 
@@ -444,9 +444,12 @@ declarations**.
 ```
 
 **Since [#543](https://github.com/mmeyerlein/meclaw/issues/543) nobody writes this file by
-hand.** It is, byte for byte, the SECOND manifest the builder renders for a member wish: a
-member always gets a screen and an app, and the `7900` is `screen_port_base` plus that member's
-index in its organisation — alex is the first, so alex takes the base. It stays checked in as
+hand.** It is, byte for byte, the TAIL of the manifest the builder renders for a member wish —
+the two declarations behind the person, which since
+[#585](https://github.com/mmeyerlein/meclaw/issues/585) ride in the same submission as the
+person rather than in a second one: a member always gets a screen and an app, and the `7900` is
+`screen_port_base` plus that member's index in its organisation — alex is the first, so alex
+takes the base. It stays checked in as
 the byte pin of that manifest and as the corpus row a composer retrieves for either level. The
 third declaration it used to carry — the route from the member's `assistants` container into one
 generation — moved into the assistant level, which is the only place that knows the generation's
@@ -565,7 +568,7 @@ nothing until an operator turns on exactly what they mean.
 shall stand.
 
 ```json
-{"cell": {"type": "ref", "template": "meclaw-os@1.8.1"}}
+{"cell": {"type": "ref", "template": "meclaw-os@1.8.2"}}
 ```
 
 That is a **declaration, not a cell**. The FIRST `meclaw --root ./examples/organism/seed-ref`

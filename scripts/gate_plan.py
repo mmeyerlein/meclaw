@@ -60,9 +60,19 @@ STATIONS (S strand, I integration, R release, C ci)
     scenarios:*     see the template/example/evals triggers; I/R always
     recall-harness  memory-hive template, recall sources, evals_memory; I/R always
     deny-advisories R always (the runner grades it NOTE, never RED)
-    export-selftest export_infra; R always
-    export-audit    R always, last station (cargo: make_export.py runs
-                    `cargo check --workspace --all-targets` in a fresh target)
+    export-selftest export_infra; I/R always (seconds, pure Python)
+    export-audit    I/R always, last station. TWO shapes, one station name:
+                    R runs the FULL audit (scope `R1-R17`, cargo:1 --
+                    make_export.py runs `cargo check --workspace
+                    --all-targets` in a fresh target); I runs it DRY
+                    (`--skip-cargo --rev HEAD`, scope `R1-R17 dry`, cargo:0
+                    -- it builds nothing). `--rev HEAD` because the pass
+                    judges the tree its receipt was written over; the release
+                    audit keeps the `master` default. The dry run is seconds
+                    and surfaces the cheap
+                    findings of R2b/R5/R10 -- dead template references in
+                    tests, name/domain patterns, relative links -- in the
+                    integration pass instead of an hour later in the release
 
 USAGE
 =====
@@ -919,22 +929,48 @@ def plan(paths, mode, repo=None):
             "deny-advisories", "advisories", True,
             [["cargo", "deny", "check", "advisories"]])
 
-    if "export_infra" in classes or mode == "release":
+    if "export_infra" in classes or ir:
+        # Seconds of pure Python, so the integration pass pays for it too --
+        # it is the self-test of the very rules the audit below applies.
         out["export-selftest"] = station(
             "export-selftest", "drift-fixtures", False,
             [["python3", "plans/export-fixtures/test_drift_gate.py"]])
 
-    if mode == "release":
+    if ir:
         # `{receipt}` is a placeholder the runner substitutes with the path it
-        # wants the audit receipt written to.
-        # cargo:1 -- it is a Python script, but it runs `cargo check
-        # --workspace --all-targets` in a fresh target directory inside the
-        # export tree. That is a cold build, and it belongs under the same
+        # wants the audit receipt written to. The runner ALWAYS substitutes it,
+        # in every mode -- so `make_export.py` never falls back to its own
+        # default receipt lookup from here.
+        #
+        # TWO shapes of the same station. Release runs the full audit; cargo:1
+        # -- it is a Python script, but it runs `cargo check --workspace
+        # --all-targets` in a fresh target directory inside the export tree.
+        # That is a cold build, and it belongs under the same
         # nice/ionice/flock/build-width hygiene as any other cargo station.
+        #
+        # Integration runs the SAME audit with `--skip-cargo`: R8/R9/R12-class
+        # work drops out, nothing is built (cargo:0), and what remains are the
+        # cheap rules -- R2b dead template references in tests, R5 name/domain
+        # patterns, R10 relative links. Those used to surface only in the
+        # release pass, an hour after the integration pass had declared the
+        # wave done (v0.30.0).
+        #
+        # `--rev HEAD` is the second half of the dry shape. `make_export.py`
+        # defaults to `--rev master`, and the receipt the audit reads belongs
+        # to the revision the RUNNER gated -- HEAD. On master the two are the
+        # same commit, which is why the release audit never noticed; from a
+        # wave branch they differ and the audit answered with a rev mismatch
+        # instead of a verdict (measured 2026-09-04). The integration pass
+        # judges the tree it just gated, so it names it. Release keeps the
+        # `master` default: an export is of master, not of whatever is checked
+        # out.
+        dry = mode == "integration"
+        argv = ["python3", "plans/export-fixtures/make_export.py", "--keep-going"]
+        if dry:
+            argv += ["--skip-cargo", "--rev", "HEAD"]
         out["export-audit"] = station(
-            "export-audit", "R1-R17", True,
-            [["python3", "plans/export-fixtures/make_export.py",
-              "--keep-going", "--gate-receipt", "{receipt}"]])
+            "export-audit", "R1-R17 dry" if dry else "R1-R17", not dry,
+            [argv + ["--gate-receipt", "{receipt}"]])
 
     if ci:
         # One rule, not eight conditions spread through the builder above:

@@ -1,4 +1,4 @@
-# `builder@1.7.1`
+# `builder@1.7.2`
 
 The intake that turns a structural wish into a **manifest** — an ordered list of
 mutation declarations, ready to be submitted by whoever asked for it.
@@ -346,14 +346,18 @@ on a `channel` (§ *A round is provenance*).
 
 ### A member grows a screen and an app, and the OS hands out the port
 
-Since `1.7.0` a `grow_level` wish for a **member** answers with **two
-manifests** rather than one
-([#543](https://github.com/mmeyerlein/meclaw/issues/543)). The first is the
-level, unchanged to the byte. The second grows the two devices that person
-speaks through:
+Since `1.7.0` a `grow_level` wish for a **member** grows the person **and** the
+two devices that person speaks through
+([#543](https://github.com/mmeyerlein/meclaw/issues/543)), and since `1.7.2`
+they travel as **one manifest**
+([#585](https://github.com/mmeyerlein/meclaw/issues/585)). The first
+declaration is the level, unchanged to the byte; the two behind it are the
+devices:
 
 ```json
 {"manifest": [
+  {"scope": "/os/orgs/acme/members",
+   "diff": {"add_nodes": [{"name": "alex", "template": "…"}], "…": "…"}},
   {"scope": "/os/orgs/acme/members/alex/channels",
    "diff": {"add_nodes": [{"name": "display", "template": "display@1.0.2",
                            "override_params": {"web": {"port": 7900}}}], "…": "…"}},
@@ -397,13 +401,22 @@ that arrived *unreadable* (present, and not a number) refuses instead of
 rendering. An **absent** index is not that case and never was — nobody counted,
 so this is the first member and the base port is the answer.
 
-**Two manifests are two submissions, and the order is semantics.** The second
-draws into `<member>/channels`, a scope only the first creates, and there is no
-rollback between them — applied the other way round the screen is refused for a
-scope that does not exist. That is measured rather than assumed
-(`gh543_a_member_always_gets_its_screen.rs`), and each manifest carries its own
-digest and its own caller row, so a refusal of either finds the door it came
-from.
+**One wish is one submission, because the order is semantics.** The devices draw
+into `<member>/channels` and `<member>/apps`, scopes only the declaration in
+front of them creates, and a manifest rolls forward with no rollback — declared
+the other way round the screen is refused for a scope that does not exist. Until
+`1.7.2` the two halves left this hive as **two** submissions in the same turn,
+and a front has no ordering across two: measured on a fresh colony, the devices
+reached the door first, were refused with `edge_schema`, and the person
+committed behind them — a member with no screen and no app, and a wish that
+reported success ([#585](https://github.com/mmeyerlein/meclaw/issues/585)).
+Inside one manifest the order is the **door's** to keep: the colony rolls a
+manifest off entry by entry through the very handling a single body takes, so an
+entry is judged against the tree the entries in front of it grew. Both halves of
+that are measured rather than assumed
+(`gh585_a_member_wish_is_one_submission.rs`,
+`gh543_a_member_always_gets_its_screen.rs`), and the one manifest carries one
+digest and one caller row, so its refusal finds the door it came from.
 
 ### The credential lanes are opt-in too, and they ride in the level's own declaration
 

@@ -52,9 +52,11 @@ fn repo(rel: &str) -> PathBuf {
 }
 
 fn grow(params: Value) -> Value {
-    // The FIRST manifest. Since GH #543 a member wish renders two — the level,
-    // and then the screen and the app that member always gets — and what this
-    // file is about is the level.
+    // The FIRST declaration. Since GH #543 a member wish renders the level AND
+    // the screen and the app that member always gets, and since GH #585 the
+    // three ride in one manifest — what this file is about is the level, which
+    // is the one in front.
+    let member = params["level"] == json!("member");
     let out = emit_all(
         &shipped_script(RECIPES),
         &json!({
@@ -73,7 +75,11 @@ fn grow(params: Value) -> Value {
     let decls = out["manifest"]
         .as_array()
         .unwrap_or_else(|| panic!("no manifest: {out}"));
-    assert_eq!(decls.len(), 1, "a level is ONE declaration");
+    assert_eq!(
+        decls.len(),
+        if member { 3 } else { 1 },
+        "the level is not the declaration this manifest leads with: {out}"
+    );
     decls[0].clone()
 }
 

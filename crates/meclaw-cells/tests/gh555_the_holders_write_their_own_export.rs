@@ -218,6 +218,32 @@ fn quiet_push() -> Value {
 
 /// A code cell that appends every message it is handed to one file per lane, so
 /// a wait can be a wait for something that HAD to arrive.
+///
+/// **One line per message, appended — never a rewritten document.** A `code`
+/// cell is a stateless dispatcher whose default `max_concurrency` is 4
+/// (`CodeParams::effective_max_concurrency`), and the member fans its export
+/// out to all three holders at once: three answers reach this recorder within
+/// microseconds of each other and run as three overlapping executions. The
+/// earlier body read the whole lane file, appended to what it had read and
+/// wrote it back — a read-modify-write across a subprocess boundary, so the
+/// last writer overwrote every receipt that had arrived while it was working.
+/// The signal was lost in the RECORDER, and the wait below then sat out its
+/// whole window on a lane that had in fact delivered (GH #587; reproduced by
+/// putting a 0.3 s gap between that read and that write: `only 1 of 3 holders
+/// reached export_done -- dead letters: []`, the reported symptom exactly).
+///
+/// `O_APPEND` plus a single `os.write` is what removes it, rather than a knob
+/// that makes the executions serial: the kernel places each line whole and at
+/// the end, so no execution can observe — let alone overwrite — another one's.
+/// A reader may still meet a line mid-flight; it fails to parse and is retried,
+/// which is why an arrival can never be miscounted in either direction.
+///
+/// Two details of that write are deliberate. `os.write` on a raw descriptor
+/// rather than `open(path, "a")`: text mode buffers, and a flush may split one
+/// line across two syscalls — each atomic on its own, the line not. And the
+/// return value is checked, because a short write (`ENOSPC`, a signal) would
+/// otherwise leave half a line lying there silently and the wait would spend
+/// its whole window calling a delivered lane undelivered.
 fn flag_cell(dir: &str) -> Value {
     json!({
         "cell": {"type": "code"},
@@ -226,14 +252,15 @@ fn flag_cell(dir: &str) -> Value {
 import sys, json, os
 doc = json.load(sys.stdin)
 hop = (doc["envelope"].get("header") or {}).get("hop") or {}
-path = os.path.join(doc["params"]["flag_dir"], str(hop.get("route") or "unknown") + ".json")
-seen = []
-if os.path.exists(path):
-    with open(path) as fh:
-        seen = json.load(fh)
-seen.append({"hop": hop})
-with open(path, "w") as fh:
-    fh.write(json.dumps(seen))
+path = os.path.join(doc["params"]["flag_dir"], str(hop.get("route") or "unknown") + ".jsonl")
+blob = (json.dumps({"hop": hop}) + "\n").encode("utf-8")
+fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+try:
+    written = os.write(fd, blob)
+finally:
+    os.close(fd)
+if written != len(blob):
+    sys.exit("short write: %d of %d bytes" % (written, len(blob)))
 sys.stdout.write(json.dumps([]))
 "#},
         "contract": {"version": "1.0.0", "settings": {}, "multi_send_capable": true,
@@ -395,26 +422,43 @@ async fn wait_for(p: &std::path::Path, what: &str, h: &ColonyHandle) {
     );
 }
 
+/// The recorder's append log for one lane.
+fn lane_file(flags: &std::path::Path, lane: &str) -> std::path::PathBuf {
+    flags.join(format!("{lane}.jsonl"))
+}
+
+/// Every message the recorder has finished placing on that lane.
+fn lane_entries(p: &std::path::Path) -> Vec<Value> {
+    std::fs::read_to_string(p)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| from_str::<Value>(l).ok())
+        .collect()
+}
+
 /// Poll the `export_done` flag file until `want` of them have arrived.
 async fn wait_done(flags: &std::path::Path, want: usize, h: &ColonyHandle) -> Vec<Value> {
     wait_lane(flags, "export_done", want, h).await
 }
 
 /// Poll one lane's flag file until `want` messages have arrived on it.
+///
+/// The file is the recorder's append log, one JSON object per line, so what is
+/// counted here is arrivals and nothing else: a line that is still being placed
+/// does not parse and is simply not counted yet, and a line that parsed is a
+/// message that reached the lane. Nothing that arrived can go missing again, so
+/// reaching the marker means the lane did not deliver — never that the record
+/// of the delivery was overwritten (GH #587).
 async fn wait_lane(
     flags: &std::path::Path,
     lane: &str,
     want: usize,
     h: &ColonyHandle,
 ) -> Vec<Value> {
-    let p = flags.join(format!("{lane}.json"));
+    let p = lane_file(flags, lane);
     let deadline = std::time::Instant::now() + RECV_TIMEOUT;
     loop {
-        let seen = std::fs::read_to_string(&p)
-            .ok()
-            .and_then(|raw| from_str::<Value>(&raw).ok())
-            .and_then(|v| v.as_array().cloned())
-            .unwrap_or_default();
+        let seen = lane_entries(&p);
         if seen.len() >= want {
             return seen;
         }
@@ -699,7 +743,7 @@ async fn a_store_that_cannot_write_says_so_and_says_no_completion_word() {
 
     // (2) and only then the silence: no completion word, and no directory.
     assert!(
-        !flags.join("export_done.json").exists(),
+        !lane_file(&flags, "export_done").exists(),
         "a holder said `export_done` although nothing was written. That is the \
          one lie this lane must never tell: a reader trusts a directory whose \
          marker stands, and `export_done` is what tells it to look"

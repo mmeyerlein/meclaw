@@ -1,4 +1,4 @@
-//! GH #302 — `meclaw-os@1.8.1`, the outermost level: the colony shell.
+//! GH #302 — `meclaw-os@1.8.2`, the outermost level: the colony shell.
 //!
 //! The four composition templates are authored under one rule, and every one of
 //! their READMEs repeats it in the same words: **a level owns what its siblings

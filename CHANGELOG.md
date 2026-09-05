@@ -9,6 +9,68 @@ documented `error_code` strings (README § Stability). Anything that breaks one 
 them is listed under **Breaking** in its release, with the migration named. The
 Rust crates are internals and move without notice.
 
+## [0.30.1] — 2026-09-05
+
+A patch release: the repairs the first colony built on 0.30.0 turned up. Growing a
+member is one submission again rather than two racing ones, so the screen and the
+app cannot land in front of the person that holds them; and `meclaw --validate` now
+asks a `ref` marker's `override_params` the same two questions the mutation door has
+always asked, so a wrong cell path or a wrong param key is named before anything is
+grown instead of a boot cycle later. Nothing in the contract moved — no migration is
+needed from 0.30.0.
+
+### Fixed
+
+#### `builder@1.7.2`, `meclaw-os@1.8.2`, `tools@1.4.2`: a member wish is ONE submission (GH #585)
+
+A member wish grew the person and then, in a second submission handed to the same
+front in the same turn, its screen and its app. The order between the two was
+semantics — the devices draw into `<member>/channels` and `<member>/apps`, scopes
+only the person creates — and a front has no ordering across two submissions.
+Measured on a fresh colony and reproduced twice: the device submission reached the
+door first, was refused with `edge_schema` (`to='.' unknown` / `from='.' unknown`)
+for a scope that did not exist yet, and the person committed behind it. The result
+was a member with **no** screen and **no** app, the wish reported success, and the
+only trace was one `rejected` row in `mutation_log`.
+
+`recipes` now renders the person, the screen and the app as **one** manifest, in
+dependency order. Nothing at the door changed and no lane moved: a manifest is an
+ordered list the colony rolls off entry by entry through the very handling a single
+body takes, so an entry is judged against the tree the entries in front of it grew
+— that property is now measured
+(`crates/meclaw-cells/tests/gh585_a_member_wish_is_one_submission.rs`) instead of
+only stated in a doc comment, and `docs/meclaw-overview.md` § *Zweite Body-Form: das
+Manifest* says it in both language halves. One manifest is one digest and one caller
+row, so a refusal of the wish still finds the door it came from.
+
+`tools@1.4.2` carries the same correction on the surface a model reads: the
+`build_topology` schema and the template's own description said `grow_level` answers a
+member with more than one manifest. They now say more than one **declaration**, in one
+submission, because the devices draw into scopes only the person creates. The builder's
+authoring prompt (`templates/builder/brief`) says the same about
+`examples/organism/grow-screen.json`, which is unchanged and stays applicable on its own —
+it is the tail of the one manifest now rather than a second one.
+
+**Migration: none needed.** The wish, its parameters and the tree it grows are the
+same; what changed is how many bodies knock on the door.
+
+#### `--validate` reads the `override_params` a `ref` marker carries (GH #586)
+
+A `cell.type: "ref"` marker in the root tree may carry a top-level
+`override_params` block, addressed by the cells of the template it names. The
+mutation door has asked both halves of such a block for a long time — a key that
+names no cell (GH #140), and a key inside an entry that names no param
+(GH #294) — but `meclaw --validate` asked neither: a wrong cell path committed
+as a silent no-op, and a wrong param key surfaced a whole boot cycle later at
+the spawning cell. `--validate` now resolves the marker's template and asks the
+same two questions through the same code, with the same wording and the same
+`error_code` (`schema`). It is a hard error without `--validate-strict`, the
+same sharpness an unresolvable reference already had: a param the referenced
+template does not declare is not a legal topology somebody might have meant.
+`--validate` still grows nothing. Every offending key in the block is named
+in one run, the way the mutation door names every misspelled key of a diff — a
+pre-flight check costs a round trip per finding otherwise.
+
 ## [0.30.0] — 2026-09-05
 
 This is the wave in which every open issue was either built or ruled. The poll

@@ -410,26 +410,9 @@ fn collect_ref_overrides(
     let Some(over) = config.get("override_params") else {
         return Ok(());
     };
-    let obj = over.as_object().ok_or_else(|| {
-        MutationError::Schema(format!(
-            "override_params on the ref to '{reference}' must be an object keyed by the cells' \
-             paths inside the referenced template (\"\" is its root)"
-        ))
-    })?;
-    let known: Vec<&str> = sub_cells.iter().map(|c| c.rel_path.as_str()).collect();
+    let obj = ref_override_block(over, reference)?;
     for (key, params) in obj {
-        if !known.contains(&key.as_str()) {
-            return Err(MutationError::Schema(format!(
-                "override_params['{key}'] names no cell of the referenced template \
-                 '{reference}'. Its cells are: {}",
-                render_cell_list(&known)
-            )));
-        }
-        if !params.is_object() {
-            return Err(MutationError::Schema(format!(
-                "override_params['{key}'] must be a params object"
-            )));
-        }
+        ref_override_target(key, params, sub_cells, reference)?;
         layer_params(
             sub_overrides
                 .entry(key.clone())
@@ -438,6 +421,118 @@ fn collect_ref_overrides(
         );
     }
     Ok(())
+}
+
+/// The `override_params` block of a `ref` as a keyed object, or the refusal that
+/// says what shape it owes.
+///
+/// Extracted (GH #586) so the two readers of a ref's block — the template walk
+/// ([`collect_ref_overrides`]) and the root-tree marker's pre-flight
+/// ([`check_ref_marker_overrides`]) — cannot word one cause twice.
+///
+/// # Errors
+/// [`MutationError::Schema`] if the block is not an object.
+fn ref_override_block<'a>(
+    over: &'a JsonValue,
+    reference: &str,
+) -> Result<&'a serde_json::Map<String, JsonValue>, MutationError> {
+    over.as_object().ok_or_else(|| {
+        MutationError::Schema(format!(
+            "override_params on the ref to '{reference}' must be an object keyed by the cells' \
+             paths inside the referenced template (\"\" is its root)"
+        ))
+    })
+}
+
+/// The cell one `override_params` entry of a `ref` addresses — the CELL half of
+/// the check (GH #140), shared by both readers of a ref's block for the reason
+/// [`ref_override_block`] gives.
+///
+/// # Errors
+/// [`MutationError::Schema`] if `key` names no cell of the referenced template
+/// (the message lists the ones that exist), or if the entry is not a params
+/// object.
+fn ref_override_target<'a>(
+    key: &str,
+    params: &JsonValue,
+    cells: &'a [CellNode],
+    reference: &str,
+) -> Result<&'a CellNode, MutationError> {
+    let Some(cell) = cells.iter().find(|c| c.rel_path == key) else {
+        let known: Vec<&str> = cells.iter().map(|c| c.rel_path.as_str()).collect();
+        return Err(MutationError::Schema(format!(
+            "override_params['{key}'] names no cell of the referenced template \
+             '{reference}'. Its cells are: {}",
+            render_cell_list(&known)
+        )));
+    };
+    if !params.is_object() {
+        return Err(MutationError::Schema(format!(
+            "override_params['{key}'] must be a params object"
+        )));
+    }
+    Ok(cell)
+}
+
+/// GH #586 — ask a root-tree `ref` MARKER's top-level `override_params` both
+/// halves the mutation door asks `add_nodes[].override_params`: the CELL half
+/// (GH #140 — a key that names no cell of the referenced template) and the
+/// PARAM half (GH #294 — a key inside an entry that names no param of the cell
+/// it reached).
+///
+/// The marker is the one place where a template's params are reachable before a
+/// builder exists, and it was the one place nobody asked: a typo committed as a
+/// silent no-op (wrong cell path) or surfaced a whole boot cycle later at the
+/// spawning cell (wrong param key). `docs/config.md` § Spezialfall
+/// Template-Referenz has claimed the cell half since GH #277 — for a marker in
+/// the ROOT tree it was true of neither half.
+///
+/// A marker's block is ALWAYS the ADDRESSED form (`""` is the referenced
+/// template's root); the flat single-cell form GH #436 disambiguates belongs to
+/// `add_nodes` and never reaches here.
+///
+/// This is a pure question about a parsed template — no filesystem, no writes —
+/// which is what lets `meclaw --validate` ask it without growing anything.
+///
+/// **Every** offending key is reported, not the first — the door collects for
+/// the same reason ([`crate::mutation::validate::collect_post_state_addresses`],
+/// GH #293: a diff whose override misspells four keys names four keys). A
+/// pre-flight check that surrendered on the first typo would cost one boot's
+/// worth of round trips per typo, which is the cost this whole check exists to
+/// remove. Within ONE addressed entry the door's own
+/// [`check_override_params`] still stops at that entry's first unknown param,
+/// and this keeps that granularity rather than growing a second opinion about
+/// it.
+///
+/// Returns the refusals in the block's key order; an empty vector means every
+/// entry addresses a cell and a param that exist. Each is a
+/// [`MutationError::Schema`] (`error_code` `schema`, the door's own — never a
+/// new code, README § Stability). A block that is not an object at all is one
+/// refusal about the block, and there is nothing further to ask.
+pub fn check_ref_marker_overrides(
+    template: &SubtreeTemplate,
+    reference: &str,
+    override_params: &JsonValue,
+) -> Vec<MutationError> {
+    let obj = match ref_override_block(override_params, reference) {
+        Ok(obj) => obj,
+        Err(e) => return vec![e],
+    };
+    let mut findings = Vec::new();
+    for (key, params) in obj {
+        match ref_override_target(key, params, &template.cells, reference) {
+            // The entry addresses nothing, or is not a params object — asking
+            // it about param names would be asking about a shape that is not
+            // there. Next key.
+            Err(e) => findings.push(e),
+            Ok(cell) => {
+                if let Err(e) = check_override_params(cell, Some(key), reference, params) {
+                    findings.push(e);
+                }
+            }
+        }
+    }
+    findings
 }
 
 /// GH #294 (ruling Q6, 2026-08-21) — refuse an `override_params` entry that

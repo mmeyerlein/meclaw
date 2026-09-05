@@ -1,4 +1,4 @@
-# `meclaw-os@1.8.1`
+# `meclaw-os@1.8.2`
 
 The colony shell: the outermost of the four composition levels, and the tree everything
 else is grown into. It holds no cell of its own. It holds four occupants, one empty
@@ -409,7 +409,7 @@ in it at all**.
 seed-ref/
 ├── colony.json            substrate defaults. two lines.
 ├── main/config.json       type: "hive", one edge, and not one cell
-└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@1.8.1"}}
+└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@1.8.2"}}
 ```
 
 ```bash
@@ -468,7 +468,7 @@ the first cycle the loop runs.
 
 Everything else has a default in the template it configures and is declared anyway, so that a
 builder learns this shell's environment surface by reading it rather than by watching a cell
-answer nothing. Since `meclaw-os@1.8.1` that surface is seven keys instead of
+answer nothing. Since `meclaw-os@1.8.2` that surface is seven keys instead of
 twenty-nine, and every one of them is the provider lane: the authoring dispatcher's
 three knobs, the control loop's seven, the capability broker's six, the two source
 names of the vault inside it and the library's four windows became params
@@ -490,7 +490,7 @@ root tree:
 
 ```json
 {"scope": "/",
- "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.8.1"}],
+ "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.8.2"}],
           "add_edges": []}}
 ```
 

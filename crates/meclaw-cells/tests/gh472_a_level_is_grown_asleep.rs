@@ -55,11 +55,12 @@ fn repo(rel: &str) -> PathBuf {
         .join(rel)
 }
 
-/// The renderer's FIRST answer to a wish, header and manifest alike.
+/// The renderer's answer to a wish, header and manifest alike.
 ///
-/// First, because since GH #543 a member wish renders two manifests — the level,
-/// and then the devices that member always gets. The birth state under test is
-/// a property of the level, which is the first one.
+/// Since GH #543 a member wish renders the level AND the devices that member
+/// always gets, and since GH #585 the three ride in ONE manifest, in that
+/// order. The birth state under test is a property of the level, which is the
+/// declaration in front.
 fn run_recipes(params: Value) -> Value {
     let all = emit_all(
         &shipped_script(RECIPES),
@@ -94,9 +95,17 @@ fn run_classify(args: Value) -> Value {
 
 /// The `add_nodes` entry a level renders, or the header of the refusal.
 fn node(params: Value) -> Result<Value, Value> {
+    // The LEVEL is the declaration a manifest leads with. Since GH #585 a member
+    // wish carries the two devices behind it in the SAME manifest; every other
+    // level renders exactly one declaration and nothing else.
+    let want = if params["level"] == json!("member") {
+        3
+    } else {
+        1
+    };
     let out = run_recipes(params);
     match out["manifest"].as_array() {
-        Some(decls) if decls.len() == 1 => Ok(decls[0]["diff"]["add_nodes"][0].clone()),
+        Some(decls) if decls.len() == want => Ok(decls[0]["diff"]["add_nodes"][0].clone()),
         _ => Err(out["header"].clone()),
     }
 }

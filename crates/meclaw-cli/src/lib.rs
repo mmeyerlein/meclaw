@@ -693,6 +693,32 @@ pub async fn run_with_hooks_tuned(
                 if !unresolvable.is_empty() {
                     had_error = true;
                 }
+                // GH #586: and what the marker SAYS about the template it
+                // names. `override_params` sits top-level beside the `cell`
+                // block, addressed by the referenced template's own cell paths
+                // — the mutation door has asked both halves of that block since
+                // GH #140 (a key that names no cell) and GH #294 (a key that
+                // names no param), and this pre-flight asked neither. A typo
+                // there is the one authoring error that costs a whole boot
+                // cycle to find, because the marker is where a template's
+                // params are reachable before a builder exists.
+                //
+                // Same sharpness as the unresolvable reference above, and for
+                // the same reason: this is not a legal topology somebody might
+                // have meant, so `--validate-strict` is not the dial for it.
+                // Same check, same wording and the same `error_code` the door
+                // uses — one cause, one formulation.
+                for (path, e) in
+                    meclaw_colony::check_growth_overrides(&plan.growths, &validate_templates)
+                {
+                    eprintln!(
+                        "validate: growth {}: {} (error_code: {})",
+                        path.as_str(),
+                        e.message(),
+                        e.error_code()
+                    );
+                    had_error = true;
+                }
             }
         }
 

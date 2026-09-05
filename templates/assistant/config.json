@@ -35,7 +35,7 @@
         },
         {
           "route": "in_build_result",
-          "because": "the builder's answer on its way back to the tool round that asked -- a draft manifest, or the receipt of one that was submitted. It enters at the assistant path because its producer sits four levels up, at the OS level, where a level owns what its siblings must share (ADR-0013): one baumeister, one corpus, one audit trail for every organisation in the colony. This level only carries it down to the tool surface; it reads nothing in it. Derived from the accepts list of tools@1.4.1"
+          "because": "the builder's answer on its way back to the tool round that asked -- a draft manifest, or the receipt of one that was submitted. It enters at the assistant path because its producer sits four levels up, at the OS level, where a level owns what its siblings must share (ADR-0013): one baumeister, one corpus, one audit trail for every organisation in the colony. This level only carries it down to the tool surface; it reads nothing in it. Derived from the accepts list of tools@1.4.2"
         },
         {
           "route": "in_pack",
@@ -103,7 +103,7 @@
         },
         {
           "route": "build",
-          "because": "a structural wish leaving this generation, or a manifest being submitted by whoever drafted it. It is the one lane on which a tool of this assistant reaches OUT of the assistant, and it is declared rather than hidden: the reach exists, and a contract that did not name it would be the same defect `sandbox_union` was written to fix one level down. Derived from the emits list of tools@1.4.1"
+          "because": "a structural wish leaving this generation, or a manifest being submitted by whoever drafted it. It is the one lane on which a tool of this assistant reaches OUT of the assistant, and it is declared rather than hidden: the reach exists, and a contract that did not name it would be the same defect `sandbox_union` was written to fix one level down. Derived from the emits list of tools@1.4.2"
         },
         {
           "route": "pack_ack",

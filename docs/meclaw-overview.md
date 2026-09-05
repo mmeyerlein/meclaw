@@ -596,7 +596,7 @@ position, with the earlier entries left applied.
 
 **Every entry is byte-for-byte one single-form body.** No `kind`, no `id`, no manifest-wide `ctx` — each entry brings its own, or a manifest would have two places for one substitution.
 
-**The colony rolls it off itself:** in order, every entry through the same one-stage validation a single body gets, **stopping at the first refusal**, one receipt. **No rollback**: what applied stays applied — the receipt says at which position it stopped, and the rest is submitted again. The audit carries it: one `mutation_log` row per applied entry, plus the refusing one's `rejected` row.
+**The colony rolls it off itself:** in order, every entry through the same one-stage validation a single body gets, **stopping at the first refusal**, one receipt. **An entry is judged against the tree the entries in front of it grew** — the roll-off runs through the very mutation handling a single body takes, and the registry, the hive scopes and the template library entry *k* changed are what entry *k+1* sees. That is precisely why a manifest is where an **order carries semantics**: a node and the declaration that draws into a scope only that node creates belong in ONE submission. Two submissions in the same turn have no order at any door (measured: GH #585). **No rollback**: what applied stays applied — the receipt says at which position it stopped, and the rest is submitted again. The audit carries it: one `mutation_log` row per applied entry, plus the refusing one's `rejected` row.
 
 ```json
 { "manifest": { "outcome": "committed", "applied": 5, "ids": ["…","…","…","…","…"] } }

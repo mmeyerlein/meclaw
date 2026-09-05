@@ -13,19 +13,25 @@
 //!
 //! Three claims are measured here, and each one is measured positively:
 //!
-//! 1. **Two manifests, in order.** One member wish leaves `recipes` as two
-//!    `manifest` emissions — the member first, its screen and app second. The
-//!    first is byte-unchanged (`examples/organism/grow-member.json`), the second
-//!    is `examples/organism/grow-screen.json`.
+//! 1. **One manifest, in order.** One member wish leaves `recipes` as ONE
+//!    `manifest` emission — the member first, its screen and app behind it. The
+//!    first declaration is byte-unchanged
+//!    (`examples/organism/grow-member.json`), the two behind it are
+//!    `examples/organism/grow-screen.json`. That it is one emission and not two
+//!    is GH #585: two submissions in the same turn have no order at the front,
+//!    and the order is semantics.
 //! 2. **The port is MEASURED, never claimed.** `screen_port_base + <index>`,
 //!    where the index is how many members the organisation already carries, read
 //!    off `/colony/graph` by the builder's own counting cell. A port nobody
 //!    counted is the class of defect GH #517 made expensive.
-//! 3. **The roll-forward holds.** The second manifest draws into
-//!    `<member>/channels`, a scope only the first manifest creates. Two
-//!    manifests are two submissions with no rollback between them, so the order
-//!    is not a preference: applied the other way round the screen is refused,
-//!    and that is asserted rather than assumed.
+//! 3. **The roll-forward holds.** The screen draws into `<member>/channels`, a
+//!    scope only the declaration in front of it creates, and a manifest rolls
+//!    forward with no rollback — so the order is not a preference: submitted on
+//!    its own, before the person stands, the screen is refused, and that is
+//!    asserted rather than assumed. Since GH #585 the order lives INSIDE one
+//!    submission, where the door keeps it; the file that measures the wish
+//!    against the front is
+//!    `crates/meclaw-cells/tests/gh585_a_member_wish_is_one_submission.rs`.
 //!
 //! `the_os_hands_out_the_port` is the ADR anchor of
 //! `plans/adr/0022-the-os-hands-out-what-is-system-near.md`: a colony carries
@@ -148,42 +154,40 @@ fn a_member_wish_renders_the_member_and_then_its_screen() {
     let out = manifests(member_wish(&member_template()), "0");
     assert_eq!(
         out.len(),
-        2,
-        "a member wish renders TWO manifests — the member, then the screen and \
-         the app it always gets — and got {} instead",
+        1,
+        "a member wish renders ONE manifest — the member, then the screen and \
+         the app it always gets, in that order — and got {} instead (GH #585)",
         out.len()
     );
     assert_eq!(
         out[0]["header"]["declaration_count"],
-        json!(1),
-        "manifest 1 is the level and nothing else: one node, one scope, one \
-         decision"
+        json!(3),
+        "the person, the screen and the app: three containers, three storeys, \
+         three declarations that cannot share a mutation (GH #503)"
     );
     assert_eq!(
         out[0]["manifest"][0]["scope"],
         json!("/os/orgs/acme/members"),
-        "manifest 1 declares itself at the container the member grows into"
+        "declaration 1 declares itself at the container the member grows into"
     );
     assert_eq!(
-        out[1]["header"]["declaration_count"],
-        json!(2),
-        "manifest 2 is the screen and the app: two containers, two storeys, two \
-         declarations that cannot share a mutation (GH #503)"
-    );
-    assert_eq!(
-        out[1]["manifest"][0]["scope"],
+        out[0]["manifest"][1]["scope"],
         json!("/os/orgs/acme/members/alex/channels"),
-        "the screen stands in the member's own channels"
+        "the screen stands in the member's own channels, a scope only the \
+         declaration in front of it creates"
     );
     assert_eq!(
-        out[1]["manifest"][1]["scope"],
+        out[0]["manifest"][2]["scope"],
         json!("/os/orgs/acme/members/alex/apps"),
         "the app stands in the member's own apps"
     );
-    assert_ne!(
-        out[0]["header"]["manifest_sha256"], out[1]["header"]["manifest_sha256"],
-        "two manifests are two submissions and each one is refused or committed \
-         under its OWN digest"
+    assert!(
+        out[0]["header"]["manifest_sha256"]
+            .as_str()
+            .is_some_and(|d| d.len() == 64),
+        "one submission is one digest, and it is what the whole wish is refused \
+         or committed under: {:?}",
+        out[0]["header"]["manifest_sha256"]
     );
 }
 
@@ -199,7 +203,7 @@ fn the_os_hands_out_the_port() {
     }
     let template = member_template();
     let port_of = |index: &str| -> Value {
-        manifests(member_wish(&template), index)[1]["manifest"][0]["diff"]["add_nodes"][0]
+        manifests(member_wish(&template), index)[0]["manifest"][1]["diff"]["add_nodes"][0]
             ["override_params"]["web"]["port"]
             .clone()
     };
@@ -282,9 +286,9 @@ fn the_screen_manifest_is_the_shipped_example() {
         .expect("the screen example names a port");
     let index = port - 7900;
     let got = manifests(member_wish(&member_template()), &index.to_string());
-    let rendered: Vec<Value> = got[1]["manifest"]
-        .as_array()
-        .expect("manifest 2")
+    // The devices are the TAIL of the one manifest a member wish renders
+    // (GH #585); the example file stays the operator-applicable half of it.
+    let rendered: Vec<Value> = got[0]["manifest"].as_array().expect("the one manifest")[1..]
         .iter()
         .map(normalised)
         .collect();
@@ -314,7 +318,11 @@ fn the_way_back_from_a_screen_is_part_of_the_assistant_level() {
                           "name": "scribe", "template": "a-template@1.0.0"}}),
         "0",
     );
-    assert_eq!(out.len(), 1, "only a member wish renders a second manifest");
+    assert_eq!(
+        out.len(),
+        1,
+        "a wish is ONE manifest, and only a member wish carries the devices in it"
+    );
     let edges = out[0]["manifest"][0]["diff"]["add_edges"]
         .as_array()
         .expect("the assistant level's edges")
@@ -510,7 +518,7 @@ fn an_unreadable_number_refuses_instead_of_taking_the_base_port() {
     .filter(|m| m["header"]["operation"] == json!("recipe"))
     .collect::<Vec<_>>();
     assert_eq!(
-        absent[1]["manifest"][0]["diff"]["add_nodes"][0]["override_params"]["web"]["port"],
+        absent[0]["manifest"][1]["diff"]["add_nodes"][0]["override_params"]["web"]["port"],
         json!(7900),
         "an absent index means nobody counted, which is a statement and not a \
          guess: this is the first member"
@@ -949,7 +957,8 @@ async fn graph_nodes(h: &ColonyHandle, scope: &str) -> Vec<String> {
 }
 
 /// The whole claim, against a real colony: the index is read off the tree, the
-/// two manifests apply in the order they were emitted, and only in that order.
+/// three declarations apply in the order they were rendered, and only in that
+/// order.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_screen_lands_after_the_member_and_the_index_is_read_off_the_tree() {
     if !shipped() || !library_is_complete() {
@@ -975,31 +984,26 @@ async fn the_screen_lands_after_the_member_and_the_index_is_read_off_the_tree() 
     );
 
     let out = manifests(member_wish(&member_template()), "0");
-    let member = json!({"manifest": out[0]["manifest"]});
-    let screen = json!({"manifest": out[1]["manifest"]});
+    let decls = out[0]["manifest"].as_array().expect("the one manifest");
+    let whole = json!({"manifest": decls});
+    let devices = json!({"manifest": decls[1..]});
 
-    // THE ROLL-FORWARD, measured. Manifest 2 draws into a scope only manifest 1
-    // creates, and two manifests are two submissions with nothing between them.
-    let early = knock(&h, screen.clone()).await;
+    // THE ROLL-FORWARD, measured. The screen draws into a scope only the
+    // declaration in front of it creates, so on its own it has nowhere to land.
+    let early = knock(&h, devices).await;
     assert_eq!(
         applied(&early),
         0,
-        "the screen manifest applied something BEFORE the member existed — then \
-         the order this recipe emits in would be decoration rather than \
+        "the devices applied something BEFORE the member existed — then the \
+         order this recipe renders in would be decoration rather than \
          semantics: {early:?}"
     );
-    let first = knock(&h, member).await;
+    let whole_outcome = knock(&h, whole).await;
     assert_eq!(
-        applied(&first),
-        1,
-        "the member manifest did not commit: {first:?}"
-    );
-    let second = knock(&h, screen).await;
-    assert_eq!(
-        applied(&second),
-        2,
-        "the screen manifest did not commit after the member landed — the \
-         fall-back is ONE manifest with three declarations: {second:?}"
+        applied(&whole_outcome),
+        3,
+        "the wish did not commit as ONE submission of three declarations — the \
+         person, the screen, the app (GH #585): {whole_outcome:?}"
     );
 
     let grown = graph_nodes(&h, "/os/orgs/acme/members/alex").await;

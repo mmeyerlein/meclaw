@@ -428,10 +428,11 @@ fn rendered_levels() -> Vec<Value> {
     wishes
         .into_iter()
         .map(|params| {
-            // The FIRST manifest. Since GH #543 a member wish renders two —
-            // the level, and then the screen and the app that member always
-            // gets — and what this file compares against the four shipped
-            // declarations is the level.
+            // The FIRST declaration. Since GH #543 a member wish renders the
+            // level AND the screen and the app that member always gets, and
+            // since GH #585 the three ride in ONE manifest — what this file
+            // compares against the four shipped declarations is the level.
+            let member = params["level"] == json!("member");
             let out = meclaw_testing::emit_all(
                 &script,
                 &json!({
@@ -452,7 +453,11 @@ fn rendered_levels() -> Vec<Value> {
                 "the fast lane refused a level it is supposed to render: {out}"
             );
             let decls = out["manifest"].as_array().expect("a manifest").clone();
-            assert_eq!(decls.len(), 1, "a level is one declaration");
+            assert_eq!(
+                decls.len(),
+                if member { 3 } else { 1 },
+                "the level is not the declaration this manifest leads with: {decls:?}"
+            );
             decls[0].clone()
         })
         .collect()

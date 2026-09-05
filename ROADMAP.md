@@ -43,6 +43,10 @@ What the wave did is the [`[0.30.0]`](CHANGELOG.md) section of the changelog.
 The wave that prepared it left the gate process behind as one entry point whose
 scope comes from the diff.
 
+The first colony built on that release turned up four repairs, and **v0.30.1**
+carries them: a member wish is one submission again, and `--validate` reads the
+`override_params` a `ref` marker carries.
+
 Nothing is open under this horizon. The streams below carry what comes next;
 the tracker carries the rest.
 
@@ -110,6 +114,8 @@ a requirement, not a convention.
 One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- **v0.30.1** — the repairs a first colony on 0.30.0 turned up: a member wish is
+  one submission, and `--validate` reads a `ref` marker's `override_params`.
 - **v0.30.0** — every open issue is built or ruled: the poll timers are gone,
   a store writes its own files, memory answers an ordinary tool call, every
   member grows a screen, and one gate process reads the diff.

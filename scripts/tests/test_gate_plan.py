@@ -270,7 +270,60 @@ class Classify(unittest.TestCase):
         st = gp.plan(["docs/x.md"], "release", repo=None)
         self.assertEqual(st[-1].name, "export-audit")
         self.assertIn("{receipt}", st[-1].cmds[0])
+        self.assertNotIn("--skip-cargo", st[-1].cmds[0])
+        self.assertEqual(st[-1].scope, "R1-R17")
         self.assertIn("deny-advisories", by_name(st))
+
+    def test_integration_ends_with_the_dry_export_audit(self):
+        """The cheap export rules belong in the pass that declares a wave done.
+
+        R2b (dead template references in tests), R5 (name/domain patterns) and
+        R10 (relative links) cost seconds and need no cargo. Until the wave that
+        shipped v0.30.0 they ran in `release` only, so they surfaced an hour
+        after the integration pass had called the wave finished.
+        """
+        st = gp.plan(["docs/x.md"], "integration", repo=None)
+        self.assertEqual(st[-1].name, "export-audit")
+        self.assertEqual(st[-1].scope, "R1-R17 dry")
+        self.assertIn("--skip-cargo", st[-1].cmds[0])
+        self.assertIn("{receipt}", st[-1].cmds[0])
+        self.assertEqual(st[-1].cmds[0][-4:-2], ["--rev", "HEAD"])
+
+    def test_the_dry_audit_builds_nothing(self):
+        """`--skip-cargo` skips the R8/R9/R12-class work, so cargo:0.
+
+        A cargo:1 station takes the run's build lock and the nice/ionice/
+        build-width wrapper. The dry audit compiles nothing, so claiming the
+        lock would put every parallel strand in a queue for a Python run.
+        """
+        st = by_name(gp.plan(["docs/x.md"], "integration", repo=None))
+        self.assertFalse(st["export-audit"].cargo)
+
+    def test_the_two_audits_differ_by_two_named_flags_and_nothing_else(self):
+        """One station, two shapes -- and the difference is exactly two flags.
+
+        `--skip-cargo` (the dry run builds nothing) and `--rev HEAD` (the pass
+        judges the tree its own receipt was written over; `make_export.py`
+        would otherwise default to `master`, which is a different commit on
+        every wave branch). Anything ELSE drifting apart -- a different script,
+        a different receipt flag -- would mean the integration pass audits
+        something other than what the release pass audits, which is the whole
+        point of running it early.
+        """
+        dry = gp.plan(["docs/x.md"], "integration", repo=None)[-1].cmds[0]
+        full = gp.plan(["docs/x.md"], "release", repo=None)[-1].cmds[0]
+        extra = ("--skip-cargo", "--rev", "HEAD")
+        self.assertEqual([a for a in dry if a not in extra], full)
+
+    def test_the_release_audit_keeps_the_master_default(self):
+        """An export is of master, whatever happens to be checked out."""
+        full = gp.plan(["docs/x.md"], "release", repo=None)[-1].cmds[0]
+        self.assertNotIn("--rev", full)
+
+    def test_integration_plans_the_export_selftest(self):
+        """Seconds of pure Python, and it self-tests the audit's own rules."""
+        self.assertIn("export-selftest",
+                      by_name(gp.plan(["docs/x.md"], "integration", repo=None)))
 
     def test_ci_mode_uses_check_flags_and_plans_tests_without_running(self):
         st = by_name(gp.plan(["Cargo.lock"], "ci", repo=None))

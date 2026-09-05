@@ -316,8 +316,9 @@ fn build_tree(td: &tempfile::TempDir, root_template: &std::path::Path, base_url:
     // R-0904-6) the bound is `params.subscriber_rows` of `./hand`, and such a
     // line would be read by nothing and would say nothing about it. The copied
     // template carries the value, and
-    // `crates/meclaw-cells/tests/gh138_long_tail_params.rs` pins that the cells
-    // act on their params rather than on an environment.
+    // `crates/meclaw-cells/tests/gh138_private_tail_params.rs` pins that the
+    // cells act on their params rather than on an environment (the private half
+    // of the long-tail strand since the split under GH #584).
     write(root, "main/config.json", &main_config());
     write(
         root,

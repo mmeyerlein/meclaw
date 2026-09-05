@@ -42,9 +42,10 @@ fn repo(rel: &str) -> PathBuf {
 
 /// The `add_edges` of one rendered level, as the shipped script produces them.
 ///
-/// The FIRST manifest, because since GH #543 a member wish renders two — the
-/// level, and then the screen and the app that member always gets. This file is
-/// about the level's own export lanes, which are in the first one.
+/// The FIRST declaration, because since GH #543 a member wish renders the level
+/// AND the screen and the app that member always gets — one manifest since
+/// GH #585, in that order. This file is about the level's own export lanes,
+/// which are in the declaration up front.
 fn rendered_edges(params: Value) -> Vec<Value> {
     let out = emit_all(
         &shipped_script(RECIPES),

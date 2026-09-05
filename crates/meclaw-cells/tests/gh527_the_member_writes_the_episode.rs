@@ -398,6 +398,21 @@ sys.stdout.write(json.dumps({{
 /// A code cell that appends every message it is handed to one file per lane, so
 /// "the copy still left the level" can be a wait for something that HAD to
 /// arrive rather than a sleep.
+///
+/// **One line per message, appended — never a rewritten document.** A `code`
+/// cell is a stateless dispatcher whose default `max_concurrency` is 4
+/// (`CodeParams::effective_max_concurrency`), so two arrivals close enough
+/// together run as two overlapping subprocesses. The earlier body read the
+/// whole lane file, appended to what it had read and wrote it back — the last
+/// writer then erased every receipt that had arrived while it was working, and
+/// a wait on that lane spent its whole window on a lane that had in fact
+/// delivered (GH #587, measured there; GH #588, the same form here).
+///
+/// A single `O_APPEND` write places each line whole and at the end instead, so
+/// no execution can observe — let alone overwrite — another one's, and the
+/// return value is checked so a short write falls loudly rather than leaving
+/// half a line lying there. A reader that meets a line mid-flight fails to
+/// parse it and retries, which is why an arrival can never be miscounted.
 fn flag_cell(dir: &str) -> Value {
     json!({
         "cell": {"type": "code"},
@@ -406,19 +421,35 @@ fn flag_cell(dir: &str) -> Value {
 import sys, json, os
 doc = json.load(sys.stdin)
 hop = (doc["envelope"].get("header") or {}).get("hop") or {}
-path = os.path.join(doc["params"]["flag_dir"], str(hop.get("route") or "unknown") + ".json")
-seen = []
-if os.path.exists(path):
-    with open(path) as fh:
-        seen = json.load(fh)
-seen.append({"hop": hop})
-with open(path, "w") as fh:
-    fh.write(json.dumps(seen))
+path = os.path.join(doc["params"]["flag_dir"], str(hop.get("route") or "unknown") + ".jsonl")
+blob = (json.dumps({"hop": hop}) + "\n").encode("utf-8")
+fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+try:
+    written = os.write(fd, blob)
+finally:
+    os.close(fd)
+if written != len(blob):
+    sys.exit("short write: %d of %d bytes" % (written, len(blob)))
 sys.stdout.write(json.dumps([]))
 "#},
         "contract": {"version": "1.0.0", "settings": {}, "multi_send_capable": true,
                      "emits": {}, "consumes": {}}
     })
+}
+
+/// The recorder's append log for one lane.
+fn lane_file(flags: &std::path::Path, lane: &str) -> std::path::PathBuf {
+    flags.join(format!("{lane}.jsonl"))
+}
+
+/// Every message the recorder has finished placing on that lane. A line that is
+/// still being placed does not parse and is simply not there yet.
+fn lane_entries(p: &std::path::Path) -> Vec<Value> {
+    std::fs::read_to_string(p)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| from_str::<Value>(l).ok())
+        .collect()
 }
 
 /// The container wiring `examples/memory-import/build_import.py` writes — the
@@ -661,9 +692,9 @@ async fn one_turn(wired: bool) -> Run {
     // honest thing to wait on: it arrives whether or not the edge under test
     // exists, so both runs wait the same way and neither waits on its own
     // conclusion.
-    let turn_flag = flags.join("turn_write.json");
+    let turn_flag = lane_file(&flags, "turn_write");
     let deadline = std::time::Instant::now() + DEADLINE;
-    while std::time::Instant::now() < deadline && !turn_flag.exists() {
+    while std::time::Instant::now() < deadline && lane_entries(&turn_flag).is_empty() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     // The store write is one hop behind it. A wired run stops as soon as the row
@@ -674,7 +705,7 @@ async fn one_turn(wired: bool) -> Run {
     let deadline = std::time::Instant::now() + if wired { DEADLINE } else { SETTLE };
     while std::time::Instant::now() < deadline
         && rows(&db, "SELECT id FROM episodes").is_empty()
-        && !flags.join("reject.json").exists()
+        && lane_entries(&lane_file(&flags, "reject")).is_empty()
     {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
@@ -685,7 +716,7 @@ async fn one_turn(wired: bool) -> Run {
             "SELECT turn_id, session_id, sender, channel, content, happened_at, recorded_at \
              FROM episodes ORDER BY id",
         ),
-        left_the_level: turn_flag.exists(),
+        left_the_level: !lane_entries(&turn_flag).is_empty(),
         dead_letters: h
             .drain_dead_letters()
             .await

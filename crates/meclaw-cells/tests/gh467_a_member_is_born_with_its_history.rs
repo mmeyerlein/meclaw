@@ -270,18 +270,35 @@ else:
     })
 }
 
-/// A code cell that writes one file named after the route that reached it.
+/// A code cell that appends one line per message to a file named after the
+/// route that reached it.
 ///
 /// Every lane this colony has to wait on ends here, so waiting is one rule and
-/// a refusal is a FILE rather than the absence of one.
+/// a refusal is a LINE rather than the absence of one.
+///
+/// **Appended, never rewritten.** The earlier body opened the file with `"w"`
+/// and wrote the hop it was holding, so a route that arrived twice kept only
+/// whichever execution finished last — and a `code` cell is a stateless
+/// dispatcher whose default `max_concurrency` is 4
+/// (`CodeParams::effective_max_concurrency`), so two arrivals close enough
+/// together really do run at once. A single `O_APPEND` write places each line
+/// whole and at the end, and its return value is checked so a short write falls
+/// loudly rather than leaving half a line lying there (GH #587, GH #588).
 fn flag_cell(dir: &str) -> Value {
     let script = r#"
 import sys, json, os
 doc = json.load(sys.stdin)
 hop = (doc["envelope"].get("header") or {}).get("hop") or {}
 route = str(hop.get("route") or "unknown")
-with open(os.path.join(doc["params"]["flag_dir"], route + ".json"), "w") as fh:
-    fh.write(json.dumps(hop, sort_keys=True))
+path = os.path.join(doc["params"]["flag_dir"], route + ".jsonl")
+blob = (json.dumps({"hop": hop}, sort_keys=True) + "\n").encode("utf-8")
+fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+try:
+    written = os.write(fd, blob)
+finally:
+    os.close(fd)
+if written != len(blob):
+    sys.exit("short write: %d of %d bytes" % (written, len(blob)))
 sys.stdout.write(json.dumps([]))
 "#;
     json!({
@@ -374,13 +391,30 @@ fn build_source_colony(root: &std::path::Path, export_dir: &str, flag_dir: &str)
     write_json(&root.join("main/flag/config.json"), &flag_cell(flag_dir));
 }
 
-async fn wait_for(path: &std::path::Path, what: &str, h: &ColonyHandle) {
+/// The recorder's append log for one lane.
+fn lane_file(flags: &std::path::Path, lane: &str) -> std::path::PathBuf {
+    flags.join(format!("{lane}.jsonl"))
+}
+
+/// Every message the recorder has finished placing on that lane. A line that is
+/// still being placed does not parse and is simply not there yet.
+fn lane_entries(p: &std::path::Path) -> Vec<Value> {
+    std::fs::read_to_string(p)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| from_str::<Value>(l).ok())
+        .collect()
+}
+
+/// Wait until at least one message has been recorded whole on `lane`.
+async fn wait_for(flags: &std::path::Path, lane: &str, what: &str, h: &ColonyHandle) {
+    let p = lane_file(flags, lane);
     let deadline = std::time::Instant::now() + RECV_TIMEOUT;
-    while std::time::Instant::now() < deadline && !path.exists() {
+    while std::time::Instant::now() < deadline && lane_entries(&p).is_empty() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     assert!(
-        path.exists(),
+        !lane_entries(&p).is_empty(),
         "{what} never arrived — dead letters: {:?}",
         h.drain_dead_letters()
             .await
@@ -598,14 +632,14 @@ async fn a_past_on_disk(source_td: &tempfile::TempDir) -> std::path::PathBuf {
         .expect("the remembering colony must boot");
 
     nudge(&source, "in_alias").await;
-    wait_for(&flag_dir.join("alias_done.json"), "the alias row", &source).await;
+    wait_for(&flag_dir, "alias_done", "the alias row", &source).await;
 
     nudge(&source, "in_export").await;
-    wait_for(&flag_dir.join("export_done.json"), "the walk", &source).await;
+    wait_for(&flag_dir, "export_done", "the walk", &source).await;
     assert!(
-        !flag_dir.join("reject.json").exists(),
-        "the walk refused: {}",
-        std::fs::read_to_string(flag_dir.join("reject.json")).unwrap_or_default()
+        !lane_file(&flag_dir, "reject").exists(),
+        "the walk refused: {:?}",
+        lane_entries(&lane_file(&flag_dir, "reject"))
     );
     source.shutdown().await;
     export_dir

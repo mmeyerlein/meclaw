@@ -63,9 +63,10 @@ fn read(path: &Path) -> Option<String> {
     std::fs::read_to_string(path).ok()
 }
 
-/// The FIRST manifest a wish renders. Since GH #543 a member wish renders two —
-/// the person, then the screen and the app that person always gets — and this
-/// file is about the LEVEL, which is the first one. The second is owned by
+/// The manifest a wish renders. Since GH #543 a member wish renders the person
+/// AND the screen and the app that person always gets, and since GH #585 the
+/// three ride in ONE manifest, in that order — this file is about the LEVEL,
+/// which is the declaration up front. The two behind it are owned by
 /// `gh543_a_member_always_gets_its_screen.rs`.
 fn run_recipes(payload: Value) -> Value {
     let all = emit_all(
@@ -130,12 +131,15 @@ fn grow(params: Value) -> Value {
     let decls = out["manifest"]
         .as_array()
         .unwrap_or_else(|| panic!("no manifest: {out}"));
+    // The LEVEL is one declaration: the node and its edges are one decision, and
+    // a manifest rolls forward — a node that landed without its edges is the
+    // island this recipe exists to prevent. Since GH #585 a member wish carries
+    // two more behind it, the devices that member always gets, in the same
+    // manifest; the level is the one in front either way.
     assert_eq!(
         decls.len(),
-        1,
-        "a level is ONE declaration: the node and its edges are one decision, \
-         and a manifest rolls forward — a node that landed without its edges is \
-         the island this recipe exists to prevent"
+        if member { 3 } else { 1 },
+        "the level is not the declaration this manifest leads with: {decls:?}"
     );
     decls[0].clone()
 }

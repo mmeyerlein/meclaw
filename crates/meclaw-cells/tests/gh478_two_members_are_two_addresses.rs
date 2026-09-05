@@ -45,9 +45,10 @@ const RECIPES: &str = concat!(
 
 /// The `add_edges` of one rendered level, as the shipped script produces them.
 fn rendered_edges(params: Value) -> Vec<Value> {
-    // The FIRST manifest. Since GH #543 a member wish renders two — the level,
-    // and then the screen and the app that member always gets — and what this
-    // file is about is the level.
+    // The FIRST declaration. Since GH #543 a member wish renders the level AND
+    // the screen and the app that member always gets, and since GH #585 the
+    // three ride in ONE manifest — what this file is about is the level, which
+    // is the one in front.
     let out = emit_all(
         &shipped_script(RECIPES),
         &json!({

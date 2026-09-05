@@ -83,6 +83,69 @@ pub(crate) fn grow_planned_refs(
     Ok(born_inactive)
 }
 
+/// GH #586 — ask every planned growth's `override_params` what the mutation
+/// door asks an `add_nodes` entry's, for the door that has no colony:
+/// `meclaw --validate`.
+///
+/// Pure and non-destructive by construction — it resolves references, parses
+/// the templates they name and asks
+/// [`crate::mutation::subtree::check_ref_marker_overrides`], writing nothing.
+/// That is what lets the nginx -t role ask it: `--validate` promises to touch
+/// nothing, and a marker whose block names a param that does not exist is a
+/// tree whose first boot spawns a cell with a default nobody asked for.
+///
+/// A reference that does not resolve is skipped: it is its own finding, and the
+/// caller already reports it (GH #424). Asking about the params of a template
+/// nothing provides would say the same thing twice.
+///
+/// **The template is parsed for every growth, including one whose
+/// `override_params` is absent or empty** — the walk is what turns a reference
+/// into the cell list the question is asked against, so there is no cheaper
+/// order. The visible consequence is that a template which does not PARSE is
+/// reported here too, at a marker that carries no override at all. That is
+/// deliberate and benign: it is the same `parse_subtree` the growth itself runs
+/// first thing in [`grow_one`], so such a tree does not boot either — the
+/// pre-flight check merely says so before the boot instead of after it, which
+/// is the whole job of `--validate`. It is a finding about the marker's
+/// template, never an invented complaint about a block that is not there: a
+/// marker with no `override_params` and a template that parses has nothing to
+/// report (`bootstrap::plan_growth` gives it an empty object, and the check
+/// iterates over nothing).
+///
+/// Returns one `(marker position, refusal)` pair per offending KEY, in walk
+/// order and then in the block's key order — a plan with two broken markers
+/// names both, and a marker with two misspelled keys names both (GH #293).
+/// Empty means every marker addresses cells and params that exist.
+pub fn check_growth_overrides(
+    growths: &[PlannedGrowth],
+    templates: &crate::templates::TemplatesRegistry,
+) -> Vec<(meclaw_core::Path, MutationError)> {
+    let mut findings = Vec::new();
+    for g in growths {
+        let Ok(entry) = templates.resolve(&g.reference) else {
+            continue;
+        };
+        let parsed =
+            match crate::mutation::subtree::parse_subtree(&entry.filesystem_path, templates) {
+                Ok(parsed) => parsed,
+                Err(e) => {
+                    findings.push((g.path.clone(), e));
+                    continue;
+                }
+            };
+        findings.extend(
+            crate::mutation::subtree::check_ref_marker_overrides(
+                &parsed,
+                &g.reference,
+                &g.override_params,
+            )
+            .into_iter()
+            .map(|e| (g.path.clone(), e)),
+        );
+    }
+    findings
+}
+
 fn grow_one(
     root: &std::path::Path,
     g: &PlannedGrowth,
