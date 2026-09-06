@@ -77,11 +77,6 @@ from a 50-question LongMemEval run: **the bottleneck is the synthesis, not the
 remembering** — in nineteen of twenty-one wrong answers the retrieval had
 already delivered the gold session.
 
-- [#261](https://github.com/mmeyerlein/meclaw/issues/261) — the memory porter
-  predates the substrate's `transfer` slot and duplicates four things it does
-  natively; it can shrink to a walk over the sixteen tables. Not urgent, but
-  it is the one component where a member's history is at stake, so it earns a
-  slot of its own rather than a place at the end of a wave.
 - Re-running the answer half of that measurement, directed and stratified. It
   waits until the memory chain — collector, recall, curator, memory hive —
   stops moving between builds; a measurement of a surface still in motion buys
@@ -114,6 +109,8 @@ a requirement, not a convention.
 One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- **built, in the next release** — the memory porter is a walk over the substrate's
+  `transfer` slot ([#261](https://github.com/mmeyerlein/meclaw/issues/261)).
 - **v0.30.1** — the repairs a first colony on 0.30.0 turned up: a member wish is
   one submission, and `--validate` reads a `ref` marker's `override_params`.
 - **v0.30.0** — every open issue is built or ruled: the poll timers are gone,
