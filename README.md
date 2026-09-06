@@ -16,11 +16,13 @@
 
 </div>
 
-meclaw is three things, and you only install the first one. **meclaw** is the substrate: a
-directory tree that runs — every folder an actor, every edge a route, one Rust binary
-underneath. **meclaw-os** is a small, experimental operating system for agents, *grown*
-onto that substrate at runtime. An **assistant** is grown into the OS the same way — a
-JSON file, not a deployment. Install once, grow everything else.
+One Linux binary that runs a tree of agents. Every folder in the tree is an entity: one actor,
+one `config.json`, one SQLite file, one kernel sandbox (Landlock, network namespace, cgroup v2,
+seccomp). Edges between folders are the routes a message may take. The binary ships no agent
+loop; a loop is an edge that routes back into an `llm` entity. To change a running system you
+POST a diff to one endpoint: validated, applied without a restart, written to a ledger. Agents
+change the system through the same endpoint. **meclaw-os** and an **assistant** are grown onto
+that tree at runtime from JSON, not deployed.
 
 ## Start an assistant
 
