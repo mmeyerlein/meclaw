@@ -116,7 +116,7 @@
           "eot_timeout_ms": 5000,
           "sample_rate": 16000
         },
-        "description": "The speech-to-text lane: 'provider' picks the adapter and the remaining keys belong to it. Carries the credential, so the whole block is immutable on the runtime params surface -- rotation means .env plus a restart. 'echo' is the provider that needs no credential and no tts block at all. The deepgram block also takes 'keyterms', a list of words the recogniser should expect (for example ['Egon', 'meclaw']): names and product terms a general model has no reason to know, each one boosted on its own, and a multi-word entry stays one term. Empty by default, and an empty list changes nothing about the request."
+        "description": "The speech-to-text lane: 'provider' picks the adapter and the remaining keys belong to it. Carries the credential, so the whole block is immutable on the runtime params surface -- rotation means .env plus a restart. 'echo' is the provider that needs no credential and no tts block at all. The deepgram block also takes 'keyterms', a list of words the recogniser should expect (for example ['Sam', 'meclaw']): names and product terms a general model has no reason to know, each one boosted on its own, and a multi-word entry stays one term. Empty by default, and an empty list changes nothing about the request."
       },
       "tts": {
         "type": "object",

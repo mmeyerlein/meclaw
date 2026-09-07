@@ -1,62 +1,60 @@
 # Everything is a file
 
-Every agent framework asks you to express your agent in its code: subclass this, register
-that, wire the loop, redeploy. meclaw asks you to express it in a directory tree — and
-then it runs the tree.
+The harness of a meclaw agent lives in the file system. meclaw ships no SDK to import and no
+plugin API to implement against. You point one binary at a directory, and the tools that
+read that directory are the ones already on your machine: `ls`, `grep`, `diff`, `git`.
 
-## The tree runs
+## What the binary reads
 
-A colony is a directory. Every folder in it is a **cell**: an actor with a mailbox, an
-async task of its own, and a `config.json` that says what it is — an `llm` brain, a
-`store`, a `bash` runner, a `web_fetch` probe, one of 15 built-in types
-([cell types](../cell-types.md)). Folders that group cells are **hives**. The **edges**
-between them are the routes a message can take, and a message that travels writes a typed
-`hop` into the trace at every step.
+A colony is a directory tree. Every directory that holds a `config.json` is one node, found
+by a recursive walk from `--root` at boot (`walk_cell_directories` in
+`crates/meclaw-colony/src/bootstrap.rs`). A node that names a cell type is an actor with a
+mailbox and an async task of its own. A node that names none groups the nodes below it and
+is called a hive; it has no mailbox and runs no task. Directed edges between paths are the
+routes a message may take.
 
-That is the whole model. There is no second config format, no DSL file beside the tree,
-no registry the tree must match. The tree *is* the topology.
+Sixteen cell types have a factory in the binary, and `hive` is a seventeenth catalogue entry
+with none. The list is in [cell types](../cell-types.md), the shape of a `config.json` is in
+[config](../config.md), the vocabulary in the [glossary](../glossary.md). Nothing else
+describes the running system: no second configuration format beside the tree, no registry
+to keep in agreement with it.
 
-## Why that buys flexibility
+## What that buys
 
-Because the harness is files, everything you already know how to do with files works on
-your agent system:
+A change to the topology is a change to JSON files in a directory, so you read one with `ls`
+and `cat`, search it with `grep`, review a change to it with `diff` and version it with
+`git`. What a framework would ship as a class is topology here: tools are cells, and a tool
+loop is an edge that routes an answer back into the cell that asked. An `llm` cell makes one
+provider call and emits one message, so whatever loops in your system is on disk as edges,
+traced hop by hop in
+[the store-backed tool loop](../store-backed-tool-loop.md). Forty templates ship in
+[`templates/`](../../templates/README.md), from a one-cell door to a whole operating shell,
+and `find templates -name '*.rs'` prints nothing. Instantiating a template copies its
+subtree into your colony, and from that moment the copy is yours with no link back.
 
-- `ls` shows the topology, `grep` searches it, `diff` reviews a change, `git` versions it.
-- A harness pattern — tool loop, plan-and-execute, fan-out — is not a library feature.
-  It is a shape: tools are cells, the loop is an edge that routes back.
-- An `llm` cell makes **one** provider call and emits **one** message. No inner loop,
-  ever. Whatever loops in your system is visible as edges on disk.
+## The door a change goes through
 
-And because the harness is files, an agent can rebuild it. Not by writing Rust — by
-submitting the same kind of change a human submits.
+A running colony changes through one operation. A mutation diff is POSTed to
+`/colony/mutations` and carries eight keys and no others: `add_templates`, `add_nodes`,
+`remove_nodes`, `swap_nodes`, `move_nodes`, `add_edges`, `remove_edges`, `seed_rows`
+(`DIFF_OPERATIONS` in `crates/meclaw-colony/src/mutation/validate.rs`). A key no operation
+reads is refused instead of ignored. A committed diff answers 200, a rejected one 422, the
+process keeps running either way, and `--apply` hands the same body to the same door.
 
-## One door for every change
+An agent gets no second door, and which node may knock on this one is itself a fact about
+the tree. `submit` carries the edge onto `/colony/mutations`, the shipped `builder` carries
+none, and no mutation can draw the missing edge, because that address is absent from the
+endpoints a diff may name
+(`crates/meclaw-cells/tests/gh425_the_builder_cannot_reach_the_mutation_door.rs`).
 
-A running colony changes through exactly one operation: a **mutation**, `POST`ed to
-`/colony/mutations`. A mutation is a diff in a closed vocabulary — add nodes, add edges,
-remove them, register templates, adjust params. It is validated against the tree,
-applied atomically while everything keeps running, and recorded in the mutation ledger
-(`GET` on the same address). There is no second way. That single door is what makes
-"agents rebuild their own harness" auditable instead of terrifying: every change has a
-record, every record has a requester.
+## Where the file idea stops
 
-## No SDK, no plugin API — deliberately
+Files describe the harness, and code still runs inside it: the `bash`, `code` and `harness`
+cell types start real programs under a kernel sandbox
+([why Rust, why Linux](rust-and-linux.md)). The cell types themselves are compiled in, so
+adding a seventeenth one means writing Rust and shipping a new binary. The extension point
+is templates and edges, and foreign tools connect through the `mcp` cell type as ordinary
+cells on ordinary routes.
 
-The interface is HTTP and files. You do not import meclaw into your program; you point
-the binary at a tree. Extension does not mean writing a plugin against an API surface
-that must stay stable — it means adding cells and templates. The proof is shipped: **38
-templates** in [`templates/`](../../templates/README.md), from a ten-line door to a
-complete operating shell, and not one of them contains a line of Rust. Instantiating a
-template **copies** it into your tree; from that moment it is yours, with no link back to
-the library.
-
-Foreign tools still connect — the `mcp` cell type speaks MCP to external tool servers —
-but they connect as cells, over routes, inside the sandbox, like everything else.
-
-## What this is not
-
-It is not "config over code" as a slogan. Code exists — `bash`, `code` and `harness`
-cells run real programs, under a real kernel sandbox
-([Why Rust, why Linux](rust-and-linux.md)). The point is narrower and harder: the
-*harness* — who talks to whom, what loops, what escalates — is data, changed through one
-recorded door, readable by every tool you already have.
+A template fixed here does not reach the trees already grown from it; lifting an instance to
+a newer template is a mutation somebody writes ([rewiring](../rewiring.md)).

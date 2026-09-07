@@ -1,53 +1,52 @@
 # examples
 
 Nine colonies and one step, in the order they are worth reading. Every one of them is a
-directory tree plus edges -- no example here adds a line of Rust.
+directory tree plus edges, and no example here adds a line of Rust.
 
 | example | cells | keyless | boot | why it exists |
 |---|---:|---|---|---|
-| [`hard-shell`](hard-shell/) | 1 → 3 | **yes** | < 1 s | An agent you are allowed to attack: point it at the cloud metadata endpoint and watch a refusal become a routed, typed event -- from a seed that configures no security at all. |
+| [`hard-shell`](hard-shell/) | 1 → 3 | yes | < 1 s | An agent you are allowed to attack. Point it at the cloud metadata endpoint and watch a refusal become a routed, typed event, out of a seed that configures no security at all. |
 | [`hello`](hello/) | 2 | no | < 1 s | The smallest colony that does something. One `llm`, one edge. If you understand this folder, you understand the model. |
 | [`swarm`](swarm/) | 7 | no | < 1 s | The tool loop as a shape: fan-out to tools, fan-in through a store, and a loopback edge that re-enters the `llm`. |
-| [`meclaw-os`](meclaw-os/) | 0 → 16 | to boot | < 1 s | The same class of agent, **not** written out: an EMPTY seed -- two config files, zero cells -- plus one declaration that instantiates the whole tree from the template library at runtime. It carries a **second** root, `seed-ref/`: stage one of a *built* colony, where the seed declares the shipped `meclaw-os` shell with a `ref` marker and the first boot grows it. |
-| [`organism`](organism/) | 0 → 55 | to boot | < 1 s | The same empty seed, one level up: **five** declarations grow the whole four-level stack -- a colony shell, an organisation, a person, one generation of that person's agent and a Telegram surface for it -- each level instantiated into the open container the level above ships for it. 287 edges, 48 of them written by hand. |
+| [`meclaw-os`](meclaw-os/) | 0 → 16 | to boot | < 1 s | The same class of agent, left unwritten. An empty seed (two config files, zero cells) plus one declaration that instantiates the whole tree from the template library at runtime. It carries a second root, `seed-ref/`: stage one of a built colony, where the seed declares the shipped `meclaw-os` shell with a `ref` marker and the first boot grows it. |
+| [`organism`](organism/) | 0 → 55 | to boot | < 1 s | The same empty seed, one level up. Five declarations grow the whole four-level stack: a colony shell, an organisation, a person, one generation of that person's agent and a Telegram surface for it. Each level is instantiated into the open container the level above ships for it. 287 edges, 48 of them written by hand. |
 | [`never-forgets`](never-forgets/) | 3 → 17 | to boot | < 1 s | Tell it something in January, ask it in March. Bi-temporal episodes, an import lane for a past you already have, and a model that names the time range it wants. |
 | [`vault-pilot`](vault-pilot/) | 2 → 8 | to boot | < 1 s | A model that holds no key: its bearer credential arrives sealed from the capability broker's vault, on a grant that was seeded before it booted. The first shipped wiring of `access` to a consumer. |
-| [`display-colony-view`](display-colony-view/) | 2 → 9 | **yes** | < 1 s | Two owners, one screen. A `display` is a CHANNEL rather than a picture: an application draws the colony's own topology onto it while a `code` cell with no model writes a paragraph beside it, and neither can touch the other's view -- because the owner of a view is the envelope the substrate stamped, not anything the body claims. |
+| [`display-colony-view`](display-colony-view/) | 2 → 9 | yes | < 1 s | Two owners, one screen. A `display` is a channel, so an application can draw the colony's own topology onto it while a `code` cell with no model writes a paragraph beside it, and neither can touch the other's view. The owner of a view is the envelope the substrate stamped, and nothing the body claims changes that. |
 | [`telegram-research`](telegram-research/) | 10 | no | < 1 s | A real multi-tool agent on a real surface, written out node by node. Needs a Telegram bot token as well as a provider key. |
-| [`memory-import`](memory-import/) | 0 → one member | to boot | < 1 s | The one door a memory can come back through. An export is a set of seed files and a seed is a FILE, so the reference the shipped level reaches its memory through is written out and the whole document is registered as a local template and grown in the same diff -- born with its past, because a member that is already running cannot be given one. |
+| [`memory-import`](memory-import/) | 0 → one member | to boot | < 1 s | The one door a memory can come back through. An export is a set of seed files and a seed is a file, so the reference the shipped level reaches its memory through is written out, the whole document is registered as a local template, and both are grown in the same diff. The member is born with its past, because a member that is already running cannot be given one. |
 
 `a → b` means *a* cells are checked in and *b* are running once the example's `grow.json` has
-been applied. A hive is not a cell and is not counted: it is a scope marker, not an actor.
+been applied. A hive is a scope marker and is not counted as a cell.
 
-`memory-import` is a **step** rather than a colony, so its column names what it grows rather
-than a cell count: it has no seed of its own and adds one member to whichever org shell you
-already have.
+`memory-import` is a step, so its column names what it grows instead of a cell count. It has no
+seed of its own and adds one member to whichever org shell you already have.
 
 `hard-shell` is the one to run first, and the one the top-level README walks through: it has no
 `llm` cell at all, so there is nothing to authenticate and nothing to pay for.
 
-Two of them carry a **`WALKTHROUGH.md`** — the same example end to end, every command in the
-order it has to happen with the real output next to it:
-[`hard-shell`](hard-shell/WALKTHROUGH.md) (under two minutes, keyless) and
-[`never-forgets`](never-forgets/WALKTHROUGH.md) (needs a key and a model). If you mean to
-*run* either example rather than read it, start there — the walkthrough is the tested path,
-and for `never-forgets` it carries a seed step the README alone will not get you past.
+Two of them carry a `WALKTHROUGH.md`, the same example end to end, every command in the order
+it has to happen with the real output next to it.
+[`hard-shell`](hard-shell/WALKTHROUGH.md) takes under two minutes and needs no key;
+[`never-forgets`](never-forgets/WALKTHROUGH.md) needs a key and a model. If you mean to run
+either example, start there. The walkthrough is the tested path, and for `never-forgets` it
+carries a seed step the README alone will not get you past.
 
-**What "keyless" means here**, because the distinction is a boot-time one:
+What "keyless" means here, because the distinction is a boot-time one:
 
-- **yes** -- boots and *answers* with no key anywhere. Only `hard-shell`.
-- **to boot** -- boots, grows and validates with no key; it needs a provider key before it can
+- yes: boots and answers with no key anywhere. Only `hard-shell`.
+- to boot: boots, grows and validates with no key. It needs a provider key before it can
   answer, because answering is what an `llm` cell does. `meclaw-os`, `never-forgets`,
-  `organism`, `memory-import` and `vault-pilot` — the last of which needs its key in a
-  **vault** rather than in `.env`, plus the passphrase that opens it.
-- **no** -- will not boot at all until the variable its `llm` cell substitutes exists. `hello`,
+  `organism`, `memory-import` and `vault-pilot`, the last of which wants its key in a vault
+  instead of in `.env`, plus the passphrase that opens it.
+- no: will not boot at all until the variable its `llm` cell substitutes exists. `hello`,
   `swarm` and `telegram-research` read `${OPENROUTER_API_KEY}`, and the substitution reads
-  `{root}/.env` (or `--env`), **not** the process environment -- an unset variable fails the
-  bootstrap with `env_var_missing` rather than starting something half-wired. Any value gets you
+  `{root}/.env` (or `--env`), never the process environment. An unset variable fails the
+  bootstrap with `env_var_missing` instead of starting something half-wired. Any value gets you
   through boot and `--validate`; a real one is needed to get an answer.
 
-The `boot` column is time to a healthy HTTP API on an already-built binary, not the build.
-`cargo build --release` is the slow step, and you pay it once.
+The `boot` column measures the time to a healthy HTTP API on an already-built binary, and it
+leaves the build out. `cargo build --release` is the slow step, and you pay it once.
 
 `--validate` is the cheap way to check a tree without spawning anything:
 
@@ -57,4 +56,4 @@ The `boot` column is time to a healthy HTTP API on an already-built binary, not 
 
 Every colony here runs the guarded CEL form (`has(hop.x) && hop.x == ...`), which the sweep in
 `crates/meclaw-colony/tests/gh80_shipped_conditions_are_guarded.rs` enforces over every shipped
-`config.json`. Copy from these, not from an old README.
+`config.json`. Copy from these examples instead of from an old README.

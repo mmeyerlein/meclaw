@@ -14,7 +14,7 @@ wait for tools. A multi-tool loop therefore needs application topology that can:
 
 [`examples/telegram-research`](../examples/telegram-research/) is the worked example in this
 guide. Its `prep`, `dispatch`, and `collector` nodes are ordinary `code` cells. The durable
-thread lives in the `memory` store. The loop itself is the `collector -> planner` edge.
+thread lives in the `memory` store. The loop itself is the `collector` to `planner` edge.
 
 ## The four roles
 
@@ -88,14 +88,11 @@ The lane edges guard the key they discriminate on:
   "condition": "has(hop.tool_name) && hop.tool_name == 'web_fetch'" }
 ```
 
-The `has()` is not decoration. `hop` is single-hop, so most messages passing a fan-out carry no
-`tool_name` at all: the `c_asst` emission, every store reply, every collector emission. A bare
-`hop.tool_name == 'web_search'` does not evaluate to `false` on those, it **errors** — CEL
-standard semantics — and the substrate skips the edge. Routing is right either way; the
-difference is one log line per non-matching lane per message, which at eight lanes is most of the
-log. Since GH #80 the substrate logs that class at `debug` instead of `warn`, and the guarded
-form above produces no line at all. Apply it to every condition that reads an optional `hop` key;
-`context.*` keys, which are carried along, do not need it.
+Every condition that reads an optional `hop` key needs that `has()`, because `hop` is
+single-hop and most messages passing a fan-out carry no `tool_name` at all. The reason a bare
+comparison still routes correctly, and why it costs a log line per non-matching lane, is
+CEL error semantics plus the GH #80 log level: `meclaw-overview.md` § *Edge expression
+language*. Keys under `context.*` are carried along and need no guard.
 
 The collector stores the complete assistant turn in one row:
 
@@ -125,19 +122,18 @@ received = {call-read, call-search}
 complete = expected is non-empty and expected is a subset of received
 ```
 
-The comparison uses IDs rather than row counts. Arrival order cannot change the result, and a
-duplicate ID cannot make a missing result appear complete.
+The comparison is over IDs; row counts are never used. Arrival order cannot change the result,
+and a duplicate ID cannot make a missing result appear complete.
 
-**What a result may carry.** A tool result is its `messages[]` -- every `tool_result` turn of
-it, each under the `id` of the call it answers -- and nothing else. One result may therefore
-answer several calls at once, which is what a batching tool does when it receives the whole
-call bundle in one message; every id in it enters `received`. A `system` slot or a top-level
-body slot on that lane is dropped on the way in, and that is a decision rather than an
-omission: what leaves the collector's seam in `system.*` is upserted into the brain cell's own
-`cell.db` and stands in the prompt until something overwrites the same slot path, so it is
-durable state of the agent, not evidence of one round. Only something re-sent under a fixed
-path on every turn -- the memory bundle -- belongs there. A tool with structure to hand back
-serialises it into the text of its result.
+A tool result is its `messages[]`, every `tool_result` turn of it, each under the `id` of the
+call it answers, and nothing else. One result may therefore answer several calls at once,
+which is what a batching tool does when it receives the whole call bundle in one message;
+every id in it enters `received`. A `system` slot or a top-level body slot on that lane is
+dropped on the way in. What leaves the collector's seam in `system.*` is upserted into the
+brain cell's own `cell.db` and stands in the prompt until something overwrites the same slot
+path, so it is durable state of the agent and no evidence of one round. Only something
+re-sent under a fixed path on every turn, the memory bundle, belongs there. A tool with
+structure to hand back serialises it into the text of its result.
 
 ### 4. Claim the completed round once
 
@@ -164,8 +160,8 @@ The store serializes its own operations. Exactly one update changes the assistan
 reports `rows_affected == 1`. Every loser reports `0` and parks by emitting an empty
 multi-send. The winner issues one final select with `context.firing == "1"`.
 
-The `fired` column is therefore not a completion flag. It is a compare-and-set guard that
-grants one collector path permission to cross the loopback edge.
+The `fired` column is a compare-and-set guard, not a completion flag: it grants one collector
+path permission to cross the loopback edge.
 
 ### 5. Rebuild and re-enter
 
@@ -199,40 +195,40 @@ proxy and to `archive`; the tool loop is done.
 
 ## A tool result is re-sent on every subsequent round
 
-The thread is rebuilt cumulatively (step 5), so a tool result does not enter the model's context
-once. It enters again on every round of the same turn. One 172 KB fetch in a two-round turn was
-measured at roughly 70k prompt tokens; in a five-round turn the same fetch is carried five times.
+The thread is rebuilt cumulatively (step 5), so a tool result enters the model's context again
+on every round of the same turn. One 172 KB fetch in a two-round turn was measured at roughly
+70k prompt tokens; in a five-round turn the same fetch is carried five times.
 
-Two places bound that, and they are different decisions:
+Two places bound that, and they are different decisions.
 
-- **At the tool.** `web_fetch` takes `params.max_bytes` (default 256 KiB, GH #83) and marks a trim
-  in the payload (`… [truncated, N bytes total]`, `header.truncated: true`, `header.bytes` = the
-  full size). `bash` shares the same knob and default for runaway stdout, and `web_search` trims
-  its result list at `params.max_results` (default 10, visible inside the JSON) with the same byte
-  backstop. Inside a loop those values belong much lower —
-  [`examples/telegram-research`](../examples/telegram-research/) sets 32 KiB on its `reader`. A cap
-  is a bound on the worst case, not a policy.
-- **At the collector.** What leaves the assembled context again is the collector's decision, and it
-  is the one that turns a large result from a per-round cost back into a one-time cost. The shape
-  is deterministic policy rather than a model judgement: whole turns leave on a turn cap and a byte
-  cap, never halves, and the turn being answered is never the one evicted. An eviction rule over
-  the tool rows of the round slate is that same shape one level down, and it is tracked on GH #83.
+At the tool, `web_fetch` takes `params.max_bytes` (default 256 KiB, GH #83) and marks a trim
+in the payload (`… [truncated, N bytes total]`, `header.truncated: true`, `header.bytes` = the
+full size). `bash` shares the same knob and default for runaway stdout, and `web_search` trims
+its result list at `params.max_results` (default 10, visible inside the JSON) with the same byte
+backstop. Inside a loop those values belong much lower:
+[`examples/telegram-research`](../examples/telegram-research/) sets 32 KiB on its `reader`. A cap
+bounds the worst case; it does not express a policy.
 
-For a genuinely large document the honest pattern is not a cap at all: fetch it to a file with a
+At the collector, what leaves the assembled context again is its decision, and that decision
+is the one that turns a large result from a per-round cost back into a one-time cost. The shape
+is deterministic policy and no model judgement: whole turns leave on a turn cap and a byte cap,
+never halves, and the turn being answered is never the one evicted. An eviction rule over the
+tool rows of the round slate is that same shape one level down, and it is tracked on GH #83.
+
+For a genuinely large document the honest pattern is no cap at all: fetch it to a file with a
 `file` cell and hand the model the path, so the payload never becomes a thread row.
 
-Both of those bound what enters and what leaves. Neither **condenses** — a cap keeps a prefix and
-an eviction keeps nothing. That third answer is the next section.
+Neither condenses: a cap keeps a prefix and an eviction keeps nothing.
 
 ## Compacting the thread when the window fills
 
 A cap bounds one item; an eviction drops a whole turn. Neither turns twelve rounds into a
 paragraph, so a long turn's window keeps growing until the provider refuses it. The missing
-capability is condensation: fold the old rounds into **one** summary row and rebuild from
+capability is condensation: fold the old rounds into one summary row and rebuild from
 `summary + tail`.
 
-This is topology, not a new cell type. The reference tree is
-[`tests/fixtures/gh120-compaction-lane`](../tests/fixtures/gh120-compaction-lane/) — the loop
+This is topology and needs no new cell type. The reference tree is
+[`tests/fixtures/gh120-compaction-lane`](../tests/fixtures/gh120-compaction-lane/), the loop
 above plus one hive and one edge split, pinned in
 `crates/meclaw-cells/tests/compaction_lane.rs`.
 
@@ -248,14 +244,14 @@ it is still readable is the edge that leaves the brain, so that edge keeps the r
     "tokens_seen": "int(context.tokens_seen) + int(hop.tokens_prompt)" } } }
 ```
 
-No cell counts anything, and the number rides in `context` next to `iter` — the same
+No cell counts anything, and the number rides in `context` next to `iter`, in the same
 compartment, owned by the same layer.
 
 ### The threshold splits the re-entry edge in two
 
-The loopback edge of step 5 becomes two edges that **partition** the `fire` lane. The second
+The loopback edge of step 5 becomes two edges that partition the `fire` lane. The second
 condition is the exact negation of the first, because a lane that is not exhaustive parks the
-turn — the collector has already spent its fire guard and nothing else will emit:
+turn: the collector has already spent its fire guard and nothing else will emit.
 
 ```json
 { "from": "./collector", "to": "/compact/prep",
@@ -267,17 +263,19 @@ turn — the collector has already spent its fire guard and nothing else will em
                                  "compacting": "''" } } }
 ```
 
-Three things are decided here and nowhere else:
+Three things are decided here and nowhere else.
 
-- **The threshold.** `40` is a fixture-scale number, chosen so four rounds of a deterministic
-  mock cross it; a real one is a fraction of the model's context window, in the tens of thousands.
-- **The reset.** Compaction sets `tokens_seen` back to `0`, which is what makes the lane fire
-  again later instead of once. The accumulator *is* the lane's state.
-- **The iteration bound.** `int(context.iter) >= 1` is the number of rounds kept verbatim
-  (`KEEP_ROUNDS`, one) expressed on the edge: a fold needs something to fold. Compaction does
-  **not** consume an iteration — only the brain edge counts.
+The threshold `40` is a fixture-scale number, chosen so four rounds of a deterministic mock
+cross it; a real one is a fraction of the model's context window, in the tens of thousands.
 
-### The lane: policy in `code`, prose in `llm`
+Compaction sets `tokens_seen` back to `0`, and that reset is what makes the lane fire again
+later instead of once. The accumulator *is* the lane's state.
+
+The iteration bound `int(context.iter) >= 1` is the number of rounds kept verbatim
+(`KEEP_ROUNDS`, one) expressed on the edge: a fold needs something to fold. Compaction does
+not consume an iteration; only the brain edge counts.
+
+### The lane, policy in `code` and prose in `llm`
 
 `/compact` is three ordinary cells:
 
@@ -285,23 +283,24 @@ Three things are decided here and nowhere else:
 |---|---|---|
 | `prep` | `code` | groups the rebuilt thread into rounds, picks the cut, writes the prompt |
 | `condense` | `llm` | the prose, and only the prose |
-| `emit` | `code` | one `insert` of the summary row — or the degradation route |
+| `emit` | `code` | one `insert` of the summary row, or the degradation route |
 
-Three rules are worth taking from [prime-agent](https://github.com/PrimeIntellect-ai/prime-agent),
-whose compaction is the strongest part of that codebase, and each lands in a different place here:
+Three rules are worth taking from the compaction lane of
+[prime-agent](https://github.com/PrimeIntellect-ai/prime-agent), and each lands in a different
+place here:
 
-1. **Summarize iteratively.** The previous summary is already the second message of the rebuilt
+1. Summarize iteratively. The previous summary is already the second message of the rebuilt
    thread, so `prep` finds it without asking the store: it enters the prompt as the running
    summary and the next fold refines it instead of starting from a blank page.
-2. **Force fixed sections.** The instruction shipped by `prep` names four headings — goal,
+2. Force fixed sections. The instruction shipped by `prep` names four headings: goal,
    progress, key decisions, next steps. Fixed shape is what makes two folds of the same turn
    comparable; a summary whose shape drifts can only be rewritten, never refined.
-3. **Never cut at a `tool_result`.** `prep` groups the thread into rounds — a round begins at the
-   first assistant `tool_call` of a run of them — and folds whole groups. A cut between groups
-   cannot land between a `tool_call` and its answer, so every folded prefix stays a valid provider
-   thread. The rule is structural, not a check.
+3. Never cut at a `tool_result`. `prep` groups the thread into rounds, a round beginning at the
+   first assistant `tool_call` of a run of them, and folds whole groups. A cut between groups
+   cannot land between a `tool_call` and its answer, so every folded prefix stays a valid
+   provider thread. The rule is structural; nothing checks it afterwards.
 
-### The rebuild: `user + summary + tail`
+### The rebuild, `user + summary + tail`
 
 `emit` writes one row whose `iter` column carries the boundary:
 
@@ -312,53 +311,54 @@ t-7      2     summary    null   {"origin":"assistant","type":"text","text":"GOA
 
 The collector's rebuild (step 5) reads that column. Without a summary row it is the plain
 cumulative thread; with one it is the user turn, the newest summary, and every `assistant`/`tool`
-row **behind** the boundary. After a fold at boundary `2`, a four-round turn re-enters the brain
+row behind the boundary. After a fold at boundary `2`, a four-round turn re-enters the brain
 with four messages instead of nine.
 
-The chain re-enters through the collector rather than around it: the summary insert comes back
+The chain re-enters through the collector instead of around it: the summary insert comes back
 as an ordinary store reply, and because it carries `context.compacting`, the collector re-selects
 with `firing = 1` instead of racing for a guard the chain already holds.
 
-### What is compacted is the view, never the record
+### Compaction folds the view and keeps the record
 
 The folded rows stay in `thread`, byte for byte. Nothing is updated, nothing is deleted; the
-summary row is an **addition**. That is the same discipline the collector template applies to its
+summary row is an addition. That is the same discipline the collector template applies to its
 own window: a cap is a read-time cut of something the environment still holds, and rows fall only
 where deletion is the declared job. A later fold, an audit, or a session batch still sees the
 full turn.
 
 ### The lane can always leave
 
-A fold that produced nothing — an empty answer, a provider error — must not fold the rounds into
+A fold that produced nothing, an empty answer or a provider error, must not fold the rounds into
 nothing, and it must not park the turn either. `emit` then leaves on `refire`: a plain select that
-sends the **uncompacted** window on. Expensive and complete beats cheap and stuck. `prep` carries
-the same exit for a thread with nothing to fold, which the iteration bound above already makes
-unreachable.
+sends the uncompacted window on. That costs the tokens the fold would have saved and finishes
+the turn; parking finishes nothing. `prep` carries the same exit for a thread with nothing to
+fold, which the iteration bound above already makes unreachable.
 
 ### What it costs
 
-A fold replaces the one hop of a plain re-entry with eight — collector → `prep` → `condense` →
-`emit` → store, the reply back, the re-select, its reply, and then the brain — so it costs seven
-extra hops on the round it interrupts. The next section's advice applies unchanged, and more so:
-put `restore_ttl` on the re-entry edge and the loop pays for one round at a time, fold included.
+A fold replaces the one hop of a plain re-entry with eight: collector, `prep`, `condense`,
+`emit`, the store, the reply back, the re-select, its reply, and then the brain. It therefore
+costs seven extra hops on the round it interrupts. The next section's advice applies unchanged,
+and more so: put `restore_ttl` on the re-entry edge and the loop pays for one round at a time,
+fold included.
 
 ## The TTL budget of one round
 
 `ttl` is the routing-loop guard: colony decrements it on every routing decision and a message
-that reaches `0` is dead-lettered. One user-visible tool round in this shape is **not** one hop.
-It is about a dozen, because the collector's read-modify-write conversation with the store is
-itself routing:
+that reaches `0` is dead-lettered (`meclaw-overview.md` § *Message model*). One user-visible
+tool round in this shape costs about a dozen routing hops, and not one, because the
+collector's read-modify-write conversation with the store is itself routing:
 
 | Leg | Hops |
 |---|---|
-| planner -> dispatcher | 1 |
-| dispatcher -> tool | 1 |
-| tool -> collector | 1 |
-| collector -> store insert, and the reply back | 2 |
-| collector -> store select, and the reply back | 2 |
-| collector -> store guarded update, and the reply back | 2 |
-| collector -> store firing select, and the reply back | 2 |
-| collector -> planner (the loopback edge) | 1 |
+| planner to dispatcher | 1 |
+| dispatcher to tool | 1 |
+| tool to collector | 1 |
+| collector to store insert, and the reply back | 2 |
+| collector to store select, and the reply back | 2 |
+| collector to store guarded update, and the reply back | 2 |
+| collector to store firing select, and the reply back | 2 |
+| collector to planner (the loopback edge) | 1 |
 | **one round** | **~12** |
 
 Parallel tool calls do not multiply this: `ttl` lives on each message envelope, so the branches
@@ -366,17 +366,17 @@ burn their own copies and the number above is the cost along the chain that re-e
 planner.
 
 Measured on the checked-in fixture (`tests/fixtures/14b-tool-loop-store`, pinned in
-`crates/meclaw-cells/tests/tool_loop_ttl_budget.rs`): six tool rounds end to end cost **76**
-routing hops. `message_default_ttl` defaults to **64**, so the default budget holds **five**
-rounds and the sixth runs out. Five rounds is not generous for an assistant — "write the file,
-read it back, fix it, verify, then summarise" is five.
+`crates/meclaw-cells/tests/tool_loop_ttl_budget.rs`): six tool rounds end to end cost 76
+routing hops. `message_default_ttl` defaults to 64, so the default budget holds five rounds and
+the sixth runs out. Five rounds is not generous for an assistant. "Write the file, read it
+back, fix it, verify, then summarise" is five.
 
-### The recommended form: let the loopback edge restore the budget
+### The recommended form, letting the loopback edge restore the budget
 
 Raising the colony-wide budget pays for every round of every turn up front, and it makes the
-number of rounds an agent may take a property of `colony.json` rather than of the loop. The
-loop can instead pay per round. An edge may declare that it restores the routing budget of the
-message it takes (GH #82, ruling 2026-08-13):
+number of rounds an agent may take a property of `colony.json` instead of a property of the
+loop. The loop can pay per round. An edge may declare that it restores the routing budget of
+the message it takes (GH #82, ruling 2026-08-13):
 
 ```json
 {
@@ -392,24 +392,18 @@ message it takes (GH #82, ruling 2026-08-13):
 
 That is one edge: the re-entry edge, carrying the iteration counter and the restore together.
 When it takes a message, colony lifts the follow-up's `ttl` back to `message_default_ttl`. The
-loop then only ever has to fit **one** round into the budget instead of all of them, so
+loop then only ever has to fit one round into the budget instead of all of them, so
 [`examples/telegram-research`](../examples/telegram-research/) needs no `colony.json` at all:
 six rounds and more run on the substrate default of 64. Pinned in
 `crates/meclaw-cells/tests/tool_loop_ttl_budget.rs`
 (`six_tool_rounds_complete_on_the_default_budget_when_the_loopback_edge_restores_ttl`).
 
-What the restore is, precisely:
-
-- **A reset, not a grant.** `ttl` becomes the budget, never `ttl + budget`. Six restores and
-  one restore leave the same ceiling, so a restoring cycle can never inflate its own budget
-  (pinned: `a_restoring_loopback_edge_never_lifts_ttl_above_the_initial_budget`).
-- **Never a demotion.** A message ingested with a larger budget (the `ttl` field of
-  `POST /messages`) keeps what it has.
-- **Not a hole in the guard, a move of it.** A restoring edge declares its loop legitimate, so
-  the runaway guard for that loop is the iteration bound in its `condition`, not TTL. That is
-  why a restoring edge **without** a condition is refused at config load and at `add_edges`
-  validation instead of booting a colony that can spin forever. TTL keeps guarding everything
-  that did not opt in, and the substrate default stays 64.
+The restore resets the budget and never accumulates it, it never lowers a message ingested with
+a larger budget, and it moves the runaway guard from TTL to the iteration bound in the edge's
+own `condition`, which is why a restoring edge without a condition is refused at config load
+and at `add_edges` validation. The three properties in full, with their rationale:
+`meclaw-overview.md` § *Message model*. The ceiling is pinned in
+`a_restoring_loopback_edge_never_lifts_ttl_above_the_initial_budget`.
 
 ### Sizing the budget instead, for shapes without the modifier
 
@@ -425,16 +419,17 @@ buys twelve rounds. Per initial message the HTTP ingress accepts a `ttl` field t
 
 ### TTL exhaustion is a silent stall, so bound the loop yourself
 
-TTL expiry is **terminal**: the message goes directly to the dead-letter queue and deliberately
-does **not** take the `reply_to` cascade (`meclaw-overview.md` § TTL semantics). Inside a fan-in
-that is invisible from the agent surface: the collector's fan-in never completes, so it parks by
-design, and **nothing is emitted toward the origin** — no answer, no error, nothing a topology
-can route on. The colony logs the death loudly (an `ERROR` line naming the message id, its
-target, and the trace id) and writes a `ttl_expired` dead-letter row; those are the operator's
-signals, and they are the only ones.
+TTL expiry is terminal: the message goes directly to the dead-letter queue and skips the
+`reply_to` cascade (`meclaw-overview.md` § *Message model*). Inside a fan-in that is invisible
+from the agent surface. The collector's fan-in never completes, so it parks, and nothing is
+emitted toward the origin: no answer, no error, nothing a topology can route on. The colony
+logs the death loudly (an `ERROR` line naming the message id, its target, and the trace id) and
+writes a `ttl_expired` dead-letter row; those are the operator's signals, and they are the only
+ones.
 
-So TTL is a substrate guard, not the loop's bound. Bound the loop where the loop lives — on the
-loopback edge, with the iteration counter the edge already owns:
+TTL is a substrate guard and never the loop's bound. Bound the loop where the loop lives, on
+the loopback edge, with the iteration counter the edge already owns. The recommended edge above,
+with the `has()` guard on the optional key:
 
 ```json
 {
@@ -448,8 +443,8 @@ loopback edge, with the iteration counter the edge already owns:
 }
 ```
 
-With `restore_ttl` that bound is not optional but mandatory: it is the only thing left
-that stops the loop, which is exactly why the substrate refuses an unconditional restoring edge.
+With `restore_ttl` that bound is mandatory. It is the only thing left that stops the loop, which
+is exactly why the substrate refuses an unconditional restoring edge.
 
 A second edge with the inverse condition gives the runaway round a destination that answers
 (an apology turn, an error lane, a notifier) instead of a silence.
@@ -481,12 +476,12 @@ To build another store-backed loop:
 3. Preserve the complete assistant tool-call turn before dispatching individual calls.
 4. Return every tool result with its original tool-call ID.
 5. Test completeness by ID membership, scoped to the current correlation ID and iteration.
-6. Put the one-shot guard in the store operation, not in code-cell memory.
+6. Put the one-shot guard in the store operation, and never in code-cell memory.
 7. Rebuild the provider thread only after winning that guard.
 8. Increment the iteration and route to the LLM on an edge.
 9. Make store replies and losing races terminate explicitly with an empty multi-send.
 10. When the thread outgrows the window, fold the old rounds into one summary row and rebuild
-    from `summary + tail` — condensation is the one memory capability a cap cannot supply.
+    from `summary + tail`; condensation is the one memory capability a cap cannot supply.
 
 Validate the worked example without external credentials:
 

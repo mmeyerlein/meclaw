@@ -22,7 +22,7 @@ policy to another colony*). Since 2.2.0 `./warden` holds the parked turns.
 character count or a clock. That is the point of GH #36: enforcement is code, only
 phrasing is agentic -- and phrasing is not this hive's business.
 
-The pattern is not new, only generalised. Egon's intake carries the Telegram allowlist
+The pattern is not new, only generalised. A production intake carries the Telegram allowlist
 today as a literal baked into a script (`ALLOWED = "${TELEGRAM_ALLOWED_USER_ID}"`,
 sender mismatch → silent drop). This template turns that one line into rows: auditable,
 hot-updatable, visible in the tree, and **loud** when it fires.

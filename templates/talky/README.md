@@ -5,7 +5,7 @@ A whole conversational agent as one template. Three referenced units under one h
 [`dispatcher`](../dispatcher/) -- each carrying its template's own name -- plus an
 `llm` brain, the sidecar splitter and one error collector. No new cell type, no Rust.
 
-**The Egon rollout wired this by hand.** Keeper in the ingress, collector at the seam,
+**The first production rollout wired this by hand.** Keeper in the ingress, collector at the seam,
 dispatcher for the fan-out, the close batch out to the write port -- thirty-two edges,
 each of them a decision that had already been made in a README. That is the definition of a
 composite: a recurring unit that should be instantiated, not re-derived. Here it is one

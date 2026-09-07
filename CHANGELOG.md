@@ -9,6 +9,55 @@ documented `error_code` strings (README § Stability). Anything that breaks one 
 them is listed under **Breaking** in its release, with the migration named. The
 Rust crates are internals and move without notice.
 
+## [0.32.1] — 2026-09-08
+
+A patch release without a code change. The README and the public documentation
+were rewritten so that a person can read them: shorter sentences, one thought per
+sentence, no slogans, every number with a source in the tree. Nothing in the
+contract moved, and no migration is needed from 0.32.0.
+
+### Changed
+
+- `README.md` went from 234 to 91 lines. The first paragraph and the five
+  quickstart commands are unchanged. The nine "why" sections left the README;
+  they live in `docs/why/`. The stability section keeps all five contract
+  surfaces, the additive rule on `0.x`, and the Breaking rule for this file.
+- `docs/why/` has six essays instead of nine. `names` became the section "Names
+  of the shipped roles" in the glossary. `ontology` had no subject of its own;
+  the mechanism it described (`add_templates`) is in `everything-is-a-file` and
+  `rewiring`. `you-talk-it-shows` claimed there was no voice in this repository,
+  which has been false since 0.31.0; its one durable paragraph moved into
+  `an-os-for-agents`. `rsi` is now `self-modification`, same thesis, no slogan.
+- `docs/meclaw-overview.md` lost about a quarter of its words. Every rule,
+  every error code, every table and every code block is still there; the 54
+  spec-claim anchors and the heading structure are unchanged. What fell was
+  repetition between sections, defect narratives from past audits, and
+  justification prose.
+- `docs/cell-types.md`, `docs/config.md`, `docs/rewiring.md`,
+  `docs/voice-wire-protocol.md`, `docs/store-backed-tool-loop.md`,
+  `docs/costs.md` and `docs/glossary.md` were rewritten paragraph by paragraph
+  with their facts, tables and examples intact. The German editions of the paired
+  documents follow the English ones in the same commit.
+- `templates/README.md` describes each of the 40 templates in a few sentences.
+  The version history that used to sit in the catalogue lives in each template's
+  own README.
+- The private assistant name that served as an example in `docs/cell-types.md`,
+  `docs/rewiring.md`, `templates/voice/README.md` and the `talky` and `voice`
+  descriptions is now the neutral example name Sam.
+- Corrected numbers on the public surface: 16 built-in cell types plus `hive`
+  (the text said 15), 40 templates (the text said 38), 15 cells in
+  `memory-hive` (the text said thirteen), and three cell types that receive a
+  default sandbox profile (the text said four; `mcp` reads the same profile
+  but must declare it).
+- `CONTRIBUTING.md`, `ROADMAP.md`, `examples/README.md` and `docs/README.md`
+  were rewritten for tone only; every issue and register anchor in the roadmap
+  is unchanged.
+
+### Migration
+
+None. No API route, no `template.json` or `config.json` key, no port, no
+`error_code` and no `web` route changed.
+
 ## [0.32.0] — 2026-09-07
 
 A minor release, and what it adds is a **typed offer**. Until now the fenced

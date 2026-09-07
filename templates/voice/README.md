@@ -143,7 +143,7 @@ the shape a personal agent ships with -- refuses every turn that arrives without
 a promoted `context.user_id` as `sender_not_allowed`, and a voice turn carries
 no chat identity of its own. So the ingress edge of such a member promotes the
 one speaker as a literal, beside the round (measured 2026-09-05 on a colony
-grown from `egon-seed`: every voice turn rejected until this line stood):
+grown from a production seed: every voice turn rejected until this line stood):
 
 ```json
 "set_context": {"channel_node": "'voice'", "channel": "'voice'",
@@ -341,7 +341,7 @@ takes `stability` and `similarity_boost` instead of `language`, `emotion` and
 provider has no wire for is refused as unknown rather than ignored.
 
 **`deepgram` takes `keyterms`.** A list of words the recogniser should expect --
-`"keyterms": ["Egon", "meclaw"]` inside the `stt` block -- because a general model
+`"keyterms": ["Sam", "meclaw"]` inside the `stt` block -- because a general model
 hears a name it was never trained on as the nearest name it knows. Each entry is
 boosted on its own and a multi-word entry stays one term; the list is empty by
 default. It lives in the `stt` block, so like the rest of that block it is set at

@@ -1,28 +1,22 @@
-<div align="center">
-
 # meclaw
 
-**Where agents build agents.**
+[![ci](https://github.com/mmeyerlein/meclaw/actions/workflows/ci.yml/badge.svg)](https://github.com/mmeyerlein/meclaw/actions/workflows/ci.yml) [![release](https://img.shields.io/github/v/release/mmeyerlein/meclaw)](https://github.com/mmeyerlein/meclaw/releases) [![license](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](#license)
 
-**An agentic build system for agentic systems. Ontology-grounded, auditable, one Rust binary.**
+[Docs](docs/README.md) · [Glossary](docs/glossary.md) · [Templates](templates/README.md) · [Examples](examples/README.md) · [Roadmap](ROADMAP.md) · [Contributing](CONTRIBUTING.md)
 
-[![ci](https://github.com/mmeyerlein/meclaw/actions/workflows/ci.yml/badge.svg)](https://github.com/mmeyerlein/meclaw/actions/workflows/ci.yml)
-[![tests](https://img.shields.io/badge/tests-6800%2B%20passing-brightgreen)](#)
-[![rust](https://img.shields.io/badge/rust-edition%202024-orange)](#)
-[![license](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](#license)
+One Linux binary that runs a tree of agents. Every folder in the tree is an entity: one actor, one
+`config.json`, one SQLite file, one kernel sandbox (Landlock, network namespace, cgroup v2,
+seccomp). Edges between folders are the routes a message may take. The binary ships no agent loop; a
+loop is an edge that routes back into an `llm` entity. To change a running system you POST a diff to
+one endpoint: validated, applied without a restart, written to a ledger. Agents change the system
+through the same endpoint. **meclaw-os** and an **assistant** are grown onto that tree at runtime
+from JSON, not deployed.
 
-[Start an assistant](#start-an-assistant) · [Docs](docs/README.md) ·
-[Templates](templates/README.md) · [Examples](examples/) · [Roadmap](ROADMAP.md)
-
-</div>
-
-One Linux binary that runs a tree of agents. Every folder in the tree is an entity: one actor,
-one `config.json`, one SQLite file, one kernel sandbox (Landlock, network namespace, cgroup v2,
-seccomp). Edges between folders are the routes a message may take. The binary ships no agent
-loop; a loop is an edge that routes back into an `llm` entity. To change a running system you
-POST a diff to one endpoint: validated, applied without a restart, written to a ledger. Agents
-change the system through the same endpoint. **meclaw-os** and an **assistant** are grown onto
-that tree at runtime from JSON, not deployed.
+You can rewire an assistant while it is still answering: the change is a diff of nodes and edges,
+and nothing restarts. An agent that wants to change the tree goes through the same endpoint. The
+shipped `builder` template drafts such a diff and holds no edge to that endpoint; `submit` is the
+one node that does. 40 templates ship as JSON declarations and Python scripts, and `templates/`
+contains no Rust. The docs call an entity a cell and the whole tree a colony.
 
 ## Start an assistant
 
@@ -58,177 +52,43 @@ curl -s '127.0.0.1:7777/colony/trace?limit=200' | jq -r \
 # 5 — watch the colony in the browser: http://127.0.0.1:7777/ui/
 ```
 
-One binary, one key, five steps — and the fourth already shows the point:
-the answer is not a return value, it is a message on the record.
+`--daemon` runs in the foreground and stops on Ctrl-C, so step 1 keeps its terminal. Run steps 2 to
+5 in a second shell.
 
-## What just happened
+## Where it stands
 
-**You installed meclaw.** A single Rust binary that turns a directory tree into a running
-colony of actors: every folder is a cell, its `config.json` is its definition, and the
-edges between folders are the routes a message can take. Nothing else got installed.
-
-**You installed an operating system — without stopping anything.** `grow.json` is not
-code and was not deployed. It is a *mutation*: nodes and edges, applied over HTTP to a
-colony that was already running. It grew a door, a firewall and a conversation agent out
-of the template library — and that is the only way anything is ever added to a colony,
-which is why the same door is open to the agents themselves.
-
-**You talked to an assistant nobody programmed.** No SDK, no agent class, no loop you
-wrote. The assistant is a shape in the filesystem, grown from templates — and the full
-version of that shape ([`examples/organism`](examples/organism/)) grows an organisation,
-a person, their assistant and their channels from five such files.
-
-meclaw is different enough that the same questions come up every time. The rest of this
-page is those questions — each a few lines here, each a real page in
-[`docs/why/`](docs/why/).
-
-## meclaw doesn't ship you a loop
-
-Every agent framework ships you the same thing: a loop — call the model, run a tool, feed
-the result back, until some condition you wrote says stop. You hand-build that harness
-and redeploy it when it's wrong. In meclaw an `llm` cell makes **one** provider call and
-emits **one** message; tools are cells, the loop is an edge that routes back, the harness
-is topology. Since topology is files, the swarm can rewrite its own harness while it runs.
-
-## Everything is a file
-
-Flexibility is not a feature here — it is the consequence of one decision. Because the
-harness lives in the filesystem, `ls`, `grep`, `diff` and `git` are the tooling, every
-change is diffable, and an agent rebuilds its own topology with the same closed vocabulary
-a human uses. There is no SDK and no plugin API, and that is deliberate: the interface is
-HTTP and files, and 40 shipped templates without a line of Rust are the proof.
-*More: [docs/why/everything-is-a-file.md](docs/why/everything-is-a-file.md)*
-
-## An operating system for agents
-
-Every agentic product ends up rebuilding the same things: an organisation, its people,
-their assistants, the channels they are reached on — plus secrets, screening, sessions
-and a control loop across all of them. meclaw-os ships those as templates under one rule:
-**a level owns what its siblings must share.** It is rudimentary and experimental, it
-already has the concept of **apps**, and it exists so a new agent is a grow, not a project.
-*More: [docs/why/an-os-for-agents.md](docs/why/an-os-for-agents.md)*
-
-## One assistant, two brains
-
-The shipped assistant runs two models on purpose: a conversation surface that answers
-fast, and a reasoning core that thinks — one job, one brain, one tool menu each, and the
-menu is asked for rather than typed into a prompt. One model doing both is either slow in
-conversation or shallow in reasoning; the split is a harness decision, and the harness is
-a file. *More: [docs/why/two-brains.md](docs/why/two-brains.md)*
-
-## Memory that outlives the window
-
-A conversation can run for weeks — not because something clever compacts the context, but
-because **the window was never where the conversation was stored**. The memory hive
-writes without an LLM, retrieves over five model-free legs, consolidates nightly by
-superseding instead of deleting, and the window is assembled per turn out of the record,
-under a budget. *More: [docs/why/memory.md](docs/why/memory.md)*
-
-## Ontology, in the meclaw sense
-
-Not philosophy: a typed catalogue. The builder designs against the template library and
-its declarations and is validated by them, rather than emitting free-form JSON somebody
-hopes parses. When the catalogue has no word for what you want, the manifest brings one —
-`add_templates` registers a new class into a running colony. Apps are how the ontology
-learns new words. *More: [docs/why/ontology.md](docs/why/ontology.md)*
-
-## Prepared for recursive self-improvement
-
-The primitives are here and tested: runtime mutation, a builder that turns a wish into a
-manifest, keep-or-revert on a measured window, a receipt for every act. **The loop that
-closes them is not** — deliberately. Nothing in this repository improves itself
-unattended, and every goal the control loop could pursue ships disabled. No blind RSI.
-*More: [docs/why/rsi.md](docs/why/rsi.md)*
-
-## You talk, it shows
-
-**This one is an idea, not a feature.** The vision for the assistant is the movie *Her*:
-you **talk** to it, and it **shows** you — lists, plans, pictures, drawn onto a display
-that belongs to you, not to any one agent. Nothing in this repository does voice today;
-what exists is the window it would draw on.
-*The idea, and what already stands under it: [docs/why/you-talk-it-shows.md](docs/why/you-talk-it-shows.md)*
-
-## The strange names
-
-argus, affinity, talky, cogny, hive — the names are roles, not branding, and each has a
-one-line reason. *More: [docs/why/names.md](docs/why/names.md)*
-
-## Why Rust, why Linux only
-
-One static binary, one async task per cell — and the security model *is* the kernel:
-Landlock, network namespaces, cgroup v2 and seccomp, fail-closed. Without those
-primitives, "sandboxed" would be a promise instead of a property; that is why there is no
-macOS build. Authentication is the reverse proxy's job, as for every Linux daemon.
-*More: [docs/why/rust-and-linux.md](docs/why/rust-and-linux.md)*
-
-## Limits
-
-`code` cells run `python3`, nothing else. One screen, one app; voice is roadmap, not a
-feature. Not for unsupervised production yet. Running costs, measured on one production
-colony: 0.32 EUR per day in conversation, method and pinned window in
-[`docs/costs.md`](docs/costs.md).
-
-## Under heavy development
-
-meclaw is not finished, and it is open source so it does not have to be finished alone.
-Good first contributions: example colonies, template cells, docs drift-fixes — see
-[CONTRIBUTING.md](CONTRIBUTING.md) and the `good first issue` label. **6800+ tests,
-0 fail**; release truth lives in [CHANGELOG.md](CHANGELOG.md).
+Linux x86_64 only. The release is a static musl build, and the installer refuses any other platform.
+A `code` cell runs `python3` and no other runner. The binary has no SDK and no plugin API. HTTP and
+files are the interface. The daemon installs no authentication and no TLS. Put a reverse proxy in
+front of it, like any Linux daemon. meclaw is under heavy development, and I would not leave it
+unattended in production. The 0.32.0 release gate ran 6875 tests. One measured colony spent 0.32 EUR
+on a day of conversation ([docs/costs.md](docs/costs.md)).
 
 ## Stability
 
-**Five surfaces are the public contract of this project:**
-
-- the **HTTP API** — the `/colony/*` routes, `POST /messages`, their query parameters and
-  status codes;
-- the **template DSL** — the `template.json` and `config.json` schemas, including the
-  mutation diff format;
-- the **template ports** — the endpoints a template's README declares as its ingress and
-  exit addresses;
-- the **`web` cell's own origin** — the route grammar a `page.set` accepts, the two
-  reserved names (`/live/websocket` and `/@client/*`), and the closed component-template
-  syntax ([`docs/cell-types.md`](docs/cell-types.md) § `web`); the removed `/surface/*`
-  prefix and `cell.surface` key stay removed
-  ([#383](https://github.com/mmeyerlein/meclaw/issues/383));
-- the **documented `error_code` strings** — the dead-letter codes, the cell-type error
-  enums, and the codes a `/colony` read reply carries
-  ([#363](https://github.com/mmeyerlein/meclaw/issues/363)).
-
-While meclaw is on `0.x`, changes to those five are **additive**. A change that breaks an
-existing topology gets its own **Breaking** section in [CHANGELOG.md](CHANGELOG.md),
-naming what breaks and what to do about it — if it is not in that section, it was not
-meant to break you: file an issue. Two carve-outs: the `${KNOB}` environment variables
-the shipped templates read were a declared **experimental** surface, and their migration
-onto `params` is finished in this release
-([#138](https://github.com/mmeyerlein/meclaw/issues/138)) — a behaviour knob is a
-`params` entry now, declared in `contract.settings` and overridable per instance with
-`override_params`, and what stays in `.env` is the provider lane: secrets, model ids and
-endpoints. Two remainders are named rather than hidden: `steward` is deprecated and ships
-one more release unmigrated, and `templates/_cell-types/edit-min` keeps `EDIT_BASE_PATH`,
-which is out of scope by the `_`-prefix rule the tree gate runs under. Both are written
-down in that gate, `scripts/check_tree_rules.py` R6. The second carve-out: **the Rust
-crates are internals** — nothing under `crates/` carries a SemVer guarantee, and there is
-no `meclaw` library API.
+Five surfaces are the public contract of this project: the HTTP API, the template DSL, the template
+ports, the `web` cell's own origin, and the documented `error_code` strings. The API means the
+`/colony/*` routes and `POST /messages`. The DSL means the `template.json` and `config.json`
+schemas, including the mutation diff format. The ports are the ingress and exit endpoints a
+template's README declares. The `web` origin is the `page.set` route grammar and its two reserved
+names; the `error_code` strings are the documented dead-letter, cell-type and `/colony` read codes.
+While meclaw is on `0.x`, changes to those five are additive. A change that breaks an existing
+topology gets its own Breaking section in [CHANGELOG.md](CHANGELOG.md). Nothing under `crates/`
+carries a SemVer guarantee.
 
 ## Docs
 
-[`docs/README.md`](docs/README.md) is the index. First stops:
-[glossary](docs/glossary.md) (the words you need first) ·
-[system overview](docs/meclaw-overview.md) ·
-[cell types](docs/cell-types.md) · [config format](docs/config.md) ·
-[template catalogue](templates/README.md) · [examples](examples/).
+| If you want to | Read |
+|---|---|
+| read the whole system once | [system overview](docs/meclaw-overview.md) |
+| know what a cell type does | [cell types](docs/cell-types.md) |
+| write a `config.json` | [config format](docs/config.md) |
+| change a colony while it runs | [rewiring](docs/rewiring.md) |
+| pick a template | [template catalogue](templates/README.md) |
+| read a measured transcript | [hard-shell walkthrough](examples/hard-shell/WALKTHROUGH.md) |
+| know why it is built this way | [docs/why/](docs/why/) |
 
 ## License
 
-MIT ([LICENSE-MIT](LICENSE-MIT)) or Apache 2.0 ([LICENSE-APACHE](LICENSE-APACHE)) —
-whichever you like.
-
----
-
-<div align="center">
-
-**No loops were used in the making of this framework.**
-
-If that line made you twitch, you're exactly who this is for. Drop a ⭐.
-
-</div>
+MIT ([LICENSE-MIT](LICENSE-MIT)) or Apache 2.0 ([LICENSE-APACHE](LICENSE-APACHE)), whichever you
+like.
