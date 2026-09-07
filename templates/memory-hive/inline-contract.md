@@ -1,6 +1,25 @@
-# The inline extraction contract
+# The memory section of the sidecar block
 
-This block used to ask for a **tool call**: *"AFTER your answer, call `remember` with both
+**This file used to describe a BLOCK, and it describes a SECTION now** (owner ruling
+2026-09-06, GitHub #606). Until it, the text below opened by telling a model to append a
+fenced block that opens with ```` ```memory ````: one fence, one section, one consumer.
+**Those sentences are retracted, not quietly reworded.** The fence is a frame, and a frame
+that belongs to one consumer cannot be shared -- a screen that wants a view out of the same
+answer would have had to ask for a second block, and two blocks are two chances for a model
+to put one of them in the wrong place. There is ONE fenced block now, ```` ```sidecar ````,
+holding ONE JSON object with one top-level key per section, and `memory` is one of the keys.
+Who states the frame is the collector that assembles the prompt; who states what goes under
+the key is the hive that reads it, which is this one.
+
+**And this file is no longer copied into a collector.** From GitHub #525 to #606 the text
+below lived a second time as a literal in `templates/collector/assemble`, held to this file
+by a drift lock -- which is the shape GitHub #552 had already retired one contract over:
+whoever is REACHED declares themselves. `templates/memory-hive/schemas` OFFERS the section
+now, on the same answer that hands out `memory_recall`'s schema (`sidecar[]` beside
+`schemas[]`), and the collector composes what it was offered. This file stays the authority
+and the drift lock moved with the text.
+
+This section used to ask for a **tool call**: *"AFTER your answer, call `remember` with both
 parts"*. **That instruction is retracted, not quietly reworded** (owner ruling 2026-08-24,
 GitHub #373; built in GitHub #379). It was measured across seven model families and it did not
 hold: in the best case 44 % of turns carried the call, in most cases far less, and a completion
@@ -51,22 +70,39 @@ Three damages out of one missing rule:
 
 ## The contract
 
-This block goes into the **instructions** of any model that emits inline extraction. There is
-no tool alternative any more: the annotation is something the model writes, so the place it is
-asked for is the place everything else it writes is asked for.
+These rules go into the **instructions** of any model that emits inline extraction, under the
+key `memory` of the sidecar block. There is no tool alternative any more: the annotation is
+something the model writes, so the place it is asked for is the place everything else it writes
+is asked for.
 
 **Who puts it there is settled, and it is not a person** (GH #525). This paragraph used to read
 *"paste this block into the instructions"*, and for as long as it did, nothing shipped executed
-it: the block lived here, in the harness fixtures and in the drift lock, and in no delivery at
-all. A colony ran the splitter, the `extraction` lane, this ingress and both required drains for
+it: the text lived here, in the harness fixtures and in the drift lock, and in no delivery at
+all. A colony ran the splitter, the extraction lane, this ingress and both required drains for
 weeks with `episodes` growing and `facts` standing still, and every part of it reported healthy.
 The contract describes a fence a CELL cuts with, so it is a promise of the template and not of a
-charter: `collector/assemble` carries this text and writes it to the brain's
-`system.instructions.sidecar` on every assembly, switched on by the composite that has a
-splitter behind it. Written per slot path and with no `$replace` marker, so it stands beside a
-person's charter in `instructions.reply` and neither can revoke the other; and named to sort
-AFTER it, because an `llm` cell walks a family's leaves alphabetically and the block belongs
-after the answer it follows.
+charter.
+
+**Which template, though, is what GitHub #606 corrected.** From #525 to #606 the answer was
+`collector/assemble`: it held this text as a literal and wrote it on every turn assembly. That
+put the rules of a memory in a cell that enforces none of them, one composite away -- exactly
+the arrangement GitHub #552 had already retired for `memory_recall`'s schema, and it had the
+same second cost: a contract one cell types can describe one consumer, and the moment a screen
+wanted a section of the same answer there was nowhere to put it. **The delivery now runs the
+other way round.** `templates/memory-hive/schemas` OFFERS the section -- `sidecar[]` beside
+`schemas[]`, on the same lane that hands out the tool schema -- an asking collector merges the
+offers of every answerer the way it merges the tool menu (GH #529), and composes ONE block
+contract out of them: a fixed preamble of its own, then `## memory (required)`, these rules, and
+a compact example rendered from the offered schema. It lands on the brain's
+`system.instructions.sidecar` beside `system.tools`, written per slot path and with no
+`$replace` marker, so it stands beside a person's charter in `instructions.reply` and neither
+can revoke the other; and named to sort AFTER it, because an `llm` cell walks a family's leaves
+alphabetically and the block belongs after the answer it follows.
+
+**The frame is not stated here any more, and that is the point.** How many blocks, what the
+fence is called, what happens on a turn where an optional section does not apply -- all of that
+is one preamble, written once by the collector, for every section at once. This file states what
+belongs under one key. A second consumer of the same answer costs an offer, not a second fence.
 
 It states an **obligation**, and that is the whole change of GitHub #299: every turn is
 annotated, and the annotation has two parts -- the *delta of world state* the turn carried and
@@ -74,29 +110,24 @@ the *movement of the conversation*. A turn that carried nothing is annotated as 
 nothing; an absent block is a fault, not a modest answer, because a turn nobody annotated is now
 a turn nobody extracts.
 
-The block is deliberately short. It is carried on **every** turn and length here is paid for per
-call -- so what is in it is what the ingress can actually read, and nothing else. GitHub #299 cut
-it by more than half (3,302 characters to 1,573); the flip to the sidecar bought some of that
-back (1,878), because a delivery the model has to build costs more words than a tool it only has
-to call. The lock below keeps it under 1,900 so the sprawl cannot grow back unnoticed.
+These rules are deliberately short. They are carried on **every** turn and length here is paid
+for per call -- so what is in them is what the ingress can actually read, and nothing else.
+GitHub #299 cut them by more than half (3,302 characters to 1,573); the flip to the sidecar
+bought some of that back (1,878), because a delivery the model has to build costs more words
+than a tool it only has to call; and GitHub #606 gave that back again (1,426), because the
+sentences describing the fence went to the collector's preamble, where they are written once for
+every section instead of once per section. The lock below keeps them under 1,900 so the sprawl
+cannot grow back unnoticed -- a bound rather than a measurement, because the wording keeps
+moving while the harness tunes it.
 
-````text
-ANNOTATE EVERY TURN. You have no tool for this: the annotation is part of what you write. After your answer -- always after, never instead of it -- append a fenced block that opens with ```memory, holds ONE JSON object and nothing else, and closes with ```. Write it on every turn, including the turns that changed nothing. It has both parts -- `facts`, this turn's delta of world state, and `topic`, where the conversation stands.
-
-```memory
-{"facts":[{"subject":"","predicate":"","claim":"",
-"fact_kind":"world|experience|foresight","valid_from":"<RFC3339|null>"}],
-"topic":{"movement":"start|continue|end","name":""}}
-```
+```text
+ANNOTATE EVERY TURN, including the turns that changed nothing. This section has both parts -- `facts`, this turn's delta of world state, and `topic`, where the conversation stands.
 
 experience = what happened between us, foresight = expected or planned.
 start opens a thread, end closes it by name, continue is ordinary.
 
-A turn that carried nothing is still ANNOTATED; leaving the block out is a fault:
-
-```memory
-{"nothing_new": true, "facts": [], "topic": {"movement": "continue"}}
-```
+A turn that carried nothing is still ANNOTATED; leaving the section out is a fault:
+{"memory":{"nothing_new":true,"facts":[],"topic":{"movement":"continue"}}}
 
 DELTA, NOT STATE: what the memory handed you is already remembered; say what this turn
 CHANGED. Your own answer is not a fact, and a question asserts nothing about what it asks.
@@ -113,7 +144,7 @@ A PREDICATE NAMES THE SUBJECT MATTER, NEVER THE SPEECH ACT: an intention is
 
 ENTITIES ARE VERBATIM: names and values are copied byte for byte, never translated or
 corrected.
-````
+```
 
 **What is not in the block, and why that is a shape decision rather than a fence.**
 `valid_until` is not an emitted field: a validity taken from the range a question asks about
@@ -179,21 +210,31 @@ decides what a statement *means* -- that is the close pass's work and the night'
 
 ## Consumers
 
-- Front-line personas that wire the `inline-extraction` port (see [README](README.md) § Ports).
-  This file is the authority; a persona carries a copy of the block. The `talky` composite
-  documents the seam and both edges in
-  [`../talky/README.md`](../talky/README.md), section "The extraction sidecar".
-- `templates/collector/assemble` -- **the only shipper.** It holds this text byte for byte and
-  writes it to `system.instructions.sidecar` on every turn assembly, under the knob
-  `inline_extraction`. A brain that GREW is the case that decides the shape: a seed is written
-  once, at birth, so a slot re-derived every round is the only home that reaches an agent whose
-  birth is behind it (the lesson of GH #512, one slot family over).
+- Front-line personas that wire the `sidecar` port (see [README](README.md) § Ports).
+  This file is the authority. The `talky` composite documents the seam and both edges in
+  [`../talky/README.md`](../talky/README.md), section "The sidecar (inline extraction)".
+- `templates/memory-hive/schemas` -- **the only shipper** (GH #606). It holds this text byte for
+  byte and OFFERS it, as the section `memory` of the sidecar block, on every answer it gives to
+  a menu question: `{"section": "memory", "required": true, "schema": ..., "instruction": ...}`
+  beside the `memory_recall` schema. The offer travels on every answer, including the one that
+  found no name it serves -- the section is not a response to a name, it is what this hive asks
+  of whoever talks to it. **`templates/collector/assemble` held this literal until #606** and
+  holds none of it now; that sentence is retracted, not quietly reworded.
+- `templates/collector/assemble` -- **the composer, and the owner of the frame.** It merges the
+  offers of every answerer by section name (the tool-menu merge of GH #529, one column over),
+  writes its own preamble in front of them, renders a compact example out of each offered
+  schema, and lands the result on the brain's `system.instructions.sidecar` under the knob
+  `sidecar` (`inline_extraction` until #606). A brain that GREW is the case that decides the
+  shape: a seed is written once, at birth, so a slot re-derived from the offers on every
+  mutation receipt is the only home that reaches an agent whose birth is behind it (the lesson
+  of GH #512, one slot family over). Nobody offering anything writes an EMPTY slot rather than
+  nothing, because durable state is revoked and never merely abandoned.
 - `templates/talky/splitter` -- the cell between the brain and the dispatcher that takes the
-  block back OUT of the answer, on lane `extraction`. Its fence grammar is the same one the
-  harness measured this wording with; without the block in the instructions it is a pure
-  pass-through, which is what lets a colony run this composite without any memory at all --
-  and it is why `talky` is the composite that switches the knob above ON while `cogny`, which
-  has no splitter, leaves it off.
+  block back OUT of the answer and hands each section on as its own message. Its fence grammar
+  is the one the harness measured this wording with; without the contract in the instructions it
+  is a pure pass-through, which is what lets a colony run this composite without any memory at
+  all -- and it is why `talky` is the composite that switches the knob above ON while `cogny`,
+  which has no splitter, leaves it off.
 - `extract-glue` -- **the only ingress.** It validates the block, canonicalises the predicates,
   dedups against what the turn already carries, writes the facts, writes the `topic` row next to
   them, and marks the queue row of the turn it covered with the status its answer earned
@@ -223,8 +264,9 @@ decides what a statement *means* -- that is the close pass's work and the night'
   sentence: the marker this block tells a model to open with is the marker the splitter looks
   for.
 - `crates/meclaw-cells/tests/gh525_a_grown_brain_carries_the_extraction_contract.rs` -- the
-  delivery half: the collector's copy of this text is byte-identical to the fence above, a grown
-  brain carries it after an identity pack and a menu tick, and the shipped composites ask for it
-  exactly where the block is cut back out.
+  delivery half: the OFFER of `memory-hive/schemas` is byte-identical to the fence above, the
+  collector's menu merge composes it into `instructions.sidecar` under its own preamble, a grown
+  brain carries it beside an identity pack's charter, no offer leaves an empty slot rather than
+  a stale one, and the shipped composites ask for it exactly where the block is cut back out.
 - `crates/meclaw-cells/tests/w10b_remember_colony.rs` -- both of them in a running colony,
   including the half that matters most: a broken block costs the answer nothing.

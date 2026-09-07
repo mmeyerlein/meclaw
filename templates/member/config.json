@@ -43,26 +43,44 @@
         {
           "route": "tool",
           "at": [
-            "./assistants"
+            "./assistants",
+            "./channels"
           ],
-          "because": "the `memory_recall` tool call a generation of this member made -- declared here, like `recall` above and for the same reason (GH #552, ADR-0020). It is not a lane of this rim and never was: it starts inside `./assistants` and ends inside `./memory-hive`, both siblings in here, and `at` says so. Under ADR-0020 a level that declares a lane takes part in it and may not be skipped, and taking part is exactly what this level does: the door `./assistants -> ./memory-hive` turns `tool` into the hive's own `tool_call` and stamps the two keys the hive refuses a question without -- `audience_now` (the round, from `context.audience_set`) and `channel` (the room). Nothing below this level knows the round and nothing above it knows the person, so a v-lane drawn from a generation straight to any memory would produce `missing_audience` at runtime; it is refused at mutation time instead, with `v_lane_mandatory_hop`"
+          "because": "the `memory_recall` tool call a generation of this member made -- declared here, like `recall` above and for the same reason (GH #552, ADR-0020). It is not a lane of this rim and never was: it starts inside `./assistants` and ends inside `./memory-hive`, both siblings in here, and `at` says so. Under ADR-0020 a level that declares a lane takes part in it and may not be skipped, and taking part is exactly what this level does: the door `./assistants -> ./memory-hive` turns `tool` into the hive's own `tool_call` and stamps the two keys the hive refuses a question without -- `audience_now` (the round, from `context.audience_set`) and `channel` (the room). Nothing below this level knows the round and nothing above it knows the person, so a v-lane drawn from a generation straight to any memory would produce `missing_audience` at runtime; it is refused at mutation time instead, with `v_lane_mandatory_hop` Since 1.6.3 the same lane may also dock at `./channels`: a channel that offers a tool of its own -- a telephone that can be asked to ring somebody -- is the same mechanism at a second rim, and the level says so rather than letting one rim be a special case."
         },
         {
           "route": "schemas",
           "at": [
-            "./assistants"
+            "./assistants",
+            "./channels"
           ],
-          "because": "a generation's menu tick asking this member's memory what its tool looks like (GH #552). Same shape as `tool` and declared for the same reason: the question starts inside `./assistants`, the answer is written inside `./memory-hive`, and the door between them is this level's. A menu that never asked is a menu without `memory_recall` in it, and a round that then looks like a model which chose not to ask its memory"
+          "because": "a generation's menu tick asking this member's memory what its tool looks like (GH #552). Same shape as `tool` and declared for the same reason: the question starts inside `./assistants`, the answer is written inside `./memory-hive`, and the door between them is this level's. A menu that never asked is a menu without `memory_recall` in it, and a round that then looks like a model which chose not to ask its memory Since 1.6.3 the same lane may also dock at `./channels`: a channel that offers a tool of its own -- a telephone that can be asked to ring somebody -- is the same mechanism at a second rim, and the level says so rather than letting one rim be a special case."
         },
         {
           "route": "mutation_committed",
-          "because": "the mutation receipt, GH #553: the graph moved, and the door said so. This level declares it and routes it into `./assistants` AND `./apps` -- two children, because an agent's tool menu and a person's screen are the same fact read twice -- which is what makes it a mandatory hop under ADR-0020: nothing may carry this lane past a level that takes part in it. Derived from assistant@2.5.0 and colony-view@1.1.0"
+          "because": "the mutation receipt, GH #553: the graph moved, and the door said so. This level declares it and routes it into `./assistants` AND `./apps` -- two children, because an agent's tool menu and a person's screen are the same fact read twice -- which is what makes it a mandatory hop under ADR-0020: nothing may carry this lane past a level that takes part in it. Derived from assistant@2.6.0 and colony-view@1.1.0"
+        },
+        {
+          "route": "tool_result",
+          "at": [
+            "./apps",
+            "./channels"
+          ],
+          "because": "an app answered a tool call the surface made (the call reached it as a v-lane onto the app's own connect point, ADR-0020). Declared here like `tool` is for the memory (GH #552): it starts inside `./apps` and ends inside `./assistants`, both siblings in here, and `at` says so -- the door `./apps -> ./assistants` restamps it to `in_tool`, and a v-lane from outside carrying it past this level is refused as a mandatory hop Since 1.6.3 the same lane may also dock at `./channels`: a channel that offers a tool of its own -- a telephone that can be asked to ring somebody -- is the same mechanism at a second rim, and the level says so rather than letting one rim be a special case."
+        },
+        {
+          "route": "tool_schemas",
+          "at": [
+            "./apps",
+            "./channels"
+          ],
+          "because": "an app's OFFER on its way into the menu: the declarations of the tools it serves, whatever was asked (GH #529 merges every answerer's row). Same shape as `tool_result` above; `context.tool_answerer` is stamped by the installing mutation's binding edge, because only that mutation knows the instance name Since 1.6.3 the same lane may also dock at `./channels`: a channel that offers a tool of its own -- a telephone that can be asked to ring somebody -- is the same mechanism at a second rim, and the level says so rather than letting one rim be a special case."
         }
       ],
       "emits": [
         {
           "route": "answer",
-          "because": "what this member answered, from either of its two producers. From `./affinity` it is the brief the record produced, told apart from a push by `hop.subscriber == ''`; from `./assistants` it is a turn ANSWERED, and that half is new in 1.3.0 (GH #454). An answer whose turn arrived through one of this person's channels never gets here -- it is carried into `./channels` by the guarded edge and out through the channel that asked. What gets here is the other case: a turn injected at this member's own `in_turn` door, by an operator or a digest or a second person's agent, which names no channel of this member and whose answer therefore belongs to whoever sent it. That is a GUARDED DEFAULT (GH #283), not a second unconditional exit: exactly one of the two edges fires, and the one that fires is decided by whether `context.channel` names something. The lane was always declared at this level and at both levels above it -- org@1.4.0 and meclaw-os@1.6.1 both declare it -- and until 1.3.0 only the brief half could ever travel it, because the channel that consumed the answer stood inside the generation"
+          "because": "what this member answered, from either of its two producers. From `./affinity` it is the brief the record produced, told apart from a push by `hop.subscriber == ''`; from `./assistants` it is a turn ANSWERED, and that half is new in 1.3.0 (GH #454). An answer whose turn arrived through one of this person's channels never gets here -- it is carried into `./channels` by the guarded edge and out through the channel that asked. What gets here is the other case: a turn injected at this member's own `in_turn` door, by an operator or a digest or a second person's agent, which names no channel of this member and whose answer therefore belongs to whoever sent it. That is a GUARDED DEFAULT (GH #283), not a second unconditional exit: exactly one of the two edges fires, and the one that fires is decided by whether `context.channel` names something. The lane was always declared at this level and at both levels above it -- org@1.4.0 and meclaw-os@1.6.1 both declare it -- and until 1.3.0 only the brief half could ever travel it, because the channel that consumed the answer stood inside the generation. Since 1.6.2 an app that listens gets a second regular edge `./assistants -> ./apps`, guarded exactly like the channel edge and drawn by the app's installing mutation; the guarded default to the parent is untouched, because a regular fan-out on the channel-less case would silence it"
         },
         {
           "route": "bundle",
@@ -89,7 +107,7 @@
         },
         {
           "route": "write",
-          "because": "an assistant's batched conversation write, on its way past this member to whatever archive the parent wired. It is NOT this level's memory lane: the member's memory is written per turn on `extraction` and read on `in_recall`, both of which stop here. Derived from the emits list of assistant@2.0.0 -- nothing inside this member consumes it, so a level that did not declare it would let a real, recurring message die as no_route at its own boundary"
+          "because": "an assistant's batched conversation write, on its way past this member to whatever archive the parent wired. It is NOT this level's memory lane: the member's memory is written per turn on `sidecar` (`extraction` until 1.7.0) and read on `in_recall`, both of which stop here. Derived from the emits list of assistant@2.0.0 -- nothing inside this member consumes it, so a level that did not declare it would let a real, recurring message die as no_route at its own boundary"
         },
         {
           "route": "turn_write",
@@ -132,6 +150,27 @@
             "./assistants"
           ],
           "because": "the way back of `schemas` (GH #552). The hive's `tool_schemas` becomes `in_menu` on the edge `./memory-hive -> ./assistants` and carries `context.tool_answerer == 'memory'`, which is the key the menu merge of GH #529 files an answerer's declarations under -- without it a third answerer would overwrite the menu instead of joining it"
+        },
+        {
+          "route": "turn",
+          "at": [
+            "./apps"
+          ],
+          "because": "the screened turn of a channel conversation, observable by an app of this person (ruling 2026-09-04: an app OBSERVES a member lane, never owns it). NOT a lane of this rim: `./firewall` raises it and it docks on `./apps`, and the edge that carries it -- `./firewall -> ./apps` on `pass`, restamped, guarded like the answer's channel edge -- is drawn by the mutation that installs an app that listens (ruling 2026-09-05: whoever listens orders it, as `voice` does with `emit_partials`). A member with no listening app carries no such edge and dead-letters nothing"
+        },
+        {
+          "route": "partial",
+          "at": [
+            "./apps"
+          ],
+          "because": "an interim transcript from a voice channel, for an app that ordered it. Same rule, same owner of the edge (`./channels -> ./apps`); nothing else emits it and no holder in here reads it"
+        },
+        {
+          "route": "sidecar",
+          "at": [
+            "./apps"
+          ],
+          "because": "one section of the block the front model appends to its answer, on its way to the app that asked for it (GH #607). The block is ONE fence with one key per section; the splitter inside the generation cuts it up and emits one message per section, carrying `hop.section`. `memory` is taken by this level's own memory hive on the edge beside this one -- it is the write half of the member's memory (GH #122, ADR 0012) and it is not this lane. EVERY OTHER SECTION belongs to an app of this person, and `at: [\"./apps\"]` says the same thing `turn` and `partial` say: the lane docks on that container, both its ends are inside this level, and nothing may carry it PAST the member as a v-lane (ADR-0020). What is DIFFERENT from the observer lanes is who draws the edge into the container: this level does, not the installing mutation. The rim cannot know the sections -- a section is named by whoever offered it, an app is installed later, and an edge per section would have to be redrawn at the rim on every install. So the level carries everything that is not `memory` into `./apps` on ONE edge and the installing mutation draws `./apps -> ./apps/<app>` on `hop.section == '<app section>'`, which is the level where the name is known. That costs a member without apps nothing measurable, for the same reason the two restamp edges cost it nothing: a section is only ever written because it was OFFERED, and with no app offering one the model is never asked for anything but `memory`"
         }
       ]
     },
@@ -253,7 +292,7 @@
         {
           "from": "./assistants",
           "to": "./memory-hive",
-          "condition": "has(hop.route) && hop.route == 'extraction'",
+          "condition": "has(hop.route) && hop.route == 'sidecar' && has(hop.section) && hop.section == 'memory'",
           "modifier": {
             "set_hop": {
               "route": "'in_remember'"
@@ -264,6 +303,11 @@
               "channel": "has(context.channel) ? context.channel : ''"
             }
           }
+        },
+        {
+          "from": "./assistants",
+          "to": "./apps",
+          "condition": "has(hop.route) && hop.route == 'sidecar' && has(hop.section) && hop.section != 'memory'"
         },
         {
           "from": "./assistants",
@@ -634,20 +678,6 @@
         },
         {
           "from": "./channels",
-          "to": "./assistants",
-          "condition": "has(hop.route) && hop.route == 'receipt' && has(hop.owner) && hop.owner.contains('/assistants/')",
-          "modifier": {
-            "set_hop": {
-              "route": "'in_turn'",
-              "kind": "'receipt'"
-            },
-            "set_context": {
-              "channel": "has(context.channel) ? context.channel : ''"
-            }
-          }
-        },
-        {
-          "from": "./channels",
           "to": "./apps",
           "condition": "has(hop.route) && hop.route == 'event' && has(hop.owner) && hop.owner.contains('/apps/')",
           "modifier": {
@@ -669,7 +699,7 @@
         {
           "from": "./channels",
           "to": ".",
-          "condition": "has(hop.route) && (hop.route == 'event' || hop.route == 'receipt') && (!has(hop.owner) || hop.owner == '' || (!hop.owner.contains('/assistants/') && !hop.owner.contains('/apps/')))",
+          "condition": "has(hop.route) && ((hop.route == 'event' && (!has(hop.owner) || hop.owner == '' || (!hop.owner.contains('/assistants/') && !hop.owner.contains('/apps/')))) || (hop.route == 'receipt' && (!has(hop.owner) || hop.owner == '' || !hop.owner.contains('/apps/'))))",
           "modifier": {
             "set_hop": {
               "route": "'error'",
@@ -750,6 +780,26 @@
           }
         },
         {
+          "from": "./apps",
+          "to": "./assistants",
+          "condition": "has(hop.route) && hop.route == 'tool_result'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_tool'"
+            }
+          }
+        },
+        {
+          "from": "./apps",
+          "to": "./assistants",
+          "condition": "has(hop.route) && hop.route == 'tool_schemas'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_menu'"
+            }
+          }
+        },
+        {
           "from": ".",
           "to": "./assistants",
           "condition": "has(hop.route) && hop.route == 'mutation_committed'"
@@ -758,6 +808,26 @@
           "from": ".",
           "to": "./apps",
           "condition": "has(hop.route) && hop.route == 'mutation_committed'"
+        },
+        {
+          "from": "./channels",
+          "to": "./assistants",
+          "condition": "has(hop.route) && hop.route == 'tool_result'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_tool'"
+            }
+          }
+        },
+        {
+          "from": "./channels",
+          "to": "./assistants",
+          "condition": "has(hop.route) && hop.route == 'tool_schemas'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_menu'"
+            }
+          }
         }
       ]
     },

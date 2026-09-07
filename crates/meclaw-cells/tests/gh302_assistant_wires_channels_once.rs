@@ -641,7 +641,10 @@ fn the_level_declares_the_lanes_its_occupants_ship() {
     }
     // Every outbound lane is one an occupant really produces. There is no
     // exception any more: `turn` used to be one, normalised by this level out of
-    // the connector's single wire, and the connector left with GH #454.
+    // the connector's single wire, and the connector left with GH #454. The
+    // transitional exemption GH #607 carried while the surface and the levels
+    // were built in parallel is gone with the integration: `talky@5.1.0` emits
+    // `sidecar` itself, so the derivation stands on its own again.
     for e in &emits {
         assert!(
             talky_emits.contains(e) || cogny_emits.contains(e) || tools_emits.contains(e),
@@ -662,16 +665,24 @@ fn the_level_declares_the_lanes_its_occupants_ship() {
     // memory belongs to the MEMBER and not to one of its generations. So the lane
     // crosses, and a level whose derivation still subtracted it would promise
     // nothing where a caller has to draw an edge.
+    //
+    // Since 2.5.1 `tool` ALSO names connect points (`at: ["./talky", "./cogny"]`,
+    // apps rim), so it is no longer in the rim-only list — the declaration says
+    // a deep edge may START at a brain rim, which is what lets an app of the
+    // member be offered a tool. It still leaves the level on the same named
+    // edge, so the question here is "does the level declare it at all", and
+    // `declared_lanes` is the list that answers it.
     let crossing = "tool".to_string();
+    let (_, declared_emits) = declared_lanes(&hive_params(&root));
     assert!(
         talky_emits.contains(&crossing),
         "the derivation of `{crossing}` is stale: talky no longer emits it"
     );
     assert!(
-        emits.contains(&crossing),
+        declared_emits.contains(&crossing),
         "`{crossing}` crosses this level since GH #552 — `memory_recall` leaves it for the \
          member's own memory, and a lane a caller has to drain is a lane the level declares: \
-         {emits:?}"
+         {declared_emits:?}"
     );
 
     // And the lane that STOPPED being a subtraction, which is the whole of
@@ -809,7 +820,7 @@ fn the_boundary_matches_the_member_this_level_is_instantiated_into() {
     let want: BTreeSet<String> = [
         "answer",
         "recall",
-        "extraction",
+        "sidecar",
         "write",
         "turn_write",
         "tool",
@@ -821,15 +832,19 @@ fn the_boundary_matches_the_member_this_level_is_instantiated_into() {
     assert_eq!(
         consumed_by_the_member, want,
         "the member consumes exactly the seven lanes of this level it has a holder for: the \
-         `answer` goes to a channel of the PERSON (GH #454), `recall` and `extraction` to \
+         `answer` goes to a channel of the PERSON (GH #454), `recall` and `sidecar` to \
          the memory that belongs to the person (GH #122), `write` is fanned onto the \
          memory's close pass as well as leaving the level (GH #447), `turn_write` is fanned \
          onto that same memory's episode lane (GH #527) -- the only path a conversation has \
          into an `episodes` table -- and since GH #552 \
          `tool` and `schemas` reach that same memory: a `memory_recall` call and the menu \
          tick that asks what it looks like, both answered by the hive that enforces the \
-         rules a recall obeys. Every other lane an assistant raises crosses the member and \
-         is the parent's to drain."
+         rules a recall obeys. `sidecar` REPLACED `extraction` with GH #607 and it is the one this \
+         level SORTS rather than forwards: the memory section takes the same door \
+         `extraction` used to take, every other section goes into the person's apps container, and \
+         this level neither reads a section nor could -- a section is an OFFER, and an \
+         offer may be made by an app standing outside the generation. Every other lane an \
+         assistant raises crosses the member and is the parent's to drain."
     );
     for lane in &consumed_by_the_member {
         assert!(
@@ -1214,7 +1229,7 @@ fn main_config() -> Value {
         "answer",
         "write",
         "turn_write",
-        "extraction",
+        "sidecar",
         "recall",
         "prune",
         "error",

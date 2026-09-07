@@ -840,9 +840,14 @@ async fn a_fresh_colony_answers_out_of_a_memory_it_never_saw_written() {
 /// lane a template declares and nothing drives is the dead-lane class of
 /// `docs/development-rules.md` § 2c.
 ///
+/// Since `memory-hive@3.3.0` the lane takes a DIRECTORY rather than one part of
+/// a document (GH #261): `hop.import_from` names the run, nothing travels in
+/// the body, and the same directory the birth was built from is the one the
+/// delta arrives in — grown by the one line the source learned afterwards.
+///
 /// Two claims, and the second is what makes the first usable: the delta lands,
-/// and the same part applied twice leaves the same state. Idempotency is not a
-/// nicety here — it is the whole repair procedure for a partial transfer.
+/// and the same directory applied twice leaves the same state. Idempotency is
+/// not a nicety here — it is the whole repair procedure for a partial transfer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_second_step_takes_a_later_document_into_the_running_member() {
     if !shipped() {
@@ -853,7 +858,12 @@ async fn the_second_step_takes_a_later_document_into_the_running_member() {
 
     let target_td = tempfile::TempDir::new().unwrap();
     let target = boot_target(&target_td).await;
-    let manifest = build_manifest(&export_dir, &target_td.path().join("templates"));
+    let mut manifest = build_manifest(&export_dir, &target_td.path().join("templates"));
+    // The one thing an instance still has to say about files: the fence its own
+    // store reads inside. It is the very directory the source wrote, because
+    // the delta below is that document with one more line in it.
+    manifest["manifest"][0]["diff"]["add_nodes"][0]["override_params"]["memory-hive/store"] =
+        json!({"transfer": {"base_path": export_dir.to_str().unwrap()}});
     // An import receipt rides the same `dump` lane the export parts ride, so
     // the level's sink is going to be spawned by this test. Its shipped
     // `restricted` profile is fail-closed against the host (see the module
@@ -868,22 +878,23 @@ async fn the_second_step_takes_a_later_document_into_the_running_member() {
     let db = target_td
         .path()
         .join(format!("main/members/{MEMBER}/memory-hive/store/cell.db"));
-    let schema =
-        shipped_config("templates/memory-hive/store/config.json")["params"]["schema"]["episodes"]
-            .clone();
-    let part = json!({
-        "format": "meclaw-memory-export/1", "hive_template": "memory-hive",
-        "export_id": "delta-467", "exported_at": "2026-03-02T00:00:00Z",
-        "table": "episodes", "part": 1, "of": 1, "final": false, "absent": false,
-        "key": ["id"], "schema": schema,
-        "rows": [{
-            "id": "e-3", "session_id": "s-2", "turn_id": "s-2#1",
-            "sender": "user", "speaker": "member:alex", "channel": "kitchen",
-            "audience_set": "[\"member:alex\",\"agent:scribe\"]",
-            "content": "the plumber is coming back in March for the annual service",
-            "happened_at": "2026-03-01T08:00:00Z", "recorded_at": "2026-03-01T08:00:01Z"
-        }]
-    });
+    // What the source learned after the walk: one more line in the very file
+    // the walk wrote. A seed file is one row per line under its schema header,
+    // so growing a document is appending to it -- which is the whole reason the
+    // birth path and the transfer path speak one format.
+    let delta = meclaw_core::serde_json::to_string(&json!({
+        "id": "e-3", "session_id": "s-2", "turn_id": "s-2#1",
+        "sender": "user", "speaker": "member:alex", "channel": "kitchen",
+        "audience_set": "[\"member:alex\",\"agent:scribe\"]",
+        "content": "the plumber is coming back in March for the annual service",
+        "happened_at": "2026-03-01T08:00:00Z", "recorded_at": "2026-03-01T08:00:01Z"
+    }))
+    .unwrap();
+    let episodes = export_dir.join("memory-hive/seed/episodes.jsonl");
+    let mut grown = std::fs::read_to_string(&episodes).expect("the walk wrote episodes.jsonl");
+    grown.push_str(&delta);
+    grown.push('\n');
+    std::fs::write(&episodes, grown).unwrap();
 
     for round in 1..=2 {
         let mut hop = Map::new();
@@ -892,10 +903,7 @@ async fn the_second_step_takes_a_later_document_into_the_running_member() {
             .send(
                 MessageBuilder::new(Path::new(&format!("/members/{MEMBER}")))
                     .hop(hop)
-                    .body(Body::Inline(json!({"messages": [{
-                        "origin": "assistant", "type": "text",
-                        "text": meclaw_core::serde_json::to_string(&part).unwrap()
-                    }]})))
+                    .body(Body::Inline(json!({"messages": []})))
                     .build(),
             )
             .await;

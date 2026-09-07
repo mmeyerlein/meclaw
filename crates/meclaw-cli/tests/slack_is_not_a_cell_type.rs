@@ -30,7 +30,7 @@ fn slack_did_not_add_a_cell_type() {
     let reg = built_in_factories();
     assert_eq!(
         reg.len(),
-        15,
+        16,
         "a cell type was added or removed — if that was deliberate, say why here; \
          a chat platform in particular is params.platform on proxy, never a type"
     );
@@ -46,4 +46,14 @@ fn slack_did_not_add_a_cell_type() {
         reg.contains_key("web"),
         "the web cell type owns a listener of its own (GH #380, ADR-0014)"
     );
+    assert!(
+        reg.contains_key("voice"),
+        "the voice cell type owns a listener of its own (wave voice-cell)"
+    );
+    for vendor in ["deepgram", "cartesia", "openai"] {
+        assert!(
+            !reg.contains_key(vendor),
+            "{vendor} must NOT be its own cell type — it is params.stt/params.tts on voice"
+        );
+    }
 }

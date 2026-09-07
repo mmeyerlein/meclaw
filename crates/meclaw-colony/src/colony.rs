@@ -4944,6 +4944,11 @@ pub(crate) async fn handle_mutation(
     // tasks 18–20 would be a far larger change than the saving is worth, and a
     // refused mutation is the cheap case. Correctness first.
     let mut hive_contracts: Vec<crate::mutation::hive_contract::HiveContract> = Vec::new();
+    // Apps rim (2026-09-05): declared out here rather than inside the block
+    // below, because a SECOND reader needs it — the required-lane check in the
+    // post-state stage, which cannot run until the diff's edges are in RAM. The
+    // list itself is built where it always was, and nothing else about it moves.
+    let mut newborn_contracts: Vec<crate::mutation::hive_contract::HiveContract> = Vec::new();
     let mut planned_moves: Vec<crate::mutation::relocate::PlannedMove> = Vec::new();
     let mut relocated_nodes: Vec<crate::mutation::relocate::RelocatedNode> = Vec::new();
     let rejection = 'validate: {
@@ -5490,7 +5495,11 @@ pub(crate) async fn handle_mutation(
         // `collect_lane_doors` ("a hive added by THIS diff has no contract to
         // break yet") false. So the birth contracts live in their own list and
         // are joined for exactly one call.
-        let mut newborn_contracts: Vec<crate::mutation::hive_contract::HiveContract> = Vec::new();
+        //
+        // Apps rim (2026-09-05): "exactly one call" is now two, and the second
+        // one is the post-state required-lane check. Same argument, same list:
+        // the boundary judges what the diff DRAWS, and a lane a newborn hive
+        // insists on is a statement about what this diff has to draw.
         // Review 2026-09-02 (fix round 1): the guard asks what STANDS, not what
         // DECLARED. `collect_hive_contracts` only emits a hive that declared a
         // contract, so `hive_contracts` cannot answer "is this path occupied" —
@@ -5644,7 +5653,9 @@ pub(crate) async fn handle_mutation(
             std::borrow::Cow::Borrowed(&hive_contracts)
         } else {
             let mut joined = hive_contracts.clone();
-            joined.append(&mut newborn_contracts);
+            // Extended rather than drained (apps rim): the post-state check
+            // below reads the same list, so it has to survive the join.
+            joined.extend_from_slice(&newborn_contracts);
             std::borrow::Cow::Owned(joined)
         };
         crate::mutation::port_boundary::collect_hive_port_boundary(
@@ -7106,6 +7117,19 @@ pub(crate) async fn handle_mutation(
     if !hive_contracts.is_empty() {
         crate::mutation::hive_contract::collect_lane_doors(
             &hive_contracts,
+            edges,
+            &mut post_state_rejection,
+        );
+    }
+    // Apps rim (2026-09-05), the third shape of `hive_contract`: a hive born by
+    // THIS diff may insist on a lane, and the diff that gives it birth owes it
+    // the edge. The list is the one the port boundary already reads (GH
+    // #562/#567) — that boundary judges what the diff DRAWS, and so does this.
+    // Post-state for the same reason as the two checks above, and appended to
+    // the same rejection so one refusal can carry both kinds of finding.
+    if !newborn_contracts.is_empty() {
+        crate::mutation::hive_contract::collect_required_lanes(
+            &newborn_contracts,
             edges,
             &mut post_state_rejection,
         );

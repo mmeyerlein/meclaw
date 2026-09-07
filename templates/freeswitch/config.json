@@ -1,0 +1,190 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "ports": [],
+    "contract": {
+      "accepts": [
+        {
+          "route": "in_speak",
+          "because": "the finished turn of an assistant, to be spoken into the call it belongs to. It enters at this hive's own rim and is handed to the media half; `context.session_id` picks the connection, exactly as it does for a voice channel standing on its own. It reaches the signalling half in the same breath, because a `hangup` that arrives while this sentence is still being spoken has to wait for it"
+        },
+        {
+          "route": "call_incoming",
+          "because": "somebody is ringing this member. It arrives from the dialplan through the front door (`POST /messages` addressed at this hive) and carries the caller's number and the call's UUID. It is the one lane that makes this a channel rather than a tool: a call that comes in becomes a turn of a conversation -- THE one turn of that call, since 1.0.1 (GH #614). A number in no `callers` entry raises no turn and the leg is put down instead of being left parked in silence"
+        },
+        {
+          "route": "call_ringing",
+          "because": "the switch is ringing a number this channel dialled. Nothing is said yet and nobody has answered, so it moves the row and raises no turn -- an agent that were told about every ring would be told the same thing twice a moment later"
+        },
+        {
+          "route": "call_answered",
+          "because": "somebody picked up. For a call this channel PLACED that is the moment the media half has a connection and the moment an agent has something to say, so it becomes a turn carrying the number and the purpose the call was placed for. For an INBOUND call it books the state and raises nothing (GH #614): the dialplan answers an inbound leg at once, so this lane follows `call_incoming` inside the same second, and the second turn had the assistant greet the same caller twice"
+        },
+        {
+          "route": "call_ended",
+          "because": "the line is down, from either end. It moves the row -- state and cause -- and raises NO turn, which is the one thing it changed in 1.0.1 (GH #614). It was written as a turn to stop an agent talking into a call that ended, and it is what made it do exactly that: a generation reads a turn by ANSWERING it, so the assistant said goodbye into a line that was already gone, hung up a call that was no longer running, and said goodbye again. ADR-0025's reasoning one lane over -- a fact that is not something a person said is not a turn of a person. The book is where the end of a call is recorded, and the book is this hive's `calls` table"
+        },
+        {
+          "route": "tool",
+          "at": [
+            "./dial"
+          ],
+          "because": "a model called `call` or `hangup`. The connect point is named because a tool call is answered by the cell that IS the tool -- a hop through the rim would only add a place for the call to get lost (ADR-0020)"
+        },
+        {
+          "route": "schemas",
+          "at": [
+            "./dial"
+          ],
+          "because": "an assistant asking what this channel offers before it offers it to a model. Same connect point as the call itself, because the offer and the answer to it are one cell's business and the two must never be able to disagree"
+        }
+      ],
+      "emits": [
+        {
+          "route": "turn",
+          "because": "one thing that was said, or one thing that happened to the line. Both are turns of the same conversation: what a person said into the microphone, and the sentence that says the call was answered or refused. `hop` carries `session_id`, `turn_id`, `platform`, `number` and `user_id`, and the ingress edge of the member promotes them. One CALL is one turn about the line, never two (GH #614), and the END of a call is not one of them at all"
+        },
+        {
+          "route": "partial",
+          "because": "an interim transcript, while somebody is still speaking. It comes out of the media half and is OFF by default -- whoever listens orders it (`emit_partials`)"
+        },
+        {
+          "route": "error",
+          "because": "the failure of a leg of this channel: a caller nobody allowlisted -- whose leg this hive puts down in the same breath (GH #614), so the dialplan has its extension back instead of an answered call nobody speaks into -- a request this hive cannot read, or the media half's own error. It leaves rather than being logged, because a channel that kept its faults to itself is a telephone that stopped ringing for a reason nobody can find"
+        },
+        {
+          "route": "tool_result",
+          "because": "the answer to a `call` or a `hangup`, under the call's own id. A `call` answers the moment the switch has been asked -- with the session the conversation will run under -- because the OUTCOME of a call is a turn on this channel and not a tool result: the model is told twice, once as the receipt of its own action and once as something that happened"
+        },
+        {
+          "route": "tool_schemas",
+          "because": "the whole offer of this channel, whatever list the question carried. It is a lane of its own and not a tool result: a result belongs to a call somebody made, this belongs to a start-up question"
+        }
+      ]
+    },
+    "graph": {
+      "edges": [
+        {
+          "from": ".",
+          "to": "./voice",
+          "condition": "has(hop.route) && hop.route == 'in_speak'"
+        },
+        {
+          "from": ".",
+          "to": "./signal",
+          "condition": "has(hop.route) && hop.route == 'in_speak'"
+        },
+        {
+          "from": "./voice",
+          "to": ".",
+          "condition": "has(hop.route) && (hop.route == 'turn' || hop.route == 'partial' || hop.route == 'error')",
+          "modifier": {
+            "delete_context": [
+              "phone_origin",
+              "phone_phase",
+              "phone_call",
+              "phone_cause",
+              "phone_number",
+              "phone_op",
+              "phone_tool_call_id"
+            ]
+          }
+        },
+        {
+          "from": "./voice",
+          "to": "./signal",
+          "condition": "has(hop.route) && hop.route == 'speak_end'"
+        },
+        {
+          "from": ".",
+          "to": "./signal",
+          "condition": "has(hop.route) && (hop.route == 'call_incoming' || hop.route == 'call_ringing' || hop.route == 'call_answered' || hop.route == 'call_ended')"
+        },
+        {
+          "from": "./dial",
+          "to": "./signal",
+          "condition": "has(hop.route) && hop.route == 'request'"
+        },
+        {
+          "from": "./dial",
+          "to": ".",
+          "condition": "has(hop.route) && (hop.route == 'tool_result' || hop.route == 'tool_schemas')",
+          "modifier": {
+            "delete_context": [
+              "phone_origin",
+              "phone_phase",
+              "phone_call",
+              "phone_cause",
+              "phone_number",
+              "phone_op",
+              "phone_tool_call_id"
+            ]
+          }
+        },
+        {
+          "from": "./signal",
+          "to": "./calls",
+          "condition": "has(hop.route) && hop.route == 'book'",
+          "modifier": {
+            "set_context": {
+              "phone_origin": "'book'",
+              "phone_phase": "has(hop.phase) ? hop.phase : ''",
+              "phone_call": "has(hop.call_uuid) ? hop.call_uuid : ''",
+              "phone_cause": "has(hop.cause) ? hop.cause : ''",
+              "phone_tool_call_id": "has(hop.tool_call_id) ? hop.tool_call_id : ''"
+            }
+          }
+        },
+        {
+          "from": "./calls",
+          "to": "./signal",
+          "condition": "has(context.phone_origin) && context.phone_origin == 'book'"
+        },
+        {
+          "from": "./signal",
+          "to": "./gateway",
+          "condition": "has(hop.route) && hop.route == 'switch'",
+          "modifier": {
+            "set_context": {
+              "phone_origin": "'switch'",
+              "phone_call": "has(hop.call_uuid) ? hop.call_uuid : ''",
+              "phone_number": "has(hop.number) ? hop.number : ''",
+              "phone_tool_call_id": "has(hop.tool_call_id) ? hop.tool_call_id : ''",
+              "phone_op": "has(hop.operation) ? hop.operation : ''"
+            }
+          }
+        },
+        {
+          "from": "./gateway",
+          "to": "./signal",
+          "condition": "has(context.phone_origin) && context.phone_origin == 'switch'"
+        },
+        {
+          "from": "./signal",
+          "to": ".",
+          "condition": "has(hop.route) && (hop.route == 'turn' || hop.route == 'error' || hop.route == 'tool_result')",
+          "modifier": {
+            "delete_context": [
+              "phone_origin",
+              "phone_phase",
+              "phone_call",
+              "phone_cause",
+              "phone_number",
+              "phone_op",
+              "phone_tool_call_id"
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "description": {
+    "purpose": "A telephone as one channel of a person, over FreeSWITCH: the MEDIA half is a `voice` cell that carries the audio, the SIGNALLING half is the small state machine that knows who is on the line, why, and what state the line is in. Both live in this hive, because a call is one thing -- the socket the audio runs over and the number the call is with are two halves of the same conversation, and the id that binds them is the call's own UUID. THE HIVE IS THE ADDRESS: `params.ports` is empty, so no edge reaches an occupant except on a lane that names its own connect point.",
+    "use_when": "Wherever a person should be reachable by telephone, or should be able to ring somebody up. FreeSWITCH stays the media edge in gateway mode: it does the SIP, it forks the audio into the media half over a WebSocket, and it tells this hive what happened over the front door. Nothing here speaks SIP, and nothing here holds a trunk.",
+    "not_in_scope": "It is not a switch: it dials, it hangs up, and everything else about the call -- codecs, trunks, dialplans, voicemail -- belongs to FreeSWITCH and stays there. It does not authenticate a caller either: it maps a number to a sender id and refuses a number it has no entry for, which is a table and not a judgement. And it holds no persona: what is said into a call is a turn of the member's conversation, answered by the member's assistant.",
+    "contract_in": "Seven lanes. Five arrive at the hive path: `in_speak` (the answer to be spoken) and the four dialplan events `call_incoming`, `call_ringing`, `call_answered` and `call_ended`, which reach the front door as `POST /messages` addressed at this hive. Two of the four raise a turn -- `call_incoming`, and `call_answered` for a call this channel PLACED. `call_ringing` and `call_ended` only move the row, and since 1.0.1 so does a `call_answered` that follows a `call_incoming` of the same uuid (GH #614). Two lanes name their own connect point: `tool` and `schemas`, both on `./dial`, because a tool call is answered by the cell that is the tool.",
+    "contract_out": "Five lanes, out of the hive path. `turn` -- what was said, or what happened to the line. `partial` -- an interim transcript, off unless ordered. `error` -- a caller nobody allowlisted, or a leg that failed. `tool_result` and `tool_schemas` -- the answer to `call`/`hangup` and the offer itself."
+  }
+}

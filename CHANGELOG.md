@@ -9,6 +9,1071 @@ documented `error_code` strings (README § Stability). Anything that breaks one 
 them is listed under **Breaking** in its release, with the migration named. The
 Rust crates are internals and move without notice.
 
+## [0.32.0] — 2026-09-07
+
+A minor release, and what it adds is a **typed offer**. Until now the fenced
+block a front model appended to its answer meant exactly one thing — remember
+this — and anything else it might want to say had to be a tool call, one more
+round through the brain, measured at 44 % adoption at best against 12/12 for a
+fence at the end of the answer. The fence now opens with ```` ```sidecar ````,
+holds ONE JSON object, and every top-level key is a **section**: the splitter
+inside the generation cuts it up and emits one message per section. `memory` is
+the first section and carries byte for byte what the old `extraction` lane
+carried; every other section is an OFFER, sorted by the member into the apps
+that asked for it, on an edge the installing mutation draws rather than the
+template. The screen that shows the result grew a second column and an order a
+rewrite cannot move, and the app rim — the fan-out edges a member draws to what
+listens — is what turns a spoken turn into something on a screen.
+
+Around that, speech grew a channel of its own. `freeswitch@1.0.0` puts a
+telephone in front of the `voice` cell: one call is one session, the signalling
+is a book with a row per call, and the audio still never becomes a message. The
+`voice` cell learned to say when a sentence is over (`speak_end`), to speak what
+a reader would read rather than what a writer wrote (`speak_plain`), to be told
+which names to expect, to leave in 20 ms frames, and to synthesise through
+ElevenLabs as a third provider. A hive may now insist on a lane at birth
+(`required`), and two repairs close the release: a registered template keeps its
+placeholders instead of materialising them on disk, and an inbound call raises
+one turn instead of two.
+
+This section is also where **0.31.0** reaches the public for the first time. It
+was cut on 2026-09-05, never exported and never tagged; its section stands
+unchanged below and there is no `v0.31.0` tag — `v0.32.0` is the one tag that
+carries both.
+
+### Added
+
+#### `member@1.7.0`, `assistant@2.6.0`: the block after the answer carries sections, and the member sorts them ([#607](https://github.com/mmeyerlein/meclaw/issues/607))
+
+Until now a front model appended exactly one fenced block to its answer and that
+block meant exactly one thing: remember this. A screen hint, an app that wants to
+be written to, anything else at all had to be a tool call — one extra round
+through the brain, measured at 44 % adoption at best, against 12/12 for a fence
+at the end of the answer.
+
+So the fence grew a dimension. It opens with ```` ```sidecar ````, holds ONE JSON
+object, and each top-level key is a **section**; the splitter inside the
+generation cuts it up and emits one message per section on route `sidecar` with
+`hop.section` naming the key. `memory` is the first section and it is byte for
+byte the annotation the `extraction` lane has always carried, one level deeper
+inside the fence.
+
+**`assistant@2.6.0`** emits the new lane and does nothing else with it: one edge
+`./talky -> .`, no section read anywhere. It cannot read one — a section is an
+OFFER, and an offer may be made by an app of the person standing outside the
+generation entirely.
+
+**`member@1.7.0`** is what sorts it, and the split falls where knowledge does.
+`hop.section == 'memory'` goes up into the memory hive on the same `in_remember`
+door with the same three promoted keys `extraction` uses; everything else goes
+into `./apps` on ONE section-blind edge, and the mutation that installs an app
+draws `./apps -> ./apps/<app>` on the section that app offered. The rim cannot
+know the sections — a section is named by whoever offered it and an app is
+installed long after the template was written. The lane is declared with
+`at: ["./apps"]`, so no rim lane moved: a parent wired at `1.6.3` is still wired
+correctly.
+
+That edge into `./apps` is the level's rather than the installing mutation's,
+which makes it the second exception to *whoever listens orders it* — and it rests
+on the same measurement as the two restamp edges beside it: a section is only
+ever written because it was OFFERED, so on a member with no app the model is
+never asked for anything but `memory` and nothing arrives.
+
+**`extraction` is gone from both levels**, because `talky@5.1.0` renamed the
+port and no generation can raise the lane any more — an edge for it would be an
+edge nothing travels. **What stayed two-phased is the SHAPE, not the lane:**
+`memory-hive`'s `extract-glue` reads BOTH — the section out of `body.payload`,
+and the block-in-a-turn it read before — and decides per message rather than per
+version, so a replayed message, an operator probe and a model that has not been
+re-instructed all still write. A section addressed to `memory` that is not one is
+refused write-free, in its own words, so an operator can tell a mis-drawn edge
+from a model that wrote nonsense.
+
+`grow_level` renders the exit under its new name for a grown generation
+(`examples/organism/grow-assistant.json`, twenty-three edges).
+#### `voice@1.3.0`: a lane that says when a sentence is over (`speak_end`)
+
+A browser never needs to know when the assistant has finished speaking — it can
+hear it. A telephone does, twice over, and neither answer was reachable from the
+topology: the cell told its own client on the socket and told nobody else.
+
+So there is a fourth lane. `speak_end` is one source emission per `in_speak` the
+cell accepted, when that synthesis is over, carrying `session_id`, `speak_id`
+and `reason` (`done`, `cancelled`, `failed`) and no words at all — whoever waits
+for the sentence to finish already had the sentence. It leaves whether or not
+the connection is still held, because a synthesis that ended *because* the
+client went away is exactly the case a waiter must not hang on; the cell's own
+invariant of exactly one end per accepted speak is what makes waiting for it
+safe.
+
+The lane ships **off** (`emit_speak_end`, default `false`), the rule `partial`
+already runs under (R-V8'): the emission goes to the cell's own path and the
+out-edges decide, so a lane nobody drew an edge for would dead-letter once per
+sentence. Whoever listens orders it, in the same breath as the edge that drains
+it. `emit_speak_end` is on the runtime params surface; the client's own
+`speak_end` frame is a different path and is untouched. Nothing about the wire
+protocol changed. Documented in `docs/cell-types.md` § `voice` and
+`templates/voice/README.md`.
+
+**The promise the lane rests on is now kept in every arm.** "Exactly one
+`SpeakEnded` per `Speak` the handler issued" was the connection task's stated
+invariant and it had two holes, both reachable when the client goes away
+mid-sentence: a `Speak` whose very first frame could not be written returned
+without reporting anything (the id had already left the command channel, so the
+post-loop block found nothing), and a synthesis whose last frame could not be
+written broke out after `speaking` was already empty. Both now emit the verdict
+on the lane before they leave — no `speak_end` frame, since there is nobody to
+read it. Nothing about this is new API; it is the difference between a waiting
+telephony hive that hangs up and one that waits for ever.
+
+The caller it was built for is `freeswitch@1.0.0`, below.
+
+The template's binding manifest also grows the `voice_session` pair the
+telephone found (GH #603 § 3), because the defect is not telephony's: the
+member's `session-keeper` mints and stamps `context.session_id` for its own
+bookkeeping, and this cell selects a connection by that same key — so on any
+member that holds a keeper, the spoken answer came back naming a session no
+connection held. The ingress edge promotes the connection's id into
+`voice_session` as well and the answer edge puts it back. It is written down as
+a workaround: which of the two owns `context.session_id` is a ruling nobody has
+made.
+
+#### `display@1.1.0`: a second column, and an order a rewrite cannot move (GH #609)
+
+Found while building an ambient application -- a clock, a weather tile and a
+countdown, standing on a screen beside a conversation. `display@1.0.2` knew
+exactly one region and sorted the views in it newest-first, so a widget
+rewritten every twenty seconds took the top slot on **every tick**: not because
+it was important, but because it was recent. That is the right answer for a card
+and the wrong one for anything standing, and the two readings cannot share a
+screen.
+
+**A screen now has two columns.** `main` is the wide one and the **default**, so
+every view written before this version lands exactly where it landed before.
+`aside` is the narrow one beside it, at `clamp(15rem, 22%, 24rem)`, and it takes
+no width at all while it is empty -- a screen that has never heard of a region
+looks the same as it did. Under 60rem the two stack. The rule travels in the
+`display-shell` template as one `<style>` block rather than as a line in
+`/vision.css`: the token sheet belongs to the `web` template and describes a
+design language, while *main is wide and aside is narrow* is a statement about
+this screen. Anything that is not one of the two is still `invalid_view` on
+`receipt`, with nothing written.
+
+**The order inside a column is three keys, and the interesting one is the key
+that is gone.** First the `ord` the view declared -- optional, `0` by default,
+signed, a band rather than a slot, so a widget asks for `-10` instead of asking
+every other sender to move down. Then **first appearance**: a new view sorts
+behind everything already standing and keeps the seat it is given until
+something above it goes away. Then `(owner, view_id)`. **The moment a view was
+last written is not among them**; `updated_at` is the `ttl_ms` clock and nothing
+else now.
+
+First appearance is remembered **by the screen**, not by a column of the table:
+the seat of a view is the `ord` the display is already holding it at, which the
+compose cell reads back on pass 3 anyway -- so what the display holds is an
+input to the layout rather than only something to diff against. Two consequences
+worth knowing: a page that has to be bootstrapped has no seats, and every view
+on it is new together; and a view that changes region is new in the region it
+arrives in.
+
+**The trap between the two changes** was that both regions used to hang under
+the page root at `ord: 0`, and the display documented the root as taking exactly
+one child. That constraint had already been lifted, in the `web` cell, by
+[#394](https://github.com/mmeyerlein/meclaw/issues/394) -- a materialised page
+carries n+1 statics for n slots, and a one-child root is "a composition CHOICE
+now rather than a constraint" -- and nobody had come back to the display to say
+so. Both regions are direct children of the root now, at `ord` `0` and `10`, in
+declaration order.
+
+The `views` table gains one column, `ord`, and `region` gains a second legal
+value. **Migration: none.** A view that names neither is the view it was, and a
+`store` adds a column its declaration gained with `ALTER TABLE ADD COLUMN` on
+the next spawn -- a screen that was already up keeps its rows.
+
+#### `builder@1.7.4`, `meclaw-os@1.8.5`: the pin nachzug of the two-column screen
+
+`builder`'s `member_screen_template` is what a member's screen is instantiated
+from, and it named `display@1.0.2`. It names `display@1.1.0`; `meclaw-os` refs
+the builder by version and follows. No recipe, no lane and no parameter moved
+around either of them.
+
+#### `voice`: ElevenLabs as a third text-to-speech provider (GH #591)
+
+`params.tts.provider` takes `"elevenlabs"`. The claim the `voice` cell shipped
+with — *a third adapter is one new file and one match arm* — was worth exactly
+what a claim is worth until somebody tried it; this is the trying, and it cost
+one file (`providers/elevenlabs.rs`), one arm in the factory, one params struct
+and a scripted fake. The cell, the wire protocol and the turn machine are
+untouched, and so is the template: `provider` was always a value, never a shape,
+so an instance switches with one `override_params` block and no version bump
+anywhere.
+
+The adapter speaks the vendor's documented streaming WebSocket
+(`/v1/text-to-speech/{voice_id}/stream-input`), one connection per synthesis,
+the whole turn as one message followed by the end-of-stream marker, `pcm_<rate>`
+audio decoded from Base64 in arrival order. The credential travels in the
+`xi-api-key` header — never in the URL and never in a message body, the two
+places the documentation also offers and the two places a transport error or a
+wire log would carry it away.
+
+Two properties of that protocol are visible on the params surface, because
+hiding them would only move the failure later. **The voice id is a path segment
+of the endpoint**, not a request field, so an unresolved `${…}` there is not a
+wrong voice but a wrong URL — it is refused by name at parse time, as is any
+value carrying `/`, `?`, `#`, `&`, `%` or whitespace. **And `sample_rate`
+accepts only the rates the vendor serves** (`8000`, `16000`, `22050`, `24000`,
+`32000`, `44100`, `48000`), because the cell never resamples: an unserved rate
+is a cell that announces one format in `hello` and then never speaks.
+
+**There is no cancel message in this protocol.** Cartesia has one; this endpoint
+documents three client messages and none of them retracts audio. So a barge-in
+closes the socket, which is the whole vocabulary available — and the adapter is
+held to the same eleven cases as the Cartesia one, including that a dropped
+cancel *sender* is not a cancel.
+
+#### The conversation guide grades a multi-section sidecar block (GH #608)
+
+`workshop/evals/conversation-guide/run_guide.py` gains the arm
+`--annotation sidecar`: ONE ```` ```sidecar ```` block per turn holding one JSON
+object with a named section per offer, which is the delivery
+[#604](https://github.com/mmeyerlein/meclaw/issues/604) decided on. The `memory`
+section is graded by exactly the rules the shipped single-section arm is graded
+by — one `annotation_shape`, so the two arms' adoption figures are comparable —
+and the optional `display` section is counted apart, against the closed
+vocabulary of the ruling (`kind` one of fact/list/table/text/link/chart, `data`
+present, `mode` graded only when written) and against a per-turn expectation the
+guide records. The block it seeds is
+`contracts/sidecar-sections-2026-09.txt`, composed the way
+`templates/collector/assemble` will compose it (preamble, required section
+first, then alphabetical) with the shipped rules byte-identical from
+`DELTA, NOT STATE` down. `guides/g3-a-day-with-a-screen.json` is its guide: G1's
+planting, revision, nothing-turn and four final questions, plus six single-turn
+sections that ask to be shown something.
+
+The block it seeds is **composed, not typed**: since GH #606 the file is the
+output of `templates/collector/assemble`'s own `sidecar_block()`, run over the
+two shipped offers and read back through the same `contract_block()` the run
+uses, so the harness measures the block a colony would actually carry. A
+`display` section is graded against that offer, which requires `kind`, `title`
+and `data`. A guide may say `display: "either"` for a turn whose answer shape
+the model decides: such a turn is counted and printed and scores neither way,
+because grading a card there would measure the guide's guess about an answer it
+had not seen.
+
+**Both block arms are now counted at the SOURCE**, on the brain's own
+completions out of the central message log, and the report says so in
+`adoption.source`. The reason is a property of the shipped tree rather than of
+either arm: `talky/splitter` cuts the block out of the answer before the capture
+sees it, so a count taken at the delivery reports `absent` on every turn the
+model got right. The delivery-side counters stay in the report beside the source
+ones (`annotation_blocks` next to `annotation_blocks_at_source`), because
+`absent` there and `valid` here is the sentence "the block left the answer".
+
+#### `voice@1.2.0`: what an assistant wrote is not what a provider reads (`speak_plain`)
+
+The first live call this cell ever carried ended with the synthesis provider
+saying the punctuation out loud. That is not a provider bug: an assistant writes
+for a screen without being asked to — `**emphasis**`, `# headings`, `- lists`,
+`[links](https://example.com)`, code fences, table pipes — and a text-to-speech provider reads
+what it is handed, character by character.
+
+So the handler now turns a written answer into SPEECH text before it enters the
+session's queue, which is the only place it can happen: the queue holds the text
+that will be synthesised, so rewriting after an answer was queued would let a
+later `params` flip reach answers that were already accepted. The markup goes
+and the words stay — a link keeps its text and an image its alt text, a code
+fence loses its fence and keeps its code, a heading loses its hashes, a
+blockquote its `>`, a list item its marker and its `[ ]` box, an escape loses
+its backslash and keeps the character behind it, a table row becomes its cells
+joined by commas and a separator row disappears, and a line break becomes a
+sentence end (a full stop unless the line already ends in `.`, `!`, `?`, `:`,
+`;` or `,`). Nothing else is touched: umlauts, punctuation and digits travel as
+they are, and HTML entities and tags are somebody else's escape, left alone on
+purpose.
+
+**Two shapes are kept on purpose, because somebody dictated them.** A `*` or `_`
+with whitespace on both sides is an arithmetic operator, not an emphasis, and
+`3 * 4` stays what it was. And an ordinal at the start of a line loses only its
+punctuation, never its digit: `5. September 2026` becomes `5 September 2026`,
+because a date and a list item are indistinguishable there — an agent that reads
+a date back without its day has lost something, while a list read as "1 Erstens"
+has lost nothing but a little grace.
+
+**An answer with no words left in it is not spoken and not refused.** A
+horizontal rule, an empty emphasis, an assistant turn that arrived empty:
+nothing is queued, the cell logs it at debug level, and the session is untouched.
+A refusal would have an agent retry a turn that was fine, and a synthesis of
+nothing is a `speak_start`/`speak_end` pair around silence that costs a provider
+call. An empty assistant turn used to be synthesised; it now takes the same path.
+
+Three properties are pinned by their own tests: prose with no markup in it comes
+out byte for byte as it went in, the rewriting is IDEMPOTENT — checked as a
+property over every example the module's tests use, because the inline rules can
+uncover a structural marker the structural rules already walked past
+(`` `# install` ``, `[- Punkt](https://example.com)`, `**| a | b |**`), so a line is rewritten to
+a fixpoint rather than once —, and a page of unclosed brackets is read in one
+linear walk rather than a quadratic one.
+
+It is a hand-written rule set (`crates/meclaw-cells/src/voice/speech_text.rs`),
+not a markdown parser: a parser is the honest tool for RENDERING markdown, and
+this is a short list of shapes a microphone should not hear, one screen long and
+one unit test per rule.
+
+The new param `speak_plain` (default `true`) turns it off, and `false` hands the
+provider the answer exactly as it arrived — the behaviour this template had
+before. It is on the runtime update surface and is in force from the next answer
+on, because the handler is the half that rewrites; only its DECLARATION in
+`hello` and `GET /info` — a new field on both, additive, at the end — follows on
+the next respawn, since that is the I/O half's. Documented in
+`docs/cell-types.md` § `voice` and `docs/voice-wire-protocol.md`.
+
+The same template version also learned that **`release` is not where a turn
+ends** (`release_grace_ms`). Push-to-talk on the built-in test page lost the last
+real line of every take, and the take before it turned up at the front of the
+next one. Both are the same event: a recognition provider reports the end of a
+turn some hundreds of milliseconds after the audio carrying its last words was
+sent — Deepgram Flux takes 400–700 ms — and `release` cut on the frame, so those
+words were dropped, and the late end-of-turn then landed inside whichever
+boundary happened to be open when it arrived.
+
+So `release` now says what it means: no NEW audio belongs to this turn. The
+boundary stays open and **drains** — `partial` frames keep arriving and still
+belong to the turn that is closing — and exactly one `turn` leaves at whichever
+comes first, the provider's own end-of-turn or the new cap `release_grace_ms`
+(default `1500`, `0..=10000`), which cuts with the last interim. Events after
+the cut belong to no boundary, so the next `hold` starts empty. A `hold` pressed
+mid-drain closes the old take at once with what it has; a `mode` frame does the
+same rather than being refused, since a boundary that has been released cannot
+be released again and a refusal would be a dead end until the grace ran out.
+`0` restores the old behaviour as a value rather than as history.
+
+Whenever a boundary is closed by something other than the provider — the key
+again, the cap, a mode switch — the SESSION remembers a provider end it is still
+owed, because the provider is still inside the turn the old audio started and
+its next end-of-turn carries the take that has just closed. That one event pays
+the debt and is thrown away, whether it lands inside the next boundary or
+outside every boundary: whether the client presses again before or after the
+provider answers is a race, and a debt only one of those orders could collect
+would be a leak in the other. It is written off when the recognition session
+dies, because a provider that is gone owes nothing and a debt carried over a
+reconnect would eat the first real end-of-turn of the next take — the very loss
+the drain exists against.
+
+The cap needs a clock the handler does not have, so it is one more round trip
+over the seam this cell already has (`ArmReleaseGrace` out,
+`ReleaseGraceExpired` back) and a generation counter that makes a timer for a
+turn that already closed a no-op instead of a second, empty turn. The
+generations are minted per CELL rather than per session, because a session
+identity outlives a connection: a caller who redials — or whose second
+connection displaces the first with close `4409` — would otherwise get a new
+session whose first generations are the numbers the old one's timer is still
+asleep on. The param is on the runtime update surface and is read at the next
+`release`, never moving a deadline a turn is already waiting on, and it is
+declared in `hello` and by `GET /info` — a new field on both, additive, at the
+end — so a `hold` client reads the upper bound on its `turn` instead of
+guessing it.
+
+And the test page builds its socket address **relative to itself** (`new URL`
+against the page's own location, with the path normalised to a directory), so a
+reverse proxy that serves the cell under a path prefix no longer sends the
+page's WebSocket to `/ws` at the root.
+
+#### `voice@1.2.0`: the recogniser can be told which names to expect (`stt.deepgram.keyterms`)
+
+Flux heard "Ivan" where a live call said "Egon". That is what a general model
+does with a name it was never trained on — it returns the nearest name it knows —
+and no threshold fixes it, because the recognition was confident and wrong.
+
+`stt.deepgram` therefore takes `keyterms`, a list of words the recogniser should
+expect: `"keyterms": ["Egon", "meclaw"]`. Each entry goes out as its own repeated
+`keyterm` query parameter, which is the shape the service reads a list in, so an
+entry made of several words stays ONE boosted term instead of splitting into two
+— the space is percent-encoded like every other query value this adapter writes.
+The case is the caller's: a proper noun capitalised, everything else lowercase,
+exactly as Deepgram documents it. Blank entries are dropped rather than sent as
+an empty parameter, and the list is empty by default — a colony that names no
+keyterms sends byte for byte the query it sent before, which has its own test.
+
+It sits inside the `stt` block, so like the rest of that block it is set at
+instantiation and never on the runtime params surface. Documented in
+`docs/cell-types.md` § `voice` and `templates/voice/README.md`.
+
+#### `voice@1.1.0`: outbound audio leaves in 20 ms frames (`audio_out_frame_ms`)
+
+A synthesis provider picks its own chunk size and Cartesia's are large, and the
+cell used to hand each chunk to the client exactly as it came. That is fine for a
+browser and fatal for a telephone: FreeSWITCH's `mod_audio_stream` 1.0.3 aborts
+the whole call — `SIGABRT`, `free(): corrupted unsorted chunks`, inside its
+closed-source playback half — as soon as one outbound binary frame carries more
+than about 100 ms of audio. Measured on the real socket: 960 B (20 ms), 4410 B
+and 4800 B (100 ms) play; 9600 B, 14400 B and 19200 B kill the call.
+
+So the frame size is the CELL's decision now, not the provider's. The new param
+`audio_out_frame_ms` (default `20`, `0` = passthrough, `0..=1000`) cuts every
+synthesis chunk into frames of at most that length before they leave — 960 bytes
+at 24 kHz PCM16 mono. It is an upper bound rather than a fixed size: a frame is
+either exactly that long or the remainder of a provider chunk, never longer, and
+an even remainder leaves at once rather than waiting for the next chunk. The cut
+never runs through a sample: a part-sample tail is
+held and travels with the next chunk, and whatever is still held when the
+synthesis ends leaves as one short last frame, so the bytes and their order are
+exactly what the provider produced. Nothing is paced and nothing sleeps — a
+burst of small frames is what that module expects, and a gap is what it cannot
+take. A cancel discards the held tail with the rest of the synthesis, and the
+echo provider is never framed at all.
+
+The value is declared, so a client reads it instead of measuring it: `hello` and
+`GET /info` both carry `audio_out_frame_ms`, and it is `0` where nothing is ever
+framed (no text-to-speech provider, or the echo loopback). It is on the runtime
+params surface, with the same reservation both timeouts carry: an update is
+persisted at once, but the I/O half frames at the value its life was built with,
+so a moved one reaches the wire on the next respawn. Documented in
+`docs/cell-types.md` § `voice` and `docs/voice-wire-protocol.md`.
+
+#### `freeswitch@1.0.0`: a telephone as a channel of a person
+
+A new template, and a channel rather than an app: a call that comes in, a call
+that is answered and a call that ends are things that **happen**, so each of them
+becomes a TURN of the member's conversation. FreeSWITCH stays the media edge in
+gateway mode — it does the SIP and `mod_audio_stream` connects to the channel as
+a WebSocket client — and the hive holds both halves of one call: the MEDIA half is
+a `voice` cell, unchanged, and the SIGNALLING half is one `code` cell that offers
+the tools, one that keeps the book, a `web_fetch` cell that talks to the switch
+over `mod_xml_rpc`, and a `store` that holds the calls. The two halves live
+together because **one id binds them**: FreeSWITCH's channel UUID is the
+`?session=` of the audio stream and therefore the `session_id` an answer is
+spoken back into.
+
+The channel offers the assistant two tools of its own, `call(number, purpose)` and
+`hangup()`. `call` answers immediately, with the session the conversation will run
+under — the OUTCOME arrives as a turn (`answered`, `busy`, `no_answer`, `failed`),
+because a telephone call is not a value a function returns, and a tool that waited
+for one would hold a round open across a ringing telephone. There is no clock in
+the template: the ring timeout travels to the switch as its own
+`originate_timeout`, and the answer comes back over the same connection.
+
+`params.callers` maps a number to a sender id, which is what turns a caller into
+somebody the member knows; a number with no entry is refused with
+`unknown_caller` rather than becoming a turn nobody can attribute.
+
+`member@1.6.3` carries the wiring half of it, additively: `tool`, `schemas`,
+`tool_result` and `tool_schemas` may now dock at `./channels` as well as at
+`./apps`, and two new restamp edges `./channels -> ./assistants` turn a channel's
+`tool_result` into `in_tool` and its `tool_schemas` into `in_menu`. It is the app
+rim's mechanism at a second rim (ADR-0024), not a second mechanism.
+
+**Three findings came off the first real call and a fourth off the review of
+the fix** (GH #603), and they are in this template from the start rather than in a patch release, because
+`phone@1.0.0` never left this tree:
+
+- **the stream starts on `api_on_answer`, with `uuid_audio_stream` at `16000`.**
+  Starting the stream is an API command, and `execute_on_answer` runs an
+  *application*: FreeSWITCH answered `Invalid Application` and hung the freshly
+  answered call up. `fork_sample_rate` is written as the number `16000` —
+  both spellings reach the module (`mod_audio_stream.c` v1.0.3 lines 170-177
+  read `16k`/`8k` by `strcmp` and everything else through `atoi`), and a digit
+  string is the form that cannot be mistaken for a unit inside a one-line
+  switch command. The whole variable is left out when `answer_app` hands the
+  leg to a dialplan extension (`&transfer(...)`), which starts its own.
+- **every promotion in the installing manifest is `has()`-guarded.** One was
+  not, and a CEL modifier that fails to evaluate skips the whole edge — so the
+  channel's tool offer never reached the assistant's menu, silently.
+- **the call travels as `context.voice_session` beside `context.session_id`.**
+  The member's session keeper owns the second key and rewrites it for its own
+  bookkeeping, so the spoken answer came back naming a session no connection
+  held. The ingress edge promotes the call's id into `voice_session`, the answer
+  edge puts it back on the way into the channel. It is a workaround written down
+  as one: which of the two owns `context.session_id` is a ruling nobody has made.
+- **a `hangup` in the middle of a sentence waits for the sentence**, and a
+  sentence cut short reaches the switch. Both ride the `voice` cell's new
+  `speak_end` lane over an edge inside this hive. A `hangup` that finds a
+  synthesis running books the intent and answers the model that the line will be
+  cut when it has finished; `speaking` is a COUNT, because the media half queues
+  what it is given and a flag would let the first `speak_end` cut a second
+  sentence off. Both sides of that exchange read the row back after they write
+  it, because the hang-up and the `speak_end` it waits for can interleave
+  either way round and one read-back would close one order and leave the other
+  waiting for ever. The `speak_end` that takes the count to zero fires the
+  `uuid_kill`. A `speak_end` with `reason: cancelled` or `failed` fires
+  **`uuid_break <uuid> all`** — FreeSWITCH's own command, because
+  `mod_audio_stream` dispatches only start/stop/pause/resume/send_text
+  (`mod_audio_stream.c` v1.0.3 lines 148-186) and offers no clear, and the half
+  sentence the caller is still hearing sits at the switch. That last one is
+  reasoned rather than read — the module's playback half is closed source — and
+  the README marks it for verification at the switch. There is deliberately
+  **no clock** on the waiting hang-up; the reason, and what it would take, are
+  in `templates/freeswitch/README.md` § *What is not here*.
+
+#### `member@1.6.2`, `assistant@2.5.1`: the apps rim (rulings 2026-09-04/05)
+
+A member could already hold an app — the `./apps` container has been there since
+a member grew a screen — but an app could only ever be **written to**. It had no
+way to hear the conversation it was drawing about, and no way to offer the
+assistant anything. Both are now ordinary wiring, and an app stays what it was:
+a sub-form of the member, a sealed hive with no port, no secret and no channel of
+its own. There are exactly three ways to plug in, all of them **at the rim** —
+observe, offer, write — and none of them is an interception. Every edge an app
+gets is an additional one, so the paths that existed without it fire exactly as
+they did before.
+
+The split of ownership is the ruling that shapes the whole thing: **whoever
+listens orders it.** `member@1.6.2` DECLARES the observer lanes on its container
+— `turn` and `partial` as `emits`, `tool_result` and `tool_schemas` as `accepts`,
+all four with `at: ["./apps"]` — and ships only the two restamping edges
+`./apps -> ./assistants` that turn an app's answer into `in_tool` and `in_menu`,
+which cannot fire while no app is installed. The edges that carry the observation
+(`./firewall -> ./apps` on the screened turn, `./assistants -> ./apps` on the
+answer, `./channels -> ./apps` on the interim transcript, and the container
+binding) are drawn by the **mutation that installs the app**, exactly like the
+`emit_partials` switch on the voice channel that feeds them. A member with no
+listening app therefore carries no such edge and dead-letters nothing, and the
+member's guarded default exit — the one that answers a turn nobody's channel
+raised — keeps working, because the observer edges are guarded on the channel and
+never fire beside it. A second installation redraws the same member edges and the
+commit is idempotent: an edge is the same edge when `from`, `to`, `condition`,
+`modifier` and `default` are. `answer` deliberately keeps its rim entry **without**
+`at`: it is a rim lane, and an `at` would switch off the exit check that guards it.
+
+Offering runs on v-lanes in both directions of the question and on the ordinary
+road for the answer. `assistant@2.5.1` declares `tool` and `schemas` with
+`at: ["./talky", "./cogny"]`, so a v-lane may leave the brain's rim and land on
+the connect point the app pronounces for itself (`at: ["./show"]`); it carries the
+assistant exit's stamps itself, because it bypasses that exit. The result comes
+**back** the way the memory's already does — the app emits at its own rim, the
+binding edge stamps `context.tool_answerer`, and the member restamps into
+`in_tool`/`in_menu` — so nothing on the assistant's rim moves and every growth
+recipe keeps the door it draws. The menu needs no new operation either: an app
+answers its **whole** offer whatever list was asked for, with an empty `unknown`,
+and the collector merges the rows of all answerers as it already did. And an app
+may watch tool results go by, as a v-lane fan-out from the assistant's `./tools`
+(for which `assistant@2.5.1` declares `tool_result` with `at: ["./tools"]` — not a
+rim lane, `development-rules.md` § 8b) and from the member's `./memory-hive`;
+there is deliberately no container edge for the latter, which would have delivered
+the observed copy into the assistant a second time.
+
+The install manifest, with its placeholders, is in `templates/member/README.md`
+§ Installing an app. What is **not** here is the loader: no `app.json` read at
+start, no colony-level app listing, no `app install` command, and no builder that
+installs by reading `/colony/graph` and drawing only what is missing. Those are
+one later errand, and an app today is an ordinary template plus a manifest.
+`builder` and `meclaw-os` move by a patch each, as the pin nachzug and nothing
+else.
+
+#### `required` lanes: a hive may insist on a lane at birth (`hive_contract`, third shape)
+
+A hive contract could say what a hive accepts and where the lane connects, but not
+that it **must** be connected. So a hive whose whole purpose is a lane — an app
+that exists to draw what it hears — could be instantiated deaf, and the first
+sign of it was silence.
+
+`params.contract.accepts[]` therefore takes `required: true` (absent means
+`false`, and every standing template keeps today's behaviour). It means: *whoever
+instantiates me must wire this lane to me.* The check runs in the post-state stage
+of the mutation, beside the lane doors and the required drains, because it needs
+the post-state edge table — and it judges exactly the hives **this diff gives
+birth to**, the same list and the same reasoning as the port boundary: the border
+judges what the diff DRAWS. A lane with `at` counts as wired when an edge carrying
+that lane ends on one of its connect points; a rim lane counts as wired when the
+router probe of an inbound edge lands on the hive path, which is the door check
+asked from the outside rather than from within. Missing, the mutation is refused
+`hive_contract` — the third shape of a code that already exists, no new word —
+naming the hive, the lane and its `because`, collecting rather than stopping at
+the first find, before the commit and rolled back like its neighbours.
+
+The limits are part of the feature. **Only birth is judged**: a later
+`remove_edges` that takes the lane's edge away is not an instantiation and is not
+re-judged, and the door check on standing hives stays what it is. Boot does not
+even warn, for the same reason it does not warn about the port seal — the birth
+topology is authorship. And whether the emitter at the other end actually delivers
+the lane, rather than merely being wired to it, is nothing the substrate can know:
+a switch like `emit_partials` sitting at its default is a topology decision, and
+the rule for it stays *both halves, or neither*.
+
+### Breaking
+
+#### `talky@5.1.0`: the `extraction` port is now `sidecar`, one message per section (GH #605)
+
+The sidecar was one hard-wired thing: a ```` ```memory ```` fence, cut out of an
+answer by `talky/splitter` and carried on a port called `extraction` as the raw
+block, in the text of a single turn. An application that wants to be written to
+inline — a screen, say — had no way in that did not cost a second brain round.
+
+The block is generic now. It opens with ```` ```sidecar ````, carries ONE JSON
+object, and **one top-level key per section**. The splitter reads the object and
+emits one message per key on route `sidecar`, with `hop.section` naming the
+section and the body carrying `{"messages": [], "section": "<key>", "payload":
+<the section object>}`. It looks no section up and routes none anywhere: the
+edges downstream distribute on `hop.section`, so a section this tree has never
+heard of travels without a line of code changing in the cell.
+
+**Migration.** A parent wired on `hop.route == 'extraction'` writes nothing. The
+memory annotation is now the section `memory`:
+
+```json
+{"from": "./talky", "to": "/front/memory",
+ "condition": "has(hop.route) && hop.route == 'sidecar' && has(hop.section) && hop.section == 'memory'",
+ "modifier": {"set_hop": {"route": "'in_remember'"}}}
+```
+
+**The legacy fence still reads.** A ```` ```memory ```` block — and the
+tolerances beside it, a bare ```` ```json ```` fence or a naked trailing object
+carrying the payload — becomes the section `memory` with the whole block as its
+payload, so a colony whose models have not been re-instructed keeps writing.
+
+**What did not change.** A block that cannot be read, or whose top level is not
+an object, is still cut out of the answer and dropped with `hop.sidecar =
+"malformed"` and nothing on the lane (GH #534): found decides the cut, readable
+decides the lane, and nothing is ever repaired. A round carrying tool calls is
+still never taken apart (GH #378). New: a top-level key whose value is not an
+object has no body to travel in and is dropped by name, listed in
+`hop.sidecar_dropped` on the answer half.
+
+**The levels above follow in the same wave.** `assistant` re-points its `talky`
+ref, renames its own `extraction` port to `sidecar` and routes it upward
+unchanged; `member` takes the memory half on `hop.section == 'memory'`; and the
+memory hive's inline ingress reads the section's `payload` out of the body,
+keeping the old turn form readable so a colony can be rewired in two steps
+rather than one. The shipped `examples/organism` manifests move with them.
+
+Measured by `crates/meclaw-cells/tests/gh379_the_splitter_cuts_the_sidecar.rs`,
+`gh534_an_unreadable_block_still_leaves_the_answer.rs` and `talky_composite.rs`.
+
+#### `phone@1.0.0` is now `freeswitch@1.0.0`
+
+The template was named after the medium where it should have been named after
+the machine. What is behind it is a FreeSWITCH, and a colony that later wants a
+second telephony edge needs the two to be able to stand beside each other under
+names that say which is which (ruling 18, 2026-09-06). The **node** is the
+machine — `<member>/channels/freeswitch`, `context.channel_node = 'freeswitch'`
+— while `context.channel` stays `'phone'` and `hop.platform` stays `'phone'`,
+because that is a kind of room and not a vendor.
+
+It is listed as breaking although it breaks nothing that shipped: `phone@1.0.0`
+was cut locally with 0.31.0 and never exported, so no public tree has it. A
+colony that grew the node anyway migrates with `swap_nodes`
+(`{"match": {"name": "channels/phone"}, "template": "freeswitch@1.0.0"}`, which
+leaves the call table where it is) and then rewrites the five edges of the
+installing manifest, which name the node. Full migration:
+`templates/freeswitch/README.md` § *The migration from `phone@1.0.0`*.
+
+### Changed
+
+#### `collector@4.1.0`, `memory-hive@3.4.0`, `cogny@5.0.1`: the block contract is offered, not typed (GH #606)
+
+A front model has been asked, since `talky@4.1.0`, to append one fenced block to
+its answer — the memory hive's per-turn annotation. The words of that block lived
+as a literal in `templates/collector/assemble`, which is a cell that enforces none
+of its rules, one composite away from the hive that reads them. It was the
+arrangement [#552](https://github.com/mmeyerlein/meclaw/issues/552) had already
+retired for `memory_recall`'s schema: **whoever is reached declares themselves.**
+And it had a second cost that only shows when something else wants a piece of the
+same answer — a screen, say. A contract one cell types can describe exactly one
+consumer.
+
+**One block, several sections.** There is one fenced block now, ```` ```sidecar ````,
+holding ONE JSON object with one top-level key per section. `memory` is one of the
+keys.
+
+**The sections are offered.** A `tool_schemas` answer carries `sidecar[]` beside
+`schemas[]` — `{section, required, schema, instruction}` per section — and the
+collector merges them over the answerers by section name exactly as it merges the
+tool menu by tool name ([#529](https://github.com/mmeyerlein/meclaw/issues/529)):
+the same rows of its own `menu` table (one column wider), the same order, the same
+first-answerer-wins rule. `templates/memory-hive/schemas` is the first offerer, and
+its offer travels on every answer it gives — the section is not a response to a
+name.
+
+**The collector owns the frame and nothing else.** It COMPOSES a preamble — a
+fixed frame (one block after the answer, ONE JSON object, one top-level key per
+section), then the whole-object shape of this particular composition, then the
+obligation with the section names in it; 494 characters for the pair that ships.
+Under it stands one `## <section> (required|optional)` per offer with the
+offering template's own words and a compact example rendered from its schema —
+required first, alphabetical inside each half, under the new ceiling
+`params.sidecar_max_chars` (default 6,000; optional sections fall from the back
+with a warn line, a required one never falls). The knob `inline_extraction` is
+called `sidecar`.
+
+**The last two preamble lines are repairs the harness bought.** The first
+composition of this contract was measured over 52 turns and produced **7
+malformed blocks against 0 in the control arm**, in two patterns, and neither was
+about a section — both were about the frame. One model **dropped the outer
+braces** and wrote the section objects side by side: every heading shows the
+INNER shape and nothing showed the outer one, so the preamble now prints the
+whole object with the braces the model has to write. Another model let the
+**optional section stand instead of the required one** on the turns where both
+applied: *a required section is written on every turn* is true, general, and was
+read as a rule about sections in the abstract, so the names make it a rule about
+THESE two and the clause about the optional one says the failing case out loud.
+Both lines are generated from the offers, never typed.
+
+**It travels with the MENU, not with the turn.** The composed contract lands on
+`system.instructions.sidecar` beside `system.tools`, on the `menu` message: the
+same durability class, one write per change and nothing per turn, re-derived on
+every mutation receipt. The property [#525](https://github.com/mmeyerlein/meclaw/issues/525)
+needed is untouched — the slot is derived, never seeded, so a brain that GREW
+still receives it — and the per-assembly write is retracted rather than left
+running beside it, because two writers on one slot path race every round. Nobody
+offering anything writes an EMPTY slot rather than falling silent: durable state
+is revoked, never merely abandoned.
+
+**The empty-menu guard is read per half.** An answerer that offers a section
+without declaring a tool (a screen is the case this was built for) leaves
+`system.tools` untouched — a `$replace` over a menu of nothing but the collector's
+self-served names is the revocation that guard exists to refuse. A collector that
+does not ask for the block ignores every offer of one, silently: `cogny` has no
+splitter, and a warn line there would report a correctly wired tree as a defect.
+
+`templates/memory-hive/inline-contract.md` stays the authority; it describes the
+section form now and the sentences naming a fence of its own are retracted. New
+receipt key `hop.sidecar_sections` on the `menu` message. `cogny` only re-points
+its collector ref. Pinned by
+`crates/meclaw-cells/tests/gh299_the_contract_asks_for_both_parts.rs` (the rules,
+against the ingress) and
+`crates/meclaw-cells/tests/gh525_a_grown_brain_carries_the_extraction_contract.rs`
+(the delivery, offer to brain).
+
+#### Withdrawn: "the smallest view needs no app"
+
+Shipped prose said an agent's ordinary `answer`, carried into a screen by the
+member's own down-edge, *is* a view — so a person could be shown a paragraph
+without an app. On a real colony it is not. A view is a body carrying `view_id`,
+`kind` and `content`; a talking agent's answer carries `messages[]` and nothing
+else, and `display@1.0.2` refuses exactly that body by name: `invalid_view`, with
+the reason `"view_id" must match [a-z0-9-]{1,64}`. The claim read the smallest
+KIND of view — prose, which needs no component tree — as the smallest WRITER of
+one.
+
+The routing half was true and stays true: the down-edge does carry the answer
+into the display's own `in_view`. What arrives there is simply not a view. So the
+smallest screen shows nothing of the conversation, which is a legitimate state and
+the ordinary one for a member that has only just grown a screen; whoever wants an
+agent's prose on a screen installs a producer of view bodies beside the agent — an
+app at the rim of the member, or any cell built to emit `view`.
+
+The test that pinned the claim
+(`crates/meclaw-cells/tests/gh459_a_screen_is_a_member_channel.rs`) pinned a
+double whose `answer` already carried a view's three keys, so it measured a
+view-shaped body and called it an answer. It now measures the truth against the
+shipped `compose.py`: a plain prose answer is refused `invalid_view` for the
+reason above, a body with the three keys becomes a store write, and the answer
+that reaches the screen through the member arrives there carrying no `view_id`
+and no `kind`. Prose withdrawn in `templates/member/README.md`,
+`templates/member/apps/config.json`, `templates/README.md` and
+`examples/organism/README.md`
+([#597](https://github.com/mmeyerlein/meclaw/issues/597)).
+
+### Fixed
+
+#### A registered template keeps its placeholders ([#611](https://github.com/mmeyerlein/meclaw/issues/611))
+
+`add_templates` files a CLASS in the instance-local library, and until now the
+declaration travelled through the diff's full substitution pass on the way in.
+So the file BODIES were rewritten before they were written: a `config.json` that
+referenced the colony's key as `${SECRET_API_KEY}` landed under
+`{templates_root}/local/<name>/` with the key in CLEAR TEXT — found on three
+colonies built from the same recipe, five files each — and every later
+registration of that derived class copied it again. The mirror image of the same
+bug refused registrations outright: a README that merely MENTIONS `${…}` in
+prose was read as a placeholder and answered `env_var_missing`, for a variable
+the registering colony had no reason to own.
+
+`add_templates[].files` is now exempt from BOTH passes. The bytes of a
+declaration reach the library exactly as they stood in the body, and every
+`${…}` in them binds where it always binds: the instance class (`${ctx.*}`,
+`${uuid7:*}`) at instantiation, the environment class (`${VAR}`) at every read
+(GH #20). An instance grown from such a class still gets the environment's
+value, and no file on disk carries it. The entry's own fields (`name`,
+`version`) substitute as before — `files` is the one slot that is somebody
+else's bytes. This is what `docs/config.md` § Zugriff has claimed since GH #440;
+the code now does it.
+
+Library entries that already carry a materialised value are **not** rewritten —
+the rule applies forward, from the next registration on, and a class registered
+before this fix has to be registered again (under a new name) or edited by hand.
+Measured by
+`crates/meclaw-colony/tests/gh611_a_registered_template_keeps_its_placeholders.rs`.
+
+#### `freeswitch@1.0.1`: one turn per call, a silent ending, and a refused caller gets the line back ([#614](https://github.com/mmeyerlein/meclaw/issues/614))
+
+The first real inbound call through the channel, measured on 2026-09-06 at
+16:56. Three findings, all in the signalling half, and all of them the same
+mistake: *a model answers everything it is handed*
+(ADR-0025, `plans/adr/0025-a-receipt-is-feedback-to-a-writer.md`).
+
+**The caller heard two greetings.** The dialplan answers an inbound leg at once,
+so `call_incoming` and `call_answered` reached the hive inside the same second
+and each raised a turn. The assistant answered both. An inbound call is announced
+by `call_incoming` — the moment a person is on the line — and the `call_answered`
+behind it now books the state and says nothing. A call this channel *placed* is
+unchanged: `call_answered` is its turn, carrying the number and the purpose.
+
+**The assistant said goodbye into a dead line, twice, and hung up a call that
+was already gone.** `call_ended` raised a third turn, and the sentence that
+argued for it — *an agent that goes on talking into a call that ended is the
+failure this lane exists to prevent* — is exactly the failure it caused: a
+generation reads a turn by **answering** it, the answer went into a line that no
+longer existed (`in_speak` → `no live connection`), and the tool call it came
+with was answered *"no call is running"*. `call_ended` now moves the row —
+`state` and `cause` — and raises nothing, the treatment `call_ringing` already
+had. The end of a call is recorded where the line is recorded: the channel's own
+`calls` table. `call_state` therefore no longer takes the value `ended`.
+
+**A refused caller was parked in silence.** A number in no `callers` entry
+raises `unknown_caller` and no turn, and that was all it did — while the
+dialplan had already *answered* the leg in order to `curl` this hive. Its own
+mailbox fallback fires on a `curl` that fails, not on one that comes back
+carrying a refusal, so the caller sat in an answered call nobody would ever
+speak into. The signalling half now kills that leg itself (`uuid_kill` on the
+UUID the dialplan named) in the same breath as the refusal, and what the caller
+hears next is the dialplan's business again.
+
+Third place: no lane, no tool name and no dialplan event moved, so a colony on
+`1.0.0` migrates by swapping the node onto `freeswitch@1.0.1` and rewires
+nothing. Measured by
+`crates/meclaw-cells/tests/freeswitch_channel_places_a_call_and_hears_the_line.rs`.
+
+#### `voice@1.2.0`: `language_hint` is legal on one Flux model only
+
+A colony that set `model: "flux-general-en"` next to the template's `language`
+never connected: the adapter sent `language_hint` with every model, and Deepgram
+allows it on one. "`language_hint` is only supported on `flux-general-multi`.
+Sending it to any other model (including `flux-general-en`) returns a `400`
+error" — `400 INVALID_PARAMETER`, before a single frame of audio moves
+(<https://developers.deepgram.com/docs/flux/language-prompting>). The adapter's
+own module header had said as much since it was written; the code had not.
+
+The rule is now the allowlist Deepgram states, not its negation: the hint goes
+out for a model name ending in `-multi` and stays home for everything else, and
+the omission is logged at `debug`. That way a model name this build has never
+heard of loses the language bias — recoverable — rather than the whole request.
+
+#### `member@1.6.3`: a screen takes a `view`, and a receipt is not a turn (GH #598)
+
+Two colonies burned model calls in a closed loop between an agent and a screen —
+44 brain calls in six minutes on one, 68 on the other — and both halves of the
+loop were shipped recipes.
+
+**A screen was bound on `answer` as well as `view`.** GH #459 drew the display's
+down-edge on the claim that an agent's prose answer is the smallest view there
+is. It is not: `display@1.0.2` reads a view out of the BODY (`view_id`, `kind`,
+`content`) and an `answer` carries `messages[]` and none of them, so every such
+answer came back refused with `error_code: invalid_view`. No shipped recipe binds
+a screen on `answer` any more — `templates/builder/recipes` (`_screen_level`),
+`examples/organism/grow-screen.json`. What reaches a screen is what a producer of
+views emits.
+
+**And the refusal came back as a turn.** The member re-stamped a `receipt` owned
+by one of its generations onto `in_turn` with `hop.kind = 'receipt'`, because the
+assistant level accepts no receipt lane. A generation reads a turn by ANSWERING
+it, so the answer went to the screen, the screen refused it, and the loop ran at
+the speed of the model. That edge is gone: every `receipt` no **app** of the
+member owns leaves the level on `error` with the original lane on `hop.kind` —
+the branch the level already had for an owner it could not place, widened by one
+clause, and the treatment `pack_ack` had documented all along. An app keeps its
+receipts: it declares the lane, it produced the view that was refused, and it
+answers a refusal with code rather than with prose.
+
+`assistant` and `display` are untouched — the loop was never inside either of
+them — and no lane, no `error_code` and no cell moved, which is why `member` is a
+third digit. Decision and reasoning: `plans/adr/0025-a-receipt-is-feedback-to-a-writer.md`.
+Measured by `crates/meclaw-cells/tests/gh598_a_screen_receipt_is_not_a_turn.rs`.
+
+- **The gate's tree sync now full-touches a foreign worktree** (GH #595). Its
+  targeted path — `git diff <stamp-sha> HEAD` plus both dirty lists — was
+  applied to a foreign path as well, and that under-touches by construction:
+  two worktrees at the same commit hold byte-identical sources, so a test binary
+  compiled from the other copy is fresh by mtime, links, runs, and carries the
+  other tree's `CARGO_MANIFEST_DIR`. Measured as 17 red file tests reading
+  another worktree's fixtures. A foreign stamp path is now always the full
+  touch; the narrow one stays for the same tree at another commit.
+- **`corpus-committed`: a new gate station that reads the seed corpus before
+  anything regenerates it** (GH #596). The `corpus` station regenerates first
+  and checks second, so it graded the file it had just written and a committed
+  `docs.jsonl` that no longer described its sources was green in every mode.
+  The new station runs the same `--check` against the tree as it is: `NOTE` in
+  `strand` (a strand gates before its commit — the line is the reminder to
+  `git add` the regenerated seed), `RED` in `integration` and `release`, and
+  never in `ci`, where `workshop/` does not exist.
+
+## [0.31.0] — 2026-09-05
+
+A minor release: speech becomes a channel. The new `voice` cell type terminates
+audio at its own WebSocket listener and hands the colony text turns — one `turn`
+per end of turn, interim `partial`s on request — and speaks the assistant's
+answer back on the same socket. Speech-to-text and text-to-speech are traits
+with two providers each (Deepgram Flux and an OpenAI-compatible realtime
+transcription; Cartesia and an OpenAI-compatible streaming synthesis), an echo
+provider calibrates the wire, a built-in test page speaks the protocol from a
+browser, and `voice@1.0.0` is the channel template a member instantiates. Also in
+this release: the memory-hive porter walks the substrate slot (GH #261, breaking
+for `in_import` callers), and the two repairs the voice wave found in its own
+review (GH #592, #593). Nothing else in the contract moved.
+
+### Breaking
+
+#### `memory-hive@3.3.0`, `member@1.6.1`, `org@1.4.1`, `meclaw-os@1.8.3`: the porter is a walk over the substrate slot (GH #261)
+
+The transfer lane's import leg is **one message and the whole document**, and the
+five mechanisms the porter carried beside the substrate's are gone. Until 3.2.0
+`in_import` took ONE part of a memory document as the body of the message; a
+document was a sequence of sixteen such messages, and the caller was responsible
+for posting them in the walk's order and for reading the `final` marker off the
+last one. Since 3.3.0 `in_import` takes a DIRECTORY: `hop.import_from` names the
+run the export wrote, nothing travels in the body, and the substrate's `transfer`
+slot applies every `seed/<table>.jsonl` of it in one call.
+
+What came out of `templates/memory-hive/porter`, and what answers it now:
+
+| what the porter carried | what the slot does instead |
+|---|---|
+| a hand-maintained Python `SCHEMA` mirror, policed by a drift test | `export` reports the schema from the database itself |
+| a four-round-trip `scratch` probe for idempotence | one message, one transaction over the whole document |
+| a provenance name-list, checked by name | column-set equality in both directions, or the part is refused |
+| per-row inserts that could fail halfway into `import_write_failed` | a table applies whole or is refused whole |
+| a document format (`meclaw-memory-export/1`), a part sequence and a `final` marker | `seed/<table>.jsonl` plus `export_final.json`, written last by one rename |
+
+What stays is the **walk**, because nobody else can know it: the order of the
+sixteen tables, the key that makes a row the same row in each of them, the three
+machine tables that are lane state rather than memory, and the closing
+`canonicalize` per identity dimension. That is what `hop.import_from` buys — and
+it buys one property the message form could not have: **a document with one broken
+file writes nothing at all**, not even the tables ahead of the broken one, because
+every file is parsed before the first row is applied. Sixteen calls would have
+applied ten tables before finding out about the eleventh.
+
+The refusal vocabulary of the lane shrinks with the mechanisms that produced it.
+`hop.reject_reason` is now `export_write_failed` or `import_failed`, and the
+substrate's own transfer code rides beside it on `hop.store_error`
+(`transfer_seed_malformed`, `transfer_io_error`, `transfer_path_out_of_bounds`,
+`import_schema_drift`, …) with `hop.store_operation` naming the operation — the
+same shape this hive already used for a refused store (GH #343), and for the same
+reason: that code list is OPEN, and a reason enum that had to grow with it would
+turn the next new code into a failed emit. Gone from the enum:
+`missing_audience`, `missing_channel`, `import_format`, `import_unknown_table`,
+`import_schema_drift`, `import_probe_failed`, `import_write_failed`. Gone from the
+`dump` hop: `export_part`, because there is no part sequence left to locate a part
+in — one receipt names the whole document (`hop.export_of` tables applied,
+`hop.rows_written` rows that were new, `hop.export_final` always `'1'`).
+
+The substrate learned two things for this (`crates/meclaw-colony/src/db_transfer.rs`).
+
+**A whole-directory import is ONE transaction**, over every table the call names,
+inside one call on the cell's own connection. It used to be one transaction per
+table, and the difference was not academic: the column-set gate runs while the
+rows are applied rather than in the parse, so an `import_schema_drift` at table
+nine committed the eight before it — and the receipt of that refusal says
+`rows_affected = 0`, which is the worst shape a partial write can have: a
+document that reports it did nothing and a target that carries half of it. Every
+SQL failure had the same shape. Now a refusal anywhere rolls the whole walk
+back, and `import_document` keeps its own single-part transaction unchanged
+(`crates/meclaw-colony/tests/gh261_a_walk_names_its_row_identity.rs`
+§ *a_table_refused_late_rolls_back_the_tables_before_it*).
+
+And an `import` that names more than one table may name **`keys`**,
+`{"<table>": ["<col>", …]}`. `key` belongs to one table's identity and therefore
+only travelled when the call named one table, which left the whole-directory form
+unusable for the cells that need it most — a `store` declares its tables in
+`params.schema`, that declaration cannot express a `PRIMARY KEY`, and the import
+refuses a keyless table by name. Additive: `key` alone behaves exactly as before,
+and an absent `keys` falls back to each table's own primary key.
+
+The precondition the issue set for itself was met before any of this was written:
+a full round trip over a **real, grown** memory hive — export to a directory,
+import into an empty one, compared row for row across all sixteen tables with
+`audience_set`, `channel` and `speaker` compared as data and not as presence.
+`crates/meclaw-cells/tests/gh261_a_grown_memory_walks_the_slot.rs` is the public
+form of that measurement: it grows its own hive through this hive's own lanes and
+measures the same equality, and it replaces
+`gh243_a_memory_can_leave_a_hive_and_arrive_in_another.rs`, which measured the
+mirror rather than the transfer and could be green while nothing moved.
+`crates/meclaw-colony/tests/gh261_a_walk_names_its_row_identity.rs` pins the
+substrate half.
+
+The public promise moves with it: `docs/cell-types.md` § *Content transfer* and
+`docs/meclaw-overview.md` § *Seed concept* said "one transaction per table" and
+now say what the code holds, in both language halves.
+
+**Migration.** A caller that posts a memory document part by part has to stop:
+send ONE message on `in_import` with `hop.import_from` naming the directory an
+export wrote, and drain `dump` for the one receipt and `reject` for a refusal.
+Nothing about the FILES changed — a directory written by `memory-hive@3.2.0`'s
+export is read by `memory-hive@3.3.0`'s import unchanged, and it is still the seed
+set a fresh hive is born from (`examples/memory-import/`, untouched). A caller that
+matched on one of the seven retired `reject_reason` values matches
+`import_failed` plus `hop.store_error` instead. `member@1.6.1`, `org@1.4.1` and
+`meclaw-os@1.8.3` are the pin nachzug and nothing else: no lane of any of the
+three moved, and each of them names the version it derives from.
+
+### Added
+
+#### `voice` cell type and `voice@1.0.0` template: speech is a channel, and audio never becomes a message
+
+A colony could be spoken to only by writing the words down first. Every channel
+this substrate had — Telegram, Slack, the HTTP door, a display — carries text,
+and the shortest path to speech was a transcription somewhere outside that
+posted its result like a person typing. That path loses the two things that make
+speaking worth it: it cannot answer while the sentence is still arriving, and it
+cannot be interrupted.
+
+The `voice` cell is a channel bridge built like `web`: long-running, two tasks,
+its own listener on its own `port` (loopback by default), its own `cell.db`. One
+WebSocket connection is one client. Raw PCM16 mono goes in, **text turns** come
+out on the `partial` and `turn` lanes; an assistant's turn goes in on `in_speak`,
+and speech comes back out on the same socket. The full frame reference is
+`docs/voice-wire-protocol.md`, and the type is documented in `docs/cell-types.md`
+§ `voice`.
+
+**Audio terminates in the I/O half, and no sample ever enters a mailbox.** That
+is the load-bearing decision (ADR-0023). A message here is a JSON body that is
+logged, routed and possibly persisted, and a stream of samples is none of those
+things; so the connection task holds the client socket and the provider socket
+and carries the bytes between them, while only the semantics — a partial, a
+turn, an error — travel as messages. Which is also why **the cell never
+resamples**: the inbound rate is the one the speech-to-text provider demands,
+the outbound rate the one the text-to-speech provider was asked for, both are
+declared in the `hello` frame, and the client adapts. A binary frame of odd
+length is not audio at all and is refused with close code `4400` plus a
+`bad_audio_frame` on the error lane, rather than rounded down into noise.
+
+**Two modes.** In `auto` the provider draws the turn boundary; in `hold` the
+client does, by holding a key. Both end in exactly one `turn` per boundary — a
+provider that withdraws its end-of-turn afterwards does not un-emit, and the
+continuation becomes the next turn. A `partial` is a draft: it carries no
+`turn_id`, a `turn` carries no `eager`, and `emit_partials: false` switches the
+lane off where nothing listens for it.
+
+**Providers are traits with two implementations each**, chosen by
+`params.stt.provider` / `params.tts.provider`: Deepgram Flux and an
+OpenAI-compatible transcription session for speech-to-text, Cartesia and an
+OpenAI-compatible endpoint for text-to-speech. A third adapter is one new file
+and one match arm — nothing in the cell, the wire or the turn machine moves.
+Model names and thresholds are `params` with defaults rather than constants,
+every provider carries its own credential (`${VAR}` only, redacted everywhere)
+and its own `base_url`, and the `base_url` is what lets the tests point the real
+adapter at a fake server instead of proving that a mock matches a mock.
+
+**`echo` is the first thing to run**: a binary frame comes back byte-identical
+and nothing else travels, so the wire — microphone, sample rate, framing,
+playback — is calibrated before anybody blames a model for what an audio path
+did. Alongside it the cell serves two reads of its own: `GET /info` is the
+`hello` declaration as JSON without opening a connection, and `GET /` is a
+built-in, self-contained browser test page that speaks the protocol. The
+microphone needs a secure context — `localhost`, or a TLS proxy in front, which
+is the same reverse proxy that terminates authentication, because this type
+grows no auth story of its own.
+
+`error_code` strings on the error lane are closed: `invalid_body`,
+`missing_session`, `unknown_session`, `speak_failed`, `stt_failed`,
+`bad_audio_frame`, `invalid_input`. The per-connection codes a client gets on its
+own socket are a separate list and deliberately do not enter the topology.
+
+The template `voice@1.0.0` is one cell, in the shape of `telegram-connector`, and
+its README carries the binding manifest for a member. Two names are reserved and
+nothing implements them — the frames and lanes `spoken` and `tool_call` — so a
+later speech-to-speech composition has a place to say what it heard and what it
+wants called.
+
 ## [0.30.1] — 2026-09-05
 
 A patch release: the repairs the first colony built on 0.30.0 turned up. Growing a

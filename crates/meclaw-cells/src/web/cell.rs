@@ -27,11 +27,13 @@ pub enum WebEvent {
     /// The listener is up on this address. Recorded so an operator reading the
     /// journal sees where a display actually went.
     Bound(String),
-    /// The bind failed. The cell stays alive and serves nothing — see the A1′
-    /// note in [`run_io`]: a display that cannot bind must not take its cell
-    /// down, or a port collision would look like a crash loop. Since GH #410
-    /// the state is recoverable without a restart: a params update naming a
-    /// free address is served by the same task, on the same `cell.db`.
+    /// The listener could not be opened, **or** the server that was serving it
+    /// ended (GH #592); the detail is the OS error or `listener ended`. The
+    /// cell stays alive and serves nothing — see the A1′ note in [`run_io`]: a
+    /// display that cannot serve must not take its cell down, or a port
+    /// collision would look like a crash loop. Since GH #410 the state is
+    /// recoverable without a restart: a params update naming a free address is
+    /// served by the same task, on the same `cell.db`.
     BindFailed(String),
     /// A browser said something on a joined socket.
     ///
@@ -756,7 +758,7 @@ impl LongRunningCell for WebCell {
                     tracing::error!(
                         path = %self.path,
                         error = %err,
-                        "web: could not bind — send this cell a params update \
+                        "web: could not serve — send this cell a params update \
                          naming a free port or bind address"
                     );
                 }

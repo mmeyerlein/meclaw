@@ -1,4 +1,4 @@
-//! W5.7 -- the splitter cuts the extraction sidecar out of an answer (GitHub #379).
+//! W5.7 -- the splitter cuts the sidecar out of an answer (GitHub #379).
 //!
 //! Per-turn extraction stopped being a tool call. The measured-reliable form is
 //! variant 2: the model writes a fenced JSON block into its own answer text and
@@ -6,25 +6,35 @@
 //! out -- a `code` cell sitting between the brain and the dispatcher, on the
 //! answer path only.
 //!
-//! Three output forms and nothing else:
-//!   1. pass-through, byte-identical, when there is no sidecar to cut (and when
+//! **The block became GENERIC in GH #605** and this file moved with it. It is
+//! one ```` ```sidecar ```` fence carrying ONE object, one top-level key per
+//! SECTION, and the splitter emits one message per section on route `sidecar`
+//! with `hop.section` naming it -- knowing no section by name, because the edges
+//! downstream distribute on that hop and a cell that knew the names would need
+//! changing for every new one. The legacy ```` ```memory ```` fence is still
+//! read and becomes the section `memory`, which is what keeps a colony that has
+//! not been rewired writing.
+//!
+//! The output forms, and nothing else:
+//!   1. pass-through, byte-identical, when there is no block to cut (and when
 //!      the round carries tool calls, which belong to the dispatcher whole);
-//!   2. a two-element multi-send when there IS one -- the answer with the fence
-//!      taken out, and the raw block on lane `extraction`;
+//!   2. a multi-send when there IS one -- the answer with the fence taken out,
+//!      plus one message per readable section on lane `sidecar`; a section that
+//!      is not an object is dropped and named in `hop.sidecar_dropped`;
 //!   3. pass-through with `header.sidecar == "malformed"` when a block is there
 //!      but unreadable.
 //!
 //! **The third form was RETRACTED in GH #534** and its test moved to
 //! `gh534_an_unreadable_block_still_leaves_the_answer.rs`. The pass-through half
-//! of it stands -- one message, `sidecar: malformed`, nothing on `extraction` --
+//! of it stands -- one message, `sidecar: malformed`, nothing on the lane --
 //! but the answer no longer keeps the fence: a model dropped one closing brace
 //! in a running colony and the raw JSON reached a person's chat window. Found
-//! decides the cut; valid decides the lane.
+//! decides the cut; readable decides the lane.
 //!
 //! Why a test that runs the SHIPPED script through `python3` rather than a
 //! colony: the grammar is a 1:1 port of the harness parser that measured the
-//! adoption number (`run_guide.py` `find_annotation`/`annotation_shape`), and a
-//! port drifts silently. Same subprocess pattern as
+//! adoption number (`run_guide.py` `find_annotation`), and a port drifts
+//! silently. Same subprocess pattern as
 //! `gh299_the_contract_asks_for_both_parts.rs`.
 
 use std::io::Write;
@@ -136,10 +146,19 @@ const GOOD_BLOCK: &str = "{\"facts\": [{\"subject\": \"alex\", \"predicate\": \"
 const NOTHING_BLOCK: &str = "{\"nothing_new\": true, \"facts\": [], \"topic\": {\"title\": \"small talk\", \
      \"movement\": \"continue\"}}";
 
+/// The half of a cut that carries a section, by name.
+fn section<'a>(out: &'a serde_json::Value, name: &str) -> &'a serde_json::Value {
+    out.as_array()
+        .unwrap_or_else(|| panic!("a cut is an array: {out}"))
+        .iter()
+        .find(|m| m["header"]["section"] == name)
+        .unwrap_or_else(|| panic!("no `{name}` section left the splitter: {out}"))
+}
+
 #[test]
 fn an_answer_without_a_sidecar_travels_on_untouched() {
     // (a) The pass-through IS the contract with every deployment that never
-    // installs the extraction prompt: without a block the cell is a wire.
+    // installs the block contract: without a block the cell is a wire.
     let input = completion("stop", serde_json::json!([text_turn("Blau, klar.")]));
     let out = split(input.clone());
     assert!(
@@ -167,8 +186,8 @@ fn an_answer_without_a_sidecar_travels_on_untouched() {
 #[test]
 fn a_fenced_sidecar_leaves_as_its_own_message() {
     // (b) The whole point. Two messages: the answer WITHOUT the instrument, and
-    // the instrument on its own lane.
-    let answer = format!("Blue is your colour.\n\n```memory\n{GOOD_BLOCK}\n```");
+    // the instrument on its own lane, as a section.
+    let answer = format!("Blue is your colour.\n\n```sidecar\n{{\"memory\": {GOOD_BLOCK}}}\n```");
     let out = split(completion("stop", serde_json::json!([text_turn(&answer)])));
     let arr = out
         .as_array()
@@ -182,21 +201,110 @@ fn a_fenced_sidecar_leaves_as_its_own_message() {
     );
     assert!(
         arr[0]["header"].get("route").is_none(),
-        "the answer half is not routed to the memory: {out}"
+        "the answer half is not routed anywhere: {out}"
+    );
+
+    let carried = section(&out, "memory");
+    assert_eq!(
+        carried["header"]["route"], "sidecar",
+        "the section rides the one lane: {out}"
+    );
+    assert_eq!(
+        carried["section"], "memory",
+        "and names itself in the body as well as on the hop, because the body \
+         is what a receiver reads: {out}"
+    );
+    assert_eq!(
+        carried["messages"],
+        serde_json::json!([]),
+        "a section is a payload and not a turn: {out}"
+    );
+    assert_eq!(
+        carried["payload"]["facts"][0]["predicate"],
+        "favorite_colour"
+    );
+    assert_eq!(carried["payload"]["topic"]["movement"], "start");
+}
+
+#[test]
+fn the_legacy_memory_fence_is_read_as_the_memory_section() {
+    // (b2) GH #605. The single-section fence this cell shipped first is still
+    // the one every running colony writes, and it becomes the section `memory`
+    // with the whole block as its payload. Without this the rewire would have to
+    // land in the models and in the tree in the same second.
+    let answer = format!("Blue is your colour.\n\n```memory\n{GOOD_BLOCK}\n```");
+    let out = split(completion("stop", serde_json::json!([text_turn(&answer)])));
+    assert_eq!(out.as_array().map(Vec::len), Some(2), "{out}");
+    assert_eq!(out[0]["messages"][0]["text"], "Blue is your colour.");
+    let carried = section(&out, "memory");
+    assert_eq!(carried["header"]["route"], "sidecar", "{out}");
+    assert_eq!(carried["payload"]["topic"]["movement"], "start", "{out}");
+}
+
+#[test]
+fn one_block_three_sections_leave_as_three_messages() {
+    // (b3) The generic cut (GH #605). ONE object, one top-level key per section,
+    // one message per section -- and the splitter recognises none of them by
+    // name: `hop.section` is what the edges downstream distribute on, so a
+    // section this tree has never heard of travels without a line of code here.
+    //
+    // A key whose value is NOT an object is the one thing that cannot travel:
+    // the body slot it would ride in is an object slot, and inventing a wrapper
+    // would be this cell's guess rather than the model's statement. It is
+    // dropped BY NAME, so a close pass can tell "the model wrote past the form"
+    // from "the model wrote nothing".
+    let block = format!(
+        "{{\"memory\": {GOOD_BLOCK}, \
+         \"display\": {{\"kind\": \"fact\", \"title\": \"Colour\", \"data\": \"blue\"}}, \
+         \"notes\": \"a section that is not an object\"}}"
+    );
+    let answer = format!("Blue is your colour.\n\n```sidecar\n{block}\n```");
+    let out = split(completion("stop", serde_json::json!([text_turn(&answer)])));
+    let arr = out
+        .as_array()
+        .unwrap_or_else(|| panic!("a cut is an array: {out}"));
+    assert_eq!(
+        arr.len(),
+        3,
+        "the answer plus one message per READABLE section: {out}"
     );
 
     assert_eq!(
-        arr[1]["header"]["route"], "extraction",
-        "the sidecar half rides its own lane: {out}"
+        arr[0]["messages"][0]["text"], "Blue is your colour.",
+        "the prose is the prose, three sections or one: {out}"
     );
-    let carried: serde_json::Value = serde_json::from_str(
-        arr[1]["messages"][0]["text"]
-            .as_str()
-            .expect("sidecar text"),
-    )
-    .expect("the sidecar is handed over as the model wrote it, and that parses");
-    assert_eq!(carried["facts"][0]["predicate"], "favorite_colour");
-    assert_eq!(carried["topic"]["movement"], "start");
+    assert_eq!(
+        arr[0]["header"]["sidecar_dropped"], "notes",
+        "and the section that could not travel is named rather than silent: {out}"
+    );
+
+    let names: Vec<&str> = arr[1..]
+        .iter()
+        .map(|m| m["header"]["section"].as_str().expect("section on the hop"))
+        .collect();
+    assert_eq!(
+        names,
+        ["memory", "display"],
+        "in the order the model wrote them: {out}"
+    );
+    for m in &arr[1..] {
+        assert_eq!(
+            m["header"]["route"], "sidecar",
+            "one lane for all of them: {out}"
+        );
+        assert_eq!(m["messages"], serde_json::json!([]), "{out}");
+        assert_eq!(m["section"], m["header"]["section"], "{out}");
+    }
+    assert_eq!(
+        section(&out, "memory")["payload"]["topic"]["movement"],
+        "start",
+        "{out}"
+    );
+    assert_eq!(
+        section(&out, "display")["payload"]["kind"],
+        "fact",
+        "a section the splitter has no idea about travels the same way: {out}"
+    );
 }
 
 #[test]
@@ -204,16 +312,13 @@ fn the_nothing_form_travels_too() {
     // (c) An explicit nothing is a VERDICT, not an absence: it is what books the
     // turn as annotated-and-empty in the queue. Swallowing it here would leave
     // the close pass re-reading turns the model already answered for.
-    let answer = format!("Understood.\n\n```memory\n{NOTHING_BLOCK}\n```");
+    let answer = format!("Understood.\n\n```sidecar\n{{\"memory\": {NOTHING_BLOCK}}}\n```");
     let out = split(completion("stop", serde_json::json!([text_turn(&answer)])));
     let arr = out.as_array().expect("a nothing is still a cut");
     assert_eq!(arr.len(), 2, "{out}");
-    assert_eq!(arr[1]["header"]["route"], "extraction");
-    assert!(
-        arr[1]["messages"][0]["text"]
-            .as_str()
-            .expect("sidecar text")
-            .contains("nothing_new"),
+    assert_eq!(
+        section(&out, "memory")["payload"]["nothing_new"],
+        true,
         "the verdict reaches the lane: {out}"
     );
     assert_eq!(arr[0]["messages"][0]["text"], "Understood.");
@@ -230,9 +335,9 @@ fn an_unreadable_block_is_flagged_and_leaves_the_answer_all_the_same() {
     //
     // What survives from the old decision is the half that was right: nothing
     // unreadable is repaired and nothing unreadable travels. One message, the
-    // flag on the hop, no `extraction`. The forms of the cut live in
+    // flag on the hop, no section. The forms of the cut live in
     // `gh534_an_unreadable_block_still_leaves_the_answer.rs`.
-    let answer = "Bitte sehr.\n\n```memory\n{\"facts\": [oops\n```";
+    let answer = "Bitte sehr.\n\n```sidecar\n{\"memory\": {\"facts\": [oops\n```";
     let out = split(completion("stop", serde_json::json!([text_turn(answer)])));
     assert!(out.is_object(), "nothing readable to route: {out}");
     assert_eq!(
@@ -246,6 +351,21 @@ fn an_unreadable_block_is_flagged_and_leaves_the_answer_all_the_same() {
 }
 
 #[test]
+fn a_block_whose_top_level_is_not_an_object_is_a_miss_and_not_a_section() {
+    // (d2) GH #605. The block contract is ONE OBJECT whose keys are sections.
+    // A list parses as JSON and carries no section names, so there is nothing to
+    // name a lane with -- it is the same miss as a broken payload, and it earns
+    // the same treatment rather than a guessed-at wrapper.
+    let out = split(completion(
+        "stop",
+        serde_json::json!([text_turn("Here.\n\n```sidecar\n[1, 2]\n```")]),
+    ));
+    assert!(out.is_object(), "nothing to route: {out}");
+    assert_eq!(out["header"]["sidecar"], "malformed", "{out}");
+    assert_eq!(out["messages"][0]["text"], "Here.", "{out}");
+}
+
+#[test]
 fn a_round_with_tool_calls_belongs_to_the_dispatcher_whole() {
     // (e) The mixed form -- text beside an async call in ONE message -- is the
     // shape that strands a round (GH #378). The splitter never builds it and
@@ -255,7 +375,7 @@ fn a_round_with_tool_calls_belongs_to_the_dispatcher_whole() {
         serde_json::json!([
             {"origin": "assistant", "type": "tool_call", "id": "c1",
              "text": "{\"name\":\"weather\",\"arguments\":\"{}\"}"},
-            text_turn(&format!("Moment.\n\n```memory\n{GOOD_BLOCK}\n```"))
+            text_turn(&format!("Moment.\n\n```sidecar\n{{\"memory\": {GOOD_BLOCK}}}\n```"))
         ]),
     );
     let out = split(input.clone());
@@ -270,9 +390,10 @@ fn a_round_with_tool_calls_belongs_to_the_dispatcher_whole() {
 
 #[test]
 fn the_fence_tolerance_is_the_harness_tolerance() {
-    // (f) A ```json fence carrying the payload is an attempt that missed the
-    // label, and the harness grades it as one -- so the lane cuts it too. A bare
-    // fence with no marker in it is a code block in an answer and stays put.
+    // (f) A ```json fence carrying the legacy payload is an attempt that missed
+    // the label, and the harness grades it as one -- so the lane cuts it too,
+    // as the `memory` section. A bare fence with no marker in it is a code block
+    // in an answer and stays put.
     let labelled = format!("Da.\n\n```json\n{GOOD_BLOCK}\n```");
     let out = split(completion(
         "stop",
@@ -281,6 +402,10 @@ fn the_fence_tolerance_is_the_harness_tolerance() {
     assert!(
         out.is_array(),
         "a payload-shaped ```json block is a sidecar that missed its label: {out}"
+    );
+    assert_eq!(
+        section(&out, "memory")["payload"]["topic"]["movement"],
+        "start"
     );
 
     let code = "Here is your snippet:\n\n```\nprint(1)\n```";
@@ -304,7 +429,8 @@ fn a_naked_trailing_object_is_an_attempt_too() {
         .unwrap_or_else(|| panic!("a naked object is cut too: {out}"));
     assert_eq!(arr.len(), 2, "{out}");
     assert_eq!(arr[0]["messages"][0]["text"], "Notiert.", "{out}");
-    assert_eq!(arr[1]["header"]["route"], "extraction", "{out}");
+    assert_eq!(arr[1]["header"]["route"], "sidecar", "{out}");
+    assert_eq!(arr[1]["header"]["section"], "memory", "{out}");
 }
 
 #[test]
@@ -320,10 +446,20 @@ fn the_declared_lane_is_the_one_the_script_writes() {
          `multi_send_not_declared`: {cfg}"
     );
     let hop = &cfg["contract"]["emits"]["hop"];
-    assert_eq!(hop["route"]["values"], serde_json::json!(["extraction"]));
+    assert_eq!(hop["route"]["values"], serde_json::json!(["sidecar"]));
     assert_eq!(
         hop["route"]["required"], false,
         "a pass-through routes nothing"
+    );
+    assert_eq!(
+        hop["section"]["type"], "string",
+        "the section name is DECLARED and OPEN: an enum here would make every \
+         new section a change to this cell, which is the one thing GH #605 \
+         removed: {cfg}"
+    );
+    assert!(
+        hop["section"].get("values").is_none(),
+        "and it carries no enum: {cfg}"
     );
     assert_eq!(
         hop["finish_reason"]["values"],
@@ -331,11 +467,22 @@ fn the_declared_lane_is_the_one_the_script_writes() {
         "the two the answer path carries"
     );
     assert_eq!(hop["sidecar"]["values"], serde_json::json!(["malformed"]));
+    assert_eq!(
+        hop["sidecar_dropped"]["type"], "string",
+        "the sections that could not travel, by name: {cfg}"
+    );
+    let body = &cfg["contract"]["emits"]["body"];
+    assert_eq!(body["messages"]["required"], true);
+    assert_eq!(
+        body["payload"]["type"], "object",
+        "a section is an object, and the slot that carries it says so: {cfg}"
+    );
+    assert_eq!(body["section"]["type"], "string", "{cfg}");
     assert!(
         cfg["description"]["purpose"]
             .as_str()
             .expect("purpose")
             .contains("pass-through"),
-        "the cell says what it is without the extraction prompt: {cfg}"
+        "the cell says what it is without a block contract: {cfg}"
     );
 }

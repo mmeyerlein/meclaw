@@ -1,0 +1,136 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "import sys, json, uuid\n\n# The OFFER of this application, and nothing else. Two questions reach this\n# cell and no others: the start-up question about what may be called, and a\n# call the model actually made. It places no call itself -- it mints the id the\n# whole exchange is named by and hands the errand inwards, because the cell\n# that talks to a switch is the cell that keeps the book.\n\ndoc = json.load(sys.stdin)\nenv = doc.get(\"envelope\") or {}\nhdr = env.get(\"header\") or {}\nhop = hdr.get(\"hop\") or {}\nbody = doc.get(\"body\") or {}\nroute = str(hop.get(\"route\") or \"\")\n\nSCHEMAS = [\n    {\"name\": \"call\",\n     \"description\": \"Ring somebody up and talk to them. Give the number in \"\n                    \"international form and say in one short line WHY you are \"\n                    \"calling -- the purpose comes back to you the moment the \"\n                    \"person picks up, so you know what to open with. The \"\n                    \"answer to this call arrives when the phone is answered, \"\n                    \"which may be half a minute later; a call nobody takes \"\n                    \"answers `no_answer`, a busy line answers `busy`.\",\n     \"parameters\": {\"type\": \"object\",\n                    \"properties\": {\n                        \"number\": {\"type\": \"string\",\n                                   \"description\": \"the number to ring, in international form, e.g. +4930123456\"},\n                        \"purpose\": {\"type\": \"string\",\n                                    \"description\": \"one short line about why you are calling\"}},\n                    \"required\": [\"number\"]}},\n    {\"name\": \"hangup\",\n     \"description\": \"End the call that is running. Use it when the \"\n                    \"conversation is over and the other side has not hung up \"\n                    \"by themselves. If you are still speaking, the line stays \"\n                    \"up until your sentence is finished -- the answer says so.\",\n     \"parameters\": {\"type\": \"object\", \"properties\": {}}},\n]\n\n\ndef out(messages):\n    sys.stdout.write(json.dumps(messages))\n    sys.exit(0)\n\n\ndef result(call_id, text, **header):\n    head = {\"route\": \"tool_result\", \"tool_call_id\": call_id}\n    head.update(header)\n    return {\"header\": head,\n            \"messages\": [{\"origin\": \"tool\", \"type\": \"tool_result\",\n                          \"id\": call_id, \"text\": text}]}\n\n\nif route == \"schemas\":\n    # The WHOLE offer, whatever list the asker carried: the question is asked\n    # of every answerer at once and the collector merges the rows, so an\n    # application that filtered by the list would filter itself out of a menu\n    # that was never addressed to it.\n    out([{\"header\": {\"route\": \"tool_schemas\", \"operation\": \"schemas\",\n                     \"schema_count\": len(SCHEMAS), \"unknown_count\": 0},\n          \"schemas\": SCHEMAS, \"unknown\": [], \"messages\": []}])\n\ncall_id = str(hop.get(\"tool_call_id\") or \"\")\nname = str(hop.get(\"tool_name\") or \"\")\n\n# The arguments are the TEXT of the call turn: the name was split off onto\n# hop.tool_name one level up.\nraw = \"\"\nfor m in reversed(body.get(\"messages\") or []):\n    if isinstance(m, dict) and isinstance(m.get(\"text\"), str):\n        raw = m[\"text\"]\n        break\ntry:\n    args = json.loads(raw or \"{}\")\nexcept ValueError:\n    args = None\nif not isinstance(args, dict):\n    args = None\n\nif name == \"hangup\":\n    out([{\"header\": {\"route\": \"request\", \"operation\": \"hangup\",\n                     \"tool_call_id\": call_id},\n          \"messages\": []}])\n\nif name != \"call\":\n    out([result(call_id, \"this application serves `call` and `hangup`, not `%s`\" % name,\n                error_code=\"tool_unknown\")])\n\nif args is None:\n    out([result(call_id, \"the arguments of this call are not a JSON object\",\n                error_code=\"invalid_arguments\")])\n\nnumber = str(args.get(\"number\") or \"\").strip()\nif not number:\n    out([result(call_id, \"`number` is required and was empty\",\n                error_code=\"invalid_arguments\")])\n\npurpose = str(args.get(\"purpose\") or \"\").strip()\n\n# The id the WHOLE exchange is named by. It is minted here and nowhere else:\n# it becomes FreeSWITCH's `origination_uuid`, the `?session=` of the audio\n# fork, and therefore the `session_id` the answer is spoken back into.\ncall_uuid = str(uuid.uuid4())\n\n# TWO messages out of one call, and they go to two different places: the\n# errand itself, inwards, and the RECEIPT the round is waiting for. The receipt\n# is immediate on purpose -- the OUTCOME of a telephone call is not a value a\n# function returns, it is something that happens, and it arrives as a turn of\n# this channel. A tool that waited for it would hold a round open across a\n# ringing telephone.\nout([\n    {\"header\": {\"route\": \"request\", \"operation\": \"call\",\n                \"call_uuid\": call_uuid, \"number\": number,\n                \"purpose\": purpose, \"tool_call_id\": call_id},\n     \"messages\": []},\n    result(call_id,\n           \"ringing %s. The call runs under session %s -- you will be told \"\n           \"when it is answered, and if it is not.\" % (number, call_uuid),\n           operation=\"call\", session_id=call_uuid, number=number),\n])\n",
+    "external_timeout_ms": 10000,
+    "sandbox": {
+      "trust": "restricted",
+      "network": "deny",
+      "filesystem": {
+        "runtime": true
+      }
+    }
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "multi_send_capable": true,
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "schemas": {
+          "type": "array",
+          "required": false
+        },
+        "unknown": {
+          "type": "array",
+          "required": false
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "tool_result",
+            "tool_schemas",
+            "request"
+          ],
+          "required": true
+        },
+        "operation": {
+          "type": "string",
+          "values": [
+            "call",
+            "hangup",
+            "schemas"
+          ],
+          "required": false
+        },
+        "tool_call_id": {
+          "type": "string",
+          "required": false
+        },
+        "call_uuid": {
+          "type": "string",
+          "required": false
+        },
+        "number": {
+          "type": "string",
+          "required": false
+        },
+        "purpose": {
+          "type": "string",
+          "required": false
+        },
+        "session_id": {
+          "type": "string",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "values": [
+            "invalid_arguments",
+            "tool_unknown"
+          ],
+          "required": false
+        },
+        "schema_count": {
+          "type": "number",
+          "required": false
+        },
+        "unknown_count": {
+          "type": "number",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": false
+        },
+        "tools": {
+          "type": "array",
+          "required": false,
+          "description": "the names the asker declares it uses. Read and deliberately ignored: this cell answers with its whole offer, because the question is asked of every answerer at once"
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "required": false
+        },
+        "tool_name": {
+          "type": "string",
+          "required": false
+        },
+        "tool_call_id": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "The two tools this channel offers an assistant, and the menu entry that makes them callable. It mints the id the WHOLE exchange is named by -- FreeSWITCH's `origination_uuid`, the `?session=` of the audio fork, and therefore the session an answer is spoken into -- and hands the errand inwards.",
+    "use_when": "Reached on two questions and no others: the start-up question about what may be called, and a call the model actually made. Never addressed by name -- the lane and the tool name are what route a call here.",
+    "not_in_scope": "It talks to no switch, keeps no row and knows no call state. Whether a call connected is not its business: that answer arrives as a TURN of this channel, because the outcome of a telephone call is something that happens rather than something a function returns.",
+    "emits_meaning": "route tool_schemas: the whole offer -- `call` and `hangup` -- with `unknown` empty, whatever list the asker carried. route request: the errand, carrying the minted `call_uuid`, the number and the purpose. route tool_result: the receipt of the action under the call's own `tool_call_id` -- for `call` the session the conversation will run under, `hop.error_code` `invalid_arguments` when the arguments could not be read.",
+    "consumes_meaning": "messages[]: the tool_call turn as it arrived; its `text` is the ARGUMENTS string, because the name was already split off onto hop.tool_name one level up.",
+    "examples": [
+      "a schemas question -> two schemas, `call` and `hangup`, unknown empty",
+      "call {number: '+4930…', purpose: 'ask how she slept'} -> a request inwards and a tool_result naming the session",
+      "call with no number -> one tool_result, error_code `invalid_arguments`, and no request"
+    ]
+  }
+}

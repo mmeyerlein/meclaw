@@ -554,7 +554,7 @@ fn run_tally(hop: Value, context: Value, body: Value) -> Vec<Value> {
 fn index_from(nodes: Vec<&str>) -> String {
     let wish = json!({"recipe": "grow_level", "request": "…",
                       "params": {"scope": ORG, "level": "member", "name": MEMBER,
-                                 "template": "member@1.6.0"}});
+                                 "template": "member@1.7.0"}});
     // leg 1: the wish arrives, the round is parked and the graph is asked
     let first = run_tally(
         json!({"route": "count", "recipe": "grow_level"}),
@@ -630,7 +630,7 @@ fn the_wish_survives_the_colony_round_trip_with_the_index_stamped() {
     }
     let wish = json!({"recipe": "grow_level", "request": "grow a member named alex",
                       "params": {"scope": ORG, "level": "member", "name": MEMBER,
-                                 "template": "member@1.6.0"}});
+                                 "template": "member@1.7.0"}});
     let parked = run_tally(
         json!({"route": "count", "recipe": "grow_level"}),
         json!({"build_caller": "/os/operator/intake"}),
@@ -705,7 +705,7 @@ fn the_switch_sends_a_member_wish_to_be_counted_first() {
             "messages": [{"origin": "tool", "type": "tool_call", "id": "c1",
                 "text": json!({"request": "…", "recipe": "grow_level",
                     "params": {"scope": ORG, "level": "member", "name": MEMBER,
-                               "template": "member@1.6.0"}}).to_string()}],
+                               "template": "member@1.7.0"}}).to_string()}],
         }),
     );
     assert_eq!(

@@ -207,7 +207,7 @@ fn main_config() -> Value {
         // the remaining declared exits, drained so nothing dead-letters
         {"from": "./talky", "to": "/park",
          "condition": "has(hop.route) && (hop.route == 'write' || hop.route == 'turn_write' \
-          || hop.route == 'extraction' || hop.route == 'prune' || hop.route == 'error' \
+          || hop.route == 'sidecar' || hop.route == 'prune' || hop.route == 'error' \
           || hop.route == 'tool')"}
     ]}}})
 }

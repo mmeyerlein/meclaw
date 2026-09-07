@@ -9,7 +9,8 @@
 //!
 //! (a) the owner of a view is the ENVELOPE, and a body that claims a different
 //!     one is refused rather than believed;
-//! (b) two owners hold two views on one screen at the same time, newest first;
+//! (b) two owners hold two views on one screen at the same time, in an order
+//!     that no rewrite moves (`newest first` until GH #609);
 //! (c) a withdrawal removes the caller's own view and no other;
 //! (d) an application's view carries its components, every name prefixed with
 //!     the view's own id -- driven with the bytes `colony-view` really emits;
@@ -144,11 +145,15 @@ fn prose_body(view_id: &str, title: &str, text: &str) -> Value {
 }
 
 /// One row of the `views` table, as the store hands it back.
+///
+/// `at` is `updated_at`, which since GH #609 is the EXPIRY clock and nothing
+/// else: it no longer has any bearing on where the row stands on the page.
 fn row(owner: &str, view_id: &str, at: i64, ttl: i64, title: &str, text: &str) -> Value {
     json!({
         "owner": owner,
         "view_id": view_id,
         "region": "main",
+        "ord": 0,
         "kind": "prose",
         "content": meclaw_core::serde_json::to_string(
             &json!({"body": text, "title": title})).unwrap(),
@@ -305,10 +310,19 @@ fn an_accepted_view_is_written_under_the_envelopes_path() {
     assert_eq!(request_of(&out)["owner"], ALICE);
 }
 
-// ───────────────────────────────────── (b) two owners, newest first, (f) ttl
+// ───────────────────────── (b) two owners, one deterministic order, (f) ttl
 
+/// Both owners reach the plan, and the plan's order carries no clock.
+///
+/// Until GH #609 this asserted `newest first`, and the older row here is the
+/// one that would have to come SECOND under that reading. It comes second
+/// under this one too — but on `(owner, view_id)`, with `updated_at` playing no
+/// part: `alice` sorts before `bob`, and swapping the two timestamps would not
+/// change the answer. Where a person actually sees them is settled one pass
+/// later, off the seats the display holds
+/// (`gh609_a_standing_view_keeps_its_place`).
 #[test]
-fn two_owners_hold_two_views_and_the_newest_is_first() {
+fn two_owners_hold_two_views_in_an_order_that_reads_no_clock() {
     let Some(root) = display() else { return };
     if !have_python() {
         return;
@@ -336,8 +350,35 @@ fn two_owners_hold_two_views_and_the_newest_is_first() {
     let plan = plan_of(&out);
     let views = plan["views"].as_array().expect("views");
     assert_eq!(views.len(), 2, "both owners are on the screen: {views:#?}");
-    assert_eq!(views[0]["owner"], ALICE, "newest first");
+    assert_eq!(
+        views[0]["owner"], ALICE,
+        "the band is equal, so identity decides"
+    );
     assert_eq!(views[1]["owner"], BOB);
+
+    // The same two rows with their timestamps exchanged: an order that read the
+    // clock would swap them, and this one does not move at all.
+    let older_mine = row(ALICE, "note", 1_000, 0, "Mine", "the newer one");
+    let newer_theirs = row(BOB, "board", 2_000, 0, "Theirs", "the older one");
+    let request = json!({"withdraw": false, "owner": ALICE, "view_id": "note",
+                         "row": older_mine});
+    let out = only(run_shipped(
+        &root,
+        "compose",
+        stdin_doc(
+            store_reply(vec![newer_theirs], &["delete", "insert"]),
+            json!({"operation": "bundle", "bundle_errors": 0}),
+            views_context(&request),
+            None,
+        ),
+    ));
+    let views = plan_of(&out);
+    let views = views["views"].as_array().expect("views");
+    assert_eq!(
+        views[0]["owner"], ALICE,
+        "exchanging the two write times changes nothing: the last write is not \
+         a sort key any more (GH #609)"
+    );
 }
 
 #[test]
@@ -848,7 +889,9 @@ async fn both_views_reach_a_real_display() {
     }
     assert!(
         body.find("the newer paragraph") < body.find("the older paragraph"),
-        "newest first, on the page and not only in the plan:\n{body}"
+        "the order holds on the page and not only in the plan. This page is a \
+         BOOTSTRAP, so neither view has a seat yet and both are new together: \
+         equal band, and `alice` before `bob` on identity (GH #609):\n{body}"
     );
     // Each wrapper says whose it is, which is what a member reads off a browser
     // event to route it back to the one agent that put the view up.

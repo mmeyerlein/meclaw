@@ -15,9 +15,15 @@
 //! cell.
 //!
 //! What does NOT change is the refusal to repair: an unreadable block is not
-//! re-serialised, not fixed and not handed to the memory. It leaves the answer,
+//! re-serialised, not fixed and not handed on. It leaves the answer,
 //! `hop.sidecar == "malformed"` records that a block was seen, and the
-//! `extraction` lane carries nothing -- there is nothing readable to carry.
+//! `sidecar` lane carries nothing -- there is nothing readable to carry.
+//!
+//! Since GH #605 the fence is ```` ```sidecar ```` and carries one object whose
+//! top-level keys are the sections. The legacy ```` ```memory ```` fence is
+//! still read as the section `memory`, and this file is deliberately spelled in
+//! BOTH: the escape that wrote it happened in the legacy form, and a colony that
+//! has not been rewired still writes that form today.
 //!
 //! This file also pins the CONTRACT SURFACE the cut has to hold across, because
 //! the two happy forms `gh379` pinned were not enough to catch the shape that
@@ -52,16 +58,11 @@ fn prose(out: &[Value]) -> String {
         .to_string()
 }
 
-/// The raw block on lane `extraction`, or `None` when nothing was routed there.
-fn extraction(out: &[Value]) -> Option<String> {
+/// The payload of the `memory` section, or `None` when nothing was routed.
+fn memory_section(out: &[Value]) -> Option<Value> {
     out.iter()
-        .find(|m| m["header"]["route"] == "extraction")
-        .map(|m| {
-            m["messages"][0]["text"]
-                .as_str()
-                .expect("the sidecar half carries text")
-                .to_string()
-        })
+        .find(|m| m["header"]["route"] == "sidecar" && m["header"]["section"] == "memory")
+        .map(|m| m["payload"].clone())
 }
 
 /// The completion that reached a person's chat window, in the shape it had: the
@@ -100,9 +101,9 @@ fn the_block_that_escaped_does_not_escape_again() {
          missed the form from one that never annotated: {out:?}"
     );
     assert_eq!(
-        extraction(&out),
+        memory_section(&out),
         None,
-        "and nothing unreadable is handed to the memory: {out:?}"
+        "and nothing unreadable is handed on: {out:?}"
     );
 }
 
@@ -134,10 +135,25 @@ fn an_opener_with_no_closer_takes_its_fence_with_it() {
     assert_eq!(out[0]["header"]["sidecar"], "malformed", "{out:?}");
 }
 
+#[test]
+fn an_unreadable_sidecar_fence_is_the_same_miss() {
+    // The fence the contract asks for since GH #605, one closing brace short.
+    // Nothing about the retraction is specific to the legacy word: found decides
+    // the cut, readable decides the lane, whichever fence carried the block.
+    let out = emit_all(
+        &splitter(),
+        &answer("Fine.\n\n```sidecar\n{\"memory\": {\"facts\": []\n```"),
+    );
+    assert_eq!(out.len(), 1, "nothing readable to route: {out:?}");
+    assert_eq!(prose(&out), "Fine.", "{out:?}");
+    assert_eq!(out[0]["header"]["sidecar"], "malformed", "{out:?}");
+    assert_eq!(memory_section(&out), None, "{out:?}");
+}
+
 /// Every form the inline contract admits, and the ways a model spells them.
 ///
-/// `(name, block, movement)` -- the block goes into a `memory` fence, the
-/// movement is what the extraction half must carry through unchanged.
+/// `(name, block, movement)` -- the block goes into a legacy `memory` fence, the
+/// movement is what the section's payload must carry through unchanged.
 const CONTRACT_FORMS: &[(&str, &str, &str)] = &[
     (
         "an explicit nothing",
@@ -175,11 +191,9 @@ fn every_form_of_the_contract_is_cut_and_travels() {
         );
         assert_eq!(out.len(), 2, "{name}: a valid block is a cut: {out:?}");
         assert_eq!(prose(&out), "Fine.", "{name}: {out:?}");
-        let raw = extraction(&out).unwrap_or_else(|| panic!("{name}: no extraction half: {out:?}"));
-        let carried: Value = meclaw_core::serde_json::from_str(&raw).unwrap_or_else(|e| {
-            panic!("{name}: the lane carries what the model wrote ({e}): {raw}")
-        });
-        assert_eq!(carried["topic"]["movement"], *movement, "{name}: {raw}");
+        let carried =
+            memory_section(&out).unwrap_or_else(|| panic!("{name}: no memory section: {out:?}"));
+        assert_eq!(carried["topic"]["movement"], *movement, "{name}: {carried}");
         assert!(
             out[0]["header"].get("sidecar").is_none(),
             "{name}: a readable block is not a miss: {out:?}"
@@ -218,13 +232,18 @@ fn the_spelling_of_the_fence_does_not_decide_whether_the_reader_sees_it() {
             format!("Fine.\n\n```memory   \n{BLOCK}\n```"),
             "Fine.",
         ),
+        (
+            "in the sidecar fence, as one section among possible others",
+            format!("Fine.\n\n```sidecar\n{{\"memory\": {BLOCK}}}\n```"),
+            "Fine.",
+        ),
     ];
     for (name, text, expected) in cases {
         let out = emit_all(&splitter(), &answer(text));
         assert_eq!(out.len(), 2, "{name}: {out:?}");
         assert_eq!(prose(&out), *expected, "{name}: {out:?}");
         assert!(
-            extraction(&out).is_some_and(|raw| raw.contains("Andor")),
+            memory_section(&out).is_some_and(|p| p["topic"]["name"] == "Andor"),
             "{name}: the block reaches the lane: {out:?}"
         );
     }

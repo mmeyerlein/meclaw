@@ -716,6 +716,34 @@ fn a_readme_wiring_example_addresses_the_hive_it_seals() {
         let Some(hives) = interior.get(&ep.child) else {
             continue; // not a cell inside anything sealed
         };
+        // A TEMPLATE'S OWN README NAMING AN INSTANCE OF ITSELF (2026-09-06).
+        // The index above is keyed on the CHILD segment alone, deliberately —
+        // a parent segment in a wiring example is an INSTANCE name (`./agent/
+        // session-keeper/stamp` was the original defect), so the parent cannot
+        // be part of the key. That makes one collision possible and the tree
+        // now has it: `phone` holds its media half as `ref voice@…`, named
+        // after its template because a ref is (`docs/development-rules.md`
+        // § 8a, R1) — so the segment `voice` is BOTH an interior cell of a
+        // sealed hive and the name every instance of the `voice` template
+        // carries (an instance is named after its template). `templates/voice/
+        // README.md` writes `./channels/voice`, which is an instance address
+        // and not anybody's interior cell.
+        //
+        // The collision IS the rule, not a breach of it: an instance is named
+        // exactly like its template (naming rule, 2026-08; code anchor
+        // `Naming::Own` in `tests/gh203_documented_port_addresses.rs`), so a
+        // ref'd inner cell and a
+        // top-level instance of the same template MUST share the segment.
+        //
+        // The carve-out is exactly that sentence and nothing wider: THIS
+        // template's README naming a node called after THIS template, i.e. a
+        // ref'd inner cell — never a hand-named interior cell. It
+        // cannot hide the class the sweep exists for — a README pointing into
+        // somebody ELSE's sealed hive still lands here — and it needs no
+        // knowledge of the library beyond the file's own directory.
+        if ep.child == ep.template {
+            continue;
+        }
         if ep.exempt {
             *exempted.entry(ep.template).or_default() += 1;
             continue;

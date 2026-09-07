@@ -33,6 +33,7 @@
       "menu": {
         "answerer": "text",
         "tools": "json",
+        "sidecar": "json",
         "unknown": "text",
         "recorded_at": "text"
       }

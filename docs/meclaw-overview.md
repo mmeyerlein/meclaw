@@ -60,7 +60,7 @@ The DSL is hierarchical (directories, paths `/main/sub/leaf`); the actor substra
 |---|---|---|
 | **Stateful cell** (e.g. `llm`, `store`, `code` with `cell.db`) | 1 long-lived task | own mpsc mailbox |
 | **Stateless cell** (e.g. `web_fetch`, `web_search`, `file`, `edit`, `bash` one-shot) | 1 long-lived dispatcher task + one short-lived worker task per message | own mpsc mailbox |
-| **Long-running cell** (`proxy`, `timer`, `mcp`) | **2 work tasks** (handler + I/O), conceptual work-task count; encapsulated in **one** outer glue supervision task with exactly one `JoinHandle` (see "Long-running cells: double task") | external mailbox + internal channel |
+| **Long-running cell** (`proxy`, `timer`, `mcp`, `web`, `voice`) | **2 work tasks** (handler + I/O), conceptual work-task count; encapsulated in **one** outer glue supervision task with exactly one `JoinHandle` (see "Long-running cells: double task") | external mailbox + internal channel |
 | **Colony** | 1 long-lived task | own mpsc mailbox (central routing + `/colony/*` endpoints) |
 | **HTTP API** (`axum`) | Tokio-native task-per-request | translates each request into a message and hands it to colony |
 
@@ -113,7 +113,7 @@ With this:
 
 **Restart behavior**: if either the I/O task or the handler task panics, the entire cell is re-instantiated by colony's supervisor (one_for_one); both sub-tasks are set up anew together.
 
-**`run_io` lifetime contract (A1′)**: the I/O task function (`run_io`) runs for the **entire lifetime of the cell**; it polls/waits endlessly and returns only when the cell as a whole ends (teardown: handler closing the internal channels, disconnect, or panic). A **clean, voluntary return from `run_io` while the cell is still alive is a contract violation**: it would shut down the I/O side while the handler keeps running, and it opens the latent "io-finish-first" loss class (the outer `select!` over both `JoinHandle`s could win on the I/O completion and abort the surviving handler sibling along with unprocessed events). No real cell (`proxy`/`timer`/`mcp`) triggers this today, all I/O loops are endless (`pending`/loop); the invariant explicitly forbids the class for future implementers.
+**`run_io` lifetime contract (A1′)**: the I/O task function (`run_io`) runs for the **entire lifetime of the cell**; it polls/waits endlessly and returns only when the cell as a whole ends (teardown: handler closing the internal channels, disconnect, or panic). A **clean, voluntary return from `run_io` while the cell is still alive is a contract violation**: it would shut down the I/O side while the handler keeps running, and it opens the latent "io-finish-first" loss class (the outer `select!` over both `JoinHandle`s could win on the I/O completion and abort the surviving handler sibling along with unprocessed events). No real cell (`proxy`/`timer`/`mcp`/`web`/`voice`) triggers this today, all I/O loops are endless (`pending`/loop); the invariant explicitly forbids the class for future implementers.
 
 ### Bottleneck and solution
 
@@ -630,7 +630,7 @@ Large bodies travel over the existing blob offload; the mutation door resolves a
 | `remove_edges` | Remove edges from the edge table, scoped; `match.from`/`match.to` read the same endpoint vocabulary as `add_edges`, `.` included (GH #487). **Applied before `add_edges`**, so an edge can be replaced in ONE mutation (old one out, new one in) with the lane never missing in between. The other way round, the `match` pattern deleted the edge the same diff had just inserted (GitHub #158). |
 | `swap_nodes` | **Graph swap**: swings **all external edges** of an implementation (`match`) atomically onto another (`with`), the other being either freshly instantiated from a template **or** an already existing cell. The old cell remains **disconnected and preserved** (no-delete policy; swappable back at any time by swinging the edges back). `swap_nodes` is thereby a pure edge/topology diff, **no** `config.json` rewrite of an existing cell, **no** `cell.db` migration, **no** `cell_id` takeover (the new implementation has its own identity), and inherits the atomicity model of the edge mutation. **What "external" means for a subtree** (GH #256): an edge is external when its **other** endpoint lies **outside** the subtree rooted at `match`. The wiring with which that root serves its own children — `<unit> → <unit>/<cell>` and back — is **internal** (§ Connectivity and activity, hive sharpening) and is **not** carried along: it stays with the unit it belongs to. The old unit is thereby not merely preserved but preserved **whole** — which is what makes swinging the edges back restore a working unit rather than a hollow one. On a leaf the difference is invisible, which is why it went unnoticed until GH #256: the first generation change of a slot replaces a leaf, the second replaces a subtree. Conditions for the instantiate form: the `with` target path is free — in the registry (naming collision) **and** on the filesystem — **and** the template named is not a single hive cell (`hive_template_single_cell`, GH #572 — a hive has no factory and enters the world only as the root of a multi-cell subtree, and a subtree template is refused at this door with `schema` anyway). A directory already lying there that no registry row names (a hand-placed tree, the residue of an aborted migration) is refused by name rather than overwritten; taking it over is done with an `add_nodes` at the same path (a resume) or an `add_nodes[].adopt` stating the `cell.type` expected there. |
 | `move_nodes` | **Relocation**: moves a cell to a different address — `{"match": {"name": "fetch"}, "to": "helpdesk/fetch"}`. A path IS a cell's identity, which is why this is the only operation that changes one: the directory is moved with `rename(2)` (carrying `config.json`, `cell.id` and **`cell.db`**), the registry row is re-addressed by an UPDATE (`cell_id`, `created_at` and `instantiated_at` survive), and **every** edge naming the old path names the new one afterwards, condition and modifier verbatim. One committed mutation, with no window in which the lane is wired twice or not at all. Against `swap_nodes`: a swap swings edges onto a **different** implementation with its own identity and its own `cell.db`; a move is the opposite — the same cell, a different address. Conditions: the target lies inside the mutation scope, the target is free (registry, hive scopes, filesystem), its parent directory already exists, and the source is **not a hive** and has nothing beneath it (a half-moved hive would leave its children addressed under a path that no longer exists, so it is refused by name rather than done by halves). The parent hive's `params.graph` is **not** rewritten: since GH #168 the persisted edge table is the boot topology on a reboot — the file is seed, not state. |
-| `add_templates` | **Put a reusable template into the running colony's INSTANCE-local library** (GH #440). An entry is `{"name": …, "files": {"<relpath>": "<content>", …}}`; `template.json` is mandatory. The write **always** goes to `{templates_root}/local/<name>/` — the colony **builds** that path and never takes one from a field of the body, which is what puts the shipped library out of reach. The operation claims **no** address and vacates **none**: it puts a class in the library, not a cell in the tree, and therefore contributes nothing to the post_state. It runs **first** in the diff, so an `add_nodes` of the **same diff** can resolve the template by name; one level up the same holds inside a manifest — a later entry resolves what an earlier one registered, and that is why the registration is a declaration and not a side channel. Two refusals, both pre-destructive: a name outside `^[a-z][a-z0-9-]{1,63}$` or a file path that climbs out of the directory is `invalid_template_name`; a name the registry already answers is `template_name_taken` — **at its position**, rather than as an abort of the next rescan for everybody (§ Resolution `name@version`). The write is staging plus **one** `rename(2)`, so a concurrent rescan can never pick up a half-written `template.json`. A refused entry leaves nothing on disk. |
+| `add_templates` | **Put a reusable template into the running colony's INSTANCE-local library** (GH #440). An entry is `{"name": …, "files": {"<relpath>": "<content>", …}}`; `template.json` is mandatory. The write **always** goes to `{templates_root}/local/<name>/` — the colony **builds** that path and never takes one from a field of the body, which is what puts the shipped library out of reach. The operation claims **no** address and vacates **none**: it puts a class in the library, not a cell in the tree, and therefore contributes nothing to the post_state. It runs **first** in the diff, so an `add_nodes` of the **same diff** can resolve the template by name; one level up the same holds inside a manifest — a later entry resolves what an earlier one registered, and that is why the registration is a declaration and not a side channel. Two refusals, both pre-destructive: a name outside `^[a-z][a-z0-9-]{1,63}$` or a file path that climbs out of the directory is `invalid_template_name`; a name the registry already answers is `template_name_taken` — **at its position**, rather than as an abort of the next rescan for everybody (§ Resolution `name@version`). The write is staging plus **one** `rename(2)`, so a concurrent rescan can never pick up a half-written `template.json`. A refused entry leaves nothing on disk. **The files are not substituted** (GH #611): `files` carries the bytes of the class and no value of this mutation, so it is written byte for byte; every `${…}` in it binds at instantiation or at read time (§ Variable substitution). The entry's other fields are substituted like every other part of the diff. |
 | `seed_rows` | **Put rows into a store of a running colony** (GH #456). An entry is `{"target": "<path of a `store`>", "table": "<a table that store declares>", "rows": [ {…} ]}`. The eighth operation is the only one that changes what is **inside** a cell rather than where cells are, and it exists for the class of rows that are not data but **permissions and keys**: an `access` policy row, a grant, a firewall rule, a subscriber. Those rows used to reach a running colony as a bare store message, and that path has three holes: no digest, no access verdict **before** the write, and no `mutation_log` row. Through this door they have all three. It is checked against the post_state: the target is a **registered `store` cell** (any other type is `seed_target_not_a_store`, and so is a target where nothing stands), the table is named by its `params.schema` (otherwise `seed_table_undeclared`, and the refusal names the tables that do exist), and every key of every row is a declared column (otherwise `schema`). The target may have been created by the **same diff**. The operation claims **no** address and vacates **none**, so it contributes nothing to the post_state; it runs **last** in the diff, immediately before the commit, so that every refusal that can still happen has happened. **Idempotent by declaration**: a row already present, column for column, is counted and not written a second time — a store's declared tables carry no primary key, so nothing else would be idempotent, and `meclaw --apply` of the same manifest twice is therefore a no-op. It is the **same** seed mechanic, not a second one: the same JSON→SQL binding the staging seeder uses, the table built from the same declared column list, and a store-owned table left standing without its key is repaired by `ensure_keyed_table` at the next wake (GH #255). The write goes into the target's `cell.db` even while the cell is awake: the colony is the write authority, WAL plus `busy_timeout` serialise the second connection, and a `store` — unlike the `vault` (GH #160) — holds no in-memory view that could go stale. A `params.write_surface: "internal"` bounds **messages**, not this door: the reach here is the mutation scope and the access verdict over it. |
 
 **Match pattern for `remove_*` and `swap_nodes`**: a pattern references nodes/edges by properties (`name`, `template`, for edges `from`/`to`/`condition`/`modifier`/`default`), **not by UUID**. A pattern is a pattern, not an identity: `{from, to}` alone hits **every** edge between the pair rather than the one that was meant — pass `condition`/`modifier`/`default` too when exactly one is to be hit. **`remove_edges[].match.default`** (boolean, since **v0.18.0**, GH #283) follows the same convention as the two optional fields beside it: with the key absent the routing phase is **unconstrained** and the pattern hits regular **and** default edges alike; with the key present the edge must run in exactly that phase (`"default": true` hits only default edges, `false` only regular ones). The pattern must have at least one hit in the current registry, otherwise the mutation is rejected. Names are unique per scope (naming-collision reject in validation); a UUID reference as a disambiguation fallback is **not** provided.
@@ -703,7 +703,7 @@ These strings are part of the stable mutation API contract, with the same promis
 - `contract_incomplete`: a `config.json` to be loaded (boot walk or mutation staging, non-hive) does not declare the required keys `contract.version`/`settings`/`consumes`, or declares them type-wrong (`docs/config.md` § contract).
 - `invalid_params` (GH #404): the `params` block of a cell about to be instantiated does not deserialize for the cell type it names — the same question `CellFactory::validate_params` asks of every cell at boot (`plan_bootstrap`), asked at the moment the `params` are written. Before this, the two paths that put a cell into a colony disagreed: instantiation accepted what the boot refuses, so a template defect committed cleanly, the cell never did its job, and the **next** process start refused to boot — in front of whoever restarted it rather than whoever grew it (GH #401 was one instance of the class). What is checked is the runtime view of the `params` including the default-deny `sandbox` block, byte-for-byte what the boot reads back off the disk. Pre-destructive, emitted by `patch_and_substitute_config` (`mutation/stage.rs`) during staging, before the atomic rename; the message names the staged `config.json` as `<node>/config.json` — without a host path, because the staging directory is gone by the time the sentence is read (GH #507) — and the factory's own reason verbatim: the same words the boot would have printed. A cell type without a registered factory never produces this code (that is `unknown_cell_type`), and neither does a hive marker. **The guard works forward:** a tree that already carries the defect is not repaired by it, and a boot that refuses there is still the right answer.
 - `hive_port_boundary` (GH #133): an `add_edges` endpoint reaches into a hive that declared its ports (`params.ports`, opt-in — see `cell-types.md` § `hive`) while the edge's other endpoint lies outside that hive: a deep endpoint past the port, which would bypass whatever the hive puts in front of it. Pre-destructive, emitted by `validate_hive_port_boundary` (`mutation/port_boundary.rs`) before staging. A hive without the declaration is not sealed and never produces this code. **Mutations only** (ruling 2026-08-15): a hive's `params.graph` at boot is the colony author's sovereign birth design and is never rejected by the seal, which guards the runtime instead; boot-time enforcement, if it ever comes, arrives as its own opt-in switch rather than by widening this one.
-- `hive_contract` (GH #173): a hive declared its interface as lanes (`params.contract`, opt-in — see `config.en.md` § `params.contract`) and something contradicts it. Two shapes: an `add_edges` edge onto the hive path stamps a constant `hop.route` the hive does not accept; or the hive's own graph no longer carries a lane it promises (an `accepts` lane with no door, an `emits` lane with no exit through the hive path). Pre-destructive, emitted by `mutation/hive_contract.rs`; checked with the real router (`apply_edges`) rather than by comparing text, and an edge whose route is only knowable at runtime is not judged. A hive without the declaration never produces this code. **Mutations only** — boot warns, for the same reason the port seal does.
+- `hive_contract` (GH #173): a hive declared its interface as lanes (`params.contract`, opt-in — see `config.en.md` § `params.contract`) and something contradicts it. Three shapes: an `add_edges` edge onto the hive path stamps a constant `hop.route` the hive does not accept; or the hive's own graph no longer carries a lane it promises (an `accepts` lane with no door, an `emits` lane with no exit through the hive path); or a hive THIS diff gives birth to declares a lane `required` and no edge of the same diff delivers it — onto the hive path for a rim lane, onto one of its `at` connect points otherwise (apps rim, 2026-09-05; checked once, at birth — a later `remove_edges` on a standing hive is not judged). Pre-destructive, emitted by `mutation/hive_contract.rs`; checked with the real router (`apply_edges`) rather than by comparing text, and an edge whose route is only knowable at runtime is not judged. A hive without the declaration never produces this code. **Mutations only** — boot warns, for the same reason the port seal does.
 - `required_drain_missing` (GH #147/#237): a hive declared a pair (`params.required_drains`, opt-in — see `cell-types.en.md` § `hive`): a port with its drain, or an accepted lane with the answer lane the caller has to take. Something from outside serves one half and the other is missing once the diff stands. It needs the post_state edge table (the mutation this rule wants people to write brings both halves in ONE diff) and therefore runs after staging but before the spawn/registry step — the reject is spurless. Emitted by `mutation/required_drains.rs`, checked with the real router.
 - `template_ref_cycle` (GH #277): a template `ref` closes a ring — a template already on the resolution stack is entered a second time. The stack itself is the guard, which is why composition needs no depth cap: a ring is refused at its first repetition, and without a ring a chain cannot outgrow the finite registry. Pre-destructive, emitted by `expand_ref` (`mutation/subtree.rs`) during parsing, before any staging; the message renders the ring as `a@1.0.0 -> b@1.0.0 -> a@1.0.0`. A `ref` that points at nothing is not a ring but `template_missing`, whose message names the reference plus the versions the registry does hold under that name (or `none`).
 - `requirement_missing` (GH #292): an instantiation names a template that declares a key (`requires.ctx` / `requires.env`, see § `requires`) the mutation does not supply — a `ctx` key missing from the mutation's `ctx` block, or an environment variable the loaded `.env` does not hold. The set spans the named template **and**, through its `ref`s, every referenced one: what a part needs, the composite needs. Pre-destructive, emitted by `validate_requires` (`mutation/validate.rs`) before scope containment and therefore before any staging; the message names the template, the class, the key and the template's own `because` verbatim. A template without a `requires` block never produces this code. **Both instantiating operations are covered** (GH #347): an `add_nodes` entry **and** the instantiate form of `swap_nodes[].with` — the one that names a `template` and therefore performs the same copy including the `${ctx.X}` substitution. The existing-node form of `swap_nodes[].with` (no `template`) references a cell that is already there, stages nothing and owes nothing here. **A resume does not repeat the contract:** an `add_nodes` at an already existing path is a Reconnect/Resume (§ Authority model, “Instantiation and cell_id stability”) that stages nothing, resolves no `${ctx.X}` and rewrites no `config.json` — so it never consumes the declared keys and is not refused for them. The requirement belongs to the instantiation, not to the address; the exemption therefore belongs to `add_nodes` and not to the swap, which always stages. **The exemption is per node, not per entry** (GH #347): for a partially existing composite subtree (the root stands, individual children are missing) the merge path stages the missing children — and the contract holds for those. Exempt are exactly the nodes the merge skips; a `ref` belongs to the node it hangs under, so a resume is asked for a referenced template's keys only when it actually creates that node. The named template's own declaration is not attributable to a single node — it is made for the whole tree — and is therefore owed as soon as the entry stages anything at all. Which nodes those are is answered by the same classification the merge itself asks (`subtree::classify_subtree_nodes`): one derivation, not a second opinion about what a resume is. A resume over a fully existing subtree stages nothing and stays entirely exempt.
@@ -738,7 +738,7 @@ In the current phase no concurrent builders per scope are expected, no `expected
 |---|---|
 | **Colony** | The overall system and the only authority. Holds the central `HashMap<Path, ActorHandle>` registry, routes all messages, manages lifecycle, templates, `config.json`. Has path `/colony`. Runs as its own Tokio task with its own mailbox. |
 | **Hive** | Directory with `config.json` `type: "hive"`. **Scope marker** for the authority boundary and mutation scope of a path prefix, no own actor, no mailbox, no own `cell.db`. Additionally acts as a **logical transit node** in the routing graph, evaluated by colony. The hierarchy effect in the DSL remains; the implementation is flat. |
-| **Cell type** | Behavioral classification of an addressable cell: `llm`, `bash`, `code`, `store`, `web_fetch`, `web_search`, `file`, `edit`, `proxy`, `timer`, `mcp`, `harness`, `subcolony`, `vault`. Each cell type brings its own `params` schema and capability set. Cells with one of these values are kept by colony as actors in the `HashMap<Path, ActorHandle>` registry. |
+| **Cell type** | Behavioral classification of an addressable cell: `llm`, `bash`, `code`, `store`, `web_fetch`, `web_search`, `file`, `edit`, `proxy`, `timer`, `mcp`, `harness`, `subcolony`, `vault`, `web`, `voice`. Each cell type brings its own `params` schema and capability set. Cells with one of these values are kept by colony as actors in the `HashMap<Path, ActorHandle>` registry. |
 | **Cell** | Directory with `config.json` of a particular cell type. Topologically neutral, the role follows from the location (template or instance). |
 | **Hive scope marker** | Directory with `config.json` `type: "hive"`. **Not an actor**: no Tokio task, no mailbox, no `cell.db`, no `ActorHandle` entry in the cell registry. Nevertheless a **junction in the system**: colony keeps a separate hive scope table (path prefix, authority boundary, mutation scope, initial `params.graph`). At filesystem bootstrap the hive marker is recorded; on mutations it acts as a scope boundary. **Addressable as a transit target**, colony forwards based on the hive out-edges, never delivers (see "Hive paths as target: transit evaluation" and `cell-types.md` section `hive`). |
 | **Template** | A cell (or cell subtree including hive scope markers) in the `templates/` folder. Role: class / blueprint. Copied on instantiation. |
@@ -1331,8 +1331,8 @@ Cell → other cell and cell → colony both run through the same routing path (
 - **Three spawn strategies** behind this uniform handle, depending on the cell class:
   - **Stateful**: not reentrant → 1 long-lived `cell_task` Tokio task that pulls the mailbox in a loop and calls `cell.handle()` directly. Cell state is single-threaded accessible from the cell's perspective (see "Concurrency and parallelism").
   - **Stateless**: reentrant → 1 long-lived `stateless_dispatcher` Tokio task pulls the mailbox and spawns a short-lived worker task per message that runs `factory.invoke()` and terminates. Concurrency limit per cell configurable via `tokio::sync::Semaphore` in the dispatcher (`params.max_concurrency`, see below).
-  - **Long-running** (`proxy`/`timer`/`mcp`): double-task pattern (handler task + I/O task, see "Long-running cells: double task"). Both sub-tasks together under one logical cell identity.
-- **No inner loop in cell code**: cells only wait for incoming messages (or external events for `proxy`/`timer`/`mcp`). Iteration is a topology matter.
+  - **Long-running** (`proxy`/`timer`/`mcp`/`web`/`voice`): double-task pattern (handler task + I/O task, see "Long-running cells: double task"). Both sub-tasks together under one logical cell identity.
+- **No inner loop in cell code**: cells only wait for incoming messages (or external events for `proxy`/`timer`/`mcp`/`web`/`voice`). Iteration is a topology matter.
 - **Contract**: every cell declares `contract.emits`, `contract.consumes`, `contract.settings`, `contract.capabilities` (see `config.md`).
 - **Knowledge is limited**: a cell knows only message + params. Not: the sender path, the receiver path, other cells. Envelope fields (`id`, `trace_id`, `parent_message_id`, `correlation_id`, `target`, `reply_to`, `ttl`, `created_at`) are **read-only** from the cell's perspective; they are set exclusively by colony during routing (see "Envelope setter authority" in the message model).
 
@@ -1427,7 +1427,7 @@ The dispatcher task is a **real concurrency guard**, not a mere spawn loop: thro
 
 ### Long-running cells: double task
 
-Cell types that continuously take in external events (`proxy`/`timer`/`mcp`) use, instead of a single cell task, a **double-task pattern per instance**. Both sub-tasks belong to the same logical cell, communicate via an internal `mpsc::channel`, and share a single `ActorHandle` address with an external mailbox in colony's registry.
+Cell types that continuously take in external events (`proxy`/`timer`/`mcp`/`web`/`voice`) use, instead of a single cell task, a **double-task pattern per instance**. Both sub-tasks belong to the same logical cell, communicate via an internal `mpsc::channel`, and share a single `ActorHandle` address with an external mailbox in colony's registry.
 
 **Motivation**: a 30-second long poll to Telegram, a `tokio::time::sleep_until` until the next schedule firing, or a blocking MCP SSE read must never block the acceptance of new messages from the topology, and conversely a full external mailbox must not stall the polling. A single task could only solve this via `tokio::select!` between an unboundedly long future and `mailbox.recv()`, with the risk that the cancellation of the future loses provider state on every new mailbox item (e.g. a Telegram update cursor half advanced). The double-task pattern decouples polling and mailbox frequency completely.
 
@@ -1460,7 +1460,7 @@ async fn long_running_cell_spawn(
 
 **Message-timeout backstop**: long-running handlers typically have `cell.message_timeout: 0` or `-1` (no backstop), because a single `handle()` call here can definitionally be long (e.g. a long-running MCP tool call). Operation timeouts (concept A, `params.external_timeout_ms`) remain mandatory for every I/O operation in the handler, see "Timeouts".
 
-**Cell-type-specific manifestation**: the concrete role assignment (what exactly the I/O task polls, what the handler holds) is a cell-type matter and is described in `cell-types.md` per type, see `proxy`, `timer`, `mcp`.
+**Cell-type-specific manifestation**: the concrete role assignment (what exactly the I/O task polls, what the handler holds) is a cell-type matter and is described in `cell-types.md` per type, see `proxy`, `timer`, `mcp`, `web`, `voice`.
 
 **Rejected** were: (a) a single task with `tokio::select!` over the mailbox and the I/O future, cancellation of the I/O future on every new mailbox item loses provider state. (b) `tokio::spawn` of a short-lived I/O task per mailbox message, does not fit the continuous polling character (long poll/sleep/stream). (c) clamping a long-running cell as two separate cells under a hive, would split provider state across two `cell.db`s, lose the atomicity of the internal channel, and break the "one address per cell" discipline in the registry.
 
@@ -1731,6 +1731,139 @@ ordinary edges**, pulled per request against an **ephemeral** recipient key and
 **never pushed** (`cell-types.md` § `vault`, sealed delivery). On a v-lane the
 same ciphertext rides one hop instead of N; the plaintext still exists only in
 the RAM of the requesting task.
+
+### Apps at the rim of a member (ruling 2026-09-05)
+
+An **app** is a sub-form of the member, not a new kind of node: an ordinary
+sealed hive (`ports: []`) instantiated by an ordinary mutation into the member's
+`./apps` container. It has **no port, no secret and no channel of its own** —
+everything it learns it learns over edges the member's topology draws, and
+everything it says it says on lanes that member already carries. There are
+exactly **three ways to plug in, and all of them are at the rim**: an app may
+**observe** what the conversation carries, **offer** a tool to the member's
+assistant, and **write** to a screen. What it may not do is stand *in* the way:
+an app is never an interception. Every edge it gets is an additional one, so a
+path that existed without the app fires exactly as it did before — which is what
+makes an app installable and removable without re-reading the member.
+
+**Three classes of edge, two owners.** The ruling in one sentence: *whoever
+listens orders it.*
+
+| Class | Owner | Example |
+|---|---|---|
+| the level's half, in the `member` template | the member | the DECLARATION of the observer lanes (`at: ["./apps"]`), and the two restamping edges `./apps -> ./assistants` (`tool_result`→`in_tool`, `tool_schemas`→`in_menu`) that never fire while no app is installed |
+| observer and binding edges, in the installing manifest, scope `<member>` | the mutation that instantiates the app | `./firewall -> ./apps` on `turn`, `./apps -> ./apps/<app>` on `turn`/`answer`/`partial`, `./apps/<app> -> ./apps` on `view`/`tool_schemas` |
+| v-lanes (§ v-lanes, ADR-0020), same manifest, same scope | the same mutation, permitted by the `at` of the app and of the assistant | `<gen>/talky -> <app>/show` on lane `tool` |
+
+**Observing: the template declares, the manifest draws.** The member declares
+`turn` and `partial` as `emits` with `at: ["./apps"]` and `tool_result` and
+`tool_schemas` as `accepts` with the same connect point; `answer` keeps its rim
+entry **without** `at`, because it is a rim lane and an `at` would switch off the
+exit check that guards it. The edges that carry those lanes are **not** in the
+template: the mutation that installs a listening app draws `./firewall -> ./apps`
+(the screened turn, with the same hygiene as `./firewall -> ./assistants`),
+`./assistants -> ./apps` (the answer), `./channels -> ./apps` (the interim
+transcript) and the container binding `./apps -> ./apps/<app>`. That split is the
+same rule a `voice` channel already lives by with `emit_partials`: **whoever
+listens orders it**, and a member with no listening app carries no such edge and
+dead-letters nothing.
+
+Mechanically none of those edges needs the declaration — the scope is the member,
+and the endpoints are direct children or two levels deep without a `lane` field.
+The declaration earns its place twice over: it makes the member a **mandatory
+hop** for a v-lane that would carry one of those lanes in from outside
+(§ v-lanes), and it keeps the rim a truthful description of the traffic for
+anything that reads contracts instead of graphs.
+
+**The observer edges for `turn` and `answer` are guarded on the channel**
+(`has(context.channel_node) && context.channel_node != ''`), and the guard is
+load-bearing rather than cosmetic. An app belongs to the person and hears the
+person's conversation **on their channels**. A turn injected at the member's
+`in_turn` door by an operator or by a digest belongs to its sender, and its
+answer leaves through the member's guarded **default** exit — a regular fan-out
+edge beside it would kill that exit outright, because a default fires only when
+no regular edge of the same sender fired. Event and receipt turns raised by a
+screen do not pass the firewall at all and are not observed as `turn` in this
+shape.
+
+**A second installation is idempotent, and that is edge identity, not a special
+case.** An edge is the same edge when `from`, `to`, `condition`, `modifier` and
+`default` are; the edge table keeps identical edges once, so the second app's
+manifest redraws the member's observer edges and the commit goes through
+unchanged. A **diverging** guard is a different edge, and then the turn arrives
+at the container twice — which is precisely why the installer of the future is
+the **builder**, reading `/colony/graph` and drawing only what is missing. An
+`app install` command is then the errand given to it, never a second mechanism.
+
+**Offering: the call leaves the brain's rim as a v-lane.** The `tool` lane leaves
+`talky` at its own rim, and the app gets the same shape one level lower down: an
+edge in the **member's** graph, `<gen>/talky -> <app>/show` with `lane: "tool"`,
+guarded on the tool name — regular, and therefore evaluated before the
+assistant's default exit into `./tools`. Because it bypasses that exit it carries
+the exit's stamps itself (`context.tool_caller`, `context.assistant`) and deletes
+the inside markers the exit would have deleted. `schemas` — the menu question —
+runs the identical edge, guarded on its own route, as a third regular edge beside
+the two the assistant already fans the question out over. Both ends pronounce
+their connect points: the assistant declares `tool` and `schemas` with
+`at: ["./talky", "./cogny"]`, the app declares them with `at: ["./show"]`.
+
+**The way back is not a v-lane; it is the way the memory already takes.** The app
+emits `tool_result` and `tool_schemas` at its own rim, the manifest's binding edge
+carries both into the container and stamps `context.tool_answerer` there — the
+level cannot stamp it, because only the mutation knows the instance name — and
+the member's two restamping edges turn them into `in_tool` and `in_menu` for
+`./assistants`. From there the growth recipe's doors take the result exactly as
+they take the memory's. Nothing is added to the assistant's own rim, because an
+`at` on `in_tool` would close the rim door every growth recipe draws.
+
+**An app answers its WHOLE offer, whatever list was asked for.** The menu question
+carries the names its asker knows; an app replies with everything it offers and
+an empty `unknown`, because the question was never addressed to it, and the
+collector merges the rows of all answerers into one menu — a name an answerer DID
+deliver wins. So the app's tool reaches the brain's `system.tools` without the
+collector, its `params.tools` or the growth recipe being touched. The alternative
+does not exist: no mutation operation writes the params of a standing cell.
+
+**Observed tool results arrive as a v-lane fan-out, from two sources.** One from
+the assistant's `./tools`, one from the member's `./memory-hive`, both onto the
+app's `./stage`, both regular edges that fire **in addition to** the existing
+exits. For the first the assistant declares `tool_result` with `at: ["./tools"]`
+— by `development-rules.md` § 8b that is not a rim lane: the member does not carry
+it and the door check skips it. The second source is a direct child of the scope
+and is not deep at all. There is deliberately **no** container edge
+`./memory-hive -> ./apps`: the observed copy would run over `./apps ->
+./assistants` and reach the assistant a second time.
+
+**Writing is unchanged.** The app emits `view` and `error` at its rim, the
+binding edge stamps the screen it writes to, and the member's guarded
+`./apps -> ./channels` edge delivers it as `in_view` — the road a member has had
+since it grew a screen of its own.
+
+**A required lane: a hive may insist on being wired at birth.** An `accepts` entry
+may carry `required: true`, and it means *whoever instantiates me must wire this
+lane to me*. It is checked in the post-state stage of the mutation, against the
+post-state edge table, for every hive **this diff gives birth to** — the same
+list and the same reasoning as the port boundary: the check judges what the diff
+DRAWS. A lane with `at` counts as wired when an edge carrying that lane ends on
+one of its connect points; a rim lane counts as wired when the router probe of an
+inbound edge lands on the hive path, which is the door check asked from the
+outside. Missing, the mutation is refused `hive_contract` (its third shape),
+collecting rather than at the first find, before the commit, and rolled back like
+its neighbours.
+
+**Its limits, said out loud.** Only birth is judged. A later `remove_edges` that
+takes the lane's edge away is not an instantiation and is not re-judged — the
+door check on standing hives stays what it is. Boot does not even warn: the birth
+topology is authorship. And whether the emitter at the other end really delivers
+the lane — a switch like `emit_partials` left at its default — is nothing the
+substrate can know. Both halves, or neither.
+
+**What is not here.** The app loader is a later errand: today an app is an
+ordinary template plus a manifest written by hand, and there is no `app.json`
+read at start, no colony-level app listing and no `app install` command; the
+builder as installer belongs to the same errand. The **install manifest itself is
+not repeated here** — it stands, with its placeholders, in
+`templates/member/README.md` § Installing an app.
 
 ---
 
@@ -2224,7 +2357,7 @@ Format:
 - **On fresh `cell.db` creation** (`OpenStatus::Created`, see § Lifecycle): colony reads the seed, builds `cell.db` anew. On reopening an existing `cell.db` (`OpenStatus::Resumed`) it is **not** re-seeded, otherwise duplicate rows.
 - **Export** (GH #253, built): the seed loader was always **generic** — `mutation::stage::apply_seed_jsonl` calls itself that and takes a path; of the cell type the seeder wants exactly one bit since GH #398 (a type that owns its schema seeds itself). Only the way back was missing, and it was missing for **all eight** cell types with a `cell.db` (`harness`, `llm`, `mcp`, `proxy`, `store`, `subcolony`, `timer`, `vault`). It is now the **inverse of the same mechanism**, not a second one: a message carrying the body slot `transfer` with `{"operation": "export", "table": "<t>"}` is answered by the **substrate** (`crates/meclaw-colony/src/db_transfer.rs`, called in `cell_task` **before** `handle()`), and the answer is a document `{format, table, key, schema, rows}`. Write its `schema` object as line 1 and one row per line after it and the result **is** a `seed/<table>.jsonl` the existing loader reads — the birth path and the transfer path speak one format. Without `table` the export answers with the inventory of content tables. **Since GH #555 that sentence is literal**: with `"to": "<dir>"` the same process writes the file the loader reads.
 - **The export now writes the file itself — and that retracts a retraction (GH #555, ruling R-0904-3).** Until 2026-09-04 this read "The export does NOT write the file itself", with three reasons; one of them was aimed at the wrong thing, and the other two still hold and are honoured by the build. The owner's ruling is one sentence: *"cells manage their own files, nobody else does"* — `{"operation": "export", "to": "<dir>"}` writes `<dir>/seed/<table>.jsonl` and, last, the marker `<dir>/seed/export_final.json`; `{"operation": "import", "from": "<dir>"}` reads the same directory back. On the three old reasons: (1) *"the loader reads only `seed/<table>.jsonl`"* — correct, and precisely why the slot writes exactly that name; the proposed UUID/date file names never come back. (2) *"a cell writing files into its own tree would have a second output channel"* — it stands, and it is honoured: nothing is ever written into `{root}`, only into the absolute fence the cell declares for itself (`params.transfer.base_path`, `config.md`), on a `to`/`from` the caller names, answered by a receipt carrying `rows`/`seed_dir`. It is an addressed operation with a receipt, not a silent side effect — and the no-delete policy is untouched, because it speaks about `{root}`. (3) *"a file in the cell's own tree crosses no colony boundary, which is the actual need"* — that was the point, and the fence is the answer to it: it lies **outside** `{root}`, so the file crosses exactly the boundary that was at issue. The colony stays write-free outside `{root}` instantiation; the one who writes is the cell. Format, fence, `error_code`s and the whole-or-nothing promise: `cell-types.md` § Content transfer.
-- **Import** (GH #253, built): the same body slot with `{"operation": "import", …}` takes such a document into a **running** cell — the half the seeder cannot reach (it runs during staging, into a freshly created `cell.db`). Three decisions: on a key collision **the target wins, always** (never an update, never an overwrite — provenance is not rewritten), **additive, never replacing** (no delete, no truncate-and-load), and a partial import is a **state, not a failure** (everything checkable is checked before the first write, the writes run in ONE transaction, and re-applying is idempotent — the repair is "send it again"). With `"from": "<dir>"` (GH #555) the same document comes out of the directory instead of out of a message, one transaction per table, the same three decisions. Details and `error_code`s: `cell-types.md` § Content transfer.
+- **Import** (GH #253, built): the same body slot with `{"operation": "import", …}` takes such a document into a **running** cell — the half the seeder cannot reach (it runs during staging, into a freshly created `cell.db`). Three decisions: on a key collision **the target wins, always** (never an update, never an overwrite — provenance is not rewritten), **additive, never replacing** (no delete, no truncate-and-load), and a partial import is a **state, not a failure** (everything checkable is checked before the first write, the writes run in ONE transaction, and re-applying is idempotent — the repair is "send it again"). With `"from": "<dir>"` (GH #555) the same document comes out of the directory instead of out of a message, in ONE transaction over every table the call names (GH #261), the same three decisions. Details and `error_code`s: `cell-types.md` § Content transfer.
 - **Advantage**: no binary DB schema drift, grep-able, append-friendly.
 - **A seed builds the table without a key — the owning cell type puts it back** (GH #255). The mutation staging seeder creates every table from the header line alone (`CREATE TABLE IF NOT EXISTS`, no constraints), and it does so at **instantiation time**, before the cell has ever been awake. For the ordinary `params.schema` tables that costs nothing — there is no key there to lose. For a **store-owned** table of a `params.canonical` binding (`aliases`, `rejected`) it would cost everything: their ops are upserts on exactly that key. So the `store` *asserts* the key at spawn instead of assuming it: a table of that kind standing without it is rebuilt with it, every row comes along, duplicates collapse onto the key (the most recently `recorded_at` row wins) and a column the declared shape does not know is carried over. A template may therefore ship such a seed.
 - **A cell type with a fixed schema is not seeded at staging at all** (GH #398). The header line describes *rows*, not a schema: column names and a coarse type and nothing else — no key, no `NOT NULL`, no default, no index, no column order. For the `store` that follows, its tables being declared per instance. For a type whose tables are fixed **in code** it is a loss: the staging seeder gets there first, and the cell's own `CREATE TABLE IF NOT EXISTS` finds the constraint-free table standing and leaves it. Such a type says so through `CellFactory::owns_schema`, and then staging writes **nothing** into its database — no tables, no rows, not even the file. It creates its own tables and loads its own seed at first spawn (`OpenStatus::Created`) — exactly the path a cell instantiated from the filesystem at boot has always taken (the staging seeder never ran there; that divergence was the defect). Measured on the shipped `web` cell: its `pages` stood as `("root" TEXT, "route" TEXT, "title" TEXT)`, so `page.set` — an upsert on `route` — was impossible for **every** display grown by mutation, `ord` sorted lexicographically and `idx_objects_parent` was missing. A cell instantiated before the fix does **not** heal itself: instantiate it again (templates are copied, instances belong to the operator).
@@ -2249,6 +2382,8 @@ meclaw knows **three substitution sources**, all with `${...}` syntax. Where eac
 All three sources are substituted exclusively by colony, the flat substrate has no intermediate layer that would have its own tokens.
 
 **Two classes, two owners.** `${ctx.*}` and `${uuid7:*}` belong to the **instance**: they are part of its identity, are resolved exactly once at instantiation, and stand as values in the `config.json` afterwards. `${ENV_VAR}` belongs to the **environment**: the token survives instantiation literally and is re-bound at every read. Instantiation therefore materializes **no** secret -- an API key referenced as `${VAR}` lives in `.env` and in no instantiated file, `contract.settings.*.default` included. The price is a standing dependency: if the variable disappears later, the boot fails loudly (`env_var_missing`) instead of silently with an empty value. Instances already materialized are **not** rewritten -- the rule applies forward, from the next instantiation on.
+
+**A third destination: the files of a registered template** (GH #611). `add_templates[].files` belongs to neither class. A registration files a **class** in the library, and a class has no instance for anything to bind to yet: the file bodies are carried through **unchanged** and written byte for byte. Every `${…}` in them binds where it always binds — the instance class at instantiation, the environment class at read time. That is also why a `${…}` in the prose of a README is not an error there: it is never read as a placeholder. The entry's other fields (`name`, `version`) are substituted like every other part of the diff.
 
 ### `${ENV_VAR}` from `.env`
 
@@ -2428,7 +2563,7 @@ blobs/<uuid-v7>.<ext>.meta.json  # sidecar with authoritative metadata
    The root `/` is by definition always active; an already known node keeps its
    persisted status (reboot).
 5. **Hydrate the edge table**: colony reads the persisted edge table from `colony.db`. On conflicts between `params.graph` hints and persisted edges, the persisted state wins (hints are only the initial desired state at first instantiation).
-6. **Spawn long-running cells**: for each **active** `proxy`/`timer`/`mcp` start the
+6. **Spawn long-running cells**: for each **active** `proxy`/`timer`/`mcp`/`web`/`voice` start the
    double-task pattern directly (no lazy wake). Inactive long-running cells are not
    started.
 
@@ -2500,7 +2635,7 @@ a disconnected hive deactivates its **entire subtree**, independent of its
 internal wiring.
 
 **Invariant (task ⇔ active)**: Tokio tasks run exclusively for active cells.
-Long-running cells (`proxy`/`timer`/`mcp`) run exactly when they are active. Stateful
+Long-running cells (`proxy`/`timer`/`mcp`/`web`/`voice`) run exactly when they are active. Stateful
 cells additionally follow, within "active", the hot/cold model (lazy wake), the two
 axes are orthogonal (see § Hot/cold cell model).
 
@@ -2728,7 +2863,7 @@ Rationale of the phase-1 choice: bounded mailboxes are a **concurrency property*
 - **`block` is the only strategy** in the entire system, no cell-, colony-, or path-specific overrides. When a mailbox is full, the sender blocks (`mpsc::Sender::send().await`) until room frees up. Thereby backpressure propagates backward through the graph, **without silent message loss on this live backpressure path** (a blocking sender instead of a drop). Since GH #18 the cell panic/restart path preserves the waiting mailbox messages as well — only the message in flight at the moment of death is lost (§ Restart strategy, "Channel mechanics on restart"). No drop logic, no per-routing-step strategy evaluation.
 - **Implementation**: `ActorHandle` is a trivial wrapper around `mpsc::Sender<Message>`; `handle.send(msg).await` is one line. No `try_send` path, no branching logic, no wrapper crate.
 - **Consequence for hanging cells**: a fully dead cell is detected by the **message timeout** (see below), the `handle()` call is aborted, the cell marked crashed, the `one_for_one` restart takes effect; the respawned cell starts with a **fresh** mailbox into which the colony replays the rescued remainder in order (the `MailboxGuard`'s `Drop` runs on a task abort just as it does on an unwind — the same preservation as under "Channel mechanics on restart"; the message that was in flight is still lost). A `tracing` warn log on `send` operations that block > a threshold gives early diagnostics.
-- **Consequence for long-running cells**: the I/O task in the double-task pattern (`proxy`/`timer`/`mcp`) blocks on the push into the internal mpsc as soon as the handler is overloaded. This throttles the external polling frequency on its own, the desired behavior, the TCP buffer at the provider self-regulates.
+- **Consequence for long-running cells**: the I/O task in the double-task pattern (`proxy`/`timer`/`mcp`/`web`/`voice`) blocks on the push into the internal mpsc as soon as the handler is overloaded. This throttles the external polling frequency on its own, the desired behavior, the TCP buffer at the provider self-regulates.
 - **Rejected were** (before the commitment to `block`-only): `drop_newest` (silent loss, agentic-LLM reliability breaks), `drop_oldest` (not Tokio-mpsc-natural, needs a custom wrapper that violates the "one task per actor" spec or forces an additional crate), `deadletter` (silent loss with an audit trail, semantically confusing relative to the existing routing cascade to `/colony/dead_letters` on routing errors). Whoever needs a different strategy (e.g. "prioritize the newest data") builds it **application-specifically via a `code` cell as a priority filter**, consistent with "iteration is topology".
 
 ### Timeouts: two concepts, cleanly separated
@@ -2758,7 +2893,7 @@ match tokio::time::timeout(params.external_timeout, http_client.post(url).send()
 
 **Behavior on elapsed**: the `tokio::time::timeout` wrapper around the **entire** `handle()` call ends it with `Err(Elapsed)`. The cell task is thereupon terminated (`break` from the `cell_task` loop), the supervisor detects it, the restart takes effect (`one_for_one`). Colony emits a generic timeout error message to `reply_to` (`header.finish_reason: "error"`, `header.error_code: "message_timeout"`). The trait-object state of the cell is lost, `cell.db` is reloaded at the re-spawn.
 
-**Configuration**: a global default in `colony.json` `message_timeout_default_ms` (recommendation: 60000), overridable per cell via `cell.message_timeout` in `config.json`. A value of `0` or `-1` = no backstop (typically `proxy`/`timer`/`mcp`, which run long by definition).
+**Configuration**: a global default in `colony.json` `message_timeout_default_ms` (recommendation: 60000), overridable per cell via `cell.message_timeout` in `config.json`. A value of `0` or `-1` = no backstop (typically `proxy`/`timer`/`mcp`/`web`/`voice`, which run long by definition).
 
 **Cell-task pattern** (stateful, with backstop):
 ```rust

@@ -6,7 +6,7 @@
         "add_nodes": [
           {
             "name": "display",
-            "template": "display@1.0.2",
+            "template": "display@1.1.0",
             "override_params": {
               "web": {
                 "port": 7900
@@ -29,7 +29,7 @@
           {
             "from": ".",
             "to": "./display",
-            "condition": "has(hop.route) && (hop.route == 'answer' || hop.route == 'view') && has(context.channel_node) && context.channel_node == 'display'",
+            "condition": "has(hop.route) && hop.route == 'view' && has(context.channel_node) && context.channel_node == 'display'",
             "modifier": {
               "set_hop": {
                 "route": "'in_view'"

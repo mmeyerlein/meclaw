@@ -385,7 +385,7 @@ fn member_manifest(fence: &std::path::Path) -> Value {
     json!({"manifest": [{
         "scope": "/members",
         "diff": {
-            "add_nodes": [{"name": MEMBER, "template": "member@1.6.0",
+            "add_nodes": [{"name": MEMBER, "template": "member@1.7.0",
                            "override_params": Value::Object(over)}],
             "add_edges": [
                 {"from": ".", "to": format!("./{MEMBER}"),

@@ -1,0 +1,240 @@
+{
+  "cell": {
+    "type": "voice",
+    "timeout": -1
+  },
+  "params": {
+    "port": 7900,
+    "bind": "127.0.0.1",
+    "default_mode": "auto",
+    "barge_in": true,
+    "emit_partials": false,
+    "emit_speak_end": false,
+    "external_timeout_ms": 5000,
+    "provider_idle_timeout_ms": 30000,
+    "audio_out_frame_ms": 20,
+    "speak_plain": true,
+    "release_grace_ms": 1500,
+    "stt": {
+      "provider": "deepgram",
+      "api_key": "${DEEPGRAM_API_KEY}",
+      "model": "flux-general-multi",
+      "language": "de",
+      "eot_threshold": 0.7,
+      "eager_eot_threshold": 0.3,
+      "eot_timeout_ms": 5000,
+      "sample_rate": 16000
+    },
+    "tts": {
+      "provider": "cartesia",
+      "api_key": "${CARTESIA_API_KEY}",
+      "voice": "a0e99841-438c-4a64-b679-ae501e7d6091",
+      "model": "sonic-3.6",
+      "language": "de",
+      "sample_rate": 24000
+    }
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {
+      "port": {
+        "type": "number",
+        "secret": false,
+        "default": 7900,
+        "description": "TCP port of the WebSocket surface. Owned like a web cell's port: a second instance takes its own via override_params, and 0 is refused."
+      },
+      "bind": {
+        "type": "string",
+        "secret": false,
+        "default": "127.0.0.1",
+        "description": "Bind address. Loopback by default because this cell type never authenticates; put a proxy in front of it to expose it."
+      },
+      "default_mode": {
+        "type": "string",
+        "secret": false,
+        "default": "auto",
+        "description": "Mode a new connection gets when it names none: 'auto' (the cell decides where a turn ends) or 'hold' (the client says so)."
+      },
+      "barge_in": {
+        "type": "boolean",
+        "secret": false,
+        "default": true,
+        "description": "Whether detected speech aborts a running synthesis. Only meaningful in 'auto'."
+      },
+      "emit_partials": {
+        "type": "boolean",
+        "secret": false,
+        "default": false,
+        "description": "Whether interim transcripts leave the cell as their own lane. OFF here, and whoever listens orders it: set true via override_params when an app declares the partial lane and the same manifest draws the edge that drains it. Without that edge every interim dead-letters with no_route, once per interim. The client still sees interim frames on its own socket either way."
+      },
+      "emit_speak_end": {
+        "type": "boolean",
+        "secret": false,
+        "default": false,
+        "description": "Whether the END of a synthesis leaves the cell as its own lane. OFF here, for the same reason emit_partials is: the emission goes to this cell's own path and the out-edges decide, so without an edge that drains it every synthesis dead-letters with no_route. Whoever waits for the sentence to finish orders it -- a telephony hive that must not cut the line while the assistant is still speaking sets true via override_params, in the same breath as the edge that carries the lane. The client's own speak_end frame is a separate path and travels either way."
+      },
+      "external_timeout_ms": {
+        "type": "number",
+        "secret": false,
+        "default": 5000,
+        "description": "Operation timeout around every provider call."
+      },
+      "provider_idle_timeout_ms": {
+        "type": "number",
+        "secret": false,
+        "default": 30000,
+        "description": "Idle deadline per provider socket. A socket that says nothing for this long is closed and reopened on the next turn."
+      },
+      "audio_out_frame_ms": {
+        "type": "number",
+        "secret": false,
+        "default": 20,
+        "description": "How much audio one outbound binary frame carries. A synthesis provider chooses its own chunk size and Cartesia's are large, so every chunk is cut into frames of at most this length before it leaves -- an upper bound, not a fixed size; the split never runs through a sample, and a part-sample tail travels with the next chunk. 20 ms is what a phone edge survives: FreeSWITCH mod_audio_stream 1.0.3 aborts the call on a frame longer than about 100 ms. Set 0 to send each chunk exactly as the provider produced it."
+      },
+      "speak_plain": {
+        "type": "boolean",
+        "secret": false,
+        "default": true,
+        "description": "Whether a written answer becomes speech text before it is synthesised: markdown emphasis (*, **, _, __, backticks), heading hashes, list markers, link and image syntax (the text and the alt text stay), code fences (the code stays) and table pipes (a row becomes its cells, joined by commas) are removed, and a line break becomes a sentence end. An assistant writes for a screen without being asked to, and a synthesis provider reads what it is given -- the first live call of this cell had Cartesia pronouncing the stars around a bolded word. Two shapes are kept on purpose: a * or _ with whitespace on both sides is an arithmetic operator, and an ordinal at the start of a line keeps its digit ('5. September 2026' -> '5 September 2026'), because a date and a list item look identical there. An answer with no words left in it is neither spoken nor refused. Set false where the answers are already plain and the text must reach the provider byte for byte."
+      },
+      "release_grace_ms": {
+        "type": "number",
+        "secret": false,
+        "default": 1500,
+        "description": "How long a released 'hold' boundary waits for the recognition provider's own end of turn before it cuts the turn with what it has. 'release' says that no NEW audio belongs to the turn; the provider still owes the end of the audio already sent, and it takes its time -- Deepgram Flux reports an end of turn 400-700 ms after the words that caused it. Cutting on the frame lost exactly those words, and the late end of turn then arrived inside whichever boundary was open next, so the previous take turned up at the front of the following one. Whichever comes first ends the turn: the provider's end, or this cap. Set 0 to cut on the release frame, the behaviour before this knob existed. Range 0..=10000."
+      },
+      "stt": {
+        "type": "object",
+        "secret": true,
+        "default": {
+          "provider": "deepgram",
+          "api_key": "${DEEPGRAM_API_KEY}",
+          "model": "flux-general-multi",
+          "language": "de",
+          "eot_threshold": 0.7,
+          "eager_eot_threshold": 0.3,
+          "eot_timeout_ms": 5000,
+          "sample_rate": 16000
+        },
+        "description": "The speech-to-text lane: 'provider' picks the adapter and the remaining keys belong to it. Carries the credential, so the whole block is immutable on the runtime params surface -- rotation means .env plus a restart. 'echo' is the provider that needs no credential and no tts block at all. The deepgram block also takes 'keyterms', a list of words the recogniser should expect (for example ['Egon', 'meclaw']): names and product terms a general model has no reason to know, each one boosted on its own, and a multi-word entry stays one term. Empty by default, and an empty list changes nothing about the request."
+      },
+      "tts": {
+        "type": "object",
+        "secret": true,
+        "default": {
+          "provider": "cartesia",
+          "api_key": "${CARTESIA_API_KEY}",
+          "voice": "a0e99841-438c-4a64-b679-ae501e7d6091",
+          "model": "sonic-3.6",
+          "language": "de",
+          "sample_rate": 24000
+        },
+        "description": "The text-to-speech lane, same shape and same immutability as 'stt'. Required unless stt.provider is 'echo'. The cell never resamples: the rate declared here is the rate that reaches the client. 'voice' ships as Cartesia's own documented example voice -- the id their sonic-3.x request examples carry, so a first smoke with no override speaks instead of failing -- and it is a PLACEHOLDER every real instance replaces. It is a behaviour knob rather than a credential, so it stands in params and is named through override_params, never through a colony-wide environment line (development-rules 8a, R6)."
+      }
+    },
+    "ingress": {
+      "context": [
+        "session_id"
+      ]
+    },
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "turn",
+            "partial",
+            "speak_end",
+            "error"
+          ],
+          "required": false
+        },
+        "session_id": {
+          "type": "string",
+          "required": false
+        },
+        "turn_id": {
+          "type": "string",
+          "required": false
+        },
+        "speak_id": {
+          "type": "string",
+          "required": false,
+          "description": "Which synthesis ended. Only on `speak_end`: it names the `in_speak` this is the receipt of, so a waiter can tell the sentence it is holding for from the one before it."
+        },
+        "reason": {
+          "type": "string",
+          "values": [
+            "done",
+            "cancelled",
+            "failed"
+          ],
+          "required": false,
+          "description": "Why the synthesis ended. Only on `speak_end`. `cancelled` and `failed` are the ones a telephony hive has to act on: both leave a half sentence in whatever the far edge was already handed, and that buffer sits over there rather than here."
+        },
+        "platform": {
+          "type": "string",
+          "values": [
+            "voice"
+          ],
+          "required": false
+        },
+        "mode": {
+          "type": "string",
+          "values": [
+            "auto",
+            "hold"
+          ],
+          "required": false
+        },
+        "eager": {
+          "type": "boolean",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        },
+        "msg_type": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "context": {
+        "session_id": {
+          "type": "string",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "network:proxy",
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "One spoken conversation as one cell. Audio arrives over a WebSocket and leaves the cell as ordinary text turns; a finished assistant turn arriving from the topology is spoken back into the same connection. A connection IS the session, so the cell mints session_id at birth and every emission carries it.",
+    "use_when": "Wherever a topology needs a voice surface in front of something ELSE. One instance per port. Wire the cell itself -- there is no hive and no lane inside it to hit: the emission lane is on hop.route, 'turn' for a finished utterance, 'partial' for an interim one and 'error' for the cell's own failure.",
+    "not_in_scope": "No telephony, no SIP, no room: the client brings the audio and takes it back. No resampling either -- the rate a provider declares is the rate on the wire, and a client that sends something else is refused rather than converted. No persona, no memory, no answer of its own: this is the surface, and whatever stands behind it answers.",
+    "emits_meaning": "Three emission shapes, hence no required hop key. (a) 'turn' -- one user-origin text turn per finished utterance, hop carries route, session_id, turn_id ('<session_id>#<n>'), platform and mode. (b) 'partial' -- the same body shape for an interim transcript, hop carries route, session_id, platform, mode and eager; params.emit_partials ships FALSE, so this shape only appears where a manifest ordered it and drew the edge that drains it. (c) 'error' -- empty messages[], hop carries route 'error', error_code, msg_type 'voice_error' and session_id where one exists, with the detail in meta. Declaring session_id or platform required would break shape (c) against the substrate emits validation.",
+    "consumes_meaning": "messages[]: the last assistant turn is spoken into the connection. context.session_id selects which connection -- promoted onto context by the outbound edge of the level that holds this cell, out of the hop this cell stamped on the way up.",
+    "examples": [
+      "A finished utterance -> emit body { messages: [{ origin: 'user', type: 'text', text: 'what time is it' }] }, hop { route: 'turn', session_id: '0190...', turn_id: '0190...#1', platform: 'voice', mode: 'auto' }",
+      "An assistant turn arriving with context.session_id -> synthesised into that connection; the client hears speak frames and a speak_end"
+    ]
+  }
+}

@@ -939,7 +939,7 @@ fn the_shipped_contract_declares_every_new_knob_and_key() {
          does not describe the cell"
     );
     assert_eq!(
-        v["contract"]["version"], "2.0.0",
+        v["contract"]["version"], "2.1.0",
         "wave 11 added a lane and seven hop keys; wave 13 moved every setting \
          off the environment onto params; GH #372 added `consumes.hop.handoff_calls`; \
          GH #458 made `messages` optional in BOTH directions and added the `pack` / \
@@ -964,7 +964,15 @@ fn the_shipped_contract_declares_every_new_knob_and_key() {
          and a cell that answers a call whose rules it cannot enforce will drift from \
          them. The hive declares and answers the name now. A caller that sent the lane \
          or set the knob breaks, which is what the first digit says out loud; nothing \
-         shipped sends it, so the migration is empty (`CHANGELOG.md` § Breaking)"
+         shipped sends it, so the migration is empty (`CHANGELOG.md` § Breaking). GH #606 \
+         is the tenth and the SECOND digit: a consumed body slot (`sidecar[]`, the \
+         sections an answerer offers), an emitted hop key (`sidecar_sections`) and a \
+         second setting beside the renamed one (`sidecar`, `sidecar_max_chars`). The \
+         knob CHANGED ITS NAME, which is the one thing here that could have cost a \
+         first digit -- and does not, because `inline_extraction` was a switch on a \
+         literal this cell no longer holds: the thing the old name named is gone, so \
+         there is nothing left for a caller to set under it, and the only shipped \
+         setter (`talky`) moves in the same wave"
     );
 }
 

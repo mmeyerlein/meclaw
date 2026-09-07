@@ -49,11 +49,18 @@ const KNOBS: &[(&str, &str)] = &[
     ("round_idle_ms", "_int"),
     ("prune_after_ms", "_int"),
     ("turn_write", "_str"),
-    // GH #525 -- the inline extraction contract. It sits beside `turn_write`
-    // because the two are one sentence: this one asks the brain for the
-    // annotation, that one mints the episode the annotation is bound to, and a
-    // block whose turn is not yet an episode is rejected by design.
-    ("inline_extraction", "_str"),
+    // GH #525 -- the block contract, `inline_extraction` until GH #606. It sits
+    // beside `turn_write` because the two are one sentence: this one asks the
+    // brain for the annotation, that one mints the episode the annotation is
+    // bound to, and a block whose turn is not yet an episode is rejected by
+    // design. What it asks FOR is no longer a literal of this cell: the
+    // sections are offered on the menu lane and this knob decides whether they
+    // are composed into a contract at all.
+    ("sidecar", "_str"),
+    // GH #606 -- the ceiling of that composed contract. It is the only bound
+    // this cell puts on words it did not write, which is why it lives here and
+    // not as a promise each offering template has to keep.
+    ("sidecar_max_chars", "_int"),
     ("context_window", "_int"),
     ("curate_soft", "_float"),
     ("curate_hard", "_float"),
@@ -193,7 +200,7 @@ fn nothing_in_the_shipped_collector_reads_the_environment_any_more() {
 /// The script literal is read out of the source text rather than exercised,
 /// because that literal IS the fallback: `_int("window_turns", 12)` is the
 /// value a cell uses when its config says nothing, and comparing the text is
-/// the complete check over all twenty-five knobs.
+/// the complete check over all twenty-six knobs.
 #[test]
 fn every_knob_is_a_param_a_setting_and_a_script_literal_with_one_value() {
     let cfg = config();
@@ -232,7 +239,7 @@ fn every_knob_is_a_param_a_setting_and_a_script_literal_with_one_value() {
         );
     }
 
-    // No knob may hide: every non-substrate param is one of the twenty-five above.
+    // No knob may hide: every non-substrate param is one of the twenty-six above.
     //
     // The allow-list is the `code` cell's OWN param surface, i.e. every key
     // `CodeParams::parse` reads (crates/meclaw-cells/src/code/params.rs) --

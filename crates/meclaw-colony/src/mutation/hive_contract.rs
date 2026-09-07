@@ -44,6 +44,28 @@
 //! GH #559) docks BELOW the rim by declaration, so its door is that address and
 //! not an edge out of the hive path — see [`docks_below_the_rim`].
 //!
+//! # The third shape (apps rim, 2026-09-05)
+//!
+//! Both halves above answer *is this lane still reachable*. Neither answers *is
+//! this lane there at all*, and for an observer that is the only question worth
+//! asking: an app that declares `partial` and is instantiated without the edge
+//! that carries it is not degraded, it is silent, and nothing in the topology
+//! says so.
+//!
+//! So a lane may say `required` ([`crate::config::LaneSpec::required`]), and
+//! [`collect_required_lanes`] answers it — once, at the hive's BIRTH, against
+//! the hives this diff instantiates. A rim lane is satisfied by an edge onto the
+//! hive path that a message on that route would take; a lane with connect points
+//! by an edge that names the lane and ends on one of them
+//! ([`lane_is_wired_from_outside`]). Refusal is the same `hive_contract` code —
+//! a third shape of one word, not a fourth word.
+//!
+//! What it deliberately does NOT do: judge a standing hive again (a later
+//! `remove_edges` is not an instantiation), refuse at boot (the birth topology
+//! is authorship), or claim the emitter at the other end really speaks the lane
+//! — a channel's `emit_partials` is the channel's own decision, and *both halves
+//! or neither* is a sentence a README can say and a check cannot.
+//!
 //! # Why it asks the router instead of reading the text
 //!
 //! Same reasoning as [`crate::mutation::required_drains`]. Comparing condition
@@ -95,6 +117,15 @@
 //!   second hop key (`hop.round_capped`) that a route-only probe does not
 //!   carry. That check would refuse correct wirings, so it is not made. See the
 //!   issue thread.
+//! - **Whether a `required` lane's edge is itself fed.** The birth check
+//!   ([`collect_required_lanes`]) asks whether the edge LIES there, not whether
+//!   anything ever travels it: its source may be a hive path with no inbound
+//!   edge of its own, or a cell nobody wakes. That is the same dormancy the
+//!   island case above describes — a requirement waiting for its first sender is
+//!   not a broken one — and it is the same limit `accepts[].context` keeps.
+//! - **The root scope.** `/` has no outside, so nothing can deliver to it from
+//!   beyond a rim it does not have; a `required` lane declared there is skipped
+//!   rather than refused.
 //! - **The bootstrap.** Boot WARNS ([`warn_on_broken_contracts`]) and never
 //!   refuses, for the reason the port boundary leaves boot alone: the birth
 //!   topology is the colony author's sovereign design, and a colony that cannot
@@ -124,6 +155,13 @@ pub struct Lane {
     /// ([`crate::mutation::port_boundary::v_lane_verdict`]) is handed the
     /// declaration instead of reading `config.json` a second time.
     pub at: Vec<String>,
+    /// Apps rim (2026-09-05) — [`crate::config::LaneSpec::required`]: the
+    /// mutation that gives this hive birth must draw an edge delivering this
+    /// lane. Carried here for the same reason `at` is: the birth check
+    /// ([`collect_required_lanes`]) is handed the declaration instead of
+    /// reading `config.json` a second time. `false` is what every lane that
+    /// omits the key says.
+    pub required: bool,
     /// The hive's own sentence about the lane, quoted verbatim in a rejection.
     pub because: String,
 }
@@ -323,6 +361,156 @@ pub fn collect_lane_doors(
 /// and a lane with no `at` is judged exactly as it always was.
 fn docks_below_the_rim(lane: &Lane) -> bool {
     !lane.at.is_empty()
+}
+
+/// True iff SOMETHING outside delivers `lane` to this hive.
+///
+/// The mirror image of [`door_exists`], asked from the other side of the rim.
+/// Two shapes, because a lane has two shapes:
+///
+/// - a lane with connect points docks BELOW the rim by declaration
+///   ([`docks_below_the_rim`]), so what satisfies it is an edge that NAMES the
+///   lane (`add_edges[].lane`, GH #559) and ends on one of those points. An
+///   edge onto the hive path is not that edge — it arrives at a door the
+///   declaration struck.
+/// - a rim lane is satisfied by an edge onto the hive path that a message on
+///   this route would actually take: every sender that addresses the hive is
+///   run through [`crate::edge_table::apply_edges`] with the same probe
+///   `door_exists` uses, and the answer has to be the hive path. Reading the
+///   condition source instead would break on the first `startsWith('in_')`,
+///   which is how the shipped templates are written.
+///
+/// **Outside means outside**, and the filter says so: a sender INSIDE the hive
+/// is skipped, and so is the hive path itself. This is the mirror of
+/// [`exit_exists`], which only ever considers interior senders — and without it
+/// the rule would be fail-open in the one case it exists for. Every hive
+/// template that ships brings a rim exit of its own (`./inner -> .`), often
+/// unconditional or a default, and such an edge answers a route probe with the
+/// hive path. The hive would then satisfy its own insistence out of its own
+/// template, and no installing mutation would ever be asked for anything.
+fn lane_is_wired_from_outside(c: &HiveContract, lane: &Lane, edges: &EdgeTable) -> bool {
+    if docks_below_the_rim(lane) {
+        let hive = c.hive_path.trim_end_matches('/');
+        return edges.iter().any(|e| {
+            e.lane.as_deref() == Some(lane.route.as_str())
+                && lane
+                    .at
+                    .iter()
+                    .any(|at| e.to.as_str() == format!("{hive}/{}", at.trim_start_matches("./")))
+        });
+    }
+    let probe = HiveContract::probe(&lane.route);
+    let mut sources: Vec<&Path> = edges
+        .iter()
+        .filter(|e| {
+            e.to.as_str() == c.hive_path
+                && e.from.as_str() != c.hive_path
+                && !c.is_interior(e.from.as_str())
+        })
+        .map(|e| &e.from)
+        .collect();
+    sources.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+    sources.dedup_by(|a, b| a.as_str() == b.as_str());
+    sources.into_iter().any(|src| {
+        crate::edge_table::apply_edges(edges, src, &probe)
+            .iter()
+            .any(|d| d.target.as_str() == c.hive_path)
+    })
+}
+
+/// The collecting core of the birth check: every `required` lane of every
+/// newborn hive that nothing delivers, with the hive path it concerns and the
+/// hive's own sentence about that lane.
+///
+/// The ROOT scope is skipped entirely: `/` has no outside, every path in the
+/// colony lies inside it ([`HiveContract::is_interior`] says so), and a
+/// question about who delivers to it from beyond its rim has no answer rather
+/// than a negative one.
+fn addressed_required_lanes(
+    newborn: &[HiveContract],
+    edges: &EdgeTable,
+) -> Vec<(MutationError, String, String)> {
+    let mut violations = Vec::new();
+    for c in newborn {
+        if c.hive_path == "/" {
+            continue;
+        }
+        for lane in c.accepts.iter().filter(|l| l.required) {
+            if lane_is_wired_from_outside(c, lane, edges) {
+                continue;
+            }
+            let at = if lane.at.is_empty() {
+                String::new()
+            } else {
+                format!(" onto one of its connect points ({})", lane.at.join(", "))
+            };
+            violations.push((
+                MutationError::HiveContract(format!(
+                    "hive '{hive}' declares the lane '{route}' as required ({because}), but the \
+                     mutation that instantiates it draws no edge delivering that lane{at}. A \
+                     required lane is wired by the same diff that gives the hive birth.",
+                    hive = c.hive_path,
+                    route = lane.route,
+                    because = lane.because,
+                )),
+                c.hive_path.clone(),
+                lane.because.clone(),
+            ));
+        }
+    }
+    violations
+}
+
+/// Apps rim (2026-09-05) — every `required` lane of every hive THIS diff gives
+/// birth to is wired by the same diff, in the POST-state edge table.
+///
+/// Collecting (GH #293 form): a diff that leaves three insisted-on lanes unwired
+/// says all three at once, and each entry carries the declaring hive's own
+/// `because` in [`Violation::because`] as well as inside its prose.
+///
+/// `newborn` is the list the port boundary already reads (GH #562/#567), and it
+/// is the right list for the same reason: the boundary judges what the diff
+/// DRAWS. A standing hive is not judged here — losing an edge later is
+/// `remove_edges` business, and the birth topology is authorship (GH
+/// #133/#147/#173). Neither is the boot: it warns about contracts and never
+/// refuses, because a colony that cannot boot is worse than one that boots with
+/// a loud line in its log.
+///
+/// Tagged [`Stage::ContractLocality`] like its two neighbours, and run in the
+/// post-state stage for the reason they are: the mutation that instantiates a
+/// hive brings its own internal graph and its own edges with it, and a pre-state
+/// check would refuse exactly the diff this rule wants people to write.
+///
+/// [`Violation::because`]: crate::mutation::rejection::Violation::because
+/// [`Stage::ContractLocality`]: crate::mutation::rejection::Stage::ContractLocality
+pub fn collect_required_lanes(
+    newborn: &[HiveContract],
+    edges: &EdgeTable,
+    into: &mut crate::mutation::rejection::MutationRejection,
+) {
+    use crate::mutation::rejection::{Stage, Violation};
+
+    for (error, address, because) in addressed_required_lanes(newborn, edges) {
+        into.push(Violation::from_error_because(
+            Stage::ContractLocality,
+            &error,
+            Some(address),
+            because,
+        ));
+    }
+}
+
+/// The thin `Result` face of [`collect_required_lanes`]: the FIRST unwired
+/// required lane, for a caller or a test that wants a verdict rather than a
+/// list. Same core, so the two can never disagree.
+pub fn check_required_lanes(
+    newborn: &[HiveContract],
+    edges: &EdgeTable,
+) -> Result<(), MutationError> {
+    addressed_required_lanes(newborn, edges)
+        .into_iter()
+        .next()
+        .map_or(Ok(()), |(error, _, _)| Err(error))
 }
 
 /// The collecting core: every lane without a door, with the hive path it
@@ -651,6 +839,7 @@ fn contract_from_config(config: &JsonValue, hive_path: &str) -> Option<HiveContr
         route: l.route.clone(),
         context: l.context.clone(),
         at: l.at.clone(),
+        required: l.required,
         because: l.because.clone(),
     };
     Some(HiveContract {
@@ -862,6 +1051,7 @@ mod tests {
             route: route.into(),
             context: Vec::new(),
             at: Vec::new(),
+            required: false,
             because: format!("the {route} lane"),
         }
     }
@@ -946,6 +1136,48 @@ mod tests {
         // And the exemption is the `at` and nothing else: the same two lanes
         // without connect points are the refusal they always were.
         assert!(check_lane_doors(&drain_contract(), &t).is_err());
+    }
+
+    // ---- apps rim: the birth check ----
+
+    /// A newborn hive whose own template brings a rim exit does NOT thereby
+    /// wire its own `required` lane.
+    ///
+    /// `./glue -> /mem` is an edge onto the hive path, and an unconditional one
+    /// answers any route probe with the hive path — so a check that took every
+    /// inbound edge as a source would let the hive satisfy its own insistence
+    /// out of its own template, and never ask the installing mutation for
+    /// anything. The verdict has to come from a sender that really is outside.
+    #[test]
+    fn a_hives_own_rim_exit_does_not_wire_its_required_lane() {
+        let insisting = vec![HiveContract {
+            hive_path: "/mem".into(),
+            accepts: vec![Lane {
+                required: true,
+                ..lane("in_batch")
+            }],
+            emits: Vec::new(),
+        }];
+        let mut t = EdgeTable::new();
+        t.insert(edge("/mem", "/mem/glue", None));
+        t.insert(edge("/mem/glue", "/mem", None)); // the template's own exit
+
+        let err = check_required_lanes(&insisting, &t)
+            .expect_err("an interior sender is not the outside");
+        let msg = format!("{err:?}");
+        assert!(msg.contains("in_batch") && msg.contains("/mem"), "{msg}");
+
+        // One edge from a real outsider, and the same contract passes.
+        t.insert(edge(
+            "/caller",
+            "/mem",
+            Some("has(hop.route) && hop.route == 'in_batch'"),
+        ));
+        assert!(
+            check_required_lanes(&insisting, &t).is_ok(),
+            "{:?}",
+            check_required_lanes(&insisting, &t)
+        );
     }
 
     /// GH #562 — the connect point CLOSES the rim for its lane.
@@ -1164,12 +1396,14 @@ mod tests {
                     route: "in_quiet".into(),
                     context: vec!["k".into()],
                     at: Vec::new(),
+                    required: false,
                     because: String::new(),
                 },
                 Lane {
                     route: "in_loud".into(),
                     context: vec!["k".into()],
                     at: Vec::new(),
+                    required: false,
                     because: "because it matters".into(),
                 },
             ],
@@ -1194,6 +1428,7 @@ mod tests {
                 route: "episode".into(),
                 context: vec!["session_id".into()],
                 at: Vec::new(),
+                required: false,
                 because: "one message per turn".into(),
             }],
         };

@@ -69,7 +69,8 @@ class Classify(unittest.TestCase):
         st = gp.plan(["docs/memory.en.md", "README.md"], "strand", repo=repo)
         self.assertEqual(
             {s.name for s in st},
-            {"roadmap-anchors", "adr-anchors", "claims", "tree-rules", "corpus"})
+            {"roadmap-anchors", "adr-anchors", "claims", "tree-rules",
+             "corpus-committed", "corpus"})
         self.assertFalse(any(s.cargo for s in st))
 
     def test_a_doc_its_test_reads_is_not_docs_only(self):
@@ -535,6 +536,25 @@ class Classify(unittest.TestCase):
 
         # Never regenerated, never checked in ci -- `workshop/` does not travel.
         self.assertNotIn("corpus",
+                         {s.name for s in gp.plan(["README.md"], "ci", repo=None)})
+
+    def test_the_committed_corpus_is_checked_before_anything_regenerates_it(self):
+        """GH #596: `corpus` grades the file it has just written.
+
+        So the committed corpus -- the one that actually travels -- needs a
+        station of its own, and it has to be ORDERED before the regenerate.
+        """
+        seed = "workshop/tools/build_librarian_seed.py"
+        for mode in ("strand", "integration", "release"):
+            st = by_name(gp.plan(["crates/meclaw-core/src/lib.rs"], mode, repo=None))
+            self.assertIn("corpus-committed", st, mode)
+            self.assertEqual([["python3", seed, "--check"]],
+                             st["corpus-committed"].cmds, mode)
+            self.assertFalse(st["corpus-committed"].cargo, mode)
+        order = gp.STATION_ORDER
+        self.assertLess(order.index("corpus-committed"), order.index("corpus"))
+        # ci has no `workshop/` at all -- neither half may be planned there.
+        self.assertNotIn("corpus-committed",
                          {s.name for s in gp.plan(["README.md"], "ci", repo=None)})
 
     def test_gate_selftest_runs_resolver_and_runner_tests(self):

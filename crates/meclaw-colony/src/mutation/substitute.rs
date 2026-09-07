@@ -25,6 +25,17 @@
 //! -- at boot ([`crate::plan_bootstrap`]) and, with the same result, on the
 //! freshly staged config so a just-instantiated cell sees exactly what it would
 //! see after a reboot.
+//!
+//! # The third destination: a template's own files (GH #611)
+//!
+//! `add_templates[].files` is neither class. A registration files a CLASS in
+//! the library, and a class has no instance to bind to yet: its file bodies are
+//! carried through **verbatim**, byte for byte, and every `${…}` in them binds
+//! where it always binds -- the instance class at instantiation, the
+//! environment class at read time (`docs/config.md` § Access). Substituting
+//! them at registration was measured to write the colony's API key in clear
+//! text into `{templates_root}/local/<name>/`, and to refuse a README that only
+//! MENTIONS `${VAR}` in prose with `env_var_missing`.
 
 use super::MutationError;
 use meclaw_core::JsonValue;
@@ -528,6 +539,12 @@ fn replace_instance_only(
 /// and not as a materialized secret (GH #20). The staging step re-applies the
 /// env pass in memory, so the spawned cell still sees the resolved value.
 ///
+/// `add_templates[].files` is exempt from BOTH passes (GH #611): the bodies of
+/// a registered template travel untouched, because a class is not an instance
+/// and nothing of the mutation that happened to deliver it belongs in it. Its
+/// `${…}` bind where they always bind -- the instance class at instantiation,
+/// the environment class at read time -- exactly as in a shipped template.
+///
 /// The `${uuid7:<label>}` cache is shared across BOTH passes: one label yields
 /// one UUID per mutation, wherever in the diff it appears.
 pub fn substitute_mutation_diff(
@@ -544,7 +561,12 @@ pub fn substitute_mutation_diff(
     for (key, val) in top {
         let substituted = match (key.as_str(), val.as_array()) {
             ("add_nodes", Some(entries)) => {
-                walk_entries(entries, env, ctx, &mut cache, &["override_params"])?
+                walk_entries(entries, env, ctx, &mut cache, &["override_params"], &[])?
+            }
+            // GH #611: `files` carries the template's own bytes, not a value of
+            // this mutation. It is the one slot that is copied and never read.
+            ("add_templates", Some(entries)) => {
+                walk_entries(entries, env, ctx, &mut cache, &[], &["files"])?
             }
             ("swap_nodes", Some(entries)) => walk_swaps(entries, env, ctx, &mut cache)?,
             _ => walk_full(val, env, ctx, &mut cache)?,
@@ -554,14 +576,22 @@ pub fn substitute_mutation_diff(
     Ok(JsonValue::Object(out))
 }
 
-/// Substitute each entry of a node-list, routing the named keys through the
-/// disk-facing pass and everything else through the full pass.
+/// Substitute each entry of a list-shaped operation, routing three key sets
+/// apart: `disk_keys` through the disk-facing pass ([`walk_instance_only`]),
+/// `verbatim_keys` through no pass at all, everything else through the full one.
+///
+/// The verbatim set exists for `add_templates[].files` (GH #611) and is a
+/// stronger statement than the disk-facing pass: not "resolve one class and
+/// keep the other" but "these are somebody else's bytes". A body that is not
+/// even parsed cannot leak a value into a file and cannot be refused for a
+/// placeholder it only mentions.
 fn walk_entries(
     entries: &[JsonValue],
     env: &HashMap<String, String>,
     ctx: &HashMap<String, String>,
     cache: &mut HashMap<String, String>,
     disk_keys: &[&str],
+    verbatim_keys: &[&str],
 ) -> Result<JsonValue, MutationError> {
     let mut out = Vec::with_capacity(entries.len());
     for entry in entries {
@@ -571,7 +601,9 @@ fn walk_entries(
         };
         let mut new_obj = meclaw_core::serde_json::Map::new();
         for (k, v) in obj {
-            let sub = if disk_keys.contains(&k.as_str()) {
+            let sub = if verbatim_keys.contains(&k.as_str()) {
+                v.clone()
+            } else if disk_keys.contains(&k.as_str()) {
                 walk_instance_only(v, ctx, cache)?
             } else {
                 walk_full(v, env, ctx, cache)?
@@ -998,6 +1030,56 @@ mod tests {
         let diff = json!({"add_nodes": [{"override_params": {"owner": "${ctx.user_id}"}}]});
         let out = substitute_mutation_diff(&diff, &HashMap::new(), &ctx).unwrap();
         assert_eq!(out["add_nodes"][0]["override_params"]["owner"], "u-7");
+    }
+
+    // --- GH #611: a registered template's files are nobody's to substitute ---
+
+    #[test]
+    fn diff_keeps_template_file_bodies_verbatim() {
+        let mut env = HashMap::new();
+        env.insert("API_KEY".into(), "sk-sentinel".into());
+        let mut ctx = HashMap::new();
+        ctx.insert("user_id".into(), "u-7".into());
+        let diff = json!({
+            "add_templates": [{
+                "name": "note-${ctx.user_id}",
+                "files": {
+                    "template.json": r#"{"name":"note","version":"1.0.0"}"#,
+                    "config.json": r#"{"params":{"api_key":"${API_KEY}","owner":"${ctx.user_id}","s":"${uuid7:x}"}}"#,
+                }
+            }]
+        });
+        let out = substitute_mutation_diff(&diff, &env, &ctx).unwrap();
+        let files = &out["add_templates"][0]["files"];
+        assert_eq!(
+            files["config.json"],
+            r#"{"params":{"api_key":"${API_KEY}","owner":"${ctx.user_id}","s":"${uuid7:x}"}}"#,
+            "a template's bytes reach the library exactly as they were declared"
+        );
+        assert_eq!(
+            out["add_templates"][0]["name"], "note-u-7",
+            "the entry's own fields still resolve -- only `files` is exempt"
+        );
+    }
+
+    #[test]
+    fn a_template_file_that_only_mentions_a_placeholder_is_not_an_error() {
+        // The README case: `${OPENAI_API_KEY}` stands in PROSE, and no colony
+        // that registers the class has to own the variable to do so.
+        let diff = json!({
+            "add_templates": [{
+                "name": "note",
+                "files": {
+                    "template.json": r#"{"name":"note"}"#,
+                    "README.md": "Set `${OPENAI_API_KEY}` in your `.env` before instantiating.",
+                }
+            }]
+        });
+        let out = substitute_mutation_diff(&diff, &HashMap::new(), &HashMap::new()).unwrap();
+        assert_eq!(
+            out["add_templates"][0]["files"]["README.md"],
+            "Set `${OPENAI_API_KEY}` in your `.env` before instantiating.",
+        );
     }
 
     #[test]

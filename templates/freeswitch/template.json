@@ -1,0 +1,26 @@
+{
+  "name": "freeswitch",
+  "version": "1.0.1",
+  "description": {
+    "purpose": "A telephone as a CHANNEL of a person, with FreeSWITCH as the switch it is named after (it succeeds `phone@1.0.0`, a name that no longer exists: it said the medium where it should have said the machine). FreeSWITCH stays the media edge in gateway mode -- it does the SIP and forks the audio over a WebSocket -- and this hive is both halves of what a colony needs beside it: the MEDIA half is a `voice` cell that carries the sound, the SIGNALLING half is a small state machine that knows who is on the line and turns the facts about the line that a person could answer -- and only those -- into turns of the member's conversation. The two live in one hive because a call is one thing, bound by one id: FreeSWITCH's channel UUID is the `?session=` of the audio fork and therefore the session an answer is spoken back into.",
+    "use_when": "Wherever a person should be reachable by telephone, or should be able to ring somebody up. Instantiate it in `<member>/channels` under the name `freeswitch` -- the NODE is the machine, `context.channel` stays `phone`, which is the kind of conversation, draw the two channel edges the way a `voice` channel draws them, and point the dialplan's `curl` at the hive's own address. The assistant is offered two tools, `call` and `hangup`, over the tool v-lanes the member declares at its rim.",
+    "not_in_scope": "It is not a switch and holds no trunk: SIP, codecs, dialplans and voicemail belong to FreeSWITCH and stay there. It authenticates nobody -- it maps a number to a sender id from a table, refuses a number it has no entry for and puts that leg down so the dialplan has it back. And it holds no persona: what is said into a call is a turn of the member's conversation, answered by the member's own assistant. It does not narrate the line either: a ring, an answer that only confirms a call already announced, and the END of a call are booked in the call table and said to nobody (GH #614) -- a model answers everything it is handed, and a farewell into a line that is already down is what that costs.",
+    "examples": [
+      "PORTS - Entry: `in_speak` (the answer to be spoken), and the four dialplan events `call_incoming`, `call_ringing`, `call_answered`, `call_ended`, which reach the front door as `POST /messages` addressed at this hive. Two lanes name a connect point: `tool` and `schemas`, both `to: <freeswitch>/dial`. Exit: `turn`, `partial`, `error`, `tool_result`, `tool_schemas`, all at the hive path.",
+      "somebody rings the member -> ONE turn 'Incoming call from +49…', carrying the session the audio runs under and the sender id the number maps to; the `call_answered` the dialplan sends a moment later books the state and says nothing",
+      "the model calls `call` -> an originate at the switch with `origination_uuid` and an `api_on_answer` that starts `uuid_audio_stream` on `?session=<uuid>`, and a turn the moment somebody picks up",
+      "hangup while the assistant is still talking -> the row is marked, the line stays up, and the `speak_end` of that same call is what fires `uuid_kill`; a sentence cut short (`speak_end` with reason `cancelled` or `failed`) fires `uuid_break <uuid> all`, because the half sentence the caller is still hearing sits at the switch and `mod_audio_stream` offers no clear of its own.",
+      "the far end hangs up -> the row goes to `ended` with its cause, and nothing is said: the line an answer would be spoken into is gone"
+    ]
+  },
+  "tags": [
+    "freeswitch",
+    "phone",
+    "channel",
+    "voice",
+    "telephony",
+    "sip"
+  ],
+  "author": "@mmeyerlein",
+  "license": "MIT"
+}

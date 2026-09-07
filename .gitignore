@@ -61,6 +61,17 @@
 # Secrets
 /.env
 
+# Smoke workspace of the voice cell (workshop/voice-smoke/README.md): the venv,
+# the colony's own .env, its runtime state and the measurement history. The
+# .env there is written from single grepped keys and must never be committed.
+/workshop/voice-smoke/.venv/
+/workshop/voice-smoke/.smoke-history.jsonl
+/workshop/voice-smoke/colony/.env
+/workshop/voice-smoke/colony/colony.db*
+/workshop/voice-smoke/colony/log.jsonl
+/workshop/voice-smoke/colony/blobs/
+/workshop/voice-smoke/colony/.staging/
+
 # IDE
 /.vscode/
 /.idea/

@@ -46,7 +46,9 @@
 #
 # Verdicts: GREEN the station passed. RED it failed. SKIP it could not run
 # (missing tool, or planned elsewhere) -- never a failure. NOTE a finding to
-# read, not a judgement on the commit (advisories, tree-sync, lock-wait).
+# read, not a judgement on the commit (advisories, tree-sync, lock-wait, and
+# `corpus-committed` in `strand`: there the committed corpus is allowed to be
+# behind the sources of a commit that has not been written yet).
 #
 # `lock-wait` is the queue in front of the shared cargo lock, reported before
 # the first cargo station whenever it was a second or more -- so a station's
@@ -610,9 +612,22 @@ report() {   # name scope secs verdict log [reason]
 # `crates/*/Cargo.toml`, the root `Cargo.toml` and `Cargo.lock`. It is the
 # answer to "this target/ was filled by a tree I cannot diff against", and it
 # is cheap next to the alternative -- a gate grading a build it did not
-# produce. The TARGETED touch on a tree switch stays narrow on purpose: there
-# the stamp names a commit that still exists, so the diff between it and HEAD
-# plus both dirty lists is the exact set that can differ.
+# produce.
+#
+# A FOREIGN TREE IS ALWAYS A FULL TOUCH. The targeted touch used to cover the
+# tree switch as well -- `git diff <stamp-sha> HEAD` plus both dirty lists --
+# and that is an UNDER-touch across worktrees even when the stamp's commit is
+# alive and the diff is empty. Two worktrees at the same commit hold two
+# BYTE-IDENTICAL copies of every source, and a test binary compiled from the
+# other copy is fresh by mtime, links, runs -- and carries the other tree's
+# `env!("CARGO_MANIFEST_DIR")`. Measured 2026-09-05: 17 red file tests reading
+# another worktree's fixtures, from a diff the sync had nothing to touch for.
+# The diff answers "which sources changed", never "which tree they belong to",
+# so the only honest answer to a foreign path is the full touch (GH #595).
+#
+# The TARGETED touch stays for the same tree at another commit: there the path
+# is ours, the stamp names a commit that still exists, and the diff between it
+# and HEAD plus both dirty lists is the exact set that can differ.
 stamp="$target_dir/.gate-tree"
 
 # Touch every build input of every workspace member and report the count.
@@ -657,7 +672,11 @@ tree_sync() {
             # files -- a silent UNDER-touch, and ghost binaries survive it. The
             # only honest answer is the full touch.
             full_touch "stale stamp ${s_sha:0:7}"
-        elif [ "$s_path" != "$root" ] || [ "$s_sha" != "$rev" ]; then
+        elif [ "$s_path" != "$root" ]; then
+            # Another worktree filled target/. Byte-identical sources are the
+            # dangerous case, not the differing ones -- see GH #595 above.
+            full_touch "foreign tree $s_path"
+        elif [ "$s_sha" != "$rev" ]; then
             list=$( { git diff --name-only "$s_sha" HEAD 2>/dev/null
                       printf '%s\n' "${s_dirty//,/$'\n'}"
                       printf '%s\n' "$dirty_files"; } | sed '/^$/d' | sort -u)
@@ -767,7 +786,19 @@ for i in ${st_names[@]+"${!st_names[@]}"}; do
     done <<<"${st_cmds[$i]}"
     s_secs=$(( $(date +%s) - s_start ))
 
-    if [ "$name" = "deny-advisories" ]; then
+    if [ "$name" = "corpus-committed" ] && [ "$mode" = strand ]; then
+        # A strand gates BEFORE its commit, so the committed corpus is allowed
+        # to be behind the sources the strand just changed -- `corpus` is about
+        # to regenerate it. What is not allowed is committing without it, and
+        # that is what this line is for: a reminder to `git add`, not a
+        # judgement on a tree that is still being written (GH #596).
+        if [ "$rc" -eq 0 ]; then
+            report "$name" "$scope" "$s_secs" NOTE "$log_rel" "matches its sources"
+        else
+            report "$name" "$scope" "$s_secs" NOTE "$log_rel" \
+                "the corpus is stale; regenerate it and commit it with this change"
+        fi
+    elif [ "$name" = "deny-advisories" ]; then
         # Advisories move without a commit: a finding here is about the
         # dependencies, not about this tree. It is read, not blocking.
         if [ "$rc" -eq 0 ]; then

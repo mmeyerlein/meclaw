@@ -39,12 +39,13 @@
 //! * **Additive, never replacing.** No delete, no update, no truncate-and-load.
 //!   A replacing import is a different operation and would need the no-delete
 //!   policy's blessing before it could exist.
-//! * **A partial import is a STATE, not a failure.** Everything checkable is
-//!   checked before the first write and the writes run in ONE transaction, so a
-//!   part applies whole or is refused whole. A whole cell is many parts, and
-//!   stopping between them leaves a prefix — which is safe precisely because
-//!   re-applying is idempotent. The repair is "send it again"; there is no
-//!   compensating action to get wrong.
+//! * **An import applies whole or is refused whole.** Everything checkable is
+//!   checked before the first write and the writes run in ONE transaction —
+//!   one per message part, and since GH #261 one per *directory*, over every
+//!   table the call names. So a refusal anywhere in the walk leaves nothing
+//!   behind, not even the tables ahead of it. Re-applying is idempotent either
+//!   way, so the repair is "send it again"; there is no compensating action to
+//!   get wrong.
 //!
 //! ## Why both halves run on the CELL's own connection
 //!
@@ -433,6 +434,39 @@ pub fn import_document(
     conn: &rusqlite::Connection,
     args: &Map<String, Value>,
 ) -> Result<TransferOutcome, String> {
+    let tx = match conn.unchecked_transaction() {
+        Ok(t) => t,
+        Err(e) => return Ok(TransferOutcome::Sql(e)),
+    };
+    match import_one(conn, args)? {
+        TransferOutcome::Done {
+            rows_affected,
+            payload,
+        } => {
+            if let Err(e) = tx.commit() {
+                return Ok(TransferOutcome::Sql(e));
+            }
+            Ok(TransferOutcome::Done {
+                rows_affected,
+                payload,
+            })
+        }
+        // Dropping `tx` on the way out rolls the part back: whole, or nothing.
+        other => Ok(other),
+    }
+}
+
+/// One part, applied on a transaction the CALLER opened.
+///
+/// Split out of [`import_document`] for GH #261: a whole-directory import is
+/// one transaction over every table of the call, so the part-level apply may
+/// not open one of its own — SQLite has no nested `BEGIN`, and a part that
+/// committed inside an enclosing transaction would be exactly the prefix the
+/// enclosing one exists to prevent.
+fn import_one(
+    conn: &rusqlite::Connection,
+    args: &Map<String, Value>,
+) -> Result<TransferOutcome, String> {
     let table = args
         .get("table")
         .and_then(|v| v.as_str())
@@ -536,10 +570,6 @@ pub fn import_document(
         names.iter().map(|_| "?").collect::<Vec<_>>().join(",")
     );
 
-    let tx = match conn.unchecked_transaction() {
-        Ok(t) => t,
-        Err(e) => return Ok(TransferOutcome::Sql(e)),
-    };
     let mut seen: BTreeSet<String> = BTreeSet::new();
     let mut written = 0i64;
     for row in &objects {
@@ -565,13 +595,10 @@ pub fn import_document(
             vals.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
         match conn.execute(&insert, bind.as_slice()) {
             Ok(n) => written += n as i64,
-            // Dropping `tx` on the way out rolls the whole part back: whole, or
-            // nothing.
+            // The caller's transaction is dropped on the way out and rolls
+            // everything back: whole, or nothing.
             Err(e) => return Ok(TransferOutcome::Sql(e)),
         }
-    }
-    if let Err(e) = tx.commit() {
-        return Ok(TransferOutcome::Sql(e));
     }
 
     let mut payload = Map::new();
@@ -583,6 +610,66 @@ pub fn import_document(
         "rows_skipped".into(),
         Value::from(rows.len() as i64 - written),
     );
+    Ok(TransferOutcome::Done {
+        rows_affected: written,
+        payload: Value::Object(payload),
+    })
+}
+
+/// GH #261 — every part of one directory, in ONE transaction.
+///
+/// A `import … from:` call is a DOCUMENT, and a document applies whole or not
+/// at all. Until GH #261 this was one transaction per table, and the difference
+/// was not academic: the column-set gate lives inside the apply
+/// ([`import_one`]) rather than in the parse, so an `import_schema_drift` at
+/// table nine left the eight before it committed — and the receipt said
+/// `rows_affected = 0`, which made the prefix invisible to the caller. Every
+/// SQL failure had the same shape: a constraint, a trigger of a maintained FTS
+/// index, a full disk.
+///
+/// So the whole walk runs inside one `unchecked_transaction`, on the cell's own
+/// connection, inside ONE `db.call` — a transaction that spanned two calls
+/// would leave the connection in a `BEGIN` any other message could commit or
+/// roll back. Dropping the transaction on any refusal rolls back every table of
+/// the call, so a refused import is a refused import and never a half one.
+///
+/// The receipt is the per-table one, gathered: `tables[{table, rows_in_part,
+/// rows_written, rows_skipped}]` plus the two totals.
+fn import_documents(
+    conn: &rusqlite::Connection,
+    calls: Vec<Map<String, Value>>,
+) -> Result<TransferOutcome, String> {
+    let tx = match conn.unchecked_transaction() {
+        Ok(t) => t,
+        Err(e) => return Ok(TransferOutcome::Sql(e)),
+    };
+    let mut receipts = Vec::with_capacity(calls.len());
+    let mut written = 0i64;
+    let mut skipped = 0i64;
+    for call in &calls {
+        match import_one(conn, call)? {
+            TransferOutcome::Done { payload, .. } => {
+                written += payload["rows_written"].as_i64().unwrap_or(0);
+                skipped += payload["rows_skipped"].as_i64().unwrap_or(0);
+                let mut one = Map::new();
+                one.insert("table".into(), payload["table"].clone());
+                for k in ["rows_in_part", "rows_written", "rows_skipped"] {
+                    one.insert(k.into(), payload[k].clone());
+                }
+                receipts.push(Value::Object(one));
+            }
+            // Dropped on the way out, which rolls back every table before this
+            // one as well.
+            other => return Ok(other),
+        }
+    }
+    if let Err(e) = tx.commit() {
+        return Ok(TransferOutcome::Sql(e));
+    }
+    let mut payload = Map::new();
+    payload.insert("tables".into(), Value::Array(receipts));
+    payload.insert("rows_written".into(), Value::from(written));
+    payload.insert("rows_skipped".into(), Value::from(skipped));
     Ok(TransferOutcome::Done {
         rows_affected: written,
         payload: Value::Object(payload),
@@ -1214,13 +1301,85 @@ fn unix_seconds() -> i64 {
         .unwrap_or_default()
 }
 
-/// `import … from:` — every part of one directory, one transaction per table.
+/// GH #261 — `keys`: what makes a row THE SAME row, for a walk that names more
+/// than one table.
 ///
-/// Every file is PARSED before the first one is applied. A malformed file in
-/// the set therefore writes nothing at all, rather than leaving the prefix that
-/// a per-file walk would: the parse is checkable ahead of time, so it is
-/// checked ahead of time — the same discipline `import_document` applies inside
-/// one part.
+/// `key` belongs to ONE table's identity, so it only travels when the call named
+/// one table — which left a **whole-directory** import with no way to say it at
+/// all. That is not a corner case: a `store` declares its tables in
+/// `params.schema`, and that declaration cannot express a PRIMARY KEY, so
+/// [`primary_key`] is empty for every one of them and [`import_document`]
+/// refuses the part by name. Before this the only way to import such a set was
+/// one call per table — and then a malformed file halfway down the walk leaves
+/// the tables before it standing, which is exactly the prefix the whole-directory
+/// form exists to prevent.
+///
+/// So the identity of a row travels the way the ORDER already does: as an
+/// argument of the one call, `{"<table>": ["<col>", …]}`. Three refusals, and
+/// each of them is a typo a caller wants to hear about rather than a state to
+/// recover from:
+///
+/// * `key` and `keys` together — two arguments saying one thing;
+/// * an entry that is not an array of non-empty column names;
+/// * an entry naming a table this call does not address, because a key for a
+///   table that does not travel is a key nobody will ever apply.
+///
+/// It is answered BEFORE the first file is opened, against the addressed table
+/// list rather than against the parsed parts: an argument that cannot mean
+/// anything is a typo, and a typo is told to the caller instead of being
+/// discovered halfway through a directory.
+///
+/// `None` means the argument was absent, and every table falls back to its own
+/// PRIMARY KEY exactly as before.
+#[allow(clippy::type_complexity)]
+fn walk_keys(
+    args: &Map<String, Value>,
+    addressed: &[String],
+) -> Result<Option<Map<String, Value>>, String> {
+    let Some(raw) = args.get("keys") else {
+        return Ok(None);
+    };
+    if args.contains_key("key") {
+        return Err(
+            "import: key and keys cannot both be given — one call says a row's \
+                    identity once, either for the one table it names or per table"
+                .to_string(),
+        );
+    }
+    let map = raw
+        .as_object()
+        .ok_or("import: keys must be an object mapping a table name to its key columns")?;
+    for (table, cols) in map {
+        let arr = cols
+            .as_array()
+            .ok_or_else(|| format!("import: keys[{table:?}] must be an array of column names"))?;
+        if arr.is_empty()
+            || !arr
+                .iter()
+                .all(|v| v.as_str().is_some_and(|s| !s.is_empty()))
+        {
+            return Err(format!(
+                "import: keys[{table:?}] must name at least one non-empty column"
+            ));
+        }
+        if !addressed.iter().any(|t| t == table) {
+            return Err(format!(
+                "import: keys names {table:?}, which this call does not address (addressed: {})",
+                addressed.join(", ")
+            ));
+        }
+    }
+    Ok(Some(map.clone()))
+}
+
+/// `import … from:` — every part of one directory, in ONE transaction.
+///
+/// Every file is PARSED before the first one is applied, and every table is
+/// then applied inside ONE transaction ([`import_documents`]). A malformed file
+/// in the set therefore writes nothing at all — and neither does a table the
+/// target refuses halfway down the walk, which is the half a parse cannot buy:
+/// the column-set gate runs while the rows are applied, so before GH #261 an
+/// `import_schema_drift` at table nine left the eight before it committed.
 async fn import_from_dir(
     args: &Map<String, Value>,
     db: &mut crate::DbConn,
@@ -1237,6 +1396,14 @@ async fn import_from_dir(
     };
     let tables = match addressed_tables(args, walked) {
         Ok(t) => t,
+        Err(detail) => return (0, Value::Null, Some("invalid_input"), Some(detail)),
+    };
+
+    // Before a single file is opened: what makes a row THE SAME row. An
+    // argument that cannot mean anything is a typo, and a typo is told to the
+    // caller rather than discovered halfway through a directory (GH #261).
+    let per_table = match walk_keys(args, &tables) {
+        Ok(k) => k,
         Err(detail) => return (0, Value::Null, Some("invalid_input"), Some(detail)),
     };
 
@@ -1259,14 +1426,12 @@ async fn import_from_dir(
         }
     }
 
-    let single_key = if parts.len() == 1 {
+    let single_key = if parts.len() == 1 && per_table.is_none() {
         args.get("key")
     } else {
         None
     };
-    let mut receipts = Vec::with_capacity(parts.len());
-    let mut written = 0i64;
-    let mut skipped = 0i64;
+    let mut calls = Vec::with_capacity(parts.len());
     for (table, schema, rows) in parts {
         let mut call = Map::new();
         call.insert("operation".into(), Value::from("import"));
@@ -1275,29 +1440,29 @@ async fn import_from_dir(
         call.insert("rows".into(), Value::Array(rows));
         if let Some(k) = single_key {
             call.insert("key".into(), k.clone());
+        } else if let Some(k) = per_table.as_ref().and_then(|m| m.get(table.as_str())) {
+            call.insert("key".into(), k.clone());
         }
-        match db.call(move |c| import_document(c, &call)).await {
-            Ok(TransferOutcome::Done { payload, .. }) => {
-                written += payload["rows_written"].as_i64().unwrap_or(0);
-                skipped += payload["rows_skipped"].as_i64().unwrap_or(0);
-                let mut one = Map::new();
-                one.insert("table".into(), Value::from(table.as_str()));
-                for k in ["rows_in_part", "rows_written", "rows_skipped"] {
-                    one.insert(k.into(), payload[k].clone());
-                }
-                receipts.push(Value::Object(one));
-            }
-            Ok(other) => return answer_from(other),
-            Err(detail) => return (0, Value::Null, Some("invalid_input"), Some(detail)),
-        }
+        calls.push(call);
     }
 
-    let mut payload = Map::new();
+    // ONE `db.call`, and one transaction inside it (GH #261). A transaction that
+    // spanned two calls would leave this connection in a `BEGIN` that any other
+    // message on the cell's mailbox could commit or roll back.
+    let mut payload = match db.call(move |c| import_documents(c, calls)).await {
+        Ok(TransferOutcome::Done { payload, .. }) => match payload {
+            Value::Object(m) => m,
+            _ => Map::new(),
+        },
+        Ok(other) => return answer_from(other),
+        Err(detail) => return (0, Value::Null, Some("invalid_input"), Some(detail)),
+    };
+    let written = payload
+        .get("rows_written")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
     payload.insert("format".into(), Value::from(TRANSFER_FORMAT));
     payload.insert("seed_dir".into(), Value::from(named));
-    payload.insert("tables".into(), Value::Array(receipts));
-    payload.insert("rows_written".into(), Value::from(written));
-    payload.insert("rows_skipped".into(), Value::from(skipped));
     (written, Value::Object(payload), None, None)
 }
 

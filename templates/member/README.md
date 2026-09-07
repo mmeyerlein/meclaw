@@ -1,7 +1,7 @@
-# `member@1.6.0`
+# `member@1.7.0`
 
 One person, as a level. **Four holders, three open containers and no cell of
-its own** — seven nodes and sixty edges.
+its own** — seven nodes and sixty-four edges.
 
 | holder | what it holds |
 |---|---|
@@ -130,7 +130,7 @@ sends.
 |---|---|
 | `answer` | into `./channels` when `context.channel_node` names one, **out** on `answer` when it does not |
 | `recall` | consumed — into the memory as `in_query` |
-| `extraction` | consumed — into the memory as `in_remember` |
+| `sidecar` | consumed, and **sorted by section** (since 1.7.0, [#607](https://github.com/mmeyerlein/meclaw/issues/607)): `hop.section == 'memory'` into the memory as `in_remember`, everything else into `./apps`. `extraction` still carries the memory block on its own lane beside it |
 | `write` | **both**: fanned onto the memory's `in_close_pass` *and* out on `write` |
 | `turn_write` | **both** (since #527): fanned onto the memory's `in_episode` *and* out on `turn_write` |
 | `prune`, `error`, `build` | out, untranslated. Nothing here consumes them |
@@ -269,15 +269,23 @@ level twice and is read neither time: it goes up in `context.recall_caller` and
 comes back on `hop.recall_caller`, put there by the memory hive's own
 exit. Nothing here promotes it, deletes it or knows what its values mean —
 except at this level's OWN door, where the same token names the third asker
-(§ *The asker outside*). The write half is **two** edges, and
-they write two different things:
+(§ *The asker outside*). The write half is **one** edge, and
+it writes the facts:
 
-- `extraction` → `in_remember` writes the **facts** the front model annotated
-  inside its own answer. It is the second half of the recipe `talky` prescribes
-  to its parent (*two edges, never one*,
-  [`../talky/README.md`](../talky/README.md) § the extraction sidecar); the first
-  half is inside the talky, and the drain the recipe asks for is the `reject`
-  lane above.
+- `sidecar` **with `hop.section == 'memory'`** → `in_remember` writes the
+  **facts** the front model annotated inside its own answer. It is the second
+  half of the recipe `talky` prescribes to its parent (*two edges, never one*,
+  [`../talky/README.md`](../talky/README.md) § the sidecar); the first half is
+  inside the talky, and the drain the recipe asks for is the `reject` lane above.
+  Since 1.7.0 the front model appends ONE fence with one key per section instead
+  of one fence per obligation, and the splitter inside the generation cuts it
+  into one message per section
+  ([#607](https://github.com/mmeyerlein/meclaw/issues/607)). The memory section
+  is the annotation this level has always written, so this is the `extraction`
+  edge with a different condition — same target lane, same three promoted keys,
+  same hive. The two-phase rebuild lives in the SHAPE rather than in the lane:
+  the ingress at the far end reads the section's `payload` and the old
+  block-in-a-turn alike, without being told which colony it is standing in.
 - `turn_write` → `in_episode` writes the **turns**, one message per turn, and
   since [#298](https://github.com/mmeyerlein/meclaw/issues/298) it is the only
   path in the substrate from a conversation into an `episodes` table. It arrived
@@ -643,14 +651,14 @@ behaves like, and it is a channel **of the person** — which is precisely why t
 of their agents may hold views on it at the same time. A screen owned by a
 generation would go dark on a swap and could not be shared at all.
 
-Since GH #459 the cell that stands there is real: [`display@1.0.2`](../display/).
+Since GH #459 the cell that stands there is real: [`display@1.1.0`](../display/).
 **Two** edges instantiate one — one fewer than a chat channel costs — and the
 second of them says the only thing a chat channel's edges do not:
 
 | edge | condition | why |
 |---|---|---|
 | `./channels/display-<s> -> ./channels` | `event` or `receipt` | what the screen produced, stamped with `context.channel_node` and `context.channel`, which on a screen are the same word |
-| `./channels -> ./channels/display-<s>` | `answer` or `view`, `context.channel_node == '<s>'` | re-stamped to the display's own `in_view` |
+| `./channels -> ./channels/display-<s>` | `view`, `context.channel_node == '<s>'` | re-stamped to the display's own `in_view` |
 
 **A screen has no error wire, and drawing one would be drawing into the void.**
 A connector's third edge exists because a connector *emits a failure of its own*:
@@ -669,11 +677,22 @@ would not, because it carries it a compartment away. The substrate's own
 `contract_violation` reply is addressed to the caller's `reply_to` and never
 routed by this graph, so it owes no edge either.
 
-**The smallest view needs no app.** An agent's ordinary `answer` becomes a view
-through that second edge — the same `./assistants -> ./channels` lane GH #454 drew
-for a chat answer carries it, and nothing at this level knows the difference. An
-agent that only wants to show a paragraph does not have to become an application
-first, which was the half of GH #455 that had nowhere to live.
+**The edge down is for a producer of view bodies, and an agent's answer is not
+one.** A view is a body carrying `view_id`, `kind` and `content`. A talking
+agent's `answer` carries `messages[]` and nothing else, and the screen refuses it
+by name: `invalid_view`, with the reason `"view_id" must match [a-z0-9-]{1,64}`
+(`templates/display/compose/compose.py`, `validate`). The claim that stood here
+until [#597](https://github.com/mmeyerlein/meclaw/issues/597) — *the smallest view
+needs no app* — read the smallest KIND of view (prose, which needs no component
+tree) as the smallest WRITER of one. Prose is the cheapest view to write;
+somebody still has to write it.
+
+So the smallest screen shows nothing of the conversation, and that is a
+legitimate state — the ordinary one for a member that has only just grown a
+screen. A member that wants an agent's prose on its screen installs a producer of
+views beside the agent: an app at the rim of the member (`./apps`, see § *What
+transits `./apps`*), or any cell built to emit `view`. Whoever writes the body
+writes the three keys.
 
 ### The way back: `event` and `receipt`, routed by owner
 
@@ -690,11 +709,12 @@ in the body could not be routed on at all.
 
 This level splits on the **container** and never on the agent:
 
-| owner path contains | goes to | as |
-|---|---|---|
-| `/assistants/` | `./assistants` | `in_turn`, with `hop.kind` set to `event` or `receipt` |
-| `/apps/` | `./apps` | `event` / `receipt`, lane name kept |
-| neither, or empty | `.` | `error`, with the original lane on `hop.kind` |
+| lane | owner path contains | goes to | as |
+|---|---|---|---|
+| `event` | `/assistants/` | `./assistants` | `in_turn`, with `hop.kind` set to `event` |
+| `event` / `receipt` | `/apps/` | `./apps` | lane name kept |
+| `event` | neither, or empty | `.` | `error`, with the original lane on `hop.kind` |
+| `receipt` | anything but `/apps/` | `.` | `error`, with the original lane on `hop.kind` |
 
 Two things about that table are deliberate.
 
@@ -702,11 +722,22 @@ Two things about that table are deliberate.
 cell path and a template does not know its own absolute prefix. `contains('/assistants/')`
 is the prefix test a level-relative template can actually write.
 
-**An agent gets it as `in_turn`.** The `assistant` level accepts no event lane
-and did not grow one for this: `in_turn` is the lane it has, and `hop.kind` is what
-tells a brain that this turn came from a button rather than from a keyboard.
-`context.channel_node` travels with it, so the answer finds its way back to the
-same screen.
+**An agent gets an EVENT as `in_turn`.** The `assistant` level accepts no event
+lane and did not grow one for this: `in_turn` is the lane it has, and `hop.kind`
+is what tells a brain that this turn came from a button rather than from a
+keyboard. `context.channel_node` travels with it, so the answer finds its way
+back to the same screen.
+
+**An agent gets a RECEIPT not at all** — since GH #598. A receipt is feedback to
+a WRITER, not something a person said, and a generation reads a turn by answering
+it: the answer went back to the screen, the screen refused it again, and the
+level had built a loop that cost one brain call per round (44 in six minutes on
+one live colony, 68 on another). The level treats it the way it already treats
+`pack_ack`: *the hive has no lane that takes a receipt*, so the receipt is
+evidence for whoever operates the colony and leaves on `error` with the original
+lane on `hop.kind`. An APP keeps its receipts — an app declares the lane, is the
+producer of the view that was refused, and does not answer a refusal by writing
+prose. See `plans/adr/0025-a-receipt-is-feedback-to-a-writer.md`.
 
 The third row is the one that keeps a defect visible. The display emits an event
 whose object id will not parse **anyway**, with an empty owner, because a view it
@@ -825,7 +856,7 @@ The whole arrangement, as three mutations. The member first:
 
 ```json
 {"scope": "<org>/members", "diff": {
-  "add_nodes": [{"name": "alex", "template": "member@1.6.0"}]
+  "add_nodes": [{"name": "alex", "template": "member@1.7.0"}]
 }}
 ```
 
@@ -834,7 +865,7 @@ lanes (`../assistant/README.md` § *Instantiating* writes them out):
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@2.5.0"}],
+  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@2.6.0"}],
   "add_edges": [
     {"from": "./assistants", "to": "./assistants/scribe",
      "condition": "has(hop.route) && hop.route == 'in_turn' && has(context.assistant) && context.assistant == 'scribe'"},
@@ -1025,7 +1056,7 @@ version its `because` names:
   keeper, the only two that name a generation with `context.assistant` at the
   member's own door rather than at a channel's.
 - **out** — the **nine** an assistant emits: `answer`, `write`, `turn_write`,
-  `extraction`, `recall`, `prune`, `error`, `build` and — since #475 — `dump`,
+  `sidecar`, `recall`, `prune`, `error`, `build` and — since #475 — `dump`,
   the only one of them this level consumes rather than re-emits.
 
 **What transits `./channels`** — `turn`, `error`, `event` and `receipt` up;
@@ -1033,7 +1064,53 @@ version its `because` names:
 the message, and the address rule that decided where it goes lives in the edge
 below it or in the owner the screen stamped.
 
-**What transits `./apps`** — `view` and `error` up, `event` and `receipt` down.
+**What transits `./apps`** — since 1.6.2 an app has three ways to be connected
+at the rim of its member, and each one is a class of edge with an owner
+(rulings 2026-09-04 and 2026-09-05):
+
+| what the app does | how | who draws the edge |
+|---|---|---|
+| **listens** | a regular fan-out into the container: `turn` (the screened turn of a channel conversation), `answer` (what an assistant replied on that channel) and `partial` (an interim transcript of a voice channel), all three carried on down to the app by the binding edge | the mutation that installs the app |
+| **offers** | a v-lane per direction *in*: the tool call and the menu tick end on the connect points the app declares for itself. The answers come back the ordinary way — `tool_result` and `tool_schemas` up into the container, restamped to `in_tool` and `in_menu` by the level's own two edges | the mutation for the v-lanes, the **level** for the two restamp edges |
+| **writes** | `view` and `error` up, exactly as since GH #459, carried on by `./apps -> ./channels` | the mutation for the app's own outbound edge, the level for the rest |
+| **is written to** | a section of the block the front model appends to its answer, since 1.7.0 ([#607](https://github.com/mmeyerlein/meclaw/issues/607)). No round, no call: the model writes the section into the same fence it writes the memory into, and it arrives as an ordinary message on `sidecar` carrying `hop.section` | **the level** for `./assistants -> ./apps`, the mutation for `./apps -> ./apps/<app>` on the section name |
+
+`event` and `receipt` still come down from a screen the way they did, addressed
+by the owner the display stamped.
+
+**The rim does not know the sections, and cannot.** A section is named by
+whoever OFFERED it — an app declares `display`, a second app declares something
+else, and the offer is answered at menu time, long after this template was
+written. So the level draws ONE edge, `./assistants -> ./apps` on
+`hop.route == 'sidecar' && hop.section != 'memory'`, and the mutation that
+installs an app draws `./apps -> ./apps/<app>` on the section that app answers
+for. The split falls exactly where knowledge does: the level knows there is one
+section it keeps for itself (`memory`, which goes to the memory hive on the edge
+beside it, GH #122), the installer knows the app's name and the section it
+offered, and neither has to learn the other's half.
+
+That makes this edge the **second** exception to *whoever listens orders it*,
+and for the same measurable reason as the two restamp edges: a section is only
+ever written because it was offered, so on a member with no app the model is
+never asked for anything but `memory` and nothing arrives on the edge. An
+observer fan-out is different in kind — `turn` and `partial` exist whether or not
+anybody listens, which is why those stay the installing mutation's.
+
+**The level declares, the installing mutation draws** — and that split is the
+whole of the 2026-09-05 ruling. This template names `turn`, `partial` and — since 1.7.0 —
+`sidecar` as emits and `tool_result` and `tool_schemas` as accepts, all five with
+`at: ["./apps"]`, which is the same sentence `recall` and `tool` already say
+about `./assistants`: the lane is no lane of this rim, both its ends are inside
+this level, and nothing may carry it PAST the member as a v-lane (ADR-0020). It
+draws **no** observer edge of its own. *Whoever listens orders it* — the rule a
+voice channel already follows with `emit_partials` — so a member with no
+listening app carries no edge into an empty container and dead-letters nothing.
+The two restamp edges out of the container are the first exception, and for a
+measurable reason: without an installed app nothing ever arrives on them. The
+`sidecar` edge into the container is the second, on the same measurement and for
+the reason above it: the rim cannot name a section, and a section nobody offered
+is never written.
+
 An **app** is a specific composition and specific code that came out of a build
 order, a derived template in the library tagged `app`, instantiated here as
 `apps/<name>`. It stands beside the agents rather than inside one because it
@@ -1049,6 +1126,102 @@ draws on is one literal, in the edge that leaves the app —
 same word — which is why
 [`colony-view`](../colony-view/) can be wired to two displays without knowing
 either of them.
+
+### Installing an app
+
+One mutation, scope `<member>`. `<gen>` is the generation the app offers its
+tool to, `<app>` is the instance name — which is the template name, because an
+instance is named after its template — and `<screen>` is the screen node in
+`./channels` the app draws on.
+
+```json
+{"scope": "<member>", "diff": {
+  "add_nodes": [{"name": "apps/<app>", "template": "<app>@<version>"}],
+  "add_edges": [
+    {"from": "./firewall", "to": "./apps",
+     "condition": "has(hop.route) && hop.route == 'pass' && has(context.channel_node) && context.channel_node != ''",
+     "modifier": {"set_hop": {"route": "'turn'"}, "delete_context": ["fw_body", "fw_now", "fw_phase", "store_origin"]}},
+    {"from": "./assistants", "to": "./apps",
+     "condition": "has(hop.route) && hop.route == 'answer' && has(context.channel_node) && context.channel_node != ''"},
+    {"from": "./channels", "to": "./apps",
+     "condition": "has(hop.route) && hop.route == 'partial'"},
+    {"from": "./apps", "to": "./apps/<app>",
+     "condition": "has(hop.route) && (hop.route == 'turn' || hop.route == 'answer' || hop.route == 'partial')"},
+    {"from": "./apps", "to": "./apps/<app>",
+     "condition": "has(hop.route) && (hop.route == 'event' || hop.route == 'receipt') && has(hop.owner) && hop.owner.contains('/apps/<app>/')"},
+    {"from": "./apps", "to": "./apps/<app>",
+     "condition": "has(hop.route) && hop.route == 'sidecar' && has(hop.section) && hop.section == '<section>'"},
+    {"from": "./apps/<app>", "to": "./apps",
+     "condition": "has(hop.route) && (hop.route == 'view' || hop.route == 'error')",
+     "modifier": {"set_context": {"channel_node": "'<screen>'", "channel": "'<screen>'"}}},
+    {"from": "./apps/<app>", "to": "./apps",
+     "condition": "has(hop.route) && (hop.route == 'tool_result' || hop.route == 'tool_schemas')",
+     "modifier": {"set_context": {"tool_answerer": "'<app>'"}}},
+    {"from": "./assistants/<gen>/talky", "to": "./apps/<app>/show", "lane": "tool",
+     "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'show'",
+     "modifier": {"set_context": {"tool_caller": "'talky'", "assistant": "'<gen>'"},
+                  "delete_context": ["col_phase", "consult_class", "consult_id", "tool_answerer"]}},
+    {"from": "./assistants/<gen>/talky", "to": "./apps/<app>/show", "lane": "schemas",
+     "condition": "has(hop.route) && hop.route == 'schemas'",
+     "modifier": {"set_context": {"tool_caller": "'talky'", "assistant": "'<gen>'"},
+                  "delete_context": ["col_phase", "consult_class", "consult_id", "tool_answerer"]}},
+    {"from": "./assistants/<gen>/tools", "to": "./apps/<app>/stage", "lane": "tool_result",
+     "condition": "has(hop.route) && hop.route == 'tool_result'"},
+    {"from": "./memory-hive", "to": "./apps/<app>/stage", "lane": "tool_result",
+     "condition": "has(hop.route) && hop.route == 'tool_result'"}
+  ]}}
+```
+
+Read it in the three classes above. The first three edges are the **observer**
+fan-out into the container, each one guarded exactly the way the lane it copies
+is guarded elsewhere in this level: the screened turn carries the same channel
+guard and the same hygiene the road into `./assistants` carries, and the answer
+carries the same guard its channel edge carries — which is what keeps the
+guarded default to the parent alive, because a regular edge only suppresses a
+default on the case it actually fires on. The next five **bind** the app to its
+container, in both directions — the last of them being the section edge of
+[#607](https://github.com/mmeyerlein/meclaw/issues/607): the level carried every
+non-`memory` section into the container, and THIS edge is where the section is
+finally read by name, because the installer is the one act that knows both the
+app's instance name and the section it offered. The last four are **v-lanes** (ADR-0020): the
+call and the menu tick end on the connect points the app declares for itself,
+and the two observed `tool_result` lanes are fan-outs that leave the existing
+answers untouched.
+
+Two more things belong to the same act. The voice channel is told
+`emit_partials: true` by override — a lane nobody ordered carries nothing, and
+`partial` is off by default. And the app answers a menu tick with its **whole**
+offer rather than with the names it was asked about: the collector merges the
+rows of every answerer, so a tool of an app reaches the brain's menu without the
+surface, its collector or the grow recipe being touched at all.
+
+A **second** installation into the same member redraws the three observer edges
+and they do not double: an edge is identified by its endpoints, its condition,
+its modifier and its default phase, and an identical one is held once — so the
+commit is idempotent and the container gets one copy of each turn. A second app
+that draws a DIFFERENT guard is two edges and two deliveries, which is why the
+installer is meant to be the builder: it reads `/colony/graph` and draws only
+what is missing.
+
+### A channel may offer a tool too
+
+The same mechanism, at a second rim. `tool`, `schemas`, `tool_result` and
+`tool_schemas` dock at `./channels` as well as at `./apps`, and this level ships
+the two restamp edges `./channels -> ./assistants` beside the two it already had
+off `./apps`: a channel's `tool_result` becomes `in_tool`, its `tool_schemas`
+becomes `in_menu`.
+
+It exists because a channel can have something to offer that only it can do. A
+telephone (`freeswitch`) is the first: it can *ring somebody up*, and the tool that
+says so belongs where the line is, not in a hive beside it. Making the apps rim
+the only place a tool may come from would have meant either a second app that
+reaches back into the channel, or a special case — and the declaration costs
+nothing on a member whose channels offer nothing, exactly like the apps pair:
+without a channel that answers, nothing ever arrives on either edge.
+
+The v-lanes in are the installing manifest's, as always
+(`templates/freeswitch/README.md` § *Wiring it into a member*). What lives here is the
+DECLARATION and the way back.
 
 ### Five inbound lanes this level deliberately does not carry
 
@@ -1095,8 +1268,8 @@ paragraph, and the `org` and `meclaw-os` contracts with it.
 Both transit lists are prose in the containers' own `description`, not a
 `params.contract`, and the reason is mechanical rather than stylistic.
 `addressed_lane_doors` skips a hive only while **nothing addresses its path**
-(`hive_path_is_wired`). This member addresses `./assistants` on nineteen of its
-edges and `./channels` on nine, so both containers are wired the moment the
+(`hive_path_is_wired`). This member addresses `./assistants` on twenty-one of its
+edges and `./channels` on eleven, so both containers are wired the moment the
 member is instantiated — and from then on every lane they declared would owe a
 `door_exists`: a message arriving at the container path must reach a cell
 *inside* it. An empty container has no inside. The violation would be collected
@@ -1107,7 +1280,11 @@ state, and the normal one for `channels` on a fresh member.
 
 The rule, which holds for all four levels: **a container hive that its own level
 wires declares no `params.contract`. The transit lanes are declared by the level
-whose own edges satisfy the door and exit check from birth.** A container nobody
+whose own edges satisfy the door and exit check from birth.** Since 1.6.2 that is
+literally what the apps rim does: the observer lanes are declared at the LEVEL,
+with `at: ["./apps"]` naming the container as the address they dock on — the
+same form `recall` and `in_bundle` use for `./assistants` — so the container
+itself still declares nothing and still owes no door. A container nobody
 wires could technically carry a dormant contract; it should not — a declaration
 that is green only because nothing is looking is the same defect class as the
 slot this wave struck.
@@ -1144,6 +1321,41 @@ at it.
   has to fill it.
 
 ## Versioning
+
+`1.7.0` takes the **second** digit, and by the plain rule: this level does
+something it never promised before. `sidecar` is a new lane
+([#607](https://github.com/mmeyerlein/meclaw/issues/607)) — one section of the
+block a front model appends to its answer — and this level is what SORTS it:
+`memory` upward into the memory hive on the door `extraction` used to use,
+everything else into `./apps`, where an installed app's own edge picks the
+section it answers for. The lane is declared with `at: ["./apps"]`, so the rim
+lists do not move: a parent wired at `1.6.3` is still wired correctly and sees
+the same eight inbound and thirteen outbound lanes. What it does not have is a
+person whose apps can be written to without a tool round.
+
+Two edges arrive and one leaves: sixty-three become **sixty-four**. The one that
+leaves is `extraction` — `talky` (5.1.0) renamed the port, so `assistant` (2.6.0)
+cannot raise it any more and an edge for it would be an edge nothing travels.
+What survives the rename is the SHAPE: `memory-hive`'s ingress still reads the
+block out of a turn as well as out of a section's `payload`, so a colony is
+rewired in two steps rather than one.
+
+`1.6.2` takes the **third** digit, and the reason is the plain one: nothing a
+parent wired against moved. The rim keeps its eight inbound and thirteen
+outbound lanes; what came is four DECLARATIONS that are explicitly not rim lanes
+— `turn` and `partial` as emits, `tool_result` and `tool_schemas` as accepts,
+all four `at: ["./apps"]` — and two edges out of that container, which restamp
+an app's answer and its offer into `in_tool` and `in_menu` the way the memory's
+pair has since 1.6.0. The two edges may live in the library because without an
+installed app nothing ever arrives on them.
+
+What is deliberately NOT here is the other half: the observer edges
+`./firewall -> ./apps`, `./assistants -> ./apps` and `./channels -> ./apps`, and
+the pair that binds an app to the container. Those are drawn by the mutation
+that installs an app (see *Installing an app* above), because whoever listens
+orders the lane — the rule a voice channel already follows with `emit_partials`.
+Shipping them here would give every member of every colony three edges into an
+empty container, and a member with no app is the ordinary state.
 
 `1.5.0` carries a second addition that is no traffic at all: two SENTENCES, and
 they ride in the same unreleased number as the `access` occupant above them for

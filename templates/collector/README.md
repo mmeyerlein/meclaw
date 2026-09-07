@@ -1,4 +1,4 @@
-# `collector@4.0.0`
+# `collector@4.1.0`
 
 Context assembly as a hive of existing cell types -- no new cell type, no Rust. Two cells:
 `assemble` (a `code` cell, the state machine) and `window` (a `store` cell, the state). The
@@ -103,7 +103,7 @@ message context.
 | `in_prune` | a timer or an operator, on `hop.route == 'prune'` | prunes delivered-and-aged sessions; the template **never fires this itself** |
 | `in_round_sweep` | a timer or an operator, on `hop.route == 'sweep'` | re-checks every open tool round and closes the stale ones; equally **never fired by the template itself** |
 | `in_pack` | whatever curates this agent's identity -- `affinity`'s push lane is the worked example | a durable `system.*` slot for the brain: `identity`, `persona`, `handover` or `instructions`, and nothing else. The one lane that carries state meant to OUTLIVE the round. See "The door in the wall" below |
-| `in_menu` | the tools hive this agent's tools live in, answering on `tool_schemas` | the declarations of the tools this agent DECLARED it uses: `schemas[]` and the names the hive had nothing under. Since `3.4.0` the answer is filed under `context.tool_answerer` as ONE row of the `menu` table and the menu is re-derived as the union over every answerer's row (GH #529). See "The menu is asked for" below |
+| `in_menu` | the tools hive this agent's tools live in, answering on `tool_schemas` | the declarations of the tools this agent DECLARED it uses: `schemas[]` and the names the hive had nothing under -- and, since `4.1.0`, `sidecar[]` beside them, the sections that answerer wants in the block a `splitter` cuts out of the answer (GH #606). Since `3.4.0` the answer is filed under `context.tool_answerer` as ONE row of the `menu` table and both halves are re-derived as the union over every answerer's row (GH #529). See "The menu is asked for" and "One block, several offers" below |
 | `mutation_committed` | the level above, carrying the mutation door's receipt (GH #553) | the occasion to ask for the menu again. The hive's own door turns it into the internal `in_menu_tick`, which is why nothing outside ever names that lane. It replaced `./menu-clock`, a five-minute poll |
 
 Exits leave **from the hive path** on `hop.route`:
@@ -119,7 +119,7 @@ Exits leave **from the hive path** on `hop.route`:
 | `pack` | the agent LLM | an accepted pack, as `system.*` and **no** `messages[]` beside it. Not the `brain` route: that one carries an assembled turn and is bounded by `hop.iter`, and a pack belongs to no turn and no round. A parent that wires `in_pack` MUST wire this into the brain, or every accepted pack dead-letters after this cell already told its sender it was accepted |
 | `pack_ack` | back towards whoever pushed | the receipt of one pack, unconditionally: `hop.pack_owner`, `hop.pack_slots`, `hop.error_code` (empty, `slot_unknown` or `pack_empty`), `hop.pack_unknown`. Every key always present and empty rather than absent |
 | `schemas` | a tools hive's `in_schemas` door | the tool names `params.tools` declares, as the whole body (`{"tools": [...]}`); `["*"]` asks for everything that hive has. It leaves on a TICK, not per turn. A parent that wires this must wire the answer back, or the tick asks into a dead letter every period |
-| `menu` | the agent LLM | the menu as `system.tools` and **no** `messages[]` beside them -- durable, like `pack`, and for the same reason: an `llm` cell upserts the subtree into its own `cell.db` and it stands there until something overwrites that path. The subtree carries `$replace`, so a menu with nothing usable in it writes NOTHING rather than an empty menu that would revoke the model's whole tool set. Since `3.4.0` what travels here is not one answer but the UNION over every answerer's stored row, plus the names this hive serves itself (GH #529); `hop.menu_answerers` names the answerers it was derived from, beside `menu_count`, `menu_self` and `menu_unknown` |
+| `menu` | the agent LLM | the menu as `system.tools` -- and, since `4.1.0`, the block contract beside it on `system.instructions.sidecar` (GH #606) -- with **no** `messages[]` beside either. Durable, like `pack`, and for the same reason: an `llm` cell upserts the subtree into its own `cell.db` and it stands there until something overwrites that path. The `tools` subtree carries `$replace`, so a menu with nothing usable in it writes NOTHING rather than an empty menu that would revoke the model's whole tool set; the block contract carries none, and an empty one is written EMPTY rather than withheld. Since `3.4.0` what travels here is not one answer but the UNION over every answerer's stored row, plus the names this hive serves itself (GH #529), and since `4.1.0` the two halves are read separately -- an answerer that offered a section without declaring a tool leaves `system.tools` untouched. `hop.menu_answerers` names the answerers it was derived from, beside `menu_count`, `menu_self`, `menu_unknown` and `sidecar_sections` |
 | `condense` | -- | **reserved, never emitted today.** The value is declared in the enum so the fold lane can be wired later without widening a published contract; nothing in this cell writes it. |
 | `cstore` | `window`, inside the hive | **interior, and it never crosses the hive path.** Every store round-trip of the state machine rides on it (`hop.phase` carries the state, `hop.turn_id` the turn). It is in the enum because the assembler emits it, and it is in no parent's wiring because the seal gives it nowhere to go. |
 
@@ -230,7 +230,8 @@ for how to retune one, and for what `override_params` can and cannot do).
 | `async_tools` | -- | **not a collector knob.** The async class is declared once, at the dispatcher (its own `async_tools` param since `dispatcher@1.2.0`), and travels as `hop.async_calls`. |
 | `prune_after_ms` | `604800000` | age gate on the prune lane (seven days). A session is pruned only when its close batch left **and** that delivery is older than this. |
 | `turn_write` | `"1"` | **on by default since GH #298** -- it is the only path from a conversation into an episodes table, and a shipped "off" would be a shipped agent that remembers nothing. Every stored turn hands out one message per unwritten turn on route `turn_write`. `""` or `"0"` switch it off, and off means nothing said in this session reaches a memory *at all*, not that it reaches one later. Switch it off only where that route is unwired: an unrouted emission per turn is a dead letter per turn. |
-| `inline_extraction` | `""` | **the inline extraction contract** (GH #525). Non-empty writes the shipped block to `system.instructions.sidecar` on every turn assembly -- which is what asks the brain for the ```` ```memory ```` block a memory hive's `in_remember` lane reads. It ships OFF, and that is the one place it differs from `turn_write` one row up: what takes the block back OUT of the answer is a `splitter` between the brain and the dispatcher, and this cell cannot see whether one stands behind it -- asking with nothing cutting leaves a json block in the reader's face on every turn. So the COMPOSITE decides: `talky` cuts the block and switches it on, `cogny` has no splitter and leaves it off. The write carries no `$replace` marker, so a person's charter in `instructions.reply` is untouched, and the leaf name sorts AFTER it on purpose -- an `llm` cell walks a family's leaves alphabetically and the block belongs after the answer it follows. The text is byte-identical to the fence of `templates/memory-hive/inline-contract.md`, which stays the authority. |
+| `sidecar` | `""` | **the block contract this collector asks its brain for** (GH #606, and GH #525 before it). Non-empty composes the sections OFFERED on the menu lane into ONE contract and writes it beside `system.tools` on `system.instructions.sidecar` -- one write per change and nothing per turn. **What is IN the block is not this cell's business**; what it owns is the frame: one fence, one JSON object, one key per section, required before optional ("One block, several offers" below). It ships OFF, and that is the one place it differs from `turn_write` one row up: what takes the block back OUT of the answer is a `splitter` between the brain and the dispatcher, and this cell cannot see whether one stands behind it -- asking with nothing cutting leaves a json block in the reader's face on every turn. So the COMPOSITE decides: `talky` cuts the block and switches it on, `cogny` has no splitter and leaves it off. Nobody offering anything writes the slot **empty** rather than not writing it -- durable state is revoked, never abandoned. The write carries no `$replace` marker, so a person's charter in `instructions.reply` is untouched, and the leaf name sorts AFTER it on purpose -- an `llm` cell walks a family's leaves alphabetically and the block belongs after the answer it follows. |
+| `sidecar_max_chars` | `6000` | the ceiling of the composed contract, in characters. Every one of them is re-read by the provider on every turn of every conversation, and the sections come from templates this cell does not own -- so the bound lives HERE, where the block is assembled, rather than as a promise each offering template has to keep. Over it, OPTIONAL sections fall from the back of the alphabetical order, with a warn line on stderr naming what fell. A REQUIRED section never falls: a section every turn has to carry is not a budget item, and a contract still over the ceiling with nothing but required sections left is KEPT and the overrun reported, because the alternative is a fence whose contents were never stated. |
 | `context_window` | `0` | **the curator's budget**, in tokens. `0` or empty = curation off and every byte of behaviour is the pre-wave-11 behaviour. See "The curator" below. |
 | `curate_soft` | `0.5` | the working mark, as a fraction of the budget: at or above it the curator elides in stages until the projection fits under it again. |
 | `curate_hard` | `0.75` | the emergency mark. It changes no behaviour of its own -- it is *reported* as `hop.curate_mark='hard'` and means the curator is out of stages. |
@@ -351,7 +352,7 @@ caller that may use it, and no caller can offer a model anything nobody typed.
 own template says it uses -- and the schemas behind those names are **asked for**:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "collector@4.0.0",
+{"add_nodes": [{"name": "scribe", "template": "collector@4.1.0",
                 "override_params": {"assemble": {"tools": ["web_search", "web_fetch"]}}}]}
 ```
 
@@ -462,6 +463,7 @@ one more table, `menu`, with one row per answerer:
 | `answerer` | who delivered this submenu -- the key of the row |
 | `tools` (`json`) | that answerer's declarations, already in the provider envelope |
 | `unknown` | the names IT had nothing under, comma-joined -- carried rather than reported (see below) |
+| `sidecar` (`json`) | that answerer's block-contract OFFERS, one entry per section it wants asked for (`4.1.0`, GH #606 -- one section below) |
 | `recorded_at` | when the row was written |
 
 So `in_menu` writes no `system.tools` at all any more. It writes **one row** and reads the
@@ -518,6 +520,140 @@ the ask is a tick.
 `store` is one task with one connection, so the two bundles run sequentially: whichever runs
 second sees both rows and writes the full union. There is no lost update to guard against and
 no guard row to win.
+
+#### One block, several offers (`4.1.0`, GH #606)
+
+The menu is not the only thing this cell asks its brain for. Since
+[#525](https://github.com/mmeyerlein/meclaw/issues/525) it also asks for a **fenced block
+after the answer** -- the structured half of a turn, taken back out by a `splitter` between
+the brain and the dispatcher and handed to whoever the composite routed the cut to. Until
+`4.0.0` the words of that ask lived HERE, as a literal in `./assemble`, written to
+`system.instructions.sidecar` on **every turn assembly**.
+
+**That is retracted, not quietly reworded.** The literal is gone, the per-turn write is gone,
+and the knob that switched them on is gone with them: `inline_extraction` was **removed and
+replaced by `sidecar`**, not deprecated beside it, because the two do not do the same thing
+and a name kept alive over a changed mechanism is the worst of both. The cause is one
+sentence: **a contract this cell types can describe exactly one consumer, and there are two.**
+A memory hive reads the annotation it always read; a screen -- and, since this wave, an app --
+reads a section of its own. The second consumer of the same fence had nowhere to put its
+rules except into a template that answers none of them, which is the defect
+[#552](https://github.com/mmeyerlein/meclaw/issues/552) named one lane over: whoever is
+REACHED declares themselves.
+
+**So the sections are OFFERED, on the answer that already exists.** A menu answer carries
+`sidecar[]` beside `schemas[]` and `unknown[]`, one entry per section its sender wants asked
+for: `{section, required, schema, instruction}`. It is the same question read one word wider
+-- what may this agent ask its model for -- and it is merged by exactly the machinery one
+section up: the same `menu` table, keyed by `context.tool_answerer`, one row per answerer
+with the offers in its own `sidecar` column; the same sort by `answerer` on every derivation;
+the same **first answerer wins** rule where two of them offer one section name, because a
+block that described one key twice is a block whose reader cannot predict which description
+held. The `section` is the whole of an offer's identity -- it is the key the model writes and
+the key the splitter puts on `hop.section` -- so an offer without one is dropped rather than
+half-kept, and the words are copied as they came: a collector that edited an instruction
+would be the second author of a contract it does not own.
+
+**The contract is written on the `menu` message, not in front of a turn.** It lands beside
+`system.tools`, on `system.instructions.sidecar`, and it is durable state of exactly that
+class: an `llm` cell upserts `system.*` per slot path, so the block costs **one write per
+change and nothing per turn**, and it is re-derived at every `mutation_committed` receipt this
+hive hears. The #525 lesson survives the move rather than being spent by it -- a seed is read
+once at birth and a brain that grew never receives it, so the slot stays **derived, never
+seeded**. The write still carries no `$replace`, so the charter in `instructions.reply` is
+untouched and neither family can revoke the other, and `instructions` stands in the curator's
+protected set at any budget.
+
+**The frame is this cell's, the words are not.** The preamble is the only part of the block
+the collector writes, and it is short on purpose -- 494 characters for the two sections that
+ship, re-read by the provider on every turn of every conversation. It is COMPOSED rather than
+constant: a fixed frame, then the whole-object shape of this particular composition, then the
+obligation with the section names in it. Over the shipped `memory` + `display` pair it reads:
+
+````
+After your answer -- always after, never instead of it -- append ONE fenced block that opens with ```sidecar, holds ONE JSON object and nothing else, and closes with ```. One top-level key per section, all inside the one outer object:
+{"memory": {...}, "display": {...}}
+"memory" is written on EVERY turn, even the ones that changed nothing, and when "display" is present too: an optional section never replaces a required one.
+Write "display" only when it applies; otherwise leave its key out.
+````
+
+**The last two lines are repairs, and the harness bought them** (GH #608, measured 2026-09-06).
+The first composition of this contract produced **7 malformed blocks in 52 turns against 0 in
+the control arm**, in two patterns, and neither was about a section -- both were about the
+frame. One model **dropped the outer braces** and wrote the section objects side by side:
+every heading below shows the INNER shape, and nothing showed the outer one, so the shape line
+now prints the whole object with the braces the model has to write. Another model let the
+**optional section stand INSTEAD of the required one** on the turns where both applied: *a
+required section is written on every turn* is true, general, and was read as a rule about
+sections in the abstract, so the names make it a rule about THESE and the clause about the
+optional one says the failing case out loud. Both lines are generated from the offers, not
+typed: this cell knows the names at composition time and nothing else about them.
+
+Under it stands one section per offer: a heading `## <section> (required|optional)`, the
+instruction whoever offered it wrote, and a compact example. **Required first, alphabetical
+inside each half** -- required first because the preamble's obligation is about them and a
+rule stated before its subjects is a rule read twice, alphabetical because the same offers
+have to produce the same block on every derivation. A prompt that reshuffles itself is a
+prompt nothing can be measured against.
+
+**The example is a shape, not a validator document.** It is rendered out of the offered JSON
+schema by one rule: an `enum` becomes its alternatives joined by `|`, a `string` becomes its
+own `description` (and nothing when it has none), an `array` becomes one element, and an
+`object` becomes its `required` properties -- all of them when it declares no `required`.
+That last clause is what lets an offer carry a field the ordinary form must NOT show: the
+memory section's `nothing_new` lives in the schema and outside `required`, so it never prints
+on the block a model fills every turn, where it would read as a field to get right on the
+turns where it means nothing, and the empty form it belongs to is stated by the instruction
+instead. The memory hive's offer renders its head like this:
+
+```
+## memory (required)
+ANNOTATE EVERY TURN, including the turns that changed nothing. [...]
+{"memory":{"facts":[{"subject":"","predicate":"","claim":"","fact_kind":"world|experience|foresight","valid_from":"<RFC3339|null>"}],"topic":{"movement":"start|continue|end","name":""}}}
+```
+
+**The ceiling is here, not in the offers.** `sidecar_max_chars` (6000) bounds the composed
+text, because every character of it is re-read by the provider on every turn of every
+conversation and the sections come from templates this cell does not own -- a bound each of
+them had to keep would be a promise nobody could check. Over it, OPTIONAL sections fall from
+the BACK of the alphabetical order, one at a time, with a warn line on stderr naming what
+fell -- which a `code` cell puts into `log.jsonl` at warn level with `had_stderr` on the
+emission. A REQUIRED section never falls: a section every turn has to carry is not a budget
+item, and dropping one would ask a model for a fence and then refuse to say what goes in it.
+A contract still over the ceiling with nothing but required sections left is KEPT and the
+overrun reported, for the same reason.
+
+**Nobody offering anything is an EMPTY slot, not a silence.** `{"text": ""}` -- the same rule
+the `consult` slot follows: durable state is revoked, never merely abandoned. A collector that
+fell silent here would leave the last contract it wrote standing in a brain whose offers are
+gone, and the model would keep fencing for a section nothing cuts any more. The empty text
+contributes nothing to the prompt, and the `splitter` behind it is a pure pass-through --
+exactly what it was before the knob existed.
+
+**The empty-menu guard is read per HALF now.** It used to be one question: an answer with no
+usable declaration was neither written nor recorded, because a `$replace` over an empty menu
+revokes the model's whole tool set. The question is now asked of declarations **and** offers
+together, and only an answer empty in both is parked. An answerer that offers a section
+without declaring a tool -- a screen is the shipped case -- leaves `system.tools` untouched:
+the merge writes the block contract alone, and the self-served names of `3.3.1`
+(`thread_recall`) are appended **only where a menu came about at all**, because appending them
+to nothing would perform precisely the revocation the guard exists to refuse.
+
+**A collector that does not ASK for the block ignores every offer of one, silently.** `cogny`
+has no splitter, so a section offered to it describes a fence nobody would cut. There is no
+warn line: a correctly wired tree must not read like a defect, and the composite's decision is
+the answer to the question, not a symptom.
+
+**`hop.sidecar_sections`** joins `menu_count`, `menu_self`, `menu_answerers` and
+`menu_unknown` on the `menu` message: the sections that are IN the contract, in the order they
+stand in it -- so after the cap, not the offers the merge started from. Empty rather than
+absent, and empty means no section entered the contract: either nobody offered one, and the
+slot is then written EMPTY so the brain's last contract is revoked, or this collector does not
+ask for a block at all and nothing is written. `menu_answerers` beside it says who was asked.
+
+**`./assemble`'s cell contract moved again** (`contract.version` 2.1.0): `sidecar` joins
+`consumes.body` as the offers of one answer, `sidecar_sections` joins the emitted hop keys,
+and where there was one setting there are two -- `sidecar` and `sidecar_max_chars`.
 
 ### The curator (wave 11)
 
@@ -1317,12 +1453,15 @@ and, when an answerer answers a menu question (GH #529):
 ```
 in_menu    -> delete menu (this answerer)  phase menu-merge <- one row per answerer,
             +  insert menu (answerer,                          keyed by
-                            tools, unknown)                    context.tool_answerer
+                            tools, sidecar, unknown)           context.tool_answerer
             +  select menu (every row)                      <- the #419 form: the
                                                                select sees the insert
 menu-merge -> ROUTE menu                                    <- the UNION over the rows,
-              (nothing else: a menu is durable                 self-served names after
-               state and no turn travels beside it)            it, written with $replace
+              (system.tools + the block contract on            self-served names after
+               system.instructions.sidecar; no turn            them, written with $replace;
+               travels beside either -- both are               the block carries no
+               durable state)                                  marker and is written
+                                                               EMPTY when nobody offered
 ```
 
 An incomplete fan-in emits **nothing** (empty multi-send, terminal by design) -- the same

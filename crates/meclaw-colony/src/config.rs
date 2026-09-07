@@ -528,6 +528,29 @@ pub struct LaneSpec {
     /// onto this hive's interior is refused `v_lane_no_connect_point`.
     #[serde(default)]
     pub at: Vec<String>,
+    /// Apps rim (2026-09-05) — a lane the INSTANTIATING mutation must wire.
+    ///
+    /// `true` says: whoever gives this hive birth has to draw an edge that
+    /// DELIVERS this lane — onto the hive path for a rim lane, onto one of the
+    /// [`at`](Self::at) connect points for a lane that docks below the rim.
+    /// It exists because an observer is silent rather than broken when nobody
+    /// wired it: an app that declares `partial` and is instantiated without the
+    /// edge that carries it looks alive and hears nothing.
+    ///
+    /// Checked ONCE, at birth, in the post-state stage of the mutation
+    /// (`crate::mutation::hive_contract::collect_required_lanes`), against the
+    /// hives that diff gives birth to. A standing hive that later loses the
+    /// edge again is `remove_edges` business and is not judged a second time —
+    /// the birth topology is authorship, and the door check of standing hives
+    /// stays what it is. Whether the emitter at the other end really SPEAKS the
+    /// lane (a channel's `emit_partials`) is not a question the substrate can
+    /// answer; who drew the edge is.
+    ///
+    /// Only meaningful on `accepts`: nobody wires an EXIT from outside, so the
+    /// key is read and ignored on an `emits` entry. Absent and `false` are the
+    /// same statement.
+    #[serde(default)]
+    pub required: bool,
     /// What this lane is for, in the hive's own words. Travels verbatim into a
     /// rejection — a refusal that cannot say what it protects is a refusal
     /// people route around (same reasoning as `required_drains[].because`).

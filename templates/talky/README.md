@@ -1,4 +1,4 @@
-# `talky@5.0.0`
+# `talky@5.1.0`
 
 A whole conversational agent as one template. Three referenced units under one hive:
 [`session-keeper`](../session-keeper/), [`collector`](../collector/) and
@@ -60,13 +60,13 @@ The three sub-units are **references**, not copies. Each of the three directorie
 one `config.json` and nothing else:
 
 ```json
-{"cell": {"type": "ref", "template": "collector@4.0.0"}}
+{"cell": {"type": "ref", "template": "collector@4.1.0"}}
 ```
 
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`talky@5.0.0` above it in its provenance chain.
+`talky@5.1.0` above it in its provenance chain.
 
 **The library has to carry the three.** A reference resolves against the colony's template
 registry, so `collector`, `session-keeper` and `dispatcher` have to sit in
@@ -420,7 +420,7 @@ the door edges' business, exactly as it is for the four essential lanes:
 | housekeeping | `./talky` lanes `in_prune`, `in_round_sweep` | a timer; the template never fires them itself |
 | per-turn write | `./talky` route `turn_write` out | one message per turn into a memory hive's `in_episode` lane; on by default -- see below |
 | memory lookup | **nothing to wire any more -- RETRACTED in `4.5.1`** (GH #530). The `ask_memory` errand is retired; a fast memory question is the `memory_recall` row two lines up, answered since `5.0.0` by the member's own memory hive | the row used to send that question to a core that has no memory leg. See *The one errand, and the memory question that is not one* |
-| inline extraction | `./talky` on `hop.route == 'extraction'` -> the memory hive's `in_remember` lane, **plus** its `reject` egress into the parent's own drain | the memory's write path for what a turn carried -- see "The extraction sidecar". Since `talky@4.1.0` the lane is a ROUTE, not a tool name: a parent still wired on `hop.tool_name == 'remember'` writes nothing |
+| the sidecar | `./talky` on `hop.route == 'sidecar'`, distributed on `hop.section`: `section == 'memory'` to the memory hive's `in_remember` lane, **plus** its `reject` egress into the parent's own drain | one message per section of the block a turn's answer carried -- see "The sidecar". Since `talky@5.1.0` the port is `sidecar` and not `extraction`, and the memory annotation is one section on it (GH #605); before that the lane carried nothing else. Since `talky@4.1.0` it is a ROUTE and not a tool name: a parent still wired on `hop.tool_name == 'remember'` writes nothing |
 
 ### Per-turn episodes (`turn_write`)
 
@@ -485,7 +485,7 @@ collector --(pack)--------------> brain      <- THE DOOR IN THE WALL, GH #458
 collector --(menu)--------------> brain      <- the answered tool menu, GH #464
 brain --(stop | tool_calls)------> splitter      <- the sidecar cut, GH #379
 splitter --(stop | tool_calls)---> dispatcher
-splitter --(extraction)---------->  .            <- and out of the extraction port
+splitter --(sidecar)------------->  .        <- one per section, out of the sidecar port
 brain --(length)-----------------> collector    in_answer
 brain --(error | content_filter)-> errors
 session-keeper --(reject)--------> errors    <- the session store refused a step
@@ -642,7 +642,7 @@ tools this agent uses -- shipped as `["web_search", "web_fetch"]`, `["*"]` for e
 tools hive has -- and the schemas behind those names are asked for:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "talky@5.0.0",
+{"add_nodes": [{"name": "scribe", "template": "talky@5.1.0",
                 "override_params": {"collector/assemble": {"tools": ["web_search", "bash"]}}}]}
 ```
 
@@ -862,11 +862,12 @@ be looked up outside.
 Everything the core does with the errand -- what it assembles, which brain it runs and how
 the answer leaves -- is in [`../cogny/README.md`](../cogny/README.md).
 
-### The extraction sidecar (inline extraction)
+### The sidecar (inline extraction)
 
-The lanes above ASK the memory. This one WRITES to it, and it is the only lane on
+The lanes above ASK the memory. This one is WRITTEN TO, and it is the only lane on
 which the brain does two jobs in one call: it answers, and in the same response it emits
-the durable memory the turn carried. That saves a second inference over the whole window
+what the turn carried for somebody else -- the durable memory first, and since GH #605
+any other section a receiver has offered. That saves a second inference over the whole window
 -- but the reason to do it is freshness, not tokens: a fact extracted at night cannot
 answer a question asked this afternoon.
 
@@ -882,11 +883,31 @@ turns by every one of five models, with zero malformed blocks. So since `talky@4
 model writes the annotation into its own text, and a cell takes it back out again.
 
 **The splitter, in one line.** `./splitter` sits between `./brain` and `./dispatcher` on
-the answer path. A completion whose text carries a ```` ```memory ```` block leaves it as
-TWO messages: the answer with the block cut out, on to the dispatcher exactly as before,
-and the raw block on lane `extraction`, out of the composite. Everything else passes
-untouched -- a round with tool calls belongs to the dispatcher whole, and **without the
-extraction prompt the splitter is a pure pass-through**.
+the answer path. A completion whose text carries a ```` ```sidecar ```` block leaves it as
+the answer with the block cut out, on to the dispatcher exactly as before, plus **ONE
+MESSAGE PER SECTION** on lane `sidecar`, out of the composite. Everything else passes
+untouched -- a round with tool calls belongs to the dispatcher whole, and **without a
+block contract in the brain's instructions the splitter is a pure pass-through**.
+
+**One fence, sections, and a cell that knows none of them**
+([#604](https://github.com/mmeyerlein/meclaw/issues/604), built in
+[#605](https://github.com/mmeyerlein/meclaw/issues/605)). The block carries ONE JSON
+object and one top-level key per section. The splitter reads the object, and for every
+top-level key it emits a message on route `sidecar` with `hop.section` set to that key and
+the body `{"messages": [], "section": "<key>", "payload": <the section object>}`. It looks
+no section up, validates none against a schema and routes none anywhere: **the edges
+downstream distribute on `hop.section`**, so a section this composite has never heard of
+travels without a line of code changing here. A top-level key whose value is not an object
+is dropped by name -- `hop.sidecar_dropped` on the answer half lists them, comma-separated
+-- because there is no body to carry a bare string in and guessing one would be this
+cell's invention.
+
+**The legacy fence still reads.** A ```` ```memory ```` block is the single-section form
+this cell shipped first, and it becomes the section `memory` with the whole block as its
+payload. So does a bare ```` ```json ```` fence or a naked trailing object carrying the
+memory payload -- the tolerance the harness grades with. Until `talky@5.1.0` the port was
+called `extraction` and carried exactly one thing, the raw block as the text of a single
+turn; a parent still wired on `hop.route == 'extraction'` writes nothing.
 
 **A block it cannot read leaves the answer too, and that is a retraction**
 ([#534](https://github.com/mmeyerlein/meclaw/issues/534)). Until then an unreadable block
@@ -896,9 +917,9 @@ was measured wrong in a running colony -- a model that had annotated the turn be
 correctly dropped one closing brace, and the raw JSON travelled through the dispatcher and
 out to the chat window. There is no half cut to fear: the parser has already located the
 span, and the prose either side of it is the same prose whether or not the JSON in the
-middle parses. So **`found` decides the cut and `valid` decides the lane** -- an unreadable
+middle parses. So **`found` decides the cut and READABLE decides the lane** -- an unreadable
 block comes out of the answer, `hop.sidecar == "malformed"` records that one was seen, and
-NOTHING goes out on `extraction`, because a block the hive cannot read is not an annotation
+NOTHING goes out on `sidecar`, because a block nobody can read is not an annotation
 and repairing it would hand the store this cell's invention instead of the model's. An
 opener with no closer is cut the same way, to the end of the text: cutting only the JSON
 would leave the bare fence line standing, which is the same leak one character smaller. Which is why the prompt is
@@ -920,7 +941,7 @@ first line.
 
 ```json
 {"from": "./talky", "to": "/front/memory",
- "condition": "has(hop.route) && hop.route == 'extraction'",
+ "condition": "has(hop.route) && hop.route == 'sidecar' && has(hop.section) && hop.section == 'memory'",
  "modifier": {"set_hop": {"route": "'in_remember'"}}},
 {"from": "/front/memory", "to": "<drain or alarm>",
  "condition": "has(hop.route) && hop.route == 'reject'"}
@@ -962,7 +983,7 @@ Everything below this line describes how the lane worked until `talky@4.1.0`. It
 because the measurement harness can still run that arm
 (`workshop/evals/conversation-guide/run_guide.py --annotation tool`) and because a colony
 that has not been rewired yet still looks like this. **Do not wire it into anything new.**
-The parent edge was `hop.tool_name == 'remember'` instead of `hop.route == 'extraction'`,
+The parent edge was `hop.tool_name == 'remember'` instead of the `sidecar` route above,
 and the brain carried a `remember` tool named in `async_tools` (never in
 `handoff_tools`: a memory write answers nothing and never comes back, so the
 model still owed the turn a sentence, and putting it in the handoff list brought back the
@@ -1019,11 +1040,18 @@ semantic, which is worse than a duplicate. Both were measured in a running colon
 field a schema does not offer is a field constrained decoding cannot produce; the hive
 enforces the same two rules again at its end, because it does not own the persona.
 
-**The block IS the contract, and this composite DELIVERS it** (#525). The authority is
+**The block IS the contract, and this composite DELIVERS it** (#525, reshaped by
+[#606](https://github.com/mmeyerlein/meclaw/issues/606)). The authority is
 `templates/memory-hive/inline-contract.md`; what puts it in front of a model is
-`./collector`, which writes it to the brain's `system.instructions.sidecar` on every
-assembly, because `inline_extraction` is switched on in this composite's own
-`collector/config.json`. Nothing has to be pasted anywhere, and that is the repair: the
+`./collector`, because the knob `sidecar` is switched on in this composite's own
+`collector/config.json` (`override_params` on `assemble`; the default is off, and `cogny`,
+which has no splitter, leaves it off). *That the collector HOLDS the text and writes it on
+every assembly is retracted, not quietly reworded*: the text belongs to whoever reads what
+it produces, so the memory hive offers it on `sidecar[]` of its `schemas` answer, the
+collector merges the offers of everyone it asked the way it already merges a tool menu
+(GH #529), and the composed block is written to `system.instructions.sidecar` on the MENU
+message — the same durability class as `system.tools`, one write per change instead of one
+per turn. Nothing has to be pasted anywhere, and that is the repair: the
 instruction used to be *paste the fenced block into the brain's instructions*, nothing
 shipped executed it, and a colony ran the splitter, this lane, the hive's ingress and both
 required drains for weeks with `episodes` growing and `facts` standing still. A promise of
@@ -1271,12 +1299,14 @@ of the same round.
   through `inline-reject`, because a parser that could not read the block does not get
   to edit the sentence around it.
 - `crates/meclaw-cells/tests/gh379_the_splitter_cuts_the_sidecar.rs` -- the splitter's own
-  three output forms, run through the shipped `params.script_inline` itself: a cut, a
-  byte-identical pass-through (no block, and a tool-call round), and the flagged
-  pass-through a block nobody can read earns. `talky_composite.rs`'s
+  output forms, run through the shipped `params.script_inline` itself: a cut, a
+  byte-identical pass-through (no block, and a tool-call round), the flagged
+  pass-through a block nobody can read earns, and -- since GH #605 -- one block with three
+  sections leaving as three messages, the one section that is not an object dropped by
+  name. `talky_composite.rs`'s
   `an_annotated_answer_splits_into_the_reply_and_the_sidecar` is the same thing end to
-  end -- the prose reaches the reply exit fence-free and the raw block leaves on
-  `extraction`, for ONE provider call.
+  end -- the prose reaches the reply exit fence-free and the section leaves on `sidecar`,
+  for ONE provider call.
 - `crates/meclaw-cells/tests/gh273_a_swept_close_reaches_the_memory.rs` -- a
   conversation ended the only way this template ever ends one, by a SWEEP, drained
   through the shipped `memory-drain` into the memory hive's real write path: the episode

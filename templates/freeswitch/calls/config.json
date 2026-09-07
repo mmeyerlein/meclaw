@@ -1,0 +1,76 @@
+{
+  "cell": {
+    "type": "store"
+  },
+  "params": {
+    "schema": {
+      "calls": {
+        "uuid": "text",
+        "number": "text",
+        "purpose": "text",
+        "direction": "text",
+        "state": "text",
+        "user_id": "text",
+        "cause": "text",
+        "started": "int",
+        "speaking": "int",
+        "hangup_pending": "int",
+        "hangup_at": "int"
+      }
+    }
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "results": {
+          "type": "array",
+          "required": false
+        }
+      },
+      "hop": {
+        "operation": {
+          "type": "string",
+          "required": true
+        },
+        "rows_affected": {
+          "type": "number",
+          "required": false
+        },
+        "duration_ms": {
+          "type": "number",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        },
+        "bundle_errors": {
+          "type": "number",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "The calls this channel has going, one row each: the call's `uuid` (which is FreeSWITCH's channel uuid AND the media half's session id), the `number` at the other end, the `purpose` it was placed for, the `direction` (`in` or `out`), the `state` (`dialing`, `ringing`, `answered`, `ended`, `busy`, `no_answer`, `failed`), the `user_id` the number maps to, the `cause` a call ended with and `started` in epoch milliseconds, `speaking` (HOW MANY sentences the media half still has to say for this call -- a count and not a flag, because the cell queues them and two answers in a row are two sentences), `hangup_pending` (1 when a `hangup` is waiting for that sentence to finish) and `hangup_at`, the epoch millisecond that wait began.",
+    "use_when": "Inside this channel only. One cell reads and writes it; a second writer would be a second opinion about who is on the line, and a line has only one.",
+    "not_in_scope": "It decides nothing and sweeps nothing. A call that ended stays in the table, because a call that is over is not a call that never happened -- and the row is what lets the channel say afterwards who rang, when, and why. And it holds no clock: `hangup_at` is written down so the wait is READABLE, not so that anything here counts it down."
+  }
+}

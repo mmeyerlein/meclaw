@@ -84,13 +84,18 @@ PLACEABLE = {
 # whether it is whole, which is what this tool reads.
 MARKER = "export_final.json"
 
-# The DOCUMENT format of each hive, for the way back in. The marker the
-# substrate writes carries its own format (`meclaw-cell-export/1`) and cannot
-# carry a hive's: the substrate knows cells, not hives. A part handed to a
-# porter has to name the format that porter reads, or the import is refused as
-# a document from an unknown version -- which is exactly what that check is for.
+# The DOCUMENT format of each hive that still reads a PART, for the way back in.
+# The marker the substrate writes carries its own format (`meclaw-cell-export/1`)
+# and cannot carry a hive's: the substrate knows cells, not hives. A part handed
+# to such a porter has to name the format that porter reads, or the import is
+# refused as a document from an unknown version -- which is exactly what that
+# check is for.
+#
+# `memory-hive` is deliberately NOT on this list any more (GH #261): since
+# `memory-hive@3.3.0` its porter reads a DIRECTORY and no document format of its
+# own, so a format name for it would be a name nothing answers to. Its way in is
+# `hop.import_from` naming the run directory, and that needs no part at all.
 HIVE_FORMAT = {
-    "memory-hive": "meclaw-memory-export/1",
     "affinity": "meclaw-affinity-export/1",
     "firewall": "meclaw-firewall-export/1",
     "session-keeper": "meclaw-session-export/1",
@@ -304,6 +309,10 @@ def import_part(hive, marker, table_file, body, index, of):
     ran) or in `HIVE_FORMAT` (which porter reads this document) -- the marker
     the substrate writes names the CELL that wrote it, never the hive, because
     the substrate knows no hives.
+
+    Only the hives whose porter still takes a PART come through here; a hive
+    that reads a directory (`memory-hive` since 3.3.0, GH #261) is never late in
+    the sense `AFTER_BOOT` means, because its whole document is a birth seed.
     """
     lines = [line for line in body.splitlines() if line.strip()]
     if not lines:

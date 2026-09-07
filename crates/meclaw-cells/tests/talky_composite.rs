@@ -229,11 +229,12 @@ fn main_config() -> Value {
         // error drain
         {"from": "./talky/errors", "to": "/park",
          "condition": "has(hop.route) && hop.route == 'error'"},
-        // the extraction lane (GH #379): the sidecar the splitter cut out of an
-        // answer, on its way to whatever keeps this agent's memory. A real
-        // parent sets `in_remember` on it here; the drain stands in for the hive
+        // the sidecar lane (GH #379, generic since GH #605): one message per
+        // section the splitter cut out of an answer. A real parent distributes
+        // on `hop.section` -- `memory` to whatever keeps this agent's memory,
+        // with `in_remember` set here; the drain stands in for every receiver
         {"from": "./talky", "to": "/park",
-         "condition": "has(hop.route) && hop.route == 'extraction'"},
+         "condition": "has(hop.route) && hop.route == 'sidecar'"},
         // tool lanes: OUTSIDE the composite, keyed on the name
         {"from": "./talky/dispatcher", "to": "./weather",
          "condition": "has(hop.tool_name) && hop.tool_name == 'weather'"},
@@ -454,10 +455,11 @@ async fn a_turn_runs_the_whole_composite_round() {
     h.shutdown().await;
 }
 
-/// The sidecar seam (GH #379): a brain answer that carries a fenced `memory`
-/// block leaves the composite as TWO messages -- the prose on the reply exit
-/// with the block taken out, and the raw block on the `extraction` lane, which
-/// is the lane a parent wires into a memory hive's `in_remember` door.
+/// The sidecar seam (GH #379, generic since GH #605): a brain answer that
+/// carries a fenced block leaves the composite as TWO messages -- the prose on
+/// the reply exit with the block taken out, and the section on the `sidecar`
+/// lane, which is the lane a parent distributes on `hop.section`, the `memory`
+/// one into a memory hive's `in_remember` door.
 ///
 /// This is the whole of what wave 5.7 changed about the topology, and it is
 /// asserted end to end rather than at the cell: the cut is only worth anything
@@ -468,7 +470,7 @@ async fn an_annotated_answer_splits_into_the_reply_and_the_sidecar() {
     let block = "{\"facts\": [{\"subject\": \"user\", \"predicate\": \"lives_in\", \
                  \"claim\": \"Berlin\", \"fact_kind\": \"world\"}], \
                  \"topic\": {\"movement\": \"start\", \"name\": \"where the user lives\"}}";
-    let answer_with_block = format!("Notiert, Berlin.\n\n```memory\n{block}\n```");
+    let answer_with_block = format!("Notiert, Berlin.\n\n```sidecar\n{{\"memory\": {block}}}\n```");
     let mock = MockOpenAI::start(vec![canned_chat_completion(&answer_with_block, "stop")]).await;
     let td = tempfile::TempDir::new().unwrap();
     build_tree(&td, &mock.base_url);
@@ -485,15 +487,17 @@ async fn an_annotated_answer_splits_into_the_reply_and_the_sidecar() {
         body_of(&answer)
     );
 
-    let sidecar = recv_lane(&mut park_rx, "extraction")
+    let sidecar = recv_lane(&mut park_rx, "sidecar")
         .await
         .expect("the sidecar left the composite on its own lane");
-    let carried: Value = meclaw_core::serde_json::from_str(
-        body_of(&sidecar)["messages"][0]["text"]
-            .as_str()
-            .expect("the sidecar rides as text"),
-    )
-    .expect("and it is the model's own JSON, not a re-serialisation");
+    assert_eq!(
+        hop_of(&sidecar, "section"),
+        "memory",
+        "the section names itself on the hop, which is what a parent's edge \
+         distributes on: {:?}",
+        body_of(&sidecar)
+    );
+    let carried = &body_of(&sidecar)["payload"];
     assert_eq!(carried["facts"][0]["claim"], "Berlin");
     assert_eq!(carried["topic"]["movement"], "start");
 

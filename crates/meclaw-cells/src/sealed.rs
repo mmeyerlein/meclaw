@@ -253,7 +253,16 @@ mod tests {
     fn a_tampered_box_is_refused_rather_than_returned_garbled() {
         let me = RecipientKeypair::generate().expect("keypair");
         let mut sealed = seal_to(&me.public_hex(), SECRET).expect("seal");
-        sealed.ciphertext.replace_range(0..2, "ff");
+        // Flip one bit of the first ciphertext byte rather than writing a
+        // constant: the sealer's ephemeral key and nonce are fresh every
+        // time, so the first byte is uniform, and a constant `ff` was a
+        // no-op once in 256 runs -- the box then opened cleanly and the test
+        // read a correct AEAD as a defect (GH #590). A flipped bit always
+        // differs from the original.
+        let first = u8::from_str_radix(&sealed.ciphertext[0..2], 16).expect("hex byte");
+        sealed
+            .ciphertext
+            .replace_range(0..2, &format!("{:02x}", first ^ 0x01));
         assert!(matches!(me.open(&sealed), Err(SealError::Open)));
     }
 

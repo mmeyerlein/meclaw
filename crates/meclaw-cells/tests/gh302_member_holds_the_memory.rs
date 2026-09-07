@@ -504,9 +504,14 @@ fn the_memory_lane_carries_the_audience_set_and_never_participants() {
     }
     assert_eq!(
         writes, 1,
-        "exactly one edge turns per-turn extraction into the hive's `in_remember` lane — \
+        "exactly one edge turns the front model's annotation into the hive's `in_remember` \
+         lane, and it carries the round it was learned in. Since GH #607 it reads `sidecar` \
+         with `hop.section == 'memory'` where it read `extraction` before — the same block \
+         one shape further on, the same door, the same three promoted keys — because \
+         `talky@5.1.0` renamed the port and no generation can raise the old lane any more. \
          `talky`'s own shipped recipe is two edges, never one, and the second is the hive's \
-         `reject` egress out of this level"
+         `reject` egress out of this level. What stayed two-phased is the SHAPE: the hive's \
+         ingress reads the section's payload and the older block-in-a-turn alike"
     );
 }
 
@@ -579,8 +584,9 @@ fn the_level_wires_the_screen_the_memory_and_the_record() {
     );
 
     // The screen, since GH #459. A display is a channel like any other, so it
-    // needs no lane of its own on the way down — the answer edge above carries a
-    // prose view, which is the smallest view there is. What it DOES need is a
+    // needs no lane of its own on the way down — the edge above carries what a
+    // producer of views drew (an agent's ordinary `answer` is not such a body:
+    // GH #597). What it DOES need is a
     // way back for the two lanes only a screen has: `event` (a person acted on a
     // view) and `receipt` (a write was refused). Both are addressed by the
     // OWNER the display stamped, which is the path of the cell that put the view
@@ -867,6 +873,14 @@ fn the_level_names_no_lane_its_occupants_lost() {
 /// worse than one that is missing from both: it is a promise with nothing
 /// behind it.
 ///
+/// There is one exemption, and it is a declaration rather than a hole: a lane
+/// the occupant declares with `at` names its own connect points and therefore
+/// docks BELOW the rim (`docs/development-rules.md` § 8b). It is no lane of
+/// that rim, so the member owes it neither a consumer nor an exit. The shipped
+/// case is `tool_result` on `assistant@2.6.0` (apps rim, 2026-09-05): a tool
+/// round begins and ends inside the generation, and `at: ["./tools"]` says an
+/// observer of the answer docks there — the level above never carries it.
+///
 /// Since GH #454 one lane is both at once, and it is read as one thing rather
 /// than waved through as two. `answer` goes to a channel of the person when it
 /// names one (`./assistants -> ./channels`, guarded on `context.channel_node`) and
@@ -912,6 +926,14 @@ fn every_lane_an_assistant_emits_is_consumed_here_or_leaves_the_level() {
             .edges
             .iter()
             .any(|e| e.from == "./assistants" && e.to == "." && condition_names(e, route));
+        // development-rules § 8b: a lane that names connect points docks BELOW
+        // the rim and is no lane of it -- the member owes it neither a consumer
+        // nor an exit. `tool_result` (apps rim, assistant@2.6.0) is the shipped
+        // case: both ends of a tool round are inside the generation, and the
+        // `at: ["./tools"]` says an observer docks there rather than at the rim.
+        if !lane.at.is_empty() && !consumed_inside && !leaves {
+            continue;
+        }
         assert!(
             consumed_inside || leaves,
             "an assistant emits `{route}` and this member neither consumes it nor lets it out: \
@@ -1039,6 +1061,21 @@ fn every_lane_an_assistant_emits_is_consumed_here_or_leaves_the_level() {
     for lane in &raised.emits {
         let route = lane.route.as_str();
         if !emits.contains(&route) {
+            continue;
+        }
+        // A lane this level declares with a CONNECT POINT is no lane of its rim
+        // and owes no rim exit (development-rules § 8b) — the same reading the
+        // sibling test above gives an occupant's `at`. `sidecar` is the shipped
+        // case since GH #607: the member declares it `at: ["./apps"]` and
+        // CONSUMES it, sorted by section, so an `./assistants -> .` edge would
+        // be a second, undeclared way out rather than the missing exit this
+        // check hunts for.
+        if !c
+            .emits
+            .iter()
+            .find(|l| l.route == route)
+            .is_some_and(|l| l.at.is_empty())
+        {
             continue;
         }
         assert!(

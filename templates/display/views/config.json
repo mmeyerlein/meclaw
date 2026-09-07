@@ -8,6 +8,7 @@
         "owner": "text",
         "view_id": "text",
         "region": "text",
+        "ord": "int",
         "kind": "text",
         "content": "json",
         "components": "json",
@@ -67,8 +68,8 @@
     ]
   },
   "description": {
-    "purpose": "What is on the screen right now, as one table of rows. Eight slots per view: `owner` (the `envelope.reply_to` of whoever put it up -- never a field out of a body), `view_id` (that sender's own name for it, `[a-z0-9-]{1,64}`), `region` (where on the screen; v1 knows one, `main`), `kind` (`prose` or `component`), `content` (the prose `{title, body}`, or the root node of a component tree), `components` (the `component.define` arguments the view brought with it, so a later write can be compared against them and skipped when nothing changed), `ttl_ms` (how long the view stays fresh; `0` is forever) and `updated_at` (epoch milliseconds, which is what orders the screen newest first).",
+    "purpose": "What is on the screen right now, as one table of rows. Nine slots per view: `owner` (the `envelope.reply_to` of whoever put it up -- never a field out of a body), `view_id` (that sender's own name for it, `[a-z0-9-]{1,64}`), `region` (which of the screen's two columns it stands in, `main` or `aside`), `ord` (the band it asked for inside that column, default `0`, signed), `kind` (`prose` or `component`), `content` (the prose `{title, body}`, or the root node of a component tree), `components` (the `component.define` arguments the view brought with it, so a later write can be compared against them and skipped when nothing changed), `ttl_ms` (how long the view stays fresh; `0` is forever) and `updated_at` (epoch milliseconds -- an EXPIRY clock and nothing else since 1.1.0: the order of the screen is `ord` and then first appearance, so that a view rewritten every twenty seconds does not climb to the top for being recent).",
     "use_when": "Inside a display hive only. The compose cell is the sole reader and the sole writer; a second writer would be a second opinion about what is on the screen, and the screen has only one.",
-    "not_in_scope": "It decides nothing and enforces nothing. IDENTITY IS `(owner, view_id)`, and this cell cannot say so: a store schema declaration carries column types and nothing else -- no PRIMARY KEY, no UNIQUE, no index -- so the uniqueness is held by `compose`, which writes a view as a DELETE on that pair followed by an INSERT, in one bundle, in that order. A bundle is not a transaction, which is why the select that reads the before-state is the FIRST leg rather than a second round trip. Nothing here sweeps either: an expired row stays until something overwrites it, and it simply stops being drawn."
+    "not_in_scope": "It decides nothing and enforces nothing. IDENTITY IS `(owner, view_id)`, and this cell cannot say so: a store schema declaration carries column types and nothing else -- no PRIMARY KEY, no UNIQUE, no index -- so the uniqueness is held by `compose`, which writes a view as a DELETE on that pair followed by an INSERT, in one bundle, in that order. A bundle is not a transaction, which is why the select that reads the before-state is the FIRST leg rather than a second round trip. It does not hold the ORDER of the screen either: a row carries the band its sender asked for, and where a view sits inside that band is the seat the display is already holding it at. Nothing here sweeps: an expired row stays until something overwrites it, and it simply stops being drawn."
   }
 }

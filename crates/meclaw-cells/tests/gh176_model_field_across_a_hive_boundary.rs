@@ -130,6 +130,7 @@ fn contract_of(hp: &HiveParams) -> HiveContract {
         route: l.route.clone(),
         context: l.context.clone(),
         at: Vec::new(),
+        required: l.required,
         because: l.because.clone(),
     };
     HiveContract {

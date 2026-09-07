@@ -360,6 +360,60 @@ fn a_remember_call_arrives_as_a_tool_call_and_is_read_as_one() {
     );
 }
 
+/// The same block as a SIDECAR SECTION (GH #607), which is how the front model
+/// writes it once the fence carries sections.
+///
+/// The annotation rides in the body's `payload` beside `hop.section ==
+/// "memory"`, `messages[]` is empty, and there is no `tool_call` turn to read at
+/// all. The section names no turn either -- an `episodes.id` is a uuid no model
+/// has ever seen -- so it has to take exactly the bind road the `remember` call
+/// takes, or the flip of the fence quietly turns every annotation into a block
+/// hung on nothing.
+fn sidecar_memory(session: &str, arguments: &str) -> serde_json::Value {
+    let section: serde_json::Value =
+        serde_json::from_str(arguments).expect("the block under test is json");
+    serde_json::json!({
+        "header": {
+            "context": {"store_origin": "inline", "mem_phase": "inline",
+                        "session_id": session,
+                        "audience_set": AUDIENCE, "channel": CHANNEL},
+            "hop": {"route": "in_remember", "section": "memory"}
+        },
+        "messages": [],
+        "section": "memory",
+        "payload": section
+    })
+}
+
+#[test]
+fn a_sidecar_memory_section_takes_the_same_bind_road_as_a_remember_call() {
+    // GH #607. Two deliveries of one block: the `remember` tool call, which is
+    // a turn whose text is the arguments string, and the `memory` section of a
+    // sidecar block, which is an already-parsed object one level down inside the
+    // fence. The lane parks both and asks the same question of the store.
+    let args = one_fact_args("user", "diet", "isst ketogen");
+
+    let call = emit(remember("s1", &args));
+    let section = emit(sidecar_memory("s1", &args));
+
+    assert_eq!(
+        parked(&section).expect("the section is parked while the turn is resolved"),
+        parked(&call).expect("the call is parked while the turn is resolved"),
+        "the two deliveries park the same payload -- same facts, same verdict, \
+         same movement. The section IS the block the call carried as text"
+    );
+
+    let bid = batch_id_of(&section);
+    let next = emit(park_echo("inline-turn", &bid, "s1"));
+    let select = bind_select(&next).expect("the lane resolves the turn the section speaks for");
+    assert_eq!(select["where"]["session_id"], "s1");
+    assert_eq!(
+        select["where"]["sender"], "user",
+        "the turn being ANSWERED, exactly as on the call road"
+    );
+    assert_eq!(select["limit"], 1);
+}
+
 #[test]
 fn a_block_that_names_no_turn_is_bound_to_the_session_it_travelled_in() {
     // A front model cannot name an episode: the id is a uuid the hive's writer

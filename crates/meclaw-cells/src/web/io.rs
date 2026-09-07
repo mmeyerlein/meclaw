@@ -530,6 +530,12 @@ enum Round {
         /// Where the handler is waiting for the verdict.
         ack: tokio::sync::oneshot::Sender<Result<(), String>>,
     },
+    /// The server future ended while the cell is still live (GH #592).
+    ///
+    /// Not a reason to return, and handled exactly like a bind that failed:
+    /// report it and go on in a round with no listener, so a later `Rebind`
+    /// can still put the display back on the air.
+    ServeEnded,
     /// The cell is going away.
     Done,
 }
@@ -539,7 +545,9 @@ enum Round {
 /// **A1′**: this function must not return voluntarily while the cell is live.
 /// A clean early return would silence the I/O side while the handler keeps
 /// running and open the "io-finish-first" loss class the trait documents. Only
-/// the shutdown signal — the handler closing the reconfig channel — ends it.
+/// the shutdown signal — the handler closing the reconfig channel — ends it. A
+/// server future that ends is not that signal (GH #592): it is reported like a
+/// failed bind and the next round simply has no listener.
 ///
 /// # Why this is a loop (GH #410)
 ///
@@ -560,8 +568,37 @@ enum Round {
 pub async fn run_io(
     io: WebIo,
     events_tx: mpsc::Sender<WebEvent>,
-    mut reconfig_rx: mpsc::Receiver<WebReconfig>,
+    reconfig_rx: mpsc::Receiver<WebReconfig>,
 ) {
+    run_io_with(io, events_tx, reconfig_rx, serve_forever).await
+}
+
+/// Serve `router` on `l` until the server future ends.
+///
+/// The one place the axum server future is built, and the reason it is a
+/// function: `axum::serve` without graceful shutdown does not end on its own,
+/// so what [`run_io_with`] does when it *does* end is otherwise unreachable
+/// and untestable. A test passes a factory that ends at once (GH #592). This
+/// is a seam, not a mock — the shipped path is this function and nothing else.
+pub(crate) async fn serve_forever(l: tokio::net::TcpListener, router: Router) {
+    // Not swallowed: the round is about to be reported as `listener ended`,
+    // and this is the only place the reason for it exists.
+    if let Err(e) = std::future::IntoFuture::into_future(axum::serve(l, router)).await {
+        tracing::error!(error = %e, "web: the server stopped with an error");
+    }
+}
+
+/// [`run_io`] with the server future left open as a parameter — see
+/// [`serve_forever`] for why.
+pub(crate) async fn run_io_with<F, Fut>(
+    io: WebIo,
+    events_tx: mpsc::Sender<WebEvent>,
+    mut reconfig_rx: mpsc::Receiver<WebReconfig>,
+    serve_factory: F,
+) where
+    F: Fn(tokio::net::TcpListener, Router) -> Fut + Send,
+    Fut: std::future::Future<Output = ()> + Send,
+{
     // The listener half learns where to send browser events only here, because
     // this is where the channel exists.
     let mut io = io;
@@ -576,6 +613,17 @@ pub async fn run_io(
     // Cloned once, before the loop: the resync needs the published pages, and
     // `io` is moved into the router on every round and written on a rebind.
     let pages = io.pages.clone();
+    // Who owes a whole-tree resync (GH #414), for as long as the I/O half
+    // lives — NOT for as long as one round does (GH #594). A round ends on a
+    // rebind or on a server that stopped, and both of those deliberately keep
+    // their viewers: a move that failed leaves the display exactly where they
+    // are looking, and a server that ended (GH #592) leaves their connection
+    // tasks running. A set that started over with the round would hand those
+    // very viewers positional diffs against a tree they never re-fetched, for
+    // as long as the tab stayed open. It lives here rather than in the
+    // registry because it is the fan-out's bookkeeping and nothing else reads
+    // it — one owner, no lock.
+    let mut dirty: HashMap<String, Addressed> = HashMap::new();
 
     let mut listener = match bind_addr(&io.bind, io.port).await {
         Ok(l) => Some(l),
@@ -605,16 +653,16 @@ pub async fn run_io(
                 // what lets the round end without ending the task, and what
                 // makes the socket's release a point in the code rather than a
                 // guess about when a `select!` drops its arms.
-                let serve =
-                    std::future::IntoFuture::into_future(axum::serve(l, router(io.clone())));
+                let serve = serve_factory(l, router(io.clone()));
                 tokio::pin!(serve);
-                // Three things end a round, and only one of them continues the
-                // cell: the server stopping, the handler closing the reconfig
-                // channel (the shutdown signal), or a `Rebind`.
+                // Three things end a round, and only the handler going away
+                // ends the cell: the server stopping (GH #592 — a round
+                // without a listener, not a return), the handler closing the
+                // reconfig channel (the shutdown signal), or a `Rebind`.
                 tokio::select! {
-                    _ = &mut serve => Round::Done,
+                    _ = &mut serve => Round::ServeEnded,
                     r = next_round(&mut reconfig_rx) => r,
-                    _ = fan_out(&mut pushes, &viewers, &pages) => Round::Done,
+                    _ = fan_out(&mut pushes, &viewers, &pages, &mut dirty) => Round::Done,
                 }
             }
             // Nothing to serve on, and still not a reason to return. The diffs
@@ -623,12 +671,26 @@ pub async fn run_io(
             // and block the only writer of the `cell.db`.
             None => tokio::select! {
                 r = next_round(&mut reconfig_rx) => r,
-                _ = fan_out(&mut pushes, &viewers, &pages) => Round::Done,
+                _ = fan_out(&mut pushes, &viewers, &pages, &mut dirty) => Round::Done,
             },
         };
 
-        let Round::Rebind { bind, port, ack } = round else {
-            return;
+        let (bind, port, ack) = match round {
+            Round::Rebind { bind, port, ack } => (bind, port, ack),
+            // A1': the server future ending is not the cell ending. The socket
+            // is already released — `serve` was dropped with the block above —
+            // so this is the same state a bind failure leaves behind, and it is
+            // reported the same way, with the address that stopped answering.
+            Round::ServeEnded => {
+                let _ = events_tx
+                    .send(WebEvent::BindFailed(format!(
+                        "{}:{}: listener ended",
+                        io.bind, io.port
+                    )))
+                    .await;
+                continue;
+            }
+            Round::Done => return,
         };
 
         // The old socket is closed at this point, so this is the first moment
@@ -654,6 +716,10 @@ pub async fn run_io(
                 for tx in viewers.drain().await {
                     let _ = tx.try_send(ViewerMsg::Close);
                 }
+                // The debts go with them: nobody is owed a tree on a
+                // connection that no longer exists, and the ids of the next
+                // viewers are not these.
+                dirty.clear();
                 Some(l)
             }
             // The value passed the parser and still cannot be a listening
@@ -789,6 +855,9 @@ fn resync(pages: &watch::Receiver<Arc<PageMap>>, dirty: &mut HashMap<String, Add
 /// Fan every `Push` the handler sends out to the viewers of its route, and never
 /// end on a dropped frame (GH #414).
 ///
+/// `dirty` is lent, not owned: a round is a serving round, and a viewer's debt
+/// outlives it (GH #594 — see the caller).
+///
 /// Two arms, and the second only exists while somebody is marked: a burst that
 /// fills a viewer's channel is caught by the push path (the next frame that
 /// viewer can be given is the whole tree), and the LAST frame of a burst — the
@@ -799,21 +868,21 @@ async fn fan_out(
     pushes: &mut mpsc::Receiver<WebReconfig>,
     viewers: &Arc<ViewerRegistry>,
     pages: &watch::Receiver<Arc<PageMap>>,
+    dirty: &mut HashMap<String, Addressed>,
 ) {
-    let mut dirty: HashMap<String, Addressed> = HashMap::new();
     loop {
         if dirty.is_empty() {
             match pushes.recv().await {
-                Some(push) => push_one(push, viewers, pages, &mut dirty).await,
+                Some(push) => push_one(push, viewers, pages, dirty).await,
                 None => return,
             }
         } else {
             tokio::select! {
                 p = pushes.recv() => match p {
-                    Some(push) => push_one(push, viewers, pages, &mut dirty).await,
+                    Some(push) => push_one(push, viewers, pages, dirty).await,
                     None => return,
                 },
-                _ = tokio::time::sleep(RESYNC_RETRY) => resync(pages, &mut dirty),
+                _ = tokio::time::sleep(RESYNC_RETRY) => resync(pages, dirty),
             }
         }
     }
@@ -995,7 +1064,8 @@ mod tests {
         let viewers_for_task = viewers.clone();
         let pages_for_task = pages_rx.clone();
         let job = tokio::spawn(async move {
-            fan_out(&mut push_rx, &viewers_for_task, &pages_for_task).await;
+            let mut dirty: HashMap<String, Addressed> = HashMap::new();
+            fan_out(&mut push_rx, &viewers_for_task, &pages_for_task, &mut dirty).await;
         });
 
         push_tx
@@ -1057,5 +1127,255 @@ mod tests {
             head.contains("connection lost"),
             "the hint has to be readable prose, not a colour change alone"
         );
+    }
+    /// GH #592 — A1′: a server future that ends parks the round, it does not
+    /// end `run_io`.
+    ///
+    /// `axum::serve` without graceful shutdown never finishes on its own, so
+    /// the arm that used to answer it with `Round::Done` was unreachable in
+    /// practice — and the "io-finish-first" loss class it opened was therefore
+    /// invisible. The [`serve_forever`] seam makes it reachable: a factory
+    /// whose server ends the moment it is polled drives the loop through the
+    /// case on its very first round.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn gh592_a_finished_server_parks_instead_of_ending_the_io_half() {
+        use std::time::Duration;
+
+        /// The failure-marker window (30 s convention): only ever longer than a
+        /// healthy run takes, so it discriminates nothing but a hang.
+        const MARKER: Duration = Duration::from_secs(30);
+
+        let port = meclaw_testing::free_port();
+        let (events_tx, mut events_rx) = mpsc::channel::<WebEvent>(32);
+        let (reconfig_tx, reconfig_rx) = mpsc::channel::<WebReconfig>(8);
+        let (pushes_tx, pushes_rx) = mpsc::channel::<WebReconfig>(8);
+        let (_pages_tx, pages) = watch::channel(Arc::new(PageMap::new()));
+        let (_assets_tx, assets) = watch::channel(Arc::new(AssetMap::new()));
+        let (_ready_tx, ready) = watch::channel(true);
+        let io = WebIo::new(
+            "127.0.0.1".to_string(),
+            port,
+            "/web",
+            pages,
+            assets,
+            ready,
+            pushes_rx,
+        );
+
+        let join = tokio::spawn(run_io_with(io, events_tx, reconfig_rx, |_l, _r| async {}));
+
+        // The round begins as any other does, and then the server stops.
+        // `WebEvent` carries a oneshot and is not `Debug`, so the arms say what
+        // was expected instead of printing what arrived.
+        match events_rx.recv().await {
+            Some(WebEvent::Bound(_)) => {}
+            _ => panic!("the first round binds before it serves"),
+        }
+        let Some(WebEvent::BindFailed(why)) = events_rx.recv().await else {
+            panic!("a server that stopped must be reported like a bind that failed")
+        };
+        assert!(
+            why.contains("listener ended") && why.contains(&port.to_string()),
+            "the report names the address that stopped answering; got {why:?}"
+        );
+
+        // The point of the issue: the half is still there, parked without a
+        // listener rather than returned.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(
+            !join.is_finished(),
+            "A1′: `run_io` must not return while the handler is still live"
+        );
+
+        // And it is still listening to its handler: a later address is served.
+        let next = meclaw_testing::free_port();
+        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+        reconfig_tx
+            .send(WebReconfig::Rebind {
+                bind: "127.0.0.1".to_string(),
+                port: next,
+                ack: ack_tx,
+            })
+            .await
+            .expect("the parked half still reads its reconfigure channel");
+        // Under the failure-marker window, not open-ended: a regression here
+        // would be a parked half that never answers, and a hung test says less
+        // than a failed one.
+        let verdict = tokio::time::timeout(MARKER, ack_rx)
+            .await
+            .expect("the parked half answers its rebind")
+            .expect("a verdict");
+        assert!(
+            verdict.is_ok(),
+            "a free address is bindable from the parked state"
+        );
+        let rebound = tokio::time::timeout(MARKER, events_rx.recv())
+            .await
+            .expect("the rebind is reported");
+        let Some(WebEvent::Bound(addr)) = rebound else {
+            panic!("the rebind puts the display back on the air")
+        };
+        assert!(
+            addr.ends_with(&format!(":{next}")),
+            "bound to the new address; got {addr:?}"
+        );
+
+        // Only the handler going away ends it.
+        drop(reconfig_tx);
+        drop(pushes_tx);
+        tokio::time::timeout(MARKER, join)
+            .await
+            .expect("closing the command channel is what ends `run_io`")
+            .expect("and it ends without panicking");
+    }
+
+    /// GH #594 — a viewer that owes a whole-tree resync still owes it after the
+    /// round restarts.
+    ///
+    /// The mark GH #414 sets says "this browser is behind"; the frame it is
+    /// owed is its page's whole tree, because a positional diff patches a
+    /// picture it never received. That mark used to live in the fan-out's own
+    /// scope, so every re-entry into the round started with an empty one — and
+    /// both ways out of a round deliberately KEEP their viewers: a rebind that
+    /// failed leaves the display exactly where they are looking, and a server
+    /// that stopped (GH #592) leaves their connection tasks running. Exactly
+    /// those viewers were then fed diffs against a stale tree, silently, for as
+    /// long as the tab stayed open.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn gh594_a_viewers_resync_mark_survives_a_round_restart() {
+        use std::time::Duration;
+
+        /// The failure-marker window (30 s convention): only ever longer than a
+        /// healthy run takes, so it discriminates nothing but a hang.
+        const MARKER: Duration = Duration::from_secs(30);
+
+        let port = meclaw_testing::free_port();
+        let (events_tx, mut events_rx) = mpsc::channel::<WebEvent>(32);
+        let (reconfig_tx, reconfig_rx) = mpsc::channel::<WebReconfig>(8);
+        let (pushes_tx, pushes_rx) = mpsc::channel::<WebReconfig>(8);
+        let (_pages_tx, pages) = watch::channel(page_map());
+        let (_assets_tx, assets) = watch::channel(Arc::new(AssetMap::new()));
+        let (_ready_tx, ready) = watch::channel(true);
+        let io = WebIo::new(
+            "127.0.0.1".to_string(),
+            port,
+            "/web",
+            pages,
+            assets,
+            ready,
+            pushes_rx,
+        );
+        let viewers = io.viewers.clone();
+
+        // A server that never ends on its own, holding its listener the way
+        // `serve_forever` does: the round below has to be ended by the rebind
+        // and by nothing else.
+        let join = tokio::spawn(run_io_with(
+            io,
+            events_tx,
+            reconfig_rx,
+            |l, _r| async move {
+                let _l = l;
+                std::future::pending::<()>().await;
+            },
+        ));
+        match events_rx.recv().await {
+            Some(WebEvent::Bound(_)) => {}
+            _ => panic!("the first round binds before it serves"),
+        }
+
+        // `a-wedged` sorts before `b-witness`, and `on_route` visits in id
+        // order — so a frame at the witness proves the wedged one was already
+        // tried. No sleep, no guess.
+        let (wedged, mut wedged_rx) = viewer("/", 1);
+        let (witness, mut witness_rx) = viewer("/", 8);
+        viewers.insert("a-wedged".to_string(), wedged).await;
+        viewers.insert("b-witness".to_string(), witness).await;
+
+        // The first diff fills the wedged viewer's only slot; the second cannot
+        // fit, and dropping it is what marks it.
+        pushes_tx
+            .send(diff_push("0", "<i>a</i>"))
+            .await
+            .expect("push");
+        pushes_tx
+            .send(diff_push("0", "<i>b</i>"))
+            .await
+            .expect("push");
+        let _ = witness_rx.recv().await.expect("the witness sees the first");
+        let _ = witness_rx.recv().await.expect("and the second");
+
+        // The round restarts with its viewers kept: an address that cannot be
+        // bound puts the display back where it was.
+        let occupied = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("a socket to collide with");
+        let taken = occupied.local_addr().expect("its address").port();
+        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+        reconfig_tx
+            .send(WebReconfig::Rebind {
+                bind: "127.0.0.1".to_string(),
+                port: taken,
+                ack: ack_tx,
+            })
+            .await
+            .expect("the half reads its reconfigure channel");
+        let verdict = tokio::time::timeout(MARKER, ack_rx)
+            .await
+            .expect("a round that never answers is the regression, not a hang")
+            .expect("a verdict");
+        assert!(
+            verdict.is_err(),
+            "the address is held by this test, so the move must fail"
+        );
+        let Ok(Some(WebEvent::BindFailed(_))) =
+            tokio::time::timeout(MARKER, events_rx.recv()).await
+        else {
+            panic!("a failed rebind is reported")
+        };
+        let Ok(Some(WebEvent::Bound(addr))) = tokio::time::timeout(MARKER, events_rx.recv()).await
+        else {
+            panic!("and the display goes back on the air where it was")
+        };
+        assert!(
+            addr.ends_with(&format!(":{port}")),
+            "the fallback is the address it was already on; got {addr:?}"
+        );
+
+        // Only now does the browser catch up: the slot the dropped frame needed
+        // is free again, and the mark has had to survive a whole round.
+        let first = tokio::time::timeout(MARKER, wedged_rx.recv())
+            .await
+            .expect("the frame that fit is already in the channel")
+            .expect("a frame");
+        let ViewerMsg::Frame(first) = first else {
+            panic!("a frame, not a close")
+        };
+        assert_eq!(payload(&first), json!({"0": "<i>a</i>"}));
+
+        pushes_tx
+            .send(diff_push("0", "<i>c</i>"))
+            .await
+            .expect("push");
+        let got = tokio::time::timeout(MARKER, wedged_rx.recv())
+            .await
+            .expect("a marked viewer must still be served")
+            .expect("a frame");
+        let ViewerMsg::Frame(f) = got else {
+            panic!("a frame, not a close")
+        };
+        assert_eq!(
+            payload(&f),
+            page_map().get("/").expect("route").packed_tree(),
+            "after a round restart the viewer that lost a frame is STILL owed \
+             the whole tree — a diff here patches a picture it never received"
+        );
+
+        drop(reconfig_tx);
+        drop(pushes_tx);
+        tokio::time::timeout(MARKER, join)
+            .await
+            .expect("closing the command channels ends the half")
+            .expect("and it ends without panicking");
     }
 }

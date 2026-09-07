@@ -22,7 +22,8 @@ It is the whole of the screen's bookkeeping, and it draws nothing itself. An
 agent or an app says "here is a view of mine, put it up"; this cell decides
 what the display's object tree must therefore look like, and says so as
 `object.*` calls. It holds no model, opens no socket and makes no layout
-judgement beyond an order: newest view first.
+judgement beyond two regions and an order: a declared `ord`, then first
+appearance, and never the moment a view was last written.
 
 It is NOT the owner of a view's content. The content is whatever the sender
 sent, rendered by whatever component the sender defined. This cell only ever
@@ -66,9 +67,10 @@ Pass 2 (`context.display_origin == 'views'`): the store answered. The
 after-state is computed IN MEMORY from the before-state -- minus the row that
 was deleted, plus the row that was inserted -- because a second select would be
 a second round trip for a set this cell already knows. Expired views are
-dropped from the picture here, sorted newest-first, ties broken on
-`(owner, view_id)` so two views written in the same millisecond do not swap
-places between ticks.
+dropped from the picture here and the rest is put in a deterministic order:
+region, then the `ord` the view declared, then identity. The order a person
+SEES is settled one pass later, in `build`, because it needs the seats the
+display is already holding -- see `seated`.
 
 Pass 3 (`context.display_origin == 'read'`): the display answered the query.
 The question that answer settles is "is this page MINE", and there are two ways
@@ -104,6 +106,7 @@ COLUMNS = [
     "owner",
     "view_id",
     "region",
+    "ord",
     "kind",
     "content",
     "components",
@@ -111,10 +114,17 @@ COLUMNS = [
     "updated_at",
 ]
 
-# The regions a screen has. One, in v1 -- and a closed list rather than a free
-# string, because an unknown region is a view nobody would ever see, which is
-# worse than a refusal the sender can read.
-REGIONS = ("main",)
+# The regions a screen has, in the order they stand on the page, and a closed
+# list rather than a free string: an unknown region is a view nobody would ever
+# see, which is worse than a refusal the sender can read.
+#
+# `main` is the wide column and the DEFAULT, so every view that named no region
+# before this version lands exactly where it landed then. `aside` is the narrow
+# column beside it, and it is what the second region is FOR: a clock, a weather
+# tile, a countdown -- things that are true whether or not anybody is talking,
+# and that have no business pushing a conversation down the page (GH #609).
+REGIONS = ("main", "aside")
+REGION_INDEX = dict((name, i) for i, name in enumerate(REGIONS))
 
 # The object ids, by class. Deterministic and prefixed: an id has to be
 # derivable from the row without a side table, and it has to say which class it
@@ -136,6 +146,12 @@ KEY_MAX = 512
 # `ord` is a sort key, not a list index: gaps leave room to insert without
 # renumbering anything the display already holds.
 ORD_STEP = 10
+
+# Where a view sits in its region before anything has ever placed it: behind
+# everything the screen already holds. A view's SEAT is the `ord` the display
+# is holding it at right now, which is how "first appearance" is remembered
+# without a column for it -- the screen remembers the order of the screen.
+NEW_SEAT = 1 << 40
 
 # How deep a component tree may be. The `web` cell stops rendering at 64 levels
 # and reports the object it stopped at; refusing earlier, at the door, turns
@@ -160,9 +176,32 @@ ERRORS = (
 # documents: glass is a navigation-layer material there, and a content
 # component that writes `glass--thin` is refused at definition time.
 
+# The two columns, as the display's OWN rule rather than a line in the token
+# sheet: `/vision.css` belongs to the `web` template and describes a design
+# language, while "main is wide and aside is narrow" is a statement about THIS
+# screen. It travels in the shell so that a display needs nothing installed
+# beside it. Written with no two `{` adjacent, because `{{` is the component
+# language's own marker.
+LAYOUT_CSS = (
+    "<style>"
+    ".display-columns { display: flex; flex-direction: row;"
+    " align-items: flex-start; gap: var(--gap, 16px); }"
+    ' .display-columns > [data-region="main"] { flex: 1 1 0; min-width: 0; }'
+    ' .display-columns > [data-region="aside"]'
+    " { flex: 0 0 clamp(15rem, 22%, 24rem); min-width: 0; }"
+    # An empty aside is not a narrow empty column: every screen that has never
+    # heard of a region would otherwise lose a fifth of its width to nothing.
+    ' .display-columns > [data-region="aside"]:empty { display: none; }'
+    " @media (max-width: 60rem)"
+    " { .display-columns { flex-direction: column; }"
+    ' .display-columns > [data-region="aside"] { flex: 1 1 auto; } }'
+    "</style>"
+)
+
 SHELL_TEMPLATE = (
     '{{#if stylesheet}}<link rel="stylesheet" href="/vision.css">{{/if}}'
-    '<div class="stack">{{children}}</div>'
+    + LAYOUT_CSS
+    + '<div class="stack display-columns">{{children}}</div>'
 )
 
 REGION_TEMPLATE = '<div class="stack" data-region="{{region}}">{{children}}</div>'
@@ -196,12 +235,15 @@ def components():
             "layer": "content",
         },
         {
-            # The region exists so the root can have EXACTLY ONE child. A
-            # materialised page interleaves statics and slots one for one, and a
-            # root with several direct children would put the closing static in
-            # the middle of the page (`web` README, "Both shipped pages give
-            # their root exactly one child"). Every view hangs under the region,
-            # and the region is what the root holds.
+            # One per entry in REGIONS, all of them direct children of the
+            # root. That USED to be impossible: a materialised page carried two
+            # statics whatever the child count, so the closing static landed
+            # between the first and the second child and everything from the
+            # second on rendered outside the element meant to contain it. GH
+            # #394 replaced that with n+1 statics for n slots, and the `web`
+            # README says so in as many words -- "a composition CHOICE now
+            # rather than a constraint". So the one-child rule is retracted
+            # here too, and the two regions stand side by side (GH #609).
             "name": "display-region",
             "template": REGION_TEMPLATE,
             "prop_schema": {"region": "text"},
@@ -439,6 +481,21 @@ def check_components(declared, view_id):
     return out, None, None
 
 
+def declared_ord(view):
+    """The `ord` a view asked for, or 0.
+
+    A BAND rather than a slot: a standing widget asks for -10 and stands above
+    a conversation that asked for nothing, and two views in one band are still
+    ordered by everything after it. Anything that is not a plain integer counts
+    as 0 here; the door refuses it outright, and this is the reading for a row
+    that is already in the table.
+    """
+    value = view.get("ord")
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return value
+
+
 def validate(body, owner, withdraw):
     """`(row, error_code, detail)` -- exactly one of the first and the second."""
     view_id = body.get("view_id")
@@ -498,11 +555,21 @@ def validate(body, owner, withdraw):
     if isinstance(ttl_ms, bool) or not isinstance(ttl_ms, int) or ttl_ms < 0:
         return None, "invalid_view", '"ttl_ms" is not a non-negative integer'
 
+    # Signed and unbounded on purpose: it is compared, never used as an index,
+    # and a widget that wants to stand above everything says so with a negative
+    # number instead of asking every other sender to move down.
+    view_ord = body.get("ord")
+    if view_ord is None:
+        view_ord = 0
+    if isinstance(view_ord, bool) or not isinstance(view_ord, int):
+        return None, "invalid_view", '"ord" is not an integer'
+
     return (
         {
             "owner": owner,
             "view_id": view_id,
             "region": region,
+            "ord": view_ord,
             "kind": kind,
             # The two `json` columns are written as canonical text so the value
             # that comes back out of the store compares byte for byte against
@@ -723,12 +790,16 @@ def pass_views(body, ctx, hop):
 
     now = now_ms()
     live = [r for r in after if not expired(r, now)]
-    # Newest first, and a tie broken on identity rather than on whatever order
-    # the store happened to return: a `select` without `order_by` is explicitly
-    # an unspecified selection, so the determinism has to be made here.
+    # A `select` without `order_by` is explicitly an unspecified selection, so
+    # the determinism has to be made here -- and it is made WITHOUT a clock:
+    # region, the band the view asked for, then identity. Sorting on
+    # `updated_at` was GH #609 itself, and it is not a step this list takes any
+    # more; the seats that decide what a person sees are read one pass later,
+    # off the display, in `seated`.
     live.sort(
         key=lambda r: (
-            -int(r.get("updated_at") or 0),
+            REGION_INDEX.get(str(r.get("region") or REGIONS[0]), 0),
+            declared_ord(r),
             str(r.get("owner") or ""),
             str(r.get("view_id") or ""),
         )
@@ -823,29 +894,17 @@ def add_tree(want, parent, node, index):
             add_tree(want, oid, kid, j)
 
 
-def build(views):
-    """Every object the screen should hold, keyed by id."""
-    want = {
-        ROOT_ID: {
-            "component": "display-shell",
-            "parent": None,
-            "ord": 0,
-            "props": {"stylesheet": True},
-            "keep": [],
-        }
-    }
-    # The region exists whether or not anything is in it: the root's one child
-    # is a structural promise, not a consequence of there being views.
-    for region in REGIONS:
-        want[REGION_PREFIX + region] = {
-            "component": "display-region",
-            "parent": ROOT_ID,
-            "ord": 0,
-            "props": {"region": region},
-            "keep": [],
-        }
+def drawable(views):
+    """The views that can be drawn at all, each with its wrapper id.
 
-    for i, view in enumerate(views):
+    A row the screen cannot address -- no owner, an id that is not one, a
+    region this version does not have, content that will not parse -- is
+    skipped rather than refused. It was refused at the door; a row that got
+    past that is a defect somebody has to be able to see the REST of the
+    screen through.
+    """
+    out = []
+    for view in views:
         region = str(view.get("region") or REGIONS[0])
         if region not in REGIONS:
             continue
@@ -861,8 +920,90 @@ def build(views):
                 continue
         if not isinstance(content, dict):
             continue
-
         wrapper = "%s%s.%s" % (VIEW_PREFIX, owner.replace("/", "~"), view_id)
+        out.append((region, owner, view_id, wrapper, content, view))
+    return out
+
+
+def seat_of(wrapper, region, have):
+    """The `ord` the display is already holding this view at, or `NEW_SEAT`.
+
+    A view the screen does not hold, or holds under ANOTHER region, is new
+    here: moving a widget from `main` to `aside` puts it at the end of the
+    aside rather than at whatever height it happened to have in the column it
+    came from.
+    """
+    held = have.get(wrapper)
+    if not isinstance(held, dict) or held.get("parent") != REGION_PREFIX + region:
+        return NEW_SEAT
+    try:
+        return int(held.get("ord") or 0)
+    except (TypeError, ValueError):
+        return NEW_SEAT
+
+
+def seated(views, have):
+    """`(region, index, row)` for every view, in the order it stands.
+
+    Three keys, and the interesting one is the key that is NOT among them: the
+    moment a view was last written does not appear at all. Sorting on it was
+    GH #609 -- a view rewritten every twenty seconds took the top slot on every
+    tick, not because it was important but because it was recent, which is the
+    right answer for a card and the wrong one for anything standing.
+
+    1. the `ord` the view DECLARED, default 0.
+    2. the seat the display is already holding it at. That is FIRST APPEARANCE,
+       remembered by the screen instead of by a column: a new view sorts behind
+       everything already up, is given the next seat, and keeps it through
+       every rewrite until something above it goes away. A page this cell has
+       to bootstrap has no seats at all, and every view on it is new together.
+    3. `(owner, view_id)`, so the one tie left is broken on identity rather
+       than on whatever order the store happened to return.
+    """
+    out = []
+    rows = drawable(views)
+    for region in REGIONS:
+        here = [r for r in rows if r[0] == region]
+        here.sort(
+            key=lambda r: (declared_ord(r[5]), seat_of(r[3], region, have), r[1], r[2])
+        )
+        for i, row in enumerate(here):
+            out.append((region, i, row))
+    return out
+
+
+def build(views, have=None):
+    """Every object the screen should hold, keyed by id.
+
+    `have` is what the display is holding now, and it is an INPUT to the layout
+    rather than only something to diff against: it carries the seats, and the
+    seats are the order of the screen (see `seated`).
+    """
+    have = have if isinstance(have, dict) else {}
+    want = {
+        ROOT_ID: {
+            "component": "display-shell",
+            "parent": None,
+            "ord": 0,
+            "props": {"stylesheet": True},
+            "keep": [],
+        }
+    }
+    # Every region exists whether or not anything is in it: a region is a
+    # structural promise, not a consequence of there being views. Their `ord`
+    # is the order of the declaration, which is what puts `main` left of
+    # `aside` -- two regions at `ord: 0` were the second half of GH #609.
+    for i, region in enumerate(REGIONS):
+        want[REGION_PREFIX + region] = {
+            "component": "display-region",
+            "parent": ROOT_ID,
+            "ord": i * ORD_STEP,
+            "props": {"region": region},
+            "keep": [],
+        }
+
+    for region, i, row in seated(views, have):
+        _, owner, view_id, wrapper, content, view = row
         parent = REGION_PREFIX + region
         if str(view.get("kind") or "") == "prose":
             want[wrapper] = {
@@ -951,9 +1092,9 @@ def patches(want, have, define, bootstrap):
                 calls.append({"op": "object.update", "id": oid, "props": props})
             # A move is its own operation: `object.update` writes props and
             # nothing else, so the order of the screen -- which lives in `ord`
-            # -- would never actually change without this. A view that has just
-            # been rewritten is the newest one and belongs at the top; without a
-            # move it would keep the slot it had when it was created.
+            # -- would never actually change without this. A rewrite alone
+            # moves nothing now; what moves a view is a view above it going
+            # away, a region change, or a different `ord`.
             if held["parent"] != spec["parent"] or held["ord"] != spec["ord"]:
                 calls.append(
                     {
@@ -1010,7 +1151,7 @@ def pass_read(body, ctx):
         # at them, and they were never this cell's to remove.
         have = {}
 
-    want = build(views if isinstance(views, list) else [])
+    want = build(views if isinstance(views, list) else [], have)
     calls = patches(want, have, define if isinstance(define, list) else [], bootstrap)
     if not calls:
         # Nothing to say. A bundle with no legs is refused as `invalid_input`

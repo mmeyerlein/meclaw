@@ -116,6 +116,25 @@ const AUDIENCE: &str = r#"["member:user","agent:assistant"]"#;
 /// One annotation block as the port edge delivers it, with the provenance the
 /// gate requires next to it.
 fn annotation(payload: &str) -> serde_json::Value {
+    let section: serde_json::Value =
+        serde_json::from_str(payload).expect("the block under test is json");
+    serde_json::json!({
+        "header": {
+            "context": {"store_origin": "inline", "mem_phase": "inline",
+                        "session_id": SESSION,
+                        "audience_set": AUDIENCE, "channel": CHANNEL},
+            "hop": {"route": "in_remember", "section": "memory"}
+        },
+        "messages": [],
+        "section": "memory",
+        "payload": section
+    })
+}
+
+/// The SAME block in the shape this lane read until GH #607: the fence's own
+/// text in the first turn of `messages[]`, no `payload`, no section. It is still
+/// delivered while a colony is mid-rebuild, and it still has to work.
+fn legacy_annotation(payload: &str) -> serde_json::Value {
     serde_json::json!({
         "header": {
             "context": {"store_origin": "inline", "mem_phase": "inline",
@@ -130,13 +149,17 @@ fn annotation(payload: &str) -> serde_json::Value {
 /// The same block, but delivered without the cast of the turn -- the one thing
 /// this ingress refuses before it even reads the payload (#244).
 fn annotation_without_audience(payload: &str) -> serde_json::Value {
+    let section: serde_json::Value =
+        serde_json::from_str(payload).expect("the block under test is json");
     serde_json::json!({
         "header": {
             "context": {"store_origin": "inline", "mem_phase": "inline",
                         "session_id": SESSION, "channel": CHANNEL},
-            "hop": {}
+            "hop": {"route": "in_remember", "section": "memory"}
         },
-        "messages": [{"origin": "user", "type": "text", "text": payload}]
+        "messages": [],
+        "section": "memory",
+        "payload": section
     })
 }
 
@@ -422,7 +445,11 @@ fn a_block_that_is_not_json_still_rejects_as_invalid() {
     // (d) The other side of the distinction, and the reason the two must not
     // share a lane. Garbage names no turn, proves nothing about one, and must
     // leave the turn in the queue for the batched extractor.
-    let msgs = emit(annotation("not json at all"));
+    //
+    // In the OLDER shape, which is the only shape it can have (GH #607): a
+    // sidecar section that is not an object never leaves the splitter, so bytes
+    // nothing can parse still reach this ingress as the text of a turn.
+    let msgs = emit(legacy_annotation("not json at all"));
     let refusals = rejects(&msgs);
     assert_eq!(refusals.len(), 1, "garbage is refused: {msgs:?}");
     assert_eq!(refusals[0]["header"]["reject_reason"], "inline_invalid");

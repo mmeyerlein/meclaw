@@ -327,3 +327,20 @@ PIN-birth-durable-de	docs/meclaw-overview.md	Erreichen ist nicht Adressieren	pin
 PIN-birth-durable-en	docs/meclaw-overview.en.md	Reaching is not addressing	pinned	a_mutation_that_does_not_name_it_never_wakes_it
 PIN-derived-activity-persisted-de	docs/meclaw-overview.md	Die abgeleitete Aktivität wird geschrieben	pinned	an_island_derived_asleep_is_still_asleep_on_the_second_boot
 PIN-derived-activity-persisted-en	docs/meclaw-overview.en.md	Derived activity is written down	pinned	an_island_derived_asleep_is_still_asleep_on_the_second_boot
+#
+# Added 2026-09-05 (wave voice-cell). The `voice` cell type is a new public
+# contract surface: a wire protocol, a closed `error_code` list and a params
+# table. These five rows pin the promises that already have a test in the
+# contract commit; the behaviour promises that are pinned by the strand tests
+# (echo round trip, one turn per end-of-turn over a real socket, the 4400 and
+# 4409 close codes) get their rows in the integration pass, with the tests.
+PIN-voice-one-turn-per-boundary-de	docs/cell-types.md	beide enden in genau einem Turn	pinned	auto_end_of_turn_emits_exactly_one_turn
+PIN-voice-one-turn-per-boundary-en	docs/cell-types.en.md	both end in exactly one turn	pinned	auto_end_of_turn_emits_exactly_one_turn
+PIN-voice-hello-declares-the-rates-de	docs/cell-types.md	Beide stehen im `hello`-Frame, und der Client passt sich an.	pinned	hello_frame_serializes_with_protocol_tag
+PIN-voice-hello-declares-the-rates-en	docs/cell-types.en.md	Both stand in the `hello` frame, and the client adapts to them.	pinned	hello_frame_serializes_with_protocol_tag
+PIN-voice-credential-redacted-de	docs/cell-types.md	ist in `Debug`, in Logs und in Fehlermeldungen redigiert	pinned	debug_redacts_secrets
+PIN-voice-credential-redacted-en	docs/cell-types.en.md	is redacted in `Debug`, in logs and in error messages	pinned	debug_redacts_secrets
+PIN-voice-providers-immutable-de	docs/cell-types.md	ein Update, das eines von beiden nennt, wird also als unbekannt abgelehnt	pinned	overlay_refuses_stt_update
+PIN-voice-providers-immutable-en	docs/cell-types.en.md	an update naming one is refused as unknown	pinned	overlay_refuses_stt_update
+PIN-voice-port-zero-refused-de	docs/cell-types.md	`0` wird abgelehnt, genau wie bei `web`	pinned	parse_refuses_port_zero
+PIN-voice-port-zero-refused-en	docs/cell-types.en.md	`0` is refused, exactly as in `web`	pinned	parse_refuses_port_zero

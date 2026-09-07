@@ -1,0 +1,541 @@
+//! Wave voice-cell, strand t1: the cell exists, refuses loudly, and binds.
+//!
+//! Two claims, and they are deliberately on different sides of the dual task.
+//!
+//! The first needs no I/O at all: a message a `voice` cell cannot say out loud
+//! must come back as exactly one error emission with a code from the closed
+//! list. The failure mode this pins is the quiet one — an assistant turn that
+//! never reaches a caller and never reaches a log, so the operator's only
+//! evidence is a silence they cannot tell from a slow model. The `slack` cell's
+//! handler tests are the shape.
+//!
+//! The second is the whole cell: spawned through its factory, the listener has
+//! to be up. It was `#[ignore]`d while `run_io` was a stub that parked forever
+//! (A1′) and bound nothing; strand t4 replaced it, so this is now the first
+//! proof that the two halves boot as one cell.
+
+use meclaw_cells::VoiceCellFactory;
+use meclaw_cells::voice::cell::VoiceCell;
+use meclaw_cells::voice::contract::ProviderTimeouts;
+use meclaw_cells::voice::io::VoiceIo;
+use meclaw_cells::voice::params::VoiceParams;
+use meclaw_cells::voice::providers::build_stt;
+use meclaw_cells::voice::wire::Mode;
+use meclaw_colony::{CellFactory, ContractView, DbConn, LongRunningCell, SpawnedCellKind};
+use meclaw_core::serde_json::json;
+use meclaw_core::{Body, CellEmission, MessageBuilder, OriginSink, OutputSink, Path, Uuid};
+use meclaw_testing::free_port;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::sync::mpsc;
+
+const CELL_PATH: &str = "/main/members/tester/channels/voice";
+
+/// An echo-provider cell with no colony around it.
+///
+/// `emit_partials` is ordered explicitly: it is off by default (R-V8'), and
+/// the tests below are about what reaches the lane, so they have to start from
+/// a cell whose lane is on.
+fn echo_cell(path: &Path) -> VoiceCell {
+    let raw = json!({"port": 7900, "stt": {"provider": "echo"}, "emit_partials": true});
+    let params = VoiceParams::parse(&raw).expect("the echo config parses");
+    let stt = build_stt(&params.stt, ProviderTimeouts::default()).expect("the echo provider");
+    let (events_tx, _events_rx) = mpsc::channel(8);
+    let io = VoiceIo::new(
+        params.bind.clone(),
+        params.port,
+        stt,
+        None,
+        Mode::Auto,
+        Duration::from_millis(params.external_timeout_ms),
+        Duration::from_millis(params.provider_idle_timeout_ms),
+        events_tx,
+    );
+    VoiceCell::new(path.clone(), io, &params, &raw)
+}
+
+fn db() -> DbConn {
+    let conn = rusqlite::Connection::open_in_memory().expect("db");
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS params (
+             key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL);",
+    )
+    .expect("the overlay table");
+    DbConn::wrap(conn, None)
+}
+
+fn error_code(em: &CellEmission) -> Option<String> {
+    em.content
+        .get("header")
+        .and_then(|h| h.get("error_code"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
+/// A body with no assistant turn is answered, not dropped.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_body_without_an_assistant_turn_is_refused_by_name() {
+    let path = Path::new(CELL_PATH);
+    let mut cell = echo_cell(&path);
+    let mut db = db();
+    let (tx, mut rx) = mpsc::channel::<CellEmission>(8);
+    let sink = OutputSink::new(
+        tx,
+        path.clone(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        64,
+        meclaw_core::Headers::new(),
+        None,
+    );
+    let (reconfig_tx, _reconfig_rx) = mpsc::channel(8);
+
+    let msg = MessageBuilder::new(path.clone())
+        .body(Body::Inline(json!({"messages": []})))
+        .build();
+    cell.handle(msg, &sink, &mut db, &reconfig_tx).await;
+
+    let mut emissions = Vec::new();
+    while let Ok(em) = rx.try_recv() {
+        emissions.push(em);
+    }
+    assert_eq!(emissions.len(), 1, "exactly one answer, never silence");
+    assert_eq!(
+        error_code(&emissions[0]).as_deref(),
+        Some("invalid_body"),
+        "the code is from the closed list: {:?}",
+        emissions[0].content
+    );
+}
+
+/// The whole cell, through its factory: the listener has to be up.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+// Un-ignored by strand t4: the I/O half binds now (the one line t4 changed in
+// this file).
+async fn a_voice_cell_spawned_by_its_factory_serves_its_port() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let port = free_port();
+    let (out_tx, _out_rx) = mpsc::channel::<CellEmission>(64);
+    let (inbox_tx, _inbox_rx) = mpsc::channel(8);
+
+    let spawned = Arc::new(VoiceCellFactory)
+        .spawn_cell(
+            Path::new(CELL_PATH),
+            json!({"port": port, "stt": {"provider": "echo"}}),
+            out_tx,
+            td.path().to_path_buf(),
+            ContractView::default(),
+            inbox_tx,
+            None,
+            -1,
+            None,
+            None,
+            64,
+        )
+        .expect("a voice cell spawns");
+    let SpawnedCellKind::Active { join, .. } = spawned else {
+        panic!("a voice cell is an eager, long-running kind");
+    };
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if reqwest::get(format!("http://127.0.0.1:{port}/"))
+            .await
+            .is_ok()
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the cell never bound its port");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    join.abort();
+}
+
+/// R-V15: every emission that belongs to a connection names its session.
+///
+/// Telephony is why this is a rule and not a nicety — a colony that answers the
+/// wrong caller is worse than one that answers nobody, and `session_id` on the
+/// hop is the only thing that keeps two live calls apart. The two refusals that
+/// may go without it are the ones that have no session to name: a mailbox
+/// message with an unreadable body, and one that never said which call it meant.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn every_connection_bound_emission_carries_session_id() {
+    use meclaw_cells::voice::cell::VoiceEvent;
+    use meclaw_cells::voice::contract::SttEvent;
+    use meclaw_cells::voice::wire::SpeakEndReason;
+
+    let path = Path::new(CELL_PATH);
+    let mut cell = echo_cell(&path);
+    let mut db = db();
+    let (tx, mut rx) = mpsc::channel::<CellEmission>(32);
+    let sink = OriginSink::new(tx, path.clone(), 64);
+
+    cell.handle_event(
+        VoiceEvent::Connected {
+            session_id: "call-1".to_string(),
+            mode: Mode::Auto,
+        },
+        &sink,
+        &mut db,
+    )
+    .await;
+
+    let events = vec![
+        VoiceEvent::Stt {
+            session_id: "call-1".to_string(),
+            event: SttEvent::Partial {
+                text: "hallo".to_string(),
+                eager: false,
+            },
+        },
+        VoiceEvent::Stt {
+            session_id: "call-1".to_string(),
+            event: SttEvent::EndOfTurn {
+                text: "hallo".to_string(),
+            },
+        },
+        VoiceEvent::Stt {
+            session_id: "call-1".to_string(),
+            event: SttEvent::Failed {
+                detail: "socket closed".to_string(),
+            },
+        },
+        VoiceEvent::SpeakEnded {
+            session_id: "call-1".to_string(),
+            speak_id: "sp1".to_string(),
+            reason: SpeakEndReason::Failed,
+            detail: Some("provider said no".to_string()),
+        },
+        VoiceEvent::BadAudioFrame {
+            session_id: "call-1".to_string(),
+            len: 7,
+            count: 3,
+        },
+    ];
+    for event in events {
+        cell.handle_event(event, &sink, &mut db).await;
+    }
+
+    let mut emissions = Vec::new();
+    while let Ok(em) = rx.try_recv() {
+        emissions.push(em);
+    }
+    assert!(
+        emissions.len() >= 5,
+        "partial, turn, stt_failed, speak_failed and bad_audio_frame all emit: {}",
+        emissions.len()
+    );
+    for em in &emissions {
+        let session = em
+            .content
+            .get("header")
+            .and_then(|h| h.get("session_id"))
+            .and_then(|v| v.as_str());
+        assert_eq!(
+            session,
+            Some("call-1"),
+            "an emission without its session cannot be routed back to its caller: {:?}",
+            em.content
+        );
+    }
+
+    // R-V6': the mis-framed buffer is reported with its count, and the call is
+    // still there afterwards — a dropped frame does not end a conversation.
+    let bad = emissions
+        .iter()
+        .find(|em| {
+            em.content
+                .get("header")
+                .and_then(|h| h.get("error_code"))
+                .and_then(|v| v.as_str())
+                == Some("bad_audio_frame")
+        })
+        .expect("the bad frame reached the error lane");
+    assert_eq!(
+        bad.content
+            .get("header")
+            .and_then(|h| h.get("bad_frames"))
+            .and_then(|v| v.as_u64()),
+        Some(3),
+        "the hop carries how many times it has happened: {:?}",
+        bad.content
+    );
+
+    cell.handle_event(
+        VoiceEvent::Stt {
+            session_id: "call-1".to_string(),
+            event: SttEvent::EndOfTurn {
+                text: "it goes on".to_string(),
+            },
+        },
+        &sink,
+        &mut db,
+    )
+    .await;
+    let mut after = Vec::new();
+    while let Ok(em) = rx.try_recv() {
+        after.push(em);
+    }
+    assert!(
+        after.iter().any(|em| em
+            .content
+            .get("header")
+            .and_then(|h| h.get("route"))
+            .and_then(|v| v.as_str())
+            == Some("turn")),
+        "the session survived the bad frame and still produces turns: {after:?}"
+    );
+}
+
+/// A `bind` the socket will not take is refused, and nothing is written.
+///
+/// The spec's rebind rule (§ 2, the `web` cell's GH #410 shape) has an order in
+/// it: merge, **move**, then persist. Getting that order wrong is not a cosmetic
+/// bug — a `cell.db` overlay naming an address the cell was never on comes back
+/// on the next respawn, and the endpoint then boots with no listener at all.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_bind_that_does_not_take_is_refused_and_not_persisted() {
+    use meclaw_cells::voice::cell::VoiceReconfig;
+
+    // A real listener on the port, so the refusal is about an address that is
+    // genuinely taken rather than about a mock saying no.
+    let occupied = std::net::TcpListener::bind("127.0.0.1:0").expect("hold a port");
+    let busy_port = occupied.local_addr().expect("its address").port();
+
+    let path = Path::new(CELL_PATH);
+    let mut cell = echo_cell(&path);
+    // The I/O half's command seam, taken here so this test can answer the
+    // rebind the way a failed bind would.
+    let mut io = cell
+        .split_io()
+        .expect("split_io hands over the i/o half once");
+    let mut from_handler = io.from_handler.take().expect("the handler's command seam");
+    tokio::spawn(async move {
+        while let Some(cmd) = from_handler.recv().await {
+            if let VoiceReconfig::Rebind { ack, .. } = cmd {
+                let _ = ack.send(Err(format!("address in use (port {busy_port})")));
+            }
+        }
+    });
+
+    let mut db = db();
+    let (tx, mut rx) = mpsc::channel::<CellEmission>(8);
+    let sink = OutputSink::new(
+        tx,
+        path.clone(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        64,
+        meclaw_core::Headers::new(),
+        None,
+    );
+    let (reconfig_tx, _reconfig_rx) = mpsc::channel(8);
+
+    let msg = MessageBuilder::new(path.clone())
+        .body(Body::Inline(json!({"params": {"port": busy_port}})))
+        .build();
+    cell.handle(msg, &sink, &mut db, &reconfig_tx).await;
+
+    let mut emissions = Vec::new();
+    while let Ok(em) = rx.try_recv() {
+        emissions.push(em);
+    }
+    assert_eq!(
+        emissions.len(),
+        1,
+        "a refused update is answered, not dropped"
+    );
+    assert_eq!(
+        error_code(&emissions[0]).as_deref(),
+        Some("invalid_input"),
+        "got {:?}",
+        emissions[0].content
+    );
+    let detail = emissions[0]
+        .content
+        .get("meta")
+        .and_then(|m| m.get("detail"))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    assert!(
+        detail.starts_with("bind failed:"),
+        "the refusal says it was the socket, not the parser: {detail}"
+    );
+
+    let rows = db
+        .call(|c| {
+            c.query_row("SELECT COUNT(*) FROM params", [], |r| r.get::<_, i64>(0))
+                .unwrap_or(-1)
+        })
+        .await;
+    assert_eq!(rows, 0, "a move that did not happen is not remembered");
+}
+
+/// SHOULD 3: an accepted flag update reaches the calls that are already up.
+///
+/// The failure mode is the half-applied setting: `barge_in: false` accepted,
+/// remembered, reported — and the one caller who happened to be mid-sentence
+/// still gets cut off, which is exactly the caller the operator was turning it
+/// off for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_flag_update_reaches_open_sessions() {
+    use meclaw_cells::voice::cell::{VoiceEvent, VoiceReconfig};
+    use meclaw_cells::voice::contract::SttEvent;
+
+    let path = Path::new(CELL_PATH);
+    let mut cell = echo_cell(&path);
+    // Drain the command seam so a full channel cannot be mistaken for a
+    // behaviour change.
+    let mut io = cell.split_io().expect("the i/o half");
+    let mut from_handler = io.from_handler.take().expect("the command seam");
+    let (seen_tx, mut seen_rx) = mpsc::channel::<&'static str>(16);
+    tokio::spawn(async move {
+        while let Some(cmd) = from_handler.recv().await {
+            let name = match cmd {
+                VoiceReconfig::CancelSpeak { .. } => "cancel",
+                VoiceReconfig::Rebind { ack, .. } => {
+                    let _ = ack.send(Ok(()));
+                    "rebind"
+                }
+                _ => "other",
+            };
+            let _ = seen_tx.send(name).await;
+        }
+    });
+
+    let mut db = db();
+    let (tx, mut rx) = mpsc::channel::<CellEmission>(16);
+    let out = OutputSink::new(
+        tx.clone(),
+        path.clone(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        64,
+        meclaw_core::Headers::new(),
+        None,
+    );
+    let origin = OriginSink::new(tx, path.clone(), 64);
+    let (reconfig_tx, _reconfig_rx) = mpsc::channel(8);
+
+    cell.handle_event(
+        VoiceEvent::Connected {
+            session_id: "call-1".to_string(),
+            mode: Mode::Auto,
+        },
+        &origin,
+        &mut db,
+    )
+    .await;
+
+    // Give the call something to interrupt: without a running synthesis,
+    // `SpeechStarted` is a no-op whatever `barge_in` says, and the test would
+    // pass on a cell that ignores the update entirely.
+    let mut ctx = meclaw_core::serde_json::Map::new();
+    ctx.insert("session_id".to_string(), json!("call-1"));
+    let speak = MessageBuilder::new(path.clone())
+        .context(ctx)
+        .body(Body::Inline(json!({
+            "messages": [{"origin": "assistant", "type": "text", "text": "guten tag"}]
+        })))
+        .build();
+    cell.handle(speak, &out, &mut db, &reconfig_tx).await;
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(30), seen_rx.recv())
+            .await
+            .expect("the speak order reached the i/o half within 30s"),
+        Some("other"),
+        "the speak order reached the i/o half"
+    );
+
+    // Positive control, BEFORE the update: with `barge_in` still on, speech
+    // does cut the synthesis short. Without this the negative assertion below
+    // would also pass on a cell that never cancels anything at all — and the
+    // control has to run on this session and at this moment, because the
+    // update reaches every open session and a session opened after it starts
+    // from the new value.
+    cell.handle_event(
+        VoiceEvent::Stt {
+            session_id: "call-1".to_string(),
+            event: SttEvent::SpeechStarted,
+        },
+        &origin,
+        &mut db,
+    )
+    .await;
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(30), seen_rx.recv())
+            .await
+            .expect("barge_in:true cancels within 30s"),
+        Some("cancel"),
+        "barge_in is on: speech interrupts the synthesis"
+    );
+
+    // Turn both flags off while the call is live.
+    let msg = MessageBuilder::new(path.clone())
+        .body(Body::Inline(
+            json!({"params": {"barge_in": false, "emit_partials": false}}),
+        ))
+        .build();
+    cell.handle(msg, &out, &mut db, &reconfig_tx).await;
+    if let Ok(em) = rx.try_recv() {
+        panic!("an accepted params update is silent, got {:?}", em.content);
+    }
+    // A cancel does not end the synthesis by itself — only a `SpeakEnded` from
+    // the I/O half does — so the session is still speaking and the negative
+    // case below is testing what it says it is.
+
+    // `emit_partials: false` — the client still sees the mirror, the topology
+    // does not see the lane.
+    cell.handle_event(
+        VoiceEvent::Stt {
+            session_id: "call-1".to_string(),
+            event: SttEvent::Partial {
+                text: "hallo".to_string(),
+                eager: false,
+            },
+        },
+        &origin,
+        &mut db,
+    )
+    .await;
+    let mut emissions = Vec::new();
+    while let Ok(em) = rx.try_recv() {
+        emissions.push(em);
+    }
+    assert!(
+        emissions.is_empty(),
+        "emit_partials:false must stop the lane for a call that was already up: {emissions:?}"
+    );
+
+    // The interim still travels to the client — `emit_partials` stops the lane,
+    // never the mirror — so the frame shows up on the command seam. Take it off
+    // before asserting silence, and assert it while we are here.
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(30), seen_rx.recv())
+            .await
+            .expect("the client mirror arrives within 30s"),
+        Some("other"),
+        "emit_partials:false stops the lane, not the frame the client sees"
+    );
+
+    // `barge_in: false` — speech no longer cuts a synthesis short.
+    cell.handle_event(
+        VoiceEvent::Stt {
+            session_id: "call-1".to_string(),
+            event: SttEvent::SpeechStarted,
+        },
+        &origin,
+        &mut db,
+    )
+    .await;
+    // A deadline, not a `try_recv`: the command travels through a channel and
+    // a task, so an immediate poll wins the scheduler hop and a cell that DID
+    // cancel would still look quiet. Half a second is long enough for the hop
+    // the positive control above just demonstrated.
+    assert!(
+        tokio::time::timeout(Duration::from_millis(500), seen_rx.recv())
+            .await
+            .is_err(),
+        "barge_in:false must reach the open call, not only the next one"
+    );
+}

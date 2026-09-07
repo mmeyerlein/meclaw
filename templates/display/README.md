@@ -1,4 +1,4 @@
-# `display@1.0.2`
+# `display@1.1.0`
 
 One screen, on a port of its own, that many agents and applications write onto
 at the same time. A **view** is a named, owned, optionally expiring piece of
@@ -16,14 +16,15 @@ in_view / in_withdraw  ->  compose (code)  <->  views (store)
 ## What it is not
 
 - **Not a window manager.** Nothing overlaps, nothing has a z-order, nothing is
-  resized, and there is no camera. A screen is a column of views in one order,
-  and that order is time.
+  resized, and there is no camera. A screen is two columns of views, and inside
+  a column an order that is not time.
 - **Not a model.** The compose cell is deterministic and offline: it opens no
   socket, asks nothing and decides nothing about content. Given the same table
   and the same display it produces the same bundle.
-- **Not a layout judgement.** It places views newest first and breaks a tie on
-  `(owner, view_id)`. That is the whole of its taste. An application that wants
-  a different arrangement builds it inside its own view, where it belongs.
+- **Not a layout judgement.** Two columns, a band inside a column, and a tie
+  broken on `(owner, view_id)`. That is the whole of its taste. An application
+  that wants a different arrangement builds it inside its own view, where it
+  belongs.
 - **Not the owner of content.** What is inside a view is whatever the sender
   sent, rendered by whatever component the sender defined. This scope wraps it,
   places it, and takes it away again.
@@ -48,15 +49,18 @@ message has already been.
 2. **The store answered.** The after-state is computed in memory from the
    before-state -- minus the row that was deleted, plus the row that was
    inserted -- because a second `select` would be another round trip for a set
-   this cell already knows. Expired views drop out here, the rest is sorted, and
-   the result travels on `hop.display_views` with one `query` at the display.
+   this cell already knows. Expired views drop out here, the rest is put in a
+   deterministic order that reads no clock -- region, band, identity -- and the
+   result travels on `hop.display_views` with one `query` at the display.
 3. **The display answered.** The question that answer settles is *is this page
    mine*, and there are two ways it is not: there is no page at `/` at all, or
    there is one and its root is somebody else's. Both are the **bootstrap** case
-   -- see below. Then, either way, one bundle of `object.*` calls. The order of
-   the screen lives in `ord`, and `object.update` writes props and nothing else,
-   so a view that moved up the column is patched with an `object.move` beside
-   whatever else changed about it.
+   -- see below. The answer is also where the **seats** come from, which is why
+   this pass computes the layout rather than only diffing it. Then, either way,
+   one bundle of `object.*` calls. The order of the screen lives in `ord`, and
+   `object.update` writes props and nothing else, so a view that moved up the
+   column is patched with an `object.move` beside whatever else changed about
+   it.
 4. **The display acknowledged the patch.** Nothing is emitted, and that is what
    stops the loop. A cell that cannot recognise the reply to its own write has
    no way to stop; one write becomes two, two become four, and the routing loop
@@ -78,18 +82,77 @@ The bootstrap **deletes nothing**. Those objects are not this scope's to remove,
 and another route may still point at them. `/` is re-pointed at our own root and
 the old tree is left standing.
 
+## Two regions, and an order that is not time
+
+A screen has two columns, and a view names the one it wants:
+
+| `region` | what it is for |
+|---|---|
+| `main` | the wide column, and the **default**. A view that names no region lands here, exactly as it did before there was a second one |
+| `aside` | the narrow column beside it, for what simply **stands**: a clock, a weather tile, a countdown. It takes no width at all while it is empty |
+
+Anything else is `invalid_view` and nothing is written. A closed list rather
+than a free string, because an unknown region is a view nobody would ever see,
+which is worse than a refusal the sender can read.
+
+**Inside a region the order is three keys, and the interesting one is the key
+that is missing.**
+
+1. **`ord`**, the band the view declared. Optional, `0` by default, signed: a
+   widget that wants to stand above a conversation asks for `-10` instead of
+   asking every other sender to move down. It is a sort key and never an index.
+2. **First appearance.** A new view sorts behind everything already standing,
+   is given the next seat, and keeps that seat through every rewrite until
+   something above it goes away.
+3. **`(owner, view_id)`**, so the one tie left is broken on identity rather
+   than on whatever order the store happened to return.
+
+**The moment a view was last written is not one of them**, and that is the
+whole of [#609](https://github.com/mmeyerlein/meclaw/issues/609). Until 1.1.0
+a region was sorted newest-first, so a view rewritten every twenty seconds took
+the top slot on every tick -- not because it was important, but because it was
+recent. That is the right answer for a card and the wrong one for anything
+standing, and the two readings cannot share a screen. `updated_at` is an expiry
+clock now and nothing else.
+
+**First appearance is remembered by the screen**, not by a column of the table.
+The seat of a view is the `ord` the display is already holding it at, which the
+compose cell reads back on pass 3 anyway -- so the layout takes what the display
+holds as an *input* rather than only as something to diff against. Two
+consequences worth knowing: a page this cell has to **bootstrap** has no seats
+at all, and every view on it is new together (band, then identity); and a view
+that **changes region** is new in the region it arrives in, because a height in
+the column it came from means nothing in the column it goes to.
+
+**The regions themselves stand in declaration order**, `main` before `aside`,
+as `ord` `0` and `10` under the page root. Both hang there directly. That used
+to be impossible -- a materialised page carried two statics whatever the child
+count, so the closing static landed between the first child and the second and
+everything from the second on rendered outside the element meant to contain it.
+[#394](https://github.com/mmeyerlein/meclaw/issues/394) replaced that with n+1
+statics for n slots, and the `web` README says as much: a root with one child is
+"a composition CHOICE now rather than a constraint".
+
+The **layout** is this scope's own, and it travels in the `display-shell`
+template as one `<style>` block rather than as a rule in `/vision.css`: the
+token sheet belongs to the `web` template and describes a design language,
+while *main is wide and aside is narrow* is a statement about this screen. Two
+flex columns, the aside at `clamp(15rem, 22%, 24rem)`, `display: none` while it
+is empty, and stacked one above the other under 60rem.
+
 ## What is on the screen: the `views` table
 
 | column | type | what it holds |
 |---|---|---|
 | `owner` | `text` | the `envelope.reply_to` of whoever put the view up |
 | `view_id` | `text` | that sender's own name for it, `[a-z0-9-]{1,64}` |
-| `region` | `text` | where on the screen. v1 knows one: `main` |
+| `region` | `text` | which column it stands in: `main` or `aside` |
+| `ord` | `int` | the band it asked for inside that column. `0` by default, signed |
 | `kind` | `text` | `prose` or `component` |
 | `content` | `json` | the prose `{title, body}`, or the root node of a component tree |
 | `components` | `json` | the `component.define` arguments the view brought with it |
 | `ttl_ms` | `int` | how long the view stays fresh. `0` is forever |
-| `updated_at` | `int` | epoch milliseconds, which is what orders the screen |
+| `updated_at` | `int` | epoch milliseconds. An **expiry** clock, and since 1.1.0 nothing else |
 
 **`(owner, view_id)` is the identity, and the store cannot say so.** A `store`
 schema declaration carries column types and nothing else -- no PRIMARY KEY, no
@@ -116,7 +179,7 @@ leaving the table untouched:
 |---|---|
 | `owner_unknown` | the message carries no `envelope.reply_to` |
 | `not_owner` | the body claims an owner that is not the sender |
-| `invalid_view` | a missing or wrongly typed field, an unknown `kind`, an unknown `region`, or a component tree whose form does not hold -- two children of one node naming the same `key`, or a child `key` that is a plain number |
+| `invalid_view` | a missing or wrongly typed field, an unknown `kind`, a region this screen does not have, an `ord` that is not an integer, or a component tree whose form does not hold -- two children of one node naming the same `key`, or a child `key` that is a plain number |
 | `component_prefix` | a component name that does not start with `<view_id>-` |
 | `store_failed` | a leg of the store bundle came back with an `error_code` |
 
@@ -215,16 +278,17 @@ can trip either refusal.
 
 | component | layer | what it is |
 |---|---|---|
-| `display-shell` | `content` | the page root. `stylesheet` emits the link to the token sheet |
-| `display-region` | `content` | the one child of the root, and the parent of every view |
+| `display-shell` | `content` | the page root. `stylesheet` emits the link to the token sheet, and the shell carries this scope's own two-column rule |
+| `display-region` | `content` | one per region, a direct child of the root, and the parent of every view standing in it |
 | `display-view-prose` | `navigation` | a glass card with an optional title and a paragraph |
 | `display-view-custom` | `content` | the wrapper an application's own tree hangs in |
 
-**The region is on that list because the root gets exactly one child** -- a
-materialised page interleaves statics and slots one for one, and a root with
-several direct children would put the closing static in the middle of the page
-(`web` README, *Both shipped pages give their root exactly one child*). So the
-root holds the region, and every view hangs under the region.
+**The region is on that list because a view hangs under a region rather than
+under the root** -- that is what makes a column a place. It used to be on it for
+a different reason, that the root could hold exactly one child, and that reason
+is retracted: [#394](https://github.com/mmeyerlein/meclaw/issues/394) gave a
+materialised page n+1 statics for n slots, so the root holds both regions and
+renders both.
 
 `display-view-prose` writes `glass--thin`, and glass is a navigation-layer
 material -- a content component that names one of the three glass classes is

@@ -128,6 +128,25 @@ const AUDIENCE: &str = r#"["member:user","agent:assistant"]"#;
 /// `inline-extraction` port prescribes, the session the turn belongs to, and the
 /// provenance the gate requires next to them.
 fn annotation(payload: &str) -> serde_json::Value {
+    let section: serde_json::Value =
+        serde_json::from_str(payload).expect("the block under test is json");
+    serde_json::json!({
+        "header": {
+            "context": {"store_origin": "inline", "mem_phase": "inline",
+                        "session_id": SESSION,
+                        "audience_set": AUDIENCE, "channel": CHANNEL},
+            "hop": {"route": "in_remember", "section": "memory"}
+        },
+        "messages": [],
+        "section": "memory",
+        "payload": section
+    })
+}
+
+/// The SAME block in the shape this lane read until GH #607: the fence's own
+/// text in the first turn of `messages[]`, no `payload`, no section. It is still
+/// delivered while a colony is mid-rebuild, and it still has to work.
+fn legacy_annotation(payload: &str) -> serde_json::Value {
     serde_json::json!({
         "header": {
             "context": {"store_origin": "inline", "mem_phase": "inline",
@@ -190,6 +209,98 @@ fn block(episode: &str, topic: serde_json::Value) -> String {
 /// wrote, not a retrieval axis (wave 5 task 1 declared it without `fts` and
 /// without `canonical` for exactly that reason).
 const NAME: &str = "Segeltörn in Kroatien";
+
+/// GH #607 -- the two shapes are ONE ingress.
+///
+/// The `memory` section of a sidecar block and the block-in-a-turn this lane
+/// read before it carry the same object, so everything the lane emits about it
+/// has to be the same: the topic op, the staged payload and the coverage op
+/// alike. Compared as store OPS rather than as raw messages, because the batch
+/// key and the ingest instant are minted per run and are the only two things
+/// that may legitimately differ.
+#[test]
+fn the_older_block_in_a_turn_reaches_the_same_ops_as_the_sidecar_section() {
+    let payload = block(
+        "e-both",
+        serde_json::json!({"movement": "start", "name": NAME}),
+    );
+
+    let strip = |msgs: &[serde_json::Value]| -> Vec<serde_json::Value> {
+        store_ops(msgs)
+            .into_iter()
+            .map(|mut a| {
+                // the two per-run values: the scratch key the lane mints and the
+                // instant it stamps on what it writes
+                if let Some(row) = a["row"].as_object_mut() {
+                    row.remove("key");
+                    row.remove("created_at");
+                    row.remove("id");
+                    row.remove("opened_at");
+                }
+                a
+            })
+            .collect()
+    };
+
+    let sidecar = emit(annotation(&payload));
+    let older = emit(legacy_annotation(&payload));
+
+    assert!(
+        topic_op(&sidecar).is_some(),
+        "the sidecar section is read at all: {sidecar:?}"
+    );
+    assert_eq!(
+        strip(&sidecar),
+        strip(&older),
+        "one annotation, two deliveries, two different sets of ops. The section \
+         IS the block -- one level down inside the fence and already parsed -- \
+         so the lane must not be able to tell which shape it was handed. A \
+         difference here means a colony mid-rebuild writes two memories"
+    );
+}
+
+/// GH #607 -- a section that is not this lane's is refused, and refused
+/// WRITE-FREE.
+///
+/// The member's edge only sends `memory` here, so this is a mis-drawn edge
+/// rather than a model's mistake — which is exactly why the refusal says so in
+/// its own words instead of borrowing the "not JSON" line. What it must not do
+/// is write: the turn keeps its `pending` row and stays visible as one nobody
+/// annotated.
+#[test]
+fn a_sidecar_section_that_is_not_memory_is_refused_and_writes_nothing() {
+    let doc = serde_json::json!({
+        "header": {
+            "context": {"store_origin": "inline", "mem_phase": "inline",
+                        "session_id": SESSION,
+                        "audience_set": AUDIENCE, "channel": CHANNEL},
+            "hop": {"route": "in_remember", "section": "display"}
+        },
+        "messages": [],
+        "section": "display",
+        "payload": {"kind": "fact", "title": "the weather", "data": "warm"}
+    });
+    let msgs = emit(doc);
+    assert!(
+        store_ops(&msgs).is_empty(),
+        "a foreign section writes nothing at all: {msgs:?}"
+    );
+    let refusals: Vec<&serde_json::Value> = msgs
+        .iter()
+        .filter(|m| m["header"]["route"] == "reject")
+        .collect();
+    assert_eq!(refusals.len(), 1, "exactly one refusal: {msgs:?}");
+    assert_eq!(refusals[0]["header"]["reject_reason"], "inline_invalid");
+    let text = refusals[0]["messages"][0]["text"]
+        .as_str()
+        .expect("the refusal says why");
+    assert!(
+        text.contains("display") && text.contains("memory"),
+        "the refusal names the section it was handed and the one this lane \
+         answers for, so an operator can tell a mis-drawn edge from a model \
+         that wrote nonsense: {text}"
+    );
+}
 
 #[test]
 fn a_started_topic_is_opened_on_the_turn_the_block_covers() {

@@ -1,4 +1,4 @@
-//! GH #302 — `meclaw-os@1.8.2`, the outermost level: the colony shell.
+//! GH #302 — `meclaw-os@1.8.5`, the outermost level: the colony shell.
 //!
 //! The four composition templates are authored under one rule, and every one of
 //! their READMEs repeats it in the same words: **a level owns what its siblings
@@ -666,6 +666,7 @@ fn every_declared_lane_has_a_door_in_the_shells_own_graph() {
         route: l.route.clone(),
         context: l.context.clone(),
         at: Vec::new(),
+        required: l.required,
         because: l.because.clone(),
     };
     let contract = HiveContract {

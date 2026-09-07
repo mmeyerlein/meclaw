@@ -532,6 +532,7 @@ fn contracts_at(member_abs: &str, gen_abs: &str) -> Vec<HiveContract> {
             route: l.route.clone(),
             context: l.context.clone(),
             at: l.at.clone(),
+            required: l.required,
             because: l.because.clone(),
         };
         HiveContract {

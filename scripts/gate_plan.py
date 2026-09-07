@@ -41,6 +41,10 @@ CLASSES (a path can carry several)
 STATIONS (S strand, I integration, R release, C ci)
 ===================================================
     roadmap-anchors adr-anchors claims tree-rules   always
+    corpus-committed  the seed corpus against the tree AS IT IS, before
+                    anything regenerates it. NEVER in C, for the same reason
+                    as `corpus`. NOTE in S (the strand still owes the commit),
+                    RED in I/R (a committed corpus that lies is a finding)
     corpus          corpus_source -> `regenerate+check+librarian`, else
                     `check+librarian`; NEVER in C. Two checks, not one: the
                     seed corpus AND `build_librarian.py` (the R11 pair)
@@ -174,6 +178,7 @@ SHELL_GLOBS = ("scripts/*.sh", ".github/gates/*.sh", "plans/meclaw-os/*.sh")
 # these there produces a red station or a silent duplicate run (GH #234).
 CI_EXCLUDED = frozenset({
     "corpus",            # workshop/tools/build_librarian*.py
+    "corpus-committed",  # ... and its pre-check reads the same builder
     "scenarios:memory",  # workshop/evals/scenarios/
     "scenarios:builder",  # workshop/evals/builder-scenarios/
     "recall-harness",    # workshop/evals/p5-longmemeval/
@@ -188,7 +193,7 @@ CI_EXCLUDED = frozenset({
 # reads the tree every earlier station just proved.
 STATION_ORDER = (
     "roadmap-anchors", "adr-anchors", "claims", "tree-rules",
-    "corpus", "catalogue", "shellcheck", "gate-selftest",
+    "corpus-committed", "corpus", "catalogue", "shellcheck", "gate-selftest",
     "fmt", "clippy", "unwrap-budget", "corridor",
     "tests", "doctests", "deny",
     "scenarios:memory", "scenarios:builder", "recall-harness",
@@ -814,6 +819,22 @@ def plan(paths, mode, repo=None):
     seed = ["python3", "workshop/tools/build_librarian_seed.py"]
     librarian = ["python3", "workshop/tools/build_librarian.py", "--check"]
     if not ci:
+        # The pre-check, and it must come BEFORE `corpus` in STATION_ORDER.
+        # `corpus` regenerates first and checks second, so it grades the file
+        # it has just written: a committed corpus that no longer describes its
+        # sources was GREEN in every mode. Measured 2026-09-05, two strands
+        # with version bumps in `templates/*/template.json`: `docs.jsonl`
+        # travelled with the OLD versions and no station ever said so
+        # (GH #596). `--check` regenerates into a temp file and byte-compares
+        # against the committed path -- run against the tree as it is, it is
+        # the only station that reads what would actually travel.
+        #
+        # It costs a quarter of a second, so it runs in every non-ci mode
+        # regardless of the diff: a stale corpus is stale whoever last touched
+        # it, and the strand that finds it is the cheapest place to say so.
+        out["corpus-committed"] = station(
+            "corpus-committed", "seed as committed", False,
+            [seed + ["--check"]])
         if "corpus_source" in classes:
             out["corpus"] = station(
                 "corpus", "regenerate+check+librarian", False,

@@ -197,11 +197,11 @@ fn main_config() -> Value {
          "modifier": {"set_hop": {"route": "'in_prune'"}}},
         {"from": "./talky", "to": "/park",
          "condition": "has(hop.route) && hop.route == 'prune'"},
-        // the error drain and the extraction lane
+        // the error drain and the sidecar lane
         {"from": "./talky", "to": "/park",
          "condition": "has(hop.route) && hop.route == 'error'"},
         {"from": "./talky", "to": "/park",
-         "condition": "has(hop.route) && hop.route == 'extraction'"},
+         "condition": "has(hop.route) && hop.route == 'sidecar'"},
         {"from": "./talky", "to": "/park",
          "condition": "has(hop.route) && (hop.route == 'write' || hop.route == 'turn_write')"},
         // THE TWO PROBES. Both take a lane of the composite's public contract

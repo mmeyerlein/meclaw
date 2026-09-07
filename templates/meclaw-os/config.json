@@ -25,19 +25,19 @@
         },
         {
           "route": "in_turn",
-          "because": "one turn on its way to an organisation. The LEVEL declares this lane and routes it into `./orgs`, because the container is empty by construction and a contract on an empty hive would have doors that lead nowhere (W7-R2). Derived from org@1.4.0"
+          "because": "one turn on its way to an organisation. The LEVEL declares this lane and routes it into `./orgs`, because the container is empty by construction and a contract on an empty hive would have doors that lead nowhere (W7-R2). Derived from org@1.4.1"
         },
         {
           "route": "in_recall",
-          "because": "a question against a member's memory, asked from outside the organisation that holds it. Derived from org@1.4.0"
+          "because": "a question against a member's memory, asked from outside the organisation that holds it. Derived from org@1.4.1"
         },
         {
           "route": "in_brief",
-          "because": "a read against a member's curated record -- who is this person, who are they to the asker. Derived from org@1.4.0"
+          "because": "a read against a member's curated record -- who is this person, who are they to the asker. Derived from org@1.4.1"
         },
         {
           "route": "in_propose",
-          "because": "a write against that same record: a correction, a trust or disclosure decision, a subscription. Derived from org@1.4.0"
+          "because": "a write against that same record: a correction, a trust or disclosure decision, a subscription. Derived from org@1.4.1"
         },
         {
           "route": "in_build",
@@ -57,15 +57,15 @@
         },
         {
           "route": "in_export",
-          "because": "a demand that one of an organisation's members hand out its memory as a versioned document. The level carries it because the namespace beneath declares it and a lane an occupant accepts is a lane no caller can reach unless the level does too. The usual sender is the front door -- `./operator` raises `export` and this level's own edge re-stamps it onto this lane -- and the rim door exists because a colony may also trigger one from outside without going through the front door. Derived from org@1.4.0"
+          "because": "a demand that one of an organisation's members hand out its memory as a versioned document. The level carries it because the namespace beneath declares it and a lane an occupant accepts is a lane no caller can reach unless the level does too. The usual sender is the front door -- `./operator` raises `export` and this level's own edge re-stamps it onto this lane -- and the rim door exists because a colony may also trigger one from outside without going through the front door. Derived from org@1.4.1"
         },
         {
           "route": "in_import",
-          "because": "one part of a memory document, on its way to the member whose hive it belongs to. It is the return leg of `in_export`, and the shell carries it for the same reason: nothing at this level produces memory parts and nothing here consumes them, so a lane the organisations below can answer would die as `no_route` at the outermost boundary if the shell did not declare it. It crosses untouched -- the shell reads no part and decides nothing about what may enter -- and the receipt comes back on the `dump` lane the member already drains. Derived from the accepts list of org@1.4.0"
+          "because": "one part of a memory document, on its way to the member whose hive it belongs to. It is the return leg of `in_export`, and the shell carries it for the same reason: nothing at this level produces memory parts and nothing here consumes them, so a lane the organisations below can answer would die as `no_route` at the outermost boundary if the shell did not declare it. It crosses untouched -- the shell reads no part and decides nothing about what may enter -- and the receipt comes back on the `dump` lane the member already drains. Derived from the accepts list of org@1.4.1"
         },
         {
           "route": "mutation_committed",
-          "because": "the mutation receipt, GH #553: the graph moved, and the door said so. It enters at the hive `colony.json` names in `mutation_receipts.to` -- this level -- and is drawn onwards ONE LEVEL AT A TIME into `./orgs`, which is what makes every level that declares it a mandatory hop under ADR-0020. It replaces a poll: the tool menus and the screens below used to ask a timer's question every few minutes, and the boot receipt is the first fill, so a colony that has just started already knows. Derived from org@1.4.0"
+          "because": "the mutation receipt, GH #553: the graph moved, and the door said so. It enters at the hive `colony.json` names in `mutation_receipts.to` -- this level -- and is drawn onwards ONE LEVEL AT A TIME into `./orgs`, which is what makes every level that declares it a mandatory hop under ADR-0020. It replaces a poll: the tool menus and the screens below used to ask a timer's question every few minutes, and the boot receipt is the first fill, so a colony that has just started already knows. Derived from org@1.4.1"
         }
       ],
       "emits": [
@@ -75,7 +75,7 @@
         },
         {
           "route": "ack",
-          "because": "an outcome that was decided rather than answered: the broker spending a grant (ok or denied plus a reason_code), or an organisation acknowledging a proposed change to a member's record. TWO senders, ONE lane -- a caller subscribes to the lane, not to whoever raised it. Derived from access@2.3.2 and org@1.4.0"
+          "because": "an outcome that was decided rather than answered: the broker spending a grant (ok or denied plus a reason_code), or an organisation acknowledging a proposed change to a member's record. TWO senders, ONE lane -- a caller subscribes to the lane, not to whoever raised it. Derived from access@2.3.2 and org@1.4.1"
         },
         {
           "route": "mutate",
@@ -87,31 +87,31 @@
         },
         {
           "route": "answer",
-          "because": "what an organisation produced for whoever asked -- a turn answered, a brief read. Note that `turn` is NOT a lane of this level: it is consumed inside the member that raised it, and a shell that re-declared it would offer an exit no message ever takes. Derived from org@1.4.0"
+          "because": "what an organisation produced for whoever asked -- a turn answered, a brief read. Note that `turn` is NOT a lane of this level: it is consumed inside the member that raised it, and a shell that re-declared it would offer an exit no message ever takes. Derived from org@1.4.1"
         },
         {
           "route": "bundle",
-          "because": "the bundle a member's memory produced for an asker outside that member, carried out of the organisation and out of the shell (GH #533). It is the return leg of `in_recall`, which this level has accepted since it was written: a lane that goes down and does not come back is a question with no answer, and the answer died at the first boundary that had not declared it. This level neither reads the bundle nor the reply-to token that addresses it. Derived from org@1.4.0"
+          "because": "the bundle a member's memory produced for an asker outside that member, carried out of the organisation and out of the shell (GH #533). It is the return leg of `in_recall`, which this level has accepted since it was written: a lane that goes down and does not come back is a question with no answer, and the answer died at the first boundary that had not declared it. This level neither reads the bundle nor the reply-to token that addresses it. Derived from org@1.4.1"
         },
         {
           "route": "reject",
-          "because": "a refusal from inside an organisation that is a VERDICT rather than a failure -- a screened turn, a proposal the record would not take. It is not `error`, because the two are drained by different readers. Derived from org@1.4.0"
+          "because": "a refusal from inside an organisation that is a VERDICT rather than a failure -- a screened turn, a proposal the record would not take. It is not `error`, because the two are drained by different readers. Derived from org@1.4.1"
         },
         {
           "route": "error",
-          "because": "a lane of the broker, of the control loop or of an organisation failed and it was not a verdict; which of the three produced it is not the caller's business, and a colony that drains nothing loses every refusal. Derived from access@2.3.2, argus@1.0.0 and org@1.4.0"
+          "because": "a lane of the broker, of the control loop or of an organisation failed and it was not a verdict; which of the three produced it is not the caller's business, and a colony that drains nothing loses every refusal. Derived from access@2.3.2, argus@1.0.0 and org@1.4.1"
         },
         {
           "route": "write",
-          "because": "the batched conversation write of an assistant inside an organisation, handed straight out of the shell. The shell owns no archive: what is done with a conversation record is the colony operator's decision, and a shell that consumed it would have made that decision for them. Derived from org@1.4.0"
+          "because": "the batched conversation write of an assistant inside an organisation, handed straight out of the shell. The shell owns no archive: what is done with a conversation record is the colony operator's decision, and a shell that consumed it would have made that decision for them. Derived from org@1.4.1"
         },
         {
           "route": "turn_write",
-          "because": "one finished turn, offered for archiving as it is produced rather than at the close. Same reasoning as `write`, and the same non-consumption -- the shell is the outermost boundary, not the last consumer. It is NOT the only consumer either, and until GH #527 it effectively was: no shipped topology routed the lane anywhere, so every stored turn climbed nine hops and dead-lettered here as `hive_no_route`. The member fans it into its own memory hive now; what still arrives at this rim is the copy, and a distribution that wants an archive of its own wires it -- `examples/meclaw-os/` routes it to `./sink` and says so. Derived from org@1.4.0"
+          "because": "one finished turn, offered for archiving as it is produced rather than at the close. Same reasoning as `write`, and the same non-consumption -- the shell is the outermost boundary, not the last consumer. It is NOT the only consumer either, and until GH #527 it effectively was: no shipped topology routed the lane anywhere, so every stored turn climbed nine hops and dead-lettered here as `hive_no_route`. The member fans it into its own memory hive now; what still arrives at this rim is the copy, and a distribution that wants an archive of its own wires it -- `examples/meclaw-os/` routes it to `./sink` and says so. Derived from org@1.4.1"
         },
         {
           "route": "prune",
-          "because": "a housekeeping report raised inside an organisation. Nothing in this shell schedules it -- the control loop's cycle is its own lane -- so the shell only refuses to swallow it. Derived from org@1.4.0"
+          "because": "a housekeeping report raised inside an organisation. Nothing in this shell schedules it -- the control loop's cycle is its own lane -- so the shell only refuses to swallow it. Derived from org@1.4.1"
         },
         {
           "route": "receipt",
@@ -119,15 +119,15 @@
         },
         {
           "route": "close_report",
-          "because": "the receipt of one close pass -- what the strong model added, sharpened, corrected, closed or restated when it read an ended session whole. Nothing in this shell triggers the pass (a member fires it on its own closed sessions) and nothing here reads the receipt, so the outermost boundary does the one thing it can honestly do: it refuses to swallow it. Derived from org@1.4.0"
+          "because": "the receipt of one close pass -- what the strong model added, sharpened, corrected, closed or restated when it read an ended session whole. Nothing in this shell triggers the pass (a member fires it on its own closed sessions) and nothing here reads the receipt, so the outermost boundary does the one thing it can honestly do: it refuses to swallow it. Derived from org@1.4.1"
         },
         {
           "route": "dump",
-          "because": "the receipt of one applied import part, from a member somewhere below, on its way out of the colony. Same reason as `close_report` and `pack_ack`: the shell is transit for a receipt it did not ask for. Derived from the emits list of org@1.4.0 (GH #555)"
+          "because": "the receipt of one applied import part, from a member somewhere below, on its way out of the colony. Same reason as `close_report` and `pack_ack`: the shell is transit for a receipt it did not ask for. Derived from the emits list of org@1.4.1 (GH #555)"
         },
         {
           "route": "pack_ack",
-          "because": "the receipt of one identity pack, on its way out of the level (GH #458). Nothing in here consumes it and nothing in here can: the record that pushed the identity keeps its own delivery stamp, and a receipt is evidence for whoever operates the colony. TWO travel per pack, one per occupant of the generation it reached. Derived from the emits list of org@1.4.0 -- a level that did not declare it would let a real, recurring message die as no_route at its own boundary"
+          "because": "the receipt of one identity pack, on its way out of the level (GH #458). Nothing in here consumes it and nothing in here can: the record that pushed the identity keeps its own delivery stamp, and a receipt is evidence for whoever operates the colony. TWO travel per pack, one per occupant of the generation it reached. Derived from the emits list of org@1.4.1 -- a level that did not declare it would let a real, recurring message die as no_route at its own boundary"
         },
         {
           "route": "catalogue",

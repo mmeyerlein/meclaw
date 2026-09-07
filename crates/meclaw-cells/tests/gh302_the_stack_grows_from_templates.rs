@@ -964,17 +964,20 @@ async fn c_a_second_assistant_is_one_instantiation_with_its_own_parameters() {
          `member` template on disk declares"
     );
     assert_eq!(
-        declared, 27,
+        declared, 31,
         "the member's own edges to and from its assistants container are the member \
-         template's, drawn ONCE at member instantiation. ELEVEN reach the container: the \
+         template's, drawn ONCE at member instantiation. FOURTEEN reach the container: the \
          screened turn coming back off ./firewall, the memory hive's bundle \u{2014} as the \
          DEFAULT since GH #533, so a bundle addressed to the asker OUTSIDE the member takes \
          the level's own exit instead \u{2014} the memory hive's REFUSAL of a recall an asker \
          inside raised, re-stamped to `in_bundle` and told from the hive's other refusals by \
          the same reply-to token (GH #533), the \
-         builder's answer since GH #425, since GH #459 a screen's `event` and `receipt` \
+         builder's answer since GH #425, since GH #459 a screen's `event` \
          off ./channels, re-stamped to `in_turn` with the lane on `hop.kind`, because the \
-         assistant level has no event lane and did not grow one, and \u{2014} since GH #475 \
+         assistant level has no event lane and did not grow one \u{2014} but NOT its \
+         `receipt`, which since GH #598 leaves the level on `error` instead: a refusal is \
+         feedback to a WRITER, and a generation that reads one as a turn answers it, which \
+         is the loop that paid for the issue, and \u{2014} since GH #475 \
          \u{2014} the two transfer lanes `in_export` and `in_import`, carried in plain, so \
          that the session ledger of a NAMED generation can leave and come back, and \
          \u{2014} since GH #552 \u{2014} the memory's own two answers, `tool_result` \
@@ -982,8 +985,22 @@ async fn c_a_second_assistant_is_one_instantiation_with_its_own_parameters() {
          `context.tool_answerer = 'memory'`, and \u{2014} since GH #553 \u{2014} the mutation \
          door's receipt on `mutation_committed`, which the level carries into BOTH of its \
          containers so that an agent's tool menu and a person's screen follow a graph \
-         change instead of asking a timer for it. SIXTEEN \
-         leave it: recall, extraction, write, turn_write, prune, error, `build`, the \
+         change instead of asking a timer for it, and \u{2014} since the apps rim \
+         (member@1.7.0, rulings 2026-09-04/05) \u{2014} an installed app's own two \
+         answers off `./apps`, `tool_result` re-stamped to `in_tool` and `tool_schemas` \
+         re-stamped to `in_menu`, the mirror of the memory pair: without an app in the \
+         container nothing ever arrives on either, which is why they may live in the \
+         template while the observer edges INTO `./apps` may not, and \u{2014} since \
+         the phone channel (2026-09-06, the maintainer's ruling that a telephone is a CHANNEL \
+         and not an app) \u{2014} the SAME pair once more off `./channels`, because a \
+         channel may offer a tool of its own and the level says so at a second rim \
+         rather than making one of the two rims a special case. SEVENTEEN \
+         leave it: recall, `sidecar` TWICE since GH #607 \u{2014} the one lane \
+         this level SORTS rather than forwards, the memory section onto the very door \
+         `extraction` used to take and every other section into `./apps`, on a section-blind edge \
+         because the rim cannot know a section name: a section is named by whoever OFFERED \
+         it and an app is installed long after this template was written \u{2014} \
+         write, turn_write, prune, error, `build`, the \
          second fan-out of `write` that fires the close pass into the memory hive since \
          GH #447, the second fan-out of `turn_write` that writes the EPISODE into that same \
          hive since GH #527 \u{2014} the only path in this substrate from a conversation into \
@@ -1109,18 +1126,22 @@ async fn d_a_second_channel_is_one_instantiation_in_the_member() {
             .filter(|e| e["from"] == json!("./channels") || e["to"] == json!("./channels"))
             .count();
     assert_eq!(
-        declared, 9,
-        "the member ships nine edges between `./channels` and the rest of itself. Three \
+        declared, 10,
+        "the member ships ten edges between `./channels` and the rest of itself. Three \
          are the chat channel's own, from GH #454: the screened turn into `./firewall`, \
          the answer coming back from `./assistants` guarded on `context.channel_node`, and \
-         the connector's error out at the rim. Six more arrived with GH #455/#459, when \
+         the connector's error out at the rim. Five more arrived with GH #455/#459, when \
          a SCREEN became one of these channels: `./apps -> ./channels` carries an app's \
          `view` towards the display named in the edge that leaves the app, and the way \
-         back off the screen is split on the OWNER the display stamped — `event` and \
-         `receipt` into `./assistants` for `hop.owner.contains('/assistants/')`, the \
-         same pair into `./apps` for `'/apps/'`, and one catch-all out at the rim on \
-         `error` for an owner this level cannot place, carrying the original lane on \
-         `hop.kind`. A second channel must not move any of them \
+         back off the screen is split on the OWNER the display stamped — `event` \
+         into `./assistants` for `hop.owner.contains('/assistants/')`, `event` AND \
+         `receipt` into `./apps` for `'/apps/'`, and one catch-all out at the rim on \
+         `error` for an owner this level cannot place — and, since GH #598, for every \
+         `receipt` no app of this person owns — carrying the original lane on \
+         `hop.kind`. Two more arrived on 2026-09-06 with the phone channel: a \
+         channel's own `tool_result` and `tool_schemas`, re-stamped into \
+         `./assistants` as `in_tool` and `in_menu` \u{2014} the mirror of the pair \
+         `./apps` already had. A second channel must not move any of them \
          (templates/member/README.md § Why a container carries no contract). Move the \
          README with the number."
     );

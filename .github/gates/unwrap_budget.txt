@@ -4,10 +4,21 @@
 # (lib + bins) -- test modules and tests/ are out of scope by design.
 # A number may only ever go DOWN. Re-pin with `unwrap_budget.py --write`
 # and say in the commit why the number moved.
+#
+# meclaw-cells 71 -> 72 (wave voice-cell, 2026-09-05): one `expect` on the
+# `cell.db` open inside a long-running factory's build closure. The closure is
+# the `RespawnFn`, whose signature returns the spawn tuple and has nowhere to
+# put a failure, and `build_long_running_task` needs a `DbConn`, which needs a
+# `rusqlite::Connection` -- there is no value to fall back to. `web`, `timer`,
+# `mcp` and `proxy` each carry the same call site for the same reason; a new
+# cell type of that kind costs exactly one. The other two the `voice` cell would
+# have taken were paid off instead of pinned: `split_io` is typed
+# `Option<VoiceIo>` rather than unwrapped, and the session lookup in `handle`
+# uses a let-else.
 
 meclaw 0
 meclaw-api 2
-meclaw-cells 71
+meclaw-cells 72
 meclaw-cli 0
 meclaw-colony 64
 meclaw-core 3

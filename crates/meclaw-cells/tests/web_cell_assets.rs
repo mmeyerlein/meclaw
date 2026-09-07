@@ -247,6 +247,12 @@ async fn a_path_that_is_neither_page_nor_asset_stays_the_same_404() {
     seed_one_asset(&cell_dir, "/vision.css", CSS_TYPE, CSS);
 
     let booted = boot(&cell_dir);
+    // The listener answers `503 starting` on purpose until the first page
+    // snapshot is there, and an undeclared path can never turn that into a
+    // 200 -- so the negative probe below has to start AFTER the cell is
+    // proven ready, and the proof is the same positive receipt the sister
+    // cases use: the seeded page answering 200 (GH #589).
+    let _ = get_ok(&booted.url("/")).await;
     let resp = get_once(&booted.url("/nothing-declares-this")).await;
     assert_eq!(resp.status().as_u16(), 404, "an undeclared path");
     let body = resp.text().await.expect("read the body");

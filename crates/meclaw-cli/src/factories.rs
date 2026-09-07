@@ -18,7 +18,8 @@ use meclaw_cells::subcolony::SubcolonyCellFactory;
 use meclaw_cells::vault::VaultCellFactory;
 use meclaw_cells::{
     BashCellFactory, EditCellFactory, FileCellFactory, LlmCellFactory, McpCellFactory,
-    ProxyCellFactory, TimerCellFactory, WebCellFactory, WebFetchCellFactory, WebSearchCellFactory,
+    ProxyCellFactory, TimerCellFactory, VoiceCellFactory, WebCellFactory, WebFetchCellFactory,
+    WebSearchCellFactory,
 };
 use meclaw_colony::CellFactoryRegistry;
 use std::sync::Arc;
@@ -39,6 +40,7 @@ use std::sync::Arc;
 /// - `"mcp"` → `McpCellFactory` (long-running MCP tool bridge)
 /// - `"harness"` → `HarnessCellFactory` (long-running agent-harness supervisor)
 /// - `"vault"` → `VaultCellFactory` (sealed secret store; no operation returns a secret)
+/// - `"voice"` → `VoiceCellFactory` (long-running voice channel bridge: audio in, turns out)
 ///
 /// Returns an owned `CellFactoryRegistry` (`HashMap<String, Arc<dyn CellFactory>>`).
 /// Callers move or clone as needed.
@@ -74,6 +76,9 @@ pub fn built_in_factories() -> CellFactoryRegistry {
     // GH #380: the display substrate. Long-running like proxy/timer/mcp, and
     // deliberately multiple — each instance binds its own port.
     reg.insert("web".to_string(), Arc::new(WebCellFactory));
+    // Wave voice-cell: the second port-owning channel bridge. Long-running and
+    // deliberately multiple, like `web` — each instance binds its own port.
+    reg.insert("voice".to_string(), Arc::new(VoiceCellFactory));
     reg
 }
 
@@ -114,8 +119,33 @@ mod tests {
         }
         assert_eq!(
             reg.len(),
-            15,
-            "8 Phase-9 + proxy/timer/mcp + harness + subcolony + vault + web"
+            16,
+            "8 Phase-9 + proxy/timer/mcp + harness + subcolony + vault + web + voice"
+        );
+    }
+
+    /// Wave voice-cell: a topology declaring a `voice` cell must not fail to
+    /// boot with `unknown_cell_type` — the hole the long-running factories sat
+    /// in before Befund 3, and the vault after them.
+    #[test]
+    fn registry_wires_voice_factory() {
+        let reg = built_in_factories();
+        assert!(reg.contains_key("voice"), "registry missing the voice cell");
+        // A voice endpoint without a port and a speech-to-text provider is not
+        // an endpoint: both are refused here, at boot-plan time.
+        assert!(
+            reg["voice"]
+                .validate_params(&meclaw_core::serde_json::json!({}))
+                .is_err()
+        );
+        assert!(
+            reg["voice"]
+                .validate_params(&meclaw_core::serde_json::json!({
+                    "port": 7900,
+                    "stt": {"provider": "echo"}
+                }))
+                .is_ok(),
+            "the echo provider needs no credential and no voice to speak with"
         );
     }
 

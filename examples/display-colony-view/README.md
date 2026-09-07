@@ -127,8 +127,11 @@ loopback by default and everything in front of it is somebody else's job.
 ## What this example is not
 
 - **Not a window manager.** Nothing here decides what deserves attention. The
-  screen stacks by `updated_at` and stops; a producer that has something new says
-  it again, and that is the whole focus model in v1.
-- **Not multi-screen.** One region, called `main`.
+  screen stacks a view under the ones already up and stops; a producer that has
+  something new says it again, in the place it already has, and that is the
+  whole focus model.
+- **Not multi-screen.** One screen, and this example writes into one of its two
+  columns: `main`, the wide one. `aside` is there and stays empty, which costs
+  the page nothing (`display@1.1.0`).
 - **Not a model.** There is no `llm` cell in this colony at all, so it costs
   nothing to run and needs no provider key.

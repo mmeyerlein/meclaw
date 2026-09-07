@@ -50,12 +50,12 @@
         {
           "route": "in_export",
           "context": [],
-          "because": "write this hive's remembered content OUT as a declared, versioned document (#243). Nothing travels on the hop: the lane names the whole memory. Sixteen parts leave on `dump`, one per content table, and the LAST one carries `hop.export_final = '1'` -- a document without that part is incomplete and is not a backup. Provenance travels with every row: the participant set, the room and the speaker are projected explicitly, because a column nobody selects is a column that never leaves the store"
+          "because": "write this hive's remembered content OUT as a declared, versioned document (#243). `hop.export_to` names the run's directory, relative to the fence this hive's store declares in `params.transfer.base_path`; without it the hive's own name. The store writes `<dir>/memory-hive/seed/<table>.jsonl` for every table of the walk itself and `export_final.json` last, and the hive says `export_done` naming the directory (GH #555) -- a directory without the marker is not a document. Provenance travels with every row because the export projects every column of every table: a column nobody selects is a column that never leaves the store"
         },
         {
           "route": "in_import",
           "context": [],
-          "because": "take ONE part of such a document into this RUNNING hive, idempotently. The part is the body; nothing else is needed and nothing is inferred. Applying the same part twice leaves the same state -- that is what makes the document a backup and a merge rather than only a birth seed. A part that lost a provenance column in transit is REFUSED on `reject` with nothing written: an imported row whose participant set did not survive is a row that may be told to anyone"
+          "because": "take such a document into this RUNNING hive, idempotently. Since 3.3.0 it is ONE message and the WHOLE directory (GH #261): `hop.import_from` names the run directory the export wrote, nothing travels in the body and nothing is inferred. Every `seed/<table>.jsonl` of it is parsed before the first row is written, and every table of the call is applied in ONE transaction, so a document that is refused anywhere writes nothing at all -- not even the tables ahead of the refusal, and that holds for a broken file as well as for a table whose columns no longer agree with this store. Applying the same directory twice leaves the same state; that is what makes it a backup and a merge rather than only a birth seed. A document whose declared schema disagrees with this store by a single column, in either direction, is REFUSED on `reject` with nothing written: an imported row whose participant set did not survive is a row that may be told to anyone"
         },
         {
           "route": "tool_call",
@@ -79,7 +79,7 @@
         },
         {
           "route": "reject",
-          "because": "something this hive was sent and would not take -- a block it cannot bind, a half window it will not guess at, a turn or a question whose audience or channel is missing (`hop.reject_reason` is then 'missing_audience' or 'missing_channel'). Since 2.3.1 it also carries what this hive's OWN STORE would not do: a lane whose read or write came back refused stops there and says so, with `hop.reject_reason` = 'store_refused', `hop.store_error` carrying the store's own `error_code` and `hop.store_operation` naming the op that was refused (GH #343) -- including the nightly consolidation, which has no caller of its own and reports on this lane rather than nowhere. The code rides in `store_error` rather than inside `reject_reason` on purpose: the store's code list is OPEN (`invalid_input`, `query_timeout`, `write_denied`, `unknown_table`, `unknown_column`, `constraint_violation`, `sql_error`, ...), and a reason enum that had to grow with it would turn the next new code into a failed emit. The body says which and why. Drain it: undrained, nobody ever learns the memory was not written and the caller waits for a bundle that never comes. A refusal on the RECALL lane carries `hop.recall_caller` home exactly as a bundle does (GH #532): the asker that cannot be told its question failed is the one that waits longest"
+          "because": "something this hive was sent and would not take -- a block it cannot bind, a half window it will not guess at, a turn or a question whose audience or channel is missing (`hop.reject_reason` is then 'missing_audience' or 'missing_channel'). Since 2.3.1 it also carries what this hive's OWN STORE would not do -- the transfer lane included, which since 3.3.0 names only `export_write_failed` and `import_failed` and puts the substrate's own transfer code (`transfer_seed_malformed`, `transfer_io_error`, `transfer_path_out_of_bounds`, `import_schema_drift`, ...) on `hop.store_error` beside it, for exactly the reason this sentence gives: a lane whose read or write came back refused stops there and says so, with `hop.reject_reason` = 'store_refused', `hop.store_error` carrying the store's own `error_code` and `hop.store_operation` naming the op that was refused (GH #343) -- including the nightly consolidation, which has no caller of its own and reports on this lane rather than nowhere. The code rides in `store_error` rather than inside `reject_reason` on purpose: the store's code list is OPEN (`invalid_input`, `query_timeout`, `write_denied`, `unknown_table`, `unknown_column`, `constraint_violation`, `sql_error`, ...), and a reason enum that had to grow with it would turn the next new code into a failed emit. The body says which and why. Drain it: undrained, nobody ever learns the memory was not written and the caller waits for a bundle that never comes. A refusal on the RECALL lane carries `hop.recall_caller` home exactly as a bundle does (GH #532): the asker that cannot be told its question failed is the one that waits longest"
         },
         {
           "route": "close_report",
@@ -91,7 +91,7 @@
         },
         {
           "route": "dump",
-          "because": "the receipt of one applied import part: `hop.rows_written` counts the inserts it dispatched, so zero means the target already had every row, and `hop.export_part` of `hop.export_of` locates it in the document and `hop.export_final` marks the last one. Since 0.30.0 the lane carries NOTHING ELSE -- an export writes its own files and reports on `export_done` (GH #555), so the `dump_kind` key that told the two apart is gone with the distinction. Drain it with a PLAIN `hop.route == 'dump'` edge -- an edge that tests a second key reads as no drain under the required_drains probe. Undrained, it becomes `no_route` in the dead-letter queue, which is where the shipped member leaves it (GH #284 state 2): the receipt localises itself with its sender and its trace instead of being dropped inside a cell that read it and said nothing"
+          "because": "the receipt of ONE applied import: `hop.export_of` counts the tables the document applied, `hop.rows_written` the rows that were NEW (so zero means the target already had every one of them), and `hop.export_final` is always '1' because since GH #261 a directory is applied whole or not at all and there is no part sequence left to be the last of. Since 0.30.0 the lane carries nothing else -- an export writes its own files and reports on `export_done` (GH #555), so the `dump_kind` key that told the two apart is gone with the distinction. Drain it with a PLAIN `hop.route == 'dump'` edge -- an edge that tests a second key reads as no drain under the required_drains probe. Undrained, it becomes `no_route` in the dead-letter queue, which is where the shipped member leaves it (GH #284 state 2): the receipt localises itself with its sender and its trace instead of being dropped inside a cell that read it and said nothing"
         },
         {
           "route": "tool_result",
@@ -99,7 +99,7 @@
         },
         {
           "route": "tool_schemas",
-          "because": "this memory's OWN declaration, one `{name, description, parameters}` for `memory_recall`, plus in `unknown[]` the asked names it does not serve. Provider-neutral, like the tools hive's answer. A lane of its own and NOT `tool_result`: a result belongs to a call somebody made, this belongs to a start-up question"
+          "because": "this memory's OWN declaration, one `{name, description, parameters}` for `memory_recall`, plus in `unknown[]` the asked names it does not serve. Provider-neutral, like the tools hive's answer. A lane of its own and NOT `tool_result`: a result belongs to a call somebody made, this belongs to a start-up question. Since 3.4.0 it also carries `sidecar[]` ([#606](https://github.com/mmeyerlein/meclaw/issues/606)): the section this memory asks for IN RETURN, `{section: \"memory\", required: true, schema, instruction}`, on every answer of the lane including the one that served no asked name -- a section is not a response to a name, it is what this hive asks of whoever talks to it. An asking collector merges the offers of all its answerers and composes one block contract out of them (GH #529, one column over)"
         }
       ]
     },
@@ -137,17 +137,17 @@
       {
         "accepts": "in_export",
         "emits": "reject",
-        "because": "an export that aborts mid-walk (the store refused a read) has already emitted parts; undrained, the caller keeps a partial document that looks complete"
+        "because": "an export the store refused leaves here, and it is the only signal there is: no marker is written, so the directory is not a document and a reader that trusts a prefix trusts a lie"
       },
       {
         "accepts": "in_import",
         "emits": "dump",
-        "because": "the receipt of an applied part is the only positive signal an import has -- undrained, nobody ever learns whether a transfer landed"
+        "because": "the receipt of an applied document is the only positive signal an import has -- undrained, nobody ever learns whether a transfer landed"
       },
       {
         "accepts": "in_import",
         "emits": "reject",
-        "because": "a part this hive will not take -- one whose audience did not survive the transfer above all -- leaves here; undrained, a refused transfer looks exactly like a successful one"
+        "because": "a document this hive will not take -- one whose schema no longer agrees with this store above all -- leaves here with nothing written; undrained, a refused transfer looks exactly like one that landed"
       },
       {
         "accepts": "tool_call",

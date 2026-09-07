@@ -1,4 +1,4 @@
-# `org@1.4.0`
+# `org@1.4.1`
 
 The namespace, and nothing else.
 
@@ -168,7 +168,7 @@ the first second.
 
 Two mutations, in this order.
 
-1. **The organisation.** One `add_nodes` with the template `org@1.4.0`, plus the transit
+1. **The organisation.** One `add_nodes` with the template `org@1.4.1`, plus the transit
    edges -- one per accepted lane onto the org's own path, and one per emitted lane
    back out to whoever asked. Nothing is registered as a cell: both directories become
    hive scopes, and a hive is a scope marker, not an actor. The inbound edges carry

@@ -12,7 +12,7 @@
 //! and not to the mirror does not fail anything — it simply stops travelling,
 //! and the loss surfaces one colony later as an empty field nobody can trace.
 //! `memory-hive` has had this gate since GH #243
-//! (`gh243_a_memory_can_leave_a_hive_and_arrive_in_another`); these three get
+//! (`gh261_a_grown_memory_walks_the_slot`); these three get
 //! the same one.
 //!
 //! Three properties:

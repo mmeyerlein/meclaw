@@ -294,6 +294,7 @@ fn the_rebuilt_table_judges_the_topology_that_runs() {
             route: "work".to_string(),
             context: Vec::new(),
             at: Vec::new(),
+            required: false,
             because: "the lane this hive promises".to_string(),
         }],
         emits: Vec::new(),

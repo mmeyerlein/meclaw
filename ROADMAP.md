@@ -29,10 +29,32 @@ is a red build.
 Release detail is in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
-## Now: the wave that closed the tracker
+## Now: the answer carries offers, and an app picks them up
 
-The clean-up wave is **released as v0.30.0**, and with it every issue the
-tracker held is either built or ruled. The poll timers are gone — the mutation
+**v0.32.0** turns the block a front model appends to its answer into a **typed
+offer**. The fence opens with ```` ```sidecar ````, holds one JSON object, and
+each top-level key is a section: `memory` is what the old extraction lane
+carried, everything else is offered to whatever listens. The member sorts them —
+memory up into its hive, every other section into `./apps` — and the edge into
+the app that offered it is drawn by the mutation that installs the app, not by
+the template. That is the app rim, and with the screen's second column it is
+what turns a spoken turn into something on a screen. Beside it, a telephone
+became a channel of a person: `freeswitch@1.0.0` in front of the `voice` cell,
+one call one session, the signalling kept as a book. What the release contains
+is the [`[0.32.0]`](CHANGELOG.md) section of the changelog.
+
+That release is also where **v0.31.0** first reaches the public. It gave the
+substrate a **voice** cell type — raw audio over a WebSocket in, text turns into
+the tree, an assistant's turn back out as speech, built like the `web` cell and
+with the audio terminating in the cell's I/O half so that no sample ever becomes
+a message. Two speech-to-text and two text-to-speech providers sit behind
+traits, an `echo` provider calibrates the wire before anybody blames a model,
+and the cell serves its own browser test page. It was cut as the
+[`[0.31.0]`](CHANGELOG.md) section and never tagged; `v0.32.0` carries both.
+
+Behind them, two releases that were already out. The clean-up wave shipped as
+**v0.30.0**, and with it every issue the tracker held is either built or
+ruled. The poll timers are gone — the mutation
 door leaves a receipt and the menu and the screen follow it; file transfer is a
 substrate slot, so every store writes and reads the directories it owns and the
 one cell that did it for the holders is gone; `memory_recall` is an ordinary
@@ -47,8 +69,8 @@ The first colony built on that release turned up four repairs, and **v0.30.1**
 carries them: a member wish is one submission again, and `--validate` reads the
 `override_params` a `ref` marker carries.
 
-Nothing is open under this horizon. The streams below carry what comes next;
-the tracker carries the rest.
+Nothing is open under this horizon as an issue. The streams below carry what
+comes next; the tracker carries the rest.
 
 ## Next: substrate flanks
 
@@ -89,18 +111,32 @@ already delivered the gold session.
   mutable display names held in a database, never an address, the tree untouched
   underneath. It gets a design round before it gets an issue.
   *(register: display-names)*
+- A browser as a cell. A `link` card frames the page it names, and that is as
+  far as a frame goes: a page decides whether it may be embedded, a growing
+  share of the web says no, and nothing behind a login was ever reachable that
+  way. The shape that lifts the limit is a browser running *as a cell* — a page
+  rendered where the colony runs, its picture streamed into the card, pointer
+  and keys routed back — so a screen shows any page, not only the ones that
+  permit it. It waits on the sidecar `display` section being in daily use,
+  because that is what tells which pages a person actually asks for.
+  [#610](https://github.com/mmeyerlein/meclaw/issues/610)
 
 ## Alongside: surfaces, docs, and the way it is operated
 
-- Realtime voice — not a further channel but the way the thing is meant to be
-  operated: spoken intent straight into structure in the tree. It gets a
-  design round of its own before it gets an issue. Dictation (a voice note
+- Voice-to-graph. The channel exists — a `voice` cell takes speech in and puts
+  turns into the tree — but a spoken intent still arrives as a sentence
+  somebody else has to act on, not as a node and an edge. What is missing is
+  not a cell but the operating form: which utterances are build intents at
+  all, what a speaker hears while the graph grows, and what taking something
+  back looks like when nobody pressed Enter. It waits on a `voice` instance
+  being used in earnest for more than a day, because that is what tells the
+  difference between an intent and an invented one. Dictation (a voice note
   through the ordinary text path) stays fully designed and explicitly
-  secondary. *(register: voice-realtime)*
+  secondary. *(register: voice-to-graph)*
 
 The template surface is open alongside all of this, and it needs no entry to
 stay that way: a template is a directory, a README and a `template.json`.
-Thirty-eight are listed in [`templates/README.md`](templates/README.md) as worked
+Forty are listed in [`templates/README.md`](templates/README.md) as worked
 examples; what a hive template has to satisfy is § *The hive boundary* there —
 a requirement, not a convention.
 
@@ -109,8 +145,11 @@ a requirement, not a convention.
 One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
-- **built, in the next release** — the memory porter is a walk over the substrate's
-  `transfer` slot ([#261](https://github.com/mmeyerlein/meclaw/issues/261)).
+- **v0.32.0** — the answer carries typed offers: one ```` ```sidecar ```` block
+  with sections, a member that sorts them into its apps, a screen with a second
+  column, and a telephone as a channel of a person.
+- **v0.31.0** — speech is a channel: the `voice` cell type and `voice@1.0.0`,
+  two STT and two TTS providers behind traits, an echo provider, a test page.
 - **v0.30.1** — the repairs a first colony on 0.30.0 turned up: a member wish is
   one submission, and `--validate` reads a `ref` marker's `override_params`.
 - **v0.30.0** — every open issue is built or ruled: the poll timers are gone,

@@ -190,8 +190,16 @@ if not marker or marker.endswith("_MARKER_PATH"):
 deadline = time.time() + 45
 while not os.path.exists(marker) and time.time() < deadline:
     time.sleep(0.02)
-sys.stdout.write(json.dumps([{"header": {"route": "remember"},
-                              "messages": d.get("messages", [])}]))
+# GH #607 -- the barrier is form-blind. A sidecar message carries the annotation
+# in `payload` next to an EMPTY `messages[]`, the older form carries it as the
+# text of the first turn, and a barrier that forwarded only `messages` would
+# silently hand the ingress an empty block the moment the surface flips. So both
+# slots travel, and neither is invented where it was not there.
+out = {"header": {"route": "remember"}, "messages": d.get("messages", [])}
+for slot in ("payload", "section"):
+    if slot in d:
+        out[slot] = d[slot]
+sys.stdout.write(json.dumps([out]))
 "#;
 
 fn code_cell(script: &str, routes: &[&str], extra_hop: Value) -> Value {
@@ -319,8 +327,15 @@ fn main_config() -> Value {
         // Since talky@4.1.0 this is a ROUTE, not a tool name (GH #379). In
         // production the edge goes straight to the memory; here it takes the
         // test barrier on the way (module note).
+        //
+        // GH #607: BOTH lane names, because the rebuild of the fence is
+        // two-phased. A surface that still writes ```memory raises `extraction`;
+        // one that writes ```sidecar raises `sidecar` with `hop.section`. This
+        // file is about what the HIVE does with an annotated turn, not about
+        // which word the surface used to hand it over, so it accepts either and
+        // keeps measuring the same two claims.
         {"from": "./talky", "to": "./gate",
-         "condition": "has(hop.route) && hop.route == 'extraction'"},
+         "condition": "has(hop.route) && (hop.route == 'extraction' || hop.route == 'sidecar')"},
         // The inline ingress mints facts directly, so the same round travels
         // with it (#244). Same audience as the write lane above: the block is
         // written INSIDE the turn those two exchanged.

@@ -48,7 +48,7 @@ organism/
 │   ├── colony.json            byte-identical to seed/colony.json
 │   └── main/
 │       ├── config.json        byte-identical to seed/main/config.json
-│       └── os/config.json     type: "ref", template: "meclaw-os@1.8.2"
+│       └── os/config.json     type: "ref", template: "meclaw-os@1.8.5"
 ├── grow-os.json               1. the shell.        1 node,  0 edges
 ├── grow-org.json              2. an organisation.  1 node, 18 edges
 ├── grow-member.json           3. a person.         1 node, 18 edges
@@ -67,21 +67,21 @@ principle of GH #26: a tree is grown, not checked in.
 ## What grows
 
 ```
-/os                                 meclaw-os@1.8.2   the shell
+/os                                 meclaw-os@1.8.5   the shell
 ├── access                            → access@2.5.0        the capability broker
 ├── argus                             → argus@1.1.0         the control loop
 └── orgs                              (empty container)
-    └── acme                       org@1.4.0         a namespace and a boundary
+    └── acme                       org@1.4.1         a namespace and a boundary
         └── members                  (empty container)
-            └── alex               member@1.6.0      one person
+            └── alex               member@1.7.0      one person
                 ├── affinity          → affinity@3.3.0      identity and meaning
                 ├── firewall          → firewall@2.3.0      the screen
-                ├── memory-hive       → memory-hive@3.2.0   what was said to them
+                ├── memory-hive       → memory-hive@3.3.0   what was said to them
                 ├── channels          (empty container)
                 │   └── telegram      telegram-connector@2.0.1   how alex is reached
                 └── assistants        (empty container)
-                    └── scribe    assistant@2.5.0   one generation of an agent
-                        ├── talky     → talky@5.0.0         the conversation surface
+                    └── scribe    assistant@2.6.0   one generation of an agent
+                        ├── talky     → talky@5.1.0         the conversation surface
                         ├── cogny     → cogny@5.0.0         the reasoning core
                         └── tools     → tools@1.4.2         the tool surface
 ```
@@ -114,7 +114,7 @@ is a separate act.
 
 ```json
 {"scope": "/",
- "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.8.2"}],
+ "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.8.5"}],
           "add_edges": []}}
 ```
 
@@ -139,7 +139,7 @@ door has as many as there are children, and edges fan out: a lane guarded on
 is permissive (`!has(context.org) || context.org == 'acme'`), so a message that
 names nobody still travels exactly as it did before there were two.
 
-`in_import` is the one lane `org@1.4.0` accepts that gets no edge, and that is the one
+`in_import` is the one lane `org@1.4.1` accepts that gets no edge, and that is the one
 subtraction in this set: a memory part on its way back into a running hive addresses the
 member it belongs to **at its own path**, so an edge from the container could never deliver
 one. Lane count is not edge count, and this is the direction where it costs a lane rather
@@ -159,7 +159,7 @@ of its own.
 
 ```json
 {"scope": "/os/orgs",
- "diff": {"add_nodes": [{"name": "acme", "template": "org@1.4.0"}],
+ "diff": {"add_nodes": [{"name": "acme", "template": "org@1.4.1"}],
           "add_edges": [{"from": ".", "to": "./acme",
                          "condition": "has(hop.route) && hop.route == 'in_turn' && (!has(context.org) || context.org == 'acme')"},
                         {"from": "./acme", "to": ".",
@@ -189,7 +189,7 @@ same address on the seven doors — `context.member == 'alex'` where the organis
 above reads `context.org`. The member brings its three
 holders (`affinity`, `firewall`, `memory-hive`) and — since `member@1.5.0` — its own
 `access`, its three open containers (`assistants`, `channels` and `apps`) and its own
-sixty edges with it. Since `member@1.6.0` it brings NO cell of its own: the one that filed
+sixty-two edges with it. Since `member@1.6.1` it brings NO cell of its own: the one that filed
 its holders' exports is gone, and every holder's store writes its own seed set
 ([#555](https://github.com/mmeyerlein/meclaw/issues/555)).
 
@@ -203,11 +203,14 @@ Down are `in_turn` TWICE — the screened turn coming back off the member's fire
 mutation door's receipt, GH #553), `in_build_result` (the builder's answer), `in_tool` and
 `in_menu` (the memory's two answers on their way back, GH #552), the two transfer lanes
 `in_export` and `in_import` (since GH #475), and `in_bundle` TWICE — one edge per asker inside
-the generation. Up are `answer`, `extraction`, `write`, `turn_write`, `prune`, `error`, `build`,
+the generation. Up are `answer`, `sidecar` (since
+[#607](https://github.com/mmeyerlein/meclaw/issues/607) — one message per section of the
+block the answer ends with, carried out undivided because this level reads no section),
+`write`, `turn_write`, `prune`, `error`, `build`,
 `export_done` and `dump` (since GH #555 the keeper says its own completion word and the lane
 that is left carries an import receipt) and — since GH #552 — `tool` and `schemas`, the
 outbound half of that same memory road, plus `recall` twice, again one per asker. The member
-consumes `answer`, `recall` and `extraction` itself and passes the rest on.
+consumes `answer`, `recall` and `sidecar` itself and passes the rest on.
 
 **The four `recall` / `in_bundle` edges do not end on the generation's path** — they end on
 `./scribe/talky` and `./scribe/cogny`, and each names the lane it carries
@@ -220,7 +223,7 @@ WITHOUT a connect point below `./assistants`, so it stays a mandatory hop — it
 `audience_now`, `channel` and `recall_as_of`, and an author who tried to draw a v-lane straight
 from a brain to the memory is refused with `v_lane_mandatory_hop` rather than debugging a
 `missing_audience` in the log.
-`assistant@2.5.0` emits a tenth lane, `pack_ack` (GH #458), and this walkthrough draws no edge
+`assistant@2.6.0` emits a tenth lane, `pack_ack` (GH #458), and this walkthrough draws no edge
 for it: nothing here pushes an identity into the generation, so nothing here produces the
 receipt. A colony that wires the push wires the receipt with it, and the member already declares
 the exit. Since GH #561 both halves are **v-lanes** and neither ends at this level: the push
@@ -272,7 +275,7 @@ model of its own with `override_params` on `<assistant>/talky/brain` if the two 
 channel belongs to the person, not to a generation, so this step is declared at the *member's*
 `channels` container and the node is `telegram`. The name is no label: it is the value
 `context.channel_node` carries, and it is what the answer is routed back by. Nothing stands beside it — the
-conversation surface travels inside `assistant@2.5.0` as `talky`.
+conversation surface travels inside `assistant@2.6.0` as `talky`.
 
 **It is born asleep.** The entry carries `"birth": "inactive"` (GH #437), so the node is
 registered, addressable and taskless: it exists in the topology before its upstream is real, and
@@ -315,7 +318,7 @@ Three edges, and there is no fourth:
   The `chat_id` the first edge promoted is what the reply has to go to.
 
 **The nine edges between `channels` and its siblings are not among them** — they belong to
-`member@1.6.0` and were drawn once, when step 3 ran: `./channels → ./firewall` turns the raw
+`member@1.7.0` and were drawn once, when step 3 ran: `./channels → ./firewall` turns the raw
 `turn` into `in_turn`, `./assistants → ./channels` carries a finished answer back to the channel
 that asked, `./apps → ./channels` carries an app's `view` the same way, `./channels → .` lets a
 connector's own failure leave the level, and five more place a screen's `event` and `receipt` —
@@ -366,7 +369,7 @@ its provider credential out of it, **sealed**, on an ordinary broker invocation.
 
 They are **v-lanes** (GH #559). Three levels lie between a brain and the broker —
 `./assistants`, the generation, `talky` — and the innermost is sealed, so the edge
-lands on a cell inside a sealed hive and is legal anyway: `talky@5.0.0` and
+lands on a cell inside a sealed hive and is legal anyway: `talky@5.1.0` and
 `cogny@5.0.0` name `./brain` as this lane's connect point in their own contract
 (`"at": ["./brain"]`), which is the one opening a template pronounces about
 itself. The two levels in between declare nothing about the lane and are
@@ -404,7 +407,7 @@ Both are one instantiation with their own parameters, and neither re-runs anythi
 {"scope": "/os/orgs/acme/members/alex/assistants",
  "ctx": {"model": "${MODEL_CORE}", "model_fast": "${MODEL_CORE_FAST}",
          "model_surface": "${MODEL_SURFACE}"},
- "diff": {"add_nodes": [{"name": "aide", "template": "assistant@2.5.0",
+ "diff": {"add_nodes": [{"name": "aide", "template": "assistant@2.6.0",
                          "override_params": {"cogny/brain": {"temperature": 0.9}}}],
           "add_edges": []}}
 ```
@@ -437,7 +440,7 @@ declarations**.
 ```json
 {"manifest": [
   {"scope": "/os/orgs/acme/members/alex/channels",
-   "diff": {"add_nodes": [{"name": "display", "template": "display@1.0.2",
+   "diff": {"add_nodes": [{"name": "display", "template": "display@1.1.0",
                            "override_params": {"web": {"port": 7900}}}], "…": "…"}},
   {"scope": "/os/orgs/acme/members/alex/apps",
    "diff": {"add_nodes": [{"name": "colony-view", "template": "colony-view@1.1.0"}], "…": "…"}}]}
@@ -462,14 +465,18 @@ display's own `in_view`:
 
 ```text
 . → ./display        (declared at <member>/channels)
-  on (hop.route == 'answer' || hop.route == 'view') && context.channel_node == 'display'
+  on hop.route == 'view' && context.channel_node == 'display'
   set_hop.route = 'in_view'
 ```
 
-That is why **the smallest view needs no app**. An agent's ordinary `answer`, carried back by
-the `./assistants → ./channels` edge `member@1.6.0` already ships, *is* a view once the channel
-on the other end is a screen. An agent that only wants to show a paragraph does not have to
-become an application first.
+**An `answer` is not a view, though.** A view is a body carrying `view_id`, `kind` and
+`content`; a talking agent emits `messages[]` and nothing else, and the screen refuses that by
+name — `invalid_view`, `"view_id" must match [a-z0-9-]{1,64}`.
+[#597](https://github.com/mmeyerlein/meclaw/issues/597) withdrew the claim that used to stand
+here (*the smallest view needs no app*): it read the smallest KIND of view, prose, as the
+smallest WRITER of one. What draws on this screen is the app below it, or another cell built to
+emit `view`. A member with a screen and no such producer has a screen that shows nothing, which
+is the ordinary state of a freshly grown member.
 
 **An app has no port and no surface of its own — it writes views.** Whatever authentication
 stands in front of the screen stands in front of it. `colony-view` is also display-*blind*: it
@@ -568,7 +575,7 @@ nothing until an operator turns on exactly what they mean.
 shall stand.
 
 ```json
-{"cell": {"type": "ref", "template": "meclaw-os@1.8.2"}}
+{"cell": {"type": "ref", "template": "meclaw-os@1.8.5"}}
 ```
 
 That is a **declaration, not a cell**. The FIRST `meclaw --root ./examples/organism/seed-ref`

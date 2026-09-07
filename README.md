@@ -7,7 +7,7 @@
 **An agentic build system for agentic systems. Ontology-grounded, auditable, one Rust binary.**
 
 [![ci](https://github.com/mmeyerlein/meclaw/actions/workflows/ci.yml/badge.svg)](https://github.com/mmeyerlein/meclaw/actions/workflows/ci.yml)
-[![tests](https://img.shields.io/badge/tests-6600%2B%20passing-brightgreen)](#)
+[![tests](https://img.shields.io/badge/tests-6800%2B%20passing-brightgreen)](#)
 [![rust](https://img.shields.io/badge/rust-edition%202024-orange)](#)
 [![license](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](#license)
 
@@ -96,7 +96,7 @@ Flexibility is not a feature here — it is the consequence of one decision. Bec
 harness lives in the filesystem, `ls`, `grep`, `diff` and `git` are the tooling, every
 change is diffable, and an agent rebuilds its own topology with the same closed vocabulary
 a human uses. There is no SDK and no plugin API, and that is deliberate: the interface is
-HTTP and files, and 38 shipped templates without a line of Rust are the proof.
+HTTP and files, and 40 shipped templates without a line of Rust are the proof.
 *More: [docs/why/everything-is-a-file.md](docs/why/everything-is-a-file.md)*
 
 ## An operating system for agents
@@ -172,7 +172,7 @@ colony: 0.32 EUR per day in conversation, method and pinned window in
 
 meclaw is not finished, and it is open source so it does not have to be finished alone.
 Good first contributions: example colonies, template cells, docs drift-fixes — see
-[CONTRIBUTING.md](CONTRIBUTING.md) and the `good first issue` label. **6600+ tests,
+[CONTRIBUTING.md](CONTRIBUTING.md) and the `good first issue` label. **6800+ tests,
 0 fail**; release truth lives in [CHANGELOG.md](CHANGELOG.md).
 
 ## Stability

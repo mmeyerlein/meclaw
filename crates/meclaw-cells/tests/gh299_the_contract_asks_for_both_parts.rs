@@ -23,8 +23,18 @@
 //! (3,302 characters to 1,573) cannot grow back unnoticed.
 //!
 //! Everything here reads the SHIPPED files -- the contract, `predicate-core.json`
-//! and the real `params.script_inline` of `extract-glue` -- so nothing costs
-//! anything and nothing is a copy.
+//! and the real `params.script_inline` of `extract-glue` and of the cell that
+//! OFFERS the section -- so nothing costs anything and nothing is a copy.
+//!
+//! GH #606 moved two things and this file followed both. The rules are a SECTION
+//! of one shared block now, not a block of their own, so the sentences that named
+//! a fence are asserted ABSENT here rather than asserted present: the frame is one
+//! preamble the collector writes for every section at once, and a second fence
+//! sentence in here would compete with it. And the FORM a model is shown is
+//! rendered by that collector out of the offered JSON schema instead of printed
+//! into the prose, so the shape assertions read the schema
+//! `templates/memory-hive/schemas` offers. What did not move is what this file is
+//! for: the rules themselves, held against the ingress that reads them.
 
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -32,7 +42,7 @@ use std::process::{Command, Stdio};
 const GLUE_CONFIG: &str = "../../templates/memory-hive/extract-glue/config.json";
 const INLINE_CONTRACT: &str = "../../templates/memory-hive/inline-contract.md";
 const CORE_LIST: &str = "../../templates/memory-hive/predicate-core.json";
-const SPLITTER_CONFIG: &str = "../../templates/talky/splitter/config.json";
+const SCHEMAS_CONFIG: &str = "../../templates/memory-hive/schemas/config.json";
 
 /// The block's length bound, in characters.
 ///
@@ -69,23 +79,51 @@ fn resolve_vars(script: &str) -> String {
     out
 }
 
-/// The shipped splitter's script -- the OTHER end of the sentence the block
-/// states (GH #379). Read the same way as `glue_script`, so a template that
-/// moved is a panic with a path in it rather than a silent skip.
-fn splitter_script() -> String {
-    let raw = std::fs::read_to_string(SPLITTER_CONFIG).unwrap_or_else(|e| {
+/// The offer this hive answers a menu question with (GH #606): the section
+/// `memory`, its schema and its instruction, read out of the SHIPPED cell by
+/// running it, not out of a copy.
+///
+/// The form a model is shown used to be printed inside the block; since #606 it
+/// is RENDERED by the asking collector out of the schema below, so the schema is
+/// where the shape assertions have to land. The instruction is the same text
+/// `contract_block()` reads from the authority file, and `gh525` is the lock on
+/// those two being one text.
+fn memory_offer() -> serde_json::Value {
+    let raw = std::fs::read_to_string(SCHEMAS_CONFIG).unwrap_or_else(|e| {
         panic!(
-            "the talky composite ships no splitter ({SPLITTER_CONFIG}): {e}. The \
-             block below asks for a fenced sidecar; without the cell that cuts \
-             it, the fence travels to the person."
+            "the hive ships no declaring cell ({SCHEMAS_CONFIG}): {e}. Since \
+             GH #606 that cell is what OFFERS the memory section; without it \
+             nothing asks a model for an annotation at all."
         )
     });
-    let v: serde_json::Value = serde_json::from_str(&raw).expect("splitter config json");
-    resolve_vars(
+    let v: serde_json::Value = serde_json::from_str(&raw).expect("schemas config json");
+    let script = resolve_vars(
         v["params"]["script_inline"]
             .as_str()
-            .expect("params.script_inline"),
-    )
+            .expect("script_inline"),
+    );
+    let doc = serde_json::json!({"body": {"tools": ["*"], "messages": []}});
+    let out = run_script_on_stdin(&script, &meclaw_testing::code_stdin_bytes(&doc));
+    assert!(
+        out.status.success(),
+        "the declaring cell exited non-zero: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let answer: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+        panic!(
+            "the answer is not json ({e}): {}",
+            String::from_utf8_lossy(&out.stdout)
+        )
+    });
+    answer["sidecar"]
+        .as_array()
+        .and_then(|o| o.iter().find(|o| o["section"] == "memory").cloned())
+        .unwrap_or_else(|| panic!("the answer carries no `memory` section offer: {answer}"))
+}
+
+/// The item schema of one fact, as the offer declares it.
+fn fact_schema() -> serde_json::Value {
+    memory_offer()["schema"]["properties"]["facts"]["items"].clone()
 }
 
 fn glue_script() -> String {
@@ -154,15 +192,16 @@ fn inline_contract() -> String {
     })
 }
 
-/// The block a persona actually carries: the fenced `text` section of the file.
+/// The rules a model actually carries: the fenced `text` section of the file.
 /// Prose ABOUT a rule is not the rule, so the assertions below read the block and
 /// never the page around it.
 ///
-/// The fence is FOUR backticks since W5.7 (GH #379): the block itself now shows
-/// two ```memory fences, and a three-backtick wrapper would close on the first
-/// of them -- every reader of this file would then pin a third of the contract
-/// and call it the whole. The three-backtick form is still accepted, so a
-/// counter-contract written the old way still reads.
+/// FOUR backticks were needed from W5.7 to GH #606, because the text showed two
+/// ```` ```memory ```` fences of its own and a three-backtick wrapper would have
+/// closed on the first of them. It shows none any more -- the frame is the
+/// collector's -- so three backticks are enough again and both forms are read,
+/// four first, so a file written either way pins the whole text and never a
+/// third of it.
 fn contract_block() -> String {
     let raw = inline_contract();
     for (open, close) in [("````text\n", "\n````"), ("```text\n", "\n```")] {
@@ -305,75 +344,67 @@ fn the_block_obliges_an_annotation_on_every_turn() {
         block.contains("ANNOTATE EVERY TURN"),
         "the block states the obligation, not a permission:\n{block}"
     );
-    // W5.7 (GH #379): the delivery is a fenced sidecar, not a tool call. Both
-    // halves are asserted -- what the model must DO, and that the retracted
-    // instruction is gone -- because a block carrying both would ask for two
-    // deliveries and get whichever the model prefers.
-    assert!(
-        block.contains("append a fenced block"),
-        "and names the act that discharges it:\n{block}"
-    );
-    assert!(
-        block.contains("opens with ```memory"),
-        "with the marker the splitter looks for -- a block that only said \
-         `fenced` would be cut by nothing:\n{block}"
-    );
     assert!(
         !block.contains("call `remember`"),
-        "and the tool call is RETRACTED, not left standing beside it:\n{block}"
+        "and the tool call is RETRACTED, not left standing beside it (GH #379): \
+         \n{block}"
     );
     assert!(
-        block.contains("After your answer -- always after, never instead of it"),
-        "in the order that makes the answer readable -- a model that emits its \
-         structured field before its reasoning answers from nothing:\n{block}"
-    );
-    assert!(
-        block.contains("leaving the block out is a fault"),
+        block.contains("leaving the section out is a fault"),
         "and says what an absent annotation IS, or the obligation reads as a \
          preference:\n{block}"
     );
+    // GH #606 -- THE FRAME LEFT THIS TEXT, and that is asserted as a removal
+    // rather than assumed. Until it, these rules opened by naming a fence of
+    // their own (`append a fenced block that opens with ```memory`), which is
+    // right while exactly one consumer cuts one block out of an answer and is
+    // the whole defect the moment a second one wants a section of the same
+    // answer. The frame is ONE preamble now, written by the collector for every
+    // section at once (`SIDECAR_PREAMBLE` in `templates/collector/assemble`),
+    // and a fence sentence left standing here would be a second, competing
+    // instruction about how many blocks to write.
+    for gone in ["append a fenced block", "```memory", "closes with"] {
+        assert!(
+            !block.contains(gone),
+            "the section names no fence of its own since GH #606 -- {gone:?} is \
+             the collector's preamble's business:\n{block}"
+        );
+    }
 }
 
 /// The sentence and the mechanism, in one assertion (development-rules § 2d).
 ///
-/// The block tells a model to open its annotation with ```` ```memory ````. That
-/// is only true if the cell that cuts the sidecar out of the answer actually
-/// reads that marker -- so the form the block SHOWS is sent through the real
-/// `params.script_inline` of `templates/talky/splitter`, and has to come back as
-/// a cut with a valid sidecar. A rewording that moved the fence and left the
-/// splitter alone would fail here rather than in production.
+/// The key is the whole of a section's identity since GH #606: it is what the
+/// model writes inside the one `sidecar` block, what the splitter puts on
+/// `hop.section`, and what the member's edge routes to this hive. So the offer
+/// has to name `memory` and the forms this text shows have to be keyed under
+/// that same word -- a rewording that moved one of the two would leave a model
+/// writing a key nothing routes.
+///
+/// The OTHER end of that sentence -- the marker the splitter looks for -- is
+/// pinned where the splitter is, in
+/// `gh379_the_splitter_cuts_the_sidecar.rs`. It was asserted here as well while
+/// this text named the fence itself; it does not name one any more, so the
+/// duplicate is retracted rather than left running against a sentence that is
+/// gone.
 #[test]
-fn the_shown_fence_is_the_one_the_splitter_cuts() {
-    let block = contract_block();
-    let form = json_form(&block, "{\"nothing_new\"");
-    let answer = format!("Understood.\n\n```memory\n{form}\n```");
-    let doc = serde_json::json!({
-        "header": {"hop": {"finish_reason": "stop"}},
-        "messages": [{"origin": "assistant", "type": "text", "text": answer}]
-    });
-    let out = run_script_on_stdin(&splitter_script(), &meclaw_testing::code_stdin_bytes(&doc));
-    assert!(
-        out.status.success(),
-        "the splitter exited non-zero on the form the block shows: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let emitted: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
-        panic!(
-            "splitter stdout ({e}): {}",
-            String::from_utf8_lossy(&out.stdout)
-        )
-    });
-    let arr = emitted.as_array().unwrap_or_else(|| {
-        panic!(
-            "the fence the block shows was NOT cut -- the contract asks for a \
-             delivery the substrate does not take apart: {emitted}"
-        )
-    });
-    assert_eq!(arr.len(), 2, "{emitted}");
-    assert_eq!(arr[1]["header"]["route"], "extraction", "{emitted}");
+fn the_offered_section_is_the_key_the_forms_are_written_under() {
+    let offer = memory_offer();
     assert_eq!(
-        arr[0]["messages"][0]["text"], "Understood.",
-        "and the answer reaches the person without it: {emitted}"
+        offer["section"], "memory",
+        "the hive offers the section by the name its ingress is routed on: {offer}"
+    );
+    assert_eq!(
+        offer["required"], true,
+        "and REQUIRED -- the obligation of GH #299 is a field of the offer, not \
+         only a sentence in the prose: {offer}"
+    );
+    let block = contract_block();
+    let form = json_form(&block, "{\"memory\":{\"nothing_new\"");
+    assert!(
+        form.get("memory").is_some(),
+        "and the form the text shows is written under that key, because the \
+         block holds one object with one key per section: {form}"
     );
 }
 
@@ -408,7 +439,10 @@ fn the_nothing_form_is_the_one_the_ingress_actually_parses() {
     // that does not parse is worse than no form), then run through the real
     // script.
     let block = contract_block();
-    let form = json_form(&block, "{\"nothing_new\"");
+    // The SECTION's payload, which is what the splitter hands on and the ingress
+    // reads: the shown form is `{"memory": {...}}` since GH #606 and the object
+    // under the key is the annotation itself.
+    let form = json_form(&block, "{\"memory\":{\"nothing_new\"")["memory"].clone();
     assert_eq!(
         form["nothing_new"], true,
         "the empty answer says so explicitly -- `is_explicit_nothing` reads the \
@@ -451,20 +485,22 @@ fn the_nothing_form_is_the_one_the_ingress_actually_parses() {
 
 #[test]
 fn the_shown_movements_are_the_ones_the_script_honours() {
-    // (d) The `topic.movement` enum in the block against the branches in the real
-    // `params.script_inline`. A fourth value in the block would be a value the
-    // lane silently ignores; a missing one would be a lane nothing can reach.
-    let block = contract_block();
-    let form = json_form(&block, "{\"facts\":");
-    let shown: Vec<&str> = form["topic"]["movement"]
-        .as_str()
-        .expect("the block shows the movement alternatives")
-        .split('|')
-        .collect();
+    // (d) The `topic.movement` enum of the OFFERED SCHEMA against the branches in
+    // the real `params.script_inline`. A fourth value in the schema would be a
+    // value the lane silently ignores; a missing one would be a lane nothing can
+    // reach. Since GH #606 the alternatives are shown to a model by the
+    // collector, which renders an enum as its values joined by `|` -- so the
+    // schema is the source and the rendering is the collector's own lock.
+    let offer = memory_offer();
+    let enumerated = offer["schema"]["properties"]["topic"]["properties"]["movement"]["enum"]
+        .as_array()
+        .cloned()
+        .unwrap_or_else(|| panic!("the offer enumerates the movements: {offer}"));
+    let shown: Vec<&str> = enumerated.iter().filter_map(|v| v.as_str()).collect();
     assert_eq!(
         shown,
         vec!["start", "continue", "end"],
-        "the three movements, in the order the block explains them"
+        "the three movements, in the order the section explains them"
     );
 
     let script = glue_script();
@@ -495,18 +531,30 @@ fn the_shown_movements_are_the_ones_the_script_honours() {
 
 #[test]
 fn the_shown_fact_shape_is_the_one_the_validator_accepts() {
-    // (d), the other half: the fact form. Every key the block shows has to be a
-    // key `validate()` reads -- a shown key nobody reads is a token paid for on
+    // (d), the other half: the fact form. Every key the offer declares has to be
+    // a key `validate()` reads -- a shown key nobody reads is a token paid for on
     // every turn for nothing -- and the `fact_kind` alternatives have to be the
     // tuple the validator checks against, or a well-formed fact is dropped
     // individually and silently.
-    let block = contract_block();
-    let form = json_form(&block, "{\"facts\":");
-    let fact = &form["facts"][0];
+    //
+    // REQUIRED is what decides what a model is shown (GH #606): the collector
+    // renders the required properties of an object and leaves the rest out, which
+    // is what keeps `nothing_new` off the ordinary form while the empty form in
+    // the prose still shows it.
+    let fact = fact_schema();
+    let required: Vec<&str> = fact["required"]
+        .as_array()
+        .map(|r| r.iter().filter_map(|v| v.as_str()).collect())
+        .unwrap_or_default();
     for key in ["subject", "predicate", "claim", "fact_kind", "valid_from"] {
         assert!(
-            fact.get(key).is_some(),
-            "the fact form shows {key:?}: {form}"
+            fact["properties"].get(key).is_some(),
+            "the fact schema declares {key:?}: {fact}"
+        );
+        assert!(
+            required.contains(&key),
+            "and shows it -- an optional property is not rendered into the \
+             example a model copies: {fact}"
         );
     }
 
@@ -516,15 +564,32 @@ fn the_shown_fact_shape_is_the_one_the_validator_accepts() {
         .find(|l| l.starts_with("KINDS = "))
         .expect("the validator declares the kinds it accepts");
     let kinds: Vec<&str> = kinds_line.split('"').skip(1).step_by(2).collect();
-    let shown: Vec<&str> = fact["fact_kind"]
-        .as_str()
-        .expect("the block shows the kind alternatives")
-        .split('|')
-        .collect();
+    let shown: Vec<&str> = fact["properties"]["fact_kind"]["enum"]
+        .as_array()
+        .map(|k| k.iter().filter_map(|v| v.as_str()).collect())
+        .unwrap_or_else(|| panic!("the offer enumerates the fact kinds: {fact}"));
     assert_eq!(
         shown, kinds,
-        "the kinds the block offers are the kinds `validate()` accepts -- a fact \
+        "the kinds the section offers are the kinds `validate()` accepts -- a fact \
          on any other one is dropped, on its own, without a word"
+    );
+    // And the flag the ordinary form must NOT carry: the ingress reads it as
+    // either true or absent (`is_explicit_nothing`), so a `false` printed on
+    // every content block would read as a field that has to be got right on the
+    // turns where it means nothing.
+    let section = memory_offer();
+    let top_required: Vec<&str> = section["schema"]["required"]
+        .as_array()
+        .map(|r| r.iter().filter_map(|v| v.as_str()).collect())
+        .unwrap_or_default();
+    assert!(
+        section["schema"]["properties"].get("nothing_new").is_some(),
+        "the flag is declared: {section}"
+    );
+    assert!(
+        !top_required.contains(&"nothing_new"),
+        "and is NOT required, which is what keeps it out of the rendered \
+         example: {section}"
     );
 }
 

@@ -421,6 +421,53 @@ class TestReceiptDirty(GateShTestCase):
         self.assertTrue((out / "logs" / "strand-ok.log").exists())
 
 
+class TestCorpusCommitted(GateShTestCase):
+    """GH #596 -- the committed corpus is graded, but not by the same verdict.
+
+    A strand gates BEFORE its commit, so a corpus that is behind the sources
+    the strand just changed is expected: `corpus` is about to regenerate it.
+    A pass gates a tree that is finished, so there the same finding is a
+    failure. One station, two verdicts by mode.
+    """
+
+    STALE = "corpus-committed\tseed as committed\t0\tfalse\t\n"
+    FRESH = "corpus-committed\tseed as committed\t0\ttrue\t\n"
+
+    def test_a_stale_corpus_is_a_note_in_a_strand(self):
+        res = run_gate(self.repo, "strand", plan=self.plan_file(self.STALE),
+                       dry=False)
+        rows = {r["name"]: r for r in gate_lines(res.stdout)}
+        row = rows["corpus-committed"]
+        self.assertEqual("NOTE", row["verdict"], res.stdout)
+        self.assertEqual(
+            "the corpus is stale; regenerate it and commit it with this change",
+            row["reason"])
+        # A NOTE is not a judgement: the run is green and counts nothing.
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        summary = [m.groupdict() for m in
+                   (SUMMARY_LINE.match(ln) for ln in res.stdout.splitlines())
+                   if m][0]
+        self.assertEqual(("0", "0", "GREEN"),
+                         (summary["green"], summary["total"], summary["verdict"]))
+
+    def test_a_fresh_corpus_is_still_a_note_in_a_strand(self):
+        # ... and says which of the two it is, or the line means nothing.
+        res = run_gate(self.repo, "strand", plan=self.plan_file(self.FRESH),
+                       dry=False)
+        rows = {r["name"]: r for r in gate_lines(res.stdout)}
+        self.assertEqual("NOTE", rows["corpus-committed"]["verdict"])
+        self.assertEqual("matches its sources", rows["corpus-committed"]["reason"])
+
+    def test_a_stale_corpus_is_red_in_the_passes(self):
+        for mode in ("integration", "release"):
+            res = run_gate(self.repo, mode, "--base", "HEAD~1",
+                           plan=self.plan_file(self.STALE), dry=False)
+            rows = {r["name"]: r for r in gate_lines(res.stdout)}
+            self.assertEqual("RED", rows["corpus-committed"]["verdict"],
+                             "%s: %s" % (mode, res.stdout))
+            self.assertEqual(1, res.returncode, mode)
+
+
 class TestTreeStamp(GateShTestCase):
     """target/.gate-tree -- the ghost-binary guard across shared worktrees."""
 
@@ -487,13 +534,36 @@ class TestTreeStamp(GateShTestCase):
         self.assertEqual("full touch: --resync, 4 files", rows["tree-sync"]["scope"])
         self.assert_all_inputs_touched(before)
 
-    def test_a_tree_switch_still_touches_only_the_difference(self):
-        # The targeted path is deliberately NOT a full touch: the stamp names a
-        # commit that still exists, so the diff plus the dirty lists is exact.
+    def test_a_foreign_tree_full_touches_even_when_the_diff_is_empty(self):
+        # GH #596's sibling, GH #595: the stamp names ANOTHER worktree at a
+        # commit that still exists, so `git diff <stamp-sha> HEAD` is empty and
+        # the targeted path touched nothing at all. Two worktrees at the same
+        # commit hold byte-identical sources, and a test binary compiled from
+        # the other copy is fresh by mtime -- carrying the other tree's
+        # `env!("CARGO_MANIFEST_DIR")` (17 red file tests, measured 2026-09-05).
         before = self.add_crate()
         self.stamp().parent.mkdir(parents=True, exist_ok=True)
         self.stamp().write_text("/somewhere/else\n%s\n\n" % (
             _git(self.repo, "rev-parse", "HEAD").stdout.strip()))
+        res = run_gate(self.repo, "strand", plan=self.plan_file(PLAN_CARGO),
+                       dry=False)
+        rows = {r["name"]: r for r in gate_lines(res.stdout)}
+        self.assertEqual("full touch: foreign tree /somewhere/else, 4 files",
+                         rows["tree-sync"]["scope"], res.stdout)
+        self.assertEqual("NOTE", rows["tree-sync"]["verdict"])
+        self.assert_all_inputs_touched(before)
+
+    def test_the_same_tree_at_another_commit_touches_only_the_difference(self):
+        # The targeted path survives for OUR path: the stamp names a commit of
+        # this worktree that still exists, so the diff plus the dirty lists is
+        # exact and a full touch would be paid for nothing.
+        before = self.add_crate()
+        (self.repo / "README.md").write_text("third\n")
+        _git(self.repo, "add", "-A")
+        _git(self.repo, "commit", "-q", "-m", "readme")
+        self.stamp().parent.mkdir(parents=True, exist_ok=True)
+        self.stamp().write_text("%s\n%s\n\n" % (
+            self.repo, _git(self.repo, "rev-parse", "HEAD~1").stdout.strip()))
         res = run_gate(self.repo, "strand", plan=self.plan_file(PLAN_CARGO),
                        dry=False)
         rows = {r["name"]: r for r in gate_lines(res.stdout)}

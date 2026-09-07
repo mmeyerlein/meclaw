@@ -301,8 +301,9 @@ else:
 /// arrived with `hop.kind` set is a SCREEN event or receipt the member re-stamped
 /// onto `in_turn`, and the double reports it on `error` so the assertion can read
 /// what the surface actually saw. Anything else is an ordinary turn, and the
-/// answer it produces is a PROSE VIEW — the smallest view there is, which needs
-/// no application at all.
+/// answer it produces is what a talking agent really emits: `messages[]` and
+/// nothing else — no `view_id`, no `kind`, no `content`, which are the three keys
+/// a view is made of (GH #597).
 const SURFACE: &str = r#"
 import sys, json
 doc = json.load(sys.stdin)
@@ -321,10 +322,8 @@ if kind:
 else:
     sys.stdout.write(json.dumps({
         "header": {"route": "answer"},
-        "messages": [],
-        "view_id": "note",
-        "kind": "prose",
-        "content": {"title": "a note", "body": "written by the agent, with no app at all"}}))
+        "messages": [{"origin": "assistant", "type": "text",
+                      "text": "a paragraph, which is all an answer is"}]}))
 "#;
 
 /// `colony-view@1.0.0`, doubled at its two lanes.
@@ -407,10 +406,14 @@ const MEMBER: &str = "/person";
 
 /// The edges one SCREEN costs — **two** of them, one fewer than a chat channel.
 ///
-/// The down-edge is the only display-specific thing in the whole arrangement: a
-/// screen takes what an agent said (`answer`) or what an app drew (`view`) and
-/// re-stamps it to the display's own `in_view`. A chat channel's down-edge takes
-/// `answer` and leaves the lane alone. Same shape, one literal apart.
+/// The down-edge is the only display-specific thing in the whole arrangement: it
+/// takes what a producer of views drew (`view`) and re-stamps it to the display's
+/// own `in_view`. A chat channel's down-edge takes `answer` and leaves the lane
+/// alone. Same shape, one literal apart.
+///
+/// The edge below is deliberately the WIDE one — `answer || view`, the recipe as
+/// it shipped — because one measurement in this file is what the `answer` half
+/// actually delivers: it routes, and what arrives is not a view (GH #597).
 ///
 /// A chat channel's THIRD edge catches `hop.error_code`, because a connector
 /// emits a failure of its own. The display does not: its contract declares
@@ -706,14 +709,77 @@ fn skip() -> bool {
 
 // ═══════════════════════════════════════════════════════ the measurements
 
-/// **The smallest view needs no app.** An agent answers a turn that arrived on
-/// the screen, and the answer lands on the screen as a view — through the very
-/// same `./assistants -> ./channels` edge GH #454 drew for a chat answer.
+/// **A prose `answer` is not a view, and the shipped screen says so by name.**
+/// Measured against the shipped `compose.py`, not against a double: an ordinary
+/// answer — `messages[]` and nothing else — is refused `invalid_view` for the
+/// first key it is missing, while a body that carries `view_id`, `kind` and
+/// `content` becomes a store write.
 ///
-/// This is the half of GH #455 that had no home: "a prose view is the smallest
-/// view there is" was true of the display and unreachable from a member.
+/// GH #597 withdrew the claim this file used to make ("the smallest view needs no
+/// app"). It was true of a BODY: prose is the smallest KIND of view. It was never
+/// true of an agent's answer, and the test that pinned it emitted a double whose
+/// `answer` already carried a view's three keys, so it measured a view-shaped
+/// body and called it an answer.
+#[test]
+fn a_prose_answer_is_refused_as_a_view_and_a_view_shaped_body_is_taken() {
+    if !repo("templates/display/compose/config.json").is_file() {
+        eprintln!("display did not travel into this tree -- skipped (GH #49)");
+        return;
+    }
+    if std::process::Command::new("python3")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("no python3 -- skipped");
+        return;
+    }
+
+    // What a talking agent emits, verbatim.
+    let refused = compose_once(
+        json!({"messages": [
+            {"origin": "assistant", "type": "text", "text": "a paragraph, which is all an answer is"}
+        ]}),
+        "in_view",
+        "/os/orgs/example/members/one/assistants/egon/talky",
+    );
+    assert_eq!(refused["header"]["route"], "receipt");
+    assert_eq!(
+        refused["receipt"]["error_code"], "invalid_view",
+        "an answer carries no view_id, and the display holds nothing it cannot address"
+    );
+    assert_eq!(
+        refused["receipt"]["detail"], r#""view_id" must match [a-z0-9-]{1,64}"#,
+        "the documented reason, so a reader of this test knows WHY it is not a view"
+    );
+    assert_eq!(refused["receipt"]["view_id"], "");
+
+    // What a producer of views emits — an app at the rim of the member
+    // (ADR-0024) or a cell built to draw. The same lane, a different body.
+    let taken = compose_once(
+        json!({"messages": [], "view_id": "note", "kind": "prose",
+               "content": {"title": "a note", "body": "written by a producer of views"}}),
+        "in_view",
+        "/os/orgs/example/members/one/apps/colony-view/layout",
+    );
+    assert_eq!(
+        taken["header"]["route"], "views",
+        "three keys apart from the answer above, and this one is held: {taken:#?}"
+    );
+}
+
+/// **An agent's answer REACHES the screen, and arrives there as nothing a view
+/// needs.** The routing half was always true — the channel's own down-edge
+/// re-stamps an ordinary `answer` onto the display's `in_view`, through the very
+/// same `./assistants -> ./channels` lane GH #454 drew for a chat answer. What
+/// lands is the answer, unchanged: no `view_id`, no `kind`.
+///
+/// So the smallest screen without an app shows nothing of the prose. Whoever
+/// wants the answer on a screen installs a producer of views beside the agent —
+/// an app at the rim of the member (ADR-0024) — or the display stays empty
+/// (GH #597).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_agents_prose_answer_lands_on_the_screen_as_a_view() {
+async fn an_agents_prose_answer_reaches_the_screen_without_being_a_view() {
     if skip() {
         return;
     }
@@ -722,14 +788,25 @@ async fn an_agents_prose_answer_lands_on_the_screen_as_a_view() {
     assert_eq!(
         hop_of(&got, "shown_route"),
         "in_view",
-        "the screen has to see the agent's answer as its OWN lane: the channel's down-edge \
-         re-stamps it, which is the one display-specific thing in the whole arrangement"
+        "the answer does travel: the channel's down-edge re-stamps it, which is the one \
+         display-specific thing in the whole arrangement"
     );
-    assert_eq!(hop_of(&got, "shown_kind"), "prose");
+    assert_eq!(
+        hop_of(&got, "shown_view"),
+        "",
+        "an answer names no view: what arrives is messages[] and nothing else"
+    );
+    assert_eq!(
+        hop_of(&got, "shown_kind"),
+        "",
+        "and it says nothing about a kind either -- the shipped compose refuses exactly \
+         this body as `invalid_view`, measured in this file"
+    );
     assert_eq!(
         hop_of(&got, "shown_owner"),
         format!("{MEMBER}/assistants/{AGENT}/talky"),
-        "the owner of a view is the path of the cell that emitted it, and nothing else"
+        "the owner a screen would stamp is the path of the cell that emitted it, and \
+         nothing else -- true of a view and of this non-view alike"
     );
     assert_eq!(hop_of(&got, "shown_channel"), SCREEN_NAME);
 }
@@ -779,18 +856,30 @@ async fn an_event_on_an_agents_view_reaches_that_agent_as_a_turn() {
     );
 }
 
-/// **A refused write goes back to the agent that asked for it**, on the same
-/// path and told apart by the same key.
+/// **A refused write does NOT go back to the agent as a turn** — since GH #598.
+///
+/// It did until then, re-stamped onto `in_turn` with `hop.kind = 'receipt'`, and
+/// that was the second half of a loop that cost money: a generation reads a turn
+/// by answering it, the answer went to the screen, the screen refused it again.
+/// A receipt is feedback to a WRITER, not something a person said, and the level
+/// treats it the way it already treats `pack_ack`: evidence for whoever operates
+/// the colony, carried out on `error` with the original lane on `hop.kind`.
+/// The loop itself is measured in
+/// `crates/meclaw-cells/tests/gh598_a_screen_receipt_is_not_a_turn.rs`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_receipt_reaches_the_agent_whose_write_was_refused() {
+async fn a_receipt_leaves_the_level_rather_than_waking_the_agent() {
     if skip() {
         return;
     }
     let owner = format!("{MEMBER}/assistants/{AGENT}/talky");
     let got = round("screen", "receipt", &owner).await;
-    assert_eq!(hop_of(&got, "error_code"), "surface_saw", "{got:#?}");
-    assert_eq!(hop_of(&got, "saw_kind"), "receipt");
-    assert_eq!(hop_of(&got, "saw_owner"), owner);
+    assert_ne!(
+        hop_of(&got, "error_code"),
+        "surface_saw",
+        "a receipt must not reach the surface as a turn (GH #598): {got:#?}"
+    );
+    assert_eq!(hop_of(&got, "kind"), "receipt", "{got:#?}");
+    assert_eq!(hop_of(&got, "owner"), owner);
 }
 
 /// **The same event, owned by an app, reaches the app** — and it is the OWNER

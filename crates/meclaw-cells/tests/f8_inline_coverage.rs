@@ -21,6 +21,15 @@
 //! list is the front model's verdict that nothing was memorable, not an absence
 //! of one.
 //!
+//! Since GH #607 the block arrives in TWO shapes and this file measures both.
+//! The one the helpers use by default is the `memory` SECTION of the single
+//! fenced block the front model appends to its answer, delivered by the splitter
+//! as `body.payload` with `hop.section == "memory"`; the older shape -- the
+//! fence's own text written into the first turn -- is `legacy_inline`, and
+//! `the_legacy_block_in_a_turn_and_the_sidecar_section_are_one_ingress` proves
+//! the lane cannot tell them apart once it holds the annotation. Everything else
+//! in this file is about coverage and is written against the shape that ships.
+//!
 //! Everything here runs the REAL `params.script_inline` of `extract-glue`
 //! against injected replies, so nothing costs anything.
 
@@ -125,12 +134,44 @@ const CHANNEL: &str = "c-f8";
 /// case below pass against a write path with no gate at all.
 const AUDIENCE: &str = r#"["member:user","agent:assistant"]"#;
 
-/// One inline block as the port edge delivers it: `store_origin`/`mem_phase` in
-/// the context, the provenance the gate requires next to them (#244 --
-/// `audience_set` and `channel` are promoted by the edge that carries a turn
-/// into the hive, the same way a real colony's port edge promotes them), the
-/// payload as the first message's text.
+/// One inline block as the port edge delivers it, in the shape it has had since
+/// GH #607: `store_origin`/`mem_phase` in the context, the provenance the gate
+/// requires next to them (#244 -- `audience_set` and `channel` are promoted by
+/// the edge that carries a turn into the hive, the same way a real colony's port
+/// edge promotes them), and the annotation itself as the body's `payload`.
+///
+/// That is the `memory` SECTION of the one fenced block the front model appends
+/// to its answer. The splitter cuts the fence into one message per section and
+/// hands each one over on route `sidecar` with `hop.section` naming the key; the
+/// member's own edge restamps the route to `in_remember` on the way into the
+/// hive and leaves the section alone, which is exactly what arrives here. The
+/// section object IS the annotation this lane has always validated -- one level
+/// down inside the fence, identical once unwrapped.
 fn inline(payload: &str) -> serde_json::Value {
+    let annotation: serde_json::Value =
+        serde_json::from_str(payload).expect("the block under test is json");
+    serde_json::json!({
+        "header": {
+            "context": {"store_origin": "inline", "mem_phase": "inline",
+                        "audience_set": AUDIENCE, "channel": CHANNEL},
+            "hop": {"route": "in_remember", "section": "memory"}
+        },
+        "messages": [],
+        "section": "memory",
+        "payload": annotation
+    })
+}
+
+/// The SAME block in the shape this lane read until GH #607: the fence's own
+/// text, written into the first turn of `messages[]`, with no `payload` and no
+/// section anywhere.
+///
+/// It is still delivered, and it still has to work. The rebuild of the fence is
+/// two-phased -- a colony wired to an older surface, a replay of a message
+/// written last week, an operator probe -- and a lane that read only the new
+/// shape would refuse every one of them as "not JSON" while the answer went out
+/// unaffected and nothing in the books said the memory was never written.
+fn legacy_inline(payload: &str) -> serde_json::Value {
     serde_json::json!({
         "header": {
             "context": {"store_origin": "inline", "mem_phase": "inline",
@@ -139,6 +180,96 @@ fn inline(payload: &str) -> serde_json::Value {
         },
         "messages": [{"origin": "user", "type": "text", "text": payload}]
     })
+}
+
+/// A uuid v4 in its canonical spelling, `8-4-4-4-12` hex.
+fn is_uuid(s: &str) -> bool {
+    let dashes = [8usize, 13, 18, 23];
+    s.len() == 36
+        && s.char_indices().all(|(i, c)| {
+            if dashes.contains(&i) {
+                c == '-'
+            } else {
+                c.is_ascii_hexdigit()
+            }
+        })
+}
+
+/// The head of an RFC-3339 instant this century, `20dd-dd-ddT`.
+fn is_instant_head(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 11
+        && &b[..2] == b"20"
+        && b[4] == b'-'
+        && b[7] == b'-'
+        && b[10] == b'T'
+        && [2, 3, 5, 6, 8, 9].iter().all(|&i| b[i].is_ascii_digit())
+}
+
+/// Every uuid and every instant replaced by a fixed word, so one block run
+/// through two deliveries can be compared as a DOCUMENT. Without it the batch
+/// key, the scratch row id and the ingest instant differ on every run and no two
+/// emissions are ever equal.
+fn stable(msgs: &[serde_json::Value]) -> String {
+    let s = serde_json::to_string(msgs).expect("messages are json");
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0usize;
+    while i < s.len() {
+        if i + 36 <= s.len() && s.is_char_boundary(i + 36) && is_uuid(&s[i..i + 36]) {
+            out.push_str("UUID");
+            i += 36;
+            continue;
+        }
+        if i + 11 <= s.len() && s.is_char_boundary(i + 11) && is_instant_head(&s[i..i + 11]) {
+            out.push_str("WHEN");
+            // an instant is always inside a json string, so the closing quote
+            // is the end of it
+            i += s[i..].find('"').expect("an instant closes its string");
+            continue;
+        }
+        let c = s[i..].chars().next().expect("a char at a boundary");
+        out.push(c);
+        i += c.len_utf8();
+    }
+    out
+}
+
+/// GH #607 -- the two shapes are ONE ingress, and the proof is that the same
+/// block produces the same document through both of them.
+///
+/// This is the whole of the two-phase rebuild in one assertion. It is not "the
+/// new form works" and "the old form works" side by side: those two could drift
+/// apart on a coverage status, a topic op or a staged payload and both tests
+/// would stay green. What must hold is that the lane cannot tell which shape it
+/// was handed once it has the annotation, and the only way to say that is to run
+/// one block twice and compare everything that leaves.
+#[test]
+fn the_legacy_block_in_a_turn_and_the_sidecar_section_are_one_ingress() {
+    let block = serde_json::json!({
+        "episode_id": "e-both",
+        "facts": [{"episode_id": "e-both", "subject": "user", "predicate": "favorite_color",
+                   "claim": "Blau", "fact_kind": "world", "confidence": 90}],
+        "topic": {"movement": "open", "name": "colours"}
+    })
+    .to_string();
+
+    let new_shape = emit(inline(&block));
+    let old_shape = emit(legacy_inline(&block));
+
+    assert!(
+        queue_op(&new_shape).is_some(),
+        "the sidecar section is read at all: {new_shape:?}"
+    );
+    assert_eq!(
+        stable(&new_shape),
+        stable(&old_shape),
+        "one annotation, two deliveries, and the lane emitted two different \
+         things. The `memory` section of a sidecar block IS the block the older \
+         form carried as text -- one level down inside the fence and already \
+         parsed -- so everything after the read is the same validator, the same \
+         gates and the same ops. A difference here means the rebuild is not \
+         two-phased and a colony mid-flip writes two different memories"
+    );
 }
 
 fn args_of(msg: &serde_json::Value) -> serde_json::Value {
@@ -261,7 +392,12 @@ fn a_block_that_is_not_json_covers_nothing() {
     // it names no episode, so it proves nothing about one, and a turn nobody
     // extracted must stay in the queue. Zero store writes, exactly as the lane's
     // contract has always said.
-    let msgs = emit(inline("not json at all"));
+    //
+    // Delivered in the OLDER shape, and that is the only shape it can have
+    // (GH #607): a sidecar section that is not an object never leaves the
+    // splitter -- it is dropped there with `hop.sidecar_dropped` -- so the one
+    // way unreadable bytes still reach this ingress is as the text of a turn.
+    let msgs = emit(legacy_inline("not json at all"));
     assert!(
         queue_op(&msgs).is_none(),
         "garbage covers no episode: {msgs:?}"

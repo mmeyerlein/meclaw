@@ -8,13 +8,19 @@ pub mod code_wire;
 mod colony_handle;
 pub mod factories;
 mod message_builder;
+pub mod mock_cartesia;
+pub mod mock_deepgram;
+pub mod mock_elevenlabs;
 pub mod mock_http;
+pub mod mock_openai_realtime;
+pub mod mock_openai_tts;
 pub mod mock_slack;
 pub mod mocks;
 pub mod ports;
 pub mod shipped_params;
 mod test_root;
 pub mod topologies;
+pub mod voice_client;
 pub mod wait;
 
 pub use code_wire::{

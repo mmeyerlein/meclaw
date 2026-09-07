@@ -585,7 +585,7 @@ fn member_manifest(export_dir: &std::path::Path) -> Value {
         // member is named bare, and the path it lands at is unchanged.
         "scope": "/members",
         "diff": {
-            "add_nodes": [{"name": MEMBER, "template": "member@1.6.0",
+            "add_nodes": [{"name": MEMBER, "template": "member@1.7.0",
                            "override_params": over}],
             "add_edges": container_edges(),
         }
@@ -647,7 +647,7 @@ fn assistant_manifest(name: &str) -> Value {
         "answer",
         "write",
         "turn_write",
-        "extraction",
+        "sidecar",
         "prune",
         "error",
         "build",
@@ -674,7 +674,7 @@ fn assistant_manifest(name: &str) -> Value {
         "ctx": {"model": "double/no-network", "model_fast": "double/no-network",
                 "model_surface": "double/no-network"},
         "diff": {
-            "add_nodes": [{"name": format!("assistants/{name}"), "template": "assistant@2.5.0"}],
+            "add_nodes": [{"name": format!("assistants/{name}"), "template": "assistant@2.6.0"}],
             "add_edges": add_edges,
         }
     }]})
