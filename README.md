@@ -87,17 +87,6 @@ turn is waiting too. The browser view at `/ui/` is that same record with a nav b
 - The security model is the kernel itself, which is what one static Linux binary buys and what a macOS build could not ([why Rust, why Linux only](docs/why/rust-and-linux.md)).
 - argus, affinity, talky and cogny are role names, and each one carries its reason in a line ([names of the shipped roles](docs/glossary.md#names-of-the-shipped-roles)).
 
-## Where it sits among other systems
-
-| System | What meclaw shares | What meclaw does differently |
-|---|---|---|
-| Erlang/OTP | actors, mailbox, supervisor | the topology is a file rather than code; specialised for LLM work |
-| LangGraph | a graph for LLM agent flows | language-agnostic, file-based, persistent |
-| Temporal | durable execution, message log | lightweight, decentralised, a filesystem DSL |
-
-The [system overview](docs/meclaw-overview.md) carries the same table with three more rows: NATS,
-Node-RED, and BPMN with Serverless Workflow.
-
 ## Quick links
 
 - [Read the whole system once](docs/meclaw-overview.md): cells, edges, headers, routing, mutations and the lifecycle, in the one document that wins on conflict.
