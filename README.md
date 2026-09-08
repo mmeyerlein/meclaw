@@ -28,12 +28,10 @@ all. Out of them you grow an assistant with sessions of its own, a memory that o
 window, a display with its own origin and a phone line, into a running colony, without stopping
 it. A colony is what one running tree of cells is called here.
 
-![The colony dashboard in a browser: a table of the seventeen cells that step 3 grows, an empty dead-letter queue, and no errors](docs/assets/colony-dashboard.png)
-
 ## Get started
 
-Four steps, and the colony in the picture is answering you: install the binary, start an empty
-colony, grow the OS into it while it runs, ask it something.
+Four steps, and a colony is answering you: install the binary, start an empty colony, grow the
+OS into it while it runs, ask it something.
 
 ```bash
 # 1 — install meclaw: one static Linux binary (lands in ~/.local/bin)
@@ -74,7 +72,7 @@ runtime" means here.
 
 Step 4 posted a turn to `/door` and read the answer back. The answer is a hop on the colony's
 own record, so `meclaw ask` reads it out of `GET /colony/trace`, where every other hop of that
-turn is waiting too. The page in the picture is that same record with a nav bar on it.
+turn is waiting too. The browser view at `/ui/` is that same record with a nav bar on it.
 
 ## Why it is built this way
 
