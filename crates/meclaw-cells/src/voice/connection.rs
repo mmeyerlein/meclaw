@@ -78,7 +78,7 @@ use tokio::time::Instant;
 use crate::voice::cell::VoiceEvent;
 use crate::voice::contract::{AudioFormat, SttError, SttEvent, TtsError};
 use crate::voice::io::{ToConnection, VoiceIoShared, register, unregister};
-use crate::voice::service::{audio_out, audio_out_frame_ms, tts_name};
+use crate::voice::service::{Negotiated, audio_out_frame_ms, tts_name};
 use crate::voice::wire::{ClientFrame, Mode, PROTOCOL, ServerFrame, SpeakEndReason, WireErrorCode};
 
 /// How long a lost recognition session is left alone before the one retry.
@@ -106,15 +106,17 @@ struct SttSession {
 }
 
 impl SttSession {
-    /// Start one session for this connection.
-    fn start(shared: &Arc<VoiceIoShared>) -> Self {
+    /// Start one session for this connection, at the format it negotiated.
+    fn start(shared: &Arc<VoiceIoShared>, format: AudioFormat) -> Self {
         let (audio_tx, audio_rx) = mpsc::channel::<Vec<u8>>(AUDIO_QUEUE);
         let (events_tx, events_rx) = mpsc::channel::<SttEvent>(AUDIO_QUEUE);
         let (done_tx, done_rx) = oneshot::channel();
         let provider = shared.stt.clone();
         let liveness = shared.liveness.clone();
         tokio::spawn(async move {
-            let outcome = provider.run_session(audio_rx, events_tx, liveness).await;
+            let outcome = provider
+                .run_session(format, audio_rx, events_tx, liveness)
+                .await;
             let _ = done_tx.send(outcome);
         });
         Self {
@@ -301,6 +303,7 @@ pub async fn run_connection(
     shared: Arc<VoiceIoShared>,
     session_id: String,
     mode: Mode,
+    negotiated: Negotiated,
     conn_id: u64,
     to_conn_tx: mpsc::Sender<ToConnection>,
     mut to_conn_rx: mpsc::Receiver<ToConnection>,
@@ -309,13 +312,20 @@ pub async fn run_connection(
     register(&shared, &session_id, conn_id, to_conn_tx, mode).await;
 
     let echo = shared.stt.name() == "echo";
-    let input = shared.stt.input_format();
+    // The pair this connection agreed to in `?sample_rate=` (GH #619), not the
+    // pair the providers declare: a telephony edge runs one call at 8 kHz
+    // while a browser on the same cell runs the next at 16 kHz.
+    let Negotiated {
+        audio_in: input,
+        audio_out: output,
+    } = negotiated;
     let hello = ServerFrame::Hello {
         protocol: PROTOCOL,
         session_id: session_id.clone(),
+        call_id: session_id.clone(),
         mode,
         audio_in: input,
-        audio_out: audio_out(&shared),
+        audio_out: output,
         stt: shared.stt.name(),
         tts: tts_name(&shared),
         audio_out_frame_ms: audio_out_frame_ms(&shared),
@@ -331,7 +341,7 @@ pub async fn run_connection(
     let mut stt = if echo {
         None
     } else {
-        Some(SttSession::start(&shared))
+        Some(SttSession::start(&shared, input))
     };
     let mut stt_retried = false;
     let mut retry_at: Option<Instant> = None;
@@ -422,7 +432,9 @@ pub async fn run_connection(
                                 break;
                             }
                         }
-                        match start_speak(&shared, &mut sink, &session_id, speak_id, text).await {
+                        match start_speak(&shared, &mut sink, &session_id, output, speak_id, text)
+                            .await
+                        {
                             Err(()) => break,
                             Ok(started) => {
                                 // The first chunk is the provider's first answer
@@ -458,7 +470,7 @@ pub async fn run_connection(
 
             () = sleep_until_opt(retry_at) => {
                 retry_at = None;
-                stt = Some(SttSession::start(&shared));
+                stt = Some(SttSession::start(&shared, input));
             }
 
             event = next_stt_event(&mut stt) => {
@@ -693,10 +705,12 @@ async fn handle_text(
 }
 
 /// Start one synthesis, or report at once why there is none.
+#[allow(clippy::too_many_arguments)]
 async fn start_speak(
     shared: &Arc<VoiceIoShared>,
     sink: &mut Sink,
     session_id: &str,
+    output: Option<AudioFormat>,
     speak_id: String,
     text: String,
 ) -> Result<Option<Speaking>, ()> {
@@ -738,9 +752,16 @@ async fn start_speak(
     let (cancel_tx, cancel_rx) = watch::channel(false);
     let (done_tx, done_rx) = oneshot::channel();
     let liveness = shared.liveness.clone();
+    // The format this CONNECTION was told in `hello`, so the framer cuts at
+    // the rate the client is actually being sent (GH #619) — a 20 ms frame is
+    // 320 bytes at 8 kHz and 960 at 24 kHz, and a framer reading the
+    // provider's declared rate would cut the wrong length for a negotiated
+    // one. `unwrap_or` cannot fire: `provider` above exists, so the connection
+    // negotiated an output beside it.
+    let format = output.unwrap_or_else(|| provider.output_format());
     tokio::spawn(async move {
         let outcome = provider
-            .synthesize(text, audio_tx, cancel_rx, liveness)
+            .synthesize(format, text, audio_tx, cancel_rx, liveness)
             .await;
         let _ = done_tx.send(outcome);
     });
@@ -748,7 +769,7 @@ async fn start_speak(
         speak_id,
         cancel: cancel_tx,
         audio_rx,
-        framer: Framer::new(audio_out(shared), audio_out_frame_ms(shared)),
+        framer: Framer::new(Some(format), audio_out_frame_ms(shared)),
         done_rx,
     }))
 }

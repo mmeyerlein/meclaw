@@ -1976,20 +1976,34 @@ async fn a_transfer_import_from_outside_plants_no_schedule_row() {
 
 // ══════════════════════════════════════ GH #336: the store does not travel
 
+/// GH #612: the level a message stands for when it names an interior cell.
+///
+/// A sealed hive refuses an interior address named from OUTSIDE — the whole
+/// point of the boundary is that an outside caller may not know the inside. The
+/// operator messages below are not outside callers: each stands for what the
+/// level itself hands to its own occupant, so each names that level as its
+/// sender instead of borrowing the ingress's `/`.
+fn level_of(cell: &str) -> Path {
+    Path::new(match cell.rfind('/') {
+        Some(0) | None => "/",
+        Some(i) => &cell[..i],
+    })
+}
+
 /// A `transfer` slot addressed straight at `cell`, answered back to `/sink`.
 ///
 /// The slot is answered by the SUBSTRATE in `cell_task`, so the reply is a
 /// DIRECT reply to the input's `reply_to` and needs no out-edge — which is why
 /// the refused import above is invisible while this one is readable. Everything
-/// else is the same seam: a source message from outside the hive, carrying no
-/// sender at all.
+/// else is the same seam, addressed AS THE LEVEL (see [`level_of`]).
 async fn transfer_reply(
     h: &ColonyHandle,
     rx: &mut mpsc::Receiver<Message>,
     cell: &str,
     slot: Value,
 ) -> Message {
-    h.send(
+    h.send_from(
+        level_of(cell),
         MessageBuilder::new(Path::new(cell))
             .body(Body::Inline(json!({ "transfer": slot })))
             .reply_to(Path::new("/sink"))

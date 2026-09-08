@@ -134,6 +134,7 @@ async fn a_scheduled_lane_is_triggerable_once_over_the_http_api() {
         vault_key_source: "auto".to_string(),
         vault_key_file: None,
         stdio_format: meclaw_cli::StdioFormat::Text,
+        command: None,
     };
     let (addr_tx, addr_rx) = tokio::sync::oneshot::channel();
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();

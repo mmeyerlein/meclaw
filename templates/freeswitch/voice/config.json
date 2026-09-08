@@ -1,7 +1,7 @@
 {
   "cell": {
     "type": "ref",
-    "template": "voice@1.3.0"
+    "template": "voice@1.4.0"
   },
   "override_params": {
     "": {
@@ -10,7 +10,7 @@
     }
   },
   "description": {
-    "purpose": "The MEDIA half of this channel: one `voice` cell, with two numbers named here rather than left to the template default, because THIS is the hive where both of them matter. FreeSWITCH's `mod_audio_stream` connects to its socket as a WebSocket CLIENT and passes the call's UUID as `?session=`, so the session this cell mints for that connection IS the call -- which is what lets an answer find its way back into the right line. `audio_out_frame_ms` is 20 because `mod_audio_stream` aborts the call on an outbound frame longer than about 100 ms. `emit_speak_end` is on because this hive is the one thing in the library that WAITS for a sentence to be over: a `hangup` in the middle of one holds until the `speak_end` of that call arrives, and a `cancelled` or `failed` one is turned into `uuid_break <uuid> all` at the switch, because the half sentence that has to be stopped is being played over there. The lane ships off in the template (R-V8'), so ordering it here is the same breath as the edge beside it that drains it.",
+    "purpose": "The MEDIA half of this channel: one `voice` cell, with two numbers named here rather than left to the template default, because THIS is the hive where both of them matter. FreeSWITCH's `mod_audio_stream` connects to its socket as a WebSocket CLIENT and passes the call's UUID as `?session=`, so the session this cell mints for that connection IS the call -- which is what lets an answer find its way back into the right line. Since `voice@1.4.0` it says so in the message as well: every emission carries `hop.call_id`, and an answer selects its connection with `context.call_id` rather than with the key a member's session-keeper also writes (GH #620). That is why the pin moved. `audio_out_frame_ms` is 20 because `mod_audio_stream` aborts the call on an outbound frame longer than about 100 ms. `emit_speak_end` is on because this hive is the one thing in the library that WAITS for a sentence to be over: a `hangup` in the middle of one holds until the `speak_end` of that call arrives, and a `cancelled` or `failed` one is turned into `uuid_break <uuid> all` at the switch, because the half sentence that has to be stopped is being played over there. The lane ships off in the template (R-V8'), so ordering it here is the same breath as the edge beside it that drains it.",
     "use_when": "Always, and only from inside this hive. It is named after its template because a ref is (`docs/development-rules.md` § 8a, R1), and it is addressed by the three edges of this hive and by nothing else.",
     "not_in_scope": "It knows nothing about telephony: no number, no call state, no dialplan. It carries audio and mints a session, and the half beside it does the rest."
   }

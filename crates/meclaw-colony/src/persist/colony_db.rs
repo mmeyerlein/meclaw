@@ -129,6 +129,10 @@ pub struct DeadLetterRow {
     pub trace_id: String,
     /// Unix-seconds timestamp.
     pub created_at: i64,
+    /// GH #612 — the reason-specific fact of [`crate::DeadLetter::detail`].
+    /// `NULL` in every row written before the column existed, and in every row
+    /// whose reason has no such fact.
+    pub detail: Option<String>,
     /// Full message envelope as JSON (Ruling W6d Option 1). The HTTP DTO read
     /// ignores this; the DLQ-drain deserializes it to reconstruct the verbatim
     /// `DeadLetter`.
@@ -343,7 +347,7 @@ impl ColonyDb {
         limit: usize,
     ) -> rusqlite::Result<Vec<DeadLetterRow>> {
         let mut sql = String::from(
-            "SELECT sender_path, original_target, resolved_target, error_code, trace_id, created_at, message_json \
+            "SELECT sender_path, original_target, resolved_target, error_code, trace_id, created_at, message_json, detail \
              FROM dead_letters",
         );
         let mut clauses: Vec<&str> = Vec::new();
@@ -379,6 +383,7 @@ impl ColonyDb {
                 trace_id: r.get(4)?,
                 created_at: r.get(5)?,
                 message_json: r.get(6)?,
+                detail: r.get(7)?,
             })
         })?;
         rows.collect()
@@ -390,7 +395,7 @@ impl ColonyDb {
     /// `DeadLetter`s.
     pub fn read_all_dead_letters(&self) -> rusqlite::Result<Vec<DeadLetterRow>> {
         let mut stmt = self.read_conn.prepare(
-            "SELECT sender_path, original_target, resolved_target, error_code, trace_id, created_at, message_json \
+            "SELECT sender_path, original_target, resolved_target, error_code, trace_id, created_at, message_json, detail \
              FROM dead_letters ORDER BY id ASC",
         )?;
         let rows = stmt.query_map([], |r| {
@@ -402,6 +407,7 @@ impl ColonyDb {
                 trace_id: r.get(4)?,
                 created_at: r.get(5)?,
                 message_json: r.get(6)?,
+                detail: r.get(7)?,
             })
         })?;
         rows.collect()
@@ -792,10 +798,11 @@ mod tests {
         let db_path = td.path().join("colony.db");
         let db = ColonyDb::open(&db_path).unwrap();
         assert!(db_path.exists(), "colony.db file created");
-        // Schema check: the meta table has schema_version='9' (GH #559: the
-        // edges `lane` column, on top of the GH #491 registry `dormant`, the
-        // GH #283 edges `is_default`, the GH #277 registry `template_chain`,
-        // the GH #62 provenance triple and the W6d dead_letters table).
+        // Schema check: the meta table has schema_version='10' (GH #612: the
+        // dead_letters `detail` column, on top of the GH #559 edges `lane`, the
+        // GH #491 registry `dormant`, the GH #283 edges `is_default`, the
+        // GH #277 registry `template_chain`, the GH #62 provenance triple and
+        // the W6d dead_letters table).
         let v: String = db
             .read_conn
             .query_row(
@@ -804,7 +811,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(v, "9");
+        assert_eq!(v, "10");
         // Single-owner invariant: writer_tx is present (not consumed)
         let _ = &db.writer_tx;
         drop(db);
@@ -947,6 +954,7 @@ mod tests {
                 trace_id: format!("trace-{ts}"),
                 created_at: ts,
                 message_json: format!(r#"{{"target":"/b","ttl":{ts}}}"#),
+                detail: None,
             })
             .await;
         }

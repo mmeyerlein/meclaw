@@ -394,6 +394,20 @@ fn container_edges() -> Vec<Value> {
     from_str(&String::from_utf8_lossy(&out.stdout)).expect("edges are json")
 }
 
+/// GH #612: the level a message stands for when it names an interior cell.
+///
+/// A sealed hive refuses an interior address named from OUTSIDE — the whole
+/// point of the boundary is that an outside caller may not know the inside. The
+/// operator messages below are not outside callers: each stands for what the
+/// level itself hands to its own occupant, so each names that level as its
+/// sender instead of borrowing the ingress's `/`.
+fn level_of(cell: &str) -> Path {
+    Path::new(match cell.rfind('/') {
+        Some(0) | None => "/",
+        Some(i) => &cell[..i],
+    })
+}
+
 fn op(target: &str, reply_to: &str, args: Value) -> Message {
     MessageBuilder::new(Path::new(target))
         .reply_to(Path::new(reply_to))
@@ -411,7 +425,8 @@ async fn ask(
     reply_to: &str,
     args: Value,
 ) -> Option<String> {
-    h.send(op(target, reply_to, args.clone())).await;
+    h.send_from(level_of(target), op(target, reply_to, args.clone()))
+        .await;
     let m = match tokio::time::timeout(RECV_TIMEOUT, sink_rx.recv()).await {
         Ok(Some(m)) => m,
         other => panic!(

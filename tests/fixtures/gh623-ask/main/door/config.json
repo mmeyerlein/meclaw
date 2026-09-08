@@ -1,0 +1,47 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json\n\nbody = json.load(sys.stdin)[\"body\"]\nsaid = \"\"\nfor turn in body.get(\"messages\", []):\n    if turn.get(\"origin\") == \"user\":\n        said = turn.get(\"text\", \"\")\nroute = \"error\" if said.startswith(\"fail\") else \"answer\"\nsys.stdout.write(json.dumps({\n    \"header\": {\"route\": route},\n    \"messages\": [{\"origin\": \"assistant\", \"type\": \"text\", \"text\": \"echo: \" + said}],\n}))\n",
+    "external_timeout_ms": 10000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "required": true
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "Echoes the user turn back as an assistant turn and stamps `hop.route`: 'answer' normally, 'error' when the text starts in 'fail'.",
+    "use_when": "Stand-in for a brain, so the fixture answers without a provider.",
+    "not_in_scope": "No inference, no state, no tools.",
+    "examples": [
+      "a user turn 'hello' leaves as an assistant turn 'echo: hello' on route 'answer'"
+    ]
+  }
+}

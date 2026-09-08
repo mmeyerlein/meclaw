@@ -148,13 +148,29 @@ pub fn bump_iteration(conn: &Connection, id: Uuid) -> rusqlite::Result<usize> {
 /// right; an `at` that ran out of lead time in flight is refused at the op
 /// instead (`at_in_past`, see `timer::cell`), so nothing reaches here that a
 /// caller is still waiting on.
+///
+/// GH #613: the order of the returned Vec is load-bearing — it is the order in
+/// which schedules that fall on the same second fire — so the SELECT names one
+/// instead of leaning on the plan SQLite happens to pick. A scan of this table
+/// walks it in `rowid` order today because nothing indexes `status`, but that is
+/// an accident of the current plan; an index added later would reorder the
+/// result silently, and the firing order is a documented promise.
+/// `ORDER BY rowid` is the schedule order: SQLite hands out `rowid` as a
+/// monotonic insert counter (this table is not `WITHOUT ROWID`), and rows are
+/// INSERTed in exactly the order the schedules were created, first the
+/// `params.schedules` seed in config order, then every `add` op as it arrives.
+/// The two columns that look like candidates are not: `created_at` is written at
+/// second precision, so two schedules created in the same second tie — which is
+/// the very case at hand — and `schedule_id` is a UUID v7 assigned by the
+/// CALLER, so it orders by whenever the caller happened to mint it, not by when
+/// the timer took the schedule on.
 pub fn load_active_filter_past(
     conn: &Connection,
     now: DateTime<Utc>,
 ) -> rusqlite::Result<Vec<ActiveSchedule>> {
     let mut stmt = conn.prepare(
         "SELECT schedule_id, kind, cron_expr, at_utc
-           FROM schedules WHERE status='active'",
+           FROM schedules WHERE status='active' ORDER BY rowid",
     )?;
     let mut out = Vec::new();
     let mut rows = stmt.query([])?;
@@ -297,6 +313,36 @@ mod tests {
         assert!(
             !ids.contains(&past_id),
             "once-in-past must drop out of the I/O set"
+        );
+    }
+
+    /// GH #613: the I/O working copy comes back in schedule order, and schedule
+    /// order is insertion order. Three schedules created inside one second would
+    /// tie on `created_at` (second precision), and their caller-minted UUID v7s
+    /// are handed over in REVERSE order here — so a SELECT ordered by either
+    /// column fails this outright.
+    ///
+    /// It does NOT go red on the unordered SELECT this replaced: with no index
+    /// on `status` the scan walks `rowid` anyway. That is the point of the test.
+    /// The promise "same second, schedule order" is now written down in one
+    /// place (the `ORDER BY`) and checked in another, so an index added to this
+    /// table later cannot quietly take the order away.
+    #[test]
+    fn load_active_returns_the_schedules_in_insertion_order() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        setup_timer_schema(&conn).unwrap();
+        let mut ids = [Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7()];
+        ids.reverse();
+        for (n, id) in ids.iter().enumerate() {
+            insert_schedule(&conn, &cron_fixture(*id, "0 0 9 * * *", &format!("s{n}"))).unwrap();
+        }
+
+        let active = load_active_filter_past(&conn, Utc::now()).unwrap();
+
+        assert_eq!(
+            active.iter().map(|a| a.schedule_id).collect::<Vec<_>>(),
+            ids.to_vec(),
+            "the working copy must follow the order the rows were INSERTed in"
         );
     }
 

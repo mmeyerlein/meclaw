@@ -183,6 +183,7 @@ async fn seed() -> (tempfile::TempDir, std::path::PathBuf) {
             trace_id: "019ebb7e-0000-7000-8000-000000000abc".into(),
             created_at,
             message_json: format!(r#"{{"id":"dl-{n}"}}"#),
+            detail: None,
         })
         .await;
     }

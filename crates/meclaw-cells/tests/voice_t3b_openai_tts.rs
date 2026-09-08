@@ -49,7 +49,13 @@ async fn synth(
 ) -> Result<(), TtsError> {
     tokio::time::timeout(
         MARKER,
-        tts.synthesize(text.to_string(), audio, cancel, liveness),
+        tts.synthesize(
+            tts.output_format(),
+            text.to_string(),
+            audio,
+            cancel,
+            liveness,
+        ),
     )
     .await
     .expect("synthesize did not finish within the failure marker")

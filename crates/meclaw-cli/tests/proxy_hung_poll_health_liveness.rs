@@ -134,6 +134,7 @@ async fn a_hung_proxy_poll_is_visible_on_health_while_a_healthy_one_stays_fresh(
         vault_key_source: "auto".to_string(),
         vault_key_file: None,
         stdio_format: meclaw_cli::StdioFormat::Text,
+        command: None,
     };
     let join =
         tokio::spawn(async move { run_with_hooks(cli, Some(addr_tx), Some(shutdown_rx)).await });

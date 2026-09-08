@@ -905,9 +905,18 @@ sys.stdout.write(json.dumps({"header": {"route": "closed"},
 "#;
 
 /// The port wiring a parent draws around the keeper: one ingress lane in, the
-/// stamped turn out, the close request out.
+/// stamped turn out, the close request out -- plus the door the operator's
+/// firing goes through.
+///
+/// GH #612: `./session-keeper/night` is not an address from outside. The keeper
+/// declares `params.ports: []`, so the only address it has is its own path, and
+/// a message that names an interior cell of it is refused `hive_boundary`. A
+/// parent may reach the timer -- birth topology is authorship -- and this is what
+/// that looks like: the parent draws the lane and the caller names the parent.
 fn main_config() -> Value {
     json!({"cell": {"type": "hive"}, "params": {"graph": {"edges": [
+        {"from": ".", "to": "./session-keeper/night",
+         "condition": "hop.route == 'fire_night'"},
         {"from": "./probe", "to": "./session-keeper",
          "condition": "hop.route == 'turn'",
          "modifier": {"set_hop": {"route": "'in_turn'"}}},
@@ -1019,8 +1028,15 @@ fn turn(channel: &str, text: &str) -> Message {
 /// The firing, as an operator or a test drives it: `trigger` runs the schedule
 /// once, now, without changing its plan -- and a triggered run is not
 /// distinguishable from a cron run (docs/cell-types.md § timer).
+///
+/// Addressed at the LEVEL, on the lane the level opened (see [`main_config`]).
+/// The keeper is a sealed hive, so its own path is its only address and the
+/// timer inside it is reached through the door its parent drew -- GH #612.
 fn fire() -> Message {
-    MessageBuilder::new(Path::new("/session-keeper/night"))
+    let mut hop = meclaw_core::serde_json::Map::new();
+    hop.insert("route".into(), json!("fire_night"));
+    MessageBuilder::new(Path::new("/"))
+        .hop(hop)
         .body(Body::Inline(
             json!({"messages": [], "op": "trigger", "schedule_id": SCHEDULE_ID}),
         ))

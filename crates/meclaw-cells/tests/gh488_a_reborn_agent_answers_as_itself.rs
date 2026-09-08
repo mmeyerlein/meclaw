@@ -631,8 +631,13 @@ async fn an_exported_agent_comes_back_knowing_who_it_is() {
     ctx.insert("session_id".to_string(), json!("s-gh488"));
     let mut hop = Map::new();
     hop.insert("route".to_string(), json!("in_turn"));
+    // GH #612: at the RIM, which is also the shipped path. `in_turn` is talky's
+    // own lane and its own edge carries it to `./session-keeper`; naming the
+    // keeper directly asserted that talky contains one, which is the dependency
+    // on inner structure the boundary rule refuses — and since GH #612 the
+    // substrate refuses it too (`hive_boundary`), a nested rim included.
     b.send(
-        MessageBuilder::new(Path::new("/talky/session-keeper"))
+        MessageBuilder::new(Path::new("/talky"))
             .hop(hop)
             .context(ctx)
             .body(Body::Inline(json!({"messages": [

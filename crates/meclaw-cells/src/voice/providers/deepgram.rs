@@ -49,6 +49,33 @@
 //! silence the client sent; when the client stops entirely, the session ends
 //! with `CloseStream` rather than being kept artificially alive.
 //!
+//! # 8 kHz is native here, and it is `linear16` (GH #619)
+//!
+//! A telephone call is 8 kHz. Until this issue the switch upsampled it to
+//! 16 kHz and this adapter wrote `sample_rate=16000` — a recogniser fed
+//! interpolated samples that never carried more than 4 kHz of bandwidth.
+//! Flux does not need that. Deepgram's own quickstart lists "Supported Sample
+//! Rates: 8000, 16000, 24000, 44100, 48000 Hz" and calls `16000` the
+//! recommendation, not a floor
+//! (<https://developers.deepgram.com/docs/flux/quickstart>); `encoding` and
+//! `sample_rate` are both required for raw audio
+//! (<https://developers.deepgram.com/docs/sample-rate>). So `sample_rate` is
+//! now the rate the CONNECTION negotiated ([`SUPPORTED_SAMPLE_RATES`]), and
+//! `params.sample_rate` is only what a client that asked for nothing gets.
+//!
+//! **The encoding stays `linear16`, deliberately.** Flux would take companded
+//! audio — "Flux supports `linear16`, `linear32`, `mulaw`, `alaw`, `opus`, and
+//! `ogg-opus` for non-containerized/raw audio"
+//! (<https://developers.deepgram.com/docs/encoding>) — but nothing in this
+//! tree produces a companded frame: FreeSWITCH's `mod_audio_stream` "attaches
+//! a media bug and starts streaming audio (in L16 format) to the websocket
+//! server" and takes `8k` or `16k` and nothing else
+//! (<https://github.com/amigniter/mod_audio_stream>). R-V11 agrees with the
+//! narrow reading: LiveKit's `stt_v2.py` hardcodes `"encoding": "linear16"`
+//! and pipecat's `flux/stt.py` documents its own parameter as `Must be
+//! "linear16"`. `linear16` at 8000 is a path two implementations and one
+//! vendor page all describe; `mulaw` would be one nobody in this chain speaks.
+//!
 //! # Model names are params, not constants (R-V4)
 //!
 //! Flux ships two models: `flux-general-en` (English only) and
@@ -88,6 +115,18 @@ pub const DEFAULT_MODEL: &str = "flux-general-multi";
 /// query are the adapter's business, so a fake only has to replace this.
 pub const DEFAULT_BASE_URL: &str = "wss://api.deepgram.com";
 
+/// Every sample rate Flux serves for raw audio, per Deepgram's own quickstart
+/// (read 2026-09-08): "Supported Sample Rates: 8000, 16000, 24000, 44100,
+/// 48000 Hz", with `16000` named as the RECOMMENDATION and not as a floor --
+/// <https://developers.deepgram.com/docs/flux/quickstart>. Both `encoding` and
+/// `sample_rate` are required for raw audio there, which is why this adapter
+/// has always written both.
+///
+/// 8000 is the entry that matters (GH #619): a telephone call IS 8 kHz, and
+/// the alternative was upsampling it at the switch and sending a recogniser
+/// 16 kHz of audio that never held more than 4 kHz of bandwidth.
+pub const SUPPORTED_SAMPLE_RATES: [u32; 5] = [8000, 16000, 24000, 44100, 48000];
+
 /// What the client sends to end the stream.
 const CLOSE_STREAM: &str = r#"{"type":"CloseStream"}"#;
 
@@ -118,13 +157,19 @@ impl DeepgramFluxStt {
 
     /// The full session URL, query and all. `base_url` is the scheme and host
     /// only (`wss://api.deepgram.com`), so a test can point it at a fake.
-    fn session_url(&self) -> String {
+    ///
+    /// The rate comes from `format` — the pair this CONNECTION negotiated —
+    /// and not from `params.sample_rate` any more (GH #619). `params` is what
+    /// a client that asked for nothing gets; a telephony edge asks for 8000
+    /// per call, and the URL has to say the same number the socket carries or
+    /// every word arrives at the wrong pitch.
+    fn session_url(&self, format: AudioFormat) -> String {
         let p = &self.params;
         let mut url = format!(
             "{}/v2/listen?model={}&encoding=linear16&sample_rate={}&eot_threshold={}&eager_eot_threshold={}&eot_timeout_ms={}",
             p.base_url.trim_end_matches('/'),
             encode(&p.model),
-            p.sample_rate,
+            format.sample_rate,
             p.eot_threshold,
             p.eager_eot_threshold,
             p.eot_timeout_ms,
@@ -201,13 +246,24 @@ impl SttProvider for DeepgramFluxStt {
         AudioFormat::pcm16_mono(self.params.sample_rate)
     }
 
+    fn input_rates(&self) -> Vec<u32> {
+        SUPPORTED_SAMPLE_RATES.to_vec()
+    }
+
+    fn negotiate_input(&self, sample_rate: u32) -> Option<AudioFormat> {
+        SUPPORTED_SAMPLE_RATES
+            .contains(&sample_rate)
+            .then(|| AudioFormat::pcm16_mono(sample_rate))
+    }
+
     fn run_session(
         &self,
+        format: AudioFormat,
         audio: mpsc::Receiver<Vec<u8>>,
         events: mpsc::Sender<SttEvent>,
         liveness: IoLivenessMark,
     ) -> BoxFuture<Result<(), SttError>> {
-        let url = self.session_url();
+        let url = self.session_url(format);
         let credential = format!("Token {}", self.params.api_key.expose());
         let external = self.timeouts.external;
         let idle = self.timeouts.idle;
@@ -490,7 +546,7 @@ mod tests {
     #[test]
     fn keyterms_are_repeated_query_parameters() {
         let url = DeepgramFluxStt::new(params_with_keyterms(serde_json::json!(["Egon", "meclaw"])))
-            .session_url();
+            .session_url(AudioFormat::pcm16_mono(16_000));
         assert!(
             url.ends_with("&keyterm=Egon&keyterm=meclaw"),
             "each term is its own parameter, in order: {url}"
@@ -502,7 +558,8 @@ mod tests {
     /// what it was before keyterms existed.
     #[test]
     fn no_keyterms_leaves_the_query_untouched() {
-        let bare = DeepgramFluxStt::new(params_with_keyterms(serde_json::json!([]))).session_url();
+        let bare = DeepgramFluxStt::new(params_with_keyterms(serde_json::json!([])))
+            .session_url(AudioFormat::pcm16_mono(16_000));
         assert!(!bare.contains("keyterm"), "{bare}");
     }
 
@@ -513,7 +570,7 @@ mod tests {
         let url = DeepgramFluxStt::new(params_with_keyterms(serde_json::json!([
             "", "   ", " Egon "
         ])))
-        .session_url();
+        .session_url(AudioFormat::pcm16_mono(16_000));
         assert!(
             url.ends_with("&keyterm=Egon"),
             "only the real term travels, trimmed rather than encoded as %20Egon%20: {url}"
@@ -526,7 +583,7 @@ mod tests {
     #[test]
     fn a_keyterm_with_spaces_stays_one_parameter() {
         let url = DeepgramFluxStt::new(params_with_keyterms(serde_json::json!(["Ada Lovelace"])))
-            .session_url();
+            .session_url(AudioFormat::pcm16_mono(16_000));
         assert!(
             url.ends_with("&keyterm=Ada%20Lovelace"),
             "the space is encoded, the term is not split: {url}"
@@ -552,7 +609,7 @@ mod tests {
             "base_url": DEFAULT_BASE_URL,
         }))
         .expect("params parse");
-        let url = DeepgramFluxStt::new(params).session_url();
+        let url = DeepgramFluxStt::new(params).session_url(AudioFormat::pcm16_mono(16_000));
         assert!(
             url.starts_with("wss://api.deepgram.com/v2/listen?model=flux-general-multi&"),
             "the configured model goes on the wire verbatim: {url}"
@@ -560,6 +617,48 @@ mod tests {
         assert!(
             url.ends_with("&language_hint=de"),
             "the multilingual model takes the language bias: {url}"
+        );
+    }
+
+    /// GH #619: the rate on the wire is the CONNECTION's, not the template's.
+    /// A telephony edge negotiates 8000 per call while `params.sample_rate`
+    /// stays at what a browser sends, and the query has to carry the former.
+    #[test]
+    fn the_session_url_carries_the_negotiated_rate() {
+        let params: DeepgramParams = serde_json::from_value(serde_json::json!({
+            "api_key": "not-a-real-key",
+            "sample_rate": 16000,
+        }))
+        .expect("params parse");
+        let url = DeepgramFluxStt::new(params).session_url(AudioFormat::pcm16_mono(8000));
+        assert!(
+            url.contains("&sample_rate=8000&"),
+            "the negotiated rate goes on the wire, not the param: {url}"
+        );
+        assert!(
+            url.contains("&encoding=linear16&"),
+            "8 kHz telephony is L16 here: nothing in this tree produces mulaw: {url}"
+        );
+    }
+
+    /// The rates the vendor lists, and the refusal of one it does not.
+    #[test]
+    fn deepgram_serves_the_rates_the_vendor_lists() {
+        let params: DeepgramParams = serde_json::from_value(serde_json::json!({
+            "api_key": "not-a-real-key",
+        }))
+        .expect("params parse");
+        let stt = DeepgramFluxStt::new(params);
+        assert_eq!(stt.input_rates(), vec![8000, 16000, 24000, 44100, 48000]);
+        assert_eq!(
+            stt.negotiate_input(8000),
+            Some(AudioFormat::pcm16_mono(8000)),
+            "8 kHz is the whole point of GH #619"
+        );
+        assert_eq!(
+            stt.negotiate_input(11025),
+            None,
+            "a rate the vendor does not serve is refused, never resampled (R-V2)"
         );
     }
 
@@ -577,7 +676,7 @@ mod tests {
                 "language": "en",
             }))
             .expect("params parse");
-            let url = DeepgramFluxStt::new(params).session_url();
+            let url = DeepgramFluxStt::new(params).session_url(AudioFormat::pcm16_mono(16_000));
             assert!(
                 url.contains(&format!("model={model}")),
                 "the configured model still goes on the wire verbatim: {url}"

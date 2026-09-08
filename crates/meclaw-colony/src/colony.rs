@@ -1671,6 +1671,7 @@ async fn run_shutdown_teardown(
     io_liveness: &mut HashMap<Path, Option<std::time::SystemTime>>,
     parked: &mut ParkedSlots,
     slot_table: &SlotTable,
+    hive_boundaries: &crate::hive_boundary::HiveBoundaryTable,
     colony_db: crate::persist::colony_db::ColonyDb,
     factories: &crate::CellFactoryRegistry,
     root: &std::path::Path,
@@ -1852,7 +1853,13 @@ async fn run_shutdown_teardown(
             }
             ColonyMsg::Route { sender_path, msg } => {
                 let mut work: VecDeque<(Path, Message)> = VecDeque::new();
-                work.push_back((sender_path, msg));
+                // GH #612: the hive boundary is checked on the way IN, before the
+                // work queue, so a refused address never reaches the corridor.
+                if let Some(msg) =
+                    refuse_at_hive_boundary(hive_boundaries, dead_letters, &sender_path, msg)
+                {
+                    work.push_back((sender_path, msg));
+                }
                 while let Some((s, m)) = work.pop_front() {
                     // GH #119: TTL death + reply anchor ⇒ ONE terminal notice.
                     // Queued BEFORE the corridor consumes the message; the
@@ -2295,6 +2302,10 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
     // boot apply, a hive scope, a mutation) and consumed at the top of the loop,
     // i.e. BEFORE the next message is handled.
     let mut slot_table: SlotTable = SlotTable::new();
+    // GH #612: the delivery-side twin of the slot table — what every sealed hive
+    // declared as an address. Rebuilt by the same dirty flag, so the two views of
+    // "which hives declared something" can never come from different moments.
+    let mut hive_boundaries: crate::hive_boundary::HiveBoundaryTable = Vec::new();
     let mut slot_table_dirty = true;
     // GH #285 (W4 T12): what the `park` slots are holding. Same ownership rule
     // as `slot_table` — colony state in the colony task, no lock — and the same
@@ -2444,6 +2455,8 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
         // ordering the delivery filter needs.
         if slot_table_dirty {
             slot_table = rebuild_slot_table(&root, &hive_scopes);
+            hive_boundaries =
+                crate::hive_boundary::rebuild_hive_boundaries(&root, hive_scopes.paths());
             slot_table_dirty = false;
         }
         // GH #285 (W4 T12): release the queue of every `park` slot something is
@@ -2554,6 +2567,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                         &mut io_liveness,
                         &mut parked,
                         &slot_table,
+                        &hive_boundaries,
                         colony_db,
                         &factories,
                         &root,
@@ -2596,6 +2610,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                         &mut io_liveness,
                         &mut parked,
                         &slot_table,
+                        &hive_boundaries,
                         colony_db,
                         &factories,
                         &root,
@@ -2648,6 +2663,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                 &mut io_liveness,
                                 &mut parked,
                                 &slot_table,
+                                &hive_boundaries,
                                 colony_db,
                                 &factories,
                                 &root,
@@ -2698,6 +2714,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                             &mut io_liveness,
                             &mut parked,
                             &slot_table,
+                            &hive_boundaries,
                             colony_db,
                             &factories,
                             &root,
@@ -2765,7 +2782,12 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                     }
                     ColonyMsg::Route { sender_path, msg } => {
                         let mut work: VecDeque<(Path, Message)> = VecDeque::new();
-                        work.push_back((sender_path, msg));
+                        // GH #612: the hive boundary is checked on the way IN, before
+                        // the work queue, so a refused address never reaches the
+                        // corridor and never spends TTL.
+                        if let Some(msg) = refuse_at_hive_boundary(&hive_boundaries, &mut dead_letters, &sender_path, msg) {
+                            work.push_back((sender_path, msg));
+                        }
                         while let Some((s, m)) = work.pop_front() {
                             // GH #119: TTL death + reply anchor ⇒ ONE terminal notice (see the
                             // inbox-Route twin above). Corridor untouched.
@@ -5048,23 +5070,20 @@ pub(crate) async fn handle_mutation(
         // Phase 13.5 step-6: hive short-names are valid edge endpoints too — collect
         // them (last path segment, mirroring `registry_names`) so `add_edges` may
         // reference an existing hive symmetrically to a cell.
-        // NOTE: hive names are colony-global and intentionally NOT scope-filtered
-        // (unlike `registry_names`): hives define transit scopes reachable from
-        // anywhere in the colony, so they must be visible regardless of guard_scope.
+        //
+        // GH #612: SCOPE-FILTERED, with the same `parent == scope_prefix` rule
+        // `registry_names` carries. It used to be colony-global, and the reason
+        // given was that hives define transit scopes reachable from anywhere. That
+        // is true of ROUTING and says nothing about this check: an `add_edges`
+        // endpoint spelled as a bare short name is not a path, it is resolved
+        // against the guard scope by the apply (`resolve_scoped_path`), so a global
+        // name-set let validation approve one node while the apply named another.
+        // Measured: with a hive at `/a/phone` and nothing under `/b/phone`, a
+        // mutation at scope `/b` with `to: "phone"` committed and left an edge onto
+        // an address nothing occupies. A cross-scope reference to a hive keeps the
+        // spelling it always had — a relative path, answered absolutely by
+        // `deep_endpoint_paths` — so nothing legitimate is lost here.
         let hive_endpoint_names: Vec<String> = hive_scopes
-            .paths()
-            .filter_map(|p| p.as_str().rsplit('/').next().map(|s| s.to_string()))
-            .collect();
-        // paket-5 T4 (P10b companion): SCOPE-FILTERED hive short-names for the
-        // `swap_nodes` `match.name` existence check. Mirrors the `registry_names`
-        // parent==scope_prefix filter above: only hives whose full path lives DIRECTLY
-        // within `guard_scope` contribute their short-name. A `match.name` is scope-bound
-        // (spec Z.265 "Names are unique per scope"), so a hive in a FOREIGN scope must
-        // NOT satisfy a short-name match — otherwise validate passes a node that the
-        // scope-correct apply-side (`resolve_scoped_path`) cannot resolve (finding
-        // Paket-2-b'). This is DISTINCT from `hive_endpoint_names` (global, for add_edges
-        // endpoints, which are scope-relative and may legitimately reference any hive).
-        let hive_match_names: Vec<String> = hive_scopes
             .paths()
             .filter(|p| {
                 let s = p.as_str();
@@ -5081,6 +5100,22 @@ pub(crate) async fn handle_mutation(
             })
             .filter_map(|p| p.as_str().rsplit('/').next().map(|s| s.to_string()))
             .collect();
+        // paket-5 T4 (P10b companion): SCOPE-FILTERED hive short-names for the
+        // `swap_nodes` `match.name` existence check. Mirrors the `registry_names`
+        // parent==scope_prefix filter above: only hives whose full path lives DIRECTLY
+        // within `guard_scope` contribute their short-name. A `match.name` is scope-bound
+        // (spec Z.265 "Names are unique per scope"), so a hive in a FOREIGN scope must
+        // NOT satisfy a short-name match — otherwise validate passes a node that the
+        // scope-correct apply-side (`resolve_scoped_path`) cannot resolve (finding
+        // Paket-2-b').
+        //
+        // GH #612: it used to be the one scope-filtered set beside a global
+        // `hive_endpoint_names`, and the two are now the SAME set — for the same
+        // reason, arrived at from the other end. It keeps its own name because the
+        // two answer different questions ("may this be an edge endpoint" and "does
+        // this name a node to replace"), and a future divergence should be a
+        // decision rather than an accident.
+        let hive_match_names: Vec<String> = hive_endpoint_names.clone();
         // GH #179: the absolute-path twins of `registry_names` / `hive_match_names`
         // above — the SAME pre-state, spelled the way a multi-segment diff name has
         // to be looked up. `add_nodes[].name` and `match.name` may name a node one or
@@ -9100,6 +9135,7 @@ async fn persist_dead_letters(
                 trace_id: dl.message.trace_id.to_string(),
                 created_at: dl.message.created_at,
                 message_json,
+                detail: dl.detail().map(str::to_owned),
             })
             .await;
     }
@@ -9202,8 +9238,15 @@ fn message_from_json(s: &str) -> Message {
 /// (unknown code → `NoRoute` rather than dropping the row). Used by the DLQ-drain
 /// to return `Vec<DeadLetter>` from the DB unchanged for callers.
 pub(crate) fn dead_letter_from_row(row: crate::persist::colony_db::DeadLetterRow) -> DeadLetter {
-    let reason = crate::dead_letter::DeadLetterReason::from_code(&row.error_code)
+    let mut reason = crate::dead_letter::DeadLetterReason::from_code(&row.error_code)
         .unwrap_or(crate::dead_letter::DeadLetterReason::NoRoute);
+    // GH #612: the row's own column is where the boundary was recorded, and
+    // `from_code` reads a bare string — so the path goes back on here, and the
+    // reconstructed entry answers `detail()` exactly as the original did. `NULL`
+    // in an old row and `None` here are the same statement.
+    if let crate::dead_letter::DeadLetterReason::HiveBoundary { hive } = &mut reason {
+        *hive = row.detail;
+    }
     DeadLetter {
         sender_path: Path::new(&row.sender_path),
         original_target: Path::new(&row.original_target),
@@ -9481,6 +9524,81 @@ fn rebuild_slot_table(root: &std::path::Path, hive_scopes: &HiveScopeTable) -> S
         .into_iter()
         .map(|(address, unbound)| (Path::new(&address), unbound))
         .collect()
+}
+
+/// GH #612 — the hive boundary, on the delivery side.
+///
+/// Returns the message back when it may go on to `route_with_log`, and `None`
+/// when it was refused and dead-lettered here.
+///
+/// **External only.** The root sender plus no parent message is the source
+/// message the ingress produces, and it is the same discriminator the message
+/// log writes `@external` for. Everything with a parent is a hop of a turn that
+/// is already inside the colony: a cell emitting, a hive transit follow-up, a
+/// reply cascade. Those address interior cells legitimately and constantly —
+/// inside a hive the interior graph is the hive's own business, which is the
+/// reasoning GH #133 gives for leaving subtree-internal edges free.
+///
+/// **A pre-check at the call site, not in the corridor.** `route()` is
+/// byte-frozen and pure; this is built exactly like its `cell_inactive` and TTL
+/// twins in `route_with_log` — the check happens before the message enters the
+/// work queue, so the corridor never sees it and TTL is never decremented for a
+/// message that was refused before routing.
+fn refuse_at_hive_boundary(
+    boundaries: &crate::hive_boundary::HiveBoundaryTable,
+    dead_letters: &mut VecDeque<DeadLetter>,
+    sender_path: &Path,
+    msg: Message,
+) -> Option<Message> {
+    if boundaries.is_empty() || sender_path.as_str() != "/" || msg.parent_message_id.is_some() {
+        return Some(msg);
+    }
+    let resolved = Path::resolve(sender_path, msg.target.as_str());
+    // A nested LEVEL is refused exactly like a cell (ruling 9). The looser
+    // reading — a rim is an address of its own, so naming one walks past no
+    // declaration — was taken first and then measured away: five shipped sealed
+    // templates hold a nested hive through a `ref` marker, so an outside caller
+    // could have named one and reached into the composite past its rim. That is
+    // the bypass requirement 1 exists to refuse, in its own words:
+    // "`<hive>/<cell>` is not an address, and `<hive>/<subhive>/<cell>` is less
+    // of one". Nothing shipped depends on the looser reading, so the literal one
+    // is what runs. The hive path ITSELF stays an address — it is not strictly
+    // inside itself, and `is_interior` says so.
+    let lane = msg.headers.hop.get("route").and_then(|v| v.as_str());
+    // NOT `?`: `None` from the predicate means "no hive refuses this", which is
+    // the ALLOW answer, and letting it fall out of this function would drop the
+    // message without a dead letter — the exact silence this whole strand exists
+    // to remove.
+    let Some(hive) = crate::hive_boundary::boundary_refusal(boundaries, &resolved, lane) else {
+        return Some(msg);
+    };
+    tracing::warn!(
+        hive = %hive,
+        target = %resolved.as_str(),
+        lane = lane.unwrap_or(""),
+        trace_id = %msg.trace_id,
+        reason = "HiveBoundary",
+        "an address behind a hive boundary was named from outside — the address of a \
+         sealed hive is the hive path plus a lane (`hop.route`), and an interior \
+         address answers only where the hive declared it: as an entry in \
+         `params.ports`, or as a connect point of a `params.contract` accepts lane, \
+         on that lane. Dead-lettering (hive_boundary)"
+    );
+    push_dead_letter(
+        dead_letters,
+        DeadLetter {
+            sender_path: sender_path.clone(),
+            original_target: msg.target.clone(),
+            resolved_target: resolved,
+            message: msg,
+            // The receipt names the boundary. `resolved_target` is the address
+            // that was refused and `sender_path` the caller; the hive that
+            // refused is neither of them, so without this the entry could not
+            // say what the ops line above says.
+            reason: crate::dead_letter::DeadLetterReason::HiveBoundary { hive: Some(hive) },
+        },
+    );
+    None
 }
 
 /// GH #285 (W4 T11) — what a routing decision meets when its target is a

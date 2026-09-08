@@ -473,6 +473,15 @@ pub struct DeadLetterDto {
     /// the trace-level link rather than treating it as an error.
     #[serde(default)]
     pub message_id: Option<String>,
+    /// GH #612 — the one reason-specific fact the six locating fields cannot
+    /// carry. For `hive_boundary` it is the ABSOLUTE PATH of the hive that
+    /// refused the address; every other reason has none and omits the key.
+    ///
+    /// Additive: absent from a row written before the column existed and from
+    /// every entry that has no such fact, so a reader that never asks for it
+    /// sees the JSON it always saw.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 /// Filter for [`crate::ColonyMsg::ReadMessages`] — the P1 message browser.

@@ -1,4 +1,4 @@
-# `freeswitch@1.0.1`
+# `freeswitch@1.1.0`
 
 A telephone as one **channel** of a person, in two halves inside one hive.
 
@@ -21,7 +21,10 @@ old node: the migration is § *The migration from `phone@1.0.0`* at the end.
 
 They live in one hive because a call is one thing, and because **one id binds
 both halves**: FreeSWITCH's channel UUID is the `?session=` of the audio fork,
-and therefore the `session_id` an answer is spoken back into. A colony that kept
+and therefore the `call_id` an answer is spoken back into. Since 1.1.0 both
+halves stamp that id as `hop.call_id` and the answer comes back on
+`context.call_id`; `session_id` is what a member's `session-keeper` mints, and
+the two are no longer the same word ([#620](https://github.com/mmeyerlein/meclaw/issues/620)). A colony that kept
 the two apart would have to invent a second table to say which socket belongs to
 which number.
 
@@ -44,16 +47,17 @@ the trunk, and `mod_audio_stream` connects to the media half as a WebSocket
 
 | direction | what travels |
 |---|---|
-| in, `in_speak` | the finished assistant turn, to be spoken into the call. `context.session_id` picks the connection, exactly as it does for a `voice` channel standing on its own |
-| in, `call_incoming` | somebody is ringing this member. `hop` carries `call_uuid` and `number`. This is THE turn of an inbound call — a number in no `callers` entry gets no turn and its leg is put down |
+| in, `in_speak` | the finished assistant turn, to be spoken into the call. `context.call_id` picks the connection, exactly as it does for a `voice` channel standing on its own |
+| in, `call_incoming` | somebody is ringing this member. `hop` carries `call_uuid` and `number`. This is THE turn of an inbound call — a number in no `callers` entry gets no turn and its leg is put down, and since 1.1.0 a call that arrives while the line is busy gets what `params.second_call` says it gets (§ *What a second call gets*) |
 | in, `call_ringing` | the switch is ringing a number this channel dialled. It moves the row and raises no turn |
 | in, `call_answered` | somebody picked up. `hop` carries `call_uuid`. A turn for a call this channel PLACED; for an inbound call it moves the row and raises no turn, because `call_incoming` already said it |
 | in, `call_ended` | the line is down, from either end. `hop` carries `call_uuid` and `cause`. It moves the row and raises no turn |
 | in, `tool` / `schemas` | a call to `call`/`hangup`, and the menu tick. Both dock on `<freeswitch>/dial` |
-| out, `hop.route == 'turn'` | one thing that was said, or one thing that happened to the line. `hop` carries `session_id`, `turn_id` (`<session_id>#<n>`), `platform` (`phone`), `number`, `user_id`, and `call_state` (`incoming`, `answered`, `busy`, `no_answer`, `failed`) for a turn about the line rather than about words |
+| out, `hop.route == 'turn'` | one thing that was said, or one thing that happened to the line. `hop` carries `session_id` and `call_id`, `turn_id` (`<session_id>#<n>`), `platform` (`phone`), `number`, `user_id`, and `call_state` (`incoming`, `answered`, `busy`, `no_answer`, `failed`) for a turn about the line rather than about words |
 | out, `hop.route == 'partial'` | an interim transcript, out of the media half. OFF by default — `emit_partials` on the `voice` cell turns it on |
 | out, `hop.route == 'error'` | a caller with no entry in `callers` — whose leg is put down in the same breath — a request this hive cannot read, or the media half's own failure |
 | out, `tool_result` / `tool_schemas` | the receipt of a `call`/`hangup`, and the offer itself |
+| out, `call_accepted` / `call_queued` / `call_refused` / `call_abandoned` | what a second call got. One receipt per inbound call, empty `messages[]`, `hop` carries `call_id`, `policy`, `capacity` and `cause`. The installing manifest draws the edge that drains them |
 
 **One lane travels only INSIDE this hive**, and it is the reason the media half
 carries an `override_params` at all: `speak_end`, from the `voice` cell to the
@@ -161,7 +165,7 @@ tool v-lanes and their way back.
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "channels/freeswitch", "template": "freeswitch@1.0.1",
+  "add_nodes": [{"name": "channels/freeswitch", "template": "freeswitch@1.1.0",
                  "override_params": {
                    "voice": {"port": 7910, "bind": "0.0.0.0"},
                    "signal": {"dial_prefix": "sofia/gateway/fs02/",
@@ -177,16 +181,23 @@ tool v-lanes and their way back.
                                   "audience_set": "'[\"agent:<assistant>\",\"member:<member>\"]'",
                                   "user_id": "has(hop.user_id) && hop.user_id != '' ? hop.user_id : '<the person's sender id>'",
                                   "call_state": "has(hop.call_state) ? hop.call_state : ''",
-                                  "session_id": "has(hop.session_id) ? hop.session_id : ''",
-                                  "voice_session": "has(hop.session_id) ? hop.session_id : ''"}}},
+                                  "call_id": "has(hop.call_id) ? hop.call_id : ''",
+                                  "session_id": "has(hop.session_id) ? hop.session_id : ''"}}},
     {"from": "./channels", "to": "./channels/freeswitch",
      "condition": "has(hop.route) && hop.route == 'answer' && has(context.channel_node) && context.channel_node == 'freeswitch'",
-     "modifier": {"set_hop": {"route": "'in_speak'"},
-                  "set_context": {"session_id": "has(context.voice_session) && context.voice_session != '' ? context.voice_session : (has(context.session_id) ? context.session_id : '')"}}},
+     "modifier": {"set_hop": {"route": "'in_speak'"}}},
+
+    {"from": "./channels/freeswitch", "to": "./channels",
+     "condition": "has(hop.route) && (hop.route == 'call_accepted' || hop.route == 'call_queued' || hop.route == 'call_refused' || hop.route == 'call_abandoned')",
+     "modifier": {"set_context": {"channel_node": "'freeswitch'", "channel": "'phone'"}}},
+    {"from": "./channels", "to": ".",
+     "condition": "has(hop.route) && (hop.route == 'call_accepted' || hop.route == 'call_queued' || hop.route == 'call_refused' || hop.route == 'call_abandoned')",
+     "modifier": {"set_hop": {"route": "'error'", "kind": "hop.route"}}},
 
     {"from": "./channels/freeswitch", "to": "./channels",
      "condition": "has(hop.route) && (hop.route == 'tool_result' || hop.route == 'tool_schemas')",
      "modifier": {"set_context": {"tool_answerer": "'freeswitch'",
+                                  "call_id": "has(hop.call_id) ? hop.call_id : (has(context.call_id) ? context.call_id : '')",
                                   "session_id": "has(hop.session_id) ? hop.session_id : (has(context.session_id) ? context.session_id : '')"}}},
     {"from": "./assistants/<gen>/talky", "to": "./channels/freeswitch/dial", "lane": "tool",
      "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && (hop.tool_name == 'call' || hop.tool_name == 'hangup')",
@@ -208,29 +219,56 @@ branch read a key that was not there. A CEL modifier that fails to evaluate
 nothing said why. The rule has no exception: **every** key read off `hop` or
 `context` inside a modifier is guarded, even the one that "obviously" exists.
 
-Read it in three groups.
+Read it in four groups.
 
 **The channel half** is the first two edges, and they are the `voice` channel's
 own two, word for word (`templates/voice/README.md` § *Wiring it into a member*):
-one promotion up, one restamp down. `session_id` is promoted on **all three**
+one promotion up, one restamp down. `call_id` is promoted on **all three**
 outbound lanes and not only on `turn`, because a failure that happened inside a
-call carries that call, and an edge that promoted the session only on the happy
+call carries that call, and an edge that promoted the call only on the happy
 path would make every failure look like it came from nowhere. `user_id` is the
 one line the `voice` channel writes as a bare literal and this one writes as a
 fallback: the signalling half knows the caller, the media half does not.
 
-**`voice_session` is the fourth key, and it exists because somebody else owns
-the third** (GH #603, defect 3). The media half selects the connection it speaks
-into by `context.session_id`. Between the channel and the assistant stands the
-member's `session-keeper`, whose whole job is to mint and stamp a session of its
-OWN on that same key — so the answer came back carrying the keeper's generation
-id, no connection held it, and the cell answered `unknown_session` while the
-caller listened to silence. The manifest works around it in two lines: the
-ingress edge writes the call's id into `voice_session` as well, and the answer
-edge puts it back on `session_id` on the way into the channel. It is a
-**workaround and it is written down as one**: which of the two owns
-`context.session_id` is a ruling nobody has made, and the day it is made this
-pair of lines comes out.
+**`voice_session` is gone, and the call has a key of its own** (retracted in
+1.1.0, [#620](https://github.com/mmeyerlein/meclaw/issues/620)). Until 1.0.1 the
+manifest carried two extra lines, and this section described them like this:
+
+> The media half selects the connection it speaks into by `context.session_id`.
+> Between the channel and the assistant stands the member's `session-keeper`,
+> whose whole job is to mint and stamp a session of its OWN on that same key —
+> so the answer came back carrying the keeper's generation id, no connection
+> held it, and the cell answered `unknown_session` while the caller listened to
+> silence.
+
+The diagnosis was right (GH #603 § 3) and the cure was a workaround: a second
+context key, `voice_session`, written on the way up and put back on `session_id`
+on the way down. It was written down as a workaround because *which of the two
+owns `context.session_id` is a ruling nobody has made*.
+
+The ruling has been made: **the call key belongs to the channel.** Both halves
+stamp `hop.call_id`, the media half selects a connection by `context.call_id`,
+and `context.session_id` stays the keeper's. So the manifest promotes `call_id`
+on the way up and restamps **nothing** on the way down — there is no longer
+anybody to take the key away. A colony that is still on the old pair does not
+have to move on the same day, since the `voice` cell reads `context.session_id`
+wherever `call_id` is absent and prefers `call_id` where both are there.
+
+**The receipt half** is the two edges after that, and they exist because a
+channel now says what a second call GOT (§ *What a second call gets*). The four
+lanes leave the hive under their own names; the member has one lane for
+something that happened and nobody inside consumes, and that lane is `error` —
+so the second edge restamps them onto it with the original lane on `hop.kind`.
+That is not an invention: it is what this level already does with a `receipt` no
+app of the member owns (ADR-0025), spelled out in the manifest instead of shipped
+in the template. **Say the cost out loud: every accepted call leaves an `error`
+line at the member's rim**, not only a refused one — the lane is the member's one
+exit for something that happened and nobody inside consumes, so an operator
+reading that lane sees one entry per inbound call with `hop.kind` naming which
+kind it was. Whoever wants them apart from real failures draws the first edge to
+a sink of their own instead of to `.`. **A manifest that draws neither edge gets `no_route`, once per
+inbound call** — the rule the `partial` lane already follows. An operator who
+wants the receipts somewhere else (an app, a log sink) draws that edge instead.
 
 **The offer half** is the last three, and it is the app rim's mechanism at a
 second rim (ADR-0024, ADR-0020). Since 1.6.3 the `member` level declares `tool`, `schemas`,
@@ -245,6 +283,100 @@ draft of a sentence orders it (`override_params: {"voice": {"emit_partials":
 true}}`), the rule a `voice` channel already follows. **`emit_speak_end` is ON**,
 and it is ordered by the template rather than by the manifest, because the edge
 that drains it is one of this hive's own — see *Hanging up* below.
+
+## What a second call gets
+
+Until 1.0.1 the answer was *nothing decides*: a second `call_incoming` from an
+allowlisted number became a second row and a second turn, both calls fed one
+conversation, and `hangup` ended whichever was newest. `params.second_call` is
+the decision, and `params.capacity` is how many calls it allows at once.
+
+| `second_call` | what an inbound call gets while the line is busy |
+|---|---|
+| `busy` (default) | refused. The leg is ended at the switch with `uuid_kill <uuid> USER_BUSY`, so the caller hears a busy signal rather than a line that died. No turn |
+| `queue` | taken and held. Its audio fork is stopped, `params.queue_hold_media` plays into the leg, and it runs when the call in front of it ends. No turn until then |
+| `parallel` | a session of its own, up to `capacity`. Over that it is refused exactly as `busy` refuses |
+
+`capacity` is read for **every** policy, so `busy` is `parallel` with
+`capacity: 1` and the decision is one comparison rather than three branches. It
+counts the live states (`dialing`, `ringing`, `answered`); a caller waiting in
+the queue occupies nothing.
+
+**Every outcome leaves a receipt**, in the book and on a lane:
+
+| lane | when | `hop.cause` |
+|---|---|---|
+| `call_accepted` | the call is on the line | empty, or `dequeued` when it waited first |
+| `call_queued` | it is waiting and hearing hold media | empty |
+| `call_refused` | capacity was full under a policy that refuses | `busy` |
+| `call_abandoned` | it hung up while waiting | the switch's own hangup cause |
+
+Each carries `hop.call_id`, `hop.policy` and `hop.capacity`, and each leaves the
+hive. The installing manifest draws the edge that drains them (§ *Wiring it into
+a member*); without it they dead-letter as `no_route`, once per inbound call.
+
+**A waiting caller is taken off the recogniser, and that is the point.** The
+dialplan answers an inbound leg before it `curl`s this hive, and it starts the
+audio fork there — so a caller parked in a queue would be talking into a
+recogniser, and every sentence would become a turn of a conversation that has
+not started. Queueing therefore sends `uuid_audio_stream <uuid> pause` and
+`uuid_broadcast <uuid> <queue_hold_media> aleg`; promotion sends
+`uuid_break <uuid> all` and `uuid_audio_stream <uuid> resume`. Each pair leaves
+in ONE bundle and the two commands of a pair reach the switch in **either**
+order — see *What is not here*. No synthesis
+provider is involved, so a queue costs nothing at a vendor. `queue_hold_media`
+is `local_stream://moh` by default and takes any `uuid_broadcast` source, so a
+recorded announcement is a `file_string://…`.
+
+**`pause`/`resume` and not `stop`/`start`, and the reason is the socket.** Both
+pairs are dispatched by the module — `mod_audio_stream.c` v1.0.3 lines 148-186
+list `start`, `stop`, `pause`, `resume`, `send_text` — but `stop` closes the
+WebSocket, which ends the media half's session. The promotion would then have to
+compose a fresh `start` out of THIS hive's knobs (`voice_ws_url`,
+`fork_sample_rate`) and hope they still match what the dialplan started the fork
+with; an inbound fork is the dialplan's, not this channel's. A pause leaves the
+socket, the session and the call's id exactly where they are, so a promotion is
+one command and reconstructs nothing.
+
+**The queue is emptied by the end of a call and by nothing else.** Every
+transition of a row to `ended` — the far end's `call_ended`, and the `uuid_kill`
+this channel fires itself — asks the table for the oldest `queued` row and
+promotes it. There is no timer and nothing polls. Two ends arriving at once cost
+one harmless duplicate: the promoting update names the state as well as the
+uuid, so the second one matches nothing, and the second `resume` reaches a
+stream that is already running.
+
+> **To be verified at the switch (fs02).** What a `resume` on a stream that was
+> never paused answers is not established here: the module's dispatch table is
+> readable, its per-command behaviour is not, and no recording of that case
+> exists. The claim this section rests on is only that the second `resume` is
+> harmless, because the first one already did the work — and the switch pass
+> discards its answer either way, since it is not an `originate`.
+
+**Two conversations, or one?** `context.channel` is what the holders count by —
+`session-keeper` opens one generation per value, `firewall` rate-limits one
+bucket per value, `memory-hive` writes it down as the room a thing was said in
+(`templates/member/README.md` § *The two channel keys*). The manifest above
+ships `'phone'`: one line, one room, one rate bucket, and a redial is the same
+conversation, which is what a personal agent wants. Under `parallel` that is
+wrong — two callers would share one generation and the assistant would read one
+interleaved history — so a manifest that sets `parallel` with a capacity above
+one changes that one line:
+
+```json
+"channel": "has(hop.call_id) && hop.call_id != '' ? 'phone:' + hop.call_id : 'phone'"
+```
+
+**Both halves or neither.** What it buys: two calls are two generations, so
+neither caller reads the other's history. What it costs, said out loud: the
+memory writes the room down per call rather than per line, and the rate limit
+becomes per call — a redial is a fresh bucket. That is why it is not the
+default, and why it is one line rather than a param.
+
+**What is NOT arbitrated** is an outbound `call`: the model asks for a line and
+gets one, whatever else is running. `second_call` is about who is allowed to
+ring THIS member, and a colony that wants to stop its own agent dialling twice
+has a tool schema to say so in, not a policy.
 
 ## What the dialplan owes
 
@@ -264,7 +396,7 @@ POST /messages
 
 | `hop.route` | when the dialplan sends it | what the channel does |
 |---|---|---|
-| `call_incoming` | an inbound leg arrives, before it is answered | one turn *“Incoming call from …”* — or, for a number in no `callers` entry, one `unknown_caller` error **and** a `uuid_kill` on that leg |
+| `call_incoming` | an inbound leg arrives, before it is answered | one turn *“Incoming call from …”* — **if the line is free, or the policy takes it** (§ *What a second call gets*); a queued or refused call raises no turn and leaves a receipt instead. For a number in no `callers` entry: one `unknown_caller` error **and** a `uuid_kill` on that leg, before the policy is ever asked |
 | `call_ringing` | an outbound leg starts ringing | moves the row, raises nothing |
 | `call_answered` | either leg is answered — the same place the audio stream is started | for a call this channel PLACED: one turn *“… answered. Purpose of this call: …”*. For an INBOUND one: moves the row, raises nothing — `call_incoming` was the turn |
 | `call_ended` | the leg hangs up | moves the row, `state` and `cause`, and raises nothing |
@@ -283,20 +415,29 @@ kills that leg itself rather than leaving it parked (see *Who is on the line*).
 
 ## What leaves for the switch
 
-Three commands, all as a GET at `mod_xml_rpc`'s `/webapi` endpoint — `web_fetch`
+Five commands, all as a GET at `mod_xml_rpc`'s `/webapi` endpoint — `web_fetch`
 implements GET and nothing else (`docs/cell-types.md` § `web_fetch`), and
 `/webapi/<command>?<args>` is exactly a GET. The endpoint, its credentials and
 its host live in **one** provider lane, `${FREESWITCH_XMLRPC_BASE_URL}`, which is
-the only `${…}` token in this template:
+the only `${…}` token in this template. The count is worth reading before you
+write an ACL in front of that endpoint:
 
 ```
 GET <base>/webapi/originate?{origination_uuid=<uuid>,originate_timeout=45,
       ignore_early_media=true,
-      api_on_answer='uuid_audio_stream <uuid> start <voice_ws_url>?session=<uuid> mono 16000'}
+      api_on_answer='uuid_audio_stream <uuid> start <voice_ws_url>?session=<uuid>&sample_rate=8000 mono 8000'}
       <dial_prefix><number> &park()
 GET <base>/webapi/uuid_kill?<uuid>
+GET <base>/webapi/uuid_kill?<uuid>%20USER_BUSY
 GET <base>/webapi/uuid_break?<uuid>%20all
+GET <base>/webapi/uuid_audio_stream?<uuid>%20pause
+GET <base>/webapi/uuid_audio_stream?<uuid>%20resume
+GET <base>/webapi/uuid_broadcast?<uuid>%20<queue_hold_media>%20aleg
 ```
+
+Six lines, five commands: `uuid_kill` appears twice because a refused call is
+ended with a CAUSE — `USER_BUSY` is what the caller hears as a busy signal, and
+a bare kill is a line that died for no reason they can name.
 
 **`api_on_answer`, not `execute_on_answer`, and `uuid_audio_stream`, not
 `uuid_audio_fork`** (GH #603, defect 2). Starting the stream is an **API
@@ -304,13 +445,33 @@ command**, and `execute_on_answer` runs an **application**: FreeSWITCH answered
 `Invalid Application` and hung the freshly answered call up, on the first real
 call this template ever made. Two more things about that one line:
 
-- **the rate is written as `16000`.** Both spellings reach the module —
+- **the rate is written as `8000`, twice, out of one param** (GH #619). A
+  telephone call IS 8 kHz. Asking `mod_audio_stream` for `16k` made it hand the
+  recogniser interpolated samples that never carried more than 4 kHz of
+  bandwidth, and paid twice the bytes for them; Deepgram Flux takes 8000
+  natively, so nothing is gained by the detour. `fork_sample_rate` now defaults
+  to `8000` and is written into **both** halves of that one line: as the
+  module's sampling rate, and as `?sample_rate=` in the fork URL, which is what
+  the media half runs its recognition session at. The two places that have to
+  agree are therefore one number, and a rate the recogniser does not serve is a
+  `400` on the WebSocket naming the ones it does — instead of a pitch nobody
+  notices until the transcripts read wrong. Both spellings reach the module —
   `mod_audio_stream.c` v1.0.3 lines 170-177 read `16k`/`8k` by `strcmp` and
   everything else through `atoi` — and the number is what this template writes,
   because the whole `api_on_answer` value is one line at the switch and a digit
-  string is the form that cannot be mistaken for a unit. `fork_sample_rate`
-  defaults to `16000`, and an instance carrying `"16k"` is read rather than
-  refused.
+  string is the form that cannot be mistaken for a unit; an instance carrying
+  `"8k"` is read rather than refused. The module streams L16 and only L16, so
+  there is no encoding to choose: `mod_audio_stream` "attaches a media bug and
+  starts streaming audio (in L16 format) to the websocket server", and `8k` and
+  `16k` are the only two rates it takes.
+
+  **Not yet verified at a switch:** the `&` that now separates `?session=` from
+  `&sample_rate=` sits inside the single-quoted `api_on_answer` value. It
+  travels percent-encoded through the XML-RPC GET and should reach the switch as
+  a literal `&` inside the quotes, but this template's own history says that
+  originate strings are read by more parsers than one would like (GH #603), and
+  no call was placed for this change — it is marked for verification at the
+  switch next to the `uuid_break` note below.
 - **the whole variable is left out when `answer_app` starts `&transfer(`.** A
   leg handed to a dialplan extension is that extension's leg, and the extension
   starts its own stream; a second start on the same channel is a second socket
@@ -381,6 +542,16 @@ listening while it stops talking.
 > `uuid_audio_stream <uuid> stop` plus a restart — which does cut the stream,
 > and is why it is not the first choice.
 
+**`hangup` does not guess which line.** With one call running it takes that one,
+and the tool needs no argument. With more than one it refuses — `error_code:
+ambiguous_call`, and the result lists every line it could have meant, by number
+and `call_id` — so the next call names one: `hangup {"call_id": "…"}`. Ending
+the wrong line cannot be undone, and *the newest live call* was a coincidence
+dressed as a rule. A `call_id` that names no running call is `no_call`, saying
+which id it could not find. A caller waiting in the queue is not a running call
+and `hangup` does not reach them; their leg ends when they hang up, or when they
+are promoted and the call is ended the ordinary way.
+
 **What holds the waiting hang-up bounded** is the media half's own promise: the
 `voice` cell emits exactly one `speak_end` per `in_speak` it accepted — on the
 last chunk, on a cancel, on a provider failure, and on a connection that went
@@ -395,13 +566,16 @@ silent. **What is NOT here is a clock** — see *What is not here*.
 | `audio_out_frame_ms` | `voice` | `20` | ordered here: `mod_audio_stream` aborts the call on an outbound frame longer than about 100 ms |
 | `emit_speak_end` | `voice` | `true` | ordered here: it is what *Hanging up* is built on. Off in the `voice` template itself |
 | `fs_api_base_url` | `signal` | `${FREESWITCH_XMLRPC_BASE_URL}` | the switch's control endpoint, credentials included. The one provider lane |
-| `voice_ws_url` | `signal` | `ws://127.0.0.1:7900/` | where `mod_audio_stream` reaches the media half, *seen from the machine FreeSWITCH runs on* |
+| `voice_ws_url` | `signal` | `ws://127.0.0.1:7900/` | where `mod_audio_stream` reaches the media half, *seen from the machine FreeSWITCH runs on*. The path is the cell's socket route, so it ends in `/ws`; `?session=<uuid>&sample_rate=<fork_sample_rate>` is appended |
 | `dial_prefix` | `signal` | `sofia/gateway/fs02/` | what goes in front of the number in the dial string |
 | `caller_id_number` | `signal` | `""` | the number this member calls from. Empty leaves it to the gateway |
 | `answer_app` | `signal` | `&park()` | what the answered leg is handed to |
-| `fork_sample_rate` | `signal` | `16000` | the stream's rate. Has to match the media half's STT rate. Written as a number because the `api_on_answer` value is one line at the switch; `"16k"` works too (`mod_audio_stream.c` v1.0.3 l. 170-177) and is read, not refused |
+| `fork_sample_rate` | `signal` | `8000` | the stream's rate, and the rate the media half is asked to recognise at — the same number goes into `?sample_rate=` of the fork URL, so the two cannot disagree (GH #619). `8000` because a call already is 8 kHz. Written as a number because the `api_on_answer` value is one line at the switch; `"8k"` works too (`mod_audio_stream.c` v1.0.3 l. 170-177) and is read, not refused |
 | `ring_timeout_ms` | `signal` | `45000` | travels as `originate_timeout`. The clock is the switch's |
 | `callers` | `signal` | `{}` | number → sender id |
+| `second_call` | `signal` | `busy` | what an inbound call gets while the line is busy: `busy`, `queue` or `parallel` |
+| `capacity` | `signal` | `1` | how many calls may run at once. Read for every policy, so `busy` is `parallel` with `1` |
+| `queue_hold_media` | `signal` | `local_stream://moh` | what a waiting caller hears, as a `uuid_broadcast` source. A recorded announcement is a `file_string://…` |
 | `external_timeout_ms` | `gateway` | `60000` | must exceed `ring_timeout_ms`: the originate answer arrives when the ringing stops |
 
 ## What is not here
@@ -416,10 +590,47 @@ through the signalling half, which would look each session's caller up in the
 call table. One person per channel — the personal agent — is served by the
 literal in the ingress edge, which is the shape `voice` already ships.
 
-**A second call at a time.** `hangup()` ends the newest live call, and the table
-holds every call there is; nothing stops two, and nothing arbitrates between
-them either. A channel that should serve a queue wants a lane that names the
-call, and that is a wider question than a template.
+**Arbitration between two calls — RETRACTED in 1.1.0.** This paragraph used to
+read: *A second call at a time. `hangup()` ends the newest live call, and the
+table holds every call there is; nothing stops two, and nothing arbitrates
+between them either. A channel that should serve a queue wants a lane that names
+the call, and that is a wider question than a template.* The lane that names the
+call is `hop.call_id`, and the arbitration is `params.second_call`
+([#620](https://github.com/mmeyerlein/meclaw/issues/620)) — see *What a second
+call gets*. What is **still** not here:
+
+* **A queue deeper than the policy.** Every waiting caller sits in the table and
+  the oldest is promoted, so a queue is as deep as the callers who ring; nothing
+  caps it and nothing tells a caller their position.
+* **A clock on a waiting caller.** Somebody in the queue waits until the call in
+  front of them ends or until they hang up. The reason is the one the waiting
+  hang-up gives below: a timeout would turn a wiring fault into a silence.
+* **An airtight arrival count.** The decision reads the live calls and then
+  writes the arriving row's state, so two legs that arrive inside one another's
+  store round trip can both read the same count — the class the `speaking` count
+  below already has, and the same cure it needs: an operation the store does not
+  have.
+* **A second call from the same number as a second conversation.** One
+  conversation partner is one conversation, whichever spelling of
+  `context.channel` is in force.
+* **An order between the two commands of one bundle.** The pause and the hold
+  media leave together, and so do the break and the resume. `gateway` is a
+  `web_fetch`, which is a STATELESS cell: its dispatcher spawns one worker per
+  message up to `params.max_concurrency` (4 here), so the two run at once and
+  the switch may see either first. What that costs is milliseconds of a caller
+  being heard by a recogniser that is about to be paused, or of silence before
+  the hold media starts. Closing it would mean one command where FreeSWITCH
+  offers two, or a `max_concurrency` of 1 on a cell that also carries the
+  originate — neither is worth those milliseconds. What IS ordered is anything
+  in two different bundles: the hold plays before the break that stops it,
+  because a store round trip and a `call_ended` stand between them.
+* **A handshake around the promotion.** The `resume` and the turn that announces
+  the promoted caller leave in one bundle, and the switch carries out the first
+  one when it gets to it. The media half's session was never closed — that is
+  what `pause` buys — so an answer cannot arrive at a connection that is not
+  there; what CAN happen is that the caller's first word is spoken into a stream
+  that is still paused and is lost. Closing that needs a receipt from the switch
+  that this template does not ask for.
 
 **An airtight `speaking` count.** It is a count and not a flag, so two answers
 in a row no longer let the first `speak_end` cut the second sentence off, and
@@ -453,8 +664,9 @@ are written against, and a surface somebody wires against is a shipped fact.
 
 Its one `ref` pins the `voice` template, and the pin itself stands in
 `voice/config.json` — the one place a reader can resolve it, and the one place
-§ 4a's sweep reads. `1.3.0` is the version that has the `speak_end` lane; an
-older `voice` cannot serve this template, which is why the pin moved with it.
+§ 4a's sweep reads. `1.3.0` was the version that has the `speak_end` lane and
+`1.4.0` is the one that reads `context.call_id`; an older `voice` cannot serve
+this template, which is why the pin moves with it.
 
 **`1.0.1` repairs the first real inbound call** ([#614](https://github.com/mmeyerlein/meclaw/issues/614)):
 one turn per inbound call, no turn at the end of a call, and a `uuid_kill` on the
@@ -464,8 +676,22 @@ the five outbound lanes are the surface a dialplan and a manifest are written
 against, and every one of them is untouched. What changed is what the channel
 *says* on a lane that was already there, and
 a colony that installed `1.0.0` needs no rewiring at all: the `swap_nodes` onto
-`freeswitch@1.0.1` is the whole migration, and a `call_state` of `ended` simply
-stops appearing.
+`freeswitch@1.0.1` was the whole migration, and a `call_state` of `ended` simply
+stopped appearing.
+
+**`1.1.0` decides what a second call gets** ([#620](https://github.com/mmeyerlein/meclaw/issues/620)).
+Second place, because a manifest can now declare something it never could:
+`params.second_call` and `params.capacity` are new knobs, four receipt lanes are
+new exits, and `hangup` takes a `call_id`. Both halves of the channel also stamp
+`hop.call_id`, and the media half's pin moves with it, to the `voice` version
+that reads `context.call_id` — the pin itself stands in `voice/config.json`.
+
+Migrating a colony on `1.0.1` is `swap_nodes` onto `freeswitch@1.1.0` plus three
+edits in the installing manifest: promote `call_id` instead of `voice_session`,
+drop the `set_context` on the answer edge, and add the two receipt edges. The
+first two are optional for one version, since the media half still reads
+`context.session_id`; the third is not, and without it every inbound call
+dead-letters one receipt.
 
 ### The migration from `phone@1.0.0`
 
@@ -474,11 +700,10 @@ exported, so for almost everybody this section is history. A colony that *did* g
 in two steps and keeps its call table:
 
 1. `swap_nodes` the node onto the new template
-   (`{"match": {"name": "channels/phone"}, "template": "freeswitch@1.0.1"}`),
+   (`{"match": {"name": "channels/phone"}, "template": "freeswitch@1.1.0"}`),
    which leaves the `store` where it is.
-2. Rewrite the five edges of the installing manifest above: they name the node,
-   and the node's name is what changed. The two new keys go in at the same time
-   — `voice_session` on the way up, the `session_id` restore on the way down.
+2. Rewrite the edges of the installing manifest above: they name the node, and
+   the node's name is what changed. The receipt edges go in at the same time.
 
 Renaming the *node* as well (`channels/phone` → `channels/freeswitch`) is the
 tidier end state and costs the old node's `cell.db`: a call table is a log, not

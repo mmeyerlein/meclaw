@@ -45,6 +45,7 @@ fn cli_for(root: &std::path::Path) -> Cli {
         vault_key_source: "auto".to_string(),
         vault_key_file: None,
         stdio_format: meclaw_cli::StdioFormat::Text,
+        command: None,
     }
 }
 

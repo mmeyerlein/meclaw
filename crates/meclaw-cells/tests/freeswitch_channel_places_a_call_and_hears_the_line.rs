@@ -1,4 +1,4 @@
-//! `freeswitch@1.0.1` — a telephone as a CHANNEL of a person: it turns the facts
+//! `freeswitch@1.1.0` — a telephone as a CHANNEL of a person: it turns the facts
 //! about the line a person could ANSWER into TURNS, books the rest, and offers
 //! the assistant two tools of its own.
 //!
@@ -156,7 +156,7 @@ route = str(hop.get("route") or "")
 if route == "in_speak":
     sys.stdout.write(json.dumps({
         "header": {"route": "error", "error_code": "media_got_in_speak",
-                   "spoke_session": str(ctx.get("session_id") or "")},
+                   "spoke_session": str(ctx.get("call_id") or "")},
         "messages": []}))
 elif route == "end_speak":
     # The `speak_end` lane of a real `voice` cell, on demand: the test decides
@@ -228,6 +228,7 @@ elif route == "in_turn":
         "header": {"route": "error", "error_code": "surface_got_in_turn",
                    "got_state": str(ctx.get("call_state") or ""),
                    "got_session": str(ctx.get("session_id") or ""),
+                   "got_call": str(ctx.get("call_id") or ""),
                    "got_user": str(ctx.get("user_id") or ""),
                    "got_channel": str(ctx.get("channel") or ""),
                    "got_text": last_text()},
@@ -304,22 +305,22 @@ fn install_edges(agent: &str, channel: &str) -> Vec<Value> {
                 "audience_set": format!("'[\"agent:{agent}\",\"member:person\"]'"),
                 "user_id": format!("has(hop.user_id) && hop.user_id != '' ? hop.user_id : '{KNOWN_USER}'"),
                 "call_state": "has(hop.call_state) ? hop.call_state : ''",
-                "session_id": "has(hop.session_id) ? hop.session_id : ''",
-                "voice_session": "has(hop.session_id) ? hop.session_id : ''"}}
+                "call_id": "has(hop.call_id) ? hop.call_id : ''",
+                "session_id": "has(hop.session_id) ? hop.session_id : ''"}}
         }),
         json!({
             "from": "./channels", "to": format!("./channels/{channel}"),
             "condition": format!(
                 "has(hop.route) && hop.route == 'answer' && has(context.channel_node) && \
                  context.channel_node == '{channel}'"),
-            "modifier": {"set_hop": {"route": "'in_speak'"},
-                         "set_context": {"session_id": "has(context.voice_session) && context.voice_session != '' ? context.voice_session : (has(context.session_id) ? context.session_id : '')"}}
+            "modifier": {"set_hop": {"route": "'in_speak'"}}
         }),
         json!({
             "from": format!("./channels/{channel}"), "to": "./channels",
             "condition": "has(hop.route) && (hop.route == 'tool_result' || hop.route == 'tool_schemas')",
             "modifier": {"set_context": {
                 "tool_answerer": format!("'{channel}'"),
+                "call_id": "has(hop.call_id) ? hop.call_id : (has(context.call_id) ? context.call_id : '')",
                 "session_id": "has(hop.session_id) ? hop.session_id : (has(context.session_id) ? context.session_id : '')"}}
         }),
         json!({
@@ -649,14 +650,18 @@ fn turns(got: &[Message]) -> Vec<String> {
 
 /// One finished assistant turn, entering the channels container the way the
 /// member's own answer edge delivers it — with the session keeper's id on
-/// `context.session_id` and the CALL's id on `context.voice_session`, which is
-/// the pair GH #603 § 3 is about.
+/// `context.session_id` and the CALL's id on `context.call_id`.
+///
+/// That pair is what GH #603 § 3 was about and what GH #620 settled: the two
+/// keys have two owners, so the call travels under a name of its own and the
+/// keeper keeps `session_id`. Nothing restamps anything on the way down any
+/// more — the workaround that put the call back on `session_id` is retracted.
 async fn answer_into_the_channel(c: &mut Colony, call: &str, keeper: &str) -> Vec<Message> {
     let mut context = meclaw_core::serde_json::Map::new();
     context.insert("channel_node".into(), json!(CHANNEL));
     context.insert("channel".into(), json!(CHANNEL_KIND));
     context.insert("session_id".into(), json!(keeper));
-    context.insert("voice_session".into(), json!(call));
+    context.insert("call_id".into(), json!(call));
     c.h.send(
         MessageBuilder::new(Path::new("/person/channels"))
             .context(context)
@@ -683,7 +688,14 @@ async fn answer_into_the_channel(c: &mut Colony, call: &str, keeper: &str) -> Ve
 /// Nothing this round produces reaches the member's rim — what it produces is a
 /// command at the SWITCH — so the wait is on the switch and not on the sink.
 async fn speak_ends(c: &mut Colony, call: &str, reason: &str, want_paths: usize) -> Vec<String> {
-    c.h.send(
+    // GH #612: sent AS THE HIVE. The channel is a sealed hive, so `.../voice`
+    // named from OUTSIDE (sender `/`) is refused `hive_boundary` — an outside
+    // caller may not know the inside. This message is not an outside caller: the
+    // shipped topology raises it on the `speak_end` lane and the test only says
+    // WHEN, because the timing is what is being measured. It therefore names the
+    // hive as its sender, which is who hands it over in the running colony.
+    c.h.send_from(
+        Path::new(&format!("/person/channels/{CHANNEL}")),
         MessageBuilder::new(Path::new(&format!("/person/channels/{CHANNEL}/voice")))
             .hop(
                 json!({"route": "end_speak", "session_id": call, "reason": reason})
@@ -803,10 +815,14 @@ async fn the_channel_offers_two_tools_places_a_call_and_hangs_it_up() {
         format!("origination_uuid={session}"),
         "originate_timeout=45".to_string(),
         // GH #603 § 2: starting the stream is an API command, not an
-        // application, and `mod_audio_stream` reads `16000` and not `16k`.
+        // application, and `mod_audio_stream` reads `8000` and not `8k`.
         format!("api_on_answer='uuid_audio_stream {session} start "),
-        "mono 16000'".to_string(),
-        format!("?session={session}"),
+        // GH #619: a telephone call is 8 kHz, and the SAME number reaches the
+        // media half in the fork URL -- the two places that have to agree are
+        // written from one `fork_sample_rate`, so a mismatch is not a thing an
+        // operator can produce any more.
+        "mono 8000'".to_string(),
+        format!("?session={session}&sample_rate=8000"),
         KNOWN.to_string(),
     ] {
         assert!(
@@ -1049,9 +1065,9 @@ async fn a_hangup_waits_for_the_running_sentence() {
     )
     .await;
 
-    // The assistant answers. GH #603 § 3: the session keeper owns
-    // `context.session_id`, so the call travels beside it and the channel's own
-    // edge puts it back — the media half must be handed the CALL.
+    // The assistant answers. GH #603 § 3 and GH #620: the session keeper owns
+    // `context.session_id`, so the call travels beside it under its own name —
+    // the media half must be handed the CALL.
     let got = answer_into_the_channel(&mut c, &session, "keeper-generation-7").await;
     let spoke = only(&got, "media_got_in_speak");
     assert_eq!(

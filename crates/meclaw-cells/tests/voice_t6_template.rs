@@ -1,4 +1,4 @@
-//! `voice@1.3.0` — the template, its declared surface, and the binding manifest
+//! `voice@1.4.0` — the template, its declared surface, and the binding manifest
 //! its README hands a reader.
 //!
 //! Three things can drift apart here and each of them costs a reader a wrong
@@ -126,7 +126,7 @@ fn the_template_declares_a_long_running_voice_cell() {
         "a cell holding a socket is not bounded by a message timeout"
     );
     assert_eq!(tpl["name"], json!("voice"));
-    assert_eq!(tpl["version"], json!("1.3.0"));
+    assert_eq!(tpl["version"], json!("1.4.0"));
 }
 
 /// The params surface and the settings surface are the same surface: a knob an
@@ -260,23 +260,51 @@ fn the_two_credentials_are_a_declared_environment_surface() {
 }
 
 /// The answer finds its way back because the cell says it mints the key the
-/// answer is addressed by, and because it says it needs that key.
+/// answer is addressed by, and because it declares both keys it will read.
+///
+/// **RETRACTED with 1.4.0** (GH #620), in the words this test carried until
+/// then: *`consumes.context.session_id` is `required`, because without the
+/// session there is no connection to speak into.* Required is exactly what made
+/// the repair unmeasurable — the substrate refuses a message that names only
+/// the call before the cell ever sees it, so the cell could never prefer the
+/// call over the keeper's session. Both keys are optional now, and the cell's
+/// own `missing_session` is what refuses a message that names neither. The
+/// ingress declaration does NOT move: its list is the standard header
+/// convention (GH #185) and `call_id` is not one of them; it reaches context
+/// through the channel's own ingress edge.
 #[test]
-fn the_session_key_is_both_minted_and_required() {
+fn the_call_key_is_declared_and_the_session_key_is_still_read() {
     let Some((cfg, _, _)) = shipped() else {
         return;
     };
     let contract = &cfg["contract"];
+    for key in ["call_id", "session_id"] {
+        assert_eq!(
+            contract["consumes"]["context"][key]["required"],
+            json!(false),
+            "consumes.context.{key} is required, which refuses a message \
+             addressed by the other key before the cell can read it"
+        );
+        assert!(
+            contract["consumes"]["context"][key]["description"]
+                .as_str()
+                .is_some_and(|d| d.len() > 40),
+            "consumes.context.{key} carries no reason, and two keys for one \
+             value without a reason is a puzzle rather than a contract"
+        );
+    }
     assert_eq!(
-        contract["consumes"]["context"]["session_id"]["required"],
-        json!(true),
-        "without the session there is no connection to speak into"
+        contract["emits"]["hop"]["call_id"]["required"],
+        json!(false),
+        "the call travels on every emission that has a session, and the error \
+         shape has none"
     );
     assert_eq!(
         contract["ingress"]["context"],
         json!(["session_id"]),
         "a connection is born at this cell, so the cell is the setter root for \
-         the key that addresses it (GH #185)"
+         the key that addresses it (GH #185) — and `call_id` is not a standard \
+         header, so it is not claimed here"
     );
     // The failure shape carries an empty `messages[]` and no session at all, so
     // not one hop key may be required — that is what makes three shapes legal
@@ -315,7 +343,7 @@ fn the_readme_manifest_binds_the_three_lanes_and_the_way_back() {
         .expect("add_nodes is a list");
     assert_eq!(nodes.len(), 1, "one channel is one node");
     assert_eq!(nodes[0]["name"], json!("channels/voice"));
-    assert_eq!(nodes[0]["template"], json!("voice@1.3.0"));
+    assert_eq!(nodes[0]["template"], json!("voice@1.4.0"));
 
     let edges = manifest["diff"]["add_edges"]
         .as_array()
@@ -339,7 +367,7 @@ fn the_readme_manifest_binds_the_three_lanes_and_the_way_back() {
     let promoted = up["modifier"]["set_context"]
         .as_object()
         .expect("the up edge promotes");
-    for key in ["channel_node", "channel", "audience_set", "session_id"] {
+    for key in ["channel_node", "channel", "audience_set", "call_id"] {
         assert!(
             promoted.contains_key(key),
             "the up edge promotes no `{key}` — hop is single-hop and the key \
@@ -347,11 +375,19 @@ fn the_readme_manifest_binds_the_three_lanes_and_the_way_back() {
         );
     }
     assert!(
-        promoted["session_id"]
+        promoted["call_id"]
             .as_str()
-            .is_some_and(|s| s.contains("has(hop.session_id)")),
+            .is_some_and(|s| s.contains("has(hop.call_id)")),
         "a promotion off the hop is written `has(...) ? ... : ''`, or a missing \
          key skips the whole edge silently"
+    );
+    // GH #620: the workaround is gone. `voice_session` existed because
+    // `context.session_id` had two owners, and the ruling gave the call a key
+    // of its own — so the manifest carries neither the second key nor the
+    // restamp that put it back.
+    assert!(
+        !promoted.contains_key("voice_session"),
+        "the `voice_session` workaround is retracted: {promoted:#?}"
     );
     assert!(
         up["modifier"].get("set_hop").is_none(),
@@ -374,6 +410,11 @@ fn the_readme_manifest_binds_the_three_lanes_and_the_way_back() {
         down["modifier"]["set_hop"]["route"],
         json!("'in_speak'"),
         "the inbound lane of this cell is `in_speak`"
+    );
+    assert!(
+        down["modifier"].get("set_context").is_none(),
+        "nothing on the way down rewrites the address any more: `context.call_id` \
+         has one owner and arrives on the answer exactly as it left (GH #620)"
     );
 
     // The node name the manifest grows is the word the down edge guards on and
@@ -678,7 +719,7 @@ async fn the_readme_manifest_grows_the_channel_it_describes() {
     ack_rx
         .await
         .expect("rescan acked")
-        .expect("the library must register voice@1.3.0");
+        .expect("the library must register voice@1.4.0");
 
     let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
     h.inbox_tx

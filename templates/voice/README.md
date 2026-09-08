@@ -1,16 +1,25 @@
-# `voice@1.3.0`
+# `voice@1.4.0`
 
 A spoken conversation as one cell. One WebSocket surface, one pair of provider
 credentials, one wire up and one wire down. No persona, no memory, no answer of
 its own -- it carries turns between somebody talking and whatever you put behind
 it.
 
-**The connection IS the session.** A client opens the socket, the cell mints a
-`session_id` and every emission from that connection carries it. Closing the
-socket ends the session; there is nothing to resume and nothing to garbage
-collect. That is the one structural difference from a chat connector, where the
-conversation outlives every connection, and it is why the key that routes an
-answer back here is `session_id` and not a chat id.
+**The connection IS the session.** A client opens the socket, the cell mints an
+id and every emission from that connection carries it. Closing the socket ends
+the session; there is nothing to resume and nothing to garbage collect. That is
+the one structural difference from a chat connector, where the conversation
+outlives every connection, and it is why the key that routes an answer back here
+is the connection's own and not a chat id.
+
+**Since 1.4.0 that id travels under two names, and the second one is the one to
+wire against.** Every emission carries it as `hop.session_id` and as
+`hop.call_id`, and an answer selects its connection with `context.call_id`. One
+value, two names, because the first name has a second owner one level up: a
+member's `session-keeper` mints and stamps `context.session_id` for its own
+generation on every turn that passes it (GH #603 § 3). `call_id` only ever means
+the connection. `context.session_id` is still read where `call_id` is absent, so
+a colony wired against `voice@1.3.0` keeps working unchanged.
 
 ## The cell
 
@@ -26,11 +35,11 @@ instantiating mutation put it -- and not a scope with a door, so there is no
 
 | direction | what travels |
 |---|---|
-| in | the finished assistant turn. `context.session_id` picks the connection it is spoken into |
-| out, `hop.route == 'turn'` | one finished utterance as a user-origin text turn. `hop` carries `session_id`, `turn_id` (`<session_id>#<n>`), `platform` (`voice`) and `mode` |
+| in | the finished assistant turn. `context.call_id` picks the connection it is spoken into (`context.session_id` where that key is absent) |
+| out, `hop.route == 'turn'` | one finished utterance as a user-origin text turn. `hop` carries `session_id` and `call_id`, `turn_id` (`<session_id>#<n>`), `platform` (`voice`) and `mode` |
 | out, `hop.route == 'partial'` | an interim transcript, same body shape, `hop` carries `eager` beside the rest. OFF by default -- `params.emit_partials` turns it on |
-| out, `hop.route == 'speak_end'` | one synthesis is over. Empty `messages[]`; `hop` carries `session_id`, `speak_id` and `reason` (`done`, `cancelled`, `failed`) beside `platform`. OFF by default -- `params.emit_speak_end` turns it on |
-| out, `hop.route == 'error'` | the cell's own failure: empty `messages[]`, `hop.error_code` plus `msg_type: 'voice_error'`, `session_id` where one exists, detail in `meta` |
+| out, `hop.route == 'speak_end'` | one synthesis is over. Empty `messages[]`; `hop` carries `session_id`, `call_id`, `speak_id` and `reason` (`done`, `cancelled`, `failed`) beside `platform`. OFF by default -- `params.emit_speak_end` turns it on |
+| out, `hop.route == 'error'` | the cell's own failure: empty `messages[]`, `hop.error_code` plus `msg_type: 'voice_error'`, `session_id` and `call_id` where a session exists, detail in `meta` |
 
 **Unlike a chat connector this cell names its own lanes.** `telegram-connector`
 emits one wire and the level around it sorts the two shapes apart on
@@ -50,7 +59,7 @@ with `edge_schema`.
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "channels/voice", "template": "voice@1.3.0",
+  "add_nodes": [{"name": "channels/voice", "template": "voice@1.4.0",
                  "override_params": {"port": 7900}}],
   "add_edges": [
     {"from": "./channels/voice", "to": "./channels",
@@ -59,12 +68,11 @@ with `edge_schema`.
                                   "channel": "'voice'",
                                   "assistant": "'<assistant>'",
                                   "audience_set": "'[\"agent:<assistant>\",\"member:<member>\"]'",
-                                  "session_id": "has(hop.session_id) ? hop.session_id : ''",
-                                  "voice_session": "has(hop.session_id) ? hop.session_id : ''"}}},
+                                  "call_id": "has(hop.call_id) ? hop.call_id : ''",
+                                  "session_id": "has(hop.session_id) ? hop.session_id : ''"}}},
     {"from": "./channels", "to": "./channels/voice",
      "condition": "has(hop.route) && hop.route == 'answer' && has(context.channel_node) && context.channel_node == 'voice'",
-     "modifier": {"set_hop": {"route": "'in_speak'"},
-                  "set_context": {"session_id": "has(context.voice_session) && context.voice_session != '' ? context.voice_session : (has(context.session_id) ? context.session_id : '')"}}}
+     "modifier": {"set_hop": {"route": "'in_speak'"}}}
   ]
 }}
 ```
@@ -80,32 +88,40 @@ promoted the session only on the happy path would make every failure look like i
 came from nowhere.
 
 **The promotion is not decoration.** `hop` is single-hop: it survives one
-delivery. `session_id` has to be in `context` before the turn reaches anything
+delivery. `call_id` has to be in `context` before the turn reaches anything
 that will emit again, or the answer has no connection to be spoken into and the
-cell answers `missing_session`. Every promotion off the hop is written
+cell answers `missing_session`. The way back needs no modifier at all: nothing
+between the channel and the assistant writes `context.call_id`, so it arrives on
+the answer exactly as it left. Every promotion off the hop is written
 `has(...) ? ... : ''`, because a modifier that fails to evaluate skips the whole
 edge -- and an edge that silently does not fire is the one failure mode a voice
 surface diagnoses worst.
 
-### `voice_session`, and why the connection needs a key of its own
+### `voice_session` is gone, and what replaced it
 
-The two extra lines in the manifest above look like belt and braces and are not.
-`context.session_id` is the key the cell selects a connection by — and it is
-**also** the key the member's `session-keeper` mints and stamps for its own
-bookkeeping, on every turn that passes it. So on a member that holds a keeper,
-the answer comes back carrying the keeper's generation id, no connection holds
-it, and the cell answers `unknown_session` while the caller hears nothing. It
-was found on a real telephone call (GH #603 § 3) and it is not specific to
-telephony: it is what happens whenever a keeper stands between this cell and
-whatever answers.
+**Retracted in 1.4.0.** Until 1.3.0 the manifest above carried two extra lines,
+and this section described them as a workaround waiting for a ruling:
 
-The workaround is the pair above: the ingress edge writes the connection's id
-into `voice_session` as well, and the answer edge puts it back on `session_id`
-on the way into the cell. It costs one context key and it is written down as a
-**workaround** rather than a design — which of the two owns
-`context.session_id` is a ruling nobody has made, and the day it is made these
-two lines come out. A member with no `session-keeper` does not need them, and
-they cost it nothing.
+> `context.session_id` is the key the cell selects a connection by -- and it is
+> **also** the key the member's `session-keeper` mints and stamps for its own
+> bookkeeping, on every turn that passes it. So on a member that holds a keeper,
+> the answer comes back carrying the keeper's generation id, no connection holds
+> it, and the cell answers `unknown_session` while the caller hears nothing.
+
+The diagnosis was right and it was found on a real telephone call (GH #603 § 3).
+The two lines wrote the connection's id into a second context key,
+`voice_session`, and put it back on `session_id` on the way in.
+
+The ruling has been made (GH #620): **the call key belongs to the channel.** The
+cell now stamps `hop.call_id` on everything it emits and selects a connection by
+`context.call_id`, `context.session_id` stays the keeper's, and the two lines
+come out of the manifest. Nothing is restamped on the way down, because nothing
+on the way down overwrites a key nobody else owns.
+
+**A colony on the old wiring does not have to move on the same day.**
+`context.session_id` is still read where `call_id` is absent, so the pair of
+lines keeps working until the manifest is rewritten; the cell prefers `call_id`
+whenever both are there, which is exactly what a half-migrated colony needs.
 
 ### The two channel keys, on a surface where they are the same word
 
@@ -118,16 +134,16 @@ keys*). A **screen** carries the same word in both because a screen is one room,
 and **so does this cell**: one voice channel of a person is one room they speak
 in, however many times they pick it up. The word is the node name.
 
-`session_id` is the third key and it is neither of those two: it changes with
+`call_id` is the third key and it is neither of those two: it changes with
 every connection, and the holders must not count by it or a person who redialled
 would be a new room.
 
 **That is why the promotion is on all three lanes and not only on `turn`.** A
 phone edge (FreeSWITCH) passes its call UUID as `?session=` on the socket URL and
-gets it back on every emission, which is how a phone hive matches turns to a
-call. A `partial` or an `error` that arrived without the session would be an
-event the bridge could not attribute to the call it belongs to -- and on a
-failure that is exactly the moment attribution is worth the most.
+gets it back on every emission as `hop.call_id`, which is how a phone hive
+matches turns to a call. A `partial` or an `error` that arrived without the call
+would be an event the bridge could not attribute to the call it belongs to -- and
+on a failure that is exactly the moment attribution is worth the most.
 
 **The round comes from this edge.** `audience_set` has exactly one spelling and
 no template may introduce a second (`member`, GH #330). Nothing upstream of
@@ -150,7 +166,7 @@ grown from a production seed: every voice turn rejected until this line stood):
                 "assistant": "'<assistant>'",
                 "audience_set": "'[\"agent:<assistant>\",\"member:<member>\"]'",
                 "user_id": "'<the person's sender id>'",
-                "session_id": "has(hop.session_id) ? hop.session_id : ''"}
+                "call_id": "has(hop.call_id) ? hop.call_id : ''"}
 ```
 
 A member whose firewall has no enabled `allow` row on `user_id` (the shipped
@@ -178,7 +194,7 @@ install`). Until then the manifest that wants partials does both halves itself
 one key on the node:
 
 ```json
-{"name": "channels/voice", "template": "voice@1.3.0",
+{"name": "channels/voice", "template": "voice@1.4.0",
  "override_params": {"emit_partials": true}}
 ```
 
@@ -212,7 +228,7 @@ at the switch pending — see [`freeswitch`](../freeswitch/) § *Hanging up*).
 **Both halves or neither**, exactly as for `partial`:
 
 ```json
-{"name": "channels/voice", "template": "voice@1.3.0",
+{"name": "channels/voice", "template": "voice@1.4.0",
  "override_params": {"emit_speak_end": true}}
 ```
 
@@ -313,7 +329,7 @@ names its own through `override_params`, in the flat form, because a single-cell
 template has nothing inside it to address.
 
 ```json
-{"name": "channels/voice", "template": "voice@1.3.0",
+{"name": "channels/voice", "template": "voice@1.4.0",
  "override_params": {"port": 7912}}
 ```
 
@@ -333,6 +349,18 @@ one runs is `params.stt.provider` / `params.tts.provider`:
 |---|---|---|
 | speech to text | `deepgram`, `openai`, `echo` | `api_key`, `model`, `language`, the end-of-turn thresholds, `sample_rate`, `base_url`; `deepgram` also `keyterms` |
 | text to speech | `cartesia`, `openai`, `elevenlabs` | `api_key`, `voice`, `model`, `language`, `sample_rate`, `base_url` |
+
+And what each one will run at, which is what a client negotiates against
+(GH #619). Every adapter here speaks `pcm_s16le` mono and nothing else:
+
+| provider | direction | default rate | rates it serves |
+|---|---|---|---|
+| `deepgram` | in | `16000` | `8000`, `16000`, `24000`, `44100`, `48000` |
+| `openai` (transcription) | in | `24000` | `24000` |
+| `echo` | both | `16000` | `8000`, `16000`, `24000`, `44100`, `48000` -- the union of the recognisers above, so a calibration can be run at the rate the measurement after it will use |
+| `cartesia` | out | `24000` | `8000`, `16000`, `22050`, `24000`, `44100`, `48000` |
+| `elevenlabs` | out | `24000` | `8000`, `16000`, `22050`, `24000`, `32000`, `44100`, `48000` |
+| `openai` (speech) | out | `24000` | `24000` |
 
 The fields are the provider's own, so they are not all the same: `elevenlabs`
 takes `stability` and `similarity_boost` instead of `language`, `emotion` and
@@ -362,7 +390,7 @@ spelling that says "not set" -- `VoiceParams::parse` reads a null `tts` exactly
 as an absent one, which is legal precisely when the recogniser is `echo`:
 
 ```json
-{"name": "channels/voice", "template": "voice@1.3.0",
+{"name": "channels/voice", "template": "voice@1.4.0",
  "override_params": {"stt": {"provider": "echo"}, "tts": null}}
 ```
 
@@ -375,7 +403,7 @@ routes -- a self-hosted realtime transcription endpoint, a self-hosted
 `/v1/audio/speech` -- stands in for the hosted one without touching the cell:
 
 ```json
-{"name": "channels/voice", "template": "voice@1.3.0",
+{"name": "channels/voice", "template": "voice@1.4.0",
  "override_params": {
    "tts": {"provider": "openai",
            "base_url": "http://<local-host>:<port>",
@@ -389,11 +417,28 @@ empty value is the explicit statement "this endpoint needs no credential"
 (`docs/config.md` § *The empty value*), and a literal in a mutation body ships a
 secret into the `mutation_log`.
 
-**The cell never resamples.** The rate a provider declares is the rate on the
-wire, in both directions, and audio arriving at another rate is refused rather
-than converted. Deepgram takes 16 kHz, both OpenAI adapters and Cartesia are at 24
-kHz by default, and so is `elevenlabs`; the client is what matches them, because
-the client is the one place in the chain that knows what its microphone can do.
+**The cell never resamples.** The rate on the wire is the rate a provider is
+actually running at, in both directions, and audio arriving at another rate is
+refused rather than converted. The client is what matches it, because the client
+is the one place in the chain that knows what its microphone can do.
+
+**But the client may say which rate that is** (GH #619).
+`ws://…/ws?session=<id>&sample_rate=8000` tells the cell what this connection
+sends; the recognition session then runs at that rate, and `hello` declares the
+pair it agreed to. The two directions are answered separately, because they are
+not the same kind of promise: **inbound is binding** -- a rate the recogniser
+does not serve refuses the connection with a `400` that names the rates it does
+-- while **outbound is a wish**: a rate the synthesis provider cannot do leaves
+its own rate standing, and `hello.audio_out` says which. `GET /info` lists both
+sets as `audio_in_rates` and `audio_out_rates`, so a client reads what it may
+ask for rather than provoking a refusal to find out. A client that asks for
+nothing gets exactly what it got before: the defaults in the table above.
+
+The case this exists for is the telephone. A call IS 8 kHz; upsampling it to
+16 kHz at the switch doubled the bytes and added no bandwidth, and the
+recogniser was handed interpolated samples for its trouble. The `freeswitch`
+template now streams 8 kHz and asks for 8 kHz in the same command line, out of
+one `fork_sample_rate`.
 
 ## The credentials
 
@@ -452,7 +497,7 @@ instantiating manifest's `override_params`, where it is substituted at
 instantiation exactly like the two api keys.
 
 ```json
-{"name": "channels/voice", "template": "voice@1.3.0",
+{"name": "channels/voice", "template": "voice@1.4.0",
  "override_params": {"tts": {"provider": "cartesia",
                              "api_key": "${CARTESIA_API_KEY}",
                              "voice": "${CARTESIA_VOICE}"}}}
@@ -467,7 +512,7 @@ exactly the same place, and the whole switch is one override -- the template doe
 not change, because `provider` was always a value rather than a shape:
 
 ```json
-{"name": "channels/voice", "template": "voice@1.3.0",
+{"name": "channels/voice", "template": "voice@1.4.0",
  "override_params": {"tts": {"provider": "elevenlabs",
                              "api_key": "${ELEVENLABS_API_KEY}",
                              "voice": "${ELEVENLABS_VOICE}"}}}

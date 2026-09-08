@@ -1,7 +1,7 @@
 # examples/meclaw-os
 
 An empty folder, a template library, and one declaration. Out of that: a screened,
-session-keeping conversational agent, fourteen cells, no new Rust.
+session-keeping conversational agent, seventeen cells, no new Rust.
 
 **Two roots live in this folder, and they answer different questions.** `seed/` plus the five
 `grow-*.json` are what this page walks through: a colony grown one hand-written declaration at a
@@ -136,7 +136,7 @@ curl -s -X POST http://127.0.0.1:7777/colony/mutations \
      -d @examples/meclaw-os/grow.json
 ```
 
-Reload the registry. Fourteen cells.
+Reload the registry. Seventeen cells.
 
 `MODEL_BRAIN` is read at instantiation and again at every read afterwards, so a different model
 is an `.env` line and a reboot, not a config edit. Any OpenAI-compatible endpoint works --
@@ -251,7 +251,7 @@ by a system update or seeded on first birth. Topology is not persona.
 - **The tree is not the source code.** What is version-controlled here is an empty seed and a
   declaration; the substance lives in a library and arrives at runtime, into a colony that is
   already up. Nothing was restarted -- not for the first declaration and not for the second.
-- **Composition is topology, not framework.** All fourteen cells came from four templates that
+- **Composition is topology, not framework.** All seventeen cells came from four templates that
   know nothing about each other. What connects them is four edges in one file.
 - **Enforcement is code, phrasing is agentic.** The firewall's verdicts are comparisons; the
   agent never sees a turn it rejected.

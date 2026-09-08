@@ -57,7 +57,12 @@ fn start_session_with(
     let (events_tx, events_rx) = mpsc::channel(64);
     let provider = OpenAiTranscriptionStt::new(params(&mock.base_url(), turn_detection))
         .with_timeouts(timeouts(external_ms, idle_ms));
-    let session = provider.run_session(audio_rx, events_tx, IoLivenessMark::disabled());
+    let session = provider.run_session(
+        provider.input_format(),
+        audio_rx,
+        events_tx,
+        IoLivenessMark::disabled(),
+    );
     (audio_tx, events_rx, tokio::spawn(session))
 }
 
@@ -399,6 +404,7 @@ async fn every_provider_frame_marks_liveness() {
     let provider = OpenAiTranscriptionStt::new(params(&mock.base_url(), "server_vad"))
         .with_timeouts(timeouts(5_000, 30_000));
     let session = tokio::spawn(provider.run_session(
+        provider.input_format(),
         audio_rx,
         events_tx,
         IoLivenessMark::new(Path::new("/member/channels/voice"), Some(colony_tx)),

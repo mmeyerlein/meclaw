@@ -46,6 +46,7 @@ async fn validate_skips_http_bind_even_with_api_flag() {
         vault_key_source: "auto".to_string(),
         vault_key_file: None,
         stdio_format: meclaw_cli::StdioFormat::Text,
+        command: None,
     };
     run(cli).await.unwrap();
 }

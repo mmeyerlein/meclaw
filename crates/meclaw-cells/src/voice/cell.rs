@@ -456,6 +456,7 @@ impl VoiceCell {
             "header": {
                 "route": "speak_end",
                 "session_id": session_id,
+                "call_id": session_id,
                 "speak_id": speak_id,
                 "reason": reason,
                 "platform": "voice",
@@ -482,6 +483,7 @@ impl VoiceCell {
         header.insert("msg_type".into(), json!("voice_error"));
         if let Some(s) = session {
             header.insert("session_id".into(), json!(s));
+            header.insert("call_id".into(), json!(s));
         }
         if let Some(obj) = extra.as_ref().and_then(|e| e.as_object()) {
             for (k, v) in obj {
@@ -664,6 +666,7 @@ impl VoiceCell {
         header.insert("msg_type".into(), json!("voice_error"));
         if let Some(s) = session {
             header.insert("session_id".into(), json!(s));
+            header.insert("call_id".into(), json!(s));
         }
         let content = json!({
             "header": Value::Object(header),
@@ -679,6 +682,11 @@ fn transcript_body(route: &str, session_id: &str, mode: Mode, text: &str, extra:
     let mut header = Map::new();
     header.insert("route".into(), json!(route));
     header.insert("session_id".into(), json!(session_id));
+    // The same value under the name a CHANNEL uses (GH #620). `session_id` is
+    // also what a member's `session-keeper` mints for its own generation, so a
+    // colony with two calls in flight needs a key that only ever means the
+    // call.
+    header.insert("call_id".into(), json!(session_id));
     header.insert("platform".into(), json!("voice"));
     header.insert(
         "mode".into(),
@@ -811,18 +819,30 @@ impl LongRunningCell for VoiceCell {
                 return;
             };
 
-            let Some(session_id) = msg
-                .headers
-                .context
-                .get("session_id")
-                .and_then(|v| v.as_str())
-                .map(str::to_string)
-            else {
+            // The call first, the session second (GH #620, wave ruling
+            // R-0908-6). `context.session_id` has two owners — this cell
+            // selects a connection by it, and a member's `session-keeper`
+            // mints one of its own on the same key for every turn that passes
+            // it — so a channel standing behind a keeper has to be able to say
+            // which CALL it means. Reading `session_id` where the call key is
+            // absent is what keeps a colony wired against an older `voice`
+            // working: the key is ADDED, and nothing about the old one moves.
+            let addressed = |key: &str| {
+                msg.headers
+                    .context
+                    .get(key)
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+            };
+            let Some(session_id) = addressed("call_id").or_else(|| addressed("session_id")) else {
                 self.refuse(
                     sink,
                     reply_target,
                     "missing_session",
-                    "context.session_id required (promote it on the voice cell's out-edge)",
+                    "context.call_id required, or context.session_id where a colony still \
+                     addresses this cell by the older key (promote it on the voice cell's \
+                     out-edge)",
                     None,
                 )
                 .await;
@@ -1129,6 +1149,32 @@ mod tests {
             .expect_err("the i/o half said the address was taken");
         assert_eq!(text, "bind failed: 127.0.0.1:7901: taken");
         reader.await.expect("the reader task finishes");
+    }
+
+    /// **A transcript names its call.** GH #620: `turn` and `partial` are the
+    /// two lanes a colony reads a conversation off, and a phone hive with two
+    /// calls in flight cannot attribute either of them without the call on the
+    /// hop. Both come out of one builder, so both are measured here — the
+    /// integration file pins the other two lanes, which need a live socket.
+    #[test]
+    fn a_transcript_names_the_call_it_belongs_to() {
+        for route in ["turn", "partial"] {
+            let body = transcript_body(route, "call-7", Mode::Auto, "hello", json!({}));
+            let header = body
+                .get("header")
+                .and_then(|h| h.as_object())
+                .expect("a transcript carries a header");
+            assert_eq!(
+                header.get("call_id"),
+                Some(&json!("call-7")),
+                "the `{route}` lane names the call: {body}"
+            );
+            assert_eq!(
+                header.get("call_id"),
+                header.get("session_id"),
+                "one value under both names — a connection IS the session: {body}"
+            );
+        }
     }
 
     /// A session identity outlives a connection, and a release grace outlives a

@@ -301,6 +301,10 @@ pub enum ColonyWriteOp {
         /// the DLQ-drain reconstruct the verbatim `DeadLetter` from the DB so the
         /// drain hook keeps returning `Vec<DeadLetter>` with body/correlation_id.
         message_json: String,
+        /// GH #612 — the reason-specific fact of [`crate::DeadLetter::detail`],
+        /// carried through so the persisted row can answer it too. `NULL` for
+        /// every reason that has none.
+        detail: Option<String>,
     },
     /// Phase-16 W6d (A6): delete ALL rows from the `dead_letters` table — the
     /// DB-side of the DLQ drain/DELETE (`/colony/dead_letters` DELETE). The read
@@ -726,11 +730,12 @@ fn apply_op(
             trace_id,
             created_at,
             message_json,
+            detail,
         } => {
             tx.execute(
                 "INSERT INTO dead_letters
-                   (sender_path, original_target, resolved_target, error_code, trace_id, created_at, message_json)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)",
+                   (sender_path, original_target, resolved_target, error_code, trace_id, created_at, message_json, detail)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 rusqlite::params![
                     sender_path,
                     original_target,
@@ -738,7 +743,8 @@ fn apply_op(
                     error_code,
                     trace_id,
                     created_at,
-                    message_json
+                    message_json,
+                    detail
                 ],
             )?;
         }

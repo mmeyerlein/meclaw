@@ -43,6 +43,7 @@ async fn meclaw_api_starts_serves_health_and_shuts_down_on_signal() {
         vault_key_source: "auto".to_string(),
         vault_key_file: None,
         stdio_format: meclaw_cli::StdioFormat::Text,
+        command: None,
     };
 
     let join =

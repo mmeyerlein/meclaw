@@ -131,6 +131,7 @@ async fn cli_env_seam_carries_through_boot_mutation_and_adoption() {
         vault_key_source: "auto".to_string(),
         vault_key_file: None,
         stdio_format: meclaw_cli::StdioFormat::Text,
+        command: None,
     };
     let (addr_tx, addr_rx) = tokio::sync::oneshot::channel();
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();

@@ -653,6 +653,60 @@ pub fn collect_sealed_hives<'a>(
     out
 }
 
+/// GH #612 — the ABSOLUTE addresses one hive declared as connect points, each
+/// paired with the lane that may use it.
+///
+/// Call-site adapter (NOT pure — reads `config.json`), and the delivery-side
+/// twin of what [`v_lane_verdict`] asks a contract at mutation time. Same
+/// reader, [`crate::mutation::hive_contract::contract_from_cell_dir`], so the
+/// two surfaces cannot disagree about what an `at` entry names.
+///
+/// Only `accepts` lanes contribute: an `emits` lane describes what LEAVES the
+/// hive, and nobody delivers to it from outside.
+///
+/// An entry that can name nothing is dropped with a warning rather than kept —
+/// the GH #196 shape. `"."`, an empty string and anything reaching upwards name
+/// no address below this hive, and a silent inert entry is exactly the defect
+/// that sealed two shipped templates shut.
+#[must_use]
+pub fn lane_connect_points(root: &std::path::Path, hive_path: &str) -> Vec<(String, String)> {
+    let (scope, name) = match hive_path.rfind('/') {
+        Some(0) => ("/", &hive_path[1..]),
+        Some(i) => (&hive_path[..i], &hive_path[i + 1..]),
+        None => return Vec::new(),
+    };
+    let cell_dir = crate::path_truth::resolve_cell_dir(root, scope, name);
+    let Some(contract) =
+        crate::mutation::hive_contract::contract_from_cell_dir(&cell_dir, hive_path)
+    else {
+        return Vec::new();
+    };
+    let prefix = hive_path.trim_end_matches('/');
+    let mut out = Vec::new();
+    for lane in &contract.accepts {
+        for at in &lane.at {
+            let rest = at.strip_prefix("./").unwrap_or(at);
+            if rest.is_empty()
+                || rest == "."
+                || rest == ".."
+                || rest.starts_with("../")
+                || rest.starts_with('/')
+            {
+                tracing::warn!(
+                    hive = %hive_path,
+                    lane = %lane.route,
+                    at = %at,
+                    "params.contract accepts[].at must name a path BELOW this hive — this entry \
+                     can never name an address, ignoring"
+                );
+                continue;
+            }
+            out.push((lane.route.clone(), format!("{prefix}/{rest}")));
+        }
+    }
+    out
+}
+
 /// GH #285 — the ABSOLUTE addresses the given hives declared as slots.
 ///
 /// One derivation, two readers: the boot check

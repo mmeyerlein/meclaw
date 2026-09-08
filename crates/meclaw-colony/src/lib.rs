@@ -23,6 +23,7 @@ mod drain;
 pub mod edge_table;
 pub mod env_file;
 pub mod factory;
+pub mod hive_boundary;
 pub mod hive_scope;
 pub mod io_liveness;
 pub mod long_running_cell;
@@ -83,6 +84,9 @@ pub use db_conn::{DbConn, QueryTimeout};
 pub use dead_letter::{DeadLetter, DeadLetterReason};
 pub use edge_table::{Edge, EdgeDecision, EdgeTable, apply_edges, evaluate_edge};
 pub use factory::{CellFactory, CellFactoryRegistry, ContractView, SpawnedCellKind, WakeFn};
+pub use hive_boundary::{
+    HiveBoundary, HiveBoundaryTable, boundary_refusal, rebuild_hive_boundaries,
+};
 pub use hive_scope::{HiveScope, HiveScopeTable};
 pub use io_liveness::IoLivenessMark;
 pub use long_running_cell::LongRunningCell;

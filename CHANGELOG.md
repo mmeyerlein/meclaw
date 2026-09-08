@@ -4,10 +4,291 @@ All notable changes to MeClaw are documented in this file. One entry per release
 package. The format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 versioning follows SemVer (0.x: minor/patch bumps for additive features).
 
-The public contract is the HTTP API, the template DSL, the template ports and the
-documented `error_code` strings (README § Stability). Anything that breaks one of
-them is listed under **Breaking** in its release, with the migration named. The
-Rust crates are internals and move without notice.
+The public contract is the HTTP API, the template DSL, the template ports, the
+`web` cell's own origin and the documented `error_code` strings
+([docs/stability.md](docs/stability.md)). Anything that breaks one of them is
+listed under **Breaking** in its release, with the migration named. The Rust
+crates are internals and move without notice.
+
+## [0.33.0] — 2026-09-08
+
+`meclaw ask` sends one turn to a running colony and prints the answer; the
+quickstart used to need two `curl` calls and a `jq` pipeline for that. The README
+and the `docs/why/` pages were rewritten for a first-time reader, and the three
+pages that had answered 404 since 0.32.1 are back. The telephone path learned
+what a second call is and what sample rate a call actually carries. Three
+substrate defects are repaired: a hive contract that read an edge without looking
+at its direction, two timer schedules sharing a second where only one fired, and
+endpoint validation that resolved a bare short name against a foreign scope. One
+change is breaking, and it is the first item below.
+
+### Breaking
+
+- **A sealed hive's interior is no longer addressable from outside.** A message
+  that enters the colony from outside — the HTTP ingress, and every other source
+  message — and names a CELL inside a hive that declares `params.ports` is
+  refused with the new `error_code` `hive_boundary` instead of being delivered
+  past every door the hive put in front of it. This is the rule
+  `docs/meclaw-overview.md` § The hive boundary has stated since 2026-08-18
+  ("`<hive>/<cell>` is not an address … including where the substrate still
+  resolves it today for want of a declaration"); GH #133 enforced it for
+  `add_edges`, and until now nothing enforced it for a message.
+
+  **Migration.** Address the hive and name the lane: `{"target": "<hive path>",
+  "hop": {"route": "<lane>"}}` (GH #175). Where the hive declared the interior
+  address itself — an entry in `params.ports`, or a `params.contract`
+  `accepts[].at` connect point — that address still answers, and the connect
+  point answers on its own lane only. A LEVEL inside a sealed hive is refused
+  exactly like a cell: five shipped templates carry a nested hive through a `ref`
+  marker, and treating a nested rim as an address would have made it the way
+  around the boundary. The hive path itself is of course still an address.
+  Internal traffic is unaffected — inside the hive the graph is the hive's own
+  business — and a hive that declares no ports is untouched, exactly as under
+  GH #133's opt-in.
+
+### Added
+
+- `voice@1.4.0`: every emission carries `hop.call_id` beside `hop.session_id` —
+  the same value under the name a channel addresses the connection by — and an
+  `in_speak` selects its connection with `context.call_id`. The `hello` frame
+  and the emission tables in `docs/cell-types.md` and
+  `docs/voice-wire-protocol.md` name it. A phone hive with two calls in flight
+  can now attribute a `turn`, a `partial`, a `speak_end` and an `error` to the
+  call it belongs to (GH #620).
+
+- `freeswitch@1.1.0`: `params.second_call` (`busy`, `queue`, `parallel`) and
+  `params.capacity` decide what an inbound call gets while another one is
+  running, and every outcome leaves a row in the `calls` table AND a receipt on
+  its own lane — `call_accepted`, `call_queued`, `call_refused`,
+  `call_abandoned`, each carrying `hop.call_id`, `hop.policy` and
+  `hop.capacity`. A queued caller is taken off the recogniser with
+  `uuid_audio_stream <uuid> pause` (never `stop`, which would close the
+  websocket and end the media half's session) and hears
+  `params.queue_hold_media` (the switch's own hold media by default, so a queue
+  costs nothing at a vendor); the queue is emptied by the end of a call and by
+  nothing else — no timer, no poll. `hangup` takes an optional `call_id`
+  (GH #620).
+- **`meclaw ask`: one turn to a running colony, the answer on stdout
+  ([#623](https://github.com/mmeyerlein/meclaw/issues/623)).** Reading an answer
+  used to take two `curl` calls and a four-line `jq` pipeline over
+  `/colony/trace`. It is now one command:
+  `meclaw ask --api 127.0.0.1:7777 --target /door "Say hello in one short sentence."`
+  It POSTs the turn the API already accepts, follows the trace of the message it
+  sent, and prints the first hop that travels on route `answer` or `error`.
+  `--channel` names the conversation (default: a fresh `ask-<uuid>`), `--timeout`
+  bounds the wait (default 120 s), `--json` prints the hop unchanged for scripts.
+  Exit codes: `0` on `answer`, `1` on `error` and on a transport failure, `2` on
+  timeout. A mistyped `--target` is acknowledged with a 202 and then dies in the
+  router, so the command watches `/colony/dead_letters` as well and reports the
+  refusal with its `error_code` instead of waiting out the timeout. No new HTTP
+  route and no change to an existing one — the command is a client of the three
+  routes the quickstart and the operator UI already used, so the contract does
+  not move.
+
+- `voice@1.4.0`: **the cell negotiates its sample rate per connection** (GH #619).
+  A client names what it sends with
+  `ws://…/ws?session=<id>&sample_rate=8000`, and the recognition session runs at
+  that rate instead of at whatever the template configured. The two directions
+  are answered separately: inbound is binding — a rate the recogniser does not
+  serve refuses the connection with a `400` naming the rates it does — while
+  outbound falls back to the synthesis provider's own rate, which
+  `hello.audio_out` then declares. `?encoding=` is accepted for symmetry and
+  takes the one value this protocol version has, `pcm_s16le`; any other name is
+  a `400`. `GET /info` gained `audio_in_rates` and `audio_out_rates`, so a
+  client reads the negotiable sets instead of provoking a refusal to learn them.
+  A client that sends neither parameter is served exactly as before, and the
+  cell still never resamples.
+- `hive_boundary` joins the canonical `error_code` vocabulary (README §
+  Stability). It is distinct from `unresolved_path` (the path exists) and from
+  `hive_no_route` (the hive was never asked to forward).
+- A dead letter can carry a `detail`: the one reason-specific fact its six
+  locating fields cannot. For `hive_boundary` it is the absolute path of the hive
+  that refused the address — the receipt names the boundary, which is what the
+  report asked for and what `resolved_target` alone could not say. Additive
+  everywhere: a NULL-able `dead_letters.detail` column behind a guarded `v9→v10`
+  migration (an existing row keeps every value it had), and a
+  `/colony/dead_letters` field that is omitted when there is no such fact, so a
+  reader that never asks for it sees the JSON it always saw (GH #612).
+
+### Changed
+
+- `voice@1.4.0`: `consumes.context.session_id` is no longer declared `required`,
+  so a message that names only the call reaches the cell; it is still read
+  wherever `context.call_id` is absent. **The ownership of `context.session_id`
+  is unchanged** — it stays the member's `session-keeper`'s, and this release
+  only ADDS the call key beside it. A colony wired against `voice@1.3.0` keeps
+  working unchanged. `contract.ingress.context` does not move either: its list
+  is the standard header convention and `call_id` is not one of them, so the key
+  reaches context through the channel's own ingress edge.
+- `voice@1.4.0` retracts the `voice_session` workaround of GH #603 § 3. The
+  installing manifest in `templates/voice/README.md` loses the second context
+  key and the restamp on the way down; an answer is addressed with
+  `context.call_id` and nothing rewrites it in transit.
+- **`freeswitch@1.1.0` changes what a `1.0.1` colony does with a second call.**
+  The shipped defaults are `second_call: "busy"` and `capacity: 1`, so after a
+  bare `swap_nodes` a second inbound call that `1.0.1` would have answered is
+  ended at the switch with `USER_BUSY` and leaves a `call_refused` receipt. That
+  is the point of the release, and it is still a behaviour change nobody asked
+  for: the way back to the old behaviour is one knob,
+  `override_params: {"signal": {"second_call": "parallel", "capacity": <n>}}`,
+  which lets `n` calls run at once — with the caveat that two calls then share
+  one `context.channel` unless the manifest's channel line is changed too
+  (`templates/freeswitch/README.md` § *What a second call gets*).
+- `freeswitch@1.1.0`: `hangup` refuses with `ambiguous_call` and lists the live
+  calls instead of ending the newest one when the model did not say which line
+  it meant. Ending the wrong line cannot be undone. Both halves of the channel
+  stamp `hop.call_id`, and the media half is pinned at `voice@1.4.0`.
+  `templates/freeswitch/README.md` retracts its own paragraph *A second call at
+  a time* and names what is still missing: a queue nothing caps, no clock on a
+  waiting caller, and an arrival count with the same one-round-trip window the
+  `speaking` count has.
+- `freeswitch@1.1.0` migration from `1.0.1`: `swap_nodes`, then three edits in
+  the installing manifest — promote `call_id` instead of `voice_session`, drop
+  the `set_context` on the answer edge, and add the two edges that drain the
+  receipt lanes. The first two are optional for one version; the third is not,
+  or every inbound call dead-letters one receipt.
+- `docs/README.md` is a list of self-describing links instead of a three-column
+  table: every document is named for what it is, with half a sentence where the
+  name alone does not carry it, and no row was dropped. The section about the
+  documentation's own production process is gone. One sentence now says that the
+  published documents are written in English, and the rule that the overview
+  wins on conflict stands once instead of twice. The first screen of
+  `docs/meclaw-overview.md` reads as English rather than as translated German;
+  its comparison table keeps all six rows and
+  the headings are unchanged. The pointer to the glossary said fifteen words and
+  now says sixteen, which is what the glossary carries
+  ([#625](https://github.com/mmeyerlein/meclaw/issues/625)).
+- `docs/why/ontology.md` is back, with the subject it lacked when it was cut:
+  the typed catalogue a colony is built out of — cell types, templates and the
+  contracts they publish — and what the word does not mean here. The URL had
+  been answering 404 since 0.32.1 and is linked from outside the repository.
+  `docs/why/self-modification.md` and `docs/why/names.md` are three-line
+  pointers now instead of pages of their own: the first to `rsi.md`, the second
+  to the glossary section that took the role names
+  ([#625](https://github.com/mmeyerlein/meclaw/issues/625)).
+- `docs/why/rsi.md` and `docs/why/you-talk-it-shows.md` are back as pages, and
+  both had been 404 since 0.32.1. `rsi.md` says the two-part thing the page was
+  written for — the primitives for rebuilding a running colony are here and
+  tested, the loop that would close on them is open, and leaving it open is a
+  position rather than a gap in the schedule — and it names the lock that keeps
+  the builder off the mutation door. It carries the text that shipped as
+  `self-modification.md` in 0.32.1, so that name is now the pointer and `rsi.md`
+  the page: the older URL is the one links in the wild use.
+  `you-talk-it-shows.md` says what the `voice` cell and a screen are aimed at
+  together, with the sidecar path from 0.32.0 that carries an answer's offers to
+  an app. Its earlier claim that this repository had no voice was false from
+  0.31.0 on and is gone ([#625](https://github.com/mmeyerlein/meclaw/issues/625)).
+- The CLI's "no subcommands" rule now says what it always meant: the **colony**
+  has no subcommands, and it is still driven by flags alone, nginx-style. `ask`
+  is the one client command in the same binary, because it operates no colony but
+  addresses one; as a flag, `--api` would have carried both the bind address of
+  one's own server and the address of somebody else's. The withdrawal is written
+  out in `docs/meclaw-overview.md` § CLI.
+- `GET /colony/trace` now orders a shared second by insertion (`ORDER BY
+  created_at ASC, rowid ASC`). `created_at` is whole seconds and a lane the
+  colony walks in milliseconds carries one timestamp across all its hops, so the
+  order inside that second used to be the query plan's to choose — and it
+  chooses differently with a `trace_id` filter than without. A reader that takes
+  "the first answering hop of this trace" now gets the same hop every time.
+- `freeswitch@1.1.0`: **8 kHz is the native path for telephony now** (GH #619).
+  A telephone call is 8 kHz, and the template used to have the switch upsample
+  it to 16 kHz — twice the bytes on the socket, and a recogniser handed
+  interpolated samples carrying no more bandwidth than the original. Deepgram
+  Flux serves 8000 natively, and so do Cartesia and ElevenLabs on the synthesis
+  side. `params.fork_sample_rate` therefore defaults to `8000` instead of
+  `16000`, and it is written into both halves of the `uuid_audio_stream` line —
+  the module's rate and the fork URL's `?sample_rate=` — so the two places that
+  have to agree are one number. Measured on the same recordings both ways — on
+  synthesised recordings, not on a real trunk — the word error rate is identical
+  and the first token arrives at the same time, so what the change buys is the
+  byte count and one conversion fewer (`workshop/voice-smoke/README.md`
+  § *Measured*). An instance that wants the
+  old rate sets `fork_sample_rate` back to `16000`.
+- `README.md` uses one word for the thing it is made of, `cell`, from the first
+  sentence on, which is the word every other document uses. The second paragraph
+  is gone: it repeated the first, and the argument it made is one link away in
+  `docs/why/everything-is-a-file.md`. A sentence on why the project exists
+  stands after the first paragraph. Three rows of the comparison table from the
+  overview, Erlang/OTP, LangGraph and Temporal, moved up under a heading of
+  their own, because that is the first question a reader asks. A screenshot of
+  the colony's browser view sits above the quickstart
+  (`docs/assets/colony-dashboard.png`, carried by the export map like any other
+  file). The quickstart is four steps instead of five, install, start, grow and
+  ask, and reads the answer with `meclaw ask` rather than a `jq` pipeline; the
+  browser view stayed as a sentence. The example model in the `.env` line is
+  `openai/gpt-5.6-luna`, which is the small model `docs/costs.md` measures,
+  where it used to be `openai/gpt-4o-mini`. Below the quickstart, "What just
+  happened" says what the four commands did, and "Why it is built this way"
+  gives each of the ten ideas one sentence and the link to its page under
+  `docs/why/`. The page is laid out like a README a person would write: a
+  centred name, one italic line saying what it is, three badges, then prose.
+  The documentation table at the end is a list of links that say where they go
+  ([#624](https://github.com/mmeyerlein/meclaw/issues/624)).
+- The five contract surfaces left `README.md` for `docs/stability.md`, and the
+  README keeps two sentences and the link. Nothing is retracted: the surfaces,
+  the additive rule on `0.x`, the Breaking rule for `CHANGELOG.md` and the
+  absence of a SemVer guarantee under `crates/` are all in the new document,
+  which is where "README § Stability" now points
+  ([#624](https://github.com/mmeyerlein/meclaw/issues/624)).
+- `examples/meclaw-os/README.md` says seventeen cells where it said fourteen, in
+  the summary, in the step that reloads the registry and in the closing note.
+  Seventeen is what the table in that same file adds up to (`door` 1, `firewall`
+  4, `talky` 11, `sink` 1) and what the registry of a colony grown from
+  `grow.json` reports
+  ([#624](https://github.com/mmeyerlein/meclaw/issues/624)).
+
+### Fixed
+
+- **A hive contract reads an edge by direction.** An `add_edges` entry that ends
+  on a hive's own path was always measured against that hive's `accepts` list,
+  even when it started at a node inside the hive — where the message LEAVES
+  through the rim rather than entering it. The catch-all the `member` template
+  ships (`./channels -> .`, stamping `hop.route = 'error'`) is exactly that
+  shape, and `error` is a lane the member emits, so the shipped edge was refused
+  as a live mutation while the boot instantiated it with a warning at most. The
+  check now classifies the edge: `from` outside is an entry and is held against
+  `accepts` as before, `from` strictly inside is an exit and is held against
+  `emits`, and the refusal says which — and an exit stamping a lane the hive
+  only accepts is now refused where it used to commit. The boot judges both
+  halves and still warns rather than refuses. No new `error_code` — this is
+  `hive_contract` answering the question it always meant to answer.
+  ([#602](https://github.com/mmeyerlein/meclaw/issues/602))
+- `timer`: when two schedules of one cell come due at the same second, both now
+  fire, once each, in schedule order. The I/O loop used to pick a single winner
+  per instant and re-plan the others strictly after that second, so a schedule
+  sharing its second with another one skipped a whole period, silently and
+  without a log line. Measured on a live colony with `*/20 * * * * *` next to
+  `0 */15 * * * *`: the quarter-hour schedule never fired
+  ([#613](https://github.com/mmeyerlein/meclaw/issues/613)).
+- `timer`: a cron firing lands on its second and stays there. The I/O loop
+  recomputed the next occurrence from the instant it woke — the firing time plus
+  the wake latency — and the cron parser carries the sub-second part of the
+  instant it is asked about into its answer, so that fraction became the anchor
+  for the next tick and grew with every one of them. The search is now anchored
+  on the whole second; one-shots, which carry an absolute instant, are untouched
+  ([#626](https://github.com/mmeyerlein/meclaw/issues/626)).
+- A message addressed at a cell behind a hive boundary is no longer delivered
+  silently. It reaches the address the hive declared, or it is refused with a
+  receipt that names the hive and the address — never a third, quiet thing
+  (GH #612). The check is a pre-check at the call site in front of the routing
+  corridor, like the `cell_inactive` one, so a refused message spends no TTL and
+  the frozen corridor is untouched.
+- `add_edges` endpoint validation resolves a bare short name the way the apply
+  resolves it — against the mutation's own scope. A name that existed only as a
+  hive in a FOREIGN scope used to pass the check and then commit an edge onto an
+  address nothing occupies; validation and apply had named two different nodes
+  and nothing said so. It is now refused `edge_schema`, and the refusal names the
+  scope the name was resolved against. A cross-scope reference keeps the spelling
+  it always had, a relative path (GH #612).
+
+### Note
+
+- A boundary refusal happens before the routing corridor, so it writes no
+  `message_log` row: it lives in the dead-letter queue and never in
+  `/colony/trace`. The entry carries the `trace_id` and `message_id` of the
+  posted message, so a caller polling `/colony/dead_letters` can still attribute
+  it (GH #612).
+
 
 ## [0.32.1] — 2026-09-08
 

@@ -103,6 +103,7 @@ impl SttProvider for ScriptedStt {
     }
     fn run_session(
         &self,
+        _format: AudioFormat,
         mut audio: mpsc::Receiver<Vec<u8>>,
         events: mpsc::Sender<SttEvent>,
         _liveness: IoLivenessMark,
@@ -152,6 +153,7 @@ impl SttProvider for StallingStt {
     }
     fn run_session(
         &self,
+        _format: AudioFormat,
         audio: mpsc::Receiver<Vec<u8>>,
         events: mpsc::Sender<SttEvent>,
         _liveness: IoLivenessMark,
@@ -218,6 +220,7 @@ impl TtsProvider for ScriptedTts {
     }
     fn synthesize(
         &self,
+        _format: AudioFormat,
         _text: String,
         audio: mpsc::Sender<Vec<u8>>,
         mut cancel: watch::Receiver<bool>,
@@ -291,6 +294,7 @@ impl TtsProvider for BulkTts {
     }
     fn synthesize(
         &self,
+        _format: AudioFormat,
         _text: String,
         audio: mpsc::Sender<Vec<u8>>,
         mut cancel: watch::Receiver<bool>,
@@ -2032,6 +2036,7 @@ impl TtsProvider for RecordingTts {
     }
     fn synthesize(
         &self,
+        _format: AudioFormat,
         text: String,
         _audio: mpsc::Sender<Vec<u8>>,
         _cancel: watch::Receiver<bool>,
@@ -2199,4 +2204,340 @@ async fn speak_plain_false_hands_the_text_over_untouched() {
         text_a_provider_is_handed(Some(false), &["**Hallo** Welt"]).await,
         "**Hallo** Welt"
     );
+}
+
+// ------------------------------------------------ GH #619: the negotiated rate
+
+/// A recognition provider that serves a list of rates and remembers the one it
+/// was actually run at.
+struct MultiRateStt {
+    rates: Vec<u32>,
+    ran_at: Arc<AtomicUsize>,
+}
+
+impl MultiRateStt {
+    fn new(rates: Vec<u32>, ran_at: Arc<AtomicUsize>) -> Self {
+        Self { rates, ran_at }
+    }
+}
+
+impl SttProvider for MultiRateStt {
+    fn name(&self) -> &'static str {
+        "multirate"
+    }
+    fn input_format(&self) -> AudioFormat {
+        AudioFormat::pcm16_mono(self.rates[0])
+    }
+    fn input_rates(&self) -> Vec<u32> {
+        self.rates.clone()
+    }
+    fn negotiate_input(&self, sample_rate: u32) -> Option<AudioFormat> {
+        self.rates
+            .contains(&sample_rate)
+            .then(|| AudioFormat::pcm16_mono(sample_rate))
+    }
+    fn run_session(
+        &self,
+        format: AudioFormat,
+        mut audio: mpsc::Receiver<Vec<u8>>,
+        events: mpsc::Sender<SttEvent>,
+        _liveness: IoLivenessMark,
+    ) -> BoxFuture<Result<(), SttError>> {
+        let ran_at = self.ran_at.clone();
+        Box::pin(async move {
+            ran_at.store(format.sample_rate as usize, Ordering::SeqCst);
+            let _events = events;
+            while audio.recv().await.is_some() {}
+            Ok(())
+        })
+    }
+}
+
+/// A synthesis provider fixed at one rate: what a client asks for beyond it is
+/// a wish the cell cannot grant.
+struct FixedRateTts {
+    rate: u32,
+}
+
+impl TtsProvider for FixedRateTts {
+    fn name(&self) -> &'static str {
+        "fixed-tts"
+    }
+    fn output_format(&self) -> AudioFormat {
+        AudioFormat::pcm16_mono(self.rate)
+    }
+    fn synthesize(
+        &self,
+        _format: AudioFormat,
+        _text: String,
+        _audio: mpsc::Sender<Vec<u8>>,
+        _cancel: watch::Receiver<bool>,
+        _liveness: IoLivenessMark,
+    ) -> BoxFuture<Result<(), TtsError>> {
+        Box::pin(async move { Ok(()) })
+    }
+}
+
+/// GH #619: a telephony edge says what it sends, and the recognition session
+/// runs at that rate instead of at the one the template happened to name.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_client_negotiates_the_rate_it_sends() {
+    let ran_at = Arc::new(AtomicUsize::new(0));
+    let live = start(
+        Arc::new(MultiRateStt::new(vec![16_000, 8_000], ran_at.clone())),
+        Some(Arc::new(FixedRateTts { rate: 8_000 })),
+        Mode::Auto,
+    )
+    .await;
+
+    let mut ws = connect(live.port, "?session=phone&sample_rate=8000").await;
+    let hello = next_text(&mut ws).await;
+    assert_eq!(
+        hello["audio_in"],
+        json!({"encoding": "pcm_s16le", "sample_rate": 8000, "channels": 1}),
+        "the declaration is the negotiated pair, not the provider default: {hello}"
+    );
+    assert_eq!(
+        hello["audio_out"]["sample_rate"],
+        json!(8000),
+        "a call answered at 8 kHz is spoken back to at 8 kHz: {hello}"
+    );
+
+    // One frame is enough to prove the session was started at all.
+    send_binary(&mut ws, vec![0u8; 320]).await;
+    for _ in 0..100 {
+        if ran_at.load(Ordering::SeqCst) != 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        ran_at.load(Ordering::SeqCst),
+        8_000,
+        "the recognition session runs at the negotiated rate, not at the declared one"
+    );
+}
+
+/// The cell never resamples (R-V2), so a rate the recogniser does not serve is
+/// a refused connection — answered before the upgrade, like a bad `session`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_rate_the_recogniser_cannot_serve_is_refused_before_the_upgrade() {
+    let ran_at = Arc::new(AtomicUsize::new(0));
+    let live = start(
+        Arc::new(MultiRateStt::new(vec![16_000, 8_000], ran_at)),
+        None,
+        Mode::Auto,
+    )
+    .await;
+
+    let res = reqwest::get(format!(
+        "http://127.0.0.1:{}/ws?sample_rate=11025",
+        live.port
+    ))
+    .await
+    .expect("GET /ws");
+    assert_eq!(res.status(), 400);
+    let body = res.text().await.expect("body");
+    assert!(
+        body.contains("11025") && body.contains("8000") && body.contains("16000"),
+        "the refusal names what was asked for and what is on offer: {body}"
+    );
+
+    assert!(
+        tokio_tungstenite::connect_async(format!(
+            "ws://127.0.0.1:{}/ws?sample_rate=11025",
+            live.port
+        ))
+        .await
+        .is_err(),
+        "and the websocket handshake does not come up either"
+    );
+}
+
+/// The two directions are negotiated separately: what a client sends has to be
+/// understood, what it is sent it can merely dislike.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_outbound_rate_falls_back_to_what_the_synthesiser_serves() {
+    let ran_at = Arc::new(AtomicUsize::new(0));
+    let live = start(
+        Arc::new(MultiRateStt::new(vec![16_000, 8_000], ran_at)),
+        Some(Arc::new(FixedRateTts { rate: 24_000 })),
+        Mode::Auto,
+    )
+    .await;
+
+    let mut ws = connect(live.port, "?sample_rate=8000").await;
+    let hello = next_text(&mut ws).await;
+    assert_eq!(
+        hello["audio_in"]["sample_rate"],
+        json!(8000),
+        "the inbound wish is binding: {hello}"
+    );
+    assert_eq!(
+        hello["audio_out"]["sample_rate"],
+        json!(24000),
+        "the outbound wish is not: the provider's own rate stands, and is declared: {hello}"
+    );
+}
+
+/// R-V6: what a client MAY ask for is a read, not a refusal it has to provoke.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn info_lists_every_rate_that_can_be_negotiated() {
+    let ran_at = Arc::new(AtomicUsize::new(0));
+    let live = start(
+        Arc::new(MultiRateStt::new(vec![16_000, 8_000], ran_at)),
+        Some(Arc::new(FixedRateTts { rate: 24_000 })),
+        Mode::Auto,
+    )
+    .await;
+
+    let res = reqwest::get(format!("http://127.0.0.1:{}/info", live.port))
+        .await
+        .expect("GET /info");
+    let info: Value =
+        meclaw_core::serde_json::from_str(&res.text().await.expect("body")).expect("json");
+    assert_eq!(info["audio_in_rates"], json!([16000, 8000]));
+    assert_eq!(info["audio_out_rates"], json!([24000]));
+    assert_eq!(
+        info["audio_in"]["sample_rate"],
+        json!(16000),
+        "and `audio_in` stays what a client that asks for nothing gets: {info}"
+    );
+}
+
+/// An encoding this version does not speak is refused rather than assumed: a
+/// telephony edge configured for companded audio would otherwise send bytes
+/// that are perfectly valid noise.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_encoding_this_version_does_not_speak_is_refused() {
+    let ran_at = Arc::new(AtomicUsize::new(0));
+    let live = start(
+        Arc::new(MultiRateStt::new(vec![16_000, 8_000], ran_at)),
+        None,
+        Mode::Auto,
+    )
+    .await;
+
+    let res = reqwest::get(format!(
+        "http://127.0.0.1:{}/ws?sample_rate=8000&encoding=mulaw",
+        live.port
+    ))
+    .await
+    .expect("GET /ws");
+    assert_eq!(res.status(), 400);
+    assert!(
+        res.text().await.expect("body").contains("pcm_s16le"),
+        "the refusal names the one encoding this version has"
+    );
+
+    // And the one it does speak passes, spelled the way `hello` spells it.
+    let mut ws = connect(live.port, "?sample_rate=8000&encoding=pcm_s16le").await;
+    let hello = next_text(&mut ws).await;
+    assert_eq!(hello["audio_in"]["encoding"], json!("pcm_s16le"));
+}
+
+/// Nothing moves for a client that asks for nothing — the parameter is
+/// additive, and every existing colony keeps the rates it had.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn without_a_rate_the_providers_own_declaration_stands() {
+    let ran_at = Arc::new(AtomicUsize::new(0));
+    let live = start(
+        Arc::new(MultiRateStt::new(vec![16_000, 8_000], ran_at.clone())),
+        Some(Arc::new(FixedRateTts { rate: 24_000 })),
+        Mode::Auto,
+    )
+    .await;
+
+    let mut ws = connect(live.port, "?session=browser").await;
+    let hello = next_text(&mut ws).await;
+    assert_eq!(hello["audio_in"]["sample_rate"], json!(16000), "{hello}");
+    assert_eq!(hello["audio_out"]["sample_rate"], json!(24000), "{hello}");
+
+    send_binary(&mut ws, vec![0u8; 320]).await;
+    for _ in 0..100 {
+        if ran_at.load(Ordering::SeqCst) != 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(ran_at.load(Ordering::SeqCst), 16_000);
+}
+
+/// The loopback does not answer for a synthesis provider that exists.
+///
+/// `stt: "echo"` used to declare `audio_out = audio_in` unconditionally, and a
+/// cell configured with an echo recogniser AND a synthesis block then announced
+/// the input rate while `start_speak` — which reads `shared.tts` and never asks
+/// which recogniser is in front of it — put the provider's own rate on the
+/// socket. The declaration has to be the one a client can act on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_echo_cell_with_a_synthesis_provider_declares_the_providers_rate() {
+    let live = start(
+        Arc::new(ScriptedStt::echo()),
+        Some(Arc::new(FixedRateTts { rate: 24_000 })),
+        Mode::Auto,
+    )
+    .await;
+
+    let mut ws = connect(live.port, "?session=loop").await;
+    let hello = next_text(&mut ws).await;
+    assert_eq!(hello["audio_in"]["sample_rate"], json!(16000), "{hello}");
+    assert_eq!(
+        hello["audio_out"]["sample_rate"],
+        json!(24000),
+        "the synthesis provider is asked even behind an echo recogniser: {hello}"
+    );
+
+    // And with nothing to synthesise with, the loopback is its own answer again.
+    let bare = start(Arc::new(ScriptedStt::echo()), None, Mode::Auto).await;
+    let mut ws = connect(bare.port, "?session=bare").await;
+    let hello = next_text(&mut ws).await;
+    assert_eq!(
+        hello["audio_out"], hello["audio_in"],
+        "what goes in comes back: {hello}"
+    );
+
+    let res = reqwest::get(format!("http://127.0.0.1:{}/info", bare.port))
+        .await
+        .expect("GET /info");
+    let info: Value =
+        meclaw_core::serde_json::from_str(&res.text().await.expect("body")).expect("json");
+    assert_eq!(
+        info["audio_out_rates"], info["audio_in_rates"],
+        "a `null` rate list beside a set `audio_out` is a contradiction: {info}"
+    );
+}
+
+/// The trait's DEFAULT refusal, which every service test above steps around by
+/// using a provider that serves several rates. A provider that declares one
+/// rate and overrides nothing serves that rate and refuses the rest.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_provider_that_overrides_nothing_serves_exactly_its_own_rate() {
+    let seen = Arc::new(AtomicUsize::new(0));
+    let live = start(Arc::new(ScriptedStt::draining(seen)), None, Mode::Auto).await;
+
+    let res = reqwest::get(format!(
+        "http://127.0.0.1:{}/ws?sample_rate=8000",
+        live.port
+    ))
+    .await
+    .expect("GET /ws");
+    assert_eq!(res.status(), 400);
+    let body = res.text().await.expect("body");
+    assert!(
+        body.contains("8000") && body.contains("16000"),
+        "the refusal names what was asked for and the one rate on offer: {body}"
+    );
+
+    // Its own rate passes, and `/info` says so without being asked twice.
+    let mut ws = connect(live.port, "?sample_rate=16000").await;
+    let hello = next_text(&mut ws).await;
+    assert_eq!(hello["audio_in"]["sample_rate"], json!(16000), "{hello}");
+
+    let res = reqwest::get(format!("http://127.0.0.1:{}/info", live.port))
+        .await
+        .expect("GET /info");
+    let info: Value =
+        meclaw_core::serde_json::from_str(&res.text().await.expect("body")).expect("json");
+    assert_eq!(info["audio_in_rates"], json!([16000]));
 }

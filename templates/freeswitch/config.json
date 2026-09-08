@@ -8,11 +8,11 @@
       "accepts": [
         {
           "route": "in_speak",
-          "because": "the finished turn of an assistant, to be spoken into the call it belongs to. It enters at this hive's own rim and is handed to the media half; `context.session_id` picks the connection, exactly as it does for a voice channel standing on its own. It reaches the signalling half in the same breath, because a `hangup` that arrives while this sentence is still being spoken has to wait for it"
+          "because": "the finished turn of an assistant, to be spoken into the call it belongs to. It enters at this hive's own rim and is handed to the media half; `context.call_id` picks the connection, exactly as it does for a voice channel standing on its own (`context.session_id` is read where that key is absent, for a colony wired before 1.1.0). It reaches the signalling half in the same breath, because a `hangup` that arrives while this sentence is still being spoken has to wait for it"
         },
         {
           "route": "call_incoming",
-          "because": "somebody is ringing this member. It arrives from the dialplan through the front door (`POST /messages` addressed at this hive) and carries the caller's number and the call's UUID. It is the one lane that makes this a channel rather than a tool: a call that comes in becomes a turn of a conversation -- THE one turn of that call, since 1.0.1 (GH #614). A number in no `callers` entry raises no turn and the leg is put down instead of being left parked in silence"
+          "because": "somebody is ringing this member. It arrives from the dialplan through the front door (`POST /messages` addressed at this hive) and carries the caller's number and the call's UUID. It is the one lane that makes this a channel rather than a tool: a call that comes in becomes a turn of a conversation -- THE one turn of that call, since 1.0.1 (GH #614). A number in no `callers` entry raises no turn and the leg is put down instead of being left parked in silence. Since 1.1.0 whether it becomes a turn AT ALL depends on what else is on the line: `params.second_call` decides, and a call that was refused or that is still waiting in the queue leaves a receipt instead of a turn (GH #620)"
         },
         {
           "route": "call_ringing",
@@ -44,7 +44,7 @@
       "emits": [
         {
           "route": "turn",
-          "because": "one thing that was said, or one thing that happened to the line. Both are turns of the same conversation: what a person said into the microphone, and the sentence that says the call was answered or refused. `hop` carries `session_id`, `turn_id`, `platform`, `number` and `user_id`, and the ingress edge of the member promotes them. One CALL is one turn about the line, never two (GH #614), and the END of a call is not one of them at all"
+          "because": "one thing that was said, or one thing that happened to the line. Both are turns of the same conversation: what a person said into the microphone, and the sentence that says the call was answered or refused. `hop` carries `session_id`, `call_id`, `turn_id`, `platform`, `number` and `user_id`, and the ingress edge of the member promotes them. One CALL is one turn about the line, never two (GH #614), and the END of a call is not one of them at all"
         },
         {
           "route": "partial",
@@ -61,6 +61,22 @@
         {
           "route": "tool_schemas",
           "because": "the whole offer of this channel, whatever list the question carried. It is a lane of its own and not a tool result: a result belongs to a call somebody made, this belongs to a start-up question"
+        },
+        {
+          "route": "call_accepted",
+          "because": "an inbound call is on the line. One receipt per call that was TAKEN, carrying `call_id`, the `policy` that decided it and the `capacity` that policy allows; `cause` is `dequeued` where the caller waited in the queue first. It is the positive half of the arbitration `second_call` declares (GH #620), and it says nothing a turn says: the turn is what the assistant answers, this is what an operator reads"
+        },
+        {
+          "route": "call_queued",
+          "because": "an inbound call is waiting. The leg was taken, its audio fork was stopped so that nothing said into the wait becomes a turn, and it hears `queue_hold_media`. No turn is raised: nobody is in a conversation yet. It leaves under `call_accepted` when the call in front of it ends, or under `call_abandoned` if the caller gives up"
+        },
+        {
+          "route": "call_refused",
+          "because": "an inbound call was turned away because capacity was full and the policy refuses rather than queues. `cause` is `busy`, the leg is ended at the switch with `USER_BUSY` so the caller hears a busy signal rather than a line that died, and no turn is raised -- a call nobody took is nothing anybody said"
+        },
+        {
+          "route": "call_abandoned",
+          "because": "a caller who was waiting hung up. Neither an acceptance nor a refusal, and spelling it as one of those would make a receipt lie: nobody decided anything, the person went away. `cause` carries the switch's own hangup cause"
         }
       ]
     },
@@ -133,6 +149,7 @@
               "phone_phase": "has(hop.phase) ? hop.phase : ''",
               "phone_call": "has(hop.call_uuid) ? hop.call_uuid : ''",
               "phone_cause": "has(hop.cause) ? hop.cause : ''",
+              "phone_number": "has(hop.number) ? hop.number : ''",
               "phone_tool_call_id": "has(hop.tool_call_id) ? hop.tool_call_id : ''"
             }
           }
@@ -164,7 +181,7 @@
         {
           "from": "./signal",
           "to": ".",
-          "condition": "has(hop.route) && (hop.route == 'turn' || hop.route == 'error' || hop.route == 'tool_result')",
+          "condition": "has(hop.route) && (hop.route == 'turn' || hop.route == 'error' || hop.route == 'tool_result' || hop.route == 'call_accepted' || hop.route == 'call_queued' || hop.route == 'call_refused' || hop.route == 'call_abandoned')",
           "modifier": {
             "delete_context": [
               "phone_origin",
@@ -185,6 +202,6 @@
     "use_when": "Wherever a person should be reachable by telephone, or should be able to ring somebody up. FreeSWITCH stays the media edge in gateway mode: it does the SIP, it forks the audio into the media half over a WebSocket, and it tells this hive what happened over the front door. Nothing here speaks SIP, and nothing here holds a trunk.",
     "not_in_scope": "It is not a switch: it dials, it hangs up, and everything else about the call -- codecs, trunks, dialplans, voicemail -- belongs to FreeSWITCH and stays there. It does not authenticate a caller either: it maps a number to a sender id and refuses a number it has no entry for, which is a table and not a judgement. And it holds no persona: what is said into a call is a turn of the member's conversation, answered by the member's assistant.",
     "contract_in": "Seven lanes. Five arrive at the hive path: `in_speak` (the answer to be spoken) and the four dialplan events `call_incoming`, `call_ringing`, `call_answered` and `call_ended`, which reach the front door as `POST /messages` addressed at this hive. Two of the four raise a turn -- `call_incoming`, and `call_answered` for a call this channel PLACED. `call_ringing` and `call_ended` only move the row, and since 1.0.1 so does a `call_answered` that follows a `call_incoming` of the same uuid (GH #614). Two lanes name their own connect point: `tool` and `schemas`, both on `./dial`, because a tool call is answered by the cell that is the tool.",
-    "contract_out": "Five lanes, out of the hive path. `turn` -- what was said, or what happened to the line. `partial` -- an interim transcript, off unless ordered. `error` -- a caller nobody allowlisted, or a leg that failed. `tool_result` and `tool_schemas` -- the answer to `call`/`hangup` and the offer itself."
+    "contract_out": "Nine lanes, out of the hive path. `turn` -- what was said, or what happened to the line. `partial` -- an interim transcript, off unless ordered. `error` -- a caller nobody allowlisted, or a leg that failed. `tool_result` and `tool_schemas` -- the answer to `call`/`hangup` and the offer itself. And four arbitration receipts, one per inbound call (GH #620): `call_accepted`, `call_queued`, `call_refused`, `call_abandoned`, each carrying `call_id`, `policy` and `capacity`. The installing manifest draws the edge that drains them, or they dead-letter as `no_route` -- the rule the `partial` lane already follows."
   }
 }

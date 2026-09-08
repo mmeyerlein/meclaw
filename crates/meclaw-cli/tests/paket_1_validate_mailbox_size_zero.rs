@@ -38,6 +38,7 @@ fn cli_validate(root: PathBuf, api: Option<SocketAddr>) -> Cli {
         vault_key_source: "auto".to_string(),
         vault_key_file: None,
         stdio_format: meclaw_cli::StdioFormat::Text,
+        command: None,
     }
 }
 

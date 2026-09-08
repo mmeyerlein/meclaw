@@ -94,6 +94,34 @@ pub enum DeadLetterReason {
     /// it would start work the drain then has to wait for — which is how a timer
     /// firing every second makes a drain that never converges.
     ShutdownDraining,
+    /// GH #612: the resolved target lies inside a hive that declared a boundary
+    /// (`params.ports`), and the hive did not declare THIS address — neither as
+    /// a port nor as a connect point of the lane the message carries. The path
+    /// exists, so `unresolved_path` would be a lie; the hive was never asked to
+    /// forward, so `hive_no_route` would be one too. The address of a sealed
+    /// hive is the hive path plus a lane.
+    ///
+    /// **It carries the boundary it refused at, and it is the only reason that
+    /// carries anything.** The six locating fields of a [`DeadLetter`] answer
+    /// "which message, from where, to where"; this refusal happens because of a
+    /// THIRD node, which is none of them — `resolved_target` is the address that
+    /// was refused and `sender_path` the caller. Without this the receipt could
+    /// not name the boundary, which is exactly what the report asked it to do.
+    ///
+    /// It rides on the REASON rather than on [`DeadLetter`] because that struct
+    /// is written inside the byte-frozen `route()` corridor
+    /// (`.github/gates/corridor_byte_gates.sh`): a sixth field would have forced
+    /// the corridor's literal to name it, and the corridor moves only by owner
+    /// sanction. The corridor names `TtlExpired` and nothing else, so a variant
+    /// that grows a field leaves it untouched.
+    ///
+    /// `None` after [`Self::from_code`], which reads a bare string and cannot
+    /// know a path; the DLQ row carries the path in its own column and
+    /// `dead_letter_from_row` puts it back.
+    HiveBoundary {
+        /// Absolute path of the hive that refused the address.
+        hive: Option<String>,
+    },
 }
 
 impl DeadLetterReason {
@@ -117,6 +145,7 @@ impl DeadLetterReason {
             Self::SlotUnbound => "slot_unbound",
             Self::SlotParkOverflow => "slot_park_overflow",
             Self::ShutdownDraining => "shutdown_draining",
+            Self::HiveBoundary { .. } => "hive_boundary",
         }
     }
 
@@ -142,8 +171,27 @@ impl DeadLetterReason {
             "slot_unbound" => Self::SlotUnbound,
             "slot_park_overflow" => Self::SlotParkOverflow,
             "shutdown_draining" => Self::ShutdownDraining,
+            "hive_boundary" => Self::HiveBoundary { hive: None },
             _ => return None,
         })
+    }
+}
+
+impl DeadLetter {
+    /// GH #612 — the one reason-specific fact this entry carries, if its reason
+    /// has one.
+    ///
+    /// One value per reason, machine-readable rather than prose: for
+    /// `hive_boundary` the absolute path of the hive that refused the address,
+    /// and nothing else. `None` for every other reason, which is every other
+    /// reason today. This is what the persisted `detail` column and the
+    /// `/colony/dead_letters` `detail` field carry.
+    #[must_use]
+    pub fn detail(&self) -> Option<&str> {
+        match &self.reason {
+            DeadLetterReason::HiveBoundary { hive } => hive.as_deref(),
+            _ => None,
+        }
     }
 }
 
@@ -203,6 +251,10 @@ mod tests_3a {
             SlotUnbound,
             SlotParkOverflow,
             ShutdownDraining,
+            // The one reason that carries a fact. `from_code` reads a bare
+            // string, so `None` is the form that round-trips — the path comes
+            // back from the row's own column, not from the code.
+            HiveBoundary { hive: None },
         ];
         // The compile-time half of "closed": this match names every variant and
         // has no catch-all, so a new one is a compiler error in this function.
@@ -223,13 +275,14 @@ mod tests_3a {
                 DeadLetterReason::SlotUnbound => "slot_unbound",
                 DeadLetterReason::SlotParkOverflow => "slot_park_overflow",
                 DeadLetterReason::ShutdownDraining => "shutdown_draining",
+                DeadLetterReason::HiveBoundary { .. } => "hive_boundary",
             }
         }
 
         assert_eq!(
             all.len(),
-            15,
-            "the canonical set is 15 codes; a variant was added or removed \
+            16,
+            "the canonical set is 16 codes; a variant was added or removed \
              without moving this count, and the spec list has to move with it"
         );
 
@@ -259,6 +312,28 @@ mod tests_3a {
         // And the inverse is closed too: a string nobody emits is not a reason.
         assert_eq!(DeadLetterReason::from_code("not_a_reason"), None);
         assert_eq!(DeadLetterReason::from_code(""), None);
+    }
+
+    /// GH #612 — the refusal of an address behind a hive boundary is a reason of
+    /// its own. `unresolved_path` would say the path does not exist, and it
+    /// does; `hive_no_route` would say the graph did not forward, and it was
+    /// never asked to. It round-trips like every other code, because the DLQ
+    /// drain reconstructs the enum from the stored string.
+    #[test]
+    fn hive_boundary_round_trips() {
+        assert_eq!(
+            DeadLetterReason::HiveBoundary {
+                hive: Some("/h".into())
+            }
+            .as_code(),
+            "hive_boundary",
+            "the code is the reason's name and never carries its payload"
+        );
+        assert_eq!(
+            DeadLetterReason::from_code("hive_boundary"),
+            Some(DeadLetterReason::HiveBoundary { hive: None }),
+            "a bare code cannot know a path, and says so instead of inventing one"
+        );
     }
 
     #[test]

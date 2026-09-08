@@ -159,6 +159,16 @@ impl TtsProvider for ElevenLabsTts {
         "elevenlabs"
     }
 
+    fn output_rates(&self) -> Vec<u32> {
+        SUPPORTED_SAMPLE_RATES.to_vec()
+    }
+
+    fn negotiate_output(&self, sample_rate: u32) -> Option<AudioFormat> {
+        SUPPORTED_SAMPLE_RATES
+            .contains(&sample_rate)
+            .then(|| AudioFormat::pcm16_mono(sample_rate))
+    }
+
     fn output_format(&self) -> AudioFormat {
         // R-V2: whatever rate was ordered is what the client is told to expect.
         // The cell never resamples.
@@ -167,12 +177,18 @@ impl TtsProvider for ElevenLabsTts {
 
     fn synthesize(
         &self,
+        format: AudioFormat,
         text: String,
         audio: mpsc::Sender<Vec<u8>>,
         cancel: watch::Receiver<bool>,
         liveness: IoLivenessMark,
     ) -> BoxFuture<Result<(), TtsError>> {
-        let params = self.params.clone();
+        // As in the Cartesia adapter: the endpoint is built out of `params`,
+        // so the negotiated rate is one overridden field rather than a second
+        // number travelling beside it (GH #619). `pcm_8000` is a vendor
+        // format, so a telephone call is served at its own rate.
+        let mut params = self.params.clone();
+        params.sample_rate = format.sample_rate;
         let timeouts = self.timeouts;
         Box::pin(async move { run(params, timeouts, text, audio, cancel, liveness).await })
     }
@@ -529,6 +545,30 @@ mod tests {
             assert_eq!(output_format(rate), format!("pcm_{rate}"));
         }
         assert!(SUPPORTED_SAMPLE_RATES.contains(&DEFAULT_SAMPLE_RATE));
+    }
+
+    /// GH #619: a call answered at 8 kHz is spoken back to at 8 kHz, and the
+    /// endpoint says `pcm_8000` -- there is no resampling anywhere (R-V2).
+    #[test]
+    fn a_negotiated_rate_reaches_the_endpoint() {
+        let tts = ElevenLabsTts::new(params());
+        assert!(tts.output_rates().contains(&8000));
+        assert_eq!(
+            tts.negotiate_output(8000),
+            Some(AudioFormat::pcm16_mono(8000))
+        );
+        assert_eq!(
+            tts.negotiate_output(11025),
+            None,
+            "a rate the vendor does not serve is a wish the cell cannot grant"
+        );
+        let mut p = params();
+        p.sample_rate = 8000;
+        assert!(
+            endpoint(&p).ends_with("output_format=pcm_8000"),
+            "{}",
+            endpoint(&p)
+        );
     }
 
     #[test]

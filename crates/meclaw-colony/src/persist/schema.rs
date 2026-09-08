@@ -149,7 +149,8 @@ CREATE TABLE IF NOT EXISTS dead_letters (
   error_code      TEXT NOT NULL,
   trace_id        TEXT NOT NULL,
   created_at      INTEGER NOT NULL,
-  message_json    TEXT NOT NULL
+  message_json    TEXT NOT NULL,
+  detail          TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_dlq_created ON dead_letters(created_at);
 CREATE INDEX IF NOT EXISTS idx_dlq_error_code ON dead_letters(error_code);
@@ -398,9 +399,10 @@ mod tests {
     }
 
     #[test]
-    fn setup_colony_db_seeds_schema_version_9() {
-        // GH #559: the edges `lane` column → schema v9, on top of the GH #491
-        // registry `dormant` column (v8).
+    fn setup_colony_db_seeds_schema_version_10() {
+        // GH #612: the `dead_letters.detail` column → schema v10, on top of the
+        // GH #559 edges `lane` column (v9) and the GH #491 registry `dormant`
+        // column (v8).
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         setup_colony_db(&conn).unwrap();
         let v: String = conn
@@ -410,7 +412,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(v, "9");
+        assert_eq!(v, "10");
     }
 
     #[test]
@@ -439,7 +441,7 @@ mod tests {
     fn read_schema_version_returns_9_after_colony_setup() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         setup_colony_db(&conn).unwrap();
-        assert_eq!(read_schema_version(&conn).unwrap(), 9);
+        assert_eq!(read_schema_version(&conn).unwrap(), 10);
     }
 
     #[test]
@@ -606,8 +608,9 @@ mod tests {
         );
         assert_eq!(
             read_schema_version(&conn).unwrap(),
-            9,
-            "an additive index does not move the schema version"
+            super::super::migrations::TARGET_SCHEMA_VERSION,
+            "reopening lands on the target version, and an additive INDEX is not \
+             what moves it — the DDL creates indexes outside the version ladder"
         );
     }
 
@@ -671,7 +674,7 @@ mod tests {
         assert!(cols.contains(&"modifier".to_string()));
         // GH #559: the v9 column, on the fresh-create path.
         assert!(cols.contains(&"lane".to_string()));
-        assert_eq!(read_schema_version(&conn).unwrap(), 9);
+        assert_eq!(read_schema_version(&conn).unwrap(), 10);
     }
 
     #[test]
@@ -697,7 +700,7 @@ mod tests {
         // GH #559: the v9 column, reached through the whole migration chain
         // from a v1 database — the ALTER path, not the fresh-create one.
         assert!(cols.contains(&"lane".to_string()));
-        assert_eq!(read_schema_version(&conn).unwrap(), 9);
+        assert_eq!(read_schema_version(&conn).unwrap(), 10);
     }
 
     /// GH #90: a pre-v5 database whose `registry` already exists without the
@@ -720,7 +723,7 @@ mod tests {
         )
         .unwrap();
         setup_colony_db(&conn).unwrap();
-        assert_eq!(read_schema_version(&conn).unwrap(), 9);
+        assert_eq!(read_schema_version(&conn).unwrap(), 10);
         let idx: i64 = conn
             .query_row(
                 "SELECT count(*) FROM sqlite_master WHERE type='index' AND name='idx_registry_template'",

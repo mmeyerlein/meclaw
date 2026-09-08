@@ -43,6 +43,8 @@ PIN-transfer-exempt	docs/config.md	nimmt die `cell.db` dieser Zelle vom `transfe
 PIN-write-surface	docs/config.md	begrenzt die Writes, die das Substrat vor `handle()` beantwortet	pinned	a_declared_write_surface_reaches_the_view_the_substrate_spawns_with
 PIN-neighbourhood-view	docs/config.md	Die deklarierende Cell bekommt beim Spawn einen read-only Handle	pinned	a_cell_sees_every_inbound_edge_and_only_those
 PIN-hive-port-boundary	docs/meclaw-overview.md	deklarierten Port vorbei ins Innere greift, wird mit `hive_port_boundary`	pinned	a_deep_endpoint_past_a_declared_port_rejects_and_changes_nothing
+PIN-hive-boundary-delivery-de	docs/meclaw-overview.md	`hive_boundary` abgewiesen statt an der Tür vorbei zugestellt	pinned	an_external_message_naming_an_interior_path_is_refused
+PIN-hive-boundary-delivery-en	docs/meclaw-overview.en.md	is refused with `hive_boundary` rather	pinned	an_external_message_naming_an_interior_path_is_refused
 PIN-v-lane-no-connect-point	docs/meclaw-overview.md	eine v-lane endet in einem Hive, dessen Vertrag den Endpunkt für diese Lane nicht per `at` benennt	pinned	an_undeclared_connect_point_is_refused_by_name
 PIN-v-lane-mandatory-hop	docs/meclaw-overview.md	eine v-lane will eine Zwischenebene überspringen, die die Lane in ihrem Vertrag führt	pinned	a_declaring_level_may_not_be_skipped
 PIN-v-lane-unanchored	docs/meclaw-overview.md	und die neue Form trägt den Relativpfad nicht oder benennt ihn für diese Lane nicht	pinned	a_missing_connect_point_refuses_the_swap
@@ -336,8 +338,10 @@ PIN-derived-activity-persisted-en	docs/meclaw-overview.en.md	Derived activity is
 # 4409 close codes) get their rows in the integration pass, with the tests.
 PIN-voice-one-turn-per-boundary-de	docs/cell-types.md	beide enden in genau einem Turn	pinned	auto_end_of_turn_emits_exactly_one_turn
 PIN-voice-one-turn-per-boundary-en	docs/cell-types.en.md	both end in exactly one turn	pinned	auto_end_of_turn_emits_exactly_one_turn
-PIN-voice-hello-declares-the-rates-de	docs/cell-types.md	Beide stehen im `hello`-Frame, und der Client passt sich an.	pinned	hello_frame_serializes_with_protocol_tag
-PIN-voice-hello-declares-the-rates-en	docs/cell-types.en.md	Both stand in the `hello` frame, and the client adapts to them.	pinned	hello_frame_serializes_with_protocol_tag
+PIN-voice-hello-declares-the-rates-de	docs/cell-types.md	Beide Formate stehen im `hello`-Frame, und der Client passt sich an.	pinned	a_client_negotiates_the_rate_it_sends
+PIN-voice-hello-declares-the-rates-en	docs/cell-types.en.md	Both formats stand in the `hello` frame, and the client adapts to them.	pinned	a_client_negotiates_the_rate_it_sends
+PIN-voice-rate-refused-de	docs/cell-types.md	bedient der Erkenner die Rate nicht, wird die Verbindung mit `400` abgelehnt	pinned	a_rate_the_recogniser_cannot_serve_is_refused_before_the_upgrade
+PIN-voice-rate-refused-en	docs/cell-types.en.md	a rate the recogniser does not serve refuses the connection with `400`	pinned	a_rate_the_recogniser_cannot_serve_is_refused_before_the_upgrade
 PIN-voice-credential-redacted-de	docs/cell-types.md	ist in `Debug`, in Logs und in Fehlermeldungen redigiert	pinned	debug_redacts_secrets
 PIN-voice-credential-redacted-en	docs/cell-types.en.md	is redacted in `Debug`, in logs and in error messages	pinned	debug_redacts_secrets
 PIN-voice-providers-immutable-de	docs/cell-types.md	ein Update, das eines von beiden nennt, wird also als unbekannt abgelehnt	pinned	overlay_refuses_stt_update

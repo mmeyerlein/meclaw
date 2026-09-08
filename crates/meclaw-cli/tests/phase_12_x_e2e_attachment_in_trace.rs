@@ -65,6 +65,7 @@ async fn multipart_attachment_appears_in_colony_trace_entry() {
         vault_key_source: "auto".to_string(),
         vault_key_file: None,
         stdio_format: meclaw_cli::StdioFormat::Text,
+        command: None,
     };
 
     let join =

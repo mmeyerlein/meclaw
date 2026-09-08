@@ -39,7 +39,12 @@ fn params_with_keyterms(base_url: &str, keyterms: serde_json::Value) -> Deepgram
 async fn run_one_session(stt: DeepgramFluxStt) {
     let (audio_tx, audio_rx) = mpsc::channel(8);
     let (events_tx, mut events_rx) = mpsc::channel(8);
-    let session = tokio::spawn(stt.run_session(audio_rx, events_tx, IoLivenessMark::disabled()));
+    let session = tokio::spawn(stt.run_session(
+        stt.input_format(),
+        audio_rx,
+        events_tx,
+        IoLivenessMark::disabled(),
+    ));
     let _ = tokio::time::timeout(Duration::from_secs(30), events_rx.recv())
         .await
         .expect("the scripted turn arrives");
@@ -76,7 +81,12 @@ async fn connects_with_query_and_token() {
 
     let (audio_tx, audio_rx) = mpsc::channel(8);
     let (events_tx, mut events_rx) = mpsc::channel(8);
-    let session = tokio::spawn(stt.run_session(audio_rx, events_tx, IoLivenessMark::disabled()));
+    let session = tokio::spawn(stt.run_session(
+        stt.input_format(),
+        audio_rx,
+        events_tx,
+        IoLivenessMark::disabled(),
+    ));
     // The first event proves the socket is up and the query was seen.
     let _ = tokio::time::timeout(Duration::from_secs(30), events_rx.recv())
         .await
@@ -123,7 +133,12 @@ async fn forwards_audio_and_maps_events() {
 
     let (audio_tx, audio_rx) = mpsc::channel(8);
     let (events_tx, mut events_rx) = mpsc::channel(8);
-    let session = tokio::spawn(stt.run_session(audio_rx, events_tx, IoLivenessMark::disabled()));
+    let session = tokio::spawn(stt.run_session(
+        stt.input_format(),
+        audio_rx,
+        events_tx,
+        IoLivenessMark::disabled(),
+    ));
 
     for _ in 0..5 {
         audio_tx.send(vec![0u8; 640]).await.expect("audio accepted");
@@ -219,7 +234,12 @@ async fn closing_audio_sends_close_stream_and_returns_ok() {
 
     let (audio_tx, audio_rx) = mpsc::channel(8);
     let (events_tx, _events_rx) = mpsc::channel(8);
-    let session = tokio::spawn(stt.run_session(audio_rx, events_tx, IoLivenessMark::disabled()));
+    let session = tokio::spawn(stt.run_session(
+        stt.input_format(),
+        audio_rx,
+        events_tx,
+        IoLivenessMark::disabled(),
+    ));
     audio_tx.send(vec![0u8; 640]).await.expect("audio accepted");
     drop(audio_tx);
 
@@ -246,7 +266,12 @@ async fn server_close_yields_closed_event() {
 
     let (_audio_tx, audio_rx) = mpsc::channel(8);
     let (events_tx, mut events_rx) = mpsc::channel(8);
-    let session = tokio::spawn(stt.run_session(audio_rx, events_tx, IoLivenessMark::disabled()));
+    let session = tokio::spawn(stt.run_session(
+        stt.input_format(),
+        audio_rx,
+        events_tx,
+        IoLivenessMark::disabled(),
+    ));
 
     let events = tokio::time::timeout(Duration::from_secs(30), drain(&mut events_rx))
         .await
@@ -274,7 +299,12 @@ async fn connect_timeout_is_stt_timeout() {
     let (events_tx, _events_rx) = mpsc::channel(8);
     let result = tokio::time::timeout(
         Duration::from_secs(30),
-        stt.run_session(audio_rx, events_tx, IoLivenessMark::disabled()),
+        stt.run_session(
+            stt.input_format(),
+            audio_rx,
+            events_tx,
+            IoLivenessMark::disabled(),
+        ),
     )
     .await
     .expect("the operation timeout fires long before the test deadline");
@@ -295,7 +325,12 @@ async fn auth_401_is_auth_error() {
     let (events_tx, _events_rx) = mpsc::channel(8);
     let result = tokio::time::timeout(
         Duration::from_secs(30),
-        stt.run_session(audio_rx, events_tx, IoLivenessMark::disabled()),
+        stt.run_session(
+            stt.input_format(),
+            audio_rx,
+            events_tx,
+            IoLivenessMark::disabled(),
+        ),
     )
     .await
     .expect("the handshake fails quickly");
@@ -326,7 +361,12 @@ async fn a_mute_socket_ends_the_session_although_audio_keeps_flowing() {
 
     let (audio_tx, audio_rx) = mpsc::channel(8);
     let (events_tx, _events_rx) = mpsc::channel(8);
-    let session = tokio::spawn(stt.run_session(audio_rx, events_tx, IoLivenessMark::disabled()));
+    let session = tokio::spawn(stt.run_session(
+        stt.input_format(),
+        audio_rx,
+        events_tx,
+        IoLivenessMark::disabled(),
+    ));
     // Keep the audio side busy for well past the idle deadline.
     let pump = tokio::spawn(async move {
         for _ in 0..200 {
@@ -373,6 +413,7 @@ async fn a_received_turn_marks_liveness() {
     let (audio_tx, audio_rx) = mpsc::channel(8);
     let (events_tx, mut events_rx) = mpsc::channel(8);
     let session = tokio::spawn(stt.run_session(
+        stt.input_format(),
         audio_rx,
         events_tx,
         IoLivenessMark::new(Path::new("/voice"), Some(marks_tx)),
@@ -411,7 +452,12 @@ async fn run_script(script: DeepgramScript) -> Vec<SttEvent> {
     let stt = provider(&mock.base_url());
     let (_audio_tx, audio_rx) = mpsc::channel(8);
     let (events_tx, mut events_rx) = mpsc::channel(8);
-    let session = tokio::spawn(stt.run_session(audio_rx, events_tx, IoLivenessMark::disabled()));
+    let session = tokio::spawn(stt.run_session(
+        stt.input_format(),
+        audio_rx,
+        events_tx,
+        IoLivenessMark::disabled(),
+    ));
     let mut events = tokio::time::timeout(Duration::from_secs(30), drain(&mut events_rx))
         .await
         .expect("the session ends");

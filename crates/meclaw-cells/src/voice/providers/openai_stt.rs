@@ -112,6 +112,7 @@ impl SttProvider for OpenAiTranscriptionStt {
 
     fn run_session(
         &self,
+        _format: AudioFormat,
         audio: mpsc::Receiver<Vec<u8>>,
         events: mpsc::Sender<SttEvent>,
         liveness: IoLivenessMark,
@@ -554,6 +555,25 @@ fn b64_encode(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// GH #619: this adapter overrides neither negotiation method, so it gets
+    /// the contract's default — one rate, its own. It is the only recogniser
+    /// in the tree that cannot take a telephone call at its own rate, and
+    /// `hello` says which rate it does speak rather than quietly resampling.
+    #[test]
+    fn openai_transcription_serves_exactly_one_rate() {
+        let stt = OpenAiTranscriptionStt::new(params("wss://example", "server_vad"));
+        assert_eq!(stt.input_rates(), vec![OpenAiSttParams::SAMPLE_RATE]);
+        assert_eq!(
+            stt.negotiate_input(OpenAiSttParams::SAMPLE_RATE),
+            Some(AudioFormat::pcm16_mono(OpenAiSttParams::SAMPLE_RATE))
+        );
+        assert_eq!(
+            stt.negotiate_input(8000),
+            None,
+            "8 kHz is refused, never resampled (R-V2)"
+        );
+    }
 
     fn params(base_url: &str, turn_detection: &str) -> OpenAiSttParams {
         serde_json::from_value(json!({

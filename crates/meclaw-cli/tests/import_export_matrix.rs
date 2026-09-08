@@ -490,6 +490,7 @@ fn cli_validate(root: &std::path::Path, strict: bool) -> Cli {
         vault_key_source: "auto".to_string(),
         vault_key_file: None,
         stdio_format: StdioFormat::Text,
+        command: None,
     }
 }
 

@@ -31,6 +31,11 @@ use tokio::sync::mpsc;
 /// conversion target (R-V2).
 const ECHO_SAMPLE_RATE: u32 = 16_000;
 
+/// The rates a client may negotiate against the loopback (GH #619) -- the union
+/// of what the recognition providers in this tree serve, so a calibration can
+/// be run at the rate the measurement that follows it will use.
+const ECHO_SAMPLE_RATES: [u32; 5] = [8_000, ECHO_SAMPLE_RATE, 24_000, 44_100, 48_000];
+
 /// Audio in, the same audio out.
 pub struct EchoStt {
     /// The two deadlines this adapter is held to. Kept because
@@ -70,6 +75,25 @@ impl SttProvider for EchoStt {
         AudioFormat::pcm16_mono(ECHO_SAMPLE_RATE)
     }
 
+    /// Every rate a recognition provider in this tree runs at (GH #619).
+    ///
+    /// A loopback converts nothing, so it could take any rate at all -- but a
+    /// calibration exists to be COMPARED against the real provider that
+    /// follows it, and a rate none of them serves has nothing to be compared
+    /// with. So the list is theirs, and 8000 is on it: calibrating a telephony
+    /// edge at the rate a call actually is, before any model is blamed, is
+    /// exactly what this provider is for. What `GET /info` names and what
+    /// [`Self::negotiate_input`] accepts are the same set, deliberately.
+    fn input_rates(&self) -> Vec<u32> {
+        ECHO_SAMPLE_RATES.to_vec()
+    }
+
+    fn negotiate_input(&self, sample_rate: u32) -> Option<AudioFormat> {
+        ECHO_SAMPLE_RATES
+            .contains(&sample_rate)
+            .then(|| AudioFormat::pcm16_mono(sample_rate))
+    }
+
     /// Drain the audio until the connection closes it, and say nothing.
     ///
     /// **Neither deadline applies, and that is not an oversight.** Rule 12's
@@ -79,6 +103,7 @@ impl SttProvider for EchoStt {
     /// to reconnect a provider socket that does not exist here.
     fn run_session(
         &self,
+        _format: AudioFormat,
         mut audio: mpsc::Receiver<Vec<u8>>,
         events: mpsc::Sender<SttEvent>,
         liveness: IoLivenessMark,
@@ -113,7 +138,12 @@ mod tests {
     async fn echo_stt_drains_and_reports_nothing() {
         let (audio_tx, audio_rx) = mpsc::channel(8);
         let (events_tx, mut events_rx) = mpsc::channel(8);
-        let session = EchoStt::new().run_session(audio_rx, events_tx, IoLivenessMark::disabled());
+        let session = EchoStt::new().run_session(
+            AudioFormat::pcm16_mono(16_000),
+            audio_rx,
+            events_tx,
+            IoLivenessMark::disabled(),
+        );
 
         let runner = tokio::spawn(session);
         for i in 0..4u8 {

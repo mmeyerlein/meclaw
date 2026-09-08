@@ -57,7 +57,7 @@
 use rusqlite::Connection;
 
 /// Target schema version for `colony.db` after this slice.
-pub(crate) const TARGET_SCHEMA_VERSION: u32 = 9;
+pub(crate) const TARGET_SCHEMA_VERSION: u32 = 10;
 
 /// Error during the `colony.db` schema migration.
 #[derive(Debug, thiserror::Error)]
@@ -85,7 +85,7 @@ pub(crate) fn migrate(conn: &Connection) -> Result<(), MigrationError> {
     let current = super::schema::read_schema_version(conn)?;
     match current {
         v if v == TARGET_SCHEMA_VERSION => Ok(()),
-        1..=8 => {
+        1..=9 => {
             let tx = conn.unchecked_transaction()?;
             // v1→v2: durable-edges CEL columns. `table_exists`-guarded like
             // v4→v5 below: since GH #90 this runs BEFORE the DDL batch, so a
@@ -205,6 +205,18 @@ pub(crate) fn migrate(conn: &Connection) -> Result<(), MigrationError> {
             {
                 tx.execute("ALTER TABLE edges ADD COLUMN lane TEXT", [])?;
             }
+            // v9→v10 (GH #612): the reason-specific fact of a dead letter, so a
+            // refusal that happens because of a THIRD node can name it. NULL-able
+            // and additive — an existing row keeps every value it had and reads
+            // NULL for the new column, which is exactly what it was: a dead
+            // letter with no such fact. Same two guards and the same rationale
+            // as the stages above.
+            if current <= 9
+                && table_exists(&tx, "dead_letters")?
+                && !column_exists(&tx, "dead_letters", "detail")?
+            {
+                tx.execute("ALTER TABLE dead_letters ADD COLUMN detail TEXT", [])?;
+            }
             tx.execute(
                 "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",
                 rusqlite::params![TARGET_SCHEMA_VERSION.to_string()],
@@ -266,6 +278,71 @@ mod tests {
             .unwrap()
             .map(Result::unwrap)
             .collect()
+    }
+
+    /// GH #612 (v9→v10): an OLD dead-letter row keeps every value it had and
+    /// reads `NULL` for the new `detail` column — which is exactly what it was,
+    /// a dead letter with no reason-specific fact. The second pass proves the
+    /// stage is idempotent, and a fresh write proves the column is usable.
+    #[test]
+    fn migrate_v9_to_v10_opens_an_old_db_and_adds_the_dead_letter_detail() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO meta (key, value) VALUES ('schema_version', '9');
+             CREATE TABLE dead_letters (
+               id INTEGER PRIMARY KEY, sender_path TEXT NOT NULL,
+               original_target TEXT NOT NULL, resolved_target TEXT NOT NULL,
+               error_code TEXT NOT NULL, trace_id TEXT NOT NULL,
+               created_at INTEGER NOT NULL, message_json TEXT NOT NULL);
+             INSERT INTO dead_letters
+               (sender_path, original_target, resolved_target, error_code, trace_id,
+                created_at, message_json)
+               VALUES ('/a', './b', '/a/b', 'unresolved_path', 't-1', 1, '{}');",
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        migrate(&conn).unwrap(); // idempotent second pass
+
+        let cols: Vec<String> = {
+            let mut stmt = conn.prepare("PRAGMA table_info(dead_letters)").unwrap();
+            stmt.query_map([], |r| r.get::<_, String>(1))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect()
+        };
+        assert!(cols.contains(&"detail".to_string()), "missing: {cols:?}");
+        assert_eq!(
+            super::super::schema::read_schema_version(&conn).unwrap(),
+            TARGET_SCHEMA_VERSION
+        );
+
+        let (code, detail): (String, Option<String>) = conn
+            .query_row(
+                "SELECT error_code, detail FROM dead_letters WHERE trace_id = 't-1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(code, "unresolved_path", "the old row is untouched");
+        assert_eq!(detail, None, "an old row has no such fact, and says so");
+
+        conn.execute(
+            "INSERT INTO dead_letters
+               (sender_path, original_target, resolved_target, error_code, trace_id,
+                created_at, message_json, detail)
+             VALUES ('/', '/h/c', '/h/c', 'hive_boundary', 't-2', 2, '{}', '/h')",
+            [],
+        )
+        .unwrap();
+        let detail: Option<String> = conn
+            .query_row(
+                "SELECT detail FROM dead_letters WHERE trace_id = 't-2'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(detail.as_deref(), Some("/h"));
     }
 
     /// GH #491 (v7→v8): an OLD database opens. A v7 `colony.db` — every column

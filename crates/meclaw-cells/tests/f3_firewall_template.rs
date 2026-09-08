@@ -840,9 +840,16 @@ async fn the_rule_set_is_editable_without_touching_cell_code() {
     assert_eq!(hop_of(&got, "route"), Some(&json!("pass")));
 
     // A live policy change: one ordinary store op, no restart, no code.
+    //
+    // GH #612: sent AS THE LEVEL. `/fw` is a sealed hive, so a message naming
+    // `/fw/rules` from OUTSIDE (sender `/`) is refused `hive_boundary` — an
+    // outside caller may not know the inside. This one is not an outside caller:
+    // it stands for what the level hands to its own store, and it names that
+    // sender instead of borrowing the ingress's.
     let mut ctx = Map::new();
     ctx.insert("store_origin".into(), json!("firewall"));
-    h.send(
+    h.send_from(
+        Path::new("/fw"),
         MessageBuilder::new(Path::new("/fw/rules"))
             .body(Body::Inline(json!({"messages": [{
                 "origin": "assistant", "type": "tool_call", "id": "policy-1",

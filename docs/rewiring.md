@@ -152,9 +152,18 @@ definition and triggers no inference:
 
 ```json
 POST /messages
-{"target": "/org/…/cogny/brain",
+{"target": "/org/…/brain",
  "body": {"system": {"tools": {"bash": {"text": "{\"type\":\"function\", …}"}}}}}
 ```
+
+The address is the cell itself, and that works as long as it does not stand
+behind a sealed hive's boundary. Where it does — a `cogny`, a `talky`, any
+template with `params.ports` — its path is no address from outside:
+`<hive>/<cell>` is refused with `hive_boundary` since GH #612 rather than
+delivered past the door (`meclaw-overview.md` § The hive boundary). The live
+route is then the lane the hive declared for it — for `cogny` that is `in_pack`,
+addressed at the hive path with `"hop": {"route": "in_pack"}` — and what has no
+lane goes through the seed below.
 
 A `202` says the message was submitted. Whether it arrived is a separate
 question, so go and look. And note what kind of read that is: an operator with a

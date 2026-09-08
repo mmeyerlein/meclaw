@@ -30,7 +30,7 @@ names the row that fired. `affinity` holds the curated record of the people a co
 
 `argus` is the control loop, and everything it could pursue ships switched off: both rows in
 `templates/argus/charter/seed/goals.jsonl` carry `"enabled": 0`, so a freshly grown shell
-measures nothing until an operator turns one on ([self-modification](self-modification.md)).
+measures nothing until an operator turns one on ([recursive self-improvement](rsi.md)).
 
 ## Screens and apps
 
@@ -44,8 +44,8 @@ colony's own topology onto such a screen.
 
 Speech is a channel too. Since 0.31.0 `voice` is a cell type: it terminates audio on its
 own WebSocket port and hands the colony text turns, with recognition and synthesis behind
-traits ([CHANGELOG](../../CHANGELOG.md)). Voice and screen are aimed at the same use: you
-talk to a colony, and a display shows what came of it. That aim is as far as it goes today.
+traits ([CHANGELOG](../../CHANGELOG.md)). What the two channels are aimed at together is
+[you talk, it shows](you-talk-it-shows.md).
 
 ## What is rudimentary about it
 

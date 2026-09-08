@@ -4,6 +4,7 @@
 //! no SemVer guarantee on Rust items. See README.md § Stability.
 
 pub mod apply;
+pub mod ask;
 pub mod bridge;
 pub mod factories;
 pub mod lease;
@@ -109,7 +110,11 @@ pub fn check_tokio_console(
 #[command(
     name = "meclaw",
     version,
-    about = "File-based, LLM-oriented actor workflow system for agentic harnesses."
+    about = "File-based, LLM-oriented actor workflow system for agentic harnesses.",
+    // GH #623 (review finding 7): a colony flag in front of a client command is
+    // a mistake, not a combination. Without this, `meclaw --daemon ask …` parses
+    // and the `--daemon` is silently dropped; with it, clap says so.
+    args_conflicts_with_subcommands = true
 )]
 pub struct Cli {
     /// Filesystem root of the colony.
@@ -252,6 +257,20 @@ pub struct Cli {
         default_value_t = StdioFormat::Text
     )]
     pub stdio_format: StdioFormat,
+
+    /// GH #623: the client half of the binary. Absent for every colony mode —
+    /// the colony itself is still driven by flags alone (nginx-style), and this
+    /// is the one command that runs no colony but talks to one.
+    #[command(subcommand)]
+    pub command: Option<Command>,
+}
+
+/// The client commands of the binary. There is one, and it addresses a colony
+/// that is already running instead of operating one.
+#[derive(Debug, Clone, clap::Subcommand)]
+pub enum Command {
+    /// Send one turn to a running colony and print the answer.
+    Ask(ask::AskArgs),
 }
 
 /// Wire format of the stdin/stdout bridge.
@@ -272,6 +291,51 @@ pub enum StdioFormat {
 
 /// Type alias for `Cli` — public surface consumed by integration tests and Phase 11+.
 pub type Args = Cli;
+
+/// The whole of `main`, for both binaries that ship it.
+///
+/// `meclaw-cli` carries the workspace's `meclaw` binary and the `meclaw`
+/// package carries the published one. They used to hold two copies of this
+/// logic, and the copies drifted the moment one of them learned `ask` (GH #623
+/// review): `--help` advertised the command and running it booted a colony in
+/// the caller's working directory. There is one copy now, and both `main`s are
+/// three lines that call it.
+///
+/// The order is the contract:
+///
+/// 1. `ask` — the client command. It runs no colony, so it takes precedence
+///    over every mode and returns through `std::process::exit` with the
+///    answer's verdict (0 answer, 1 error or transport failure, 2 timeout).
+/// 2. `--sandbox-probe` (GH #97) — a question about the host, answered without
+///    a subscriber for the same reason.
+/// 3. everything else — the tracing subscriber is wired here, before any colony
+///    work, and its guard outlives [`run`] because `Drop` flushes the appender.
+pub async fn entrypoint(mut cli: Cli) -> anyhow::Result<()> {
+    if let Some(Command::Ask(args)) = cli.command.take() {
+        match crate::ask::run(args).await {
+            Ok(code) => std::process::exit(code),
+            Err(e) => {
+                eprintln!("meclaw ask: {e:#}");
+                std::process::exit(crate::ask::EXIT_ERROR);
+            }
+        }
+    }
+    if cli.sandbox_probe {
+        return run(cli).await;
+    }
+    let log_path = cli
+        .log
+        .clone()
+        .unwrap_or_else(|| cli.root.join("log.jsonl"));
+    let _log_guard = setup_subscriber(
+        &log_path,
+        &cli.log_level,
+        cli.log_filter.as_deref(),
+        cli.tokio_console,
+        cli.tokio_console_port,
+    )?;
+    run(cli).await
+}
 
 /// Run the CLI. Phase 0 reaches this only via `--version`/`--help`,
 /// which clap handles before this is called.
@@ -384,6 +448,17 @@ pub async fn run_with_hooks_tuned(
     shutdown_hook: Option<tokio::sync::oneshot::Receiver<()>>,
     watchdog_override: Option<WatchdogTuning>,
 ) -> anyhow::Result<()> {
+    // GH #623 (review finding 8): a `Cli` that still carries a subcommand never
+    // belongs on this path. `entrypoint` takes it out before the colony modes
+    // begin; anything that gets here with one has bypassed the entry point and
+    // would silently boot a colony instead of asking one.
+    if cli.command.is_some() {
+        anyhow::bail!(
+            "internal: a client command reached the colony path -- \
+             call meclaw_cli::entrypoint, which dispatches it"
+        );
+    }
+
     // GH #97: --sandbox-probe answers before anything colony-shaped happens.
     // It is a question about the HOST, so it must work in a directory that is
     // not a colony at all — no colony.db, no bootstrap plan, no cell.

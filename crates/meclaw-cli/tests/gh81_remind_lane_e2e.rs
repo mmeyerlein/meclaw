@@ -159,6 +159,7 @@ async fn an_agent_tool_call_schedules_a_lane_and_gets_its_tool_result_back() {
         vault_key_source: "auto".to_string(),
         vault_key_file: None,
         stdio_format: meclaw_cli::StdioFormat::Text,
+        command: None,
     };
     let (addr_tx, addr_rx) = tokio::sync::oneshot::channel();
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();

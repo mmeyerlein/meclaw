@@ -29,9 +29,22 @@ Release detail is in [CHANGELOG.md](CHANGELOG.md) and the
 
 ## Now
 
-v0.32.1 is a documentation patch on top of v0.32.0: the README and the public
+v0.33.0 is first contact and the telephone findings. `meclaw ask` sends one turn
+to a running colony and prints the answer, so the quickstart is four steps,
+install, start, grow, ask, and the README is rewritten against it, with one word
+for the node, a sentence on why the project exists, three comparison rows and a
+picture of the screen. Three substrate defects found by the first colonies are
+repaired: a hive contract reads an edge by direction, a message addressed past a
+hive boundary is delivered exactly or refused with a receipt that names the
+boundary, and a timer fires every schedule due at the same second. On the
+telephone side every media message names its call, a second call gets a declared
+policy, and the wire rate is negotiated per connection so telephony audio reaches
+the recogniser at 8 kHz. What the release contains is the
+[`[0.33.0]`](CHANGELOG.md) section of the changelog.
+
+v0.32.1 was a documentation patch on top of v0.32.0: the README and the public
 docs were rewritten so that a person can read them, and nothing in the contract
-moved. The wave itself is v0.32.0.
+moved. The wave under it is v0.32.0.
 
 v0.32.0 turns the block a front model appends to its answer into a typed offer.
 The fence opens with ```` ```sidecar ````, holds one JSON object, and each
@@ -71,8 +84,12 @@ The first colony built on that release turned up four repairs, and v0.30.1
 carries them: a member wish is one submission again, and `--validate` reads the
 `override_params` a `ref` marker carries.
 
-Nothing is open under this horizon as an issue. The streams below carry what
-comes next; the tracker carries the rest.
+Nothing is cut and waiting. Four designs, a dispatcher in front of several
+colonies, a lane across a colony boundary, erasure of one member across every
+store, and a persona regression gate, are specified with plans and proposed ADRs
+and wait for their build wave.
+
+The streams below carry what comes next; the tracker carries the rest.
 
 ## Next
 
@@ -88,6 +105,22 @@ Findings from running the thing.
 - The message-header size watch. Headers carry no cap by design, so the watch
   is the instrument: it fires on drift past ~100 KB on a single hop, and the
   last reading was 5.4 KB max. *(register: header-size)*
+- One trunk, several colonies. A telephone reaches the one colony it belongs to
+  only if something in front of them resolves the caller, and today nothing
+  does: the channel maps a number to a sender inside the single colony it runs
+  in, so a second household means editing the dialplan. The shape is a
+  dispatcher that resolves caller number plus a device PIN — a caller id alone
+  is a claim the far end makes — hands the leg to that colony at the switch, and
+  lets a colony sign on and off without the trunk being touched. Designed, not
+  built. [#616](https://github.com/mmeyerlein/meclaw/issues/616)
+- A gate for what the assistant is like. Nothing today guards tone, brevity,
+  refusal, what is remembered and when the colony speaks: a model swap, a prompt
+  edit or a changed seed passes every gate green, and the drift is noticed weeks
+  later by whoever is talking to it. The design is in the tree: synthetic
+  personas through scripted multi-turn sessions, three blocks scored — core
+  invariants, memory, timing — with the paid measurement committed as an
+  artefact and two free stations holding the tree against it.
+  [#621](https://github.com/mmeyerlein/meclaw/issues/621)
 - Telling submissions apart by the door they came in at. Every question the
   broker is asked carries the same requester and the same subject whichever
   front raised it, so a rule that would open the shell to the operator and hold
@@ -121,6 +154,28 @@ gold session.
   ones that refuse to be framed. It waits on the sidecar `display` section
   being in daily use, because only then is it clear which pages a person
   actually asks for. [#610](https://github.com/mmeyerlein/meclaw/issues/610)
+- Erasure, despite append-only. Nothing here deletes: a path is an identity, a
+  log only grows, and a blob file is never unlinked. That rigidity is what makes
+  the record auditable, and it is also why removing every trace of one person is
+  not an operation today — the traces sit in a memory hive, in the last input of
+  every brain that answered, in the colony's own books, and in blobs nothing
+  attributes to anybody. The likely shape is one mutation that plans per store,
+  forgets through the same slot an export already reads from, redacts the log's
+  payloads while every other row stays byte-identical, and proves itself with an
+  export that comes back empty. It has a design and no build yet; the question
+  that decides its size is whether a person's name may be a path segment at all.
+  [#618](https://github.com/mmeyerlein/meclaw/issues/618)
+- A lane that crosses a colony boundary. An edge exists only inside one colony,
+  and nothing anywhere declares what may leave one or enter one. Two colonies
+  that each hold one person's memory will need to exchange abstracted things — a
+  topic, a pattern, a proposal — without either side ever seeing the other's
+  observations about a person. The design is written and is not a cluster: the
+  boundary is a cell that declares its lanes on each side the way a hive declares
+  a door, each side judges its own edge against its own declaration, a field the
+  lane does not name is refused rather than quietly dropped, and every crossing
+  and every refusal leaves a receipt. It waits on a second colony that has
+  something to say to the first.
+  [#617](https://github.com/mmeyerlein/meclaw/issues/617)
 
 ## Alongside
 
@@ -147,6 +202,10 @@ there.
 One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- v0.33.0: first contact and the telephone findings. `meclaw ask` prints the
+  answer to one turn, the README is written against a four-step quickstart, a
+  sealed hive's interior stops being addressable from outside, and a call names
+  itself, declares what a second call gets and runs at 8 kHz.
 - v0.32.1: the README and the public docs rewritten in plain language, nine why
   pages became six, the catalogue descriptions shortened; no code change.
 - v0.32.0: the answer carries typed offers. One ```` ```sidecar ```` block with

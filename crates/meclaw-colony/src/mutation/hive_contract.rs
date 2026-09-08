@@ -31,8 +31,19 @@
 //!
 //! **Outward** ([`check_inbound_lanes`]) — the caller is checked against the
 //! contract. An `add_edges` entry that targets a contracted hive and stamps a
-//! literal `hop.route` must name a lane the hive accepts. Without it a typo is
+//! literal `hop.route` must name a lane the hive DECLARES. Without it a typo is
 //! a dead letter at runtime that reads like a model failure.
+//!
+//! Which lane list it is measured against is decided by DIRECTION, not by the
+//! target (GH #602). An edge that ends on the hive path can be either half of
+//! the interface: coming from outside it ENTERS and is held against `accepts`;
+//! coming from a node strictly inside the hive it LEAVES — the message crosses
+//! the rim outwards — and is held against `emits`. Reading `to` alone made
+//! every exit look like an entry, so the catch-all the member ships (GH #598,
+//! `./channels -> .` stamping `error`, a lane the member emits) was refused as
+//! a lane it does not accept, while the boot instantiated the very same edge
+//! with a warning at most. An edge whose `from` IS the hive path leaves nothing
+//! and stays an entry.
 //!
 //! **Inward** ([`check_lane_doors`]) — the hive is checked against its own
 //! contract. Every accepted lane must be routable from the hive path to
@@ -129,7 +140,9 @@
 //! - **The bootstrap.** Boot WARNS ([`warn_on_broken_contracts`]) and never
 //!   refuses, for the reason the port boundary leaves boot alone: the birth
 //!   topology is the colony author's sovereign design, and a colony that cannot
-//!   boot is worse than one that boots with a loud line in its log.
+//!   boot is worse than one that boots with a loud line in its log. Since GH
+//!   #602 it warns about BOTH halves — it used to run only the inward one, so a
+//!   rim edge the mutation path refused was instantiated here in silence.
 
 use crate::edge_table::EdgeTable;
 use crate::mutation::MutationError;
@@ -675,6 +688,47 @@ fn addressed_inbound_lanes(
         let Some(route) = stated_route(e) else {
             continue; // the lane is only knowable at runtime — not this check's business
         };
+        // GH #602 — WHICH WAY the edge crosses the rim decides which half of the
+        // contract it is measured against. `to` alone cannot say: an edge that
+        // ends on the hive path either arrives from outside (an entry) or leaves
+        // from inside (an exit), and those are opposite lists. Reading only `to`
+        // held every exit against `accepts`, so the catch-all the member ships
+        // (`./channels -> .` on `error`, GH #598) — a lane the member EMITS —
+        // was refused as a lane it does not accept, while the boot instantiated
+        // the same edge with a warning at most.
+        //
+        // `is_interior` is strict, and deliberately: an edge whose `from` IS the
+        // hive path leaves nothing, so it stays an entry and is judged exactly
+        // as it always was — the same reading `door_exists` has of the rim.
+        if e.get("from")
+            .and_then(|v| v.as_str())
+            .map(|f| crate::mutation::resolve_scoped_path(guard_scope, f))
+            .is_some_and(|f| c.is_interior(f.as_str()))
+        {
+            if c.emits.iter().any(|l| l.route == route) {
+                continue;
+            }
+            let offered = if c.emits.is_empty() {
+                "none — this hive emits nothing at its path".to_string()
+            } else {
+                c.emits
+                    .iter()
+                    .map(|l| l.route.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            violations.push((
+                MutationError::HiveContract(format!(
+                    "add_edges[].to='{to}' leaves hive '{hive}' on hop.route='{route}', which it \
+                     does not emit. Lanes '{hive}' emits: {offered}. An edge from inside a hive \
+                     onto its own path is an EXIT — a caller can only receive what the contract \
+                     says the hive hands back.",
+                    hive = c.hive_path,
+                )),
+                c.hive_path.clone(),
+            ));
+            continue;
+        }
         if let Some(lane) = c.accepts.iter().find(|l| l.route == route) {
             if !docks_below_the_rim(lane) {
                 continue;
@@ -944,6 +998,54 @@ pub fn warn_on_broken_contracts(contracts: &[HiveContract], edges: &[BootEdge]) 
     if let Err(e) = check_lane_doors(contracts, &table) {
         tracing::warn!(reason = %format!("{e:?}"), "a hive contract does not match its own graph");
     }
+    // GH #602 — the boot judges the SAME question the mutation path judges, and
+    // says so in the same words. It used to run only the inward half, so an edge
+    // the mutation path refused was instantiated here in silence: one topology,
+    // two verdicts, and the disagreement was invisible until somebody tried to
+    // draw the shipped edge live. Still a warning and never a refusal, for the
+    // reason the doc comment above gives — the birth topology is authorship.
+    //
+    // ONE line per half, the FIRST violation, exactly like the inward check
+    // above: the `Result` face is deliberate here. Warning per finding is the
+    // shape the lane-context boot report has, and adopting it for one half only
+    // would make the two halves of one rule speak differently at boot — the
+    // very disagreement this issue exists to close. `config.md` § Enforcement
+    // says so in the table rather than leaving the reader to count lines.
+    if let Err(e) = check_inbound_lanes(&boot_edges_as_add_edges(edges), "/", contracts) {
+        tracing::warn!(
+            reason = %format!("{e:?}"),
+            "a hive contract does not match an edge that crosses its rim"
+        );
+    }
+}
+
+/// The boot's own edges, in the shape the outward check reads: an `add_edges`
+/// diff over ABSOLUTE endpoints.
+///
+/// GH #602. [`check_inbound_lanes`] is pure over a diff, which is exactly what
+/// makes it usable here — the boot has no diff, but it has the edges the colony
+/// woke up with, and every one of them was once somebody's `add_edges` entry.
+/// The scope is `/` because a boot edge names absolute paths, so the resolver
+/// hands them back unchanged.
+///
+/// `condition` does not travel: the outward check reads endpoints and the
+/// edge's own `set_hop.route`, and nothing else.
+fn boot_edges_as_add_edges(edges: &[BootEdge]) -> JsonValue {
+    let adds: Vec<JsonValue> = edges
+        .iter()
+        .map(|(from, to, _condition, modifier, _is_default)| {
+            let mut entry = meclaw_core::serde_json::Map::new();
+            entry.insert("from".to_string(), JsonValue::String(from.clone()));
+            entry.insert("to".to_string(), JsonValue::String(to.clone()));
+            if let Some(m) = modifier {
+                entry.insert("modifier".to_string(), m.clone());
+            }
+            JsonValue::Object(entry)
+        })
+        .collect();
+    let mut diff = meclaw_core::serde_json::Map::new();
+    diff.insert("add_edges".to_string(), JsonValue::Array(adds));
+    JsonValue::Object(diff)
 }
 
 /// Rebuild a routable [`EdgeTable`] from what `/colony/graph` reported.
@@ -1329,6 +1431,112 @@ mod tests {
             {"from": "./caller", "to": to,
              "modifier": {"set_hop": {"route": route_expr}}}
         ]})
+    }
+
+    /// The same edge drawn from a node INSIDE the hive: an exit, not an entry.
+    fn stamped_from(from: &str, to: &str, route_expr: &str) -> JsonValue {
+        json!({"add_edges": [
+            {"from": from, "to": to,
+             "modifier": {"set_hop": {"route": route_expr}}}
+        ]})
+    }
+
+    /// GH #602 — an edge from inside the hive onto the hive path LEAVES it, and
+    /// is therefore measured against `emits`.
+    #[test]
+    fn an_interior_edge_onto_the_hive_path_is_measured_against_emits() {
+        assert!(
+            check_inbound_lanes(
+                &stamped_from("./mem/glue", "./mem", "'episode'"),
+                "/",
+                &drain_contract()
+            )
+            .is_ok(),
+            "'episode' is emitted, so the exit is the interface working"
+        );
+    }
+
+    /// And the other half: an exit on a lane the hive does not emit is refused
+    /// as an EXIT, in the hive's own vocabulary — never as an entry that would
+    /// name the accepts list for an edge that never enters anything.
+    #[test]
+    fn an_interior_exit_on_an_undeclared_lane_is_refused_as_an_exit() {
+        // `in_batch` is ACCEPTED, so the old reading waved this edge through on
+        // the name alone while refusing the one above.
+        let err = check_inbound_lanes(
+            &stamped_from("./mem/glue", "./mem", "'in_batch'"),
+            "/",
+            &drain_contract(),
+        )
+        .expect_err("in_batch is not a lane this hive emits");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("leaves hive") && msg.contains("in_batch") && msg.contains("episode"),
+            "the refusal names the exit, the lane and what the hive does emit: {msg}"
+        );
+    }
+
+    /// GH #602 — `is_interior` is STRICT, and the verdict follows it: an edge
+    /// whose `from` is the hive path itself leaves nothing, so it is an entry
+    /// and is held against `accepts` exactly as it always was. Pinned because
+    /// the boundary case is one character wide and a reader cannot tell from
+    /// the classification alone which side it falls on.
+    #[test]
+    fn an_edge_from_the_hive_path_to_itself_is_still_an_entry() {
+        assert!(
+            check_inbound_lanes(
+                &stamped_from("./mem", "./mem", "'in_batch'"),
+                "/",
+                &drain_contract()
+            )
+            .is_ok(),
+            "an accepted lane on a self-edge is judged as an entry, and passes"
+        );
+        let err = check_inbound_lanes(
+            &stamped_from("./mem", "./mem", "'episode'"),
+            "/",
+            &drain_contract(),
+        )
+        .expect_err("and an EMITTED lane on that same edge is not an entry lane");
+        assert!(
+            format!("{err:?}").contains("does not accept"),
+            "the self-edge is refused as an entry, not as an exit: {err:?}"
+        );
+    }
+
+    /// GH #602 — an `emits` lane that names connect points is NOT measured
+    /// against the rim address on the way out.
+    ///
+    /// `at` says where a lane DOCKS on this hive, which is a statement about
+    /// arriving traffic ([`docks_below_the_rim`], GH #559/#562): the inbound
+    /// half refuses a delivery AT the rim precisely because the door there was
+    /// struck. Leaving is the other direction and owes that rule nothing —
+    /// whatever carries the lane from inside out through the hive path names a
+    /// lane the contract declares, and the way back of such a lane belongs to
+    /// the level that declared it. Refusing it would refuse the migration
+    /// ADR-0020 describes from the far side.
+    #[test]
+    fn an_emitted_lane_with_connect_points_leaves_through_the_rim() {
+        let contract = vec![HiveContract {
+            hive_path: "/mem".into(),
+            accepts: vec![lane("in_batch")],
+            emits: vec![Lane {
+                route: "in_bundle".into(),
+                context: Vec::new(),
+                at: vec!["./assistants".into()],
+                required: false,
+                because: "the way back of a lane that docks below the rim".into(),
+            }],
+        }];
+        assert!(
+            check_inbound_lanes(
+                &stamped_from("./mem/glue", "./mem", "'in_bundle'"),
+                "/",
+                &contract
+            )
+            .is_ok(),
+            "`at` governs where the lane arrives, never how it leaves"
+        );
     }
 
     #[test]

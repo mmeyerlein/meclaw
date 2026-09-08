@@ -134,6 +134,7 @@ impl TtsProvider for OpenAiTts {
 
     fn synthesize(
         &self,
+        _format: AudioFormat,
         text: String,
         audio: mpsc::Sender<Vec<u8>>,
         cancel: watch::Receiver<bool>,

@@ -102,6 +102,7 @@ fn cli_for(root: &std::path::Path, blobs: &std::path::Path, bind: SocketAddr) ->
         vault_key_source: "auto".to_string(),
         vault_key_file: None,
         stdio_format: StdioFormat::Text,
+        command: None,
     }
 }
 

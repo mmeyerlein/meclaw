@@ -1,0 +1,27 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json\nsys.stdin.read()\nsys.stdout.write(json.dumps([]))\n",
+    "external_timeout_ms": 10000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "multi_send_capable": true,
+    "consumes": {},
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "Where the answer arrives and the lane ends -- an empty multi-send, terminal by design.",
+    "use_when": "Stand-in for the channel a real topology would answer into.",
+    "not_in_scope": "No delivery, no state.",
+    "examples": [
+      "every message it receives is logged and nothing follows it"
+    ]
+  }
+}

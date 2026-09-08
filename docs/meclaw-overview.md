@@ -1,36 +1,36 @@
 # meclaw system description
 
-File-based, LLM-oriented actor workflow system. One Rust binary, Linux. Flow management is strongly
-simplified against BPMN or Serverless Workflow, with no claim to their generality.
+A file-based actor workflow system for work with LLMs. One Rust binary, Linux. Its flow control is
+much simpler than BPMN or Serverless Workflow, and it does not try to be as general as they are.
 
-> This is the long one. [`README.md`](README.md) maps the directory, [`glossary.md`](glossary.md)
-> gives you the fifteen words first.
+> This is the long one. [`README.md`](README.md) maps the directory, and
+> [`glossary.md`](glossary.md) gives you the sixteen words first.
 
 ## What meclaw is
 
-A workflow system whose topology is a directory tree. Every node is a cell (an actor); directories
-with `type: "hive"` mark authority and mutation boundaries. Cells mutate the topology at runtime,
-typically through builder hives (hive scopes holding an llm cell, a diff constructor and a
-validator) that turn a natural-language request into a mutation manifest. The colony applies it, the
-hive never does. Cells communicate exclusively via atomic messages with a universal body format. LLM
-inference, tool calls, persistent storage and long-running bridges (Telegram, timer, MCP) are all
-cell types.
+A workflow system whose topology is a directory tree. Every node is a cell (an actor), and a
+directory with `type: "hive"` bounds authority and mutation. Cells rewrite the topology at runtime,
+usually through a builder hive: a hive scope holding an llm cell, a diff constructor and a
+validator. The hive turns a request in plain language into a mutation manifest. The colony applies
+that manifest, and the hive never does. Cells reach one another only through atomic messages, and
+every message carries the same body format. LLM inference, tool calls, persistent storage and
+long-running bridges (Telegram, timer, MCP) are all cell types.
 
-The DSL is hierarchical (directories, paths `/main/sub/leaf`); the actor substrate underneath is
-flat (cells registered directly in a central colony registry, routing an O(1) lookup). The DSL stays
-readable for humans and builder LLMs, the implementation stays close to the Tokio idiom, and the
-concurrency complexity sits in one place, the colony.
+The DSL is hierarchical: directories, and paths of the form `/main/sub/leaf`. The substrate
+underneath is flat: every cell registers directly with the colony, and routing is one O(1) lookup.
+The DSL stays readable for people and for builder LLMs, the implementation stays close to the Tokio
+idiom, and the concurrency complexity sits in one place, the colony.
 
 ## Where it sits among other systems
 
 | System | What meclaw shares | What meclaw does differently |
 |---|---|---|
-| Erlang/OTP | actors, mailbox, supervisor | topology as a file, not as code; LLM-specialised |
-| NATS | subject-based routing | compute nodes in addition to transport |
-| Node-RED | nodes are dumb, the graph routes | CLI/filesystem-first, durable, LLM-specialised |
+| Erlang/OTP | actors, mailbox, supervisor | the topology is a file rather than code; specialised for LLM work |
+| NATS | subject-based routing | nodes that compute as well as forward |
+| Node-RED | nodes are dumb, the graph routes | CLI and filesystem first, durable, specialised for LLM work |
 | LangGraph | a graph for LLM agent flows | language-agnostic, file-based, persistent |
-| Temporal | durable execution, message log | lightweight, decentralised, filesystem DSL |
-| BPMN, Serverless Workflow | a workflow engine with a declarative definition | strongly simplified; covers only LLM flow patterns, no claim to generality |
+| Temporal | durable execution, message log | lightweight, decentralised, a filesystem DSL |
+| BPMN, Serverless Workflow | a workflow engine with a declarative definition | much simpler; covers LLM flow patterns only, with no claim to generality |
 
 ## Core principles
 
@@ -468,7 +468,16 @@ Normative, in the order they get broken in practice.
 
 1. The address is the hive. An edge from outside must have the hive path as its endpoint.
    `<hive>/<cell>` is not an address, and `<hive>/<subhive>/<cell>` is less of one, including where
-   the substrate still resolves it today for want of a declaration.
+   the substrate still resolves it today for want of a declaration. Where a declaration exists, the
+   substrate has enforced the sentence on **delivery** too since GH #612: a message from outside the
+   colony naming a cell inside a hive with `params.ports` is refused with `hive_boundary` rather
+   than delivered past the door. What is delivered is what the hive declared itself — an entry in
+   `params.ports`, or a connect point of a `params.contract` `accepts` lane, and then only on that
+   lane. A **level** inside it is no exception: a hive inside a sealed hive is refused exactly like a
+   cell, because otherwise the nested rim would be the way around the boundary — five shipped
+   templates carry such a hive through a `ref` marker. The hive path itself is of course still an
+   address; it does not lie inside itself. Internal traffic is not judged: inside the hive the
+   graph is the hive's own business.
 2. A lane is named functionally. A lane name (`hop.route`, declared in `params.contract`) must say
    what the caller wants, never where it lands inside. `writer`, `recall`, `render`, `refresh`,
    `policy`, `invoke` and `meter` are inner cell names; a lane is called `in_turn`, `in_batch`,
@@ -600,8 +609,12 @@ the enforcement table: `config.md` § `params.contract`):
 Three things are enforced, all of them for mutations only and all of them through the real router
 instead of a text comparison (`hive_contract`).
 
-1. An edge onto the hive path whose `set_hop.route` is constant must name an `accepts` lane. The
-   typo is refused instead of becoming a dead letter.
+1. An edge onto the hive path whose `set_hop.route` is constant must name a declared lane. The
+   typo is refused instead of becoming a dead letter. Which list applies is decided by direction,
+   not by the target (GH #602): an edge coming from outside ENTERS and is measured against
+   `accepts`; an edge coming from a node strictly inside the hive LEAVES — the message crosses the
+   hive path outwards — and is measured against `emits`. An edge whose `from` is the hive path
+   itself leaves nothing and stays an entry.
 2. Every `accepts` lane must have a door (`{"from": "."}` inward).
 3. Every `emits` lane must lead back out through the hive path, either carried by a message that
    already has it or created by the out-door itself (GH #176). A door that recognises
@@ -610,7 +623,9 @@ instead of a text comparison (`hive_contract`).
 
 (2) and (3) keep the contract from decaying into decoration: rearranging the inside is free,
 rearranging it so a promised lane loses its door is not. At boot it only warns, because the birth
-topology is sovereign, the same rule GH #133 and GH #147 follow. No validator can check requirement
+topology is sovereign, the same rule GH #133 and GH #147 follow — and since GH #602 boot warns about
+both halves; it used to run (2) and (3) alone, so a rim edge the mutation path refused was born here
+in silence. No validator can check requirement
 2, since `writer` is as valid a string as `in_episode`; that is where the rule depends on a reader.
 
 ### Where the library stands
@@ -908,7 +923,8 @@ a future code. Notes on the substrate codes:
   boot-time enforcement, if it ever comes, arrives as its own opt-in switch.
 - `hive_contract` (GH #173): a hive declared its interface as lanes (`params.contract`, opt-in) and
   something contradicts it. Three shapes: an `add_edges` edge onto the hive path stamps a constant
-  `hop.route` the hive does not accept; the hive's own graph no longer carries a lane it promises
+  `hop.route` the hive does not declare — measured against `accepts` from outside, and as an exit
+  against `emits` from inside (GH #602); the hive's own graph no longer carries a lane it promises
   (an `accepts` lane with no door, an `emits` lane with no exit through the hive path); or a hive
   this diff gives birth to declares a lane `required` and no edge of the same diff delivers it, onto
   the hive path for a rim lane and onto one of its `at` connect points otherwise (apps rim,
@@ -1381,15 +1397,64 @@ phase column below states in which phase a flag is first declared and becomes fu
 | `--vault-key-source <SOURCE>` | GH #151 | `auto` | Where the vault passphrase comes from. It says SOURCE deliberately: the switch must never be able to carry key material. Default `auto`, where a credentials directory (systemd) wins, else the terminal prompts |
 | `--vault-key-file <PATH>` | GH #151 | none | Key file for `--vault-key-source plainfile`. Refused unless it is unreadable by group and others, the same answer ssh gives |
 
-meclaw deliberately has no subcommands (`meclaw start`, `meclaw mutate` and the like). nginx-style:
+The colony has no subcommands (`meclaw start`, `meclaw mutate` and the like). nginx-style:
 one binary, many flags, one mode switch (`--daemon`, `--validate`, `--sandbox-probe`). Operations
 are the outside world's business, whether systemd, a wrapper script or a builder LLM.
+
+**Withdrawn with GH #623**: this used to read "meclaw deliberately has no subcommands", without
+qualification, for the whole binary. The sentence falls because it ran two different things
+together. An operating mode is a flag and stays one: it says how this colony runs. A client
+command operates no colony, it addresses one, and for that a subcommand is the right form. As a
+flag, `--api` would carry two meanings at once, the bind address of one's own server and the
+address of somebody else's. There is exactly one such command, `ask`, and a second one would again
+be a client, never an operating mode.
 
 **Info-only flags are side-effect-free**: `--version` and `--help` print their information to stdout
 and exit with 0, without initializing the tracing subscriber, without filesystem writes (in
 particular no `log.jsonl` creation), without subprocess spawn. They act before the subscriber setup.
 Tests for the subscriber setup path happen via direct unit tests of the setup function, not via CLI
 subprocess calls.
+
+### `meclaw ask`
+
+`meclaw ask` sends one turn to a running colony and prints the answer. It operates no colony: no
+root lease, no `colony.db`, no `log.jsonl`, no tracing subscriber. It speaks the two routes the
+quickstart took as well, `POST /messages` and `GET /colony/trace`, so the command moves no
+contract surface.
+
+```bash
+meclaw ask --api 127.0.0.1:7777 --target /door "Say hello in one short sentence."
+```
+
+| Argument | Default | Meaning |
+|---|---|---|
+| `--api <host:port>` | none, mandatory | Address of the running colony's HTTP API. A default would be a promise about a topology the substrate never made |
+| `--target <cell-path>` | none, mandatory | Colony path of the cell the turn is addressed to, for instance `/door`. Mandatory for the same reason |
+| `TEXT` | none, mandatory | The turn itself, positional, sent as a `user` turn |
+| `--channel <id>` | a fresh `ask-<uuid>` | Channel the turn belongs to. Two calls are two conversations unless you say otherwise |
+| `--timeout <secs>` | `120` | How long the answer is waited for |
+| `--json` | off | Prints the answering trace row as JSON instead of its text. The row is re-serialised, so its keys come out alphabetically; the values are the API's |
+
+The flow is the quickstart's `jq` pipeline in one command: a `POST /messages` with the turn, which
+the colony acknowledges with 202 `{message_id}`; then `GET /colony/trace?trace_id=<message_id>`
+every 500 ms until a hop of that trace travels on `hop.route` `answer` or `error`; what is printed
+is that hop's first turn. Polling is legitimate here: this is a client outside the substrate, not
+a cell inside it.
+
+Exit codes: `0` on `answer`, `1` on `error`, `2` when nothing answered before `--timeout`. A
+transport failure and a non-2xx answer to the `POST` are `1` as well - an error is not a timeout -
+with the message on stderr and nothing on stdout. In the wait that follows this no longer holds:
+the turn has been accepted, a single failed trace read is retried until the budget is spent, and
+only a wait in which not one read succeeded reports the transport failure. A target that does not
+exist is still acknowledged with a 202 and the message dies in the router, so the command reads
+`/colony/dead_letters` on every pass as well and ends with `1` as soon as an entry for this trace
+appears there - `error_code` and target on stderr, instead of sitting out the budget.
+
+Three limits belong to this. When the answering row carries no readable turn, because its body is a
+blob, the note goes to stderr, stdout stays empty, and the exit code is still the route's. The
+trace is read with `limit=1000`, the API's own cap; a trace whose answer lies further back runs
+into the timeout. And every single HTTP request has ten seconds, so a silent server cannot outlive
+the budget.
 
 ## Display cells (`web`)
 
@@ -1618,6 +1683,11 @@ whatever a guard on it excludes still dead-letters as `hive_no_route`.
 Mutations for a hive scope still go to `/colony/mutations` with the hive path in the scope field of
 the mutation body, never to the hive path as the `target`.
 
+The hive boundary is checked before it, at the call site and not in the corridor — the same
+construction as the `cell_inactive` pre-check: a source message whose target is a cell inside a
+sealed hive is refused there (`hive_boundary`, GH #612) before it enters the work queue, and it
+therefore spends no TTL either.
+
 `route()` is pure: all logging, sync and metric evaluation lives in the call-site wrapper
 `route_with_log` ([`crates/meclaw-colony/src/colony.rs`](../crates/meclaw-colony/src/colony.rs)),
 which does the pre-check and snapshot before the call and the log send after the return. The body is
@@ -1656,14 +1726,19 @@ routing. Each row carries the six localisation fields (`DeadLetterDto`, plus `me
 the complete `DeadLetter`. Unimplemented `/colony/<x>` paths and `/colony` without a sub-path also
 land in the queue, with reason `ColonyEndpointUnimplemented` or `ColonyEndpointInvalid`.
 
+Every entry carries six locating fields plus `message_id`, and since GH #612 an optional `detail`:
+the one reason-specific fact the locating fields cannot carry. It is one value per reason, machine
+readable rather than prose — for `hive_boundary` the absolute path of the hive that refused the
+address. Every other reason has none today and omits the field.
+
 **Canonical `error_code` strings**: every dead-letter reason (internally a `DeadLetterReason` enum
 variant) has a canonical string representation exposed in the dead-letter queue as the `error_code`
 field, which is what the `?error_code=` filter matches: `unresolved_path`, `hive_no_route`,
 `no_route`, `cell_inactive`, `ttl_expired`, `colony_endpoint_unimplemented`,
 `colony_endpoint_invalid`, `blob_unavailable`, `blob_recursion_too_deep`, `invalid_ubf_body`,
 `consumes_violation`, `contract_violation`, `slot_unbound`, `slot_park_overflow`,
-`shutdown_draining`. These strings are part of the stable API contract; new reasons extend the list,
-existing ones do not change their string form. `shutdown_draining` (GH #47) carries a new source
+`shutdown_draining`, `hive_boundary`. These strings are part of the stable API contract; new reasons
+extend the list, existing ones do not change their string form. `shutdown_draining` (GH #47) carries a new source
 emission that arrived during the shutdown drain; it is not routed, because that would start work the
 drain would then have to wait for.
 
@@ -1708,6 +1783,14 @@ Notes on the delivery-boundary codes:
   once something is bound. A colony shutdown discards whatever is still parked.
 - `cell_inactive`: the target path exists (a cell or a hive) and is disconnected or inactive; it
   also applies to mailbox residue on disconnect.
+- `hive_boundary`: a message from **outside** the colony (the HTTP ingress, and every other source
+  message) named an address **inside** a sealed hive, and the hive did not declare that address (GH
+  #612). Not `unresolved_path`: the path exists. Not `hive_no_route`: the hive was never asked to
+  forward. `resolved_target` is the address that was named, `detail` the path of the hive that
+  refused it. What a hive declares is in § The hive boundary. The refusal happens **before** the
+  routing corridor, so no `message_log` row is written: a boundary refusal lives in the dead-letter
+  queue and never in `/colony/trace`. It is joinable all the same — the entry carries the
+  `trace_id` and the `message_id` of the message that was posted.
 
 When processing a cell emission in the outputs arm, exactly one of three disjoint paths applies, in
 this order (ruling A1, 2026-06-12):

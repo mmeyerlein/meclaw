@@ -35,7 +35,7 @@
     }
   },
   "contract": {
-    "version": "1.0.0",
+    "version": "1.1.0",
     "settings": {
       "port": {
         "type": "number",
@@ -159,6 +159,11 @@
           "type": "string",
           "required": false
         },
+        "call_id": {
+          "type": "string",
+          "required": false,
+          "description": "The call this emission belongs to. The same value as `session_id` -- a connection IS the session -- under the name a CHANNEL uses once the turn is inside a colony: `context.session_id` is also what a member's session-keeper mints for its own generation, so an answer needs a key that only ever means the call."
+        },
         "turn_id": {
           "type": "string",
           "required": false
@@ -215,9 +220,15 @@
         }
       },
       "context": {
+        "call_id": {
+          "type": "string",
+          "required": false,
+          "description": "Which connection an `in_speak` is spoken into. Preferred over `session_id`, and neither is declared required: a message that names neither is refused BY THIS CELL as `missing_session`, which names both keys, where the substrate's own refusal would only name the declaration. It is deliberately NOT in `ingress.context`: that list is the standard header convention (turn_id, session_id, user_id, chat_id, locale) and `call_id` is not one of them -- it reaches context through the channel's own ingress edge, which is exactly where a key that is not a standard header belongs."
+        },
         "session_id": {
           "type": "string",
-          "required": true
+          "required": false,
+          "description": "The key a colony wired before 1.4.0 addresses a connection with. It is read wherever `call_id` is absent, and its OWNER is unchanged: a member's session-keeper mints it for its own generation, which is exactly why a channel needs `call_id` beside it."
         }
       }
     },
@@ -227,14 +238,14 @@
     ]
   },
   "description": {
-    "purpose": "One spoken conversation as one cell. Audio arrives over a WebSocket and leaves the cell as ordinary text turns; a finished assistant turn arriving from the topology is spoken back into the same connection. A connection IS the session, so the cell mints session_id at birth and every emission carries it.",
+    "purpose": "One spoken conversation as one cell. Audio arrives over a WebSocket and leaves the cell as ordinary text turns; a finished assistant turn arriving from the topology is spoken back into the same connection. A connection IS the session, so the cell mints the id at birth and every emission carries it twice: as session_id, and as call_id -- the name a channel addresses it by.",
     "use_when": "Wherever a topology needs a voice surface in front of something ELSE. One instance per port. Wire the cell itself -- there is no hive and no lane inside it to hit: the emission lane is on hop.route, 'turn' for a finished utterance, 'partial' for an interim one and 'error' for the cell's own failure.",
     "not_in_scope": "No telephony, no SIP, no room: the client brings the audio and takes it back. No resampling either -- the rate a provider declares is the rate on the wire, and a client that sends something else is refused rather than converted. No persona, no memory, no answer of its own: this is the surface, and whatever stands behind it answers.",
-    "emits_meaning": "Three emission shapes, hence no required hop key. (a) 'turn' -- one user-origin text turn per finished utterance, hop carries route, session_id, turn_id ('<session_id>#<n>'), platform and mode. (b) 'partial' -- the same body shape for an interim transcript, hop carries route, session_id, platform, mode and eager; params.emit_partials ships FALSE, so this shape only appears where a manifest ordered it and drew the edge that drains it. (c) 'error' -- empty messages[], hop carries route 'error', error_code, msg_type 'voice_error' and session_id where one exists, with the detail in meta. Declaring session_id or platform required would break shape (c) against the substrate emits validation.",
-    "consumes_meaning": "messages[]: the last assistant turn is spoken into the connection. context.session_id selects which connection -- promoted onto context by the outbound edge of the level that holds this cell, out of the hop this cell stamped on the way up.",
+    "emits_meaning": "Three emission shapes, hence no required hop key. (a) 'turn' -- one user-origin text turn per finished utterance, hop carries route, session_id, call_id, turn_id ('<session_id>#<n>'), platform and mode. (b) 'partial' -- the same body shape for an interim transcript, hop carries route, session_id, call_id, platform, mode and eager; params.emit_partials ships FALSE, so this shape only appears where a manifest ordered it and drew the edge that drains it. (c) 'error' -- empty messages[], hop carries route 'error', error_code, msg_type 'voice_error' and, where a session exists, session_id and call_id, with the detail in meta. Declaring session_id or platform required would break shape (c) against the substrate emits validation.",
+    "consumes_meaning": "messages[]: the last assistant turn is spoken into the connection. context.call_id selects which connection -- promoted onto context by the outbound edge of the level that holds this cell, out of the hop this cell stamped on the way up. context.session_id is read where call_id is absent, so a colony wired before 1.4.0 keeps working; its owner is unchanged, and the second key exists because a member's session-keeper writes the first one for its own generation. A message naming neither is refused as missing_session.",
     "examples": [
-      "A finished utterance -> emit body { messages: [{ origin: 'user', type: 'text', text: 'what time is it' }] }, hop { route: 'turn', session_id: '0190...', turn_id: '0190...#1', platform: 'voice', mode: 'auto' }",
-      "An assistant turn arriving with context.session_id -> synthesised into that connection; the client hears speak frames and a speak_end"
+      "A finished utterance -> emit body { messages: [{ origin: 'user', type: 'text', text: 'what time is it' }] }, hop { route: 'turn', session_id: '0190...', call_id: '0190...', turn_id: '0190...#1', platform: 'voice', mode: 'auto' }",
+      "An assistant turn arriving with context.call_id -> synthesised into that connection; the client hears speak frames and a speak_end"
     ]
   }
 }

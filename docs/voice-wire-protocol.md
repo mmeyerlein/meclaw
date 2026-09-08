@@ -12,33 +12,59 @@ resamples.
 ## The connection
 
 ```
-ws://<bind>:<port>/ws?session=<id>&mode=<auto|hold>
+ws://<bind>:<port>/ws?session=<id>&mode=<auto|hold>&sample_rate=<hz>&encoding=<name>
 ```
 
-All three are optional.
+All five are optional.
 
 | Parameter | Meaning |
 |---|---|
 | `session` | The session identity, chosen by the client. At most 128 characters from `[A-Za-z0-9._:-]`. Reconnecting with the same `session` takes over the address: a second connection claiming a live `session` displaces the first, which is closed with `4409`. Without it the cell mints a uuid7. |
 | `session_token` | An alias for `session`, same validation and same meaning, for edges that already carry a call identity under that name. `session` wins when both are set. |
 | `mode` | `auto` or `hold`, overriding the cell's `default_mode` param for this connection. |
+| `sample_rate` | The rate this client sends -- and would like to be sent. Without the parameter the providers' own declarations stand, which is the behaviour that predates it. For the inbound direction it is **binding**: the recognition session runs at it, or the connection is refused. For the outbound direction it is a wish (see below). |
+| `encoding` | The sample encoding this client speaks. This version has exactly one, `pcm_s16le`; any other name is a `400` rather than an assumption. |
 
 A phone edge such as FreeSWITCH passes its call UUID here, and every emission of
 the connection then carries it as `hop.session_id`:
 
 ```
-uuid_audio_stream <call-uuid> start ws://host:port/ws?session=<call-uuid> mono 16000
+uuid_audio_stream <call-uuid> start ws://host:port/ws?session=<call-uuid>&sample_rate=8000 mono 8000
 ```
 
-`mod_audio_stream` sends 16 kHz mono PCM16 that way, which is what the
-recognition provider has to be asking for: the rate on the command line must
-match `hello.audio_in.sample_rate`. With the OpenAI transcription provider it
-would be `24000`.
+`mod_audio_stream` sends 8 kHz mono PCM16 that way -- the rate a telephone call
+already is, and the two the module knows are `8k` and `16k` anyway. The number
+stands **twice in the same line**, and that is the point: once for the module,
+once for the cell. Keeping the command line and `hello.audio_in.sample_rate` in
+agreement used to be a person's job; now the connection says the rate, and one
+the recogniser does not serve is a `400` instead of a pitch nobody notices. The
+freeswitch template writes both places out of one `fork_sample_rate`.
 
 A `session` outside that shape, or a `mode` that is neither word, is refused
 with `400` before the upgrade. Quietly replacing it would be worse: a client
 that asked for an identity and got another one would address the wrong session
 on every reconnect.
+
+### The negotiated rate (GH #619)
+
+A telephone call is 8 kHz. Upsampling it to 16 kHz before it reaches the
+recogniser doubles the bytes and adds nothing: the bandwidth is what it was.
+Deepgram Flux takes 8000 natively (its own quickstart lists
+`8000, 16000, 24000, 44100, 48000` and calls `16000` the **recommendation**, not
+a floor), ElevenLabs has `pcm_8000`, Cartesia serves `8000`.
+
+The two directions are negotiated separately, and the asymmetry is deliberate:
+
+- **Inbound is binding.** What a client *sends* has to be understood. If the
+  recognition provider does not serve the rate, the connection is refused with
+  `400` -- before the upgrade, like `session` and `mode`, and the answer names
+  the rates it does serve. The cell does not resample (R-V2).
+- **Outbound is a wish.** What a client *is sent* it can merely dislike. If the
+  synthesis provider cannot do the rate, its own stands and `hello.audio_out`
+  says so. One connection may therefore run at two rates.
+
+`GET /info` names both sets (`audio_in_rates`, `audio_out_rates`), so a client
+reads what it may ask for instead of provoking a refusal to find out.
 
 This listener has no authentication and no TLS. It binds loopback by default;
 anything else belongs behind a reverse proxy, the same stance the `web` cell
@@ -95,7 +121,7 @@ Every text frame is a JSON object with a `type` field.
 
 | `type` | Fields | When |
 |---|---|---|
-| `hello` | `protocol: "meclaw-voice/1"`, `session_id`, `mode`, `audio_in {encoding, sample_rate, channels}`, `audio_out` (same shape, or `null` when no TTS provider is configured), `stt` (provider name), `tts` (provider name or `null`), `audio_out_frame_ms` (milliseconds of audio per outbound binary frame; `0` = the provider's own chunks, unframed), `speak_plain` (whether a written answer is turned into speech text before it is synthesised), `release_grace_ms` (how long a released `hold` boundary waits for the recognition provider's own end of turn before the cell cuts the turn; `0` = cut on the `release` frame) | Immediately after the upgrade, always the first frame on the connection. |
+| `hello` | `protocol: "meclaw-voice/1"`, `session_id`, `call_id` (the same value under the name a channel addresses this connection by; since 1.4.0), `mode`, `audio_in {encoding, sample_rate, channels}`, `audio_out` (same shape, or `null` when no TTS provider is configured), `stt` (provider name), `tts` (provider name or `null`), `audio_out_frame_ms` (milliseconds of audio per outbound binary frame; `0` = the provider's own chunks, unframed), `speak_plain` (whether a written answer is turned into speech text before it is synthesised), `release_grace_ms` (how long a released `hold` boundary waits for the recognition provider's own end of turn before the cell cuts the turn; `0` = cut on the `release` frame) | Immediately after the upgrade, always the first frame on the connection. |
 | `partial` | `text`, `eager: bool` | Every interim transcript. `eager` marks a preflight transcript: the provider thinks the turn is probably over but is not certain. |
 | `turn` | `text`, `turn_id` | Exactly one per turn boundary. |
 | `speak_start` | `speak_id` | Before the first audio frame of one synthesis. |
@@ -104,6 +130,9 @@ Every text frame is a JSON object with a `type` field.
 | `error` | `code`, `detail`, `bad_frames?` | A protocol error on this connection. `bad_frames` is present on `bad_audio_frame` and counts what this connection has lost. |
 
 `encoding` is always `"pcm_s16le"` and `channels` always `1` in this version.
+The `sample_rate` of both formats is **this connection's** -- the provider's own
+without `?sample_rate=`, the negotiated one with it, and the two directions may
+differ.
 
 What is spoken is not always what was written (`speak_plain`, `true` by
 default). `hello` declares it because it changes what a client hears. With it on,
@@ -240,6 +269,8 @@ wiring with `curl`.
   "mode": "auto",
   "audio_in": {"encoding": "pcm_s16le", "sample_rate": 16000, "channels": 1},
   "audio_out": {"encoding": "pcm_s16le", "sample_rate": 24000, "channels": 1},
+  "audio_in_rates": [8000, 16000, 24000, 44100, 48000],
+  "audio_out_rates": [8000, 16000, 22050, 24000, 44100, 48000],
   "stt": "deepgram",
   "tts": "cartesia",
   "audio_out_frame_ms": 20,
@@ -249,9 +280,11 @@ wiring with `curl`.
 ```
 
 `mode` is the cell's configured default and never a connection's mode, and there
-is no `session_id`, because nothing was opened. `audio_out` and `tts` are `null`
-when no text-to-speech provider is configured, and `audio_out_frame_ms` is `0`
-there for the same reason. `speak_plain` is reported either way, because it
+is no `session_id`, because nothing was opened. `audio_in`/`audio_out` are what
+a client that asks for nothing gets; `audio_in_rates`/`audio_out_rates` are what
+it could ask for. `audio_out` and `tts` are `null`
+when no text-to-speech provider is configured, `audio_out_rates` too, and
+`audio_out_frame_ms` is `0` there for the same reason. `speak_plain` is reported either way, because it
 describes the cell itself and a single synthesis does not change it.
 
 ## Built-in test page

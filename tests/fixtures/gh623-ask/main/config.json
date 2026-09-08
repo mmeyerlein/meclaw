@@ -1,0 +1,25 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "graph": {
+      "edges": [
+        {
+          "from": "./door",
+          "to": "./sink"
+        }
+      ]
+    }
+  },
+  "description": {
+    "purpose": "GH #623: the smallest colony that answers a turn -- a door that echoes what it was told and stamps the route the answer travels on, and a sink that ends the lane.",
+    "use_when": "As the end-to-end fixture for `meclaw ask`: one POST, one answer hop on the record, no provider and no wall clock.",
+    "not_in_scope": "No llm cell, no tool loop, no channel state.",
+    "examples": [
+      "meclaw ask --api 127.0.0.1:PORT --target /door 'hello' prints 'echo: hello' and exits 0",
+      "the same call with a text starting in 'fail' answers on route 'error' and exits 1",
+      "a turn sent straight to /sink is never answered, so the call runs into its --timeout and exits 2"
+    ]
+  }
+}

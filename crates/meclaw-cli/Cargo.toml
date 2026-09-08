@@ -21,13 +21,16 @@ console-subscriber = "0.4"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v7"] }
-meclaw-api = { path = "../meclaw-api", version = "0.32.1" }
-meclaw-cells = { path = "../meclaw-cells", version = "0.32.1" }
-meclaw-colony = { path = "../meclaw-colony", version = "0.32.1" }
-meclaw-core = { path = "../meclaw-core", version = "0.32.1" }
+# GH #623: `meclaw ask` is an HTTP client of the colony's own two routes. The
+# crate was already this crate's dev-dependency with these exact features; the
+# command moves it across, it does not add a dependency to the workspace.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+meclaw-api = { path = "../meclaw-api", version = "0.33.0" }
+meclaw-cells = { path = "../meclaw-cells", version = "0.33.0" }
+meclaw-colony = { path = "../meclaw-colony", version = "0.33.0" }
+meclaw-core = { path = "../meclaw-core", version = "0.33.0" }
 
 [dev-dependencies]
 tempfile = "3"
 rusqlite = { version = "0.39", features = ["bundled"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 meclaw-testing = { path = "../meclaw-testing" }

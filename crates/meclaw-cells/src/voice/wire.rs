@@ -46,6 +46,17 @@ pub enum ServerFrame {
         protocol: &'static str,
         /// The session this connection speaks for.
         session_id: String,
+        /// The call this connection carries.
+        ///
+        /// The same string as `session_id` on this cell — a connection IS the
+        /// session, and for a telephony edge the session IS the call. The
+        /// second name exists because the two are owned by different things
+        /// once a call reaches a colony: `session_id` is also what a member's
+        /// `session-keeper` mints for its own generation, and `call_id` is
+        /// what this cell answers to and stamps on everything it emits
+        /// (GH #620). A client reads whichever of the two its own vocabulary
+        /// uses.
+        call_id: String,
         /// The mode this connection starts in.
         mode: Mode,
         /// What the client must send. The cell never resamples (R-V2).
@@ -185,6 +196,7 @@ mod tests {
         let hello = ServerFrame::Hello {
             protocol: PROTOCOL,
             session_id: "s1".to_string(),
+            call_id: "s1".to_string(),
             mode: Mode::Auto,
             audio_in: AudioFormat::pcm16_mono(16000),
             audio_out: Some(AudioFormat::pcm16_mono(24000)),
@@ -213,6 +225,10 @@ mod tests {
         assert!(
             json.contains(r#""speak_plain":true"#),
             "what happens to the text before it is spoken is declared too: {json}"
+        );
+        assert!(
+            json.contains(r#""call_id":"s1""#),
+            "the first frame names the call this connection carries: {json}"
         );
         assert!(
             json.contains(r#""release_grace_ms":1500"#),

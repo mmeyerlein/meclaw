@@ -47,6 +47,7 @@ async fn e2e_get_registry_via_real_colony_returns_200_empty() {
         vault_key_source: "auto".to_string(),
         vault_key_file: None,
         stdio_format: meclaw_cli::StdioFormat::Text,
+        command: None,
     };
 
     let join =

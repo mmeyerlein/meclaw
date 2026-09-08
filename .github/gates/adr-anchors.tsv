@@ -96,3 +96,6 @@ adr	status	anchor_home	target
 0024-an-app-is-wired-at-the-rim-of-its-member.md	accepted	self	file:crates/meclaw-cells/tests/apps_rim_the_member_declares_its_apps_lanes.rs
 0025-a-receipt-is-feedback-to-a-writer.md	accepted	self	file:crates/meclaw-cells/tests/gh598_a_screen_receipt_is_not_a_turn.rs
 0025-a-receipt-is-feedback-to-a-writer.md	accepted	self	file:templates/member/config.json
+0030-the-call-is-the-channels-own-key.md	accepted	self	file:crates/meclaw-cells/tests/gh620_a_media_message_names_its_call.rs
+0030-the-call-is-the-channels-own-key.md	accepted	self	file:crates/meclaw-cells/tests/gh620_a_second_call_is_arbitrated.rs
+0030-the-call-is-the-channels-own-key.md	accepted	self	file:templates/freeswitch/signal/config.json

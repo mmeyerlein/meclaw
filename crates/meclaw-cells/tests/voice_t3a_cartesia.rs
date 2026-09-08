@@ -94,6 +94,7 @@ async fn request_carries_model_voice_format_and_rate() {
     tokio::time::timeout(
         Duration::from_secs(30),
         tts.synthesize(
+            tts.output_format(),
             "hallo welt".to_string(),
             audio_tx,
             cancel_rx,
@@ -166,6 +167,7 @@ async fn chunks_arrive_in_order_and_decoded() {
     tokio::time::timeout(
         Duration::from_secs(30),
         tts.synthesize(
+            tts.output_format(),
             "hallo".to_string(),
             audio_tx,
             cancel_rx,
@@ -203,6 +205,7 @@ async fn cancel_stops_stream_and_sends_cancel() {
 
     let task = tokio::spawn(async move {
         tts.synthesize(
+            tts.output_format(),
             "hallo".to_string(),
             audio_tx,
             cancel_rx,
@@ -256,6 +259,7 @@ async fn dropped_receiver_cancels() {
 
     let task = tokio::spawn(async move {
         tts.synthesize(
+            tts.output_format(),
             "hallo".to_string(),
             audio_tx,
             cancel_rx,
@@ -292,6 +296,7 @@ async fn error_frame_is_protocol_error() {
     let verdict = tokio::time::timeout(
         Duration::from_secs(30),
         tts.synthesize(
+            tts.output_format(),
             "hallo".to_string(),
             audio_tx,
             cancel_rx,
@@ -332,6 +337,7 @@ async fn connect_timeout_is_a_timeout() {
     let verdict = tokio::time::timeout(
         Duration::from_secs(30),
         tts.synthesize(
+            tts.output_format(),
             "hallo".to_string(),
             audio_tx,
             cancel_rx,
@@ -357,6 +363,7 @@ async fn refused_key_is_an_auth_error() {
     let verdict = tokio::time::timeout(
         Duration::from_secs(30),
         tts.synthesize(
+            tts.output_format(),
             "hallo".to_string(),
             audio_tx,
             cancel_rx,
@@ -393,6 +400,7 @@ async fn a_provider_that_goes_quiet_hits_the_idle_deadline() {
     let (audio_tx, mut audio_rx, _cancel_tx, cancel_rx) = wiring();
     let task = tokio::spawn(async move {
         tts.synthesize(
+            tts.output_format(),
             "hallo".to_string(),
             audio_tx,
             cancel_rx,
@@ -425,7 +433,13 @@ async fn every_chunk_marks_liveness() {
 
     tokio::time::timeout(
         Duration::from_secs(30),
-        tts.synthesize("hallo".to_string(), audio_tx, cancel_rx, liveness),
+        tts.synthesize(
+            tts.output_format(),
+            "hallo".to_string(),
+            audio_tx,
+            cancel_rx,
+            liveness,
+        ),
     )
     .await
     .expect("the synthesis must finish within 30 s")
@@ -462,6 +476,7 @@ async fn a_dead_endpoint_is_a_connect_error_with_a_reason() {
     let verdict = tokio::time::timeout(
         Duration::from_secs(30),
         tts.synthesize(
+            tts.output_format(),
             "hallo".to_string(),
             audio_tx,
             cancel_rx,
@@ -506,6 +521,7 @@ async fn dropped_cancel_sender_is_not_a_cancel() {
 
     let task = tokio::spawn(async move {
         tts.synthesize(
+            tts.output_format(),
             "hallo".to_string(),
             audio_tx,
             cancel_rx,
@@ -557,6 +573,7 @@ async fn a_provider_that_never_answers_hits_the_operation_deadline() {
     let verdict = tokio::time::timeout(
         Duration::from_secs(30),
         tts.synthesize(
+            tts.output_format(),
             "hallo".to_string(),
             audio_tx,
             cancel_rx,
@@ -589,6 +606,7 @@ async fn an_error_frame_with_401_is_an_auth_error() {
     let verdict = tokio::time::timeout(
         Duration::from_secs(30),
         tts.synthesize(
+            tts.output_format(),
             "hallo".to_string(),
             audio_tx,
             cancel_rx,

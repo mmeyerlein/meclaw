@@ -68,6 +68,7 @@ async fn slice_12b_demo_e2e_full_loop() {
         vault_key_source: "auto".to_string(),
         vault_key_file: None,
         stdio_format: meclaw_cli::StdioFormat::Text,
+        command: None,
     };
 
     let join =

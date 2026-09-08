@@ -86,6 +86,20 @@ pub const DEFAULT_MODEL: &str = "sonic-3.6";
 /// itself instead.
 pub const DEFAULT_BASE_URL: &str = "wss://api.cartesia.ai";
 
+/// Every sample rate this vendor serves, per its own output-format guide (read
+/// 2026-09-08): "`8000`, `16000`, `22050`, `24000`, `44100`, `48000`" --
+/// <https://docs.cartesia.ai/build-with-cartesia/capability-guides/tts-output-audio-format>.
+/// The same page is why `container` stays `raw` here ("our other endpoints
+/// (SSE, WebSockets) only support `raw`").
+///
+/// It is the list this adapter NEGOTIATES over (GH #619), not the list the
+/// parser enforces: `params.sample_rate` keeps taking whatever an instance
+/// writes, so a rate the vendor drops later fails at the socket as it always
+/// did, and nothing about an existing colony changes with this list arriving.
+/// 8000 is the entry that matters -- a call answered at 8 kHz is spoken back
+/// to at 8 kHz, with no resampling anywhere (R-V2).
+pub const SUPPORTED_SAMPLE_RATES: [u32; 6] = [8000, 16000, 22050, 24000, 44100, 48000];
+
 /// Cartesia TTS. One instance per cell, shared by every connection; each
 /// `synthesize` call owns its own WebSocket.
 pub struct CartesiaTts {
@@ -116,6 +130,16 @@ impl TtsProvider for CartesiaTts {
         "cartesia"
     }
 
+    fn output_rates(&self) -> Vec<u32> {
+        SUPPORTED_SAMPLE_RATES.to_vec()
+    }
+
+    fn negotiate_output(&self, sample_rate: u32) -> Option<AudioFormat> {
+        SUPPORTED_SAMPLE_RATES
+            .contains(&sample_rate)
+            .then(|| AudioFormat::pcm16_mono(sample_rate))
+    }
+
     fn output_format(&self) -> AudioFormat {
         // R-V2: whatever rate was ordered is what the client is told to expect.
         // The cell never resamples.
@@ -124,12 +148,18 @@ impl TtsProvider for CartesiaTts {
 
     fn synthesize(
         &self,
+        format: AudioFormat,
         text: String,
         audio: mpsc::Sender<Vec<u8>>,
         cancel: watch::Receiver<bool>,
         liveness: IoLivenessMark,
     ) -> BoxFuture<Result<(), TtsError>> {
-        let params = self.params.clone();
+        // The whole request is built out of `params`, so the rate this
+        // CONNECTION negotiated is expressed by overriding the one field
+        // rather than by threading a second number through five functions
+        // that would then have to agree with it (GH #619).
+        let mut params = self.params.clone();
+        params.sample_rate = format.sample_rate;
         let timeouts = self.timeouts;
         Box::pin(async move { run(params, timeouts, text, audio, cancel, liveness).await })
     }
@@ -379,6 +409,27 @@ fn frame_error(value: &JsonValue) -> TtsError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// GH #619: the vendor serves 8 kHz, so a telephone call is synthesised at
+    /// the rate it is played back at and nothing resamples (R-V2).
+    #[test]
+    fn a_negotiated_rate_reaches_the_request() {
+        let tts = CartesiaTts::new(params());
+        assert_eq!(
+            tts.output_rates(),
+            vec![8000, 16000, 22050, 24000, 44100, 48000]
+        );
+        assert_eq!(
+            tts.negotiate_output(8000),
+            Some(AudioFormat::pcm16_mono(8000))
+        );
+        assert_eq!(tts.negotiate_output(11025), None);
+        let mut p = params();
+        p.sample_rate = 8000;
+        let req = build_request(&p, "hallo", "ctx");
+        assert_eq!(req["output_format"]["sample_rate"], json!(8000));
+        assert_eq!(req["output_format"]["encoding"], "pcm_s16le");
+    }
 
     fn params() -> CartesiaParams {
         serde_json::from_value(json!({

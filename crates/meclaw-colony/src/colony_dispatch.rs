@@ -116,6 +116,9 @@ pub fn handle_read_dead_letters(
             message_id: serde_json::from_str::<serde_json::Value>(&r.message_json)
                 .ok()
                 .and_then(|v| v.get("id").and_then(|i| i.as_str()).map(|s| s.to_string())),
+            // GH #612: straight off the column. `NULL` stays `None` and the key
+            // stays out of the JSON.
+            detail: r.detail,
         })
         .collect();
     crate::api_dto::ReadDeadLettersReply { entries }
@@ -481,7 +484,13 @@ pub async fn handle_read_trace(
                 sql.push_str(" AND created_at >= ?");
                 params.push(Box::new(s));
             }
-            sql.push_str(" ORDER BY created_at ASC LIMIT ?");
+            // GH #623 (review): `created_at` is whole seconds, and a trace's
+            // hops routinely land in the same one. Without a tiebreak the order
+            // inside a second is whatever the query plan produces -- and a
+            // client that reads "the first answering row of this trace" would
+            // read a different row on a different plan. `rowid` is insertion
+            // order, so it is the ordering the log already has.
+            sql.push_str(" ORDER BY created_at ASC, rowid ASC LIMIT ?");
             params.push(Box::new(cap as i64));
             let mut stmt = conn.prepare(&sql)?;
             let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
@@ -2239,6 +2248,7 @@ mod tests {
             trace_id: trace.into(),
             created_at: 100,
             message_json: format!(r#"{{"id":"{msg_id}","trace_id":"{trace}"}}"#),
+            detail: None,
         })
         .await;
         db.shutdown_async().await;
@@ -2272,6 +2282,7 @@ mod tests {
                 trace_id: trace.into(),
                 created_at: ts,
                 message_json: envelope,
+                detail: None,
             })
             .await;
         }
@@ -2342,6 +2353,60 @@ mod tests {
             Some(r#"{"messages":[]}"#),
         )
         .await;
+    }
+
+    /// GH #623 (review): a trace whose hops share a second comes back in the
+    /// order it was written.
+    ///
+    /// `created_at` is whole seconds, so a lane that a colony walks in
+    /// milliseconds carries ONE timestamp across all its hops. `ORDER BY
+    /// created_at` alone leaves the order inside that second to the query plan,
+    /// and the plan is not the same for every filter: a `trace_id` predicate
+    /// takes the trace index and then sorts, which is where an unstable sorter
+    /// gets to decide. `meclaw ask` reads the FIRST answering row of a trace,
+    /// so the ordering is a promise now, pinned here for both shapes.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn read_trace_orders_a_shared_second_by_insertion() {
+        let td = tempfile::TempDir::new().unwrap();
+        let db_path = td.path().join("c.db");
+        let db = crate::ColonyDb::open(&db_path).unwrap();
+        let trace = "019ebb7e-0000-7000-8000-0000000000ff";
+        let ids: Vec<String> = (0..40).map(|i| format!("m{i:02}")).collect();
+        for id in &ids {
+            insert_simple_row(&db, id, 1_700_000_000, "/a", "/b").await;
+        }
+        db.shutdown_async().await;
+
+        let unfiltered = handle_read_trace(&db_path, None, None, None, false, None, 100).await;
+        assert_eq!(
+            unfiltered
+                .entries
+                .iter()
+                .map(|e| e.id.clone())
+                .collect::<Vec<_>>(),
+            ids,
+            "the whole log, oldest first, insertion order inside the second"
+        );
+
+        let filtered = handle_read_trace(
+            &db_path,
+            Some(Uuid::parse_str(trace).unwrap()),
+            None,
+            None,
+            false,
+            None,
+            100,
+        )
+        .await;
+        assert_eq!(
+            filtered
+                .entries
+                .iter()
+                .map(|e| e.id.clone())
+                .collect::<Vec<_>>(),
+            ids,
+            "and the same order through the trace index, which is the shape a client uses"
+        );
     }
 
     /// P1 Task 3a: newest-first ordering, limit, and the keyset cursor a full
@@ -2615,6 +2680,7 @@ mod tests {
                 message_json: format!(
                     r#"{{"trace_id":"{trace}","created_at":{ts},"target":"/target"}}"#
                 ),
+                detail: None,
             })
             .await;
         }

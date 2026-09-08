@@ -22,6 +22,27 @@ use tokio::sync::{mpsc, watch};
 pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 
 /// The one sample encoding on the wire. Raw PCM, signed 16-bit little-endian.
+///
+/// # Why there is still only one (GH #619)
+///
+/// Telephony carries 8 kHz, and the obvious second variant is companded
+/// G.711 — `mulaw` or `alaw`. Deepgram's own encoding list allows both on the
+/// Flux endpoint ("Flux supports `linear16`, `linear32`, `mulaw`, `alaw`,
+/// `opus`, and `ogg-opus` for non-containerized/raw audio",
+/// <https://developers.deepgram.com/docs/encoding>), so the recogniser is not
+/// what stops it. The EDGE is: FreeSWITCH's `mod_audio_stream` "attaches a
+/// media bug and starts streaming audio (in L16 format) to the websocket
+/// server" (<https://github.com/amigniter/mod_audio_stream>) and takes exactly
+/// two rates, `8k` and `16k`. Nothing in this tree produces a companded frame,
+/// and both reference implementations of the Flux protocol send `linear16` and
+/// nothing else — LiveKit's `stt_v2.py` hardcodes `"encoding": "linear16"`,
+/// pipecat's `flux/stt.py` documents its own parameter as `Must be
+/// "linear16"`. So the native telephony path here is **`pcm_s16le` at
+/// 8000 Hz**, and a second variant would be a wire nobody speaks.
+///
+/// What did change is that the sample size is read off the encoding
+/// ([`AudioFormat::sample_bytes`]) instead of being the constant `2`: a later
+/// variant is one match arm, and the frame-parity check follows it by itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Encoding {
@@ -32,6 +53,31 @@ pub enum Encoding {
     /// spelling every vendor in this wave uses.
     #[serde(rename = "pcm_s16le")]
     PcmS16Le,
+}
+
+impl Encoding {
+    /// The encoding's name on the wire, as `hello` and `?encoding=` spell it.
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Encoding::PcmS16Le => "pcm_s16le",
+        }
+    }
+
+    /// The encoding a client named in its query string, or `None` for a name
+    /// this version does not speak.
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "pcm_s16le" => Some(Encoding::PcmS16Le),
+            _ => None,
+        }
+    }
+
+    /// Bytes per sample in this encoding.
+    pub const fn sample_bytes(&self) -> usize {
+        match self {
+            Encoding::PcmS16Le => 2,
+        }
+    }
 }
 
 /// An audio format as declared in the `hello` frame. The cell never converts
@@ -56,8 +102,12 @@ impl AudioFormat {
         }
     }
     /// Bytes per sample frame (all channels). 2 for mono PCM16.
+    ///
+    /// Read off the encoding rather than written as a constant: the parity
+    /// check on the inbound socket is this number, so an encoding whose sample
+    /// is not two bytes wide moves the check with it and not a line later.
     pub const fn frame_bytes(&self) -> usize {
-        2 * self.channels as usize
+        self.encoding.sample_bytes() * self.channels as usize
     }
 }
 
@@ -194,15 +244,33 @@ impl std::error::Error for TtsError {}
 pub trait SttProvider: Send + Sync + 'static {
     /// Provider name as it appears in `hello.stt` and in logs.
     fn name(&self) -> &'static str;
-    /// The format the client must send; declared in `hello.audio_in`.
+    /// The format a client is sent to when it asks for nothing; declared in
+    /// `hello.audio_in` on such a connection.
     fn input_format(&self) -> AudioFormat;
-    /// Run one session for one connection. `audio` carries raw chunks in
-    /// `input_format`; the session ends when `audio` closes. Events go to
-    /// `events`; a full channel blocks (backpressure, never drop). Call
+    /// Every input rate this provider serves, its own included (GH #619).
+    ///
+    /// It is the discovery half of [`Self::negotiate_input`] and `GET /info`
+    /// prints it, so a client learns what it may ask for by reading instead of
+    /// by being refused. The default is the one rate the provider declares.
+    fn input_rates(&self) -> Vec<u32> {
+        vec![self.input_format().sample_rate]
+    }
+    /// The format this provider will run a session at when the client says it
+    /// sends `sample_rate` — `None` when it cannot, which is a refused
+    /// connection and never a conversion (R-V2).
+    fn negotiate_input(&self, sample_rate: u32) -> Option<AudioFormat> {
+        let mine = self.input_format();
+        (sample_rate == mine.sample_rate).then_some(mine)
+    }
+    /// Run one session for one connection. `format` is what
+    /// [`Self::negotiate_input`] agreed to for this connection, and `audio`
+    /// carries raw chunks in it; the session ends when `audio` closes. Events
+    /// go to `events`; a full channel blocks (backpressure, never drop). Call
     /// `liveness.mark_success()` after every successful provider round trip.
     /// Returns when the session is over; `Err` when it ended abnormally.
     fn run_session(
         &self,
+        format: AudioFormat,
         audio: mpsc::Receiver<Vec<u8>>,
         events: mpsc::Sender<SttEvent>,
         liveness: IoLivenessMark,
@@ -213,13 +281,32 @@ pub trait SttProvider: Send + Sync + 'static {
 pub trait TtsProvider: Send + Sync + 'static {
     /// Provider name as it appears in `hello.tts` and in logs.
     fn name(&self) -> &'static str;
-    /// The format the cell sends to the client; declared in `hello.audio_out`.
+    /// The format the cell sends to a client that asked for nothing; declared
+    /// in `hello.audio_out` on such a connection.
     fn output_format(&self) -> AudioFormat;
-    /// Synthesize `text` into `audio` (chunks in `output_format`). Stops as
+    /// Every output rate this provider serves, its own included (GH #619).
+    /// `GET /info` prints it beside [`SttProvider::input_rates`].
+    fn output_rates(&self) -> Vec<u32> {
+        vec![self.output_format().sample_rate]
+    }
+    /// The format this provider will synthesise at when the client asked for
+    /// `sample_rate`, or `None` when it cannot.
+    ///
+    /// A `None` here is **not** a refused connection: what a client sends has
+    /// to be understood, what it is sent it can merely dislike. The cell falls
+    /// back to [`Self::output_format`] and declares that in `hello`, so the
+    /// two directions of one connection may well run at two rates.
+    fn negotiate_output(&self, sample_rate: u32) -> Option<AudioFormat> {
+        let mine = self.output_format();
+        (sample_rate == mine.sample_rate).then_some(mine)
+    }
+    /// Synthesize `text` into `audio` (chunks in `format`, which is what
+    /// [`Self::negotiate_output`] agreed to for this connection). Stops as
     /// soon as `cancel` becomes `true` or the receiver is dropped, returning
     /// `Err(TtsError::Cancelled)`. `Ok(())` after the last chunk was sent.
     fn synthesize(
         &self,
+        format: AudioFormat,
         text: String,
         audio: mpsc::Sender<Vec<u8>>,
         cancel: watch::Receiver<bool>,

@@ -992,13 +992,13 @@ fn addressed_edges_and_cycle(
             };
             if !known(from) {
                 violations.push((
-                    MutationError::EdgeSchema(format!("from='{from}' unknown")),
+                    MutationError::EdgeSchema(format!("from='{from}' unknown in scope '{scope}'")),
                     Some(from.to_string()),
                 ));
             }
             if !known(to) {
                 violations.push((
-                    MutationError::EdgeSchema(format!("to='{to}' unknown")),
+                    MutationError::EdgeSchema(format!("to='{to}' unknown in scope '{scope}'")),
                     Some(to.to_string()),
                 ));
             }
