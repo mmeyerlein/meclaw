@@ -89,18 +89,19 @@ turn is waiting too. The browser view at `/ui/` is that same record with a nav b
 
 ## Quick links
 
-- [Read the whole system once](docs/meclaw-overview.md): cells, edges, headers, routing, mutations and the lifecycle, in the one document that wins on conflict.
-- [Glossary](docs/glossary.md): the sixteen words the other documents assume.
-- [Find out what each cell type does](docs/cell-types.md)
-- [Write a `config.json` by hand](docs/config.md)
-- [Change a colony while it runs](docs/rewiring.md): the procedure, and the traps that catch everyone once.
-- [Know what is under contract and what is not](docs/stability.md)
-- [Pick a template to start from](templates/README.md): forty of them, each with a README of its own.
-- [Watch a colony refuse an attack](examples/hard-shell/WALKTHROUGH.md): every command in it was recorded from a real terminal.
-- [Measure what a colony costs to run](docs/costs.md)
-- [Find the document that answers your question](docs/README.md): one line per document, and what you can do once you have read it.
-- [Read a whole colony end to end](examples/README.md): from a two-cell one to a four-level stack grown from an empty seed.
-- [Send a patch](CONTRIBUTING.md), [see what is planned](ROADMAP.md), [read what changed in each release](CHANGELOG.md)
+- [System overview](docs/meclaw-overview.md)
+- [Glossary](docs/glossary.md)
+- [Cell types](docs/cell-types.md)
+- [Writing a `config.json`](docs/config.md)
+- [Rewiring a running colony](docs/rewiring.md)
+- [Stability and the public contract](docs/stability.md)
+- [Template library](templates/README.md)
+- [Example colonies](examples/README.md)
+- [Walkthrough: a colony refuses an attack](examples/hard-shell/WALKTHROUGH.md)
+- [Walkthrough: an answer from months-old memory](examples/never-forgets/WALKTHROUGH.md)
+- [What it costs to run](docs/costs.md)
+- [All documents](docs/README.md)
+- [Contributing](CONTRIBUTING.md) · [Roadmap](ROADMAP.md) · [Changelog](CHANGELOG.md)
 
 ## Where it stands
 
