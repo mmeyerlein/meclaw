@@ -10,6 +10,117 @@ The public contract is the HTTP API, the template DSL, the template ports, the
 listed under **Breaking** in its release, with the migration named. The Rust
 crates are internals and move without notice.
 
+## [Unreleased]
+
+## [0.34.0] — 2026-09-09
+
+The documentation has one shape now, and the quick start is one line that
+asks for the key. The README is a hub of four paragraphs and links; a flat
+concept layer sits between it and the reference files, one page per
+question; the why pages, the glossary and the folder READMEs were rewritten
+to that shape, the reference files got a head each and lost the prose other
+pages carry. `start.sh` asks for the provider key on a terminal, writes it
+to one file and grows the assistant; `MECLAW_EXAMPLE=organism` boots the
+shell so the five steps of getting started run end to end and `meclaw ask`
+reaches the agent grown last. Two defects found on the way are repaired: a
+`voice` client that stops reading is dropped out loud with an `error_code`,
+and `ask` no longer reads a sibling hop's dead letter as the verdict on its
+own turn. Nothing in the contract breaks; one `error_code` is added.
+
+### Added
+
+- **The quickstart is one line.** `scripts/start.sh` installs the binary
+  through `install.sh`, fetches the templates and examples that match it,
+  picks a free port, starts a daemon in the background and grows a colony into
+  it. Without `OPENROUTER_API_KEY` in the environment it grows
+  `examples/hard-shell`, sends the cloud-metadata fetch and prints the refusal
+  out of `GET /colony/trace`; with the key it grows `examples/meclaw-os`, sends
+  one `meclaw ask` and prints the answer. It stops at the first failing step
+  and names it, never prints the key, and writes it to one file only, the
+  colony's `.env` (GH #627). The long form, every step and every knob, is
+  [docs/installation.md](docs/installation.md).
+- **`start.sh` asks for the key.** Without `OPENROUTER_API_KEY` in the
+  environment and with a terminal to ask on, the run asks for the key before it
+  installs anything. The answer is read from `/dev/tty` rather than stdin,
+  because in the one-liner stdin is the pipe the script arrives on; it is not
+  echoed while it is typed, and echo is restored however the run ends. With the
+  key in the environment nothing is asked. With no key and no terminal -- a
+  pipeline, a CI job, a cron line -- the run says how to set it and boots the
+  keyless colony as before (GH #630).
+- **The five steps of getting started run end to end.**
+  [docs/getting-started.md](docs/getting-started.md) is new: install, start the
+  `meclaw-os` shell, then grow an organisation, a member and an agent of your
+  own into the running colony and talk to it. `start.sh` grew the flat
+  assistant and nothing else, so the three declarations of
+  `examples/organism` had no shell to land in; `MECLAW_EXAMPLE` now picks the
+  colony, and `organism` boots `examples/organism/seed-ref`, whose root tree
+  declares the shell and grows it on the first boot. The colony's `.env` gets
+  every model token the shipped declarations read, not just `MODEL_BRAIN`
+  (GH #631).
+- **`examples/organism/grow-door.json`.** A `door` and a `terminal` at the
+  colony root, four edges. The door puts an inbound turn on the `in_turn` lane
+  and stamps `context.assistant`, which is what a channel does for the person
+  using it, so `meclaw ask --target /door` reaches the grown agent. The
+  terminal takes `answer`, `write` and `turn_write` where they leave the shell,
+  which used to dead-letter; `error` and `reject` stay undrained (GH #631).
+- **Both scripts are release assets.** The release workflow uploads
+  `install.sh`, `start.sh` and a second archive
+  `meclaw-<version>-templates.tar.gz` (the `templates/` and `examples/`
+  directories of the tag, with a SHA-256 sum) next to the binary. The
+  canonical URLs are
+  `https://github.com/mmeyerlein/meclaw/releases/latest/download/install.sh`
+  and `.../start.sh`; `https://meclaw.ai/install.sh` and `/start.sh` redirect
+  there. `start.sh` falls back to the tag tarball for releases that predate
+  the templates asset.
+
+### Changed
+
+- **The documentation has one shape.** `README.md` is a hub: four
+  paragraphs, a one-line quick start, links into `docs/`. `docs/README.md` is
+  the start page, and a flat concept layer sits between it and the reference
+  files: `getting-started.md`, `model.md`, `meclaw.md`, `cells.md`,
+  `meclaw-os.md`, `security.md` with `security/secrets.md`,
+  `templates-and-apps.md`, `status.md`, and an index for `why/`. Every page
+  answers one question in the same order: what it is, why it exists, how to
+  use it, where to read on. The eight `why/` pages, `glossary.md`,
+  `stability.md`, `costs.md`, `examples/README.md`, `templates/README.md` and
+  `CONTRIBUTING.md` were rewritten to that shape; paths under `why/` did not
+  move. The reference files (`meclaw-overview.md`, `cell-types.md`,
+  `config.md`, `rewiring.md`, `store-backed-tool-loop.md`,
+  `voice-wire-protocol.md`, `installation.md`) keep their structure and got a
+  head of ten lines each, lost the prose another page carries, the comparison
+  table with other systems, and the internal phase markers (GH #632, #633,
+  #634, #635, #636).
+- **`SECURITY.md`** names the private reporting path; private vulnerability
+  reporting is enabled on the repository.
+
+- **`voice@1.4.1`: a client that stops taking frames is dropped out loud.** The
+  cell gives up on a WebSocket client once 64 commands are queued behind an
+  already full connection channel, and that verdict used to reach a colony as a
+  `Disconnected` with no reason attached. It now emits one message on the
+  `error` lane first, with `hop.error_code` `client_too_slow`, the call under
+  `hop.session_id` and `hop.call_id`, and `hop.dropped_frames` naming how many
+  queued commands went with the session. Nothing changes on the topology side,
+  which was and stays backpressure: a listener that falls behind stalls the
+  sender and loses nothing. `templates/voice/README.md` says both halves now
+  (GH #601).
+
+### Fixed
+
+- `meclaw ask` no longer reads a sibling's dead letter as the fate of the turn
+  it sent. A trace holds everything one turn sets off, so a lane that emits on
+  the side and finds nobody to consume it lands in the queue under that trace
+  while the answer is still being worked on, and the command ended with `1` and
+  a `no_route` message seconds before the answer arrived. The queue is now
+  matched by `message_id`, so only an entry that killed the posted message ends
+  the wait; a mistyped `--target`, which is what the queue is read for, still
+  ends it at once (GH #640).
+- The example cell counts agree with the tests that pin them: `meclaw-os`
+  17, `never-forgets` 16, `organism` 92 cells and 565 edges, and
+  `display-colony-view` 8, now measured by a test of its own (GH #638).
+- `rewiring.md` instantiated two templates that do not exist; the diffs now
+  name `fetcher`. Two references to closed issues (#390, #83) are gone.
+
 ## [0.33.0] — 2026-09-08
 
 `meclaw ask` sends one turn to a running colony and prints the answer; the

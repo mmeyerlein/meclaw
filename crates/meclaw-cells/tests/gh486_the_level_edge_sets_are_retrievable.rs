@@ -103,6 +103,18 @@ fn grown_levels() -> Vec<(String, Value)> {
         let Ok(decl) = meclaw_core::serde_json::from_str::<Value>(&raw) else {
             continue;
         };
+        // A declaration at the colony ROOT is not a level. A level is
+        // instantiated into the open container the level above ships for it,
+        // and the root ships none -- `grow-door.json` wires a front door and
+        // the terminal its answers stop in, which is a colony's own plumbing
+        // and not a set a composer draws around a level. Mirrored in
+        // `workshop/tools/build_librarian_seed.py` `level_rows`.
+        let root_only = match decl["manifest"].as_array() {
+            Some(list) => list
+                .iter()
+                .all(|d| d["scope"].as_str().unwrap_or("/") == "/"),
+            None => decl["scope"].as_str().unwrap_or("/") == "/",
+        };
         // One file is one SOURCE, and the corpus row is per source. Since GH
         // #503 a file may carry more than one declaration — a screen and an app
         // declare themselves at two different containers and cannot share a
@@ -125,9 +137,10 @@ fn grown_levels() -> Vec<(String, Value)> {
         };
         // `grow-os.json` grows the shell, not a level: no edges, nothing to
         // publish.
-        if decl["diff"]["add_edges"]
-            .as_array()
-            .is_none_or(|a| a.is_empty())
+        if root_only
+            || decl["diff"]["add_edges"]
+                .as_array()
+                .is_none_or(|a| a.is_empty())
         {
             continue;
         }

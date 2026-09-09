@@ -1,11 +1,15 @@
 # Rewiring a running colony
 
-How to add, move and re-wire cells while the colony keeps running, and which
-traps come back every time.
+Recipes for changing a colony while it runs: add a cell, move a capability,
+seal a hive, dissolve a level. Every recipe is a mutation body plus the checks
+around it.
 
-This is the operator's view of the mutation format. `meclaw-overview.md`
-§ Mutation format says what a mutation is; this page says how to drive one. The
-examples come from real runs against a running colony.
+Written for operators who post mutations by hand or from a script. Read the
+three sentences below, then go to the recipe you need; the recipes stand on
+their own and run from the smallest change to the largest.
+
+The words are on [`meclaw.md`](meclaw.md), the mutation format in `meclaw-overview.md`
+§ Mutation format. Every example here comes from a real run.
 
 ## The three sentences that explain everything else
 
@@ -33,11 +37,11 @@ single-segment name inside that scope, and edges are scope-relative (`./name`).
   "scope": "/org/…/assistants/sam/cogny",
   "ctx": {},
   "diff": {
-    "add_nodes": [{"name": "shell", "template": "bash-tool"}],
+    "add_nodes": [{"name": "fetch", "template": "fetcher"}],
     "add_edges": [
-      {"from": "./split", "to": "./shell",
-       "condition": "has(hop.tool_name) && hop.tool_name == 'bash'"},
-      {"from": "./shell", "to": "./collector",
+      {"from": "./split", "to": "./fetch",
+       "condition": "has(hop.tool_name) && hop.tool_name == 'web_fetch'"},
+      {"from": "./fetch", "to": "./collector",
        "modifier": {"set_hop": {"route": "'in_tool'"}}}
     ]
   }
@@ -82,8 +86,7 @@ That still does not make the tool usable. See § An edge is not a tool.
 an edge in the same diff may address it. One function decides what a diff name
 means, and every check asks it. Pinned in
 `gh166_wire_a_deep_node_in_the_same_diff`, including the case that must keep
-failing: a deep endpoint that names nothing is still rejected. Before v0.14.0
-the instantiation worked and the edge came back as `edge_schema` (GH #166).
+failing: a deep endpoint that names nothing is still rejected.
 
 Setting the scope to the target hive stays the better habit, because then `name`
 stays single-segment. The deep form works. The scope is what the mutation is
@@ -118,7 +121,7 @@ put it in the busy part of the day.
 ```jsonc
 // A. Scope is the TARGET hive, so the names stay single-segment
 {"scope": "/org/…/sam/talky",
- "diff": {"add_nodes": [{"name": "fetch", "template": "web-fetch-tool"}, …],
+ "diff": {"add_nodes": [{"name": "fetch", "template": "fetcher"}, …],
           "add_edges": [{"from": "./split", "to": "./fetch", "condition": "…"},
                         {"from": "./fetch", "to": "./collector",
                          "modifier": {"set_hop": {"route": "'in_tool'"}}}, …]}}
@@ -166,12 +169,10 @@ addressed at the hive path with `"hop": {"route": "in_pack"}` — and what has n
 lane goes through the seed below.
 
 A `202` says the message was submitted. Whether it arrived is a separate
-question, so go and look. And note what kind of read that is: an operator with a
-shell is not a cell. Database isolation (`meclaw-overview.md` § Database
-isolation) binds cells and has no exception. A cell never opens another cell's
-`cell.db`, reads included. You may, from outside the colony, read-only, to
-answer a question the API does not answer. The moment that read wants to happen
-inside a topology, it is a message.
+question, so go and look. Reading it from outside the colony, read-only, is an
+operator's business and not a cell's (`meclaw-overview.md` § Database
+isolation). The moment that read wants to happen inside a topology, it is a
+message.
 
 ```bash
 sqlite3 'file:…/cogny/brain/cell.db?mode=ro' \
@@ -272,20 +273,8 @@ The parent hive's `params.graph.edges` stay where they are. They are never
 rewritten after instantiation, and that is fine: since GH #168 the edge table is
 the topology on a reboot, for the planner too. It always was for the runtime
 (`colony_task` hydrates from `colony.db` and logs "params.graph hints ignored").
-Only the bootstrap planner still believed the file, and died on an edge the
-mutation had long since removed:
-
-    bootstrap_from_filesystem failed: DanglingEndpoint … endpoint: Path("/…/search")
-    Error: bootstrap failed
-
-systemd restarted into a loop until someone edited the file by hand, and asking
-`colony.db` about those edges was falsely reassuring, because there they really
-were gone. That answer now holds at boot as well. The file is the seed, the edge
-table is the state.
-
-Which also gives rebuilding from the tree its meaning back. A colony rewired by
-mutation and rebooted from its own directory is the colony that was running, and
-the removed lanes do not come back.
+Only the bootstrap planner still believed the file; that answer now holds at
+boot as well. The file is the seed, the edge table is the state.
 
 A move is no longer a rebuild (GH #169). `move_nodes` arrived in v0.14.0: a node
 changes its address and keeps its identity, with the same `cell_id`, the same
@@ -529,8 +518,7 @@ recipe does not look the way you would write it: `remove_nodes[].match.name` is
 resolved against the cell registry, and a hive has no row there, since it lives
 in the hive scopes. A match on `./channel` is therefore `match_no_hit`, and
 because validation is all-or-nothing, the whole mutation fails on it.
-(`swap_nodes` asks both namespaces, `remove_nodes` does not; the spec promises
-more here than the code delivers, GH #390.)
+(`swap_nodes` asks both namespaces, `remove_nodes` does not.)
 
 So: two operations in one diff. `remove_nodes` for the two real cells, and
 `remove_edges` for the edges whose end is a hive.
@@ -591,18 +579,14 @@ directory, `cell_id` and `cell.db` (no-delete policy), and `channel` and
 `telegram-connector` are left behind as empty scope markers, with no edges, no
 occupants and no traffic. The colony has no live operation that removes them.
 Getting the directories themselves out is the colony-stopped list in § Removing
-a cell for real, and it is not required. The way back is `add_edges`: draw the
-old edges once more and the recompute makes the level active again. An
-`add_nodes` on the same path commits as a resume, and it wires nothing.
+a cell for real, and it is not required.
 
 A rejected step leaves nothing behind. Since GH #276 the colony registers only
 behind every check that can judge the diff itself, and the two rejects that can
 still fall after that roll back: the registry entry, the `colony.db` row and an
 already-spawned cell are gone again before the `422` reaches the caller. A
 failed step is therefore something you simply retry, with nothing to clean up
-first. Before GH #276 the cleanup was yours, and the first observed case left
-thirteen cells standing, including a second `proxy` polling the same bot token
-as the one already running. Exactly the doubling step 1 is afraid of.
+first.
 
 ### 4. Checking it
 
@@ -628,8 +612,7 @@ Then three questions to the same graph:
   stays that way.
 - Does `./telegram -> .` appear twice, once per condition? Once means the drain
   is missing.
-- Does a lane appear twice because step 2 ran twice? A fan-out shows up in
-  operation only as duplicated answers.
+- Does a lane appear twice because step 2 ran twice?
 
 `/colony/graph` filters by scope and not by activity, so the disconnected nodes
 and whatever is still wired inside a preserved generation stay visible in it.
@@ -639,9 +622,8 @@ boundary is the finding. The two empty hives do not show up there at all: the
 node list comes from the cell registry, where a hive has no row, and after step
 3 they carry no edges either. Their evidence is the directories.
 
-Read dead letters by `created_at`, do not count them. And the answer that counts
-does not come from the graph: write one line into the chat and wait for it to be
-answered.
+The answer that counts does not come from the graph: write one line into the
+chat and wait for it to be answered.
 
 ### What you give up
 

@@ -278,7 +278,7 @@ READMEs because it is the one that pays off.
 `crates/meclaw-cells/tests/meclaw_os_example.rs` boots this seed and applies **these** two
 declarations -- the files, not copies of them -- against a mock provider, and drives one turn
 from the HTTP surface to the reply port. It measures the seed (two files, zero cells, no edge)
-and both counts (16, then 21). If the example rots, that test goes red first.
+and both counts (17, then 22). If the example rots, that test goes red first.
 
 `crates/meclaw-cells/tests/gh284_no_shipped_topology_silences_a_reject.rs` measures the other
 half: no declaration in `examples/` and no `config.json` in `templates/` routes a `reject` or

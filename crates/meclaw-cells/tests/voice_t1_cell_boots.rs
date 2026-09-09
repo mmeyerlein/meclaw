@@ -151,6 +151,100 @@ async fn a_voice_cell_spawned_by_its_factory_serves_its_port() {
     join.abort();
 }
 
+/// GH #601: a client that stopped taking frames leaves a reason on the `error`
+/// lane, not only a log line.
+///
+/// The I/O half decides by count — `DISPATCH_QUEUE` commands queued behind an
+/// already full connection channel — and the ruling of 2026-09-09 is that the
+/// decision is a message. Exactly one, carrying the call it ended under both
+/// names and the number of queued commands that went with it, so a colony can
+/// tell a caller who hung up from a client that stopped reading.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_client_that_stopped_reading_leaves_its_reason_on_the_error_lane() {
+    use meclaw_cells::voice::cell::VoiceEvent;
+
+    let path = Path::new(CELL_PATH);
+    let mut cell = echo_cell(&path);
+    let mut db = db();
+    let (tx, mut rx) = mpsc::channel::<CellEmission>(32);
+    let sink = OriginSink::new(tx, path.clone(), 64);
+
+    cell.handle_event(
+        VoiceEvent::Connected {
+            session_id: "call-1".to_string(),
+            mode: Mode::Auto,
+        },
+        &sink,
+        &mut db,
+    )
+    .await;
+    cell.handle_event(
+        VoiceEvent::ClientTooSlow {
+            session_id: "call-1".to_string(),
+            dropped: 65,
+        },
+        &sink,
+        &mut db,
+    )
+    .await;
+    cell.handle_event(
+        VoiceEvent::Disconnected {
+            session_id: "call-1".to_string(),
+        },
+        &sink,
+        &mut db,
+    )
+    .await;
+
+    let mut emissions = Vec::new();
+    while let Ok(em) = rx.try_recv() {
+        emissions.push(em);
+    }
+    let reported: Vec<&CellEmission> = emissions
+        .iter()
+        .filter(|em| error_code(em).as_deref() == Some("client_too_slow"))
+        .collect();
+    assert_eq!(
+        reported.len(),
+        1,
+        "one give-up, one message: {:?}",
+        emissions.iter().map(error_code).collect::<Vec<_>>()
+    );
+    let header = reported[0]
+        .content
+        .get("header")
+        .expect("every emission carries a header");
+    assert_eq!(
+        header.get("route").and_then(|v| v.as_str()),
+        Some("error"),
+        "the give-up rides the error lane: {header:?}"
+    );
+    assert_eq!(
+        (
+            header.get("session_id").and_then(|v| v.as_str()),
+            header.get("call_id").and_then(|v| v.as_str())
+        ),
+        (Some("call-1"), Some("call-1")),
+        "R-V15: the report names the call, under both names a colony wires against: {header:?}"
+    );
+    assert_eq!(
+        header.get("dropped_frames").and_then(|v| v.as_u64()),
+        Some(65),
+        "the hop carries how many queued commands went with the session: {header:?}"
+    );
+    let detail = reported[0]
+        .content
+        .get("meta")
+        .and_then(|m| m.get("detail"))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    assert!(
+        detail.contains("65"),
+        "and the detail says the number out loud, for a reader who never parses a hop: \
+         {detail:?}"
+    );
+}
+
 /// R-V15: every emission that belongs to a connection names its session.
 ///
 /// Telephony is why this is a rule and not a nicety — a colony that answers the

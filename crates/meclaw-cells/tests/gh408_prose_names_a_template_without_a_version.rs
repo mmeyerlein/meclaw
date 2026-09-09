@@ -17,8 +17,14 @@
 //! writing the number: a cross-reference almost never means a particular
 //! version, it means "that template over there".
 //!
-//! FOUR exceptions, each earned by a real pattern in the tree rather than
+//! THREE exceptions, each earned by a real pattern in the tree rather than
 //! guessed. See the constants.
+//!
+//! There were four until GH #633 shortened `templates/README.md` to the folder,
+//! the table and the rules for adding one. Exception (b) skipped that file whole,
+//! for two DIDACTIC hits explaining what an exact reference does when it misses;
+//! the sentences carrying them left with the concept text, and an exception that
+//! covers nothing is a hole. The file is swept like every other one now.
 
 use std::path::{Path, PathBuf};
 
@@ -27,11 +33,6 @@ fn repo(rel: &str) -> PathBuf {
         .join("../..")
         .join(rel)
 }
-
-/// (b) The library file. Two of its hits are DIDACTIC — `talky@1.2.0` is there
-/// to be unresolvable, because the sentence explains what an exact reference
-/// does when it misses. A gate that fixed those would make the docs wrong.
-const LIBRARY_FILE: &str = "templates/README.md";
 
 /// (c2) A line that places its reference in the PAST. `name@N` shorthand is
 /// already ruled historical (§ 4a); a full version in such a sentence is the
@@ -138,9 +139,6 @@ fn no_prose_cross_reference_carries_a_version() {
             .unwrap_or(path)
             .to_string_lossy()
             .replace("./", "");
-        if rel.ends_with(LIBRARY_FILE) {
-            continue; // (b)
-        }
         let own = owning_template(&rel).unwrap_or("");
         let Ok(text) = std::fs::read_to_string(path) else {
             continue;
@@ -183,11 +181,6 @@ fn no_prose_cross_reference_carries_a_version() {
 fn the_exceptions_are_load_bearing_and_not_a_silence() {
     // Each exception must actually FIRE on the tree — an exception nothing hits
     // is a hole somebody widened by accident.
-    let lib = std::fs::read_to_string(repo(LIBRARY_FILE)).expect("library file");
-    assert!(
-        lib.lines().any(|l| !references(l).is_empty()),
-        "the library-file exception no longer covers anything",
-    );
     let hits = std::fs::read_to_string(repo("templates/collector/README.md"))
         .expect("collector README")
         .lines()

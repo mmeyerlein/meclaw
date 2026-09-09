@@ -94,6 +94,25 @@ jobs:
           ( cd dist && sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256" )
           echo "name=$name" >> "$GITHUB_OUTPUT"
 
+      # The templates travel as a second asset. A colony is grown from
+      # templates, and they have to match the binary: start.sh reads the
+      # version off the installed binary and fetches this archive for it,
+      # which is 2 MB of exactly the two directories a colony needs, against
+      # 8 MB for the tag tarball of the whole tree. It carries its own sum for
+      # the same reason the binary does -- start.sh unpacks nothing it has not
+      # verified. The tag tarball stays the fallback for releases before this
+      # asset existed.
+      - name: package templates
+        id: templates
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          tname="meclaw-${version}-templates"
+          mkdir -p "dist/$tname"
+          cp -r templates examples "dist/$tname/"
+          tar -czf "dist/${tname}.tar.gz" -C dist "$tname"
+          ( cd dist && sha256sum "${tname}.tar.gz" > "${tname}.tar.gz.sha256" )
+          echo "tname=$tname" >> "$GITHUB_OUTPUT"
+
       - name: release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -107,7 +126,16 @@ jobs:
               --title "$GITHUB_REF_NAME" \
               --generate-notes
           fi
+          # install.sh and start.sh are assets too: the canonical URL of both is
+          # releases/latest/download/<name>, which always resolves to the newest
+          # release, and meclaw.ai/<name> is a redirect there. One source, the
+          # tag, and no copy on a web server to drift from it.
+          tname="${{ steps.templates.outputs.tname }}"
           gh release upload "$GITHUB_REF_NAME" \
             "dist/${name}.tar.gz" \
             "dist/${name}.tar.gz.sha256" \
+            "dist/${tname}.tar.gz" \
+            "dist/${tname}.tar.gz.sha256" \
+            scripts/install.sh \
+            scripts/start.sh \
             --clobber

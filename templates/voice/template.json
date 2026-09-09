@@ -1,6 +1,6 @@
 {
   "name": "voice",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": {
     "purpose": "A spoken conversation as ONE cell: a WebSocket surface that takes audio in and gives audio back, and text turns on the topology side. It is the voice sibling of the telegram connector -- the same shape, a different medium: one cell, one credential pair, one wire up and one wire down. Speech recognition and synthesis sit behind traits with two shipped adapters each, so which provider speaks is a param and not a rebuild.",
     "use_when": "Wherever a topology needs a voice surface in front of something ELSE. Instantiate with add_nodes and wire the CELL -- there is no hive path and no lane inside it to hit. One instance per PORT: the port is owned like a web cell's, and a second instance takes its own through override_params. The outbound edge MUST promote hop.call_id to context, or the spoken answer has no connection to go to.",

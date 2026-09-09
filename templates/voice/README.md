@@ -1,4 +1,4 @@
-# `voice@1.4.0`
+# `voice@1.4.1`
 
 A spoken conversation as one cell. One WebSocket surface, one pair of provider
 credentials, one wire up and one wire down. No persona, no memory, no answer of
@@ -59,7 +59,7 @@ with `edge_schema`.
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "channels/voice", "template": "voice@1.4.0",
+  "add_nodes": [{"name": "channels/voice", "template": "voice@1.4.1",
                  "override_params": {"port": 7900}}],
   "add_edges": [
     {"from": "./channels/voice", "to": "./channels",
@@ -179,6 +179,12 @@ only; interim transcripts still reach the client as frames on its own socket,
 because that is where a live caption belongs -- they just do not become messages
 on the topology.
 
+On the topology side nothing is dropped: a listener that falls behind stalls
+the sender, and every interim waits for it. On the socket side the wait ends by
+count: a client that leaves 64 queued commands untaken loses its connection, and
+the cell reports that on the `error` lane as `client_too_slow`, with
+`hop.dropped_frames` naming how many went with it.
+
 **The reason is the exit, and there is none by default.** `partial` would reach
 `./channels` and stop there: the `member` container ships no edge for it, so
 every interim would dead-letter with `no_route` -- once per interim, forever, in
@@ -194,7 +200,7 @@ install`). Until then the manifest that wants partials does both halves itself
 one key on the node:
 
 ```json
-{"name": "channels/voice", "template": "voice@1.4.0",
+{"name": "channels/voice", "template": "voice@1.4.1",
  "override_params": {"emit_partials": true}}
 ```
 
@@ -228,7 +234,7 @@ at the switch pending — see [`freeswitch`](../freeswitch/) § *Hanging up*).
 **Both halves or neither**, exactly as for `partial`:
 
 ```json
-{"name": "channels/voice", "template": "voice@1.4.0",
+{"name": "channels/voice", "template": "voice@1.4.1",
  "override_params": {"emit_speak_end": true}}
 ```
 
@@ -329,7 +335,7 @@ names its own through `override_params`, in the flat form, because a single-cell
 template has nothing inside it to address.
 
 ```json
-{"name": "channels/voice", "template": "voice@1.4.0",
+{"name": "channels/voice", "template": "voice@1.4.1",
  "override_params": {"port": 7912}}
 ```
 
@@ -390,7 +396,7 @@ spelling that says "not set" -- `VoiceParams::parse` reads a null `tts` exactly
 as an absent one, which is legal precisely when the recogniser is `echo`:
 
 ```json
-{"name": "channels/voice", "template": "voice@1.4.0",
+{"name": "channels/voice", "template": "voice@1.4.1",
  "override_params": {"stt": {"provider": "echo"}, "tts": null}}
 ```
 
@@ -403,7 +409,7 @@ routes -- a self-hosted realtime transcription endpoint, a self-hosted
 `/v1/audio/speech` -- stands in for the hosted one without touching the cell:
 
 ```json
-{"name": "channels/voice", "template": "voice@1.4.0",
+{"name": "channels/voice", "template": "voice@1.4.1",
  "override_params": {
    "tts": {"provider": "openai",
            "base_url": "http://<local-host>:<port>",
@@ -497,7 +503,7 @@ instantiating manifest's `override_params`, where it is substituted at
 instantiation exactly like the two api keys.
 
 ```json
-{"name": "channels/voice", "template": "voice@1.4.0",
+{"name": "channels/voice", "template": "voice@1.4.1",
  "override_params": {"tts": {"provider": "cartesia",
                              "api_key": "${CARTESIA_API_KEY}",
                              "voice": "${CARTESIA_VOICE}"}}}
@@ -512,7 +518,7 @@ exactly the same place, and the whole switch is one override -- the template doe
 not change, because `provider` was always a value rather than a shape:
 
 ```json
-{"name": "channels/voice", "template": "voice@1.4.0",
+{"name": "channels/voice", "template": "voice@1.4.1",
  "override_params": {"tts": {"provider": "elevenlabs",
                              "api_key": "${ELEVENLABS_API_KEY}",
                              "voice": "${ELEVENLABS_VOICE}"}}}

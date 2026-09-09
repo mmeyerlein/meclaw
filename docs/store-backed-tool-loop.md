@@ -1,20 +1,15 @@
 # Store-backed tool-loop protocol
 
-> One round of this loop, traced hop by hop against a live provider:
-> [`../examples/never-forgets/WALKTHROUGH.md`](../examples/never-forgets/WALKTHROUGH.md) § *Step 7*.
+A worked pattern: one `llm` cell, several tools running in parallel, and a store that decides
+when a round is complete. It is topology, and no cell type does any of it.
 
-An `llm` cell makes one provider call. It does not remember the conversation and it does not
-wait for tools. A multi-tool loop therefore needs application topology that can:
+Written for anyone building a multi-tool agent on meclaw.
+[`examples/telegram-research`](../examples/telegram-research/) is the tree described here. Read
+§ One round with two tools first; compaction and TTL matter once turns get long. One round
+traced against a live provider is in
+[`never-forgets/WALKTHROUGH.md`](../examples/never-forgets/WALKTHROUGH.md) § Step 7.
 
-1. fan tool calls out in parallel,
-2. remember which results belong to the current inference round,
-3. wait until every expected result has arrived,
-4. rebuild the conversation, and
-5. route that conversation into a fresh `llm` call exactly once.
-
-[`examples/telegram-research`](../examples/telegram-research/) is the worked example in this
-guide. Its `prep`, `dispatch`, and `collector` nodes are ordinary `code` cells. The durable
-thread lives in the `memory` store. The loop itself is the `collector` to `planner` edge.
+The primitives this composes are on [`meclaw.md`](meclaw.md).
 
 ## The four roles
 
@@ -197,7 +192,8 @@ proxy and to `archive`; the tool loop is done.
 
 The thread is rebuilt cumulatively (step 5), so a tool result enters the model's context again
 on every round of the same turn. One 172 KB fetch in a two-round turn was measured at roughly
-70k prompt tokens; in a five-round turn the same fetch is carried five times.
+70k prompt tokens (CHANGELOG 0.4.0, GH #83); in a five-round turn the same fetch is carried
+five times.
 
 Two places bound that, and they are different decisions.
 
@@ -213,12 +209,10 @@ At the collector, what leaves the assembled context again is its decision, and t
 is the one that turns a large result from a per-round cost back into a one-time cost. The shape
 is deterministic policy and no model judgement: whole turns leave on a turn cap and a byte cap,
 never halves, and the turn being answered is never the one evicted. An eviction rule over the
-tool rows of the round slate is that same shape one level down, and it is tracked on GH #83.
+tool rows of the round slate is that same shape one level down, and that rule is not built.
 
 For a genuinely large document the honest pattern is no cap at all: fetch it to a file with a
 `file` cell and hand the model the path, so the payload never becomes a thread row.
-
-Neither condenses: a cap keeps a prefix and an eviction keeps nothing.
 
 ## Compacting the thread when the window fills
 
@@ -428,20 +422,8 @@ writes a `ttl_expired` dead-letter row; those are the operator's signals, and th
 ones.
 
 TTL is a substrate guard and never the loop's bound. Bound the loop where the loop lives, on
-the loopback edge, with the iteration counter the edge already owns. The recommended edge above,
-with the `has()` guard on the optional key:
-
-```json
-{
-  "from": "./collector",
-  "to": "./planner",
-  "condition": "has(hop.route) && hop.route == 'fire' && int(context.iter) < 12",
-  "modifier": {
-    "set_context": { "iter": "int(context.iter) + 1", "firing": "''" },
-    "restore_ttl": true
-  }
-}
-```
+the recommended edge above, with the iteration counter it already owns, and give its condition
+the `has()` guard on the optional key.
 
 With `restore_ttl` that bound is mandatory. It is the only thing left that stops the loop, which
 is exactly why the substrate refuses an unconditional restoring edge.
@@ -469,19 +451,11 @@ every fact needed after a reply is either in the store or in message context.
 
 ## Adapting the pattern
 
-To build another store-backed loop:
-
-1. Give each inbound request a stable correlation ID.
-2. Persist the user turn before the first inference.
-3. Preserve the complete assistant tool-call turn before dispatching individual calls.
-4. Return every tool result with its original tool-call ID.
-5. Test completeness by ID membership, scoped to the current correlation ID and iteration.
-6. Put the one-shot guard in the store operation, and never in code-cell memory.
-7. Rebuild the provider thread only after winning that guard.
-8. Increment the iteration and route to the LLM on an edge.
-9. Make store replies and losing races terminate explicitly with an empty multi-send.
-10. When the thread outgrows the window, fold the old rounds into one summary row and rebuild
-    from `summary + tail`; condensation is the one memory capability a cap cannot supply.
+Three things carry over to another store-backed loop. Give every inbound request a stable
+correlation ID, and test completeness by ID membership scoped to that ID and the current
+iteration. Put the one-shot guard in the store operation and never in code-cell memory, and
+rebuild the thread only after winning it. Count the rounds on the edge that re-enters the
+`llm` cell, where the counter is already declared.
 
 Validate the worked example without external credentials:
 

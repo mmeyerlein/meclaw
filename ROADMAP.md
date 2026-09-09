@@ -29,6 +29,15 @@ Release detail is in [CHANGELOG.md](CHANGELOG.md) and the
 
 ## Now
 
+v0.34.0 is the documentation with one shape and a quick start that asks for
+the key. The README is a hub, `docs/` has a concept layer between the start
+page and the reference files, and every page answers one question in the same
+order. `start.sh` asks for the key on a terminal and can boot the shell, so
+getting started grows an organisation, a member and an agent into a running
+colony and talks to it. A `voice` client that stops reading is dropped with an
+`error_code`, and `meclaw ask` waits out a sibling hop's dead letter. What the
+release contains is the [`[0.34.0]`](CHANGELOG.md) section of the changelog.
+
 v0.33.0 is first contact and the telephone findings. `meclaw ask` sends one turn
 to a running colony and prints the answer, so the quickstart is four steps,
 install, start, grow, ask, and the README is rewritten against it, with one word
@@ -202,6 +211,11 @@ there.
 One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- v0.34.0: the documentation has one shape and the quick start asks for the
+  key. README as a hub, a concept layer in `docs/`, the why pages rewritten,
+  the reference files with heads; `start.sh` boots the shell and getting
+  started runs end to end; `client_too_slow` on the voice error lane; `ask`
+  waits out a sibling's dead letter.
 - v0.33.0: first contact and the telephone findings. `meclaw ask` prints the
   answer to one turn, the README is written against a four-step quickstart, a
   sealed hive's interior stops being addressable from outside, and a call names

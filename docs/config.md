@@ -1,8 +1,12 @@
 # `config.json` format
 
-The `config.json` format in detail, per cell and per hive scope marker. Where this file and `meclaw-overview.md` disagree, the overview wins: it is the single source of truth.
+The reference for the four blocks of a `config.json`: `cell`, `params`, `contract` and `description`. It carries every key, its default, and what refuses a boot or a mutation.
 
-> New here? [`README.md`](README.md) is the map of this directory and [`glossary.md`](glossary.md) defines the vocabulary this file assumes.
+Read it while you write a template or a cell by hand. What a colony, a cell and a mutation are is on [`meclaw.md`](meclaw.md). What each cell type puts inside its own `params` is in [`cell-types.md`](cell-types.md), the vocabulary in [`glossary.md`](glossary.md).
+
+The order is the order of the file: what a cell may know, who writes the file, the four blocks one by one, and what is a birth snapshot versus what is read again at every boot.
+
+Where this file and [`meclaw-overview.md`](meclaw-overview.md) disagree, the overview wins: it is the single source of truth.
 
 ## Supreme rule
 
@@ -22,11 +26,9 @@ At instantiation the colony copies the template, assigns a fresh UUID v7, stamps
 
 The node reference is the filesystem directory name, the path segment under `{root}`. The `config.json` has no `cell.name` field and carries no `name` at all. When the root chain is resolved, the `${...}` substitution wins over the template name from `template.json`. Naming collisions with siblings inside the same hive scope are rejected by the colony in the single-stage mutation validation (`meclaw-overview.md` § Naming collisions).
 
-After instantiation `config.json` is semantically frozen, the bootstrap snapshot. Nobody writes into it any more, neither the colony nor the cell itself. Dynamic cell state (changed params) lives in `cell.db`, colony state (registry, edge table, `cell_id`, message log, mutations) lives in `colony.db`. After the snapshot, `config.json` carries neither of the two forward (see `meclaw-overview.md` § Lifecycle of `config.json` and `cell.db`). The graph of a topology lives centrally in the colony's registry and in `colony.db`, never in the `config.json` of the hive scope marker, whose `params.graph` is an initial bootstrap hint.
+After instantiation `config.json` is semantically frozen, the bootstrap snapshot. Nobody writes into it any more, neither the colony nor the cell itself. Dynamic cell state (changed params) lives in `cell.db`, colony state (registry, edge table, `cell_id`, message log, mutations) lives in `colony.db`. After the snapshot, `config.json` carries neither of the two forward (see `meclaw-overview.md` § Lifecycle of `config.json` and `cell.db`).
 
 On a runtime registration (`add_templates`, GH #440) the `config.json` a declaration entry brings along is written into the instance-local library byte for byte as it stood in the body. Registering does not substitute it. `${ctx.*}`, `${uuid7:*}` and `${VAR}` stay put and bind where they always bind, the instance class at instantiation and the environment class at read time. Registering files a class; only the `add_nodes` that names it turns that into an instance. Any other split would let a library blueprint carry the `ctx` of whichever mutation happened to deliver it.
-
-Cells do not read `config.json` at all. The colony hands the cell its `params` block at startup. Param updates arrive afterwards by message, and the cell persists them in its `cell.db`, so `config.json` and the live state diverge. A cell reset wipes `cell.db`, and the cell starts again from the bootstrap state.
 
 ## Structure
 
@@ -53,7 +55,7 @@ This is breaking. A tree carrying an extra `cell` key, a typo or a key someone u
 
 `surface` stood on that list until GH #383. The key is removed, neither renamed nor moved, so `cell.surface` is an unknown key and therefore a hard refusal like any other. The `cell` table below names the reason and says where a reader points instead (the `web` cell, `templates/canvy/MIGRATION.md`).
 
-The `params` block is handed to the cell 1:1 and opaque. After `${VAR}`, `${ctx.*}` and `${uuid7:*}` substitution the colony passes it through unchanged and does not interpret its content. The shape is cell-type-specific: every cell type defines its own `params` structure (see `cell-types.md`). The sole exception is the hive scope marker, where the colony reads `params.graph` as the initial desired graph. A hive is no actor, so nothing is handed to it.
+The `params` block is handed to the cell 1:1 and opaque. The shape is cell-type-specific: every cell type defines its own `params` structure (see `cell-types.md`). A hive is no actor, so nothing is handed to it.
 
 Only `id` and `type` are immutable. They identify the node instance and its cell type across the entire lifetime. Every other field follows the effectiveness rule: a change to a `cell` or `params` field, through a new instantiation at the path or through a new template, takes effect at the next spawn or wake of the cell. The running cell task does not re-read `config.json` (§ Access).
 
@@ -122,10 +124,10 @@ The type is resolved at instantiation and never reaches disk. What lands in the 
 | `id` | `cell_id` (UUID v7). Set during the copy operation from template to instance, the only time it is written. Instantiation reads it from the freshly written `config.json` and persists it into the never-deleting `colony.db`, which from then on is the authoritative source of the `cell_id` (`config.json` is only the bootstrap imprint). Afterwards never reassigned, not on reconnect, not on resume, not on reboot. (The re-dedicated `swap_nodes` graph swap pivots edges onto a different implementation with its own `id` and leaves the old cell with its `id` preserved and disconnected. It transfers no `cell_id`, see `meclaw-overview.md` § Mutation operations.) |
 | `type` | Cell type (`hive`, `store`, `llm`, `bash`, `code`, `web_fetch`, `web_search`, `file`, `edit`, `proxy`, `timer`, `mcp`, `harness`, `subcolony`, `vault`, `web`, `voice`). Together with `id` the immutable part of the `cell` block. Plus `ref`, which is never a runtime type (§ Template reference): it is resolved at instantiation and stands in no instantiated `config.json`. In the root tree it is a declaration the first boot fulfils (GH #424). |
 | `restart_limit` | *(optional)* Maximum restart attempts by the supervisor before the cell is marked as `failed`. Default `5`. See `meclaw-overview.md` § Restart strategy. |
-| `timeout` | Hot/cold mode (see `meclaw-overview.md` § Hot/cold cell model): `0` = default (idle-timeout model, Awake and Asleep), `>0` = one-shot (despawn after each message), `-1` = persistent (typically `proxy`/`timer`/`mcp`/`web`/`voice`, never despawn). Phase-13 activation; before that, all cells are permanently a task. |
-| `idle_timeout_ms` | *(optional, from Phase 13)* Idle duration in ms after which a stateful cell with `cell.timeout: 0` despawns itself (Awake to Asleep). Overrides the colony default `idle_timeout_default_ms` from `colony.json`. Ignored if `cell.timeout != 0`: at `>0` the one-shot despawn after each message takes effect, at `-1` the cell is persistent and never despawns. |
+| `timeout` | Hot/cold mode (see `meclaw-overview.md` § Hot/cold cell model): `0` = default (idle-timeout model, Awake and Asleep), `>0` = one-shot (despawn after each message), `-1` = persistent (typically `proxy`/`timer`/`mcp`/`web`/`voice`, never despawn). The idle-timeout model is live since 0.1.0. |
+| `idle_timeout_ms` | *(optional)* Idle duration in ms after which a stateful cell with `cell.timeout: 0` despawns itself (Awake to Asleep). Overrides the colony default `idle_timeout_default_ms` from `colony.json`. Ignored if `cell.timeout != 0`: at `>0` the one-shot despawn after each message takes effect, at `-1` the cell is persistent and never despawns. |
 | `message_timeout` | *(optional)* Substrate backstop per `handle()` call in ms, see `meclaw-overview.md` § Timeouts (concept B). Overrides the colony default `message_timeout_default_ms` from `colony.json`. `0` or `-1` = no backstop, for long-running cells. It is not the primary timeout for I/O operations; `params.external_timeout_ms` (concept A) is responsible for that. `cell.message_timeout` should be considerably more generous than `params.external_timeout_ms`, so that normally A takes effect first. |
-| `mailbox_size` | *(optional, from Phase 5)* Bounded-mpsc capacity; overrides the colony default (`colony.json` `mailbox_default_capacity`, default 1000). See `meclaw-overview.md` § Mailbox size. |
+| `mailbox_size` | *(optional)* Bounded-mpsc capacity; overrides the colony default (`colony.json` `mailbox_default_capacity`, default 1000). See `meclaw-overview.md` § Mailbox size. |
 | `provenance` | *(optional, GH #62)* The instantiation origin stamp, an object carrying `template` (the resolved template name from `template.json`, never the `name@version` reference form), `template_version` (the resolved version, absent exactly when the template declares none, which says something different from "version unknown") and `instantiated_at` (unix seconds, the same unit as every `created_at` in `colony.db`). Written exactly once, in the same write as the fresh `cell.id`, and never again. Absent for every node not born from a template: a hand-written tree, an `adopt` entry (the adopted node keeps its own origin unchanged, since adoption does not change where a node came from), and anything instantiated before the field existed. GH #277 retracts what stood here for a subtree template, that every node of the instance carried the subtree template's stamp. Every node carries the stamp of the template it is an instance of, and a node that came in through a `cell.type: "ref"` sub-unit names the **referenced** template, not the composite above it. The additional key `template_chain` names the composites that placed it: an array of two-element arrays `[name, version]`, outermost first, with the node's own template as the last element (`[["outer","1.0.0"],["inner","1.0.0"]]`) and `version` `null` when the template declares none. `template` and `template_version` are the projection of that last element, and an instance of a ref-free template carries a one-element chain. The subtree template remains the unit an update addresses; the chain is how an update finds its instances. See § Origin below. |
 | ~~`surface`~~ | REMOVED (GH #383), was GH #159. The key declared that a cell may be served under `/surface/<cell-path>` by the HTTP API, with `title`, `assets` and `boot_hint`. The whole statement is retracted, down to the mechanism: the `/surface/*` route, the parser (`meclaw_colony::surface`) and the serving path in `--api` no longer exist. `cell.surface` therefore falls under the closed key list above, a hard boot refusal naming the key and the file (`BootstrapError::InvalidJson` at boot, `error_code: "schema"` on the mutation path). That is breaking, and loud on purpose: a tree still carrying the key was served by a route that is gone, and ignoring it silently would let it boot into a colony where nothing answers. A display is a cell of its own now, of type `web` (`templates/web`), owning its own port through `params.port`, with no shared prefix and no declaration in the `cell` block. Migrating a 1.x canvas: `templates/canvy/MIGRATION.md`. Details: `cell-types.md` § `web`. |
 
@@ -139,7 +141,7 @@ Every cell that performs I/O of indeterminate duration (HTTP, DB, subprocess, fi
 
 #### `params.max_concurrency`
 
-*(optional, only for stateless cells, from Phase 7)* The maximum number of concurrently running worker tasks in the stateless-cell dispatcher (see `meclaw-overview.md` § Stateless cell dispatcher). It lives in `params` and not in the `cell` block. Default: a high value, effectively unbounded for typical load paths. Configurable per cell, for example `web_fetch` with `32` (HTTP provider rate limits), `file` with `8` (disk I/O), `bash` one-shot with `4` (process resource limit). For stateful and long-running cells the value is ignored.
+*(optional, only for stateless cells)* The maximum number of concurrently running worker tasks in the stateless-cell dispatcher (see `meclaw-overview.md` § Stateless cell dispatcher). It lives in `params` and not in the `cell` block. Default: a high value, effectively unbounded for typical load paths. Configurable per cell, for example `web_fetch` with `32` (HTTP provider rate limits), `file` with `8` (disk I/O), `bash` one-shot with `4` (process resource limit). For stateful and long-running cells the value is ignored.
 
 #### `params.sandbox`
 
@@ -353,11 +355,11 @@ A port is the name of a lane and never the address of a cell (`meclaw-overview.m
 
 ### `contract`
 
-The `contract` keys are organized by enforcement level. Not all of them are substrate-enforced in v0.1.0.
+The `contract` keys are organized by enforcement level. Not all of them are substrate-enforced today.
 
-| Key | Enforcement (v0.1.0) |
+| Key | Enforcement |
 |---|---|
-| `emits` | **substrate-enforced**: validated always-on at the `code` type (P13/D-017); remaining emitting cell types post-v0.1.0 (see § Schema format and validation; contract validation for the rest is a roadmap defer). |
+| `emits` | **substrate-enforced**: validated always-on at the `code` type; not for the remaining emitting cell types (see § Schema format and validation; contract validation for the rest is a roadmap defer). |
 | `version`, `settings`, `consumes` | **substrate-enforced**: presence and JSON type at config load (boot hard fail; mutation reject `contract_incomplete`). |
 | `capabilities` | **discovery-only** *(specified, not built — see GH #254)*: hint for builder composer/audit tools, **no runtime check** until the hardening (see the `capabilities` note below). The key is unchecked and also unread: `ContractBlock` (`crates/meclaw-colony/src/config.rs`) has no such field, the key is dropped silently at config load, and no API exposes it. |
 | `write_surface` | **substrate-enforced, opt-in** (GH #260). `"internal"` bounds the writes the substrate answers before `handle()` to the cell's parent scope; an absent key means `"open"`, so no effect (see below). |
@@ -493,7 +495,7 @@ The values are `"all"` (the default, and what an absent key means) and `"none"`.
 
 The exemption is a declaration and no list inside the substrate, for a reason. An exclusion list of cell-type names in `db_transfer.rs` would be invisible in the `config.json` of the cell it applies to, invisible in a diff, and would have to be edited again for the next cell type with the same need. A declaration binds a cell type nobody has written yet.
 
-`contract.write_surface` and `contract.transfer` are two independent statements about the same seam. `write_surface` bounds the write half to the parent scope and leaves an `export` untouched, since no write surface has ever bounded a read, and that gap is exactly why GH #314 was opened: the `vault`'s disclosure was a read. A cell that wants both declares both; one does not switch on the other.
+`write_surface` bounds the write half to the parent scope and leaves an `export` untouched, since no write surface has ever bounded a read, and that gap is exactly why GH #314 was opened: the `vault`'s disclosure was a read.
 
 GH #336 (`access@2.0.4`) retracts what used to read "first and today only consumer: `vault`", which was true only for as long as the `vault` was the sole declarant. It is two cell types across three shipped configs: `vault` (`templates/vault`, `templates/access/vault`) and the capability broker's `store` (`templates/access/store`), whose `grants` are live bearer handles. An export is a read, which `contract.write_surface` explicitly does not bound, which is why migration there means re-granting at the target and not importing. `cell-types.md` § Content transfer carries the same retraction.
 

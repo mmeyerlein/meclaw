@@ -1,59 +1,45 @@
 # An operating system for agents
 
-`meclaw-os` is a set of templates that arranges a colony into four nested levels under one
-rule: a level owns what its siblings must share.
+Why is `meclaw-os` cut into four nested levels instead of one flat agent? Because one rule
+decides where a thing belongs: a level owns what its siblings must share. Put a thing one level
+too low and it is duplicated or lost when a part is replaced; put it one level too high and two
+siblings get one answer to a question that was theirs.
 
-## The four levels
+## The rule at work
 
-| level | template | what it owns |
-|---|---|---|
-| shell | `meclaw-os` | the capability broker, the control loop, the authoring path, the one front door |
-| organisation | `org` | a name and a boundary, and no cell of its own |
-| member | `member` | the memory, the curated record, the screening, the channels |
-| assistant | `assistant` | one generation: a conversation surface, a reasoning core, a tool surface |
+Memory belongs to the person, not to their agent, so `memory-hive` hangs at the member level.
+Replacing an assistant does not take the history with it, and two assistants of one person read
+one record (`crates/meclaw-cells/tests/gh302_member_holds_the_memory.rs`).
 
-Each `template.json` repeats the rule and says what it concluded from it.
-`templates/org/template.json` is the shortest case: the members of one organisation share a
-name and a boundary, they do not share a memory or a firewall, so the level is thin and says
-so. Memory sits at the member level, so replacing an assistant does not take the history
-with it. Screening lives outside the assistant, so a new generation meets the same attacker
-record and the same rate window, and channels belong to the member, so one chat account can
-reach two of that person's agents.
+Screening and channels belong to the person for the same reason. A new generation meets the
+attacker record and the rate window the old one left behind, and one chat account reaches two
+of that person's agents (`crates/meclaw-cells/tests/gh454_two_assistants_one_channel.rs`).
 
-## The parts that decide
+The control loop and the authoring path sit at the shell, because one colony has one charter and
+one place a submission lives. A person's own keys are held one level down, by the member whose
+agents authenticate with them (`templates/member/README.md`).
 
-None of the authorities below asks a model. `access` is the capability broker: an agent may
-ask in natural language, what travels on the wire is a handle, and the secret stays in the
-connector. `firewall` measures size, sender, forbidden literal and rate, and every verdict
-names the row that fired. `affinity` holds the curated record of the people a colony knows.
-`session-keeper` ends a session by arithmetic, on the pattern of a phone call.
+An organisation shares a name and a boundary and nothing else, so that level owns nothing else.
+`templates/org/template.json` ships no cell at all: one hive, one open container, transit edges
+derived from what the member below accepts and emits
+(`crates/meclaw-cells/tests/gh302_org_is_a_namespace.rs`).
 
-`argus` is the control loop, and everything it could pursue ships switched off: both rows in
-`templates/argus/charter/seed/goals.jsonl` carry `"enabled": 0`, so a freshly grown shell
-measures nothing until an operator turns one on ([recursive self-improvement](rsi.md)).
+The assistant level is the one place that references both halves of a generation, which makes it
+the level that can give each half its own model ([one assistant, two brains](two-brains.md)).
 
-## Screens and apps
+## What the levels do not decide
 
-A screen is a channel, so it belongs to the person. [`display`](../../templates/display/) is
-one screen as a hive: a `web` cell that owns its own HTTP and WebSocket port, a store of what
-is currently up, and a compose step. Several agents hold named views on one screen and none
-can touch another's, because view ownership is read off the envelope the substrate stamped.
-An app is a composed use of templates, tagged `app` in its manifest and grown under a member;
-the first shipped one is [`colony-view`](../../templates/colony-view/), which draws the
-colony's own topology onto such a screen.
-
-Speech is a channel too. Since 0.31.0 `voice` is a cell type: it terminates audio on its
-own WebSocket port and hands the colony text turns, with recognition and synthesis behind
-traits ([CHANGELOG](../../CHANGELOG.md)). What the two channels are aimed at together is
-[you talk, it shows](you-talk-it-shows.md).
+None of these authorities asks a model. `access` answers a capability request by comparison and
+hands out a handle, `firewall` measures size, sender, forbidden literal and rate and names the
+row that fired, and `session-keeper` ends a session by arithmetic, on the pattern of a phone
+call. `argus` is the control loop, and everything it could pursue ships switched off: both rows
+in `templates/argus/charter/seed/goals.jsonl` carry `"enabled": 0`, so a freshly grown shell
+measures nothing until an operator turns one on ([prepared for self-improvement](rsi.md)).
 
 ## What is rudimentary about it
 
-The tree ships one app and one screen layout. The apps rim is the youngest part of it, and
-what an app may offer a member is still moving ([ROADMAP](../../ROADMAP.md)).
-
-The OS is grown, so a seed with a single `ref` declaration builds the whole shell on first
-boot through the same validation any mutation gets, and adding an organisation, a member or
-an assistant is one declaration each ([`examples/organism`](../../examples/organism/)). None
-of that gives you a way back: nothing in the tree is ever deleted, so a generation you regret
+The tree ships one app and one screen layout, and what an app may offer a member is still moving
+([ROADMAP](../../ROADMAP.md)). Nothing in a colony is ever deleted, so a generation you regret
 stays on disk, disconnected.
+
+The levels, their occupants and the mutation that grows each are on [meclaw-os](../meclaw-os.md).

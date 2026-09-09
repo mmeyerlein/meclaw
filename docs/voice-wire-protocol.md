@@ -1,13 +1,15 @@
 # The `meclaw-voice/1` wire protocol
 
-What a client and a `voice` cell say to each other over one WebSocket. Audio
-travels in binary frames, everything else as JSON text frames.
+Every frame a client and a `voice` cell exchange over one WebSocket: the
+query parameters, the JSON text frames in both directions, the audio frames,
+the error and close codes.
 
-This is the transport spec. What the cell does with a turn, which lanes it emits
-and which params it reads, is `cell-types.md` § `voice`. The two halves meet in
-exactly one place: the `hello` frame, which declares the audio formats the
-connection will use and which the client is expected to adapt to. The cell never
-resamples.
+Written for people building a client, a telephony edge or a test harness
+against a `voice` cell. The tables are the contract; read § The connection,
+then the two frame tables, then the mode you use.
+
+What a `voice` cell is, is [`cells.md`](cells.md) § `voice`. What it does with a turn,
+which lanes it emits and which params it reads, is `cell-types.md` § `voice`.
 
 ## The connection
 
@@ -33,11 +35,7 @@ uuid_audio_stream <call-uuid> start ws://host:port/ws?session=<call-uuid>&sample
 ```
 
 `mod_audio_stream` sends 8 kHz mono PCM16 that way -- the rate a telephone call
-already is, and the two the module knows are `8k` and `16k` anyway. The number
-stands **twice in the same line**, and that is the point: once for the module,
-once for the cell. Keeping the command line and `hello.audio_in.sample_rate` in
-agreement used to be a person's job; now the connection says the rate, and one
-the recogniser does not serve is a `400` instead of a pitch nobody notices. The
+already is, and the two the module knows are `8k` and `16k` anyway. The
 freeswitch template writes both places out of one `fork_sample_rate`.
 
 A `session` outside that shape, or a `mode` that is neither word, is refused
@@ -99,21 +97,12 @@ the number instead of measuring it. The reason it exists is a telephony edge:
 FreeSWITCH's `mod_audio_stream` 1.0.3 aborts the call on a frame longer than
 about 100 ms.
 
-Inbound and outbound rates are independent, because they belong to two different
-providers: `audio_in` is the rate the speech-to-text provider demands,
-`audio_out` the rate the text-to-speech provider produces. A client that can
-only produce one rate resamples on its own side.
-
 A binary frame whose length is not a whole number of sample frames, an odd byte
 count for mono PCM16, is a protocol error. It is never trimmed. The frame is
 dropped, the connection stays open, a per-connection counter goes up, and the
 client is told with `error bad_audio_frame` carrying `bad_frames`, the number of
 frames this connection has lost that way. The cell also reports it on its error
 lane.
-
-No threshold closes the socket. A client with a broken audio path gets a running
-count it can act on. A wrong chunk size is a bug to fix, and hanging up on
-somebody who is speaking would not fix it.
 
 ## Text frames the cell sends
 
@@ -307,9 +296,6 @@ The microphone needs a secure context. Browsers hand out `getUserMedia` only on
 proxy in front of the cell. A LAN IP over plain `http` will load the page and
 then fail to get a microphone. That is a browser rule, and the cell cannot grant
 an exception to it.
-
-Everything else on the page works without a microphone: the connection, the
-`hello` declaration, the frame log and the audio playback.
 
 ## Reserved, not built
 

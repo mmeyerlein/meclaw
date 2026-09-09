@@ -1,7 +1,12 @@
 #!/bin/sh
 # meclaw installer.
 #
-#   curl -fsSL https://meclaw.ai/install.sh | sh
+#   curl -fsSL https://github.com/mmeyerlein/meclaw/releases/latest/download/install.sh | sh
+#
+# (https://meclaw.ai/install.sh redirects there. The script is a release asset,
+# so the copy you run is the one the tag shipped, and there is no second copy
+# anywhere to drift from it. start.sh, next to it, runs this one and then
+# boots a colony -- see docs/installation.md.)
 #
 # What it does: picks the release asset for this machine, downloads it next to
 # its published SHA-256 sum, verifies the sum, and moves the binary into a
@@ -234,7 +239,7 @@ case ":${PATH}:" in
         say ""
         "${INSTALL_DIR}/${BIN_NAME}" --version
         say ""
-        say "Next: https://github.com/${REPO}#start-an-assistant"
+        say "Next: https://github.com/${REPO}#get-started"
         ;;
     *)
         say ""

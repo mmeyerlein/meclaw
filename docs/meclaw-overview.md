@@ -1,36 +1,26 @@
 # meclaw system description
 
-A file-based actor workflow system for work with LLMs. One Rust binary, Linux. Its flow control is
-much simpler than BPMN or Serverless Workflow, and it does not try to be as general as they are.
+This file is the specification of the substrate: the cell model, the edge model, headers,
+routing, mutations and the lifecycle. On conflict with any other file in this repository, this
+one wins.
 
-> This is the long one. [`README.md`](README.md) maps the directory, and
-> [`glossary.md`](glossary.md) gives you the sixteen words first.
+Read it when you have a concrete question. Which `error_code` a refusal carries, which key a
+param takes, which lane a hive declares, what a mutation validates before it commits. For the
+concepts behind the vocabulary read [`meclaw.md`](meclaw.md) first, and for the words themselves
+[`glossary.md`](glossary.md).
+
+Four sections carry the rest: *Core principles*, *Cell model*, *Edge model* and *Headers and
+body, the write model*. Read those four, then jump by heading.
 
 ## What meclaw is
 
-A workflow system whose topology is a directory tree. Every node is a cell (an actor), and a
+A substrate for agentic systems whose topology is a directory tree. Every node is a cell (an actor), and a
 directory with `type: "hive"` bounds authority and mutation. Cells rewrite the topology at runtime,
 usually through a builder hive: a hive scope holding an llm cell, a diff constructor and a
 validator. The hive turns a request in plain language into a mutation manifest. The colony applies
 that manifest, and the hive never does. Cells reach one another only through atomic messages, and
 every message carries the same body format. LLM inference, tool calls, persistent storage and
 long-running bridges (Telegram, timer, MCP) are all cell types.
-
-The DSL is hierarchical: directories, and paths of the form `/main/sub/leaf`. The substrate
-underneath is flat: every cell registers directly with the colony, and routing is one O(1) lookup.
-The DSL stays readable for people and for builder LLMs, the implementation stays close to the Tokio
-idiom, and the concurrency complexity sits in one place, the colony.
-
-## Where it sits among other systems
-
-| System | What meclaw shares | What meclaw does differently |
-|---|---|---|
-| Erlang/OTP | actors, mailbox, supervisor | the topology is a file rather than code; specialised for LLM work |
-| NATS | subject-based routing | nodes that compute as well as forward |
-| Node-RED | nodes are dumb, the graph routes | CLI and filesystem first, durable, specialised for LLM work |
-| LangGraph | a graph for LLM agent flows | language-agnostic, file-based, persistent |
-| Temporal | durable execution, message log | lightweight, decentralised, a filesystem DSL |
-| BPMN, Serverless Workflow | a workflow engine with a declarative definition | much simpler; covers LLM flow patterns only, with no claim to generality |
 
 ## Core principles
 
@@ -259,10 +249,8 @@ logic. Colony evaluates the hive out-edges, and there is no hive-owned evaluatio
 | Central message log (filterable by path prefix) | Colony |
 | Authority scope for mutations (path-prefix-based) | Hive (scope marker) |
 
-A directory with `config.json` `type: "hive"` is the authority boundary for scoped mutations over
-its path prefix. It has no actor, no `cell.db` and no routing table of its own. Transit edges of a
-hive (edges with `from = <hive-path>`) live in colony's one `EdgeTable`, the same data structure as
-cell edges, indexed by `from`.
+Transit edges of a hive (edges with `from = <hive-path>`) live in colony's one `EdgeTable`, the
+same data structure as cell edges, indexed by `from`.
 
 Colony writes `config.json` exclusively on instantiation (template copy with UUID assignment and
 `${VAR}` substitution); afterwards it is a bootstrap snapshot and never touched again. The live
@@ -379,10 +367,7 @@ is never an organisation's own right.
 ## Graph schema
 
 The graph is a directed graph of nodes (cells, registered in colony's `HashMap<Path, ActorHandle>`)
-and edges (routing rules between paths, held in colony's edge table). Hive scope markers are neither
-cells nor actors, have no mailbox and no `RegistryEntry`. They are logical transit nodes: their
-paths can be the `from` or `to` endpoint of an edge, and colony evaluates them as part of its one
-routing layer.
+and edges (routing rules between paths, held in colony's edge table).
 
 The same schema describes the graph in two write usages.
 
@@ -828,7 +813,7 @@ the address and `because` parts omitted where there are none. A contract's own `
 Which `error_code` a multi-defect diff reports can have moved with the staging: a diff pairing an
 unresolvable template with a missing `requires` key or a naming collision reports `template_missing`
 (stage 2) instead of `requirement_missing` or `naming_collision`. The verdict is unchanged.
-`error_code` is a stability surface (README § Stability), which is why this is written down.
+`error_code` is a stability surface ([`stability.md`](stability.md)), which is why this is written down.
 
 Checks that are not stages (the resume and `adopt` filesystem guards, the subtree pre-checks, scope
 containment, `remove_edges`, the relocation gate) keep their own single refusal where they are.
@@ -1015,20 +1000,8 @@ verifies no claim.
 
 | Term | Description |
 |---|---|
-| Colony | The overall system and the only authority. Holds the central `HashMap<Path, ActorHandle>` registry, routes all messages, manages lifecycle, templates and `config.json`. Has path `/colony`. Runs as its own Tokio task with its own mailbox. |
-| Hive | Directory with `config.json` `type: "hive"`. A scope marker for the authority boundary and mutation scope of a path prefix, with no actor, no mailbox and no `cell.db`. It is also a logical transit node in the routing graph, evaluated by colony. The hierarchy effect in the DSL remains; the implementation is flat. |
-| Cell type | Behavioural classification of an addressable cell: `llm`, `bash`, `code`, `store`, `web_fetch`, `web_search`, `file`, `edit`, `proxy`, `timer`, `mcp`, `harness`, `subcolony`, `vault`, `web`, `voice`. Each brings its own `params` schema and capability set. Cells with one of these values are kept by colony as actors in the registry. |
-| Cell | Directory with a `config.json` of a particular cell type. Topologically neutral; the role follows from the location (template or instance). |
 | Hive scope marker | Directory with `config.json` `type: "hive"`. Not an actor: no Tokio task, no mailbox, no `cell.db`, no `ActorHandle` entry in the cell registry. Still a junction in the system: colony keeps a separate hive scope table (path prefix, authority boundary, mutation scope, initial `params.graph`). At filesystem bootstrap the hive marker is recorded; on mutations it is a scope boundary. Addressable as a transit target, where colony forwards based on the hive out-edges and never delivers (`cell-types.md` § `hive`). |
-| Template | A cell, or a cell subtree including hive scope markers, in the `templates/` folder. Role: class or blueprint. Copied on instantiation. |
-| Instance | A cell in the directory tree at a freely chosen path. Role: a living object with a path, a UUID, its own Tokio task and possibly a `cell.db`. Recorded in colony's cell registry under its path. |
-| Edge | Connection between a cell output and the next input. Carries a condition and a modifier. Lives in colony's edge table. Has a UUID v7 assigned by colony. |
-| Graph | The set of all nodes (cells in the registry) and edges. Lives in colony's registry (in memory) and `colony.db` (persisted). Initial state from the filesystem bootstrap plus `params.graph` hints from hive scope markers. Dynamically changeable via mutations. |
-| Message | The unit of communication. Atomic, small. Carries routing data, headers and a body reference. |
-| Blob | A large message body. Stored separately in the `blobs/` directory, referenced by UUID v7. |
-| Path | Address of an instance. Linux-style: `/`, `.`, `..`, plus `/colony` as a virtual endpoint. Path resolution is a pure string operation before the registry lookup. |
 | Session | An application convention for a logical conversation bracket, typically propagated via the `session_id` header. Not a core concept; meclaw-core knows no sessions and applications choose their own granularity. |
-| Seed | A JSONL file per cell DB, schema in line 1 and data after. Source for the DB bootstrap. |
 
 ## Filesystem layout
 
@@ -1068,11 +1041,6 @@ builds new cell directories here completely, with substituted `config.json` valu
 POSIX. Broken half-instantiations therefore cannot lie in the live tree, and recovery at startup
 deletes everything in `.staging/` without a commit marker. Rejected: direct writing at target paths
 with backup files, and a `.tombstones/` directory.
-
-Every cell instance has the same structure: a directory with `config.json` (a bootstrap snapshot),
-optionally `cell.db` (live state), optionally `seed/`. Sub-cells sit as further directories within
-where the cell type permits it, which is common for `hive` scope markers and not for other cell
-types.
 
 ## The `colony.json` file
 
@@ -1447,8 +1415,13 @@ with the message on stderr and nothing on stdout. In the wait that follows this 
 the turn has been accepted, a single failed trace read is retried until the budget is spent, and
 only a wait in which not one read succeeded reports the transport failure. A target that does not
 exist is still acknowledged with a 202 and the message dies in the router, so the command reads
-`/colony/dead_letters` on every pass as well and ends with `1` as soon as an entry for this trace
-appears there - `error_code` and target on stderr, instead of sitting out the budget.
+`/colony/dead_letters` on every pass as well and ends with `1` as soon as an entry for the posted
+message appears there - `error_code` and target on stderr, instead of sitting out the budget. The
+entry is matched by its `message_id` and not by its trace (GH #640). A trace holds everything the
+turn set off, so a lane that emits on the side and finds nobody to consume it dead-letters under
+that same trace while the answer is still being worked on; only an entry that killed the posted
+message itself is a verdict on it. An entry with no `message_id`, written before that field
+existed, is left to the wait.
 
 Three limits belong to this. When the answering row carries no readable turn, because its body is a
 blob, the note goes to stderr, stdout stays empty, and the exit code is still the route's. The
@@ -2837,10 +2810,7 @@ llm cells have no inner loop. They make a provider call, give the response out a
 are done. Any iteration (a tool loop, ReAct, plan-and-execute) arises through graph topology and is
 application logic rather than meclaw-core.
 
-meclaw brings no prefabricated tool-loop topologies, dispatcher hive or collector hive. The builder,
-human or AI, composes such patterns from the basic building blocks: hive scopes as grouping, `code`
-cells, `store` cells, `llm` cells. What meclaw-core guarantees is that the topological composition
-is possible, because cells are dumb and edges decide.
+meclaw brings no prefabricated tool-loop topologies, dispatcher hive or collector hive.
 
 An example topology for a tool loop, for illustration and not as a prescription:
 
@@ -3810,8 +3780,8 @@ the process lives.
 - OpenAPI spec: planned. `utoipa` is in the dependency graph, there is not a single annotation in
   the code, and nothing emits a spec document. Until that changes, the canonical `/colony/*`
   endpoint table in this document is the API description.
-- Auth: none in phase 12, so it is locally usable. Post-roadmap hardening is a bearer token via
-  `${API_TOKEN}`, later capability tokens.
+- Auth: none, and no TLS. meclaw knows paths and no identities; who may reach the port is the
+  reverse proxy's business.
 - WebSocket (`/events`): live topology events from phase 14 for visualisation tools. Active in
   daemon mode, and optional in direct mode via flag.
 - Every HTTP endpoint is a thin wrapper that translates the request into a regular message and
@@ -4028,10 +3998,7 @@ extensions. No crate or endpoint is provided in the core stack.
 
 An own meclaw schema, JSON-only, optimised for the agent-first architecture, validated against JSON
 Schema Draft 2020-12. Adopted independent standards are CEL for edge expressions, SemVer for
-template versions, and HTTP/OpenAPI conventions for auth, retry and timeout. meclaw complies with no
-workflow standard such as CNCF Serverless Workflow, because the fundamentally different architecture
-(a filesystem DSL, an actor substrate with a central routing authority, self-modifying instead of
-declared) makes such an alignment not sensible.
+template versions, and HTTP/OpenAPI conventions for auth, retry and timeout.
 
 ## Tech stack
 
@@ -4090,7 +4057,7 @@ one.
   cross-colony federation as an additive extension.
 - No GUI and no editor. VSCode plus the filesystem suffice, and visualisation runs via the API from
   external tools.
-- No covering of non-agent workflows. It replaces neither Airflow nor BPMN.
+- No covering of non-agent workflows.
 - No own LLM inference. Cells call external providers.
 - No cell-to-cell topology knowledge. Cells stay dumb.
 - No compliance with foreign workflow standards. An own schema, JSON-first.

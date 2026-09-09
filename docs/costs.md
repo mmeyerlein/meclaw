@@ -1,186 +1,20 @@
-# What a colony costs to run
+# What it costs to run
 
-> This method run against a four-call colony, with the real output:
-> [`../examples/never-forgets/WALKTHROUGH.md`](../examples/never-forgets/WALKTHROUGH.md)
-> § *Step 8*, what it cost.
+A colony spends money in one place: the provider calls its `llm` cells make. Every delivered
+message is already a row in `colony.db`, table `message_log`, and a row that came back from a
+provider carries the provider's own accounting in the `hop` object of its `headers` column:
+`model`, `tokens_prompt`, `tokens_completion`. Those three fields are the whole
+instrumentation, and nothing has to be switched on to get them. Rows with no token fields are
+store, code and routing hops, and they cost nothing.
 
-A colony that runs around the clock spends money in exactly one place: the
-provider calls its `llm` cells make. This page has the method for measuring that
-spend from a colony's own database, the numbers measured on one production
-colony, and the tiers that have not been measured yet.
+The counts come from the provider's answer, not from a token estimate computed locally, so
+what a colony spends is read rather than guessed. Prices sit in dated JSON files beside the
+script, one file per retrieval day, so every figure can be traced to a list and a date and
+re-derived later. Electricity, the machine the binary runs on and prompt cache discounts are
+in none of the numbers here, and where caching is active the real bill is lower. If a figure
+computed this way disagrees with what your provider bills you, your provider is right.
 
-Every number below can be re-derived with
-[`scripts/cost_report.py`](../scripts/cost_report.py) against your own colony, or
-re-implemented from scratch in about twenty lines using the description in
-[Method](#method). If a number here disagrees with what your provider bills you,
-the provider is right and this document is wrong.
-
-## What is measured, and what is not
-
-Measured: provider tokens, priced from a public price list.
-
-Three costs are not measured and are in none of the numbers below.
-
-Electricity and hardware. A local model on your own GPU costs no provider
-tokens; it costs power and a card. That is a real cost and this method does not
-see it.
-
-The machine the colony runs on. meclaw is one Rust binary and the substrate
-itself is cheap enough that it has never been the interesting term, but it is
-still not zero.
-
-Prompt-cache discounts and cache-write surcharges. The substrate records the
-token counts the provider returns; it does not record whether a prompt was served
-from cache. Where caching is active, the real bill is lower than the number
-computed here.
-
-## Method
-
-### 1. The data source
-
-The colony logs one row per delivered message into `colony.db`, table
-`message_log`. An `llm` cell writes the provider's token accounting into the
-message it emits, under the `hop` object of the `headers` column:
-
-| field | meaning |
-|---|---|
-| `hop.model` | the model id the provider actually served |
-| `hop.tokens_prompt` | prompt tokens the provider counted |
-| `hop.tokens_completion` | completion tokens the provider counted |
-
-Those three fields are the whole instrumentation. Nothing has to be switched on,
-no metrics sidecar has to run, and the numbers come from the provider's own
-response, not from a token estimate computed locally.
-
-Rows whose `hop` carries neither token field are not provider calls (store hops,
-code hops, routing hops) and are skipped.
-
-The contract of the measurement is short. Six things are read, and nothing else
-in the schema is load-bearing for a cost report:
-
-| what | why it is read |
-|---|---|
-| `message_log.created_at` | the day and the window bound |
-| `message_log.from_path` | which cell made the call (per-cell breakdown, `fallback_models` attribution) |
-| `message_log.headers` | the JSON that carries the `hop` object |
-| `headers.hop.model` | which model was served |
-| `headers.hop.tokens_prompt` | prompt tokens the provider counted |
-| `headers.hop.tokens_completion` | completion tokens the provider counted |
-
-Any reader that touches those six can compute the same numbers. `body_payload`,
-where the conversation itself lives, is never read.
-
-The `headers` column has changed shape once, silently. Since the two-compartment
-header model, `headers` is `{"context": {…}, "hop": {…}}`; rows written before it
-carry a flat JSON object with no `hop` key at all. A long-lived `colony.db`
-therefore holds both forms, and nothing migrated the old rows: the no-delete
-policy means they stay as they were written. A reader has to tolerate both, and
-the failure mode matters. A flat row yields no `hop`, so it is skipped as "not a
-provider call" instead of being reported as a parse error, and a cost report over
-a window that reaches back into the old format will under-count in silence. That
-is why `cost_report.py` prints the number of rows it scanned next to the number
-it priced.
-
-### 2. Attributing a model to cells that do not report one
-
-Some cells reach a provider without being an `llm` cell. An `embed` cell is
-typically a `code` cell calling an embedding endpoint. Such a cell reports
-`tokens_prompt` and no `hop.model`, because the model id lives in its own
-payload instead of in the substrate's hop header.
-
-Those tokens are attributed by cell path, through a `fallback_models` rule in
-the price file. Tokens that stay unattributed land in an `unknown` bucket, are
-printed, and are excluded from the total. They are never silently folded in at a
-guessed price.
-
-### 3. The formula
-
-Group the rows by UTC day and by model, sum the two token columns, then:
-
-```
-cost(model) = tokens_prompt      / 1e6 * price_input(model)
-            + tokens_completion  / 1e6 * price_output(model)
-```
-
-Sum over models for a day total. To express a partial window as a daily rate,
-divide by the window length in hours and multiply by 24. Use the window you
-asked for, and not the span between the first and last row that happened to fall
-inside it: otherwise a quiet night whose last message lands at 03:05 is scored as
-if it had ended there, and the daily rate comes out too high.
-
-### 4. The prices
-
-Prices live in a dated JSON file, outside the code, so that every number can be
-traced to a price list and a date. The snapshot used below is
-[`scripts/prices-openrouter-2026-08-15.json`](../scripts/prices-openrouter-2026-08-15.json),
-retrieved from `https://openrouter.ai/api/v1/models` on 2026-08-15:
-
-| model | input, USD / 1M tokens | output, USD / 1M tokens |
-|---|---|---|
-| `openai/gpt-5.6-luna` | 0.10 | 0.60 |
-| `anthropic/claude-opus-5` | 5.00 | 25.00 |
-| `qwen/qwen3-embedding-8b` | 0.01 | (none) |
-
-Embedding models are absent from that listing.
-`https://openrouter.ai/api/v1/models` answers with chat models only; the
-embeddings endpoint is a separate API and carries no price list. An embedding
-figure is therefore always *measured*, one call with its billed amount divided by
-its tokens, and dated like any other measurement:
-
-| model | input, USD / 1M tokens | measured |
-|---|---|---|
-| `qwen/qwen3-embedding-8b` | 0.01 | 2026-08-08, 5 tokens |
-| `google/gemini-embedding-2` | 0.20 | 2026-08-22, 4 tokens |
-
-`google/gemini-embedding-2` is the generation `memory-hive` ships since 2.3.0. It
-costs twenty times the price of the generation before it and is still the
-smallest line on every bill below, because an embedding call bills the prompt
-side of a few dozen tokens where a synthesis call bills thousands on both sides.
-The qwen row stays because the figures further down were measured against it.
-
-Where euro figures are given, they use the ECB euro reference exchange rate of
-2026-08-14, 1 EUR = 1.1567 USD.
-
-The date is part of the measurement. A price list belongs to the day it was
-retrieved, and a number computed from it is only reproducible against that file.
-Newer lists therefore land beside the old ones and never on top of them: a new
-`scripts/prices-openrouter-<date>.json`, a new row, the old figure left standing
-with its own file next to it. Overwriting a price file would silently rewrite
-every number ever derived from it, and nobody would see the edit.
-
-The current list is
-[`scripts/prices-openrouter-2026-08-25.json`](../scripts/prices-openrouter-2026-08-25.json),
-retrieved on 2026-08-25 for the W8 web-brain bench (GH #384). It is a strict
-superset of the 2026-08-24 list: every row of that one is carried forward, plus
-the fast-tier bracket the bench measures. A newer list with fewer rows would make
-an existing spend invisible where it should merely be unpriced. Two
-carried rows moved on the provider's side and say so in their own `_note`. Point
-a colony you are measuring *today* at that one; the figures further down keep the
-2026-08-15 list, because a number is only reproducible against the list it was
-computed from. What the two newer lists carry:
-
-| model | input, USD / 1M tokens | output, USD / 1M tokens | since |
-|---|---|---|---|
-| `openai/gpt-5.6-luna` | 0.20 | 1.20 | 2026-08-22 (doubled then; re-checked 2026-08-24, unchanged) |
-| `openai/gpt-5.6-sol` | 2.00 | 10.00 | 2026-08-24 (new row, GitHub #377) |
-| `anthropic/claude-opus-5` | 5.00 | 25.00 | unchanged since 2026-08-15 |
-| `google/gemini-embedding-2` | 0.20 | (none) | 2026-08-22; the shipped generation since 2026-08-19 |
-
-The `qwen/qwen3-embedding-8b` row is carried forward into each new list instead
-of being dropped, so that a window spanning the 2026-08-19 switch prices both
-generations and pushes neither half into the `unknown` bucket. One thing the flat
-two-number format does not express: `openai/gpt-5.6-luna` bills prompts above
-272,000 tokens at a higher tier (0.40 / 1.80) and `openai/gpt-5.6-sol` at
-(4.00 / 15.00), so a colony that routinely sends contexts that large is priced
-*low* by this report.
-
-`openai/gpt-5.6-sol` was added because a run that names it, as a judge, a closer
-or a brain, is refused before it boots while the list does not know it
-(GitHub #377). The euro reference rate of the 2026-08-24 list is the one the
-2026-08-22 list carried; it names its own date inside the file, so a euro figure
-stays traceable to the day its rate was taken.
-
-### 5. Running it
+## Read your own spend
 
 ```sh
 python3 scripts/cost_report.py \
@@ -188,107 +22,56 @@ python3 scripts/cost_report.py \
     --prices scripts/prices-openrouter-2026-08-25.json
 ```
 
-The database is opened read-only through the SQLite URI `file:<path>?mode=ro`,
-so it is safe to point at a colony that is currently running. The script reads
-three columns (`created_at`, `from_path`, `headers`) and never touches
-`body_payload`, where the conversation itself lives. Useful flags: `--from` and
-`--to` to bound the window (a date, or a `YYYY-MM-DDTHH:MM` UTC instant),
-`--by-cell` for a per-cell breakdown, `--json` for machine-readable output.
+The database is opened through the SQLite URI `file:<path>?mode=ro`, so a colony that is
+currently running is a safe target. The script reads three columns and never touches
+`body_payload`, where the conversation itself lives. `--from` and `--to` bound the window,
+`--by-cell` breaks the total down per cell, `--json` makes the output machine readable. Bound
+the window explicitly, because a running colony keeps appending and an open ended re-run does
+not reproduce a figure.
 
-## The M tier, measured
+The same rows, without the script:
 
-The M tier runs the small model locally or cheaply and reserves a frontier model
-for the hard calls. The colony measured here is a personal assistant that runs
-24/7: a conversational brain on `gpt-5.6-luna`, a reasoning brain on
-`claude-opus-5`, a memory hive whose extractor and dreamer run on the small model
-and whose judge runs on the frontier model, and an embedding lane.
-
-Measured on one production colony over a 27.27 h window, 2026-08-14 09:19 UTC to
-2026-08-15 12:35 UTC, 110 provider calls out of 6,209 logged messages. The
-window is pinned explicitly, because a running colony keeps appending and an
-unbounded re-run would not reproduce the same figure:
-
-```sh
-python3 scripts/cost_report.py --db colony.db \
-    --prices scripts/prices-openrouter-2026-08-15.json \
-    --from 2026-08-14T09:19 --to 2026-08-15T12:35
+```sql
+SELECT json_extract(headers, '$.hop.model')             AS model,
+       count(*)                                         AS calls,
+       sum(json_extract(headers, '$.hop.tokens_prompt')),
+       sum(json_extract(headers, '$.hop.tokens_completion'))
+FROM message_log
+WHERE json_extract(headers, '$.hop.tokens_prompt') IS NOT NULL
+GROUP BY model;
 ```
 
-| window | length | provider calls | USD total | USD / 24 h |
-|---|---|---|---|---|
-| full observation window | 27.27 h | 110 | 0.414 | **0.364** |
-| unattended overnight (`--from 2026-08-14T17:00 --to 2026-08-15T08:00`) | 15.00 h | 7 | 0.018 | **0.028** |
+Multiply each row by the price of its model, in USD per million tokens, and add the models up
+for a total. A row whose `model` is null reached a provider without the substrate seeing a
+model id, which is what an embedding call from a `code` cell looks like; the script attributes
+those by cell path through a `fallback_models` rule in the price file, and leaves whatever
+stays unattributed out of the total instead of pricing it at a guess. The current price file
+is [`../scripts/prices-openrouter-2026-08-25.json`](../scripts/prices-openrouter-2026-08-25.json);
+the three older snapshots stay beside it, because a number is only reproducible against the
+list it was computed from.
 
-The unattended row was measured with the v0.8.0 gate defaults of the memory lane,
-`MEMORY_BATCH_TOKENS=512` and `MEMORY_BATCH_MAX_AGE_MIN=30`, the two knobs that
-decide how often an idle colony opens an extraction round. Those defaults changed
-in 0.9.0 to `128` / `2`
-([#51](https://github.com/mmeyerlein/meclaw/issues/51)), so the overnight figure
-is pinned to the configuration above and not to a version: a colony on the new
-defaults will produce a different number from the same traffic. Re-run the
-command to get yours.
+## One colony, measured
 
-> Retraction (`memory-hive@3.0.0`,
-> [#298](https://github.com/mmeyerlein/meclaw/issues/298)): both knobs are gone,
-> and so is the batched extraction round they gated. The measurement above
-> stands, since it happened on a colony configured exactly that way, but it
-> belongs to that configuration and describes a lane this template no longer has.
-> A memory hive at 3.0.0 or later extracts per turn, on the answering model, and
-> what it spends unattended is the nightly consolidation plus one close pass per
-> closed session (about 0.077 EUR,
-> [`../templates/memory-hive/README.md`](../templates/memory-hive/README.md)
-> § *What a close pass costs*). Do not carry this row forward as an overnight
-> figure for a current colony; re-run the command.
+A personal assistant running around the clock: a conversational brain on `gpt-5.6-luna`, a
+reasoning brain on `claude-opus-5`, a memory hive whose judge runs on the frontier model, and
+an embedding lane. The window is 27.27 h, 2026-08-14 09:19 UTC to 2026-08-15 12:35 UTC, and it
+holds 110 provider calls out of 6,209 logged messages.
 
-Per model, over the full window:
+| measured | model | calls | tokens in / out | USD | priced from |
+|---|---|---|---|---|---|
+| 2026-08-14/15 | `anthropic/claude-opus-5` | 26 | 50,999 / 5,784 | 0.400 | `prices-openrouter-2026-08-15.json` |
+| 2026-08-14/15 | `openai/gpt-5.6-luna` | 58 | 92,490 / 8,732 | 0.014 | `prices-openrouter-2026-08-15.json` |
+| 2026-08-14/15 | `qwen/qwen3-embedding-8b` | 26 | 1,436 / none | 0.00001 | measured, 2026-08-08 |
 
-| model | calls | prompt tokens | completion tokens | USD |
-|---|---|---|---|---|
-| `anthropic/claude-opus-5` | 26 | 50,999 | 5,784 | 0.400 |
-| `openai/gpt-5.6-luna` | 58 | 92,490 | 8,732 | 0.014 |
-| `qwen/qwen3-embedding-8b` | 26 | 1,436 | (none) | 0.00001 |
+That is 0.414 USD over the window, or 0.364 USD per 24 h. The frontier model is 97 % of that
+bill on 24 % of the calls, so which cell sits on which tier moves the total further than any
+amount of prompt trimming. The window holds no complete calendar day, so the daily rate is an
+extrapolation from a partial one. Read the table as one worked example of the method: the
+number follows how much you talk to a colony and which models you put where.
 
-The embedding row names `qwen/qwen3-embedding-8b` because this window was
-measured before the shipped generation moved to `google/gemini-embedding-2` on
-2026-08-19. At the price above the same 1,436 tokens would be 0.0003 USD, under a
-thousandth of this table's total, which is why the switch is not worth
-re-measuring the window for.
+## Where to read more
 
-In euro at the rate above: 0.32 EUR / 24 h for the full window, 0.024 EUR / 24 h
-unattended.
-
-The frontier model is 97 % of the bill on 24 % of the calls, so the tier split is
-where the money is: moving one cell between tiers moves the total further than
-any amount of prompt trimming. The unattended figure is what the colony costs
-when nobody is talking to it, which is timers, the nightly consolidation run, and
-the memory lane. The difference between the two rows is conversation.
-
-Read this as one data point, and not as a rate card. The number is dominated by
-how much you talk to the colony and which cells you put on which tier, so a
-different traffic shape gives a different number. The table is a worked example
-of the method, never a prediction of your bill. The observation window also
-contains no complete calendar day, because the colony was started into this
-configuration mid-window, so both figures are extrapolations from partial
-windows, computed as described in [The formula](#3-the-formula).
-
-## The S tier, not measured
-
-The S tier runs everything on a local model and spends no provider tokens, so
-this method reports zero by construction, which is exactly why it is not a
-measurement. The honest statement is about $0/day in provider spend plus
-electricity, and the electricity term is the entire cost and is not measured
-here. A local-tier measurement needs a different instrument, wall power over a
-representative day, and does not exist yet.
-
-## The L and XL tiers, not measured
-
-No production run has been made on either tier, and no number will be quoted for
-them until one has. The method above applies unchanged: point the script at such
-a colony and it produces the same table.
-
-| tier | status |
-|---|---|
-| S, everything local | provider spend about $0 by construction; electricity not measured |
-| M, local plus a frontier model for the hard calls | measured, see above |
-| L, frontier mix | not yet measured |
-| XL, full frontier | not yet measured |
+- [`../scripts/cost_report.py`](../scripts/cost_report.py) is the method in about twenty lines of arithmetic
+- [`../examples/never-forgets/WALKTHROUGH.md`](../examples/never-forgets/WALKTHROUGH.md) § *Step 8* runs the same command against a four call colony and shows the output
+- [`../templates/memory-hive/README.md`](../templates/memory-hive/README.md#what-a-close-pass-costs-measured) prices one closed session of a member's memory
+- [`model.md`](model.md) says where the key and the model go

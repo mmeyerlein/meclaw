@@ -507,6 +507,7 @@ fn label(event: &VoiceEvent) -> &'static str {
         VoiceEvent::SpeakEnded { .. } => "SpeakEnded",
         VoiceEvent::BadAudioFrame { .. } => "BadAudioFrame",
         VoiceEvent::ReleaseGraceExpired { .. } => "ReleaseGraceExpired",
+        VoiceEvent::ClientTooSlow { .. } => "ClientTooSlow",
     }
 }
 
@@ -1688,6 +1689,10 @@ async fn event_within(live: &mut Live, limit: Duration) -> VoiceEvent {
 /// in the five seconds this test allows — the report has to come from the
 /// second trigger, 64 commands queued behind an already full connection
 /// channel.
+///
+/// Since GH #601 the first thing out of that trigger is the reason:
+/// `ClientTooSlow`, with the number of queued commands the session took with
+/// it. Then the `Speak` that did not fit, then the disconnect.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_burst_past_both_buffers_is_given_up_on_without_waiting_for_the_deadline() {
     let cancelled = Arc::new(AtomicUsize::new(0));
@@ -1720,6 +1725,25 @@ async fn a_burst_past_both_buffers_is_given_up_on_without_waiting_for_the_deadli
     }
 
     let limit = Duration::from_secs(5);
+    // GH #601: the count says so before anything else does, and it names how
+    // many queued commands went with the session — the 64 the dispatch queue
+    // held, plus the one that no longer fitted.
+    match event_within(&mut live, limit).await {
+        VoiceEvent::ClientTooSlow {
+            session_id,
+            dropped,
+        } => {
+            assert_eq!(session_id, "stuck");
+            assert_eq!(
+                dropped, 65,
+                "the queue that decided, plus the command that bounced"
+            );
+        }
+        other => panic!(
+            "the give-up reports its reason first, got {}",
+            label(&other)
+        ),
+    }
     match event_within(&mut live, limit).await {
         VoiceEvent::SpeakEnded { reason, detail, .. } => {
             assert_eq!(reason, SpeakEndReason::Failed);

@@ -88,6 +88,24 @@ pub enum VoiceEvent {
         /// older, because that turn has already closed.
         token: u64,
     },
+    /// A client stopped taking what was queued for it, and the count said so
+    /// before any clock did (GH #601).
+    ///
+    /// The socket side of this cell is not backpressure. The colony side is: a
+    /// listener that falls behind stalls the sender and loses nothing. But a
+    /// WebSocket client that stops reading cannot be waited on for ever without
+    /// taking the listener down with it (GH #593), so once `DISPATCH_QUEUE`
+    /// commands are queued behind an already full connection channel the
+    /// connection is given up on. That verdict used to be a log line and a
+    /// `Disconnected`; it is a message now, so a colony learns why a call ended
+    /// from its own lanes rather than from an operator's terminal.
+    ClientTooSlow {
+        /// The session whose client stopped taking commands.
+        session_id: String,
+        /// How many queued commands were given up on with it: everything the
+        /// dispatch queue still held, plus the one that no longer fitted.
+        dropped: usize,
+    },
     /// A binary frame of wrong length arrived. The I/O half **dropped the
     /// frame and kept the connection** (R-V6'): a client that mis-frames one
     /// buffer has a bug, not bad intent, and closing the socket would end a
@@ -994,6 +1012,28 @@ impl LongRunningCell for VoiceCell {
                 VoiceEvent::ReleaseGraceExpired { session_id, token } => {
                     self.drive(&session_id, Input::ReleaseGraceExpired { token }, sink)
                         .await;
+                }
+                VoiceEvent::ClientTooSlow {
+                    session_id,
+                    dropped,
+                } => {
+                    // The `Disconnected` right behind this one says the call is
+                    // over; this says why, and it is the only place that does.
+                    // A colony that reads its own error lane can tell a caller
+                    // who hung up from a client that stopped reading, which is
+                    // the difference between a person leaving and a bug.
+                    let detail = format!(
+                        "the client did not take {dropped} queued commands; \
+                         the connection was given up"
+                    );
+                    self.emit_error(
+                        sink,
+                        "client_too_slow",
+                        &detail,
+                        Some(&session_id),
+                        Some(json!({"dropped_frames": dropped})),
+                    )
+                    .await;
                 }
                 VoiceEvent::BadAudioFrame {
                     session_id,

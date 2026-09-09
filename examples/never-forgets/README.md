@@ -65,7 +65,7 @@ cannot decide which database your life goes into.
 | `/talky` | [`talky`](../../templates/talky/) | 11 cells. Session keeper, context collector, tool dispatcher, sidecar splitter and an `llm` brain, with every internal edge pre-wired. |
 | `/sink` | [`terminal@1.0.1`](../../templates/terminal/) | 1 cell. The stop for the answer lane, which this example does not decide. The `error` lane is deliberately unwired (GH #284): a refusal that ends in a swallowing cell is one nobody reads, so it dead-letters instead. |
 
-Fifteen cells in the registry, three of them checked in -- the hive marker is a
+Sixteen cells in the registry, three of them checked in -- the hive marker is a
 scope, not a cell. That number is not counted by hand: it is
 `CELLS_AFTER_GROW` in `crates/meclaw-cells/tests/never_forgets_example.rs`,
 which boots this seed, applies this `grow.json` and asserts the registry it
@@ -280,7 +280,7 @@ curl -s -X POST http://127.0.0.1:7788/colony/mutations \
      -d @examples/never-forgets/grow.json
 ```
 
-`http://127.0.0.1:7788/ui/registry` now shows fifteen cells.
+`http://127.0.0.1:7788/ui/registry` now shows sixteen cells.
 
 ## Load the past
 

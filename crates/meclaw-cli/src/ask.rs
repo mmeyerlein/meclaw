@@ -162,18 +162,36 @@ pub fn deadline_verdict(saw_trace: bool, read_failed: bool) -> DeadlineVerdict {
     }
 }
 
-/// The first dead letter of this trace, as `(error_code, resolved_target)`.
+/// The dead letter of the posted turn itself, as `(error_code, resolved_target)`.
 ///
 /// A mistyped `--target` is accepted with a 202 and dies in the router, so the
 /// turn is answered by nobody and the wait would run its full budget over a
 /// typo. The dead-letter queue is where that shows, and it is read on every
 /// poll rather than once at the end, because the point is not to wait at all.
-pub fn dead_letter_of<'a>(letters: &'a Value, trace_id: &str) -> Option<(&'a str, &'a str)> {
+///
+/// The match is on `message_id`, not on `trace_id` (GH #640). A trace is the
+/// whole conversation the turn set off, siblings included: "a cell emission
+/// that matches no out-edge of its sender ... lands in the DLQ" (overview
+/// § Routing errors and the dead-letter queue), so a memory write a lane makes
+/// on the side and nobody consumes is an entry carrying this trace id while the
+/// answer is still being worked on. Only the entry whose dead-lettered message
+/// **is** the posted turn is a verdict on it, and the queue says which one that
+/// is: "the entry carries the `trace_id` and the `message_id` of the message
+/// that was posted".
+///
+/// The parent chain is not the test, although it looks like one. Every hop of
+/// the trace descends from the posted turn, the side emission included, so a
+/// chain that reaches the posted id separates nothing; and the messages it
+/// would be walked over are exactly the ones that may have no `message_log` row
+/// (a boundary refusal "lives in the dead-letter queue and never in
+/// `/colony/trace`"). An entry without a `message_id` -- a row written before
+/// the field existed -- is not attributable and is left to the wait.
+pub fn dead_letter_of<'a>(letters: &'a Value, message_id: &str) -> Option<(&'a str, &'a str)> {
     letters
         .get("dead_letters")?
         .as_array()?
         .iter()
-        .find(|d| d.get("trace_id").and_then(Value::as_str) == Some(trace_id))
+        .find(|d| d.get("message_id").and_then(Value::as_str) == Some(message_id))
         .map(|d| {
             (
                 d.get("error_code").and_then(Value::as_str).unwrap_or("?"),
@@ -256,6 +274,8 @@ async fn wait_for_answer(
             Err(e) => last_error = Some(e),
         }
         // A mistyped target is a 202 followed by silence; the queue says so.
+        // Only for the posted turn itself, though -- a sibling hop of the same
+        // trace that dies is not this turn's fate (GH #640).
         if let Ok(letters) = read_dead_letters(client, base).await
             && let Some((code, target)) = dead_letter_of(&letters, message_id)
         {
@@ -452,14 +472,41 @@ mod tests {
     }
 
     #[test]
-    fn a_dead_letter_is_found_by_the_trace_it_belongs_to() {
+    fn a_dead_letter_is_found_by_the_message_it_killed() {
         let letters = json!({ "dead_letters": [
-            {"trace_id": "other", "error_code": "no_route", "resolved_target": "/nope"},
-            {"trace_id": "mine", "error_code": "no_route", "resolved_target": "/dor"},
+            {"trace_id": "other", "message_id": "other",
+             "error_code": "unresolved_path", "resolved_target": "/nope"},
+            {"trace_id": "mine", "message_id": "mine",
+             "error_code": "unresolved_path", "resolved_target": "/dor"},
         ]});
-        assert_eq!(dead_letter_of(&letters, "mine"), Some(("no_route", "/dor")));
+        assert_eq!(
+            dead_letter_of(&letters, "mine"),
+            Some(("unresolved_path", "/dor"))
+        );
         assert_eq!(dead_letter_of(&letters, "unknown"), None);
         assert_eq!(dead_letter_of(&json!({}), "mine"), None);
+    }
+
+    #[test]
+    fn a_sibling_hop_of_the_same_trace_is_not_this_turn_s_verdict() {
+        // GH #640: the trace is the whole conversation the turn set off. A
+        // side emission that nobody consumes dies with this trace id on it
+        // while the answer is still on its way.
+        let letters = json!({ "dead_letters": [
+            {"trace_id": "mine", "message_id": "a-later-hop",
+             "error_code": "no_route", "resolved_target": "/door"},
+        ]});
+        assert_eq!(dead_letter_of(&letters, "mine"), None);
+    }
+
+    #[test]
+    fn an_entry_without_a_message_id_is_not_attributable() {
+        // A row written before the field existed. Reading it as this turn's
+        // fate is the guess the trace-id match used to make.
+        let letters = json!({ "dead_letters": [
+            {"trace_id": "mine", "error_code": "no_route", "resolved_target": "/door"},
+        ]});
+        assert_eq!(dead_letter_of(&letters, "mine"), None);
     }
 
     #[test]

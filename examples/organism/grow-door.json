@@ -1,0 +1,47 @@
+{
+  "scope": "/",
+  "diff": {
+    "add_nodes": [
+      {
+        "name": "door",
+        "template": "door@1.0.2"
+      },
+      {
+        "name": "sink",
+        "template": "terminal@1.0.1"
+      }
+    ],
+    "add_edges": [
+      {
+        "from": "./door",
+        "to": "./os",
+        "condition": "has(hop.route) && hop.route == 'turn'",
+        "modifier": {
+          "set_hop": {
+            "route": "'in_turn'"
+          },
+          "set_context": {
+            "channel": "hop.chat_id",
+            "assistant": "has(context.assistant) && context.assistant != '' ? context.assistant : 'scribe'",
+            "audience_set": "has(context.audience_set) && context.audience_set != '' ? context.audience_set : '[\"member:alex\",\"agent:scribe\"]'"
+          }
+        }
+      },
+      {
+        "from": "./os",
+        "to": "./sink",
+        "condition": "has(hop.route) && hop.route == 'answer'"
+      },
+      {
+        "from": "./os",
+        "to": "./sink",
+        "condition": "has(hop.route) && hop.route == 'write'"
+      },
+      {
+        "from": "./os",
+        "to": "./sink",
+        "condition": "has(hop.route) && hop.route == 'turn_write'"
+      }
+    ]
+  }
+}

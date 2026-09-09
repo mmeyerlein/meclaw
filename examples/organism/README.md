@@ -2,7 +2,7 @@
 
 An empty folder, the template library, and **six declarations**. Out of that: a colony
 shell, an organisation, a person, one generation of that person's agent, and a Telegram
-channel that person is reached on — **92 cells and 518 edges**, of which **57 edges were
+channel that person is reached on — **92 cells and 565 edges**, of which **70 edges were
 written by hand**.
 
 `meclaw-os` is the example that grows *one agent* from templates. This one grows the whole
@@ -55,6 +55,7 @@ organism/
 ├── grow-assistant.json        4. one generation.   1 node, 14 edges
 ├── grow-channel.json          5. a Telegram channel. 1 node, 3 edges, born asleep
 ├── grow-credentials.json      6. the credential v-lanes. 0 nodes, 4 edges, 2 grants
+├── grow-door.json             beyond the six: the front door. 2 nodes, 4 edges
 ├── grow-screen.json           beyond the six: a screen and an app. 2 declarations,
 │                              2 nodes, 5 edges — one storey each, so one manifest
 └── grow.manifest.json         all six, in one body, in that order
@@ -427,7 +428,38 @@ leaves on the same `answer` lane, with `context.channel_node` telling the member
 it back.
 
 The member's own twenty-six edges to and from its `assistants` container stay at twenty-six, and
-its nine to and from `channels` stay at nine. That is what makes each of them one instantiation.
+its ten to and from `channels` stay at ten. That is what makes each of them one instantiation.
+
+## A front door, so a person can talk to it
+
+The six declarations grow the stack. They do not grow a way in: the shell accepts `in_turn` and
+`meclaw ask` posts a turn with no lane on it, because the HTTP ingress writes `context` and never
+a lane (`meclaw-overview.md` § Standard header convention). `grow-door.json` is the two cells
+that close that gap, and it is what [`docs/getting-started.md`](../../docs/getting-started.md)
+runs before its three steps.
+
+```json
+{"scope": "/",
+ "diff": {"add_nodes": [{"name": "door", "template": "door@1.0.2"},
+                        {"name": "sink", "template": "terminal@1.0.1"}], "…": "…"}}
+```
+
+The `door` does what its template says it does: it "puts the turn on a named lane and promotes
+the channel identity". The one edge out of it renames that lane to `in_turn` and stamps
+`context.assistant`, which is the same act a channel performs — "the channel stamps
+`context.assistant` with the name of the agent the person meant … a channel that could not tell
+stamps its own default" (`templates/member/assistants/config.json`,
+[#454](https://github.com/mmeyerlein/meclaw/issues/454)). Here the default is `scribe`, and a
+caller who sets `context.assistant` itself keeps it, so a second generation is reachable without
+a second door.
+
+The `sink` is the other half. `answer`, `write` and `turn_write` leave the shell at `/os` with
+nothing above it to take them, and a lane that ends nowhere dead-letters. A `terminal` is
+"the placeholder for a decision not made yet — where an answer goes while nothing sends it back
+out" (`templates/terminal/config.json`), which is exactly the state of a colony whose member has
+no channel yet. `error` and `reject` are deliberately not drained: those have two honest states,
+a consumer that acts or no edge at all
+([#284](https://github.com/mmeyerlein/meclaw/issues/284)).
 
 ## A screen, and an app that draws on it
 
@@ -500,13 +532,13 @@ static-`Edge.to` cost a second assistant has
 | what | how many |
 |---|---:|
 | cells checked in | **0** |
-| cells after the six declarations | **95** |
-| edges after the six declarations | **537** |
-| edges written by hand in the six files | **64** |
-| edges that came with a template | **473** |
+| cells after the six declarations | **92** |
+| edges after the six declarations | **565** |
+| edges written by hand in the six files | **70** |
+| edges that came with a template | **495** |
 | `add_nodes` entries | **5** |
-| distinct templates stamped in the registry | **17** |
-| edges between the member's `channels` and its siblings | **9** |
+| distinct templates stamped in the registry | **16** |
+| edges between the member's `channels` and its siblings | **10** |
 | edges between the member's `assistants` and its siblings | **25** |
 
 Re-measure them with
@@ -555,7 +587,16 @@ for step in os org member assistant channel; do
 done
 ```
 
-Reload the registry. Eighty-two cells.
+Reload the registry. Eighty-two cells. To talk to the generation, add the front
+door and ask it something:
+
+```bash
+curl -s -X POST http://127.0.0.1:7777/colony/mutations \
+     -H 'Content-Type: application/json' \
+     -d @examples/organism/grow-door.json
+./target/release/meclaw ask --api 127.0.0.1:7777 --target /door \
+    "Say hello in one short sentence."
+```
 
 Every credential in this folder is a `${VAR}` token and never a value; the substitution reads
 `{root}/.env` (or `--env`), not the process environment. A variable with no default has to
@@ -587,8 +628,8 @@ bookkept — a second boot finds nothing to grow, and a node you later remove wi
 cannot be re-declared into existence by a restart.
 
 **What it is not.** `seed-ref/` does not replace the six declarations, and it cannot. A `ref`
-marker declares a **node** and never an **edge** — and 57 of this example's 518 edges are
-hand-written: 53 transit lanes hanging off `orgs`, `members`, `assistants` and `channels`, hives
+marker declares a **node** and never an **edge** — and 70 of this example's 565 edges are
+hand-written: 66 transit lanes hanging off `orgs`, `members`, `assistants` and `channels`, hives
 the templates themselves materialise, plus the four credential v-lanes of step 6. Until the growth has happened those addresses do not exist, so
 there is nowhere to write them down. `seed-ref/` therefore grows exactly the first level, and it
 is the honest form of "a tree that boots itself".

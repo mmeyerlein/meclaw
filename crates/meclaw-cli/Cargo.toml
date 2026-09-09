@@ -25,10 +25,10 @@ uuid = { version = "1", features = ["v7"] }
 # crate was already this crate's dev-dependency with these exact features; the
 # command moves it across, it does not add a dependency to the workspace.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-meclaw-api = { path = "../meclaw-api", version = "0.33.0" }
-meclaw-cells = { path = "../meclaw-cells", version = "0.33.0" }
-meclaw-colony = { path = "../meclaw-colony", version = "0.33.0" }
-meclaw-core = { path = "../meclaw-core", version = "0.33.0" }
+meclaw-api = { path = "../meclaw-api", version = "0.34.0" }
+meclaw-cells = { path = "../meclaw-cells", version = "0.34.0" }
+meclaw-colony = { path = "../meclaw-colony", version = "0.34.0" }
+meclaw-core = { path = "../meclaw-core", version = "0.34.0" }
 
 [dev-dependencies]
 tempfile = "3"

@@ -47,6 +47,11 @@
 //! `Speak` as a failed [`VoiceEvent::SpeakEnded`], for as long as this
 //! connection is still the session's), and the session leaves the table with a
 //! `Disconnected`. Nothing is dropped in silence; what ends is the connection.
+//!
+//! The count says so on the handler's error lane as well (GH #601): the burst
+//! path emits one [`VoiceEvent::ClientTooSlow`] carrying how many queued
+//! commands went with the session, so a colony reading its own lanes can tell a
+//! caller who hung up from a client that stopped reading.
 
 use axum::Router;
 use meclaw_colony::IoLivenessMark;
@@ -297,10 +302,12 @@ impl VoiceIoShared {
     /// one hop out, into [`deliver`], and what is left here is a `try_send`
     /// that either fits or does not.
     ///
-    /// A command that does not fit is **not dropped in silence**: a `Speak`
-    /// becomes a failed [`VoiceEvent::SpeakEnded`] on the handler's error lane,
-    /// and the session is given up with a `Disconnected` either way. Two full
-    /// buffers is not backpressure any more, it is a connection nobody is on.
+    /// A command that does not fit is **not dropped in silence**: the burst is
+    /// reported as one [`VoiceEvent::ClientTooSlow`] with the number of queued
+    /// commands it took with it (GH #601), a `Speak` among them becomes a
+    /// failed [`VoiceEvent::SpeakEnded`], and the session is given up with a
+    /// `Disconnected` either way. Two full buffers is not backpressure any
+    /// more, it is a connection nobody is on.
     async fn send_to(&self, session_id: &str, cmd: ToConnection) {
         let handle = self
             .sessions
@@ -319,6 +326,17 @@ impl VoiceIoShared {
         match dispatch.try_send(cmd) {
             Ok(()) => {}
             Err(TrySendError::Full(cmd)) => {
+                // The count that decided, before the session is given up on
+                // (GH #601): everything the dispatch queue still holds, plus
+                // the command that no longer fitted. Read off the channel
+                // rather than written as `DISPATCH_QUEUE + 1`, so the number in
+                // the message cannot drift from the queue that produced it.
+                let dropped = dispatch.max_capacity() + 1;
+                self.emit(VoiceEvent::ClientTooSlow {
+                    session_id: session_id.to_string(),
+                    dropped,
+                })
+                .await;
                 self.undeliverable(session_id, conn_id, cmd, "the client is not reading")
                     .await;
             }
@@ -980,6 +998,107 @@ pub(crate) fn new_connection_slot() -> (
 mod tests {
     use super::*;
     use crate::voice::providers::echo::EchoStt;
+
+    /// GH #601 — a client that stops taking what is queued for it loses the
+    /// connection, and the cell says so instead of writing a log line.
+    ///
+    /// The colony side of this cell is backpressure and stays that way
+    /// (`voice_t5_behaviour::backpressure_loses_nothing`). The socket side is
+    /// not: past [`DISPATCH_QUEUE`] commands behind an already full connection
+    /// channel the session is given up on, by count and without a clock. The
+    /// ruling of 2026-09-09 on GH #601 is that this verdict is a message —
+    /// exactly one [`VoiceEvent::ClientTooSlow`], naming the session and how
+    /// many queued commands went with it, before the `Disconnected` that ends
+    /// the call.
+    ///
+    /// No clock decides anything here: `external_timeout` is a failure marker,
+    /// far above anything a healthy run needs, so a loaded host cannot turn the
+    /// count path into the clock path and make this test measure the wrong one.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn gh601_a_client_that_stops_reading_is_dropped_by_count_and_reported() {
+        /// The failure-marker window (30 s convention), not a budget.
+        const MARKER: Duration = Duration::from_secs(30);
+        /// Two full buffers plus the burst behind them, with room to spare:
+        /// the give-up needs `DISPATCH_QUEUE` commands queued behind a full
+        /// connection channel, and nothing after it is sent at all.
+        const FLOOD: usize = 4 * DISPATCH_QUEUE;
+
+        let (events_tx, mut events_rx) = mpsc::channel::<VoiceEvent>(32);
+        let shared = Arc::new(VoiceIoShared {
+            stt: Arc::new(EchoStt::new()),
+            tts: None,
+            default_mode: Mode::Auto,
+            external_timeout: MARKER,
+            idle_timeout: MARKER,
+            audio_out_frame_ms: 20,
+            speak_plain: false,
+            release_grace_ms: 1500,
+            events_tx,
+            liveness: meclaw_colony::io_liveness::IoLivenessMark::disabled(),
+            sessions: Mutex::new(Registry::default()),
+            live: watch::channel(0).0,
+        });
+
+        // A connection nobody reads: the receiver is held and never polled, so
+        // the connection channel fills, `deliver` parks on it, and the dispatch
+        // queue behind it is what runs over.
+        let (conn_id, to_conn, _never_read) = new_connection_slot();
+        let dispatch = spawn_delivery(Arc::clone(&shared), "call-1".to_string(), conn_id, to_conn);
+        assert!(
+            shared.claim("call-1", conn_id, dispatch).await.is_none(),
+            "the session was free"
+        );
+
+        for _ in 0..FLOOD {
+            shared
+                .send_to(
+                    "call-1",
+                    ToConnection::Frame(ServerFrame::Mode { mode: Mode::Auto }),
+                )
+                .await;
+        }
+
+        let first = tokio::time::timeout(MARKER, events_rx.recv())
+            .await
+            .expect("the give-up is reported without waiting for a clock")
+            .expect("the handler seam is open");
+        let VoiceEvent::ClientTooSlow {
+            session_id,
+            dropped,
+        } = first
+        else {
+            panic!("the count path must report itself before it drops the session; got {first:?}")
+        };
+        assert_eq!(session_id, "call-1", "the report names the call it ended");
+        assert_eq!(
+            dropped,
+            DISPATCH_QUEUE + 1,
+            "the number in the report is the queue that decided, plus the command that no \
+             longer fitted"
+        );
+
+        let second = tokio::time::timeout(MARKER, events_rx.recv())
+            .await
+            .expect("and the session leaves the table")
+            .expect("the handler seam is open");
+        assert!(
+            matches!(&second, VoiceEvent::Disconnected { session_id } if session_id == "call-1"),
+            "the disconnect follows the reason, not the other way round; got {second:?}"
+        );
+
+        // Exactly one report: everything after the give-up finds no session and
+        // says nothing, because the call it belonged to is over.
+        assert!(
+            !shared.holds("call-1", conn_id).await,
+            "the session is gone from the registry"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let mut extra = Vec::new();
+        while let Ok(ev) = events_rx.try_recv() {
+            extra.push(format!("{ev:?}"));
+        }
+        assert!(extra.is_empty(), "one client, one verdict: {extra:?}");
+    }
 
     /// GH #592 — A1′: a server future that ends parks the round, it does not
     /// end `run_io`.
