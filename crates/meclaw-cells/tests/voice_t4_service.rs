@@ -5,6 +5,10 @@
 //! own, so the events it pushes and the commands it obeys can be checked
 //! without a turn machine in the way. The providers are defined in this file
 //! and do exactly what each test needs; the real ones arrive in t2/t3.
+//!
+//! Since `voice@2.0.0` the cell binds nothing: it registers a mount and is
+//! reached at `/<mount>/…`. So each fixture boots one listener of its own with
+//! [`meclaw_testing::surface_listener`] and talks to the cell through it.
 
 use futures_util::{SinkExt, StreamExt};
 use meclaw_cells::voice::cell::{VoiceCell, VoiceEvent, VoiceReconfig};
@@ -17,7 +21,7 @@ use meclaw_cells::voice::wire::{ClientFrame, Mode, ServerFrame, SpeakEndReason};
 use meclaw_colony::{DbConn, IoLivenessMark, LongRunningCell};
 use meclaw_core::serde_json::{Value, json};
 use meclaw_core::{OriginSink, OutputSink, Path};
-use meclaw_testing::free_port;
+use meclaw_testing::surface_listener;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -26,6 +30,10 @@ use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 /// Failure-marker timeout: generous, per the 30 s convention.
 const MARKER: Duration = Duration::from_secs(30);
+
+/// The mount every fixture in this file registers, and the first path segment
+/// its client asks for.
+const MOUNT: &str = "voice";
 
 // ---------------------------------------------------------------- providers
 
@@ -322,12 +330,18 @@ impl TtsProvider for BulkTts {
 
 // ------------------------------------------------------------------ harness
 
-/// A running listener plus the two channel ends a handler would hold.
+/// A mounted cell behind a listener of its own, plus the two channel ends a
+/// handler would hold.
 struct Live {
-    port: u16,
+    /// `http://<listener>/<mount>` — the prefix every route of the cell hangs
+    /// off.
+    base: String,
+    /// The same, as a WebSocket scheme.
+    ws_base: String,
     events_rx: mpsc::Receiver<VoiceEvent>,
     reconfig_tx: mpsc::Sender<VoiceReconfig>,
     task: tokio::task::JoinHandle<()>,
+    listener: tokio::task::JoinHandle<()>,
 }
 
 impl Live {
@@ -343,6 +357,7 @@ impl Live {
 impl Drop for Live {
     fn drop(&mut self) {
         self.task.abort();
+        self.listener.abort();
     }
 }
 
@@ -377,41 +392,47 @@ async fn start_framed(
     idle: Duration,
     audio_out_frame_ms: u32,
 ) -> Live {
-    let port = free_port();
+    let surfaces = Arc::new(meclaw_colony::SurfaceRegistry::new());
     let (events_tx, events_rx) = mpsc::channel(64);
     let (reconfig_tx, reconfig_rx) = mpsc::channel(64);
-    let mut io = VoiceIo::new(
-        "127.0.0.1".to_string(),
-        port,
-        stt,
-        tts,
-        mode,
-        external,
-        idle,
-        events_tx,
-    );
+    let mut io = VoiceIo::new(MOUNT.to_string(), stt, tts, mode, external, idle, events_tx);
     io.audio_out_frame_ms = audio_out_frame_ms;
+    io.cell_path = Path::new("/main/members/tester/channels/voice");
+    io.surfaces = Arc::clone(&surfaces);
     let task = tokio::spawn(run_io(io, reconfig_rx));
-    let mut live = Live {
-        port,
+    let (addr, listener) = surface_listener(Arc::clone(&surfaces)).await;
+    // The cell registers at the top of its own life, so the first request has
+    // to wait for it — otherwise the listener answers the helper's 404 for a
+    // mount that is one scheduler tick away.
+    await_mount(&surfaces).await;
+    Live {
+        base: format!("http://{addr}/{MOUNT}"),
+        ws_base: format!("ws://{addr}/{MOUNT}"),
         events_rx,
         reconfig_tx,
         task,
-    };
-    match live.event().await {
-        VoiceEvent::Bound(addr) => assert!(addr.ends_with(&port.to_string()), "bound to {addr}"),
-        other => panic!("expected Bound, got {}", label(&other)),
+        listener,
     }
-    live
+}
+
+/// Wait until the cell has put its mount on the table.
+async fn await_mount(surfaces: &Arc<meclaw_colony::SurfaceRegistry>) {
+    tokio::time::timeout(MARKER, async {
+        while surfaces.table().await.is_empty() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the cell registers its mount within the failure marker");
 }
 
 type Ws =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
-async fn connect(port: u16, query: &str) -> Ws {
-    let (ws, _) = tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/ws{query}"))
+async fn connect(ws_base: &str, query: &str) -> Ws {
+    let (ws, _) = tokio_tungstenite::connect_async(format!("{ws_base}/ws{query}"))
         .await
-        .expect("the cell accepts a websocket on /ws");
+        .expect("the cell accepts a websocket on /<mount>/ws");
     ws
 }
 
@@ -445,20 +466,6 @@ async fn next_binary(ws: &mut Ws) -> Vec<u8> {
             WsMessage::Binary(b) => return b.to_vec(),
             WsMessage::Ping(_) | WsMessage::Pong(_) => continue,
             other => panic!("expected a binary frame, got {other:?}"),
-        }
-    }
-}
-
-/// Read until the socket ends. A moved listener is the point: the connection it
-/// accepted cannot follow it, and the client reconnects against the new address.
-async fn drain_until_closed(ws: &mut Ws) {
-    let deadline = tokio::time::Instant::now() + MARKER;
-    loop {
-        match tokio::time::timeout_at(deadline, ws.next()).await {
-            Err(_) => panic!("the socket never ended"),
-            Ok(None) | Ok(Some(Err(_))) => return,
-            Ok(Some(Ok(WsMessage::Close(_)))) => return,
-            Ok(Some(Ok(_))) => continue,
         }
     }
 }
@@ -498,8 +505,7 @@ async fn send_binary(ws: &mut Ws, bytes: Vec<u8>) {
 /// has to say what arrived instead of what was expected.
 fn label(event: &VoiceEvent) -> &'static str {
     match event {
-        VoiceEvent::Bound(_) => "Bound",
-        VoiceEvent::BindFailed(_) => "BindFailed",
+        VoiceEvent::MountFailed(_) => "MountFailed",
         VoiceEvent::Connected { .. } => "Connected",
         VoiceEvent::Disconnected { .. } => "Disconnected",
         VoiceEvent::Control { .. } => "Control",
@@ -520,7 +526,7 @@ async fn info_page_and_hello_declare_the_same_wiring() {
     let mut live = start(Arc::new(ScriptedStt::draining(seen)), None, Mode::Auto).await;
 
     // R-V6: the declaration without a connection.
-    let res = reqwest::get(format!("http://127.0.0.1:{}/info", live.port))
+    let res = reqwest::get(format!("{}/info", live.base))
         .await
         .expect("GET /info");
     assert_eq!(res.status(), 200);
@@ -557,7 +563,7 @@ async fn info_page_and_hello_declare_the_same_wiring() {
     );
 
     // R-V9: the built-in test page, exactly as t4b wrote it.
-    let res = reqwest::get(format!("http://127.0.0.1:{}/", live.port))
+    let res = reqwest::get(format!("{}/", live.base))
         .await
         .expect("GET /");
     assert_eq!(res.status(), 200);
@@ -576,7 +582,7 @@ async fn info_page_and_hello_declare_the_same_wiring() {
     );
 
     // The session identity and the mode come from the query string.
-    let mut ws = connect(live.port, "?session=abc&mode=hold").await;
+    let mut ws = connect(&live.ws_base, "?session=abc&mode=hold").await;
     let hello = next_text(&mut ws).await;
     assert_eq!(hello["type"], json!("hello"));
     assert_eq!(hello["protocol"], json!("meclaw-voice/1"));
@@ -602,7 +608,7 @@ async fn info_page_and_hello_declare_the_same_wiring() {
 async fn a_session_without_an_id_gets_a_uuid7() {
     let seen = Arc::new(AtomicUsize::new(0));
     let live = start(Arc::new(ScriptedStt::draining(seen)), None, Mode::Auto).await;
-    let mut ws = connect(live.port, "").await;
+    let mut ws = connect(&live.ws_base, "").await;
     let hello = next_text(&mut ws).await;
     let id = hello["session_id"]
         .as_str()
@@ -624,11 +630,11 @@ async fn session_token_is_an_alias_for_session() {
     let seen = Arc::new(AtomicUsize::new(0));
     let live = start(Arc::new(ScriptedStt::draining(seen)), None, Mode::Auto).await;
 
-    let mut ws = connect(live.port, "?session_token=call-7f3a").await;
+    let mut ws = connect(&live.ws_base, "?session_token=call-7f3a").await;
     let hello = next_text(&mut ws).await;
     assert_eq!(hello["session_id"], json!("call-7f3a"));
 
-    let mut ws = connect(live.port, "?session=chosen&session_token=ignored").await;
+    let mut ws = connect(&live.ws_base, "?session=chosen&session_token=ignored").await;
     let hello = next_text(&mut ws).await;
     assert_eq!(
         hello["session_id"],
@@ -642,7 +648,7 @@ async fn session_token_is_an_alias_for_session() {
 async fn the_handler_reaches_and_closes_one_session() {
     let seen = Arc::new(AtomicUsize::new(0));
     let mut live = start(Arc::new(ScriptedStt::draining(seen)), None, Mode::Auto).await;
-    let mut ws = connect(live.port, "?session=abc").await;
+    let mut ws = connect(&live.ws_base, "?session=abc").await;
     let _hello = next_text(&mut ws).await;
     let _connected = live.event().await;
 
@@ -671,14 +677,14 @@ async fn the_handler_reaches_and_closes_one_session() {
 async fn a_second_connection_displaces_the_first() {
     let seen = Arc::new(AtomicUsize::new(0));
     let mut live = start(Arc::new(ScriptedStt::draining(seen)), None, Mode::Auto).await;
-    let mut first = connect(live.port, "?session=abc").await;
+    let mut first = connect(&live.ws_base, "?session=abc").await;
     let _hello = next_text(&mut first).await;
     match live.event().await {
         VoiceEvent::Connected { session_id, .. } => assert_eq!(session_id, "abc"),
         other => panic!("expected Connected, got {}", label(&other)),
     }
 
-    let mut second = connect(live.port, "?session=abc").await;
+    let mut second = connect(&live.ws_base, "?session=abc").await;
     let hello = next_text(&mut second).await;
     assert_eq!(hello["session_id"], json!("abc"));
 
@@ -709,7 +715,7 @@ async fn audio_reaches_the_provider_and_events_reach_the_handler() {
         },
     );
     let mut live = start(Arc::new(stt), None, Mode::Auto).await;
-    let mut ws = connect(live.port, "?session=abc").await;
+    let mut ws = connect(&live.ws_base, "?session=abc").await;
     let _hello = next_text(&mut ws).await;
     let _connected = live.event().await;
 
@@ -771,7 +777,7 @@ async fn audio_reaches_the_provider_and_events_reach_the_handler() {
 async fn an_armed_release_grace_comes_back_with_its_token() {
     let seen = Arc::new(AtomicUsize::new(0));
     let mut live = start(Arc::new(ScriptedStt::draining(seen)), None, Mode::Auto).await;
-    let mut ws = connect(live.port, "?session=abc").await;
+    let mut ws = connect(&live.ws_base, "?session=abc").await;
     let _hello = next_text(&mut ws).await;
     let _connected = live.event().await;
 
@@ -829,7 +835,7 @@ async fn a_provider_warning_passes_through_without_a_reconnect() {
     )
     .counting(starts.clone());
     let mut live = start(Arc::new(stt), None, Mode::Auto).await;
-    let mut ws = connect(live.port, "?session=abc").await;
+    let mut ws = connect(&live.ws_base, "?session=abc").await;
     let _hello = next_text(&mut ws).await;
     let _connected = live.event().await;
 
@@ -884,7 +890,7 @@ async fn an_odd_binary_frame_is_reported_and_the_connection_stays() {
         Mode::Auto,
     )
     .await;
-    let mut ws = connect(live.port, "?session=abc").await;
+    let mut ws = connect(&live.ws_base, "?session=abc").await;
     let _hello = next_text(&mut ws).await;
     let _connected = live.event().await;
 
@@ -932,7 +938,7 @@ async fn a_speak_order_becomes_frames_and_a_verdict() {
         Mode::Auto,
     )
     .await;
-    let mut ws = connect(live.port, "?session=abc").await;
+    let mut ws = connect(&live.ws_base, "?session=abc").await;
     let hello = next_text(&mut ws).await;
     assert_eq!(hello["audio_out"]["sample_rate"], json!(24000));
     assert_eq!(hello["tts"], json!("scripted-tts"));
@@ -983,7 +989,7 @@ async fn a_cancel_stops_the_synthesis_and_discards_what_is_buffered() {
         Mode::Auto,
     )
     .await;
-    let mut ws = connect(live.port, "?session=abc").await;
+    let mut ws = connect(&live.ws_base, "?session=abc").await;
     let _hello = next_text(&mut ws).await;
     let _connected = live.event().await;
 
@@ -1060,7 +1066,7 @@ async fn a_wedged_synthesis_socket_ends_even_while_the_client_talks() {
         Duration::from_millis(400),
     )
     .await;
-    let mut ws = connect(live.port, "?session=abc").await;
+    let mut ws = connect(&live.ws_base, "?session=abc").await;
     let _hello = next_text(&mut ws).await;
     let _connected = live.event().await;
 
@@ -1113,7 +1119,7 @@ async fn a_failing_synthesis_ends_with_a_reason() {
         Mode::Auto,
     )
     .await;
-    let mut ws = connect(live.port, "?session=abc").await;
+    let mut ws = connect(&live.ws_base, "?session=abc").await;
     let _hello = next_text(&mut ws).await;
     let _connected = live.event().await;
 
@@ -1160,7 +1166,7 @@ async fn a_client_that_leaves_mid_synthesis_still_ends_the_speak() {
         Mode::Auto,
     )
     .await;
-    let mut ws = connect(live.port, "?session=abc").await;
+    let mut ws = connect(&live.ws_base, "?session=abc").await;
     let _hello = next_text(&mut ws).await;
     let _connected = live.event().await;
 
@@ -1202,7 +1208,7 @@ async fn a_client_that_leaves_mid_synthesis_still_ends_the_speak() {
 async fn the_door_refuses_a_malformed_query_and_a_wrong_path() {
     let seen = Arc::new(AtomicUsize::new(0));
     let live = start(Arc::new(ScriptedStt::draining(seen)), None, Mode::Auto).await;
-    let base = format!("http://127.0.0.1:{}", live.port);
+    let base = live.base.clone();
 
     let long = "a".repeat(129);
     for (url, why) in [
@@ -1236,7 +1242,7 @@ async fn the_door_refuses_a_malformed_query_and_a_wrong_path() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_echo_provider_is_a_byte_identical_loopback() {
     let mut live = start(Arc::new(ScriptedStt::echo()), None, Mode::Auto).await;
-    let mut ws = connect(live.port, "?session=abc").await;
+    let mut ws = connect(&live.ws_base, "?session=abc").await;
     let hello = next_text(&mut ws).await;
     assert_eq!(hello["stt"], json!("echo"));
     assert_eq!(hello["tts"], Value::Null);
@@ -1272,7 +1278,7 @@ async fn a_recognition_session_that_keeps_failing_ends_the_connection() {
         Mode::Auto,
     )
     .await;
-    let mut ws = connect(live.port, "?session=abc").await;
+    let mut ws = connect(&live.ws_base, "?session=abc").await;
     let _hello = next_text(&mut ws).await;
     let _connected = live.event().await;
 
@@ -1296,104 +1302,6 @@ async fn a_recognition_session_that_keeps_failing_ends_the_connection() {
         assert_eq!(err["code"], json!("stt_failed"), "round {round}");
     }
     assert_eq!(close_code(&mut ws).await, Some(1011));
-}
-
-/// Review 2: two connections move together, and both are reported before the
-/// new address is announced.
-///
-/// The defect this pins: with the table alone as the count, the second
-/// connection could empty it and release the rebind while the first was still
-/// between its own removal and its own `Disconnected`.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn two_moved_connections_are_both_reported_before_the_new_address() {
-    let seen = Arc::new(AtomicUsize::new(0));
-    let mut live = start(Arc::new(ScriptedStt::draining(seen)), None, Mode::Auto).await;
-    let mut first = connect(live.port, "?session=one").await;
-    let _hello = next_text(&mut first).await;
-    let _connected = live.event().await;
-    let mut second = connect(live.port, "?session=two").await;
-    let _hello = next_text(&mut second).await;
-    let _connected = live.event().await;
-
-    let next_port = free_port();
-    let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
-    live.reconfig_tx
-        .send(VoiceReconfig::Rebind {
-            bind: "127.0.0.1".to_string(),
-            port: next_port,
-            ack: ack_tx,
-        })
-        .await
-        .expect("send");
-    let verdict = tokio::time::timeout(MARKER, ack_rx)
-        .await
-        .expect("the I/O half answers")
-        .expect("the ack channel stays open");
-    assert!(verdict.is_ok(), "the new address binds: {verdict:?}");
-    drain_until_closed(&mut first).await;
-    drain_until_closed(&mut second).await;
-
-    let mut gone = Vec::new();
-    for _ in 0..2 {
-        match live.event().await {
-            VoiceEvent::Disconnected { session_id } => gone.push(session_id),
-            other => panic!(
-                "both disconnects come before the new address, got {} after {gone:?}",
-                label(&other)
-            ),
-        }
-    }
-    gone.sort();
-    assert_eq!(gone, vec!["one".to_string(), "two".to_string()]);
-    match live.event().await {
-        VoiceEvent::Bound(addr) => assert!(addr.ends_with(&next_port.to_string()), "{addr}"),
-        other => panic!("expected Bound after both, got {}", label(&other)),
-    }
-}
-
-/// Step 1/2: the listener moves, and the connections it accepted go with it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_listener_moves_and_its_connections_are_dropped() {
-    let seen = Arc::new(AtomicUsize::new(0));
-    let mut live = start(Arc::new(ScriptedStt::draining(seen)), None, Mode::Auto).await;
-    let mut ws = connect(live.port, "?session=abc").await;
-    let _hello = next_text(&mut ws).await;
-    let _connected = live.event().await;
-
-    let next_port = free_port();
-    let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
-    live.reconfig_tx
-        .send(VoiceReconfig::Rebind {
-            bind: "127.0.0.1".to_string(),
-            port: next_port,
-            ack: ack_tx,
-        })
-        .await
-        .expect("send");
-    let verdict = tokio::time::timeout(MARKER, ack_rx)
-        .await
-        .expect("the I/O half answers")
-        .expect("the ack channel stays open");
-    assert!(verdict.is_ok(), "the new address binds: {verdict:?}");
-    drain_until_closed(&mut ws).await;
-
-    // The connection the old listener accepted is gone, and the handler is told
-    // so — otherwise its session table would keep a row for a socket nobody can
-    // reach, and `unknown_session` could never fire for that identity again.
-    match live.event().await {
-        VoiceEvent::Disconnected { session_id } => assert_eq!(session_id, "abc"),
-        other => panic!(
-            "expected Disconnected for the moved connection, got {}",
-            label(&other)
-        ),
-    }
-    match live.event().await {
-        VoiceEvent::Bound(addr) => assert!(addr.ends_with(&next_port.to_string()), "{addr}"),
-        other => panic!("expected Bound on the new address, got {}", label(&other)),
-    }
-    let mut ws = connect(next_port, "?session=abc").await;
-    let hello = next_text(&mut ws).await;
-    assert_eq!(hello["session_id"], json!("abc"));
 }
 
 // ------------------------------------------------- a client that stopped reading
@@ -1456,77 +1364,6 @@ async fn wedge(live: &mut Live, ws: &mut Ws, session_id: &str) {
     }
 }
 
-/// GH #593: a rebind is answered while one client's delivery is wedged.
-///
-/// The defect this pins: `run_io` dispatched commands with a blocking send in
-/// the same loop that reads `Rebind`. A connection whose channel was full
-/// parked that send, the `Rebind` queued behind it was never read, and the
-/// handler's ack timeout refused an update that was perfectly good.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_rebind_is_answered_while_a_client_is_wedged() {
-    let mut live = start_with(
-        Arc::new(StallingStt),
-        None,
-        Mode::Auto,
-        Duration::from_millis(500),
-        Duration::from_millis(500),
-    )
-    .await;
-    let mut stuck = connect(live.port, "?session=stuck").await;
-    let _hello = next_text(&mut stuck).await;
-    match live.event().await {
-        VoiceEvent::Connected { session_id, .. } => assert_eq!(session_id, "stuck"),
-        other => panic!("expected Connected, got {}", label(&other)),
-    }
-    wedge(&mut live, &mut stuck, "stuck").await;
-
-    // More commands than the connection's channel holds: the 65th of these is
-    // where the old loop stopped reading anything else.
-    for _ in 0..100 {
-        live.reconfig_tx
-            .send(VoiceReconfig::ToClient {
-                session_id: "stuck".to_string(),
-                frame: filler(),
-            })
-            .await
-            .expect("send");
-    }
-
-    let next_port = free_port();
-    let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
-    live.reconfig_tx
-        .send(VoiceReconfig::Rebind {
-            bind: "127.0.0.1".to_string(),
-            port: next_port,
-            ack: ack_tx,
-        })
-        .await
-        .expect("send");
-    let verdict = tokio::time::timeout(Duration::from_secs(2), ack_rx)
-        .await
-        .expect("the rebind is answered even though a client is wedged")
-        .expect("the ack channel stays open");
-    assert!(verdict.is_ok(), "the new address binds: {verdict:?}");
-
-    // The wedged connection is dropped like every other one the old listener
-    // accepted, and it is reported — a row nobody can reach must not outlive
-    // the address it was accepted on.
-    match live.event().await {
-        VoiceEvent::Disconnected { session_id } => assert_eq!(session_id, "stuck"),
-        other => panic!(
-            "expected Disconnected for the wedged connection, got {}",
-            label(&other)
-        ),
-    }
-    match live.event().await {
-        VoiceEvent::Bound(addr) => assert!(addr.ends_with(&next_port.to_string()), "{addr}"),
-        other => panic!("expected Bound on the new address, got {}", label(&other)),
-    }
-    let mut fresh = connect(next_port, "?session=fresh").await;
-    let hello = next_text(&mut fresh).await;
-    assert_eq!(hello["session_id"], json!("fresh"));
-}
-
 /// **A connection that dies mid-sentence still reports the sentence.**
 ///
 /// The hang-up-after-`speak_end` mechanism of the telephony hive rests on one
@@ -1553,7 +1390,7 @@ async fn every_speak_ends_even_when_the_client_disappears() {
         Mode::Auto,
     )
     .await;
-    let mut client = connect(live.port, "?session=torn").await;
+    let mut client = connect(&live.ws_base, "?session=torn").await;
     let _hello = next_text(&mut client).await;
     match live.event().await {
         VoiceEvent::Connected { session_id, .. } => assert_eq!(session_id, "torn"),
@@ -1614,7 +1451,7 @@ async fn a_speak_to_a_wedged_client_ends_as_a_reported_failure() {
         Duration::from_secs(2),
     )
     .await;
-    let mut stuck = connect(live.port, "?session=stuck").await;
+    let mut stuck = connect(&live.ws_base, "?session=stuck").await;
     let _hello = next_text(&mut stuck).await;
     match live.event().await {
         VoiceEvent::Connected { session_id, .. } => assert_eq!(session_id, "stuck"),
@@ -1704,7 +1541,7 @@ async fn a_burst_past_both_buffers_is_given_up_on_without_waiting_for_the_deadli
         Duration::from_secs(30),
     )
     .await;
-    let mut stuck = connect(live.port, "?session=stuck").await;
+    let mut stuck = connect(&live.ws_base, "?session=stuck").await;
     let _hello = next_text(&mut stuck).await;
     match live.event().await {
         VoiceEvent::Connected { session_id, .. } => assert_eq!(session_id, "stuck"),
@@ -1764,64 +1601,6 @@ async fn a_burst_past_both_buffers_is_given_up_on_without_waiting_for_the_deadli
     }
 }
 
-/// GH #593: a rebind leaves no row behind, even for a connection with nothing
-/// queued for it.
-///
-/// The gap this pins is the one the delivery deadline cannot close. A wedged
-/// connection with an *empty* queue never makes its `deliver` task wait for
-/// anything — the rebind's own `Close` fits — so nothing there ever times out,
-/// nothing gives up, and the connection never reports itself gone. Without the
-/// eviction after the drain, `Bound` would be announced with that row still in
-/// the table and the handler's session map would carry it for the rest of the
-/// cell's life.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_rebind_drops_a_wedged_connection_that_has_nothing_queued() {
-    let mut live = start_with(
-        Arc::new(StallingStt),
-        None,
-        Mode::Auto,
-        Duration::from_millis(400),
-        Duration::from_millis(400),
-    )
-    .await;
-    let mut stuck = connect(live.port, "?session=stuck").await;
-    let _hello = next_text(&mut stuck).await;
-    match live.event().await {
-        VoiceEvent::Connected { session_id, .. } => assert_eq!(session_id, "stuck"),
-        other => panic!("expected Connected, got {}", label(&other)),
-    }
-    wedge(&mut live, &mut stuck, "stuck").await;
-
-    let next_port = free_port();
-    let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
-    live.reconfig_tx
-        .send(VoiceReconfig::Rebind {
-            bind: "127.0.0.1".to_string(),
-            port: next_port,
-            ack: ack_tx,
-        })
-        .await
-        .expect("send");
-    let verdict = tokio::time::timeout(Duration::from_secs(2), ack_rx)
-        .await
-        .expect("the rebind is answered even though a client is wedged")
-        .expect("the ack channel stays open");
-    assert!(verdict.is_ok(), "the new address binds: {verdict:?}");
-
-    match live.event().await {
-        VoiceEvent::Disconnected { session_id } => assert_eq!(session_id, "stuck"),
-        other => panic!(
-            "the rebind reports the row it removed, got {} — a connection of the old address \
-             must not outlive it in the table",
-            label(&other)
-        ),
-    }
-    match live.event().await {
-        VoiceEvent::Bound(addr) => assert!(addr.ends_with(&next_port.to_string()), "{addr}"),
-        other => panic!("expected Bound after the disconnect, got {}", label(&other)),
-    }
-}
-
 // ------------------------------------------------- outbound framing (i-framing)
 
 /// Every binary frame up to the next text frame, and that text frame.
@@ -1848,7 +1627,7 @@ async fn audio_until_text(ws: &mut Ws) -> (Vec<Vec<u8>>, Value) {
 
 /// Start one synthesis on a fresh connection and take everything it produced.
 async fn speak_and_collect(live: &mut Live) -> (Vec<Vec<u8>>, Value) {
-    let mut ws = connect(live.port, "?session=abc").await;
+    let mut ws = connect(&live.ws_base, "?session=abc").await;
     let _hello = next_text(&mut ws).await;
     let _connected = live.event().await;
     live.reconfig_tx
@@ -1947,7 +1726,7 @@ async fn framing_zero_sends_the_provider_chunk_unchanged() {
     )
     .await;
 
-    let mut ws = connect(live.port, "?session=abc").await;
+    let mut ws = connect(&live.ws_base, "?session=abc").await;
     let hello = next_text(&mut ws).await;
     assert_eq!(hello["audio_out_frame_ms"], json!(0));
     let _connected = live.event().await;
@@ -1977,7 +1756,7 @@ async fn a_cancel_discards_what_the_framer_still_holds() {
         Mode::Auto,
     )
     .await;
-    let mut ws = connect(live.port, "?session=abc").await;
+    let mut ws = connect(&live.ws_base, "?session=abc").await;
     let _hello = next_text(&mut ws).await;
     let _connected = live.event().await;
     live.reconfig_tx
@@ -2026,7 +1805,7 @@ async fn hello_and_info_declare_the_outbound_frame_length() {
     .await;
 
     let info: Value = meclaw_core::serde_json::from_str(
-        &reqwest::get(format!("http://127.0.0.1:{}/info", live.port))
+        &reqwest::get(format!("{}/info", live.base))
             .await
             .expect("GET /info")
             .text()
@@ -2037,7 +1816,7 @@ async fn hello_and_info_declare_the_outbound_frame_length() {
     assert_eq!(info["audio_out_frame_ms"], json!(20), "the shipped default");
     assert_eq!(info["audio_out"]["sample_rate"], json!(24000));
 
-    let mut ws = connect(live.port, "?session=abc").await;
+    let mut ws = connect(&live.ws_base, "?session=abc").await;
     let hello = next_text(&mut ws).await;
     assert_eq!(hello["audio_out_frame_ms"], json!(20));
     let _connected = live.event().await;
@@ -2097,9 +1876,8 @@ fn cell_db() -> DbConn {
 /// where the rewriting happens.
 async fn text_a_provider_is_handed(speak_plain: Option<bool>, written: &[&str]) -> String {
     let path = Path::new("/main/members/tester/channels/voice");
-    let port = free_port();
     let mut raw = json!({
-        "port": port,
+        "mount": MOUNT,
         "stt": {"provider": "deepgram", "api_key": "k"},
         "tts": {"provider": "cartesia", "api_key": "k", "voice": "v"},
     });
@@ -2112,9 +1890,9 @@ async fn text_a_provider_is_handed(speak_plain: Option<bool>, written: &[&str]) 
     let (events_tx, mut events_rx) = mpsc::channel(64);
     // The two providers are this file's own: the recogniser drains, and the
     // synthesiser answers the one question the test asks.
-    let io = VoiceIo::new(
-        params.bind.clone(),
-        params.port,
+    let surfaces = Arc::new(meclaw_colony::SurfaceRegistry::new());
+    let mut io = VoiceIo::new(
+        params.mount.clone(),
         Arc::new(ScriptedStt::draining(Arc::new(AtomicUsize::new(0)))),
         Some(Arc::new(RecordingTts { spoken: spoken_tx })),
         params.default_mode,
@@ -2122,6 +1900,8 @@ async fn text_a_provider_is_handed(speak_plain: Option<bool>, written: &[&str]) 
         Duration::from_millis(params.provider_idle_timeout_ms),
         events_tx.clone(),
     );
+    io.cell_path = path.clone();
+    io.surfaces = Arc::clone(&surfaces);
     let mut cell = VoiceCell::new(path.clone(), io, &params, &raw);
     let io = LongRunningCell::split_io(&mut cell);
     let (_reconfig_tx, reconfig_rx) = mpsc::channel(8);
@@ -2137,12 +1917,10 @@ async fn text_a_provider_is_handed(speak_plain: Option<bool>, written: &[&str]) 
             .expect("the I/O half pushes an event")
             .expect("the events channel stays open")
     };
-    match next_event().await {
-        VoiceEvent::Bound(_) => {}
-        other => panic!("expected Bound, got {}", label(&other)),
-    }
 
-    let mut ws = connect(port, "?session=call-1").await;
+    let (addr, listener) = surface_listener(Arc::clone(&surfaces)).await;
+    await_mount(&surfaces).await;
+    let mut ws = connect(&format!("ws://{addr}/{MOUNT}"), "?session=call-1").await;
     let hello = next_text(&mut ws).await;
     assert_eq!(hello["session_id"], json!("call-1"));
     assert_eq!(
@@ -2192,6 +1970,7 @@ async fn text_a_provider_is_handed(speak_plain: Option<bool>, written: &[&str]) 
         .expect("the synthesis provider is asked within 30s")
         .expect("the provider channel stays open");
     task.abort();
+    listener.abort();
     spoken
 }
 
@@ -2314,7 +2093,7 @@ async fn a_client_negotiates_the_rate_it_sends() {
     )
     .await;
 
-    let mut ws = connect(live.port, "?session=phone&sample_rate=8000").await;
+    let mut ws = connect(&live.ws_base, "?session=phone&sample_rate=8000").await;
     let hello = next_text(&mut ws).await;
     assert_eq!(
         hello["audio_in"],
@@ -2354,12 +2133,9 @@ async fn a_rate_the_recogniser_cannot_serve_is_refused_before_the_upgrade() {
     )
     .await;
 
-    let res = reqwest::get(format!(
-        "http://127.0.0.1:{}/ws?sample_rate=11025",
-        live.port
-    ))
-    .await
-    .expect("GET /ws");
+    let res = reqwest::get(format!("{}/ws?sample_rate=11025", live.base))
+        .await
+        .expect("GET /ws");
     assert_eq!(res.status(), 400);
     let body = res.text().await.expect("body");
     assert!(
@@ -2368,12 +2144,9 @@ async fn a_rate_the_recogniser_cannot_serve_is_refused_before_the_upgrade() {
     );
 
     assert!(
-        tokio_tungstenite::connect_async(format!(
-            "ws://127.0.0.1:{}/ws?sample_rate=11025",
-            live.port
-        ))
-        .await
-        .is_err(),
+        tokio_tungstenite::connect_async(format!("{}/ws?sample_rate=11025", live.ws_base))
+            .await
+            .is_err(),
         "and the websocket handshake does not come up either"
     );
 }
@@ -2390,7 +2163,7 @@ async fn the_outbound_rate_falls_back_to_what_the_synthesiser_serves() {
     )
     .await;
 
-    let mut ws = connect(live.port, "?sample_rate=8000").await;
+    let mut ws = connect(&live.ws_base, "?sample_rate=8000").await;
     let hello = next_text(&mut ws).await;
     assert_eq!(
         hello["audio_in"]["sample_rate"],
@@ -2415,7 +2188,7 @@ async fn info_lists_every_rate_that_can_be_negotiated() {
     )
     .await;
 
-    let res = reqwest::get(format!("http://127.0.0.1:{}/info", live.port))
+    let res = reqwest::get(format!("{}/info", live.base))
         .await
         .expect("GET /info");
     let info: Value =
@@ -2442,12 +2215,9 @@ async fn an_encoding_this_version_does_not_speak_is_refused() {
     )
     .await;
 
-    let res = reqwest::get(format!(
-        "http://127.0.0.1:{}/ws?sample_rate=8000&encoding=mulaw",
-        live.port
-    ))
-    .await
-    .expect("GET /ws");
+    let res = reqwest::get(format!("{}/ws?sample_rate=8000&encoding=mulaw", live.base))
+        .await
+        .expect("GET /ws");
     assert_eq!(res.status(), 400);
     assert!(
         res.text().await.expect("body").contains("pcm_s16le"),
@@ -2455,7 +2225,7 @@ async fn an_encoding_this_version_does_not_speak_is_refused() {
     );
 
     // And the one it does speak passes, spelled the way `hello` spells it.
-    let mut ws = connect(live.port, "?sample_rate=8000&encoding=pcm_s16le").await;
+    let mut ws = connect(&live.ws_base, "?sample_rate=8000&encoding=pcm_s16le").await;
     let hello = next_text(&mut ws).await;
     assert_eq!(hello["audio_in"]["encoding"], json!("pcm_s16le"));
 }
@@ -2472,7 +2242,7 @@ async fn without_a_rate_the_providers_own_declaration_stands() {
     )
     .await;
 
-    let mut ws = connect(live.port, "?session=browser").await;
+    let mut ws = connect(&live.ws_base, "?session=browser").await;
     let hello = next_text(&mut ws).await;
     assert_eq!(hello["audio_in"]["sample_rate"], json!(16000), "{hello}");
     assert_eq!(hello["audio_out"]["sample_rate"], json!(24000), "{hello}");
@@ -2503,7 +2273,7 @@ async fn an_echo_cell_with_a_synthesis_provider_declares_the_providers_rate() {
     )
     .await;
 
-    let mut ws = connect(live.port, "?session=loop").await;
+    let mut ws = connect(&live.ws_base, "?session=loop").await;
     let hello = next_text(&mut ws).await;
     assert_eq!(hello["audio_in"]["sample_rate"], json!(16000), "{hello}");
     assert_eq!(
@@ -2514,14 +2284,14 @@ async fn an_echo_cell_with_a_synthesis_provider_declares_the_providers_rate() {
 
     // And with nothing to synthesise with, the loopback is its own answer again.
     let bare = start(Arc::new(ScriptedStt::echo()), None, Mode::Auto).await;
-    let mut ws = connect(bare.port, "?session=bare").await;
+    let mut ws = connect(&bare.ws_base, "?session=bare").await;
     let hello = next_text(&mut ws).await;
     assert_eq!(
         hello["audio_out"], hello["audio_in"],
         "what goes in comes back: {hello}"
     );
 
-    let res = reqwest::get(format!("http://127.0.0.1:{}/info", bare.port))
+    let res = reqwest::get(format!("{}/info", bare.base))
         .await
         .expect("GET /info");
     let info: Value =
@@ -2540,12 +2310,9 @@ async fn a_provider_that_overrides_nothing_serves_exactly_its_own_rate() {
     let seen = Arc::new(AtomicUsize::new(0));
     let live = start(Arc::new(ScriptedStt::draining(seen)), None, Mode::Auto).await;
 
-    let res = reqwest::get(format!(
-        "http://127.0.0.1:{}/ws?sample_rate=8000",
-        live.port
-    ))
-    .await
-    .expect("GET /ws");
+    let res = reqwest::get(format!("{}/ws?sample_rate=8000", live.base))
+        .await
+        .expect("GET /ws");
     assert_eq!(res.status(), 400);
     let body = res.text().await.expect("body");
     assert!(
@@ -2554,11 +2321,11 @@ async fn a_provider_that_overrides_nothing_serves_exactly_its_own_rate() {
     );
 
     // Its own rate passes, and `/info` says so without being asked twice.
-    let mut ws = connect(live.port, "?sample_rate=16000").await;
+    let mut ws = connect(&live.ws_base, "?sample_rate=16000").await;
     let hello = next_text(&mut ws).await;
     assert_eq!(hello["audio_in"]["sample_rate"], json!(16000), "{hello}");
 
-    let res = reqwest::get(format!("http://127.0.0.1:{}/info", live.port))
+    let res = reqwest::get(format!("{}/info", live.base))
         .await
         .expect("GET /info");
     let info: Value =

@@ -88,7 +88,7 @@ fn read_json(p: &std::path::Path) -> Value {
 // ───────────────────────────────────────────────────────── 1. the inventory
 
 #[test]
-fn both_templates_ship_their_whole_inventory_at_one_zero() {
+fn both_templates_ship_their_whole_inventory() {
     let Some(display) = shipped_display() else {
         return;
     };
@@ -104,14 +104,14 @@ fn both_templates_ship_their_whole_inventory_at_one_zero() {
             .version
             .unwrap_or_else(|| panic!("{name} declares no version"));
         // The exact shipped version is gated by `gh235_readme_library_table`
-        // against `templates/README.md`; what is pinned here is the major, and
-        // that the string is one a reference can actually name.
-        let parsed = parse_simple_version(&version)
+        // against `templates/README.md`; what is pinned here is only that the
+        // string is one a reference can actually name. The major used to be
+        // pinned to 1 with the sentence "a first cut, and nothing has been
+        // removed from it yet" — `display@2.0.0` removed something (the screen's
+        // own port, with `web@2.0.0`), so the sentence stopped being true of
+        // the digit rather than of the template.
+        parse_simple_version(&version)
             .unwrap_or_else(|e| panic!("{name}@{version} is not a resolvable version: {e}"));
-        assert_eq!(
-            parsed.0, 1,
-            "{name} is on major 1: a first cut, and nothing has been removed from it yet"
-        );
     }
 }
 

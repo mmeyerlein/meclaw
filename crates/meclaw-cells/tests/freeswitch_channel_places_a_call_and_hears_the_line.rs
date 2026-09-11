@@ -1,6 +1,6 @@
-//! `freeswitch@1.1.0` — a telephone as a CHANNEL of a person: it turns the facts
+//! `freeswitch@2.0.0` — a telephone as a CHANNEL of a person: it turns the facts
 //! about the line a person could ANSWER into TURNS, books the rest, and offers
-//! the assistant two tools of its own.
+//! the assistant five tools of its own.
 //!
 //! Ruling (2026-09-06): a phone is not an app. An app emits
 //! `view`/`error`/`tool_result`; a CHANNEL stamps turns, and a call that came
@@ -53,6 +53,7 @@ use meclaw_core::{Body, Message, MessageBuilder, Path};
 use meclaw_testing::ColonyHandle;
 use meclaw_testing::mock_http::{CapturedRequest, MockResponse, start_mock_server_capturing};
 use meclaw_testing::topologies::phase_3a::CaptureCell;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, mpsc};
@@ -196,6 +197,14 @@ if route == "in_wire":
     if mode == "menu":
         sys.stdout.write(json.dumps({"header": {"route": "schemas"},
                                      "messages": [], "tools": ["call"]}))
+    elif mode == "tool":
+        # Any tool by name, with the arguments the case wants: the three line
+        # tools take a number or a PIN and nothing this file has to model.
+        sys.stdout.write(json.dumps({
+            "header": {"route": "tool", "tool_name": str(hop.get("tool") or ""),
+                       "tool_call_id": "c9"},
+            "messages": [{"origin": "assistant", "type": "tool_call", "id": "c9",
+                          "text": str(hop.get("args") or "{}")}]}))
     elif mode == "hangup":
         sys.stdout.write(json.dumps({
             "header": {"route": "tool", "tool_name": "hangup", "tool_call_id": "c2"},
@@ -245,16 +254,21 @@ doc = json.load(sys.stdin)
 hop = ((doc["envelope"].get("header") or {}).get("hop") or {})
 mode = str(hop.get("mode") or "")
 if mode == "ev":
-    sys.stdout.write(json.dumps({
-        "header": {"route": str(hop.get("ev") or ""),
-                   "call_uuid": str(hop.get("call_uuid") or ""),
-                   "number": str(hop.get("number") or ""),
-                   "cause": str(hop.get("cause") or "")},
-        "messages": []}))
+    head = {"route": str(hop.get("ev") or ""),
+            "call_uuid": str(hop.get("call_uuid") or ""),
+            "number": str(hop.get("number") or ""),
+            "cause": str(hop.get("cause") or "")}
+    # The stamp a dialplan puts on an inbound call once the switch has looked
+    # the number up in its own table. Absent unless the case is about it.
+    if hop.get("user_id"):
+        head["user_id"] = str(hop["user_id"])
+    sys.stdout.write(json.dumps({"header": head, "messages": []}))
 else:
     sys.stdout.write(json.dumps({
         "header": {"route": "in_wire", "mode": mode,
-                   "number": str(hop.get("number") or "")},
+                   "number": str(hop.get("number") or ""),
+                   "tool": str(hop.get("tool") or ""),
+                   "args": str(hop.get("args") or "")},
         "messages": doc["body"].get("messages", [])}))
 "#;
 
@@ -326,7 +340,7 @@ fn install_edges(agent: &str, channel: &str) -> Vec<Value> {
         json!({
             "from": format!("./assistants/{agent}/talky"),
             "to": format!("./channels/{channel}/dial"), "lane": "tool",
-            "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && (hop.tool_name == 'call' || hop.tool_name == 'hangup')",
+            "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && (hop.tool_name == 'call' || hop.tool_name == 'hangup' || hop.tool_name == 'add_number' || hop.tool_name == 'set_pin' || hop.tool_name == 'disable_pin')",
             "modifier": {"set_context": {"tool_caller": "'talky'", "assistant": format!("'{agent}'")},
                          "delete_context": ["col_phase", "consult_class", "consult_id", "tool_answerer"]}
         }),
@@ -445,7 +459,11 @@ fn build_tree(
     let signal_path = chan.join("signal/config.json");
     let mut signal = read_json(&signal_path);
     signal["params"]["callers"] = json!({KNOWN: KNOWN_USER});
-    signal["params"]["voice_ws_url"] = json!("ws://127.0.0.1:7900/");
+    signal["params"]["voice_ws_url"] = json!("ws://127.0.0.1:7777/phone/ws");
+    // Which member a caller of this line is put through as. Without it the
+    // three line tools write nothing and say so, which is its own measurement
+    // below.
+    signal["params"]["line_user_id"] = json!(KNOWN_USER);
     std::fs::write(
         &signal_path,
         meclaw_core::serde_json::to_string_pretty(&signal).expect("serialise"),
@@ -787,7 +805,7 @@ async fn the_channel_offers_two_tools_places_a_call_and_hangs_it_up() {
     let menu = only(&got, "surface_got_in_menu");
     assert_eq!(
         hop_of(&menu, "got_names"),
-        "call,hangup",
+        "call,hangup,add_number,set_pin,disable_pin",
         "a channel answers its WHOLE offer, whatever was asked"
     );
     assert_eq!(hop_of(&menu, "got_answerer"), CHANNEL);
@@ -1212,6 +1230,263 @@ async fn a_transfer_answer_app_carries_no_stream_command() {
     assert!(
         !decoded.contains("api_on_answer") && !decoded.contains("uuid_audio_stream"),
         "and the channel starts no stream beside it: {decoded}"
+    );
+}
+
+/// **A `call_incoming` that carries a `user_id` is trusted** (2.0.0).
+///
+/// The switch is the proxy: it holds the numbers, it asked for the PIN, and it
+/// looked the number up in its own table. So the identity it stamped on the
+/// event is the identity of that call — and the number is not read as one while
+/// the stamp is there. Measured on a number in NO `callers` entry, which is the
+/// only way to tell a trusted stamp from the fallback answering underneath it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_call_incoming_with_a_user_id_is_trusted() {
+    if skip() {
+        return;
+    }
+    let mut c = start(vec![]).await;
+
+    let got = round(
+        &mut c,
+        json!({"mode": "ev", "ev": "call_incoming", "call_uuid": INBOUND_UUID,
+               "number": STRANGER, "user_id": "the-verified-one"}),
+    )
+    .await;
+    let turn = only(&got, "surface_got_in_turn");
+    assert_eq!(
+        hop_of(&turn, "got_user"),
+        "the-verified-one",
+        "the member the switch put the caller through as is the sender of the \
+         turn — a `callers` table that does not carry this number said nothing \
+         about it: {turn:#?}"
+    );
+    assert_eq!(hop_of(&turn, "got_session"), INBOUND_UUID);
+    assert!(
+        hop_of(&turn, "got_text").contains(STRANGER),
+        "the turn still names the number that rang: {turn:#?}"
+    );
+    // and nothing was put down: the positive control of the refusal above is
+    // that the same number without a stamp reaches `uuid_kill`.
+    let paths = switch_paths(&c).await;
+    assert!(
+        paths.is_empty(),
+        "a stamped call is a call this channel takes, so no leg is killed: \
+         {paths:?}"
+    );
+}
+
+/// **The three line tools write the SWITCH's table** (2.0.0), and nothing else.
+///
+/// `mod_db` takes `db insert/<realm>/<key>/<value>` and
+/// `db delete/<realm>/<key>`, and `/webapi/db?<args>` is that command as a GET.
+/// Two shapes of row: one keyed by the NUMBER, carrying two fields —
+/// `<line_user_id>|<voice_ws_url>`, the whole stream URL inside the row, so one
+/// row is everything the dialplan needs about a line; one keyed `pin.<member>`,
+/// carrying the PIN, which `disable_pin` deletes — a DOT because `mod_db` splits
+/// its command into four tokens on `/` and only the last of them may carry one.
+/// What is measured is the URL the template composed — no row is read back here,
+/// because this colony keeps none.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_three_line_tools_write_the_switches_table() {
+    if skip() {
+        return;
+    }
+    let mut c = start(vec![ok("+OK\n"), ok("+OK\n"), ok("+OK\n")]).await;
+
+    for (tool, args) in [
+        ("add_number", json!({"number": STRANGER}).to_string()),
+        ("set_pin", json!({"pin": "4711"}).to_string()),
+        ("disable_pin", "{}".to_string()),
+    ] {
+        let got = round(&mut c, json!({"mode": "tool", "tool": tool, "args": args})).await;
+        let receipt = only(&got, "surface_got_in_tool");
+        assert_eq!(
+            hop_of(&receipt, "got_call_id"),
+            "c9",
+            "the receipt of `{tool}` answers the call the model made: {receipt:#?}"
+        );
+    }
+
+    let paths = switch_paths(&c).await;
+    assert_eq!(
+        paths,
+        vec![
+            format!(
+                "/webapi/db?insert%2Fmeclaw_lines%2F%2B4930999999%2F{KNOWN_USER}\
+                 %7Cws%3A%2F%2F127.0.0.1%3A7777%2Fphone%2Fws"
+            ),
+            format!("/webapi/db?insert%2Fmeclaw_lines%2Fpin.{KNOWN_USER}%2F4711"),
+            format!("/webapi/db?delete%2Fmeclaw_lines%2Fpin.{KNOWN_USER}"),
+        ],
+        "three commands, in the order they were asked for, at the realm this \
+         channel is configured with: {paths:?}"
+    );
+}
+
+/// **A PIN the dialplan could not read back is refused, and nothing is written.**
+///
+/// `play_and_get_digits … ^\d{4,8}$` is what reads it at the switch, so a PIN
+/// outside that is a PIN no caller could ever enter — and a row nobody can
+/// satisfy is a line that stopped ringing for a reason nobody can find.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_pin_the_dialplan_cannot_read_is_refused() {
+    if skip() {
+        return;
+    }
+    let mut c = start(vec![]).await;
+    let got = round(
+        &mut c,
+        json!({"mode": "tool", "tool": "set_pin",
+               "args": json!({"pin": "letmein"}).to_string()}),
+    )
+    .await;
+    let receipt = only(&got, "surface_got_in_tool");
+    assert!(
+        hop_of(&receipt, "got_text").contains("4 to 8 digits"),
+        "the refusal says what a PIN is: {receipt:#?}"
+    );
+    let paths = switch_paths(&c).await;
+    assert!(paths.is_empty(), "a refused PIN writes no row: {paths:?}");
+}
+
+/// **A row the switch refused is not a silence** (2.0.0).
+///
+/// The three tools answer the moment the command leaves, because that is all the
+/// cell knows. A write the switch refuses — no `mod_db` loaded, a realm nobody
+/// configured, an XML-RPC that answers `401` — would otherwise leave an operator
+/// with a line that asks for no PIN and a model that says it does. So the answer
+/// of a `db` command is read for a refusal, and the refusal comes back on the
+/// tool call that asked for it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_row_the_switch_refused_answers_the_tool_call() {
+    if skip() {
+        return;
+    }
+    let mut c = start(vec![ok("-ERR no reply\n")]).await;
+    let got = round(
+        &mut c,
+        json!({"mode": "tool", "tool": "set_pin",
+               "args": json!({"pin": "4711"}).to_string()}),
+    )
+    .await;
+    let said: Vec<String> = got
+        .iter()
+        .filter(|m| hop_of(m, "error_code") == "surface_got_in_tool")
+        .map(|m| hop_of(m, "got_text"))
+        .collect();
+    assert_eq!(
+        said.len(),
+        2,
+        "the receipt of the command that left, and the refusal that came back: \
+         {said:?}"
+    );
+    assert!(
+        said.iter().any(|t| t.contains("on its way to the switch")),
+        "the first answer says the command LEFT: {said:?}"
+    );
+    assert!(
+        said.iter()
+            .any(|t| t.contains("refused `set_pin`") && t.contains("no reply")),
+        "the second names the operation and what the switch said: {said:?}"
+    );
+
+    // The positive control: a `+OK` says nothing and answers nothing, so the
+    // model is told once and not twice.
+    let mut c = start(vec![ok("+OK\n")]).await;
+    let got = round(
+        &mut c,
+        json!({"mode": "tool", "tool": "set_pin",
+               "args": json!({"pin": "4711"}).to_string()}),
+    )
+    .await;
+    let said: Vec<String> = got
+        .iter()
+        .filter(|m| hop_of(m, "error_code") == "surface_got_in_tool")
+        .map(|m| hop_of(m, "got_text"))
+        .collect();
+    assert_eq!(
+        said.len(),
+        1,
+        "a written row is one receipt and no second sentence: {said:?}"
+    );
+}
+
+/// **A number that is not a number writes no row** (2.0.0).
+///
+/// `mod_db` splits `insert/<realm>/<key>/<value>` on `/`, so a number carrying
+/// one would write a row nobody asked for — and the tool schema asks for
+/// international form, which this is what makes true.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_number_that_is_not_one_writes_no_row() {
+    if skip() {
+        return;
+    }
+    let mut c = start(vec![]).await;
+    for bad in ["+49/30/111", "not-a-number", ""] {
+        let got = round(
+            &mut c,
+            json!({"mode": "tool", "tool": "add_number",
+                   "args": json!({"number": bad}).to_string()}),
+        )
+        .await;
+        let receipt = only(&got, "surface_got_in_tool");
+        assert!(
+            hop_of(&receipt, "got_text").contains("international form"),
+            "the refusal of {bad:?} says what a number is: {receipt:#?}"
+        );
+    }
+    let paths = switch_paths(&c).await;
+    assert!(paths.is_empty(), "no row was written: {paths:?}");
+}
+
+/// **The README names the tools the offer carries, and only those** — the drift
+/// lock of 2.0.0.
+///
+/// A charter and a menu that disagree tell a model it has a capability it does
+/// not have (`docs/development-rules.md` § 8), and a README is the charter a
+/// human wires against. Both directions are compared against the README's own
+/// tool block, so a sixth tool documented and never offered fails here too.
+#[test]
+fn the_readme_names_the_tools_the_offer_carries() {
+    let Some((_, _, fs_template)) = shipped() else {
+        return;
+    };
+    let dial = read_json(&fs_template.join("dial/config.json"));
+    let script = dial["params"]["script_inline"]
+        .as_str()
+        .expect("the offer is a script");
+    let offered: BTreeSet<String> = script
+        .split("{\"name\": \"")
+        .skip(1)
+        .filter_map(|rest| rest.split('"').next())
+        .map(|n| n.to_string())
+        .collect();
+
+    // The README's own block: the fenced list under § *The five tools*, where
+    // every line that offers something reads `name(args)`.
+    let readme = std::fs::read_to_string(fs_template.join("README.md")).expect("the README");
+    let block = readme
+        .split("## The five tools")
+        .nth(1)
+        .and_then(|rest| rest.split("```").nth(1))
+        .expect("the tool block stands under its own heading, fenced");
+    let documented: BTreeSet<String> = block
+        .lines()
+        .filter_map(|l| l.split_once('('))
+        .map(|(head, _)| head.trim().to_string())
+        .filter(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_lowercase() || c == '_'))
+        .collect();
+
+    assert_eq!(
+        offered, documented,
+        "the offer and the README's own tool block name different sets — a \
+         reader wires against the README and a model is given the offer"
+    );
+    assert_eq!(
+        offered.len(),
+        5,
+        "the offer of this channel is five tools: {offered:?}"
     );
 }
 

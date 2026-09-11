@@ -18,19 +18,17 @@ use meclaw_core::{Body, CellOutput, Message, OriginSink, OutputSink, Path, Uuid}
 use std::collections::HashMap;
 use std::future::Future;
 use std::time::Duration;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 
 /// What the I/O half tells the handler.
 #[derive(Debug)]
 pub enum VoiceEvent {
-    /// The listener came up on this address.
-    Bound(String),
-    /// The listener could not be opened, **or** the server that was serving it
-    /// ended (GH #592); the detail is the OS error or `listener ended`. Either
-    /// way the cell stays alive with no listener — A1′ forbids the I/O half a
-    /// voluntary return — and a `params` update naming an address it can have
-    /// puts it back on the air without a restart.
-    BindFailed(String),
+    /// The mount name is taken or malformed; nothing registered under it.
+    ///
+    /// The cell stays alive and is simply reachable by nobody — A1′ forbids the
+    /// I/O half a voluntary return — and a `params` update naming a free name
+    /// is served by this same task on the next life (ruling O-P-2).
+    MountFailed(String),
     /// A client connected; `mode` already reflects `?mode=` or the default.
     Connected {
         /// The session this connection claimed.
@@ -125,16 +123,6 @@ pub enum VoiceEvent {
 /// What the handler tells the I/O half.
 #[derive(Debug)]
 pub enum VoiceReconfig {
-    /// Move the listener. The verdict travels back on `ack`; only a bind that
-    /// succeeded is persisted (the `web` cell's GH #410 shape).
-    Rebind {
-        /// The address to bind.
-        bind: String,
-        /// The port to bind.
-        port: u16,
-        /// Where the verdict goes.
-        ack: oneshot::Sender<Result<(), String>>,
-    },
     /// Send a text frame to one session's client.
     ToClient {
         /// The session to address.
@@ -198,10 +186,16 @@ pub struct VoiceCell {
     /// Live sessions, keyed by `session_id`. Owned by this task alone: no lock,
     /// because nothing is shared.
     sessions: HashMap<String, SessionState>,
-    /// Where the listener is, so a rebind knows what changed.
-    bind: String,
-    /// Which port the listener holds.
-    port: u16,
+    /// The name the I/O half registered on the colony's one listener — the
+    /// cell's only door.
+    ///
+    /// Mutable, and carried here so an update persists it — but a new name
+    /// takes effect on the **next life** (ruling O-P-2). The registration
+    /// happens once, at the top of the I/O half's life, and this cell has no
+    /// command that moves a live one: a mount that changed under an open link
+    /// would leave the client holding a door that no longer exists, and the
+    /// respawn is the moment both halves agree on the new name anyway.
+    mount: String,
     /// The mode a new connection starts in.
     default_mode: Mode,
     /// Whether speech cancels a running synthesis.
@@ -271,8 +265,7 @@ impl VoiceCell {
             path,
             io: Some(io),
             sessions: HashMap::new(),
-            bind: params.bind.clone(),
-            port: params.port,
+            mount: params.mount.clone(),
             default_mode: params.default_mode,
             barge_in: params.barge_in,
             emit_partials: params.emit_partials,
@@ -292,8 +285,7 @@ impl VoiceCell {
     /// params update.
     fn overlay(&self) -> VoiceOverlay {
         VoiceOverlay {
-            port: self.port,
-            bind: self.bind.clone(),
+            mount: self.mount.clone(),
             default_mode: self.default_mode,
             barge_in: self.barge_in,
             emit_partials: self.emit_partials,
@@ -537,15 +529,10 @@ impl VoiceCell {
             }
         };
 
-        if merged.port != self.port || merged.bind != self.bind {
-            if let Err(text) = self.rebind(&merged.bind, merged.port).await {
-                self.refuse(sink, reply_target, "invalid_input", &text, None)
-                    .await;
-                return;
-            }
-            self.port = merged.port;
-            self.bind = merged.bind.clone();
-        }
+        // Written down, not acted on: the next life registers under it
+        // (ruling O-P-2). Nothing about a surface moves during an update any
+        // more — the cell owns no socket to move.
+        self.mount = merged.mount.clone();
 
         let now = crate::params_overlay::now_unix_seconds();
         let persist = db
@@ -593,69 +580,6 @@ impl VoiceCell {
             // that is already asleep would be a turn cut by a number nobody
             // sent it with.
             session.release_grace_ms = merged.release_grace_ms;
-        }
-    }
-
-    /// Ask the I/O half to move the listener and wait for its verdict, under an
-    /// operation-timeout (hard rule 12).
-    ///
-    /// The timeout is not only about a wedged resolver. There is a cycle to
-    /// break: while `handle` waits here it drains no `VoiceEvent`s, so a busy
-    /// connection can fill the bounded events channel, which blocks the
-    /// connection task, which can block `run_io` before it ever reads the
-    /// `Rebind` — and then the verdict never comes. Bounded waiting turns that
-    /// deadlock into a refusal after `external_timeout_ms`, with nothing
-    /// persisted and the listener still where it was.
-    ///
-    /// **Both waits are covered, not only the verdict.** The command channel is
-    /// bounded (64), so handing the `Rebind` over is itself a wait — and an I/O
-    /// half that has stopped reading it makes that the *first* wait, one an
-    /// unbounded `send` would never leave. That is not hypothetical: it is the
-    /// state GH #593 fixed on the other side of the seam. A rule-12 deadline
-    /// belongs on every wait, so each wait carries the same deadline: the
-    /// exchange is bounded by twice it, and neither half can starve the other —
-    /// a handover that used most of its budget must not turn a legitimate bind
-    /// into a spurious refusal. The refusal reads the same either way: a caller
-    /// learns the listener did not move, not which half of the handshake it was
-    /// waiting in.
-    async fn rebind(&self, bind: &str, port: u16) -> Result<(), String> {
-        let (ack, verdict) = oneshot::channel();
-        let deadline = Duration::from_millis(self.external_timeout_ms);
-        let handed_over = tokio::time::timeout(
-            deadline,
-            self.to_io.send(VoiceReconfig::Rebind {
-                bind: bind.to_string(),
-                port,
-                ack,
-            }),
-        )
-        .await;
-        match handed_over {
-            Ok(Ok(())) => {}
-            Ok(Err(_)) => {
-                return Err(
-                    "bind not acknowledged: the i/o half is gone, the listener did not move"
-                        .to_string(),
-                );
-            }
-            Err(_) => {
-                return Err(
-                    "bind not acknowledged: the i/o half did not take the rebind within \
-                     external_timeout_ms; the listener stays where it is"
-                        .to_string(),
-                );
-            }
-        }
-        match tokio::time::timeout(deadline, verdict).await {
-            // The socket's own words, under one prefix, so an operator reading
-            // the refusal knows it was the bind and not the parse that said no.
-            Ok(Ok(v)) => v.map_err(|e| format!("bind failed: {e}")),
-            Ok(Err(_)) => Err("bind not acknowledged: the i/o half dropped the rebind".to_string()),
-            Err(_) => Err(
-                "bind not acknowledged: no verdict within external_timeout_ms; the listener \
-                 stays where it is"
-                    .to_string(),
-            ),
         }
     }
 
@@ -940,17 +864,15 @@ impl LongRunningCell for VoiceCell {
     ) -> impl Future<Output = ()> + Send + 'a {
         async move {
             match event {
-                VoiceEvent::Bound(addr) => {
-                    tracing::info!(path = self.path.as_str(), addr = %addr, "voice: listening");
-                }
-                VoiceEvent::BindFailed(e) => {
-                    // The cell stays alive and serves nothing: a port collision
-                    // must not look like a crash loop, and a params update
-                    // naming a free address is served by this same task.
+                VoiceEvent::MountFailed(e) => {
+                    // The cell stays alive and is simply not reachable under
+                    // that name: a name collision must not look like a crash
+                    // loop, and a params update naming a free one is served by
+                    // this same task on the next life.
                     tracing::error!(
                         path = self.path.as_str(),
                         error = %e,
-                        "voice: could not serve — send this cell a params update with a free address"
+                        "voice: mount refused — send this cell a params update with a free mount"
                     );
                 }
                 VoiceEvent::Connected { session_id, mode } => {
@@ -1079,117 +1001,6 @@ mod tests {
     use crate::voice::params::VoiceParams;
     use crate::voice::providers::build_stt;
     use crate::voice::turns::SessionState;
-    use std::time::Instant;
-
-    /// A cell with an I/O half that exists and is never driven — so nothing
-    /// ever reads the command channel.
-    fn parked_cell(external_timeout_ms: u64) -> VoiceCell {
-        let raw = json!({
-            "port": 7900,
-            "stt": {"provider": "echo"},
-            "external_timeout_ms": external_timeout_ms,
-        });
-        let params = VoiceParams::parse(&raw).expect("the echo config parses");
-        let stt = build_stt(&params.stt, ProviderTimeouts::default()).expect("the echo provider");
-        let (events_tx, _events_rx) = mpsc::channel(8);
-        let io = VoiceIo::new(
-            params.bind.clone(),
-            params.port,
-            stt,
-            None,
-            Mode::Auto,
-            Duration::from_millis(params.external_timeout_ms),
-            Duration::from_millis(params.provider_idle_timeout_ms),
-            events_tx,
-        );
-        // `run_io` is never spawned, so the receiver inside `io` stays alive
-        // and stays unread — the state a wedged I/O half leaves behind.
-        VoiceCell::new(
-            Path::new("/main/members/tester/channels/voice"),
-            io,
-            &params,
-            &raw,
-        )
-    }
-
-    /// Hard rule 12: the *handover* of a `Rebind` is bounded too, not only the
-    /// verdict.
-    ///
-    /// The defect this pins: `rebind` used to hand the command over with a bare
-    /// `send().await`. The channel is bounded (64), so an I/O half that had
-    /// stopped reading it — the state GH #593 fixed on the other side — parked
-    /// that send with no deadline on it at all, inside `handle`, which is the
-    /// one place a cell may never stop answering. The verdict timeout below it
-    /// was never reached, because the command never left.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_rebind_whose_io_half_does_not_read_is_refused_in_time() {
-        let external = 300u64;
-        let cell = parked_cell(external);
-
-        // Fill the command channel. Nothing reads it, so this is the last thing
-        // that fits; the rebind after it has to wait for room that never comes.
-        for i in 0..64 {
-            cell.to_io
-                .try_send(VoiceReconfig::CancelSpeak {
-                    session_id: format!("filler-{i}"),
-                })
-                .unwrap_or_else(|_| panic!("the command channel takes {i} before it is full"));
-        }
-
-        let started = Instant::now();
-        let verdict = tokio::time::timeout(
-            Duration::from_millis(external * 4),
-            cell.rebind("127.0.0.1", 7901),
-        )
-        .await
-        .expect("a rebind must not park for ever on a wedged i/o half");
-        let waited = started.elapsed();
-
-        let text = verdict.expect_err("a command that was never taken is not an acknowledged bind");
-        // The wording `apply_params_update` hands to the caller as
-        // `invalid_input`, and it says the listener did not move.
-        assert!(
-            text.starts_with("bind not acknowledged:"),
-            "the refusal keeps the one prefix an operator greps for: {text}"
-        );
-        assert!(
-            text.contains("did not take the rebind") && text.contains("stays where it is"),
-            "the refusal says which half of the handshake gave up: {text}"
-        );
-        assert!(
-            waited >= Duration::from_millis(external),
-            "the deadline is the cell's own operation timeout, not something shorter: {waited:?}"
-        );
-    }
-
-    /// The ordinary path is unchanged: a reader on the other end gets the
-    /// command, and its verdict is the cell's answer.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_rebind_that_is_taken_still_carries_the_io_halfs_verdict() {
-        let mut cell = parked_cell(5_000);
-        let mut from_handler = cell
-            .io
-            .as_mut()
-            .expect("the i/o half is still here")
-            .from_handler
-            .take()
-            .expect("the cell minted its own command channel");
-        let reader = tokio::spawn(async move {
-            match from_handler.recv().await {
-                Some(VoiceReconfig::Rebind { bind, port, ack }) => {
-                    let _ = ack.send(Err(format!("{bind}:{port}: taken")));
-                }
-                other => panic!("expected a Rebind, got {other:?}"),
-            }
-        });
-
-        let text = cell
-            .rebind("127.0.0.1", 7901)
-            .await
-            .expect_err("the i/o half said the address was taken");
-        assert_eq!(text, "bind failed: 127.0.0.1:7901: taken");
-        reader.await.expect("the reader task finishes");
-    }
 
     /// **A transcript names its call.** GH #620: `turn` and `partial` are the
     /// two lanes a colony reads a conversation off, and a phone hive with two
@@ -1215,6 +1026,35 @@ mod tests {
                 "one value under both names — a connection IS the session: {body}"
             );
         }
+    }
+
+    /// A cell with an I/O half that exists and is never driven.
+    fn parked_cell(external_timeout_ms: u64) -> VoiceCell {
+        let raw = json!({
+            "mount": "voice",
+            "stt": {"provider": "echo"},
+            "external_timeout_ms": external_timeout_ms,
+        });
+        let params = VoiceParams::parse(&raw).expect("the echo config parses");
+        let stt = build_stt(&params.stt, ProviderTimeouts::default()).expect("the echo provider");
+        let (events_tx, _events_rx) = mpsc::channel(8);
+        let io = VoiceIo::new(
+            params.mount.clone(),
+            stt,
+            None,
+            Mode::Auto,
+            Duration::from_millis(params.external_timeout_ms),
+            Duration::from_millis(params.provider_idle_timeout_ms),
+            events_tx,
+        );
+        // `run_io` is never spawned, so the receiver inside `io` stays alive
+        // and stays unread.
+        VoiceCell::new(
+            Path::new("/main/members/tester/channels/voice"),
+            io,
+            &params,
+            &raw,
+        )
     }
 
     /// A session identity outlives a connection, and a release grace outlives a

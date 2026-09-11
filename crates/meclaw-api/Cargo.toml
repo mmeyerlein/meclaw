@@ -18,6 +18,14 @@ license.workspace = true
 # is byte-identical either way. Reported, not taken. (GH #396: `meclaw-surface`
 # used to be the second crate named here; it binds no server any more.)
 axum = { version = "0.7", features = ["multipart", "ws"] }
+# GH #639 / ruling O-639-2: the API router also serves connections the CLI's one
+# listener accepted and did not hand to a mount, and serving a stream that is
+# already accepted is one hyper call — the one `axum::serve` makes per accept.
+# Both crates sit in `Cargo.lock` behind axum 0.7 already, so this declares an
+# edge rather than adding a crate. `meclaw-cells` carries the same two lines for
+# the mounted half of the same listener.
+hyper = { version = "1", default-features = false, features = ["http1", "server"] }
+hyper-util = { version = "0.1", default-features = false, features = ["tokio", "server", "service"] }
 # 0.27 drops the unmaintained `proc-macro-error` (RUSTSEC-2024-0370) that
 # maud_macros 0.26 pulled in; API surface used here (Markup/html!/DOCTYPE) is
 # unchanged. Issue #127.
@@ -27,8 +35,8 @@ serde_json = "1"
 tokio = { version = "1", features = ["sync", "macros", "time"] }
 tracing = "0.1"
 anyhow = "1"
-meclaw-core = { path = "../meclaw-core", version = "0.34.0" }
-meclaw-colony = { path = "../meclaw-colony", version = "0.34.0" }
+meclaw-core = { path = "../meclaw-core", version = "0.35.0" }
+meclaw-colony = { path = "../meclaw-colony", version = "0.35.0" }
 # GH #383: `meclaw-surface` is gone from here. GH #381 moved the LiveView
 # machinery out of this crate so the `web` cell could speak the protocol without
 # depending on the HTTP API; #383 removed this crate's last consumer of it (the

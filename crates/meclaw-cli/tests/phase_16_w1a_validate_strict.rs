@@ -100,7 +100,7 @@ async fn an_unguarded_default_is_a_note_not_a_strict_error() {
 
     let plan = meclaw_colony::plan_bootstrap_with_env(
         td.path(),
-        &meclaw_cli::built_in_factories(),
+        &meclaw_cli::built_in_factories(std::sync::Arc::new(meclaw_colony::SurfaceRegistry::new())),
         &Default::default(),
         meclaw_colony::BootState::FirstBoot,
         None,
@@ -144,7 +144,7 @@ fn write_slot_topology(td: &std::path::Path, ports: &str) {
 fn assert_edge_to_an_unbuilt_gen(td: &std::path::Path) {
     let plan = meclaw_colony::plan_bootstrap_with_env(
         td,
-        &meclaw_cli::built_in_factories(),
+        &meclaw_cli::built_in_factories(std::sync::Arc::new(meclaw_colony::SurfaceRegistry::new())),
         &Default::default(),
         meclaw_colony::BootState::FirstBoot,
         None,

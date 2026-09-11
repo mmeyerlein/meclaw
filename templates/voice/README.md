@@ -1,4 +1,4 @@
-# `voice@1.4.1`
+# `voice@2.0.0`
 
 A spoken conversation as one cell. One WebSocket surface, one pair of provider
 credentials, one wire up and one wire down. No persona, no memory, no answer of
@@ -59,8 +59,8 @@ with `edge_schema`.
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "channels/voice", "template": "voice@1.4.1",
-                 "override_params": {"port": 7900}}],
+  "add_nodes": [{"name": "channels/voice", "template": "voice@2.0.0",
+                 "override_params": {"mount": "voice"}}],
   "add_edges": [
     {"from": "./channels/voice", "to": "./channels",
      "condition": "has(hop.route) && (hop.route == 'turn' || hop.route == 'partial' || hop.route == 'error')",
@@ -200,7 +200,7 @@ install`). Until then the manifest that wants partials does both halves itself
 one key on the node:
 
 ```json
-{"name": "channels/voice", "template": "voice@1.4.1",
+{"name": "channels/voice", "template": "voice@2.0.0",
  "override_params": {"emit_partials": true}}
 ```
 
@@ -234,7 +234,7 @@ at the switch pending — see [`freeswitch`](../freeswitch/) § *Hanging up*).
 **Both halves or neither**, exactly as for `partial`:
 
 ```json
-{"name": "channels/voice", "template": "voice@1.4.1",
+{"name": "channels/voice", "template": "voice@2.0.0",
  "override_params": {"emit_speak_end": true}}
 ```
 
@@ -324,27 +324,33 @@ Set `0` to cut on the `release` frame, the behaviour this template had before
 the knob existed. The value is read at the next `release`, so a params update
 never moves a deadline a turn is already waiting on.
 
-## Ports
+## The door
 
-`params.port` is owned exactly the way a `web` cell's is. **One instance per
-port**: a second cell trying to bind the same one cannot start, and `0` is refused
-at parse time rather than turned into "whatever the kernel hands out".
+An instance is reached at `/<mount>/` on the colony's one listener. That is the
+whole of it: `params.mount` is required, and `port` and `bind` are gone.
 
-The default is `7900` and it is a template default, not an address: an instance
-names its own through `override_params`, in the flat form, because a single-cell
-template has nothing inside it to address.
+`params.mount` ships as `voice`, which puts the socket at `/voice/ws` and the
+declaration at `/voice/info` on whatever address the colony's `--api` listener
+holds. The grammar is `[a-z0-9-]{1,64}`, and the segments the API owns
+(`colony`, `messages`, `health`, `ui`, `live`, `@client`) are refused. **Two
+instances need two mounts**: the second one to register under a name another
+cell holds registers nothing and says so in the journal. The key is mutable, and
+a new name takes effect on the next life of the cell — the registration happens
+once, when the I/O half starts.
 
 ```json
-{"name": "channels/voice", "template": "voice@1.4.1",
- "override_params": {"port": 7912}}
+{"name": "channels/voice", "template": "voice@2.0.0",
+ "override_params": {"mount": "voice-b"}}
 ```
 
-`params.bind` defaults to `127.0.0.1` and wants to stay there. **This cell type
-never authenticates and never will** -- the same rule the `web` cell carries.
-Exposing a voice surface to a network means putting a proxy in front of it that
-does the authentication and the TLS; it does not mean widening the bind. The key
-is mutable at runtime because a rebind is a legitimate operation, not because
-widening it is.
+**Migrating from `1.x`:** drop `port` and `bind` and name a mount. A params
+document that still carries either is refused at parse time with the sentence
+that says so, rather than starting a cell nobody can reach at the address that
+was written down.
+
+**This cell type never authenticates and never will** -- the same rule the
+`web` cell carries. Exposing a voice surface to a network means putting a proxy
+in front of the colony's listener that does the authentication and the TLS.
 
 ## The providers
 
@@ -396,7 +402,7 @@ spelling that says "not set" -- `VoiceParams::parse` reads a null `tts` exactly
 as an absent one, which is legal precisely when the recogniser is `echo`:
 
 ```json
-{"name": "channels/voice", "template": "voice@1.4.1",
+{"name": "channels/voice", "template": "voice@2.0.0",
  "override_params": {"stt": {"provider": "echo"}, "tts": null}}
 ```
 
@@ -409,7 +415,7 @@ routes -- a self-hosted realtime transcription endpoint, a self-hosted
 `/v1/audio/speech` -- stands in for the hosted one without touching the cell:
 
 ```json
-{"name": "channels/voice", "template": "voice@1.4.1",
+{"name": "channels/voice", "template": "voice@2.0.0",
  "override_params": {
    "tts": {"provider": "openai",
            "base_url": "http://<local-host>:<port>",
@@ -428,9 +434,9 @@ actually running at, in both directions, and audio arriving at another rate is
 refused rather than converted. The client is what matches it, because the client
 is the one place in the chain that knows what its microphone can do.
 
-**But the client may say which rate that is** (GH #619).
-`ws://…/ws?session=<id>&sample_rate=8000` tells the cell what this connection
-sends; the recognition session then runs at that rate, and `hello` declares the
+**But the client may say which rate that is** (GH #619). The query rides the
+one URL — `ws://<listener>/<mount>/ws?session=<id>&sample_rate=8000` — and it
+tells the cell what this connection sends; the recognition session then runs at that rate, and `hello` declares the
 pair it agreed to. The two directions are answered separately, because they are
 not the same kind of promise: **inbound is binding** -- a rate the recogniser
 does not serve refuses the connection with a `400` that names the rates it does
@@ -472,7 +478,7 @@ not in this cell's `KNOWN_KEYS`, so a params update naming one is refused as
 the refusal a key that exists and may not move gets. The reason is the same
 either way: the block is the cell's identity at a third party, and swapping it
 under a live connection would leave half a turn spoken in one voice and half in
-another. What IS on the update surface: `port` and `bind` (a rebind),
+another. What IS on the update surface: `mount` (read on the next life),
 `default_mode`, `barge_in`, `emit_partials`, `emit_speak_end`, `audio_out_frame_ms`,
 `speak_plain`, `release_grace_ms` and the two timeouts.
 
@@ -503,7 +509,7 @@ instantiating manifest's `override_params`, where it is substituted at
 instantiation exactly like the two api keys.
 
 ```json
-{"name": "channels/voice", "template": "voice@1.4.1",
+{"name": "channels/voice", "template": "voice@2.0.0",
  "override_params": {"tts": {"provider": "cartesia",
                              "api_key": "${CARTESIA_API_KEY}",
                              "voice": "${CARTESIA_VOICE}"}}}
@@ -518,7 +524,7 @@ exactly the same place, and the whole switch is one override -- the template doe
 not change, because `provider` was always a value rather than a shape:
 
 ```json
-{"name": "channels/voice", "template": "voice@1.4.1",
+{"name": "channels/voice", "template": "voice@2.0.0",
  "override_params": {"tts": {"provider": "elevenlabs",
                              "api_key": "${ELEVENLABS_API_KEY}",
                              "voice": "${ELEVENLABS_VOICE}"}}}
@@ -536,8 +542,8 @@ and the vendor accepts as the end of the generation.
 - **Not a phone.** There is no SIP, no PSTN and no room: a client brings audio
   over the WebSocket and takes audio back. Whatever bridges a telephone to that
   socket stands outside this cell.
-- **Not a screen.** It has no allowlist and no rate limit; anybody who reaches the
-  port reaches your topology. Put [`firewall`](../firewall/) behind it -- shared
+- **Not a screen.** It has no allowlist and no rate limit; anybody who reaches
+  the mount reaches your topology. Put [`firewall`](../firewall/) behind it -- shared
   across channels, so an attacker touching three of them is one pattern and not
   three thirds.
 - **Not a bot.** This is the wire, and the agent behind it answers. A complete

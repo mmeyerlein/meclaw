@@ -19,12 +19,16 @@ use axum::extract::{Query, State, WebSocketUpgrade};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
+use meclaw_colony::surfaces::{BoxFuture, LINK_QUEUE};
+use meclaw_colony::{Link, LinkOpener, LinkRefused, LinkRequest};
 use meclaw_core::serde_json::json;
 use std::sync::Arc;
+use tokio::sync::mpsc;
 
 use crate::voice::connection::run_connection;
 use crate::voice::contract::{AudioFormat, Encoding};
 use crate::voice::io::{VoiceIoShared, new_connection_slot};
+use crate::voice::link::ClientLink;
 use crate::voice::testpage;
 use crate::voice::wire::{Mode, PROTOCOL};
 
@@ -53,6 +57,24 @@ pub fn router(io: Arc<VoiceIoShared>) -> Router {
         .route("/info", get(info))
         .route("/ws", get(ws_upgrade))
         .with_state(io)
+}
+
+/// The cell's router under a mount's prefix.
+///
+/// The one listener hands over a stream whose request line already carries
+/// `/<mount>/…`, so the paths a mounted cell answers are its own three routes
+/// with the mount in front of them. Nothing else differs: it is the same router,
+/// the same state, the same admission.
+///
+/// The extra route is axum's trailing slash: `nest("/voice", …)` answers
+/// `/voice` for the inner `/` and `/voice/info` for the inner `/info`, but
+/// **not** `/voice/` — the wildcard it registers does not match an empty rest.
+/// A person types the slash, and the page is the same page, so it is named
+/// rather than left as a 404 nobody can explain.
+pub fn mounted_router(io: Arc<VoiceIoShared>, mount: &str) -> Router {
+    Router::new()
+        .nest(&format!("/{mount}"), router(Arc::clone(&io)))
+        .route(&format!("/{mount}/"), get(page).with_state(io))
 }
 
 /// The format the client will be sent, if anything is ever sent.
@@ -212,55 +234,75 @@ fn session_is_valid(id: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '-'))
 }
 
-/// `GET /ws` — the upgrade. A plain `GET` is a `400`: the path is right, the
-/// request is not.
-async fn ws_upgrade(
-    State(io): State<Arc<VoiceIoShared>>,
-    Query(q): Query<WsQuery>,
-    upgrade: Option<WebSocketUpgrade>,
-) -> Response {
-    let session_id = match q.session.or(q.session_token) {
+/// What an admitted client got, before anything of its own exists.
+pub(crate) struct Admitted {
+    /// The session identity this connection speaks for.
+    pub(crate) session_id: String,
+    /// The mode it starts in.
+    pub(crate) mode: Mode,
+    /// The two formats it runs at.
+    pub(crate) negotiated: Negotiated,
+}
+
+/// Decide whether this cell will serve a client, and on what terms.
+///
+/// One parser for both doors (the one-parser rule of this tree,
+/// `docs/cell-types.md` § `web` on `component.define`): the socket door calls it
+/// before the upgrade, a topic on a display's socket calls it before the link
+/// exists. So a display page reads the same sentence a `curl` would, and a
+/// refusal cannot mean two different things depending on how a client arrived.
+///
+/// The status travels beside the text because the socket door answers HTTP with
+/// it and the topic door repeats both to whoever joined.
+pub(crate) fn admit(
+    io: &VoiceIoShared,
+    session: Option<String>,
+    session_token: Option<String>,
+    mode: Option<&str>,
+    sample_rate: Option<u32>,
+    encoding: Option<&str>,
+) -> Result<Admitted, (StatusCode, String)> {
+    let session_id = match session.or(session_token) {
         None => meclaw_core::Uuid::now_v7().to_string(),
         Some(s) if session_is_valid(&s) => s,
         // Refused rather than silently replaced: a client that asked for an
         // identity and got another one would address a session that is not its
         // own on every reconnect.
         Some(_) => {
-            return (
+            return Err((
                 StatusCode::BAD_REQUEST,
                 format!("session must be 1..={SESSION_MAX} characters from [A-Za-z0-9._:-]\n"),
-            )
-                .into_response();
+            ));
         }
     };
-    let mode = match q.mode.as_deref() {
+    let mode = match mode {
         None => io.default_mode,
         Some("auto") => Mode::Auto,
         Some("hold") => Mode::Hold,
         Some(_) => {
-            return (StatusCode::BAD_REQUEST, "mode must be auto or hold\n").into_response();
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "mode must be auto or hold\n".to_string(),
+            ));
         }
     };
-    // GH #619. Both refusals answer BEFORE the upgrade, like `session` and
-    // `mode` above and for the same reason: nothing has been opened, so there
-    // is nothing to close, and a `400` a client reads in its connect error is
-    // louder than a close code it has to look up. And they answer before the
-    // upgrade is even required, so a plain `GET` with a bad rate says which
-    // half of the request was wrong.
-    if let Some(name) = q.encoding.as_deref()
+    // GH #619. Both refusals answer BEFORE anything is opened, like `session`
+    // and `mode` above and for the same reason: there is nothing to close, and a
+    // `400` a client reads in its connect error is louder than a close code it
+    // has to look up.
+    if let Some(name) = encoding
         && Encoding::parse(name).is_none()
     {
-        return (
+        return Err((
             StatusCode::BAD_REQUEST,
             format!(
                 "encoding must be `{}`; this protocol version speaks no other\n",
                 Encoding::PcmS16Le.as_str()
             ),
-        )
-            .into_response();
+        ));
     }
-    let Some(negotiated) = negotiate(&io, q.sample_rate) else {
-        let asked = q.sample_rate.unwrap_or_default();
+    let Some(negotiated) = negotiate(io, sample_rate) else {
+        let asked = sample_rate.unwrap_or_default();
         let rates = io
             .stt
             .input_rates()
@@ -268,15 +310,91 @@ async fn ws_upgrade(
             .map(u32::to_string)
             .collect::<Vec<_>>()
             .join(", ");
-        return (
+        return Err((
             StatusCode::BAD_REQUEST,
             format!(
                 "sample_rate {asked} is not one the `{}` recogniser serves ({rates}); \
                  this cell never resamples\n",
                 io.stt.name()
             ),
-        )
-            .into_response();
+        ));
+    };
+    Ok(Admitted {
+        session_id,
+        mode,
+        negotiated,
+    })
+}
+
+/// The second door: whoever holds a socket asks this to open a link on it.
+///
+/// Same admission, same connection code as the socket door — what differs is
+/// only what carries the frames (`voice/link.rs`). The opener holds the I/O
+/// half's shared state, so a link is served by the cell that owns it rather than
+/// by whoever forwarded the frames.
+pub struct VoiceLinkOpener {
+    /// The I/O half this opener speaks for.
+    pub shared: Arc<VoiceIoShared>,
+}
+
+impl LinkOpener for VoiceLinkOpener {
+    fn open(&self, req: LinkRequest) -> BoxFuture<'static, Result<Link, LinkRefused>> {
+        let shared = Arc::clone(&self.shared);
+        Box::pin(async move {
+            let admitted = admit(
+                &shared,
+                req.session,
+                None,
+                req.mode.as_deref(),
+                req.sample_rate,
+                req.encoding.as_deref(),
+            )
+            .map_err(|(status, detail)| LinkRefused {
+                status: status.as_u16(),
+                detail,
+            })?;
+            let (conn_id, to_conn_tx, to_conn_rx) = new_connection_slot();
+            let (to_cell_tx, to_cell_rx) = mpsc::channel(LINK_QUEUE);
+            let (from_cell_tx, from_cell_rx) = mpsc::channel(LINK_QUEUE);
+            tokio::spawn(run_connection(
+                ClientLink::chan(to_cell_rx, from_cell_tx),
+                shared,
+                admitted.session_id,
+                admitted.mode,
+                admitted.negotiated,
+                conn_id,
+                to_conn_tx,
+                to_conn_rx,
+            ));
+            Ok(Link {
+                to_cell: to_cell_tx,
+                from_cell: from_cell_rx,
+            })
+        })
+    }
+}
+
+/// `GET /ws` — the upgrade. A plain `GET` is a `400`: the path is right, the
+/// request is not.
+async fn ws_upgrade(
+    State(io): State<Arc<VoiceIoShared>>,
+    Query(q): Query<WsQuery>,
+    upgrade: Option<WebSocketUpgrade>,
+) -> Response {
+    let Admitted {
+        session_id,
+        mode,
+        negotiated,
+    } = match admit(
+        &io,
+        q.session,
+        q.session_token,
+        q.mode.as_deref(),
+        q.sample_rate,
+        q.encoding.as_deref(),
+    ) {
+        Ok(admitted) => admitted,
+        Err((status, detail)) => return (status, detail).into_response(),
     };
     let Some(up) = upgrade else {
         return (
@@ -288,7 +406,14 @@ async fn ws_upgrade(
     let (conn_id, to_conn_tx, to_conn_rx) = new_connection_slot();
     up.on_upgrade(move |ws| {
         run_connection(
-            ws, io, session_id, mode, negotiated, conn_id, to_conn_tx, to_conn_rx,
+            ClientLink::ws(ws),
+            io,
+            session_id,
+            mode,
+            negotiated,
+            conn_id,
+            to_conn_tx,
+            to_conn_rx,
         )
     })
 }

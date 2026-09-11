@@ -21,7 +21,7 @@ use meclaw_cells::{
     ProxyCellFactory, TimerCellFactory, VoiceCellFactory, WebCellFactory, WebFetchCellFactory,
     WebSearchCellFactory,
 };
-use meclaw_colony::CellFactoryRegistry;
+use meclaw_colony::{CellFactoryRegistry, SurfaceRegistry};
 use std::sync::Arc;
 
 /// Build the registry of built-in cell-type factories for Phase 9.
@@ -45,13 +45,18 @@ use std::sync::Arc;
 /// Returns an owned `CellFactoryRegistry` (`HashMap<String, Arc<dyn CellFactory>>`).
 /// Callers move or clone as needed.
 ///
+/// `surfaces` is the process's mount table (ADR-0031). The surface factories
+/// (`web`, `voice`) are handed the same `Arc`, so a cell that mounts by name is
+/// reachable from the one listener and from `GET /colony/surfaces`; every other
+/// factory ignores it.
+///
 /// GH #434: the key set of this registry is kept set-equal to the shipped
 /// catalogue in `docs/cell-types.md` § Overview (minus `hive`, a scope marker
 /// with no factory) by
 /// `crates/meclaw-cli/tests/gh325_the_registry_spawns_what_the_catalogue_lists.rs`.
 /// A new entry here is an undocumented capability until that table grows with
 /// it — in **both** language editions.
-pub fn built_in_factories() -> CellFactoryRegistry {
+pub fn built_in_factories(surfaces: Arc<SurfaceRegistry>) -> CellFactoryRegistry {
     let mut reg = CellFactoryRegistry::new();
     reg.insert("bash".to_string(), Arc::new(BashCellFactory));
     reg.insert("code".to_string(), Arc::new(CodeCellFactory));
@@ -74,21 +79,37 @@ pub fn built_in_factories() -> CellFactoryRegistry {
     // on it — see `meclaw_cells::vault`.
     reg.insert("vault".to_string(), Arc::new(VaultCellFactory));
     // GH #380: the display substrate. Long-running like proxy/timer/mcp, and
-    // deliberately multiple — each instance binds its own port.
-    reg.insert("web".to_string(), Arc::new(WebCellFactory));
-    // Wave voice-cell: the second port-owning channel bridge. Long-running and
-    // deliberately multiple, like `web` — each instance binds its own port.
-    reg.insert("voice".to_string(), Arc::new(VoiceCellFactory));
+    // deliberately multiple — each instance registers its own mount on the one
+    // listener (`web@2.0.0`: no port, no bind).
+    reg.insert(
+        "web".to_string(),
+        Arc::new(WebCellFactory::new(Arc::clone(&surfaces))),
+    );
+    // Wave voice-cell: the second mounted channel bridge. Long-running and
+    // deliberately multiple, like `web` — each instance registers its own mount
+    // on the one listener (`voice@2.0.0`: no port, no bind).
+    reg.insert(
+        "voice".to_string(),
+        Arc::new(VoiceCellFactory::new(surfaces)),
+    );
     reg
 }
 
 #[cfg(test)]
 mod tests {
     use super::built_in_factories;
+    use meclaw_colony::SurfaceRegistry;
+    use std::sync::Arc;
+
+    /// The mount table every test in this module hands the registry: the
+    /// factories share one, and nothing here reads it back.
+    fn surfaces() -> Arc<SurfaceRegistry> {
+        Arc::new(SurfaceRegistry::new())
+    }
 
     #[test]
     fn registry_has_all_phase9_templates() {
-        let reg = built_in_factories();
+        let reg = built_in_factories(surfaces());
         for name in &[
             "bash",
             "code",
@@ -110,7 +131,7 @@ mod tests {
     /// alongside the eight Phase-9 types (11 total).
     #[test]
     fn registry_wires_proxy_timer_mcp_factories() {
-        let reg = built_in_factories();
+        let reg = built_in_factories(surfaces());
         for name in &["proxy", "timer", "mcp", "harness"] {
             assert!(
                 reg.contains_key(*name),
@@ -129,10 +150,10 @@ mod tests {
     /// in before Befund 3, and the vault after them.
     #[test]
     fn registry_wires_voice_factory() {
-        let reg = built_in_factories();
+        let reg = built_in_factories(surfaces());
         assert!(reg.contains_key("voice"), "registry missing the voice cell");
-        // A voice endpoint without a port and a speech-to-text provider is not
-        // an endpoint: both are refused here, at boot-plan time.
+        // A voice endpoint without a mount and a speech-to-text provider is
+        // not an endpoint: both are refused here, at boot-plan time.
         assert!(
             reg["voice"]
                 .validate_params(&meclaw_core::serde_json::json!({}))
@@ -141,7 +162,7 @@ mod tests {
         assert!(
             reg["voice"]
                 .validate_params(&meclaw_core::serde_json::json!({
-                    "port": 7900,
+                    "mount": "voice",
                     "stt": {"provider": "echo"}
                 }))
                 .is_ok(),
@@ -151,7 +172,7 @@ mod tests {
 
     #[test]
     fn registry_factories_validate_minimal_params() {
-        let reg = built_in_factories();
+        let reg = built_in_factories(surfaces());
         // file/edit/web_search need mandatory params — pure validate_params rejects an empty object.
         assert!(
             reg["file"]
@@ -199,7 +220,7 @@ mod tests {
     /// long-running factories sat in before Befund 3.
     #[test]
     fn registry_wires_the_vault_factory() {
-        let reg = built_in_factories();
+        let reg = built_in_factories(surfaces());
         assert!(reg.contains_key("vault"), "registry missing the vault");
         // A vault without a broker is not a vault: validation refuses it here,
         // at boot-plan time, not at the first message.
@@ -217,7 +238,7 @@ mod tests {
 
     #[test]
     fn registry_llm_validate_params_rejects_empty() {
-        let reg = built_in_factories();
+        let reg = built_in_factories(surfaces());
         assert!(
             reg["llm"]
                 .validate_params(&meclaw_core::serde_json::json!({}))

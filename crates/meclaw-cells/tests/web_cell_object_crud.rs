@@ -17,7 +17,7 @@ use meclaw_cells::web::WebCellFactory;
 use meclaw_colony::{CellFactory, ContractView, SpawnedCellKind};
 use meclaw_core::serde_json::{Value, json};
 use meclaw_core::{Body, CellEmission, MessageBuilder, Path};
-use meclaw_testing::free_port;
+use meclaw_testing::{surface_listener, wait_for_mount};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
@@ -64,8 +64,15 @@ fn seed(cell_dir: &std::path::Path) {
     .expect("pages");
 }
 
+/// The name this fixture's display answers to on the colony's one listener.
+/// The port in every URL below is the LISTENER's: a `web` cell has none since
+/// `web@2.0.0`.
+const MOUNT: &str = "screen";
+
 struct Live {
+    /// The port of the one listener in front of the cell.
     port: u16,
+    _listener: tokio::task::JoinHandle<()>,
     mailbox: mpsc::Sender<meclaw_core::Message>,
     out_rx: mpsc::Receiver<CellEmission>,
     _stop: tokio::sync::oneshot::Sender<()>,
@@ -73,13 +80,13 @@ struct Live {
 }
 
 async fn start(cell_dir: &std::path::Path) -> Live {
-    let port = free_port();
+    let surfaces = Arc::new(meclaw_colony::SurfaceRegistry::new());
     let (out_tx, out_rx) = mpsc::channel::<CellEmission>(64);
     let (inbox_tx, _inbox_rx) = mpsc::channel(8);
-    let spawned = Arc::new(WebCellFactory)
+    let spawned = Arc::new(WebCellFactory::new(Arc::clone(&surfaces)))
         .spawn_cell(
             Path::new("/web"),
-            json!({ "port": port }),
+            json!({ "mount": MOUNT }),
             out_tx,
             cell_dir.to_path_buf(),
             ContractView::default(),
@@ -101,9 +108,12 @@ async fn start(cell_dir: &std::path::Path) -> Live {
         panic!("Active");
     };
 
+    wait_for_mount(&surfaces, MOUNT).await;
+    let (addr, listener) = surface_listener(Arc::clone(&surfaces)).await;
+    let port = addr.port();
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        if let Ok(r) = reqwest::get(format!("http://127.0.0.1:{port}/")).await
+        if let Ok(r) = reqwest::get(format!("http://127.0.0.1:{port}/{MOUNT}/")).await
             && r.status().is_success()
         {
             break;
@@ -114,6 +124,7 @@ async fn start(cell_dir: &std::path::Path) -> Live {
 
     Live {
         port,
+        _listener: listener,
         mailbox: sender,
         out_rx,
         _stop: stop_tx,
@@ -147,7 +158,7 @@ type Ws =
 
 /// Open a socket and join the root page.
 async fn join(port: u16) -> Ws {
-    let body = reqwest::get(format!("http://127.0.0.1:{port}/"))
+    let body = reqwest::get(format!("http://127.0.0.1:{port}/{MOUNT}/"))
         .await
         .expect("get")
         .text()
@@ -159,7 +170,7 @@ async fn join(port: u16) -> Ws {
     let token = &body[start..end];
 
     let (mut ws, _) =
-        tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/live/websocket"))
+        tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/{MOUNT}/live/websocket"))
             .await
             .expect("connect");
     let topic = format!("lv:{}", meclaw_surface::session::container_id("/web"));
@@ -229,7 +240,7 @@ async fn a_bundle_of_three_answers_once_with_three_results_in_order() {
     }
 
     // The moved order is what the page now shows.
-    let html = reqwest::get(format!("http://127.0.0.1:{}/", live.port))
+    let html = reqwest::get(format!("http://127.0.0.1:{}/{MOUNT}/", live.port))
         .await
         .expect("get")
         .text()
@@ -339,7 +350,7 @@ async fn one_broken_leg_leaves_its_siblings_standing() {
         "the sibling's write counted"
     );
 
-    let html = reqwest::get(format!("http://127.0.0.1:{}/", live.port))
+    let html = reqwest::get(format!("http://127.0.0.1:{}/{MOUNT}/", live.port))
         .await
         .expect("get")
         .text()
@@ -487,7 +498,7 @@ async fn a_root_update_republishes_the_page_and_pushes_every_viewer() {
 
     // And a fresh GET serves the re-materialised page rather than a snapshot
     // from before the write.
-    let body = reqwest::get(format!("http://127.0.0.1:{}/", live.port))
+    let body = reqwest::get(format!("http://127.0.0.1:{}/{MOUNT}/", live.port))
         .await
         .expect("get")
         .text()

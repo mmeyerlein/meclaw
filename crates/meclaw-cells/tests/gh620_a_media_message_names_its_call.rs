@@ -30,7 +30,7 @@ use meclaw_colony::{CellFactory, CellFactoryRegistry, bootstrap_from_filesystem}
 use meclaw_core::serde_json::{Value, json};
 use meclaw_core::{Body, Message, MessageBuilder, Path};
 use meclaw_testing::ColonyHandle;
-use meclaw_testing::free_port;
+use meclaw_testing::surface_listener;
 use meclaw_testing::voice_client::VoiceClient;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -48,11 +48,17 @@ const QUIET: Duration = Duration::from_millis(750);
 /// Context key that opens the colony's egress door for this file's listener.
 const MARK: &str = "voice_out";
 
+/// The mount the cell registers, and the first path segment its client asks
+/// for. Since `voice@2.0.0` it is the cell's only door.
+const MOUNT: &str = "voice";
+
 struct Fixture {
     _td: tempfile::TempDir,
     h: ColonyHandle,
     egress: mpsc::Receiver<Message>,
-    port: u16,
+    /// `ws://<listener>/<mount>`.
+    ws_base: String,
+    listener: tokio::task::JoinHandle<()>,
 }
 
 impl Fixture {
@@ -81,14 +87,12 @@ impl Fixture {
         )
         .expect("write the root hive");
 
-        let port = free_port();
         std::fs::write(
             root.join("voice/config.json"),
             meclaw_core::serde_json::to_string_pretty(&json!({
                 "cell": {"type": "voice", "timeout": -1},
                 "params": {
-                    "port": port,
-                    "bind": "127.0.0.1",
+                    "mount": MOUNT,
                     "emit_speak_end": true,
                     "stt": {"provider": "echo"}
                 },
@@ -116,31 +120,34 @@ impl Fixture {
         )
         .expect("write the voice cell");
 
+        // One table for the cell and for the listener in front of it.
+        let surfaces = Arc::new(meclaw_colony::SurfaceRegistry::new());
+        let voice: Arc<dyn CellFactory> = Arc::new(VoiceCellFactory::new(Arc::clone(&surfaces)));
         let factories: Vec<(String, Arc<dyn CellFactory>)> =
-            vec![("voice".to_string(), Arc::new(VoiceCellFactory))];
+            vec![("voice".to_string(), Arc::clone(&voice))];
         let mut registry = CellFactoryRegistry::new();
-        registry.insert(
-            "voice".into(),
-            Arc::new(VoiceCellFactory) as Arc<dyn CellFactory>,
-        );
+        registry.insert("voice".into(), voice);
         let (h, egress) = ColonyHandle::new_with_marked_egress_at(&td, factories, MARK);
         bootstrap_from_filesystem(td.path(), &registry, &h.runtime())
             .await
             .expect("the colony boots with a voice cell");
 
+        let (addr, listener) = surface_listener(Arc::clone(&surfaces)).await;
         Self {
             _td: td,
             h,
             egress,
-            port,
+            ws_base: format!("ws://{addr}/{MOUNT}"),
+            listener,
         }
     }
 
-    /// Connect, retrying while the listener is still coming up: the I/O half
-    /// binds when the cell's task starts, so the first attempt can lose that
-    /// race and get `ConnectionRefused` — the absence of an answer, not one.
+    /// Connect, retrying while the cell is still registering: the I/O half
+    /// takes its mount when the cell's task starts, so the first attempt can
+    /// lose that race and read the helper's `404` — the absence of an answer,
+    /// not one.
     async fn connect(&self, session: &str) -> (VoiceClient, Value) {
-        let url = format!("ws://127.0.0.1:{}/ws?session={session}", self.port);
+        let url = format!("{}/ws?session={session}", self.ws_base);
         let deadline = Instant::now() + DEADLINE;
         loop {
             match VoiceClient::connect(&url).await {
@@ -205,6 +212,7 @@ impl Fixture {
     }
 
     async fn shutdown(self) {
+        self.listener.abort();
         self.h.shutdown().await;
     }
 }

@@ -19,7 +19,9 @@ use crate::web::params::WebParams;
 use crate::web::render::PageMap;
 use crate::web::seed;
 use meclaw_colony::persist::cell_db::{OpenStatus, open_or_create_cell_db_with_status};
-use meclaw_colony::{CellFactory, DbConn, RespawnFn, SpawnedCellKind, build_long_running_task};
+use meclaw_colony::{
+    CellFactory, DbConn, RespawnFn, SpawnedCellKind, SurfaceRegistry, build_long_running_task,
+};
 use meclaw_core::{CellEmission, JsonValue, Message, Path};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -39,7 +41,32 @@ type SpawnTuple = (
 );
 
 /// The `web` cell factory.
-pub struct WebCellFactory;
+///
+/// It carries the process's [`SurfaceRegistry`] so a display's socket loop can
+/// reach a surface that mounted on it (ADR-0031). A factory built with
+/// [`Default`] gets a table of its own, which is what a fixture wants.
+pub struct WebCellFactory {
+    surfaces: Arc<SurfaceRegistry>,
+}
+
+impl WebCellFactory {
+    /// A factory whose cells read `surfaces`.
+    pub fn new(surfaces: Arc<SurfaceRegistry>) -> Self {
+        Self { surfaces }
+    }
+
+    /// The table this factory's cells read.
+    pub fn surfaces(&self) -> Arc<SurfaceRegistry> {
+        Arc::clone(&self.surfaces)
+    }
+}
+
+impl Default for WebCellFactory {
+    /// A table of this factory's own — for a fixture, which needs no CLI.
+    fn default() -> Self {
+        Self::new(Arc::new(SurfaceRegistry::new()))
+    }
+}
 
 impl CellFactory for WebCellFactory {
     fn validate_params(&self, params: &JsonValue) -> Result<(), String> {
@@ -112,6 +139,7 @@ impl CellFactory for WebCellFactory {
             mailbox_capacity,
             contract.consumes.clone(),
             contract.transfer_bounds(),
+            self.surfaces(),
         )?;
 
         let (sender, join, peace_rx, stop_tx, death_ack_rx, backstop_rx) = build();
@@ -168,6 +196,7 @@ impl CellFactory for WebCellFactory {
             mailbox_capacity,
             contract.consumes.clone(),
             contract.transfer_bounds(),
+            self.surfaces(),
         )
         .ok()?;
         Some(Box::new(move || {
@@ -198,6 +227,7 @@ fn make_build(
     mailbox_capacity: usize,
     consumes: Option<Arc<meclaw_core::CompiledConsumes>>,
     bounds: meclaw_core::TransferBounds,
+    surfaces: Arc<SurfaceRegistry>,
 ) -> Result<impl Fn() -> SpawnTuple, String> {
     // Parsed here so a params error is a spawn failure rather than a panic on
     // the respawn path. The effective values are re-derived per (re)spawn
@@ -213,6 +243,7 @@ fn make_build(
     let colony_inbox_cap = colony_inbox_tx;
     let blob_cap = blob_store;
     let mailbox_capacity_cap = mailbox_capacity;
+    let surfaces_cap = surfaces;
     let consumes_cap = consumes;
     let bounds_cap = bounds;
 
@@ -245,19 +276,18 @@ fn make_build(
             );
         }
         // 1d. Restore: effective params = birth ⊕ the `cell.db` overlay
-        //     (GH #410). A display that was moved to another address by a
-        //     params update must come back there after a respawn, or the crash
-        //     of a cell would quietly undo an operator's move — the same
-        //     divergence between declared and actual params that `port` and
-        //     `bind` were once immutable to prevent. A corrupt overlay is not
-        //     worth a panic on the restart barrier: the birth params are a
-        //     working display, and the failure is loud.
+        //     A display that was renamed by a params update must come back
+        //     under the new name after a respawn — the rename takes effect on
+        //     exactly this next life (O-P-2), so an overlay that was not
+        //     replayed would mean the update never happened at all. A corrupt
+        //     overlay is not worth a panic on the restart barrier: the birth
+        //     params are a working display, and the failure is loud.
         let parsed = match crate::params_overlay::restore::<crate::web::params::WebOverlay>(
             &conn, &birth_cap,
         ) {
             Ok(o) => WebParams {
-                port: o.port,
-                bind: o.bind,
+                mount: o.mount,
+                identity_header: o.identity_header,
                 external_timeout_ms: o.external_timeout_ms,
             },
             Err(e) => {
@@ -296,13 +326,14 @@ fn make_build(
         //    "no such route" stop arriving as the same status code.
         let (ready_tx, ready_rx) = watch::channel(false);
         let io = WebIo::new(
-            parsed.bind.clone(),
-            parsed.port,
+            parsed.mount.clone(),
+            parsed.identity_header.clone(),
             path_cap.as_str(),
             pages_rx,
             assets_rx,
             ready_rx,
             push_rx,
+            Arc::clone(&surfaces_cap),
         );
         let cell = WebCell::new(
             path_cap.as_str().to_string(),

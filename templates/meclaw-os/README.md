@@ -1,4 +1,4 @@
-# `meclaw-os@1.8.5`
+# `meclaw-os@1.8.7`
 
 The colony shell: the outermost of the four composition levels, and the tree everything
 else is grown into. It holds no cell of its own. It holds four occupants, one empty
@@ -28,14 +28,15 @@ a shell that grew one would have stopped being a boundary and become a participa
 
 **And one thing more: the OS hands out what is system-near.** A colony carries many
 organisations and exactly **one** OS, so the OS is what allocates the resources that are
-scarce and colony-wide — a TCP port, a bind address, a socket — where two holders of one
-is a collision rather than a disagreement. An organisation does not hold a port band and
-does not assign a port; it **asks the OS** for one
+scarce and colony-wide — a mount on the colony's one listener, a socket — where two
+holders of one is a collision rather than a disagreement. An organisation does not hold a
+band of names and does not assign one; it **asks the OS** for it
 (ADR-0022,
 [#543](https://github.com/mmeyerlein/meclaw/issues/543)). The form that has today is the
 `builder` standing at this level: every member it grows gets a screen, and that screen's
-port is `screen_port_base` plus the member's index in its organisation, counted off
-`/colony/graph` before anything is rendered. The builder is part of the OS
+NAME on the colony's one listener is `screen_mount` with the member filled in
+(`alex-display`), rendered only after the member has been counted off
+`/colony/graph`. The builder is part of the OS
 (ADR-0015), so that is this
 level's own responsibility being exercised — never a right the organisation lent it.
 
@@ -409,7 +410,7 @@ in it at all**.
 seed-ref/
 ├── colony.json            substrate defaults. two lines.
 ├── main/config.json       type: "hive", one edge, and not one cell
-└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@1.8.5"}}
+└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@1.8.7"}}
 ```
 
 ```bash
@@ -490,7 +491,7 @@ root tree:
 
 ```json
 {"scope": "/",
- "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.8.5"}],
+ "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.8.7"}],
           "add_edges": []}}
 ```
 

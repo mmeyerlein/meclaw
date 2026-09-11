@@ -72,8 +72,12 @@ async fn post(
         templates_root: std::path::PathBuf::new(),
     });
     let (blob_store, _blob_td) = common::test_blob_store();
-    let app =
-        meclaw_api::router::build_router(api_colony, blob_store, meclaw_core::MESSAGE_DEFAULT_TTL);
+    let app = meclaw_api::router::build_router(
+        api_colony,
+        blob_store,
+        meclaw_core::MESSAGE_DEFAULT_TTL,
+        std::sync::Arc::new(meclaw_colony::SurfaceRegistry::new()),
+    );
     let resp = app
         .oneshot(
             Request::builder()

@@ -48,7 +48,7 @@ organism/
 │   ├── colony.json            byte-identical to seed/colony.json
 │   └── main/
 │       ├── config.json        byte-identical to seed/main/config.json
-│       └── os/config.json     type: "ref", template: "meclaw-os@1.8.5"
+│       └── os/config.json     type: "ref", template: "meclaw-os@1.8.7"
 ├── grow-os.json               1. the shell.        1 node,  0 edges
 ├── grow-org.json              2. an organisation.  1 node, 18 edges
 ├── grow-member.json           3. a person.         1 node, 18 edges
@@ -68,7 +68,7 @@ principle of GH #26: a tree is grown, not checked in.
 ## What grows
 
 ```
-/os                                 meclaw-os@1.8.5   the shell
+/os                                 meclaw-os@1.8.7   the shell
 ├── access                            → access@2.5.0        the capability broker
 ├── argus                             → argus@1.1.0         the control loop
 └── orgs                              (empty container)
@@ -115,7 +115,7 @@ is a separate act.
 
 ```json
 {"scope": "/",
- "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.8.5"}],
+ "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.8.7"}],
           "add_edges": []}}
 ```
 
@@ -472,8 +472,8 @@ declarations**.
 ```json
 {"manifest": [
   {"scope": "/os/orgs/acme/members/alex/channels",
-   "diff": {"add_nodes": [{"name": "display", "template": "display@1.1.0",
-                           "override_params": {"web": {"port": 7900}}}], "…": "…"}},
+   "diff": {"add_nodes": [{"name": "display", "template": "display@2.0.0",
+                           "override_params": {"web": {"mount": "alex-display"}}}], "…": "…"}},
   {"scope": "/os/orgs/acme/members/alex/apps",
    "diff": {"add_nodes": [{"name": "colony-view", "template": "colony-view@1.1.0"}], "…": "…"}}]}
 ```
@@ -482,9 +482,9 @@ declarations**.
 hand.** It is, byte for byte, the TAIL of the manifest the builder renders for a member wish —
 the two declarations behind the person, which since
 [#585](https://github.com/mmeyerlein/meclaw/issues/585) ride in the same submission as the
-person rather than in a second one: a member always gets a screen and an app, and the `7900` is
-`screen_port_base` plus that member's index in its organisation — alex is the first, so alex
-takes the base. It stays checked in as
+person rather than in a second one: a member always gets a screen and an app, and the
+`alex-display` is the name the OS hands out for that member's screen — the screen is then at
+`/alex-display/` on the colony's one listener. It stays checked in as
 the byte pin of that manifest and as the corpus row a composer retrieves for either level. The
 third declaration it used to carry — the route from the member's `assistants` container into one
 generation — moved into the assistant level, which is the only place that knows the generation's
@@ -510,7 +510,7 @@ smallest WRITER of one. What draws on this screen is the app below it, or anothe
 emit `view`. A member with a screen and no such producer has a screen that shows nothing, which
 is the ordinary state of a freshly grown member.
 
-**An app has no port and no surface of its own — it writes views.** Whatever authentication
+**An app has no mount and no surface of its own — it writes views.** Whatever authentication
 stands in front of the screen stands in front of it. `colony-view` is also display-*blind*: it
 emits `view` and names no display, so the screen it draws on is one literal in the edge that
 leaves it (`set_context.channel_node = 'display'`, with `channel` carrying the same word —
@@ -616,7 +616,7 @@ nothing until an operator turns on exactly what they mean.
 shall stand.
 
 ```json
-{"cell": {"type": "ref", "template": "meclaw-os@1.8.5"}}
+{"cell": {"type": "ref", "template": "meclaw-os@1.8.7"}}
 ```
 
 That is a **declaration, not a cell**. The FIRST `meclaw --root ./examples/organism/seed-ref`

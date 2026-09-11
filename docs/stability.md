@@ -1,7 +1,7 @@
 # Stability
 
 Five surfaces are the public contract of this project: the HTTP API, the template DSL, the
-template ports, the origin a `web` cell owns, and the documented `error_code` strings. If you
+template ports, the mount a `web` cell owns, and the documented `error_code` strings. If you
 build on one of them, a `0.x` release will not take it away from you without saying so. If you
 build on anything else in the tree, you are building on an internal.
 
@@ -16,8 +16,8 @@ format. [`config.md`](config.md) documents the `config.json` schema, and the ove
 The template ports are the ingress and exit endpoints a template's README declares. Each
 template's README names the ports that template has.
 
-The origin a `web` cell owns is the `page.set` route grammar and its two reserved names, `@` and
-`live`. [`cell-types.md`](cell-types.md) § `web`, a port-owning display substrate.
+The mount a `web` cell owns is `/<mount>/` on the colony's listener, its `page.set` route grammar
+and the two reserved names, `@` and `live`. [`cell-types.md`](cell-types.md) § `web`.
 
 The documented `error_code` strings are the dead-letter reasons, the cell-type codes, and the
 codes a `/colony` read can answer with. The overview lists them in the sections that emit them.

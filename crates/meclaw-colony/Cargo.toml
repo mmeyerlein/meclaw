@@ -8,9 +8,12 @@ repository = "https://github.com/mmeyerlein/meclaw"
 license.workspace = true
 
 [dependencies]
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "fs", "io-util"] }
+# `net` (ruling O-639-9): `surfaces::HandedConnection` carries a `tokio::net::TcpStream`
+# in a public field, so the feature belongs in this crate's own manifest -- it was
+# reaching the build through a dev-dependency, which a published crate does not have.
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "net"] }
 tracing = "0.1"
-meclaw-core = { path = "../meclaw-core", version = "0.34.0" }
+meclaw-core = { path = "../meclaw-core", version = "0.35.0" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.39", features = ["bundled"] }

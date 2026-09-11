@@ -170,7 +170,7 @@ fn write_template(root: &std::path::Path) {
 
 /// The production factory registry — identical to what `meclaw_cli::run` uses.
 fn factories() -> CellFactoryRegistry {
-    built_in_factories()
+    built_in_factories(std::sync::Arc::new(meclaw_colony::SurfaceRegistry::new()))
 }
 
 /// Unix seconds for the boot scan's `scanned_at`, same expression `run()` uses.

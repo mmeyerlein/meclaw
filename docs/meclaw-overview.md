@@ -358,11 +358,11 @@ is post-roadmap. The architecture will not prevent it.
 A colony carries many organisations and exactly one OS, and the OS hands out what is system-near
 (ADR-0022, GH #543). An organisation is a namespace: no port band, no port assignment, no
 configuration surface of its own; it asks the OS. System-near means scarce, colony-wide, and such
-that two holders of one is a collision: a TCP port, a bind address, a socket. How an organisation
-asks is open. Today the builder at the shell level (`templates/meclaw-os`) gives every grown member
-the port of its screen as `screen_port_base + <the member's index in its organisation>`, measured
-off `/colony/graph` before anything is rendered. The builder is part of the OS (ADR-0015), so that
-is never an organisation's own right.
+that two holders of one is a collision: a TCP port, a bind address, a socket, a mount name. How an
+organisation asks is open. Today the builder at the shell level (`templates/meclaw-os`) gives
+every grown member the mount of its screen as `<member>-display`, out of the `screen_mount`
+recipe knob. The builder is part of the OS (ADR-0015), so that is never an organisation's own
+right.
 
 ## Graph schema
 
@@ -1431,32 +1431,84 @@ the budget.
 
 ## Display cells (`web`)
 
-A display is a cell of its own, with a port of its own. It is of type `web` (`cell-types.md` §
-`web`), binds `params.port`, holds its own `cell.db` and owns its whole origin. A colony may have as
-many as it likes, the meclaw-os tree one and the website another, and each comes into being by
-mutation like any other cell.
+A display is a cell of its own, reached under a mount. It is of type `web` (`cell-types.md` §
+`web`), names `params.mount`, holds its own `cell.db` and answers under `/<mount>/` on the colony's
+listener. A colony may have as many as it likes, the meclaw-os tree one and the website another,
+and each comes into being by mutation like any other cell.
 
 That replaces the `/surface/` model and retracts it (GH #383): a surface at `GET
 /surface/<cell-path>` declared via `cell.surface` no longer exists in any part, the route and the
 parser are gone, and `cell.surface` is today an unknown key and therefore a hard boot refusal
 (`config.md` § `cell`). Migrating a 1.x canvas: `templates/canvy/MIGRATION.md`.
 
-Four things answer on a display's port, all origin-relative, and the order matters because the last
-one is a wildcard:
+Four things answer under a display's base, and the order matters because the last one is a
+wildcard. The base is the sanitised `X-Forwarded-Prefix` a proxy sends plus `/<mount>`:
 
 ```
-GET  /live/websocket       the Phoenix socket (vsn 2.0.0)
-GET  /@client/<file>       the LiveView bundles, from the binary
-GET  / and /<route>        a page out of the pages table
-GET  /<anything else>      a file out of the assets table
+GET  <base>/live/websocket    the Phoenix socket (vsn 2.0.0)
+GET  <base>/@client/<file>    the LiveView bundles, from the binary
+GET  <base>/ and <base>/<route>   a page out of the pages table
+GET  <base>/<anything else>   a file out of the assets table
 ```
 
-A reverse proxy in front therefore gets a port, not a prefix: page, own files and transport in one
-access rule, without having to know a path inside the colony tree:
+The shell writes its own links out of that base, so a proxy may put a display on a domain root, on
+a path or on a subdomain. `page.set` routes stay names (`/`, `/a/b`): the LiveView join carries the
+page URL, and the base is stripped off it again. A header value that does not match
+`^/[A-Za-z0-9._~/-]{0,200}$`, or one with a trailing slash, is ignored, and so are the two shapes
+the grammar itself lets through: a leading `//`, which is a host and not a path, and any `..`
+segment.
+
+**One listener for the rest.** `--api` is the colony's one listener, and it is the only door a
+colony opens. A surface cell registers a name (`params.mount`) and is reached on it under
+`/<mount>/…`. The listener reads the first request line and hands the connection over unread to the
+cell that holds the first path segment; from there the cell serves its own protocol on its own
+routes. A connection is decided once, on that first line, and a second request on it is not
+inspected again. A mounted cell whose handoff queue is full answers `503 surface busy` and closes. A
+connection that sends no complete request line within five seconds, or a line above 4 KiB, is
+dropped without an answer. `GET /colony/surfaces` publishes the mount table, one row per surface
+with its `mount` and its `kind`, and `?format=traefik` the same table as a map for the proxy in
+front.
+
+One domain in front of one colony, with each surface on its own path:
 
 ```nginx
-location / { proxy_pass http://127.0.0.1:7800; }
+location /alex-display/ {
+    proxy_pass http://127.0.0.1:7777;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+}
+
+location /alex-voice/ {
+    proxy_pass http://127.0.0.1:7777;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+}
+
+location /colony/ {
+    auth_basic "colony";
+    auth_basic_user_file /etc/nginx/colony.htpasswd;
+    proxy_pass http://127.0.0.1:7777;
+}
 ```
+
+A subdomain that carries several colonies gives each one a path of its own and names that path in
+the header, so the shell keeps writing links the browser can follow:
+
+```nginx
+location ^~ /egon/ {
+    proxy_pass http://127.0.0.1:7777/;
+    proxy_set_header X-Forwarded-Prefix /egon;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+}
+```
+
+The display is then at `https://<host>/egon/alex-display/`. Several displays behind one domain
+share one browser origin, so cookies, storage and whatever tells two members apart are the proxy's
+business, and a page that keeps something in browser storage keys it by mount.
 
 **The `pages` table is the only route source.** What a browser gets stands in the cell's database,
 not in a declaration in the `cell` block and not in a second namespace: a route is a name (`/`,
@@ -1466,8 +1518,8 @@ let the router's matching order decide which table a path can reach at all. If b
 path, the page answers.
 
 Auth and TLS are external, forever (R-W8-2). This cell type does not authenticate and never will,
-and a reverse proxy sits in front. The default bind is therefore loopback, and a display sees
-nothing but its own database.
+and a reverse proxy sits in front of the colony's listener. A display sees nothing but its own
+database.
 
 **Who renders what.** What is served is a snapshot the cell's handler half published earlier: the
 route was rendered once and already sits in LiveView's packed form, so a page load costs zero cell
@@ -1483,12 +1535,15 @@ than code, and a new picture arrives as a message into the running colony.
 own `cell.db` plus a diff to every joined viewer. No message is created, and the event never leaves
 the cell. Every other event is a semantic source emission on `hop.route = "event"`, in the same
 shape the `proxy` cell uses for an inbound platform turn, and the header carries `event_name`,
-`session_id` and `page_route`. The cell interprets no event name of its own: what one means is
+`session_id` and `page_route`. With `params.identity_header` set, the value of that request header
+rides along as `hop.user_id` and the ingress edge promotes it; an empty param stamps nothing,
+because a header a client can set without a proxy in front is not an identity. The cell interprets
+no event name of its own: what one means is
 decided by the out-edges, which is what keeps a display ignorant of the topology it hangs in.
 Working example: `templates/canvy`.
 
-A display needs no return path any more. It answers its own browser: it owns the listener, so the
-answer never leaves the colony as a message at all.
+A display needs no return path any more. It answers its own browser: the listener hands it the
+connection, so the answer never leaves the colony as a message at all.
 
 Retracted: `--api` takes `EgressPolicy::Marked` (GH #383). `--api` opens no second door today; it
 serves the `/colony/*` endpoints and the operator web UI and nothing else. What remains is the
@@ -3861,6 +3916,7 @@ so this table repeats the canonical endpoint table in HTTP-route form.
 | `/colony/templates/rescan` | POST | `/colony/templates/rescan` |
 | `/colony/mutations` | GET/POST | `/colony/mutations` (POST is a new mutation, GET the mutation-log audit) |
 | `/colony/graph` | GET | `/colony/graph?scope=...` |
+| `/colony/surfaces` | GET | the mount table of the surface cells (`?format=traefik`: as a Traefik HTTP-provider document); a read of the registry, with no routing through `route()` |
 | `/colony/trace` | GET | `/colony/trace?trace_id=...&...` |
 | `/colony/ledger` | GET | `/colony/ledger?since=...&...` (aggregates; an unreadable filter is a `400 bad_query` here, where the message door puts `invalid_query` into the `ledger` slot) |
 | `/colony/events` | GET (WS upgrade) | `/colony/events` (subscribe) |

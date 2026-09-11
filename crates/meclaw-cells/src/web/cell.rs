@@ -21,20 +21,15 @@ use tokio::sync::{mpsc, watch};
 
 /// What the I/O half tells the handler.
 ///
-/// Task 3 knows two: the listener came up, or it could not. Browser events
-/// (`editable` writes and semantic events) join this enum in Tasks 9 and 10.
+/// Two things: the mount was refused, or a browser said something.
 pub enum WebEvent {
-    /// The listener is up on this address. Recorded so an operator reading the
-    /// journal sees where a display actually went.
-    Bound(String),
-    /// The listener could not be opened, **or** the server that was serving it
-    /// ended (GH #592); the detail is the OS error or `listener ended`. The
-    /// cell stays alive and serves nothing — see the A1′ note in [`run_io`]: a
-    /// display that cannot serve must not take its cell down, or a port
-    /// collision would look like a crash loop. Since GH #410 the state is
-    /// recoverable without a restart: a params update naming a free address is
-    /// served by the same task, on the same `cell.db`.
-    BindFailed(String),
+    /// The name this display declared is not one it could have: another cell
+    /// holds it, or it breaks the mount grammar. The cell stays alive and is
+    /// reachable through nothing — a display that cannot serve must not take
+    /// its cell down, or a name collision would look like a crash loop. The
+    /// way out is a params update naming a free mount, which takes effect on
+    /// the cell's next life (O-P-2).
+    MountFailed(String),
     /// A browser said something on a joined socket.
     ///
     /// The I/O half does not decide what it means, and cannot: sorting an event
@@ -49,6 +44,11 @@ pub enum WebEvent {
         /// The browser session this event belongs to — the nonce half of the
         /// page's LiveView token, unique per page load.
         session_id: String,
+        /// Who the proxy in front said is looking, when the cell was given an
+        /// `identity_header` and the request carried it. `None` otherwise, and
+        /// then nothing is stamped: an identity this cell invented would be
+        /// worse than none (O-P-4).
+        user_id: Option<String>,
         /// The event name, verbatim.
         name: String,
         /// The event value, verbatim.
@@ -73,15 +73,11 @@ pub enum EventReply {
 
 /// What the handler tells the I/O half.
 ///
-/// The channel also carries the shutdown signal by being closed — the I/O half
-/// treats a closed reconfig channel as "the handler is gone".
-///
-/// The two variants travel on **different** channels, which is why neither is
-/// ever seen on the other's: `Push` goes over the cell's own `push_tx` (minted
-/// in [`WebCell`], so a browser event can push too), `Rebind` over the
-/// substrate's `reconfig_tx` (the seam `handle` is handed, and the one the
-/// proxy uses for `SetPolling`). One enum for both because the trait declares
-/// one `Reconfig` type.
+/// The substrate's own reconfig channel carries the shutdown signal by being
+/// closed — the I/O half treats a closed channel as "the handler is gone" —
+/// and nothing else since `web@2.0.0`: the `Rebind` that moved a listener went
+/// with the listener. A `Push` travels on the cell's own `push_tx` (minted in
+/// [`WebCell`], so a browser event can push too) and is the only variant here.
 #[derive(Debug)]
 pub enum WebReconfig {
     /// Send this diff to everyone joined on `route`.
@@ -94,31 +90,6 @@ pub enum WebReconfig {
         route: String,
         /// The LiveView diff payload, already packed.
         diff: Value,
-    },
-    /// Move the listener to this address (GH #410).
-    ///
-    /// The I/O half closes the old listener, binds the new address and drops
-    /// every joined viewer; if the new address cannot be bound it comes back to
-    /// the old one.
-    ///
-    /// # Why this one is answered
-    ///
-    /// A `bind` that the parser accepts can still fail at the socket — a
-    /// hostname nothing resolves, a port somebody else holds. Only the I/O half
-    /// knows which, and the handler must not write such a value into the
-    /// `cell.db` overlay: a respawn would replay it and the display would come
-    /// up with no listener at all. So the verdict travels back, the handler
-    /// persists only what actually bound, and a value that did not is refused
-    /// to the sender in the cell's ordinary error shape rather than only
-    /// appearing in a log line.
-    Rebind {
-        /// The address to bind.
-        bind: String,
-        /// The port to bind.
-        port: u16,
-        /// Where the verdict goes: `Ok` once the new address is serving, `Err`
-        /// with the socket's own words if it could not be bound.
-        ack: tokio::sync::oneshot::Sender<Result<(), String>>,
     },
 }
 
@@ -163,14 +134,15 @@ pub struct WebCell {
     /// keeps the shutdown signal unambiguous and lets both halves of the cell
     /// push, which is what a browser event needs.
     pub(crate) push_tx: mpsc::Sender<WebReconfig>,
-    /// Where the listener currently is (GH #410).
+    /// The name this display is reached under.
     ///
     /// The handler holds it because it is the only side that may change it: an
-    /// update is merged over these values, and the I/O half is *told* the
-    /// result. Two copies of the same fact would be a lock in disguise.
-    pub(crate) bind: String,
-    /// The port the listener currently holds. See [`WebCell::bind`].
-    pub(crate) port: u16,
+    /// update is merged over these values and persisted, and the I/O half
+    /// reads the result on its next life (O-P-2). Two copies of the same
+    /// mutable fact would be a lock in disguise.
+    pub(crate) mount: String,
+    /// The proxy's identity header, or empty. See [`WebCell::mount`].
+    pub(crate) identity_header: String,
     /// The live operation-timeout, held for the same reason: a params update
     /// merges over it.
     pub(crate) external_timeout_ms: u64,
@@ -198,8 +170,8 @@ impl WebCell {
             assets_tx,
             ready_tx,
             push_tx,
-            bind: params.bind.clone(),
-            port: params.port,
+            mount: params.mount.clone(),
+            identity_header: params.identity_header.clone(),
             external_timeout_ms: params.external_timeout_ms,
         }
     }
@@ -291,6 +263,7 @@ impl WebCell {
         value: &Value,
         route: &str,
         session_id: &str,
+        user_id: Option<&str>,
         sink: &OriginSink,
         db: &mut DbConn,
     ) -> (EventReply, ops::Touched) {
@@ -300,7 +273,7 @@ impl WebCell {
             // cell output on `hop.route = "event"`, exactly as the proxy emits a
             // platform turn. Whether anything is listening is a question about
             // the topology, and this cell does not ask it.
-            self.emit_semantic(name, value, route, session_id, sink)
+            self.emit_semantic(name, value, route, session_id, user_id, sink)
                 .await;
             return (EventReply::Ok, ops::Touched::default());
         }
@@ -320,19 +293,18 @@ impl WebCell {
             .await
     }
 
-    /// Apply a runtime params update (GH #410).
+    /// Apply a runtime params update.
     ///
-    /// The order is the whole design: merge, **move**, then persist. Nothing
-    /// reaches `cell.db` that the socket did not accept, so a respawn cannot
-    /// replay an address the display was never on — which is the divergence
-    /// between declared and actual params that `port` and `bind` were once
-    /// immutable to prevent, and the only part of that argument worth keeping.
-    /// A refusal writes nothing and moves nothing.
+    /// Merge, then persist. Nothing moves while the cell is alive: the mount
+    /// is registered once per life, at the top of the I/O half, and a live
+    /// remount would take a running display out from under whichever proxy
+    /// rule points at it while its viewers hold sockets on the old name. So a
+    /// `mount` an update names is written to the overlay and read by the next
+    /// life (O-P-2), which is the same promise a `voice` cell has made since
+    /// 1.5.0. A refusal writes nothing.
     ///
     /// Silent on success, in the shape every other cell type's params update
-    /// has (`proxy`, `timer`, `mcp`): the acknowledgement an operator wants is
-    /// the display answering on the new address, and a `Bound` line in the
-    /// journal says which one that is.
+    /// has (`proxy`, `timer`, `mcp`).
     async fn apply_params_update(
         &mut self,
         update: &Map<String, Value>,
@@ -340,7 +312,6 @@ impl WebCell {
         reply_target: meclaw_core::Path,
         sink: &OutputSink,
         db: &mut DbConn,
-        reconfig_tx: &mpsc::Sender<WebReconfig>,
     ) {
         let refuse = |text: String| {
             output::build_refusal(
@@ -352,8 +323,8 @@ impl WebCell {
         };
 
         let current = crate::web::params::WebOverlay {
-            port: self.port,
-            bind: self.bind.clone(),
+            mount: self.mount.clone(),
+            identity_header: self.identity_header.clone(),
             external_timeout_ms: self.external_timeout_ms,
         };
         let (merged, overlay) = match crate::params_overlay::apply_update(&current, update) {
@@ -369,83 +340,33 @@ impl WebCell {
             }
         };
 
-        // The move, before the write. A `bind` the parser accepted can still
-        // fail at the socket, and only the I/O half finds out.
-        if merged.port != self.port || merged.bind != self.bind {
-            if let Err(text) = self.rebind(&merged.bind, merged.port, reconfig_tx).await {
-                let _ = sink
-                    .push(CellOutput {
-                        target: reply_target,
-                        content: refuse(text),
-                    })
-                    .await;
-                return;
-            }
-            self.port = merged.port;
-            self.bind = merged.bind.clone();
-        }
-
         let now = crate::params_overlay::now_unix_seconds();
         let persist = db
             .call(move |c| crate::params_overlay::persist_params_overlay(c, &overlay, now))
             .await;
         if let Err(e) = persist {
-            // The display has already moved, and saying otherwise would be
-            // worse than saying this: a respawn will put it back where it was
-            // born, because that write is what a respawn reads.
+            // Nothing has moved — the update takes effect on the next life —
+            // so this is the whole of the damage: the next life reads the
+            // birth params, and the sender is told rather than left believing
+            // the display was renamed.
             let _ = sink
                 .push(CellOutput {
                     target: reply_target,
                     content: refuse(format!(
-                        "cell.db params write failed: {e} — the display moved but \
-                         a respawn will not remember it"
+                        "cell.db params write failed: {e} — the update is not \
+                         remembered and the next life starts on the birth params"
                     )),
                 })
                 .await;
             return;
         }
 
+        self.mount = merged.mount.clone();
+        self.identity_header = merged.identity_header.clone();
         self.external_timeout_ms = merged.external_timeout_ms;
         db.set_query_timeout(Some(std::time::Duration::from_millis(
             self.external_timeout_ms,
         )));
-    }
-
-    /// Ask the I/O half to move the listener and wait for its verdict.
-    ///
-    /// Operation-timeout (hard rule 12) around the wait: binding an address
-    /// resolves a name, and a wedged resolver must not hold a params update
-    /// open forever. A timeout is reported as a refusal — the display may or
-    /// may not have moved by then, and the journal is what says which.
-    async fn rebind(
-        &self,
-        bind: &str,
-        port: u16,
-        reconfig_tx: &mpsc::Sender<WebReconfig>,
-    ) -> Result<(), String> {
-        let (ack, verdict) = tokio::sync::oneshot::channel();
-        if reconfig_tx
-            .send(WebReconfig::Rebind {
-                bind: bind.to_string(),
-                port,
-                ack,
-            })
-            .await
-            .is_err()
-        {
-            return Err("the listener is gone".to_string());
-        }
-        let waited = tokio::time::timeout(
-            std::time::Duration::from_millis(self.external_timeout_ms),
-            verdict,
-        )
-        .await;
-        match waited {
-            Ok(Ok(Ok(()))) => Ok(()),
-            Ok(Ok(Err(e))) => Err(format!("bind failed: {e}")),
-            Ok(Err(_)) => Err("the listener did not answer".to_string()),
-            Err(_) => Err("bind exceeded external_timeout_ms".to_string()),
-        }
     }
 
     /// Emit one semantic browser event on the cell's out-edges.
@@ -454,26 +375,36 @@ impl WebCell {
     /// message — nobody asked for it — so it is a **source** emission, the same
     /// shape the proxy uses for an inbound platform turn.
     ///
-    /// The header carries `event_name`, `session_id` and `route`. Promoting
-    /// `session_id` into `context.session_id` is the ingress **edge's** job via
+    /// The header carries `event_name`, `session_id` and `route`, and
+    /// `user_id` when a proxy in front named the person (`identity_header`).
+    /// Promoting any of them into `context` is the ingress **edge's** job via
     /// `set_context`, not this cell's: a cell states what it knows, and an edge
     /// decides what that means for the graph. That is the proxy precedent, and
     /// it is what keeps this cell ignorant of the topology it hangs in.
+    ///
+    /// The identity is **absent** rather than empty when there is none: a
+    /// `hop.user_id` of `""` is a claim about who was looking, and this cell
+    /// has nothing to base it on unless a proxy told it (O-P-4).
     async fn emit_semantic(
         &self,
         name: &str,
         value: &Value,
         route: &str,
         session_id: &str,
+        user_id: Option<&str>,
         sink: &OriginSink,
     ) {
+        let mut header = json!({
+            "route": "event",
+            "event_name": name,
+            "session_id": session_id,
+            "page_route": route,
+        });
+        if let (Some(user_id), Some(header)) = (user_id, header.as_object_mut()) {
+            header.insert("user_id".to_string(), json!(user_id));
+        }
         let content = json!({
-            "header": {
-                "route": "event",
-                "event_name": name,
-                "session_id": session_id,
-                "page_route": route,
-            },
+            "header": header,
             "messages": [{
                 "origin": "user",
                 "type": "text",
@@ -587,7 +518,7 @@ impl LongRunningCell for WebCell {
         msg: Message,
         sink: &'a OutputSink,
         db: &'a mut DbConn,
-        reconfig_tx: &'a mpsc::Sender<Self::Reconfig>,
+        _reconfig_tx: &'a mpsc::Sender<Self::Reconfig>,
     ) -> impl Future<Output = ()> + Send + 'a {
         async move {
             let started = std::time::Instant::now();
@@ -596,23 +527,16 @@ impl LongRunningCell for WebCell {
             // The params-update slot (`config.md` § Access), handled FIRST and
             // exclusively: a message that carries it is not a tool call, and
             // reading it as one would refuse a valid update for having no
-            // `messages` array. Since GH #410 this is also how a running
-            // display is moved to another address.
+            // `messages` array. It is also how a display is renamed — on its
+            // next life (O-P-2).
             if let Body::Inline(v) = &msg.body
                 && let Some(params_val) = v.get("params")
             {
                 match params_val.as_object() {
                     Some(update) => {
                         let update = update.clone();
-                        self.apply_params_update(
-                            &update,
-                            started,
-                            reply_target,
-                            sink,
-                            db,
-                            reconfig_tx,
-                        )
-                        .await;
+                        self.apply_params_update(&update, started, reply_target, sink, db)
+                            .await;
                     }
                     None => {
                         let _ = sink
@@ -715,19 +639,25 @@ impl LongRunningCell for WebCell {
     ) -> impl Future<Output = ()> + Send + 'a {
         async move {
             match event {
-                WebEvent::Bound(addr) => {
-                    tracing::info!(path = %self.path, addr = %addr, "web: listening");
-                }
                 WebEvent::Browser {
                     viewer,
                     route,
                     session_id,
+                    user_id,
                     name,
                     value,
                     respond,
                 } => {
                     let (reply, touched) = self
-                        .handle_browser_event(&name, &value, &route, &session_id, _sink, _db)
+                        .handle_browser_event(
+                            &name,
+                            &value,
+                            &route,
+                            &session_id,
+                            user_id.as_deref(),
+                            _sink,
+                            _db,
+                        )
                         .await;
                     // The verdict goes back to the socket that is holding its
                     // client's reply open. A closed channel means the browser
@@ -747,19 +677,18 @@ impl LongRunningCell for WebCell {
                     }
                     tracing::debug!(path = %self.path, %viewer, %route, %name, "web: browser event");
                 }
-                WebEvent::BindFailed(err) => {
-                    // Loud, and not fatal. The cell keeps running with no
-                    // listener: a port collision is an operator's mistake to
-                    // read in the journal, not a reason to take a cell — and
-                    // with it possibly a whole colony boot — down.
-                    // Since GH #410 the way out is a message rather than a
-                    // restart: a params update naming a free address moves the
-                    // display there, and the `cell.db` is not touched by it.
+                WebEvent::MountFailed(err) => {
+                    // Loud, and not fatal. The cell keeps running and is
+                    // reachable through nothing: a name another cell holds is
+                    // an operator's mistake to read in the journal, not a
+                    // reason to take a cell — and with it possibly a whole
+                    // colony boot — down.
                     tracing::error!(
                         path = %self.path,
                         error = %err,
-                        "web: could not serve — send this cell a params update \
-                         naming a free port or bind address"
+                        "web: this display is reachable under no name — send it a \
+                         params update naming a free mount; it takes effect on the \
+                         cell's next life"
                     );
                 }
             }

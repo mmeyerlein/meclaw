@@ -5,9 +5,9 @@
 //! PROMISES, and every question is asked of the **substrate's own reader**
 //! rather than of a second opinion written in this file:
 //!
-//! 1. **The descriptor resolves.** `web@1.1.0` — the reference a mutation
+//! 1. **The descriptor resolves.** `web@2.0.0` — the reference a mutation
 //!    writes down.
-//! 2. **The config is a persistent `web` cell with a port of its own**, read
+//! 2. **The config is a persistent `web` cell with a mount of its own**, read
 //!    through `meclaw_colony::ParsedConfig` (the reader every boot and every
 //!    staging path goes through) and its params through `WebParams::parse`
 //!    (the cell type's one parser). A `contract` block in a shape the cell
@@ -104,7 +104,7 @@ fn the_descriptor_names_the_template_at_the_version_it_ships() {
 }
 
 #[test]
-fn the_config_is_a_persistent_web_cell_with_a_port_of_its_own() {
+fn the_config_is_a_persistent_web_cell_with_a_mount_of_its_own() {
     let cfg = parsed_config();
     assert_eq!(cfg.cell.cell_type, "web");
     assert_eq!(
@@ -114,10 +114,10 @@ fn the_config_is_a_persistent_web_cell_with_a_port_of_its_own() {
 
     // The cell type's own parser, not a second reading of the same JSON.
     let params = WebParams::parse(&cfg.params).expect("params must parse as WebParams");
-    assert_eq!(params.port, 7800);
+    assert_eq!(params.mount, "web");
     assert_eq!(
-        params.bind, "127.0.0.1",
-        "R-W8-2: the cell never authenticates, so its default bind stays off-host"
+        params.identity_header, "",
+        "O-P-4: nothing is stamped until an operator names the header a proxy writes"
     );
 
     validate_contract_presence(&cfg.contract).expect("the contract block is complete");
@@ -142,16 +142,25 @@ fn the_template_declares_the_ingress_context_it_mints() {
 }
 
 #[test]
-fn the_port_is_a_declared_param_so_a_second_display_can_override_it() {
+fn the_mount_is_a_declared_param_so_a_second_display_can_override_it() {
     // gh212's substrate question, asked of the one key the README tells a
     // reader to override: an `override_params` key must exist under `params`
     // in the template's own config, or the mutation is refused.
     let cfg = parsed_config();
     let params = cfg.params.as_object().expect("params is an object");
-    for key in ["port", "bind"] {
+    for key in ["mount", "identity_header"] {
         assert!(
             params.contains_key(key),
             "`{key}` must stand in params for an override to address it"
+        );
+    }
+    // And the two keys `web@2.0.0` removed are gone from the shipped document,
+    // not merely unused: a template that still carried one would be refused by
+    // its own cell type at boot.
+    for gone in ["port", "bind"] {
+        assert!(
+            !params.contains_key(gone),
+            "`{gone}` left the type in web@2.0.0 and must not stand in the template"
         );
     }
 }
@@ -199,8 +208,10 @@ fn the_seed_renders_a_page_at_the_root_route() {
 
     let body = home.rendered_body();
     assert!(
-        body.contains("/vision.css"),
-        "the page must reference the token stylesheet it ships: {body}"
+        body.contains("href=\"vision.css\""),
+        "the page must reference the token stylesheet it ships, and RELATIVE to \
+         the shell's `<base>`: a materialised page cannot know the mount it \
+         will be served under: {body}"
     );
     assert!(
         !body.trim().is_empty(),

@@ -1,4 +1,4 @@
-//! `voice@1.4.1` — the template, its declared surface, and the binding manifest
+//! `voice@2.0.0` — the template, its declared surface, and the binding manifest
 //! its README hands a reader.
 //!
 //! Three things can drift apart here and each of them costs a reader a wrong
@@ -113,7 +113,7 @@ fn binding_manifest(readme: &str) -> Value {
 // ═════════════════════════════ 1. the declared surface
 
 /// The cell is a `voice` cell and it is long-running: `timeout: -1`, like every
-/// other cell that owns a listener for the life of the colony.
+/// other cell that holds a mount for the life of the colony.
 #[test]
 fn the_template_declares_a_long_running_voice_cell() {
     let Some((cfg, tpl, _)) = shipped() else {
@@ -126,7 +126,14 @@ fn the_template_declares_a_long_running_voice_cell() {
         "a cell holding a socket is not bounded by a message timeout"
     );
     assert_eq!(tpl["name"], json!("voice"));
-    assert_eq!(tpl["version"], json!("1.4.1"));
+    assert_eq!(tpl["version"], json!("2.0.0"));
+    // ADR-0031: the shipped instance is reached under a mount name, and the
+    // name is a declared setting like every other knob.
+    assert_eq!(cfg["params"]["mount"], json!("voice"));
+    assert!(
+        cfg["contract"]["settings"]["mount"].is_object(),
+        "the mount is a knob a builder can read about"
+    );
 }
 
 /// The params surface and the settings surface are the same surface: a knob an
@@ -343,7 +350,7 @@ fn the_readme_manifest_binds_the_three_lanes_and_the_way_back() {
         .expect("add_nodes is a list");
     assert_eq!(nodes.len(), 1, "one channel is one node");
     assert_eq!(nodes[0]["name"], json!("channels/voice"));
-    assert_eq!(nodes[0]["template"], json!("voice@1.4.1"));
+    assert_eq!(nodes[0]["template"], json!("voice@2.0.0"));
 
     let edges = manifest["diff"]["add_edges"]
         .as_array()
@@ -490,8 +497,10 @@ fn the_shipped_params_parse_into_voice_params() {
     };
     let params = VoiceParams::parse(&substituted(&cfg["params"]))
         .expect("the shipped params parse into VoiceParams");
-    assert_eq!(params.port, 7900);
-    assert_eq!(params.bind, "127.0.0.1");
+    assert_eq!(
+        params.mount, "voice",
+        "the shipped instance is reached at /voice/ on the colony's listener"
+    );
     assert_eq!(params.default_mode, Mode::Auto);
     assert!(params.barge_in);
     assert!(
@@ -643,13 +652,13 @@ fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
 
 /// A colony root holding one empty open container to grow a channel into, the
 /// two credentials a boot would otherwise stop for, and this template in its
-/// library with the port pointed at a free one.
+/// library.
 ///
 /// The credentials are dummies and named as such. `${…}` without a default
 /// fails the boot loudly (`env_var_missing`), which is the behaviour the
 /// template's own `requires.env` declaration describes — so the test supplies
 /// them rather than dodging them.
-fn tree(port: u16) -> tempfile::TempDir {
+fn tree() -> tempfile::TempDir {
     let td = tempfile::TempDir::new().expect("tempdir");
     let root = td.path();
     std::fs::create_dir_all(root.join("channels")).expect("the container directory");
@@ -664,28 +673,17 @@ fn tree(port: u16) -> tempfile::TempDir {
     )
     .expect("write the env file");
 
-    let tpl = root.join("templates/voice");
-    copy_tree(&repo("templates/voice"), &tpl);
-    let mut cfg: Value = meclaw_core::serde_json::from_str(
-        &std::fs::read_to_string(tpl.join("config.json")).expect("read the shipped config"),
-    )
-    .expect("the shipped config is JSON");
-    cfg["params"]["port"] = json!(port);
-    std::fs::write(
-        tpl.join("config.json"),
-        meclaw_core::serde_json::to_string_pretty(&cfg).expect("serialise"),
-    )
-    .expect("write the ported config");
+    copy_tree(&repo("templates/voice"), &root.join("templates/voice"));
     td
 }
 
-/// The README's manifest, with the one value a test may not take from a
-/// document: the port. Everything else — both endpoints, both conditions, every
-/// promotion — is the text a reader copies.
-fn manifest_with_port(readme: &str, port: u16) -> Value {
+/// The README's manifest, scoped at the root. Every value in it — both
+/// endpoints, both conditions, every promotion, the mount — is the text a
+/// reader copies; since `voice@2.0.0` there is no address for a test to
+/// substitute.
+fn readme_manifest(readme: &str) -> Value {
     let mut m = binding_manifest(readme);
     m["scope"] = json!("/");
-    m["diff"]["add_nodes"][0]["override_params"]["port"] = json!(port);
     m
 }
 
@@ -694,10 +692,9 @@ async fn the_readme_manifest_grows_the_channel_it_describes() {
     let Some((_, _, readme)) = shipped() else {
         return;
     };
-    let port = meclaw_testing::free_port();
-    let td = tree(port);
+    let td = tree();
 
-    let factory: Arc<dyn meclaw_colony::CellFactory> = Arc::new(VoiceCellFactory);
+    let factory: Arc<dyn meclaw_colony::CellFactory> = Arc::new(VoiceCellFactory::default());
     let h = meclaw_testing::ColonyHandle::new_with_factories_at(
         &td,
         vec![("voice".to_string(), factory)],
@@ -719,12 +716,12 @@ async fn the_readme_manifest_grows_the_channel_it_describes() {
     ack_rx
         .await
         .expect("rescan acked")
-        .expect("the library must register voice@1.4.1");
+        .expect("the library must register voice@2.0.0");
 
     let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
     h.inbox_tx
         .send(meclaw_colony::ColonyMsg::Mutation {
-            payload: manifest_with_port(&readme, port),
+            payload: readme_manifest(&readme),
             reply_to: None,
             trace_id: meclaw_core::Uuid::now_v7(),
             parent_message_id: meclaw_core::Uuid::now_v7(),

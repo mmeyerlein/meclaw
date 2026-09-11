@@ -14,7 +14,9 @@ use crate::voice::io::VoiceIo;
 use crate::voice::params::{VoiceOverlay, VoiceParams};
 use crate::voice::providers::{build_stt, build_tts};
 use meclaw_colony::persist::cell_db::open_or_create_cell_db_with_status;
-use meclaw_colony::{CellFactory, DbConn, RespawnFn, SpawnedCellKind, build_long_running_task};
+use meclaw_colony::{
+    CellFactory, DbConn, RespawnFn, SpawnedCellKind, SurfaceRegistry, build_long_running_task,
+};
 use meclaw_core::{CellEmission, JsonValue, Message, Path};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -34,7 +36,33 @@ type SpawnTuple = (
 );
 
 /// The `voice` cell factory.
-pub struct VoiceCellFactory;
+///
+/// It carries the process's [`SurfaceRegistry`] so every cell it builds
+/// registers its mount on the one table the CLI's listener and the API read
+/// (ADR-0031). A factory built with [`Default`] gets a table of its own, which
+/// is what a fixture wants: the cell registers, nothing else looks.
+pub struct VoiceCellFactory {
+    surfaces: Arc<SurfaceRegistry>,
+}
+
+impl VoiceCellFactory {
+    /// A factory whose cells mount on `surfaces`.
+    pub fn new(surfaces: Arc<SurfaceRegistry>) -> Self {
+        Self { surfaces }
+    }
+
+    /// The table this factory's cells mount on.
+    pub fn surfaces(&self) -> Arc<SurfaceRegistry> {
+        Arc::clone(&self.surfaces)
+    }
+}
+
+impl Default for VoiceCellFactory {
+    /// A table of this factory's own — for a fixture, which needs no CLI.
+    fn default() -> Self {
+        Self::new(Arc::new(SurfaceRegistry::new()))
+    }
+}
 
 impl CellFactory for VoiceCellFactory {
     fn validate_params(&self, params: &JsonValue) -> Result<(), String> {
@@ -79,6 +107,7 @@ impl CellFactory for VoiceCellFactory {
             mailbox_capacity,
             contract.consumes.clone(),
             contract.transfer_bounds(),
+            self.surfaces(),
         )?;
 
         let (sender, join, peace_rx, stop_tx, death_ack_rx, backstop_rx) = build();
@@ -133,6 +162,7 @@ impl CellFactory for VoiceCellFactory {
             mailbox_capacity,
             contract.consumes.clone(),
             contract.transfer_bounds(),
+            self.surfaces(),
         )
         .ok()?;
         Some(Box::new(move || {
@@ -187,6 +217,7 @@ fn make_build(
     mailbox_capacity: usize,
     consumes: Option<Arc<meclaw_core::CompiledConsumes>>,
     bounds: meclaw_core::TransferBounds,
+    surfaces: Arc<SurfaceRegistry>,
 ) -> Result<impl Fn() -> SpawnTuple, String> {
     let birth_parsed = VoiceParams::parse(&params)?;
     // Built here so an unknown provider is a spawn failure rather than the
@@ -208,6 +239,7 @@ fn make_build(
     let mailbox_capacity_cap = mailbox_capacity;
     let consumes_cap = consumes;
     let bounds_cap = bounds;
+    let surfaces_cap = surfaces;
 
     Ok(move || -> SpawnTuple {
         // 1. Open cell.db (sync). The `params` overlay table comes with every
@@ -275,8 +307,9 @@ fn make_build(
         //    replaces the placeholder in `VoiceCell::run_io`.
         let (placeholder_tx, _placeholder_rx) = mpsc::channel(1);
         let mut io = VoiceIo::new(
-            parsed.bind.clone(),
-            parsed.port,
+            // Read once per life, like the two timeouts: a name that moved
+            // takes effect on the next one (ruling O-P-2).
+            parsed.mount.clone(),
             stt,
             tts,
             parsed.default_mode,
@@ -287,6 +320,11 @@ fn make_build(
         // Read here, like the two timeouts: this life frames at the value it
         // was born with, and a moved one takes effect on the next respawn.
         io.audio_out_frame_ms = parsed.audio_out_frame_ms;
+        // The path the mount registers under. The mount table refuses a name
+        // another path holds and lets the holder replace its own entry, which
+        // is what a respawn is.
+        io.cell_path = path_cap.clone();
+        io.surfaces = Arc::clone(&surfaces_cap);
         let cell = VoiceCell::new(path_cap.clone(), io, &parsed, &effective_raw);
         let db = DbConn::wrap(
             conn,
@@ -316,6 +354,20 @@ mod tests {
     use crate::voice::params::VoiceOverlay;
     use meclaw_core::serde_json::json;
 
+    /// The cells register on the table the CLI reads, so the factory has to
+    /// carry the very `Arc` it was handed — a fresh one per factory would put
+    /// every mount somewhere nobody looks.
+    #[test]
+    fn a_factory_shares_the_registry_it_was_given() {
+        let reg = Arc::new(meclaw_colony::SurfaceRegistry::new());
+        let f = VoiceCellFactory::new(reg.clone());
+        assert!(
+            Arc::ptr_eq(&f.surfaces(), &reg),
+            "the cells register on the table the CLI reads"
+        );
+        let _ = VoiceCellFactory::default(); // a fixture needs no CLI
+    }
+
     /// MUST 2: the deadlines the adapters are held to come from the effective
     /// params, not from the birth ones.
     ///
@@ -328,7 +380,7 @@ mod tests {
     #[test]
     fn respawn_builds_providers_from_the_overlay() {
         let birth = json!({
-            "port": 7900,
+            "mount": "voice",
             "stt": {"provider": "echo"},
             "external_timeout_ms": 5000,
             "provider_idle_timeout_ms": 30000

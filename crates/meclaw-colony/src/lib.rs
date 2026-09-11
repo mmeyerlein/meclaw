@@ -35,6 +35,7 @@ pub mod persist;
 mod runtime;
 pub mod stateful_cell;
 pub mod stateless_cell;
+pub mod surfaces;
 pub mod templates;
 pub mod term_ack;
 pub mod watchdog;
@@ -99,6 +100,11 @@ pub use persist::colony_db::{ColonyDb, RegistryOverlay, read_registry_overlay};
 pub use runtime::ColonyRuntime;
 pub use stateful_cell::StatefulCell;
 pub use stateless_cell::StatelessCell;
+pub use surfaces::listener::{Fallback, serve};
+pub use surfaces::{
+    HandedConnection, Link, LinkFrame, LinkOpener, LinkRefused, LinkRequest, MountRefused,
+    MountRow, Registration, SurfaceEntry, SurfaceRegistry,
+};
 pub use term_ack::TermAckGuard;
 pub use watchdog::{
     HostWitness, Watchdog, WatchdogAction, WatchdogOnTrip, WatchdogTrip, WorkItem, WorkPulse,

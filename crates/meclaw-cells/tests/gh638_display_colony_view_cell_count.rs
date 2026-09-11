@@ -12,8 +12,9 @@
 //! three templates the declaration names bring six more.
 //!
 //! There is no model in this colony, so the run needs no provider and spends
-//! nothing. The one thing it bends is the port: the shipped `7899` is a fixed
-//! number and a second run on the same machine would collide with it.
+//! nothing, and since `web@2.0.0` nothing of the declaration has to be bent
+//! either: the screen names a mount inside this colony's own listener rather
+//! than a fixed port a second run on the same machine would collide with.
 //!
 //! Guarded like every template-reading test (GH #49): a tree without the
 //! example or the library is skipped, never judged.
@@ -23,9 +24,8 @@ use meclaw_cells::store::StoreCellFactory;
 use meclaw_cells::timer::TimerCellFactory;
 use meclaw_cells::web::WebCellFactory;
 use meclaw_colony::{CellFactory, CellFactoryRegistry, ColonyMsg, bootstrap_from_filesystem};
-use meclaw_core::serde_json::{Value, json};
+use meclaw_core::serde_json::Value;
 use meclaw_testing::ColonyHandle;
-use meclaw_testing::free_port;
 use std::sync::Arc;
 
 /// The two producers the example checks in: the timer and the `code` cell that
@@ -33,7 +33,7 @@ use std::sync::Arc;
 const CELLS_CHECKED_IN: usize = 2;
 
 /// Plus six from the three templates `grow.json` names: three from
-/// `display@1.1.0` (the `web` cell, the composer and the view store), two from
+/// `display@2.0.0` (the `web` cell, the composer and the view store), two from
 /// `colony-view@1.1.0` (the probe and the layout `code` cell — its `refresh`
 /// timer left with 1.1.0, GH #553), one from `terminal@1`. MEASURED.
 const CELLS_AFTER_GROW: usize = 8;
@@ -75,7 +75,7 @@ fn factories() -> Vec<(String, Arc<dyn CellFactory>)> {
         ),
         ("store".to_string(), Arc::new(StoreCellFactory)),
         ("timer".to_string(), Arc::new(TimerCellFactory)),
-        ("web".to_string(), Arc::new(WebCellFactory)),
+        ("web".to_string(), Arc::new(WebCellFactory::default())),
     ]
 }
 
@@ -120,18 +120,10 @@ async fn the_example_grows_from_two_cells_to_eight() {
         );
     }
 
-    // The shipped port is a fixed 7899, and a second run on the same machine
-    // would take it. Nothing else of the declaration is touched.
-    let port = free_port();
-    let mut grow = read_json(&example("grow.json"));
-    for node in grow["manifest"][0]["diff"]["add_nodes"]
-        .as_array_mut()
-        .expect("add_nodes")
-    {
-        if node["name"] == json!("display") {
-            node["override_params"]["web"]["port"] = json!(port);
-        }
-    }
+    // The declaration is run exactly as it ships: since `web@2.0.0` the screen
+    // names a MOUNT rather than a port, and a name inside this colony's own
+    // listener cannot be taken by a second run on the same machine.
+    let grow = read_json(&example("grow.json"));
 
     let h = ColonyHandle::new_with_factories_at(&td, factories());
     let mut registry = CellFactoryRegistry::new();

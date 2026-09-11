@@ -1,4 +1,13 @@
-//! One WebSocket connection, for its whole life (wave voice-cell).
+//! One client connection, for its whole life (wave voice-cell).
+//!
+//! # The transport is a parameter (GH #643)
+//!
+//! Nothing here names a socket any more. A connection is driven through a
+//! [`ClientLink`] — text in, binary in, text out, binary out, a close with a
+//! code — and the two doors that produce one are this cell's own WebSocket and a
+//! `voice:<call>` topic on the socket a display page already holds. Everything
+//! below that line is the same code for both, which is what makes `hello`,
+//! `bad_audio_frame`, `4409` and `client_too_slow` mean the same thing on either.
 //!
 //! # What this task is for
 //!
@@ -66,10 +75,6 @@
 //! turn a working call into a stuttering one — the gap between frames is what a
 //! playback buffer cannot survive, not the number of them.
 
-use axum::extract::ws::{CloseFrame, Message, WebSocket};
-use futures_util::stream::SplitSink;
-use futures_util::{SinkExt, StreamExt};
-use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot, watch};
@@ -78,6 +83,7 @@ use tokio::time::Instant;
 use crate::voice::cell::VoiceEvent;
 use crate::voice::contract::{AudioFormat, SttError, SttEvent, TtsError};
 use crate::voice::io::{ToConnection, VoiceIoShared, register, unregister};
+use crate::voice::link::{ClientLink, Incoming, LinkSink, Outgoing};
 use crate::voice::service::{Negotiated, audio_out_frame_ms, tts_name};
 use crate::voice::wire::{ClientFrame, Mode, PROTOCOL, ServerFrame, SpeakEndReason, WireErrorCode};
 
@@ -91,8 +97,8 @@ const STT_RETRY_DELAY: Duration = Duration::from_secs(1);
 /// How many audio chunks may be in flight between a provider and this task.
 const AUDIO_QUEUE: usize = 32;
 
-/// The sending half of the client socket.
-type Sink = SplitSink<WebSocket, Message>;
+/// The sending half of the client link, whatever carries it.
+type Sink = LinkSink;
 
 /// One running recognition session.
 struct SttSession {
@@ -296,10 +302,24 @@ enum SynthTick {
     End,
 }
 
+/// Resolve when the cell's I/O half is gone, or never when there is none.
+///
+/// `changed()` errors when the last sender drops, and that drop is the whole
+/// signal — nobody ever sends on this channel
+/// ([`crate::voice::io::VoiceIoShared::shutdown`]).
+async fn half_is_gone(shutdown: &mut Option<tokio::sync::watch::Receiver<()>>) {
+    match shutdown {
+        Some(rx) => {
+            let _ = rx.changed().await;
+        }
+        None => std::future::pending().await,
+    }
+}
+
 /// Drive one connection until it ends.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_connection(
-    ws: WebSocket,
+    link: ClientLink,
     shared: Arc<VoiceIoShared>,
     session_id: String,
     mode: Mode,
@@ -308,7 +328,9 @@ pub async fn run_connection(
     to_conn_tx: mpsc::Sender<ToConnection>,
     mut to_conn_rx: mpsc::Receiver<ToConnection>,
 ) {
-    let (mut sink, mut stream) = ws.split();
+    // Two halves rather than one link: the loop below reads the client in one
+    // `select!` arm and writes to it from four others.
+    let (mut sink, mut stream) = link.into_halves();
     register(&shared, &session_id, conn_id, to_conn_tx, mode).await;
 
     let echo = shared.stt.name() == "echo";
@@ -351,6 +373,10 @@ pub async fn run_connection(
     // nothing is being spoken.
     let mut speak_deadline: Option<Instant> = None;
     let mut closing: Option<u16> = None;
+    // The cell's own way out. An upgraded socket runs on a task axum spawned,
+    // which nothing in the I/O half holds a handle to, so this is how it hears
+    // that the half is gone — see [`crate::voice::io::VoiceIoShared::shutdown`].
+    let mut half_gone = shared.shutdown();
     // R-V6': how many mis-framed binary frames this connection has sent. The
     // counter lives here because it is per connection and per socket, and it
     // is what makes a systematic mis-framing visible without this half having
@@ -361,6 +387,16 @@ pub async fn run_connection(
     loop {
         tokio::select! {
             biased;
+
+            // The cell is going away, and the close frame is the point: a
+            // caller whose socket reads one knows the call is over, while a
+            // socket that merely stops answering is a line nobody is on. `1001`
+            // is the code the ordinary end of this half uses as well, so the
+            // client sees one story either way.
+            _ = half_is_gone(&mut half_gone) => {
+                closing = Some(1001);
+                break;
+            }
 
             // `biased;` makes this order a decision rather than a coin toss,
             // and the order is by urgency, not by volume. Commands first — a
@@ -517,9 +553,9 @@ pub async fn run_connection(
             }
 
             incoming = stream.next() => {
-                let Some(Ok(message)) = incoming else { break };
+                let Some(message) = incoming else { break };
                 match message {
-                    Message::Binary(bytes) => {
+                    Incoming::Binary(bytes) => {
                         if frame_bytes == 0 || bytes.len() % frame_bytes != 0 {
                             // Never trimmed, never guessed — and since R-V6'
                             // never fatal either: the frame is dropped, the
@@ -545,7 +581,7 @@ pub async fn run_connection(
                             continue;
                         }
                         if echo {
-                            if sink.send(Message::Binary(bytes)).await.is_err() {
+                            if sink.send(Outgoing::Binary(bytes)).await.is_err() {
                                 break;
                             }
                         } else if let Some(session) = stt.as_ref() {
@@ -559,7 +595,7 @@ pub async fn run_connection(
                         // for audio to go; that window is the price of the one
                         // retry and is a second of it.
                     }
-                    Message::Text(text) => {
+                    Incoming::Text(text) => {
                         if handle_text(&shared, &session_id, &mut sink, echo, &text)
                             .await
                             .is_err()
@@ -567,8 +603,7 @@ pub async fn run_connection(
                             break;
                         }
                     }
-                    Message::Close(_) => break,
-                    Message::Ping(_) | Message::Pong(_) => {}
+                    Incoming::Close => break,
                 }
             }
             tick = next_synth_tick(&mut speaking) => {
@@ -648,12 +683,7 @@ pub async fn run_connection(
             .await;
     }
     if let Some(code) = closing {
-        let _ = sink
-            .send(Message::Close(Some(CloseFrame {
-                code,
-                reason: Cow::Borrowed(""),
-            })))
-            .await;
+        sink.close(code, "").await;
     }
     unregister(&shared, &session_id, conn_id).await;
 }
@@ -809,13 +839,13 @@ async fn send_frame(sink: &mut Sink, frame: &ServerFrame) -> Result<(), ()> {
             return Ok(());
         }
     };
-    sink.send(Message::Text(text)).await.map_err(|_| ())
+    sink.send(Outgoing::Text(text)).await.map_err(|_| ())
 }
 
 /// Send audio frames in order, stopping at the first socket that is gone.
 async fn send_audio(sink: &mut Sink, frames: Vec<Vec<u8>>) -> Result<(), ()> {
     for frame in frames {
-        sink.send(Message::Binary(frame)).await.map_err(|_| ())?;
+        sink.send(Outgoing::Binary(frame)).await.map_err(|_| ())?;
     }
     Ok(())
 }

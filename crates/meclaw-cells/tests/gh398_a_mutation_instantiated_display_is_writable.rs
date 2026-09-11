@@ -39,7 +39,10 @@ use meclaw_colony::{CellFactory, ColonyMsg, MutationOutcome};
 use meclaw_core::serde_json::{Value, json};
 use meclaw_core::{Body, Message, MessageBuilder, Path, Uuid};
 use meclaw_testing::ColonyHandle;
-use meclaw_testing::free_port;
+use meclaw_testing::{surface_listener, wait_for_mount};
+
+/// The name the installed display answers to on the colony's one listener.
+const MOUNT: &str = "screen";
 use meclaw_testing::topologies::phase_3a::CaptureCell;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -73,9 +76,9 @@ fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
 }
 
 /// Install the shipped `templates/web/` into a temporary library, with one value
-/// changed: the port. Everything else — the contract block, the seed, the
+/// changed: the mount. Everything else — the contract block, the seed, the
 /// stylesheet — is the shipped file, because a fixture cannot ship a defect.
-async fn install_web_template(td: &tempfile::TempDir, h: &ColonyHandle, port: u16) {
+async fn install_web_template(td: &tempfile::TempDir, h: &ColonyHandle) {
     let shipped = core_root().join("templates/web");
     assert!(
         shipped.join("config.json").is_file(),
@@ -89,12 +92,12 @@ async fn install_web_template(td: &tempfile::TempDir, h: &ColonyHandle, port: u1
         &std::fs::read_to_string(tpl.join("config.json")).expect("read the shipped config"),
     )
     .expect("the shipped config is JSON");
-    cfg["params"]["port"] = json!(port);
+    cfg["params"]["mount"] = json!(MOUNT);
     std::fs::write(
         tpl.join("config.json"),
         meclaw_core::serde_json::to_string_pretty(&cfg).expect("serialise"),
     )
-    .expect("write the ported config");
+    .expect("write the mounted config");
 
     let (ack_tx, ack_rx) = oneshot::channel();
     h.inbox_tx
@@ -111,15 +114,31 @@ async fn install_web_template(td: &tempfile::TempDir, h: &ColonyHandle, port: u1
 }
 
 /// A colony with the `web` factory registered and a capture cell to answer into.
-async fn colony_with_sink(td: &tempfile::TempDir) -> (ColonyHandle, mpsc::Receiver<Message>) {
-    let factory: Arc<dyn CellFactory> = Arc::new(WebCellFactory);
+async fn colony_with_sink(
+    td: &tempfile::TempDir,
+) -> (
+    ColonyHandle,
+    mpsc::Receiver<Message>,
+    Arc<meclaw_colony::SurfaceRegistry>,
+) {
+    let surfaces = Arc::new(meclaw_colony::SurfaceRegistry::new());
+    let factory: Arc<dyn CellFactory> = Arc::new(WebCellFactory::new(Arc::clone(&surfaces)));
     let h = ColonyHandle::new_with_factories_at(td, vec![("web".to_string(), factory)]);
     let (sink_tx, sink_rx) = mpsc::channel::<Message>(64);
     h.spawn(Path::new("/sink"), move || {
         CaptureCell::new(sink_tx.clone())
     })
     .await;
-    (h, sink_rx)
+    (h, sink_rx, surfaces)
+}
+
+/// The listener in front of the grown display, and where it answers.
+async fn listener_for(
+    surfaces: &Arc<meclaw_colony::SurfaceRegistry>,
+) -> (String, tokio::task::JoinHandle<()>) {
+    wait_for_mount(surfaces, MOUNT).await;
+    let (addr, listener) = surface_listener(Arc::clone(surfaces)).await;
+    (format!("http://{addr}/{MOUNT}"), listener)
 }
 
 /// `add_nodes` from the shipped template — the step that runs the staging
@@ -130,7 +149,7 @@ async fn grow_the_display(h: &ColonyHandle) {
         .send(ColonyMsg::Mutation {
             payload: json!({
                 "scope": "/",
-                "diff": {"add_nodes": [{"name": NODE, "template": "web@1.1.0"}]}
+                "diff": {"add_nodes": [{"name": NODE, "template": "web@2.0.0"}]}
             }),
             reply_to: None,
             trace_id: Uuid::now_v7(),
@@ -253,12 +272,12 @@ fn factory_reference(dir: &std::path::Path) -> std::path::PathBuf {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_display_instantiated_by_mutation_accepts_a_page_set() {
     let td = tempfile::TempDir::new().unwrap();
-    let (h, mut sink_rx) = colony_with_sink(&td).await;
-    let port = free_port();
-    install_web_template(&td, &h, port).await;
+    let (h, mut sink_rx, surfaces) = colony_with_sink(&td).await;
+    install_web_template(&td, &h).await;
     grow_the_display(&h).await;
+    let (base, listener) = listener_for(&surfaces).await;
     wait_until_200(
-        &format!("http://127.0.0.1:{port}/"),
+        &format!("{base}/"),
         "the instantiated display never served its seeded page",
     )
     .await;
@@ -290,12 +309,13 @@ async fn a_display_instantiated_by_mutation_accepts_a_page_set() {
     );
 
     wait_until_200(
-        &format!("http://127.0.0.1:{port}/second"),
+        &format!("{base}/second"),
         "the route a page.set created never served",
     )
     .await;
 
     h.shutdown().await;
+    listener.abort();
 }
 
 /// The general form: what a mutation builds is what the cell type declares.
@@ -304,12 +324,12 @@ async fn a_display_instantiated_by_mutation_accepts_a_page_set() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_display_instantiated_by_mutation_has_the_schema_its_factory_declares() {
     let td = tempfile::TempDir::new().unwrap();
-    let (h, _sink_rx) = colony_with_sink(&td).await;
-    let port = free_port();
-    install_web_template(&td, &h, port).await;
+    let (h, _sink_rx, surfaces) = colony_with_sink(&td).await;
+    install_web_template(&td, &h).await;
     grow_the_display(&h).await;
+    let (base, listener) = listener_for(&surfaces).await;
     wait_until_200(
-        &format!("http://127.0.0.1:{port}/"),
+        &format!("{base}/"),
         "the instantiated display never served its seeded page",
     )
     .await;
@@ -325,4 +345,5 @@ async fn a_display_instantiated_by_mutation_has_the_schema_its_factory_declares(
     );
 
     h.shutdown().await;
+    listener.abort();
 }

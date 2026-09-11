@@ -94,7 +94,7 @@ dead-letters. Neither is silent, which is the point.
 **3. Open the screen.**
 
 ```
-http://127.0.0.1:7899/
+http://127.0.0.1:7788/display/
 ```
 
 The topology picture is there at once: `colony.json` opts this colony into
@@ -116,13 +116,15 @@ curl -s -X POST http://127.0.0.1:7788/messages \
   -d '{"target": "/colony-view", "hop": {"route": "in_refresh"}, "body": {"messages": []}}'
 ```
 
-## The port
+## The mount
 
-One port per screen, and it is chosen at instantiation — `grow.json` names `7899`.
-A second screen in the same colony is a second `display` on a different port, which
-is what makes one reverse-proxy rule a complete access statement for one of them.
-Authentication and TLS are external, permanently (R-W8-2): the screen binds
-loopback by default and everything in front of it is somebody else's job.
+One mount per screen, and it is chosen at instantiation — `grow.json` names
+`"mount": "display"`, so the page is at `/display/` on the address `--api` bound
+above. A second screen in the same colony is a second `display` under a second
+name, which is what makes one reverse-proxy rule a complete access statement for
+one of them. Since `web@2.0.0` the screen binds nothing itself; authentication
+and TLS are external, permanently (R-W8-2), and where the colony listens is one
+decision for the whole colony.
 
 ## What this example is not
 
@@ -132,6 +134,6 @@ loopback by default and everything in front of it is somebody else's job.
   whole focus model.
 - **Not multi-screen.** One screen, and this example writes into one of its two
   columns: `main`, the wide one. `aside` is there and stays empty, which costs
-  the page nothing (`display@1.1.0`).
+  the page nothing (`display@2.0.0`).
 - **Not a model.** There is no `llm` cell in this colony at all, so it costs
   nothing to run and needs no provider key.

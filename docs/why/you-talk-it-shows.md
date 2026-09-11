@@ -7,14 +7,14 @@ lets several agents and apps write onto one.
 
 ## What ships today
 
-Speech is a channel. Since 0.31.0 `voice` is a cell type: audio arrives on a WebSocket port of
-its own, recognition and synthesis sit behind traits, and the colony sees ordinary text turns
+Speech is a channel. Since 0.31.0 `voice` is a cell type: audio arrives on a WebSocket of its
+own, recognition and synthesis sit behind traits, and the colony sees ordinary text turns
 ([`voice-wire-protocol.md`](../voice-wire-protocol.md)).
 
 A screen is a channel too. [`display`](../../templates/display/) is one screen as a hive with a
-port of its own, and a view is a named, owned, optionally expiring piece of it. Whoever sends a
+mount of its own, and a view is a named, owned, optionally expiring piece of it. Whoever sends a
 view owns it, replaces it under the same name and takes it down, and nobody writing to it needs
-to know that anybody else does. An app owns no port and no origin of its own. It states a view
+to know that anybody else does. An app owns no mount and no screen of its own. It states a view
 on a lane and the wiring decides which screen holds it, which is why the same drawing can go to
 a display on a laptop or to two displays at once.
 

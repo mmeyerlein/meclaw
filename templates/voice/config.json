@@ -4,8 +4,7 @@
     "timeout": -1
   },
   "params": {
-    "port": 7900,
-    "bind": "127.0.0.1",
+    "mount": "voice",
     "default_mode": "auto",
     "barge_in": true,
     "emit_partials": false,
@@ -35,19 +34,13 @@
     }
   },
   "contract": {
-    "version": "1.1.0",
+    "version": "2.0.0",
     "settings": {
-      "port": {
-        "type": "number",
-        "secret": false,
-        "default": 7900,
-        "description": "TCP port of the WebSocket surface. Owned like a web cell's port: a second instance takes its own via override_params, and 0 is refused."
-      },
-      "bind": {
+      "mount": {
         "type": "string",
         "secret": false,
-        "default": "127.0.0.1",
-        "description": "Bind address. Loopback by default because this cell type never authenticates; put a proxy in front of it to expose it."
+        "default": "voice",
+        "description": "The name this cell is reached under on the colony's one listener, and the only door it has: `/<mount>/ws`, `/<mount>/info`, `/<mount>/`. Required. Two instances need two mounts, or the second registers nothing and says so. A name that moved takes effect on the next life. `port` and `bind` were removed in 2.0.0; a params document that still names one is refused with the migration."
       },
       "default_mode": {
         "type": "string",
@@ -239,7 +232,7 @@
   },
   "description": {
     "purpose": "One spoken conversation as one cell. Audio arrives over a WebSocket and leaves the cell as ordinary text turns; a finished assistant turn arriving from the topology is spoken back into the same connection. A connection IS the session, so the cell mints the id at birth and every emission carries it twice: as session_id, and as call_id -- the name a channel addresses it by.",
-    "use_when": "Wherever a topology needs a voice surface in front of something ELSE. One instance per port. Wire the cell itself -- there is no hive and no lane inside it to hit: the emission lane is on hop.route, 'turn' for a finished utterance, 'partial' for an interim one and 'error' for the cell's own failure.",
+    "use_when": "Wherever a topology needs a voice surface in front of something ELSE. One instance per mount. Wire the cell itself -- there is no hive and no lane inside it to hit: the emission lane is on hop.route, 'turn' for a finished utterance, 'partial' for an interim one and 'error' for the cell's own failure.",
     "not_in_scope": "No telephony, no SIP, no room: the client brings the audio and takes it back. No resampling either -- the rate a provider declares is the rate on the wire, and a client that sends something else is refused rather than converted. No persona, no memory, no answer of its own: this is the surface, and whatever stands behind it answers.",
     "emits_meaning": "Three emission shapes, hence no required hop key. (a) 'turn' -- one user-origin text turn per finished utterance, hop carries route, session_id, call_id, turn_id ('<session_id>#<n>'), platform and mode. (b) 'partial' -- the same body shape for an interim transcript, hop carries route, session_id, call_id, platform, mode and eager; params.emit_partials ships FALSE, so this shape only appears where a manifest ordered it and drew the edge that drains it. (c) 'error' -- empty messages[], hop carries route 'error', error_code, msg_type 'voice_error' and, where a session exists, session_id and call_id, with the detail in meta. Declaring session_id or platform required would break shape (c) against the substrate emits validation.",
     "consumes_meaning": "messages[]: the last assistant turn is spoken into the connection. context.call_id selects which connection -- promoted onto context by the outbound edge of the level that holds this cell, out of the hop this cell stamped on the way up. context.session_id is read where call_id is absent, so a colony wired before 1.4.0 keeps working; its owner is unchanged, and the second key exists because a member's session-keeper writes the first one for its own generation. A message naming neither is refused as missing_session.",

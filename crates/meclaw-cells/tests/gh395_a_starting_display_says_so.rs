@@ -30,7 +30,11 @@
 use meclaw_cells::web::io::{WebIo, run_io};
 use meclaw_cells::web::render::PageMap;
 use meclaw_cells::web::{Asset, AssetMap};
-use meclaw_testing::free_port;
+use meclaw_testing::{surface_listener, wait_for_mount};
+
+/// The name this fixture's display answers to. The port in every URL below is
+/// the LISTENER's: a `web` cell has none since `web@2.0.0`.
+const MOUNT: &str = "screen";
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, watch};
@@ -62,6 +66,9 @@ async fn get_once_up(url: &str) -> reqwest::Response {
 /// scope produced four tests whose listener was never up — which is a fair
 /// description of what the substrate promises, just not what was being tested.
 struct Alive {
+    /// The one listener in front of the half under test. Held for the same
+    /// reason as the senders: the task it names serves every request below.
+    _listener: tokio::task::JoinHandle<()>,
     _assets: watch::Sender<Arc<AssetMap>>,
     _push: mpsc::Sender<meclaw_cells::web::cell::WebReconfig>,
     _reconfig: mpsc::Sender<meclaw_cells::web::cell::WebReconfig>,
@@ -73,32 +80,35 @@ struct Alive {
 /// Returns the port, the readiness sender, the pages sender (so a publish can
 /// be made real rather than simulated), the keep-alive bundle, and the join
 /// handle.
-fn listener() -> (
+async fn listener() -> (
     u16,
     watch::Sender<bool>,
     watch::Sender<Arc<PageMap>>,
     Alive,
     tokio::task::JoinHandle<()>,
 ) {
-    let port = free_port();
+    let surfaces = Arc::new(meclaw_colony::SurfaceRegistry::new());
     let (pages_tx, pages_rx) = watch::channel(Arc::new(PageMap::new()));
     let (assets_tx, assets_rx) = watch::channel(Arc::new(AssetMap::new()));
     let (ready_tx, ready_rx) = watch::channel(false);
     let (push_tx, push_rx) = mpsc::channel(8);
     let io = WebIo::new(
-        "127.0.0.1".to_string(),
-        port,
+        MOUNT.to_string(),
+        String::new(),
         "/display",
         pages_rx,
         assets_rx,
         ready_rx,
         push_rx,
+        Arc::clone(&surfaces),
     );
     let (events_tx, events_rx) = mpsc::channel(8);
     let (reconfig_tx, reconfig_rx) = mpsc::channel(8);
     let join = tokio::spawn(run_io(io, events_tx, reconfig_rx));
+    wait_for_mount(&surfaces, MOUNT).await;
+    let (addr, listener) = surface_listener(surfaces).await;
     (
-        port,
+        addr.port(),
         ready_tx,
         pages_tx,
         Alive {
@@ -106,6 +116,7 @@ fn listener() -> (
             _push: push_tx,
             _reconfig: reconfig_tx,
             _events: events_rx,
+            _listener: listener,
         },
         join,
     )
@@ -113,13 +124,13 @@ fn listener() -> (
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn before_the_first_publish_the_display_answers_503_not_404() {
-    let (port, ready_tx, _pages_tx, _alive, join) = listener();
+    let (port, ready_tx, _pages_tx, _alive, join) = listener().await;
 
     // The window, held open. Every route is "not ready", including the one a
     // seed would declare — the display has no page map to make a statement from
     // yet, so it makes none.
     for path in ["/", "/seeded-page", "/nothing-here"] {
-        let resp = get_once_up(&format!("http://127.0.0.1:{port}{path}")).await;
+        let resp = get_once_up(&format!("http://127.0.0.1:{port}/{MOUNT}{path}")).await;
         assert_eq!(
             resp.status().as_u16(),
             503,
@@ -140,10 +151,10 @@ async fn before_the_first_publish_the_display_answers_503_not_404() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn after_the_first_publish_a_route_that_does_not_exist_is_404_again() {
-    let (port, ready_tx, _pages_tx, _alive, join) = listener();
+    let (port, ready_tx, _pages_tx, _alive, join) = listener().await;
 
     // Wait for the listener, still in the window.
-    let first = get_once_up(&format!("http://127.0.0.1:{port}/")).await;
+    let first = get_once_up(&format!("http://127.0.0.1:{port}/{MOUNT}/")).await;
     assert_eq!(first.status().as_u16(), 503, "precondition: still starting");
 
     // The handler publishes. An EMPTY map is published on purpose: a display
@@ -152,7 +163,7 @@ async fn after_the_first_publish_a_route_that_does_not_exist_is_404_again() {
     // as "is the page map empty".
     ready_tx.send(true).expect("the listener is still up");
 
-    let resp = get_once_up(&format!("http://127.0.0.1:{port}/nothing-here")).await;
+    let resp = get_once_up(&format!("http://127.0.0.1:{port}/{MOUNT}/nothing-here")).await;
     assert_eq!(
         resp.status().as_u16(),
         404,
@@ -167,8 +178,8 @@ async fn after_the_first_publish_a_route_that_does_not_exist_is_404_again() {
 /// distinguishable on the wire, at the same URL, with nothing else changed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_two_facts_are_told_apart_at_one_url() {
-    let (port, ready_tx, _pages_tx, _alive, join) = listener();
-    let url = format!("http://127.0.0.1:{port}/some-route");
+    let (port, ready_tx, _pages_tx, _alive, join) = listener().await;
+    let url = format!("http://127.0.0.1:{port}/{MOUNT}/some-route");
 
     let starting = get_once_up(&url).await.status().as_u16();
     ready_tx.send(true).expect("the listener is still up");
@@ -188,8 +199,8 @@ async fn the_two_facts_are_told_apart_at_one_url() {
 /// `on_start`, so a request for one in the window is "not ready" too.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_file_request_in_the_window_is_not_a_404_either() {
-    let (port, ready_tx, _pages_tx, _alive, join) = listener();
-    let resp = get_once_up(&format!("http://127.0.0.1:{port}/style.css")).await;
+    let (port, ready_tx, _pages_tx, _alive, join) = listener().await;
+    let resp = get_once_up(&format!("http://127.0.0.1:{port}/{MOUNT}/style.css")).await;
     assert_eq!(
         resp.status().as_u16(),
         503,

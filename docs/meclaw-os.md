@@ -53,7 +53,7 @@ that exists before the mutation that puts something there.
 | `cogny` | assistant | The reasoning core. One brain and one class of errand: synthesis, a development over time, multi-step work. |
 | `tools` | assistant | The tool surface. `tool_call` in, `tool_result` out, and it hands back the schemas of the tools it serves. |
 | `telegram-connector` | channel | One Telegram chat behind one proxy cell, with no persona and no answer of its own. |
-| `display` | channel | One screen on a port of its own, which several agents write named views onto without knowing about each other. |
+| `display` | channel | One screen on a mount of its own, which several agents write named views onto without knowing about each other. |
 | `freeswitch` | channel | A telephone as a channel. A `voice` cell terminates the media, a small state machine offers `call` and `hangup`. |
 | apps | member | A sealed hive in the member's `apps` container. It may observe the conversation, offer a tool and write to a screen, and it never stands in the way. |
 

@@ -31,7 +31,7 @@ use meclaw_cells::web::WebCellFactory;
 use meclaw_colony::{CellFactory, ContractView, SpawnedCellKind};
 use meclaw_core::serde_json::{Value, json};
 use meclaw_core::{Body, CellEmission, MessageBuilder, Path};
-use meclaw_testing::free_port;
+use meclaw_testing::{surface_listener, wait_for_mount};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
@@ -80,8 +80,15 @@ fn seed(cell_dir: &std::path::Path) {
     .expect("pages");
 }
 
+/// The name this fixture's display answers to on the colony's one listener.
+/// The port in every URL below is the LISTENER's: a `web` cell has none since
+/// `web@2.0.0`.
+const MOUNT: &str = "screen";
+
 struct Live {
+    /// The port of the one listener in front of the cell.
     port: u16,
+    _listener: tokio::task::JoinHandle<()>,
     mailbox: mpsc::Sender<meclaw_core::Message>,
     out_rx: mpsc::Receiver<CellEmission>,
     _stop: tokio::sync::oneshot::Sender<()>,
@@ -89,13 +96,13 @@ struct Live {
 }
 
 async fn start(cell_dir: &std::path::Path) -> Live {
-    let port = free_port();
+    let surfaces = Arc::new(meclaw_colony::SurfaceRegistry::new());
     let (out_tx, out_rx) = mpsc::channel::<CellEmission>(64);
     let (inbox_tx, _inbox_rx) = mpsc::channel(8);
-    let spawned = Arc::new(WebCellFactory)
+    let spawned = Arc::new(WebCellFactory::new(Arc::clone(&surfaces)))
         .spawn_cell(
             Path::new("/web"),
-            json!({ "port": port }),
+            json!({ "mount": MOUNT }),
             out_tx,
             cell_dir.to_path_buf(),
             ContractView::default(),
@@ -117,9 +124,12 @@ async fn start(cell_dir: &std::path::Path) -> Live {
         panic!("Active");
     };
 
+    wait_for_mount(&surfaces, MOUNT).await;
+    let (addr, listener) = surface_listener(Arc::clone(&surfaces)).await;
+    let port = addr.port();
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        if let Ok(r) = reqwest::get(format!("http://127.0.0.1:{port}/")).await
+        if let Ok(r) = reqwest::get(format!("http://127.0.0.1:{port}/{MOUNT}/")).await
             && r.status().is_success()
         {
             break;
@@ -130,6 +140,7 @@ async fn start(cell_dir: &std::path::Path) -> Live {
 
     Live {
         port,
+        _listener: listener,
         mailbox: sender,
         out_rx,
         _stop: stop_tx,
@@ -159,7 +170,7 @@ async fn call(live: &mut Live, calls: &[(&str, Value)]) -> Value {
 }
 
 async fn page(live: &Live) -> String {
-    reqwest::get(format!("http://127.0.0.1:{}/", live.port))
+    reqwest::get(format!("http://127.0.0.1:{}/{MOUNT}/", live.port))
         .await
         .expect("get")
         .text()

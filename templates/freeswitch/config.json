@@ -12,7 +12,7 @@
         },
         {
           "route": "call_incoming",
-          "because": "somebody is ringing this member. It arrives from the dialplan through the front door (`POST /messages` addressed at this hive) and carries the caller's number and the call's UUID. It is the one lane that makes this a channel rather than a tool: a call that comes in becomes a turn of a conversation -- THE one turn of that call, since 1.0.1 (GH #614). A number in no `callers` entry raises no turn and the leg is put down instead of being left parked in silence. Since 1.1.0 whether it becomes a turn AT ALL depends on what else is on the line: `params.second_call` decides, and a call that was refused or that is still waiting in the queue leaves a receipt instead of a turn (GH #620)"
+          "because": "somebody is ringing this member. It arrives from the dialplan through the front door (`POST /messages` addressed at this hive) and carries the caller's number, the call's UUID and -- since 2.0.0 -- `user_id`, the member the switch put the caller through as, which is trusted where it is there. It is the one lane that makes this a channel rather than a tool: a call that comes in becomes a turn of a conversation -- THE one turn of that call, since 1.0.1 (GH #614). A call with no `user_id` and no `callers` entry raises no turn and the leg is put down instead of being left parked in silence. Since 1.1.0 whether it becomes a turn AT ALL depends on what else is on the line: `params.second_call` decides, and a call that was refused or that is still waiting in the queue leaves a receipt instead of a turn (GH #620)"
         },
         {
           "route": "call_ringing",
@@ -31,7 +31,7 @@
           "at": [
             "./dial"
           ],
-          "because": "a model called `call` or `hangup`. The connect point is named because a tool call is answered by the cell that IS the tool -- a hop through the rim would only add a place for the call to get lost (ADR-0020)"
+          "because": "a model called one of the five tools -- `call` and `hangup` for a call, `add_number`, `set_pin` and `disable_pin` for the line. The connect point is named because a tool call is answered by the cell that IS the tool -- a hop through the rim would only add a place for the call to get lost (ADR-0020)"
         },
         {
           "route": "schemas",
@@ -56,7 +56,7 @@
         },
         {
           "route": "tool_result",
-          "because": "the answer to a `call` or a `hangup`, under the call's own id. A `call` answers the moment the switch has been asked -- with the session the conversation will run under -- because the OUTCOME of a call is a turn on this channel and not a tool result: the model is told twice, once as the receipt of its own action and once as something that happened"
+          "because": "the answer to one of the five tools, under the call's own id. For the three line tools it is the receipt of the row that left for the switch, and it is the only answer there is: nothing here reads the switch's table back. A `call` answers the moment the switch has been asked -- with the session the conversation will run under -- because the OUTCOME of a call is a turn on this channel and not a tool result: the model is told twice, once as the receipt of its own action and once as something that happened"
         },
         {
           "route": "tool_schemas",
@@ -103,6 +103,7 @@
               "phone_call",
               "phone_cause",
               "phone_number",
+              "phone_user",
               "phone_op",
               "phone_tool_call_id"
             ]
@@ -134,6 +135,7 @@
               "phone_call",
               "phone_cause",
               "phone_number",
+              "phone_user",
               "phone_op",
               "phone_tool_call_id"
             ]
@@ -150,6 +152,7 @@
               "phone_call": "has(hop.call_uuid) ? hop.call_uuid : ''",
               "phone_cause": "has(hop.cause) ? hop.cause : ''",
               "phone_number": "has(hop.number) ? hop.number : ''",
+              "phone_user": "has(hop.user_id) ? hop.user_id : ''",
               "phone_tool_call_id": "has(hop.tool_call_id) ? hop.tool_call_id : ''"
             }
           }
@@ -189,6 +192,7 @@
               "phone_call",
               "phone_cause",
               "phone_number",
+              "phone_user",
               "phone_op",
               "phone_tool_call_id"
             ]

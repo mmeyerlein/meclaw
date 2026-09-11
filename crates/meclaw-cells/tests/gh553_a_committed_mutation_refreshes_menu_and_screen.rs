@@ -51,7 +51,11 @@ use meclaw_colony::{CellFactory, CellFactoryRegistry, ColonyMsg, bootstrap_from_
 use meclaw_core::serde_json::{Value, json};
 use meclaw_core::{Message, Path};
 use meclaw_testing::ColonyHandle;
-use meclaw_testing::free_port;
+use meclaw_testing::{surface_listener, wait_for_mount};
+
+/// The name the screen answers to on the colony's one listener. The port in
+/// the URLs below is the LISTENER's: a `web` cell has none since `web@2.0.0`.
+const MOUNT: &str = "display";
 use meclaw_testing::topologies::phase_3a::CaptureCell;
 use mock_openai::MockOpenAI;
 use std::collections::BTreeSet;
@@ -231,7 +235,7 @@ fn grow_the_tools_hive() -> Value {
     ]}})
 }
 
-fn build_root(td: &tempfile::TempDir, base_url: &str, port: u16) {
+fn build_root(td: &tempfile::TempDir, base_url: &str) {
     let root = td.path();
     write_json(
         &root.join("colony.json"),
@@ -260,7 +264,7 @@ fn build_root(td: &tempfile::TempDir, base_url: &str, port: u16) {
     double_the_tool_cells(&root.join("templates/tools"));
 
     patch(&root.join("main/screen/web/config.json"), |v| {
-        v["override_params"][""]["port"] = json!(port)
+        v["override_params"][""]["mount"] = json!(MOUNT)
     });
     patch(&root.join("main/agent/brain/config.json"), |v| {
         v["params"]["base_url"] = json!(base_url);
@@ -294,7 +298,9 @@ fn build_root(td: &tempfile::TempDir, base_url: &str, port: u16) {
     .unwrap();
 }
 
-fn factories() -> Vec<(String, Arc<dyn CellFactory>)> {
+fn factories(
+    surfaces: &Arc<meclaw_colony::SurfaceRegistry>,
+) -> Vec<(String, Arc<dyn CellFactory>)> {
     vec![
         (
             "code".to_string(),
@@ -303,22 +309,28 @@ fn factories() -> Vec<(String, Arc<dyn CellFactory>)> {
         ("store".to_string(), Arc::new(StoreCellFactory)),
         ("timer".to_string(), Arc::new(TimerCellFactory)),
         ("llm".to_string(), Arc::new(LlmCellFactory)),
-        ("web".to_string(), Arc::new(WebCellFactory)),
+        (
+            "web".to_string(),
+            Arc::new(WebCellFactory::new(Arc::clone(surfaces))),
+        ),
     ]
 }
 
-async fn boot(td: &tempfile::TempDir) -> (ColonyHandle, mpsc::Receiver<Message>) {
-    let h = ColonyHandle::new_with_factories_at(td, factories());
+async fn boot(
+    td: &tempfile::TempDir,
+    surfaces: &Arc<meclaw_colony::SurfaceRegistry>,
+) -> (ColonyHandle, mpsc::Receiver<Message>) {
+    let h = ColonyHandle::new_with_factories_at(td, factories(surfaces));
     let (park_tx, park_rx) = mpsc::channel::<Message>(1024);
     h.spawn(Path::new("/park"), move || {
         CaptureCell::new(park_tx.clone())
     })
     .await;
     let mut registry = CellFactoryRegistry::new();
-    for (name, f) in factories() {
+    for (name, f) in factories(surfaces) {
         registry.insert(name, f);
     }
-    // The scan comes BEFORE the boot: the display refs `web@1.1.0`, and a growth
+    // The scan comes BEFORE the boot: the display refs `web@2.0.0`, and a growth
     // at boot time resolves against the templates table in `colony.db`, which is
     // empty until somebody fills it (GH #424).
     let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
@@ -375,7 +387,7 @@ fn menu_in_the_brain(td: &tempfile::TempDir) -> BTreeSet<String> {
 
 /// GET the screen's own route until the listener answers at all.
 async fn get_page(port: u16) -> (u16, String) {
-    let url = format!("http://127.0.0.1:{port}/");
+    let url = format!("http://127.0.0.1:{port}/{MOUNT}/");
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         match reqwest::get(&url).await {
@@ -465,8 +477,8 @@ async fn the_boot_receipt_fills_the_screen_and_a_mutation_refreshes_both() {
     }
     let mock = MockOpenAI::start(vec![]).await;
     let td = tempfile::tempdir().unwrap();
-    let port = free_port();
-    build_root(&td, &mock.base_url, port);
+    let surfaces = Arc::new(meclaw_colony::SurfaceRegistry::new());
+    build_root(&td, &mock.base_url);
 
     // No `timer` cell anywhere on the live path but the keeper's night close.
     let timers: Vec<String> = config_paths(td.path().join("main").as_path())
@@ -479,7 +491,11 @@ async fn the_boot_receipt_fills_the_screen_and_a_mutation_refreshes_both() {
         "the grown tree still carries a poll timer"
     );
 
-    let (h, park) = boot(&td).await;
+    let (h, park) = boot(&td, &surfaces).await;
+    // One listener in front of the whole colony, the way the CLI runs one.
+    wait_for_mount(&surfaces, MOUNT).await;
+    let (addr, listener) = surface_listener(Arc::clone(&surfaces)).await;
+    let port = addr.port();
 
     // --- claim 1: the boot receipt alone draws the picture and publishes it.
     // Nothing has ticked, nothing has been asked, and the screen answers.
@@ -535,4 +551,5 @@ async fn the_boot_receipt_fills_the_screen_and_a_mutation_refreshes_both() {
         "the colony is still emitting after the mutation settled — a receipt \
          that triggers a mutation is the feedback loop GH #161 wedged on"
     );
+    listener.abort();
 }

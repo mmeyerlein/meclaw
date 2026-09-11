@@ -5,13 +5,14 @@
 use crate::ColonyHandle;
 use crate::handlers::{
     dead_letters, events, graph, health, ledger, message_log, messages, mutations, registry,
-    templates, trace,
+    surfaces, templates, trace,
 };
 use crate::ui;
 use axum::Router;
 use axum::extract::FromRef;
 use axum::response::Redirect;
 use axum::routing::{get, post};
+use meclaw_colony::SurfaceRegistry;
 use meclaw_colony::blob::DiskBlobStore;
 use std::sync::Arc;
 
@@ -29,6 +30,10 @@ pub struct AppState {
     /// `meclaw_core::MESSAGE_DEFAULT_TTL`. `POST /messages` uses it whenever the
     /// request carries no explicit `ttl` field.
     pub message_default_ttl: u32,
+    /// The process's mount table (ADR-0031), minted by the CLI and shared with
+    /// the surface factories and the one listener. `GET /colony/surfaces` reads
+    /// it; nothing in this crate writes it.
+    pub surfaces: Arc<SurfaceRegistry>,
 }
 
 impl FromRef<AppState> for Arc<ColonyHandle> {
@@ -40,6 +45,12 @@ impl FromRef<AppState> for Arc<ColonyHandle> {
 impl FromRef<AppState> for Arc<DiskBlobStore> {
     fn from_ref(s: &AppState) -> Self {
         s.blob_store.clone()
+    }
+}
+
+impl FromRef<AppState> for Arc<SurfaceRegistry> {
+    fn from_ref(s: &AppState) -> Self {
+        s.surfaces.clone()
     }
 }
 
@@ -61,15 +72,21 @@ impl FromRef<AppState> for Arc<DiskBlobStore> {
 /// (`templates/canvy/MIGRATION.md`). A display is a `web` cell on a port of its
 /// own now, so this router serves the operator UI and the colony endpoints —
 /// exactly what it served before GH #159 — and nothing an application draws.
+///
+/// GH #644: a fourth param again, `surfaces` — the process's mount table, read
+/// by `GET /colony/surfaces`. It is not the retired `SurfaceState` returning: the
+/// registry serves no bytes, it only says which name reaches which cell.
 pub fn build_router(
     colony: Arc<ColonyHandle>,
     blob_store: Arc<DiskBlobStore>,
     message_default_ttl: u32,
+    surfaces: Arc<SurfaceRegistry>,
 ) -> Router {
     let state = AppState {
         colony,
         blob_store,
         message_default_ttl,
+        surfaces,
     };
     Router::new()
         // Issue #7: still the HTTP layer's own health check (always 200, no
@@ -91,6 +108,9 @@ pub fn build_router(
         // P1 message browser — read-only surface over colony.db::message_log.
         .route("/colony/messages", get(message_log::get_message_log))
         .route("/colony/graph", get(graph::get_graph))
+        // GH #644: the mount table of the surface cells. A read of the process's
+        // own registry — no message, hence no route() on this path.
+        .route("/colony/surfaces", get(surfaces::get_surfaces))
         .route(
             "/colony/mutations",
             get(mutations::get_mutations_audit).post(mutations::post_mutation),

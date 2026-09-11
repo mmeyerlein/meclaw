@@ -11,13 +11,13 @@ authentication and no TLS; put a reverse proxy in front of it, like any Linux da
 files are the whole interface, and there is no SDK to import.
 
 meclaw is under heavy development, and I would not leave it unattended in production. The
-0.33.0 release gate ran 6953 tests. One measured colony spent 0.32 EUR on a day of
+0.35.0 release gate ran 7002 tests. One measured colony spent 0.32 EUR on a day of
 conversation.
 
 ## What 0.x binds
 
 Five surfaces are the public contract of this project: the HTTP API, the template DSL, the
-template ports, the `web` cell's own origin, and the documented `error_code` strings. On `0.x`
+template ports, the mount a `web` cell owns, and the documented `error_code` strings. On `0.x`
 those five change additively, and a change that breaks an existing topology gets its own
 Breaking section in [`../CHANGELOG.md`](../CHANGELOG.md).
 

@@ -17,7 +17,7 @@ meclaw is a framework for composing complex agentic systems, not just agents: fa
 
 meclaw-os is the reference implementation: a complete agentic OS, grown on that substrate and nothing else.
 
-Three things that make a meclaw agent unique. A voice cell that listens and speaks on a wire protocol built for it. A web cell that gives the assistant a display on its own origin, where it shows you instead of telling you. And a vault that keeps your secrets secret, with every cell inside a kernel sandbox.
+Three things that make a meclaw agent unique. A voice cell that listens and speaks on a wire protocol built for it. A web cell that gives the assistant a display of its own, where it shows you instead of telling you. And a vault that keeps your secrets secret, with every cell inside a kernel sandbox.
 
 meclaw talks to any OpenAI-compatible endpoint and to MCP servers.
 

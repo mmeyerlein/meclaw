@@ -5,12 +5,186 @@ package. The format loosely follows [Keep a Changelog](https://keepachangelog.co
 versioning follows SemVer (0.x: minor/patch bumps for additive features).
 
 The public contract is the HTTP API, the template DSL, the template ports, the
-`web` cell's own origin and the documented `error_code` strings
+mount a `web` cell owns and the documented `error_code` strings
 ([docs/stability.md](docs/stability.md)). Anything that breaks one of them is
 listed under **Breaking** in its release, with the migration named. The Rust
 crates are internals and move without notice.
 
 ## [Unreleased]
+
+## [0.35.0] — 2026-09-11
+
+A surface cell has no port. A colony has one listener, and everything on it
+that is not the HTTP API is reached under a name: a display at
+`http://<listener>/<mount>/`, a voice door at `ws://<listener>/<mount>/ws`.
+`params.port` and `params.bind` leave the `web` and the `voice` cell type
+altogether, and a document that still carries one is refused at parse with the
+migration in the message. The OS hands out a mount per member instead of a
+port. In front of a telephone the switch is the proxy: it maps a number and a
+PIN to a colony's listener and the mount of that colony's telephone half, and
+stamps who is calling into the event it posts. This release carries what the
+one-listener wave built and what the ruling after it changed, in one Breaking
+section.
+
+### Breaking
+
+- **`web` and `voice` have no port, not even as an option.** `params.port` and
+  `params.bind` are removed from both cell types, and `params.mount` is
+  required. A params document that still names one of the two is refused at
+  parse, before every other check, with the migration in the message:
+
+  ```
+  port: removed in web 2.0.0 — the cell is reached at /<mount>/ on the colony's
+  listener; drop the key and name a mount
+  ```
+
+  `bind:` is told the same sentence, and a `voice` document reads
+  `voice 2.0.0` where this one reads `web 2.0.0`. It is a refusal rather than
+  an ignored key because a display whose port was dropped in silence would come
+  up at an address nobody asked for.
+
+  **Migration.** Drop the two keys, name a mount, and reach the cell on the
+  colony's listener: a display at `http://<listener>/<mount>/`, a voice socket
+  at `ws://<listener>/<mount>/ws`, its declaration at `/<mount>/info`. What
+  stood in front of a cell's own port — a reverse-proxy rule, a firewall line —
+  stands in front of the one listener, and one rule covers the whole colony.
+  `web@2.0.0`, `voice@2.0.0`, `display@2.0.0`, `canvy@2.3.0`. ADR-0014 is
+  superseded by ADR-0031 (GH #654, umbrella #653; GH #645, umbrella #639).
+- **An upgraded cell's `params` table has to lose its `port` and `bind` rows.**
+  A param update is persisted in the `params` table of the cell's `cell.db` and
+  replayed over the birth params on every wake and every respawn, so a `port`
+  or a `bind` once set on a single cell outlives the upgrade of its template and
+  `2.0.0` refuses the merged document. Delete those rows before the cell comes
+  up under the new version; editing `config.json` is not enough. An
+  `override_params` merge cannot remove a key either, which is why a `port` set
+  to `null` is refused with the same sentence rather than read as unset.
+- **The OS hands out a mount instead of a port.** The `builder` recipe knob
+  `screen_port_base` (a number, `7900`) is replaced by `screen_mount` (a string
+  with one placeholder, default `{member}-display`), and the member grow recipe
+  writes `override_params.web.mount` from it. Two organisations with a
+  same-named member render the same mount: the second registration answers
+  `MountFailed`, that cell stays up and is not reachable under the name. The two
+  ways out are a member name that is distinct colony-wide, or a hand-written
+  manifest carrying its own `override_params.web.mount`. `builder@1.8.0`,
+  `meclaw-os@1.8.7` (GH #655).
+- **`freeswitch@2.0.0`: the switch is the proxy.** `voice_ws_url` defaults to
+  `ws://127.0.0.1:7777/phone/ws`; the form is `ws://<listener>/<mount>/ws`, and
+  the media half mounts as `phone`. The switch's own table is the register: one
+  row per line in the realm `meclaw_lines` (`params.db_realm`), keyed by the
+  caller's number, with the value `<line_user_id>|<voice_ws_url>` — who the
+  caller is put through as, and where the audio is streamed — and the PIN in a
+  row of its own under `pin.<user>`. `call_incoming` trusts `hop.user_id` as the
+  identity the switch verified; `params.callers` stays the fallback for a
+  dialplan that stamps none, and a call with neither is refused `unknown_caller`
+  as before (GH #616).
+- **`GET /colony/surfaces` rows carry `mount` and `kind`.** The `own_addr`
+  column is gone: no surface cell binds an address of its own, so the second
+  address slot in the row had nothing left to carry. The `?format=traefik`
+  document is unchanged.
+
+### Added
+
+- **A surface mounts by name.** A `voice` cell takes `params.mount` and is
+  reached under that name on the colony's one listener: the socket at
+  `/<mount>/ws`, the declaration at `/<mount>/info`, the test page at
+  `/<mount>/`. The name lives in a process-level registry the cell's I/O half
+  writes on every life, and a name another cell holds is refused out loud — the
+  cell stays up and is simply not reachable under it. The grammar is narrower
+  than a path segment (`[a-z0-9-]{1,64}`, and never a first segment the API
+  owns), so a name that needs escaping is refused before the cell spawns.
+  `mount` is mutable, and a mount that moved takes effect on the next life of
+  the cell. A member with a browser voice channel and a telephone holds two
+  mounts, `voice` for the screen's half and `phone` for the switch's. Decision:
+  ADR-0031, which supersedes ADR-0014 (GH #642, umbrella #639; GH #654,
+  umbrella #653).
+- **One listener for what is not a browser.** `--api` reads a connection's
+  first request line and hands the stream, unread, to the cell that mounted the
+  first path segment; a mount is reached under `/<mount>/…` on that port and
+  serves its own routes there. Everything else on the same socket is the HTTP
+  API, as before. A mount that cannot take another connection answers `503` and
+  closes, and a connection is decided once, on that first line. `GET
+  /colony/surfaces` publishes the mount table: the listener's address and one
+  row per mount with its name and its cell type. `?format=traefik` renders the
+  same table as a Traefik HTTP-provider document, one router per mount and one
+  service for the listener, with the request's `Host` header as the service
+  URL; any other `format` is a `400 bad_query` (GH #644 and #645, umbrella
+  #639).
+- **The listener core is a colony function.** The peek-and-hand-off loop, the
+  accept error classes and the drain live in
+  `meclaw_colony::surfaces::listener` as
+  `serve(listener, registry, fallback, shutdown)`, with a `Fallback` trait for
+  the connection whose first segment is no mount; the CLI wraps its API router
+  in one and keeps nothing else. `meclaw_testing::surface_listener(registry)` is
+  that same core with a `404` fallback, so a fixture holding a display and a
+  voice cell binds one port for both instead of one each (GH #654).
+- **The shell is prefix-aware.** A `web` cell writes every link of its page
+  from `X-Forwarded-Prefix` plus its own mount, so a proxy may put a display on
+  a domain path or on a subdomain root and say which. The header is read only
+  when it is a path (`^/[A-Za-z0-9._~/-]{0,200}$`, no trailing slash) and never
+  when it leads with `//` or carries a `..` segment; anything else is ignored
+  rather than trusted. The socket URL, the asset bundles and the page's
+  `<base href>` follow that base, and the LiveView join's URL is stripped of it
+  again, so a `page.set` route stays what it was (GH #645).
+- **`identity_header`.** A new `web` param, empty by default. With a request
+  header named, the value that header carried at the socket upgrade travels as
+  `hop.user_id` on every semantic browser event of that connection. Nothing is
+  stamped while the param is empty, because a header a client can set without a
+  proxy in front of it is not an identity. A `hop` is single-hop, so the edge out
+  of the screen owes the stamp a promotion into `context.user_id`: the member
+  grow recipe renders it (`builder@1.8.0`), and
+  `examples/organism/grow-screen.json` carries it. Separating members — auth,
+  cookies, storage — is the proxy's job, and a page that needs browser storage
+  keys it by mount (GH #645).
+- **Audio in the display window.** `display@2.0.0` carries a hold-to-talk
+  button. Pressing it joins a `voice:<call>` topic on the LiveView socket the
+  page is already holding, and the `web` cell hands those frames to the `voice`
+  cell mounted under the name the display was given (`voice_mount`, default
+  `voice`). There is no second port and no second connection. Three events carry
+  it: `frame` for a text frame either way, `audio` for binary either way,
+  `close` for the code. Everything the wire protocol says stays true on the
+  topic: both modes, `4409`, `client_too_slow`, and a refusal is the same
+  sentence the socket door answers with, carried as the join's error reason,
+  because both doors run one admission. One socket holds at most four live
+  `voice:` topics; the fifth join is refused `too many voice topics on this
+  socket`. The page cuts 20 ms PCM16 frames in an `AudioWorklet` and plays the
+  answer through an `AudioContext` at the rate `hello` declared; a microphone
+  needs a secure context, and the button says so where there is none. Two
+  proofs travel with it: a Rust client that speaks through the display's socket
+  and reads the turn on the topic, and headless Chromium driven over CDP that
+  holds the real button with a real microphone. `voice` gains `mount`-side
+  documentation in
+  [docs/voice-wire-protocol.md](docs/voice-wire-protocol.md) (GH #643, umbrella
+  #639).
+- **A socket ends with the cell.** Every handed connection of a `web` and of a
+  `voice` cell is held by its I/O half rather than detached, so a respawn takes
+  its sockets with it instead of leaving a browser or a call talking to a cell
+  that is gone (GH #654, #645).
+- **A member name that renders no mount refuses the whole wish.** The builder
+  checks the mount grammar before it renders anything: the length, the alphabet
+  and the reserved first segments stand in the recipe as they stand in
+  `meclaw_colony::surfaces`, a name that would render an invalid mount comes
+  back as `wish_incomplete` naming the grammar and the field, and no manifest is
+  written — a manifest rolls forward and has no rollback, so half a member is
+  worse than none. A test holds the recipe's copy of the reserved segments
+  against the substrate's, in both directions (GH #655).
+- **Three tools write the switch's line table.** Beside `call` and `hangup` the
+  `freeswitch` channel offers `add_number(number)`, `set_pin(pin)` and
+  `disable_pin()`. Each one is a single GET at the switch's `/webapi/db`
+  (`mod_db`: `db insert/<realm>/<key>/<value>`, `db delete/<realm>/<key>`), and
+  the answer is a receipt. Two `error_code` strings are new: a switch that
+  refuses the write says `line_write_failed`, and a hive without `line_user_id`
+  says `line_unconfigured` and writes nothing. A PIN the dialplan could not read
+  back — anything but 4 to 8 digits — is `invalid_arguments`, the code the
+  channel has carried since `freeswitch@1.0.0`, with nothing sent.
+  The PIN rests where the switch keeps it, in that host's own database, guarded
+  by that host's access control (GH #616).
+- **The dialplan contract for a switch in front of several colonies.**
+  `templates/freeswitch/README.md` § *What the dialplan owes* carries it as
+  copyable XML: the `db(select/…)` lookup of the calling number, the PIN prompt
+  (`play_and_get_digits 4 8 3 8000 … ^\d{4,8}$`), the compare, one generic
+  connect block that streams the call to the URL the row named, the
+  `call_incoming` post with `user_id` on it, and the announcement a refused line
+  hears. Adding a colony to such a switch is one row in its table (GH #616).
 
 ## [0.34.0] — 2026-09-09
 

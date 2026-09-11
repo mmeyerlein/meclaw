@@ -91,7 +91,7 @@ async fn phase_9_demo_code_to_store_round_trip() {
     write(td.path(), "main/code/query/config.json", &query_config);
 
     // Boot the colony with built_in_factories (contains store + code).
-    let factories = built_in_factories();
+    let factories = built_in_factories(std::sync::Arc::new(meclaw_colony::SurfaceRegistry::new()));
     let factory_vec: Vec<(String, Arc<dyn meclaw_colony::CellFactory>)> = factories
         .iter()
         .map(|(k, v)| (k.clone(), v.clone()))

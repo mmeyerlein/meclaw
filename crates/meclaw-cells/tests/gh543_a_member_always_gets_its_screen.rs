@@ -1,5 +1,5 @@
 //! GH #543 — a member grows a screen and an app, always, and the OS hands out
-//! the port.
+//! the mount.
 //!
 //! WHAT THIS FILE IS
 //! =================
@@ -8,8 +8,8 @@
 //! application that draws on it were a second, hand-written act, and every
 //! colony that ever wanted one wrote the same two declarations again. Ruling
 //! R-0904-4 closes that: **every member gets a screen and an app, always**, the
-//! wish is not asked and cannot refuse, and the templates and the port base are
-//! the builder's own configuration rather than anything the wish says.
+//! wish is not asked and cannot refuse, and the templates and the mount pattern
+//! are the builder's own configuration rather than anything the wish says.
 //!
 //! Three claims are measured here, and each one is measured positively:
 //!
@@ -20,10 +20,13 @@
 //!    `examples/organism/grow-screen.json`. That it is one emission and not two
 //!    is GH #585: two submissions in the same turn have no order at the front,
 //!    and the order is semantics.
-//! 2. **The port is MEASURED, never claimed.** `screen_port_base + <index>`,
-//!    where the index is how many members the organisation already carries, read
-//!    off `/colony/graph` by the builder's own counting cell. A port nobody
-//!    counted is the class of defect GH #517 made expensive.
+//! 2. **The mount is HANDED OUT, never wished for.** `screen_mount` with
+//!    `{member}` filled in, written on the screen's own node — since GH #655 a
+//!    surface cell has no port and is reached at `/<mount>/` on the colony's one
+//!    listener. The member is still counted before the renderer runs, and an
+//!    index that arrived unreadable is still what a wish is refused over — what
+//!    the number is no longer spent on is the address, because a member's name
+//!    is unique inside its organisation by construction.
 //! 3. **The roll-forward holds.** The screen draws into `<member>/channels`, a
 //!    scope only the declaration in front of it creates, and a manifest rolls
 //!    forward with no rollback — so the order is not a preference: submitted on
@@ -33,7 +36,7 @@
 //!    against the front is
 //!    `crates/meclaw-cells/tests/gh585_a_member_wish_is_one_submission.rs`.
 //!
-//! `the_os_hands_out_the_port` is the ADR anchor of
+//! `the_os_hands_out_the_mount` is the ADR anchor of
 //! `plans/adr/0022-the-os-hands-out-what-is-system-near.md`: a colony carries
 //! many organisations and ONE OS, and the OS is what allocates the system-near
 //! things. The allocation in the builder is the first form of that
@@ -193,35 +196,47 @@ fn a_member_wish_renders_the_member_and_then_its_screen() {
 
 /// The ADR anchor. `plans/adr/0022-the-os-hands-out-what-is-system-near.md`.
 ///
-/// A port is system-near: two screens on one port is one screen and one silent
-/// degradation. The number is not in the wish and not in the template — the
-/// builder, which is part of the OS, adds the member's index to its own base.
+/// A name on the colony's one listener is system-near: two screens under one
+/// name is one screen and one silent degradation. It is not in the wish and
+/// not in the template — the builder, which is part of the OS, fills its own
+/// `screen_mount` in with the member's name. What it handed out before was a
+/// port, `screen_port_base + <index>`; the display has none to be given any
+/// more.
 #[test]
-fn the_os_hands_out_the_port() {
+fn the_os_hands_out_the_mount() {
     if !shipped() {
         return;
     }
     let template = member_template();
-    let port_of = |index: &str| -> Value {
+    let mount_of = |index: &str| -> Value {
         manifests(member_wish(&template), index)[0]["manifest"][1]["diff"]["add_nodes"][0]
-            ["override_params"]["web"]["port"]
+            ["override_params"]["web"]["mount"]
             .clone()
     };
     assert_eq!(
-        port_of("0"),
-        json!(7900),
-        "the first member of an organisation gets the base port itself"
+        mount_of("0"),
+        json!("alex-display"),
+        "the member's own name is what the screen is reached under"
     );
     assert_eq!(
-        port_of("1"),
-        json!(7901),
-        "the second member gets the next one: the index is what makes two \
-         screens two sockets rather than one socket and one BindFailed"
+        mount_of("7"),
+        json!("alex-display"),
+        "and the index no longer decides it: a member's name is unique inside \
+         its organisation by construction, so two screens are two names \
+         without arithmetic"
     );
-    assert_eq!(
-        port_of("7"),
-        json!(7907),
-        "base + index, with nothing clever in between"
+    // What the index still decides is whether anything is rendered at all: an
+    // unreadable one is a refusal, which
+    // `an_unreadable_index_refuses_instead_of_rendering_a_member` measures.
+    assert!(
+        mount_of("").as_str().is_some(),
+        "an absent index is a first member, not a refusal"
+    );
+    assert!(
+        manifests(member_wish(&template), "0")[0]["manifest"][1]["diff"]["add_nodes"][0]
+            ["override_params"]["web"]["port"]
+            .is_null(),
+        "a surface cell has no port since GH #655, so the OS hands out none"
     );
 }
 
@@ -239,7 +254,7 @@ fn the_shipped_configuration_and_the_renderers_floor_agree() {
     for key in [
         "member_screen_template",
         "member_app_template",
-        "screen_port_base",
+        "screen_mount",
     ] {
         let value = &cfg["params"][key];
         assert!(
@@ -269,8 +284,9 @@ fn the_screen_manifest_is_the_shipped_example() {
     if !shipped() {
         return;
     }
-    // The port the example carries decides which member it is written for, so
-    // the index is read back OUT of it rather than assumed here.
+    // The example is written for the first member of its organisation, which
+    // is the index this comparison renders at. The mount it carries names the
+    // member rather than a band position, so there is nothing to read back.
     let want = read_json(&repo("examples/organism/grow-screen.json"));
     let decls = want["manifest"].as_array().expect("a manifest of two");
     assert_eq!(
@@ -281,11 +297,13 @@ fn the_screen_manifest_is_the_shipped_example() {
          assistant level, which is the one place that knows the generation's \
          name"
     );
-    let port = decls[0]["diff"]["add_nodes"][0]["override_params"]["web"]["port"]
-        .as_u64()
-        .expect("the screen example names a port");
-    let index = port - 7900;
-    let got = manifests(member_wish(&member_template()), &index.to_string());
+    assert!(
+        decls[0]["diff"]["add_nodes"][0]["override_params"]["web"]["mount"]
+            .as_str()
+            .is_some(),
+        "the screen example names a mount"
+    );
+    let got = manifests(member_wish(&member_template()), "0");
     // The devices are the TAIL of the one manifest a member wish renders
     // (GH #585); the example file stays the operator-applicable half of it.
     let rendered: Vec<Value> = got[0]["manifest"].as_array().expect("the one manifest")[1..]
@@ -455,19 +473,171 @@ fn a_display_receipt_reaches_the_generation_exactly_once() {
     );
 }
 
+/// One run of `recipes` with the builder's own `params` handed in.
+fn run_recipes_with(payload: Value, member_index: &str, params: Value) -> Vec<Value> {
+    emit_all(
+        &shipped_script(repo(RECIPES).to_str().expect("utf-8 path")),
+        &json!({
+            "target": "/os/builder/recipes",
+            "header": {"hop": {"route": "recipe", "member_index": member_index},
+                       "context": {}},
+            "ttl": 64,
+            "params": params,
+            "messages": [{"origin": "tool", "type": "tool_result", "id": "",
+                          "text": payload.to_string()}],
+        }),
+    )
+}
+
+/// **A member's name has to render a mount, and the refusal comes BEFORE the
+/// person.**
+///
+/// The mount grammar is narrower than a node name, and nothing in the substrate
+/// restricts a member's name to it. A manifest rolls forward with no rollback,
+/// so a wish that got past the renderer would commit the person and then have
+/// its screen refused at the door — the half-act GH #585 exists to prevent,
+/// re-entered through a name. So the whole wish is refused here, by name, and no
+/// manifest is drafted.
+///
+/// **The grammar is not spelled again here.** The recipe carries a copy of it
+/// (`network: deny`, no substrate to ask), and the copy is what drifts when a new
+/// API route reserves a seventh name — so every name below is run through
+/// `meclaw_colony::surfaces::mount_is_valid`, the original, and the two constants
+/// are compared against the recipe's own.
+#[test]
+fn a_member_name_that_renders_no_mount_refuses_the_whole_wish() {
+    if !shipped() {
+        return;
+    }
+    let template = member_template();
+    let script = std::fs::read_to_string(repo(RECIPES)).expect("the recipe config");
+
+    // The copy against the original: the two numbers, and every reserved name.
+    assert!(
+        script.contains(&format!(
+            "MOUNT_MAX = {}",
+            meclaw_colony::surfaces::MOUNT_MAX
+        )),
+        "the recipe's own MOUNT_MAX is not the substrate's ({})",
+        meclaw_colony::surfaces::MOUNT_MAX
+    );
+    // The recipe's own tuple, parsed rather than searched for: four of the six
+    // names occur elsewhere in this script, so a `contains` sweep would pass on
+    // a list that had dropped one.
+    let tuple = script
+        .split("RESERVED_MOUNTS = (")
+        .nth(1)
+        .and_then(|rest| rest.split(')').next())
+        .expect("the recipe declares its reserved names as one tuple");
+    let copied: BTreeSet<String> = tuple
+        .split(',')
+        .map(|t| t.trim().trim_matches(|c| c == '\\' || c == '"').to_string())
+        .filter(|t| !t.is_empty())
+        .collect();
+    let original: BTreeSet<String> = meclaw_colony::surfaces::RESERVED_MOUNTS
+        .iter()
+        .map(|n| n.to_string())
+        .collect();
+    assert_eq!(
+        copied, original,
+        "the recipe's copy of the reserved names and the substrate's own list \
+         have drifted apart — a member whose screen renders a name the listener \
+         already answers would be refused at the door with the person already \
+         committed"
+    );
+
+    for name in ["Alex", "alex_1", "alex.b"] {
+        assert!(
+            !meclaw_colony::surfaces::mount_is_valid(&format!("{name}-display")),
+            "the fixture is wrong: `{name}-display` IS a mount"
+        );
+        let wish = json!({"recipe": "grow_level", "request": "grow a member",
+                          "params": {"scope": ORG, "level": "member", "name": name,
+                                     "template": template}});
+        let out = run_recipes(wish, "0");
+        assert_eq!(
+            out.len(),
+            1,
+            "a refusal answers ONCE and drafts nothing for {name}: {out:?}"
+        );
+        assert_eq!(
+            out[0]["header"]["error_code"],
+            json!("wish_incomplete"),
+            "the member {name} renders no mount, and that is a wish a human can \
+             answer by naming another one: {:?}",
+            out[0]["header"]
+        );
+        assert!(
+            out[0]["manifest"].is_null(),
+            "the PERSON must not be drafted either — a manifest rolls forward \
+             with no rollback, so half of it is a member with no devices: {:?}",
+            out[0]["manifest"]
+        );
+        let text = out[0]["messages"][0]["text"].as_str().expect("a reason");
+        assert!(
+            text.contains("[a-z0-9-]")
+                && text.contains("params.name")
+                && text.contains("params.screen_mount"),
+            "the refusal names the grammar and BOTH halves of the name — the \
+             member's and the pattern's: {text}"
+        );
+    }
+
+    // A reserved segment is the other half of the grammar, and the shipped
+    // pattern cannot render one — a member called `live` is `live-display`. It
+    // takes a pattern that renders the bare name.
+    let reserved = run_recipes_with(
+        json!({"recipe": "grow_level", "request": "…",
+               "params": {"scope": ORG, "level": "member", "name": "live",
+                          "template": template}}),
+        "0",
+        json!({"screen_mount": "{member}"}),
+    );
+    assert!(
+        !meclaw_colony::surfaces::mount_is_valid("live"),
+        "the fixture is wrong: `live` is not a reserved mount"
+    );
+    assert_eq!(reserved.len(), 1);
+    assert_eq!(
+        reserved[0]["header"]["error_code"],
+        json!("wish_incomplete"),
+        "`live` is a name a route on the same listener already answers: {:?}",
+        reserved[0]["header"]
+    );
+    assert!(
+        reserved[0]["manifest"].is_null(),
+        "and the person is not drafted either: {:?}",
+        reserved[0]["manifest"]
+    );
+
+    // and the positive control: the shipped name renders one, and the substrate
+    // agrees that it is a mount
+    assert!(meclaw_colony::surfaces::mount_is_valid("alex-display"));
+    assert_eq!(
+        manifests(member_wish(&template), "0")[0]["manifest"][1]["diff"]["add_nodes"][0]["override_params"]
+            ["web"]["mount"],
+        json!("alex-display")
+    );
+}
+
 /// A number that arrived unreadable is NAMED, never rounded down to zero.
 ///
-/// The silent version of this is the whole failure class the allocation exists
-/// to prevent: a screen quietly given the base port is a second holder of a
-/// socket somebody else already has, and it surfaces as a page that never loads.
+/// The silent version of this is the failure class the counting exists to
+/// prevent: a member placed at a position nobody measured is a member placed
+/// at a guess.
+///
+/// This test had a second half until the display lost its port, and it is gone
+/// with the knob it guarded: the builder's `screen_port_base` could itself be
+/// unreadable, and that was refused with the same code. There is no such value
+/// to be wrong any more.
 #[test]
-fn an_unreadable_number_refuses_instead_of_taking_the_base_port() {
+fn an_unreadable_index_refuses_instead_of_rendering_a_member() {
     if !shipped() {
         return;
     }
     let template = member_template();
 
-    // (a) the index the counting cell stamped is not a number
+    // The index the counting cell stamped is not a number.
     let out = run_recipes(member_wish(&template), "abc");
     assert_eq!(
         out.len(),
@@ -481,29 +651,8 @@ fn an_unreadable_number_refuses_instead_of_taking_the_base_port() {
          the face of an honest answer"
     );
 
-    // (b) the base the builder is configured with is not a number. It used to
-    // raise an uncaught ValueError and take the cell down with it.
-    let broken = emit_all(
-        &shipped_script(repo(RECIPES).to_str().expect("utf-8 path")),
-        &json!({
-            "target": "/os/builder/recipes",
-            "header": {"hop": {"route": "recipe", "member_index": "1"},
-                       "context": {}},
-            "ttl": 64,
-            "params": {"screen_port_base": "not-a-port"},
-            "messages": [{"origin": "tool", "type": "tool_result", "id": "",
-                          "text": member_wish(&template).to_string()}],
-        }),
-    );
-    assert_eq!(
-        broken[0]["header"]["error_code"],
-        json!("count_unavailable"),
-        "a builder configured with a port base that is not a number must refuse \
-         by name, not crash the cell"
-    );
-
     // and an ABSENT index is not that case: nobody counted, so this is the
-    // first member and the base port is the answer.
+    // first member, and the wish renders.
     let absent = emit_all(
         &shipped_script(repo(RECIPES).to_str().expect("utf-8 path")),
         &json!({
@@ -518,10 +667,10 @@ fn an_unreadable_number_refuses_instead_of_taking_the_base_port() {
     .filter(|m| m["header"]["operation"] == json!("recipe"))
     .collect::<Vec<_>>();
     assert_eq!(
-        absent[0]["manifest"][1]["diff"]["add_nodes"][0]["override_params"]["web"]["port"],
-        json!(7900),
+        absent[0]["manifest"][1]["diff"]["add_nodes"][0]["override_params"]["web"]["mount"],
+        json!("alex-display"),
         "an absent index means nobody counted, which is a statement and not a \
-         guess: this is the first member"
+         guess: this is the first member, and its screen is named after it"
     );
 }
 
@@ -711,8 +860,9 @@ fn the_switch_sends_a_member_wish_to_be_counted_first() {
     assert_eq!(
         out[0]["header"]["route"],
         json!("count"),
-        "a member wish takes the counting hop first — the screen it always gets \
-         needs an index, and the renderer reads nothing"
+        "a member wish takes the counting hop first — the count is what a \
+         member wish is refused over when it cannot be taken, and the renderer \
+         reads nothing itself"
     );
     let other = emit_all(
         &shipped_script(repo(CLASSIFY).to_str().expect("utf-8 path")),
@@ -1030,7 +1180,7 @@ async fn the_screen_lands_after_the_member_and_the_index_is_read_off_the_tree() 
     assert_eq!(
         direct.len(),
         1,
-        "one member stands, so the next screen takes 7901: {direct:?}"
+        "one member stands, so the next member is index 1: {direct:?}"
     );
     h.shutdown().await;
 }

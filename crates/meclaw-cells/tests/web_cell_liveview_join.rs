@@ -2,9 +2,10 @@
 //!
 //! The point of #381 was that the serving machinery had to work for a **second**
 //! consumer, one that is not the HTTP API. This is that consumer: a websocket
-//! opened against the cell's own port, speaking the same Phoenix vsn 2.0.0
-//! protocol, answered by the cell out of its own materialised pages — no
-//! `Dispatcher`, no colony round trip, no `/surface/` prefix.
+//! opened at `/<mount>/live/websocket` on the colony's one listener, speaking
+//! the same Phoenix vsn 2.0.0 protocol, answered by the cell out of its own
+//! materialised pages — no `Dispatcher`, no colony round trip, no `/surface/`
+//! prefix, and since `web@2.0.0` no socket of the cell's own either.
 //!
 //! R-W8-4b is what the join assertion is really about: the reply carries the
 //! tree that the last **write** produced. A join is a read, and a read does no
@@ -12,10 +13,10 @@
 
 use futures_util::{SinkExt, StreamExt};
 use meclaw_cells::web::WebCellFactory;
-use meclaw_colony::{CellFactory, ContractView, SpawnedCellKind};
+use meclaw_colony::{CellFactory, ContractView, SpawnedCellKind, SurfaceRegistry};
 use meclaw_core::serde_json::{Value, json};
 use meclaw_core::{CellEmission, Path};
-use meclaw_testing::free_port;
+use meclaw_testing::{surface_listener, wait_for_mount};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
@@ -69,22 +70,28 @@ fn seed_two_pages(cell_dir: &std::path::Path) {
     .expect("pages");
 }
 
+/// The name this fixture's display answers to. Every URL below carries it, and
+/// the port in them is the LISTENER's: a `web` cell has none since `web@2.0.0`.
+const MOUNT: &str = "screen";
+
 /// A live cell, plus the handles that keep it alive.
 struct Live {
+    /// The port of the one listener in front of the cell.
     port: u16,
+    _listener: tokio::task::JoinHandle<()>,
     _sender: mpsc::Sender<meclaw_core::Message>,
     _stop: tokio::sync::oneshot::Sender<()>,
     join: tokio::task::JoinHandle<()>,
 }
 
 async fn start(cell_dir: &std::path::Path) -> Live {
-    let port = free_port();
+    let surfaces = Arc::new(SurfaceRegistry::new());
     let (out_tx, _out_rx) = mpsc::channel::<CellEmission>(8);
     let (inbox_tx, _inbox_rx) = mpsc::channel(8);
-    let spawned = Arc::new(WebCellFactory)
+    let spawned = Arc::new(WebCellFactory::new(Arc::clone(&surfaces)))
         .spawn_cell(
             Path::new("/web"),
-            json!({ "port": port }),
+            json!({ "mount": MOUNT }),
             out_tx,
             cell_dir.to_path_buf(),
             ContractView::default(),
@@ -106,11 +113,15 @@ async fn start(cell_dir: &std::path::Path) -> Live {
         panic!("web cells spawn Active");
     };
 
+    wait_for_mount(&surfaces, MOUNT).await;
+    let (addr, listener) = surface_listener(Arc::clone(&surfaces)).await;
+    let port = addr.port();
+
     // Wait for the page to be served before opening a socket against it: the
-    // listener and the first render are both asynchronous.
+    // registration and the first render are both asynchronous.
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        if let Ok(r) = reqwest::get(format!("http://127.0.0.1:{port}/")).await
+        if let Ok(r) = reqwest::get(format!("http://127.0.0.1:{port}/{MOUNT}/")).await
             && r.status().is_success()
         {
             break;
@@ -121,6 +132,7 @@ async fn start(cell_dir: &std::path::Path) -> Live {
 
     Live {
         port,
+        _listener: listener,
         _sender: sender,
         _stop: stop_tx,
         join,
@@ -129,7 +141,7 @@ async fn start(cell_dir: &std::path::Path) -> Live {
 
 /// Read the page and pull the session token out of its shell.
 async fn token_of(port: u16) -> String {
-    let body = reqwest::get(format!("http://127.0.0.1:{port}/"))
+    let body = reqwest::get(format!("http://127.0.0.1:{port}/{MOUNT}/"))
         .await
         .expect("get")
         .text()
@@ -148,9 +160,10 @@ type Ws =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 async fn connect(port: u16) -> Ws {
-    let (ws, _) = tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/live/websocket"))
-        .await
-        .expect("the cell must accept a websocket on /live/websocket");
+    let (ws, _) =
+        tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/{MOUNT}/live/websocket"))
+            .await
+            .expect("the cell must accept a websocket on /<mount>/live/websocket");
     ws
 }
 
@@ -189,7 +202,7 @@ async fn a_join_is_answered_from_the_materialised_page() {
         &mut ws,
         json!(["1", "1", topic, "phx_join", {
             "session": token,
-            "url": format!("http://127.0.0.1:{}/", live.port)
+            "url": format!("http://127.0.0.1:{}/{MOUNT}/", live.port)
         }]),
     )
     .await;
@@ -247,7 +260,7 @@ async fn the_join_url_decides_which_page_the_socket_is_on() {
         &mut ws,
         json!(["1", "1", topic, "phx_join", {
             "session": token,
-            "url": format!("http://127.0.0.1:{}/other", live.port)
+            "url": format!("http://127.0.0.1:{}/{MOUNT}/other", live.port)
         }]),
     )
     .await;

@@ -29,7 +29,7 @@
 //!   `turn_id`, a `turn` never wears `eager`.
 
 use meclaw_cells::voice::VoiceCellFactory;
-use meclaw_cells::voice::cell::{VoiceEvent, VoiceReconfig};
+use meclaw_cells::voice::cell::VoiceReconfig;
 use meclaw_cells::voice::contract::{SttProvider, TtsProvider};
 use meclaw_cells::voice::io::{VoiceIo, run_io};
 use meclaw_cells::voice::providers::echo::EchoStt;
@@ -44,7 +44,7 @@ use meclaw_core::serde_json::json;
 use meclaw_core::{Body, Message, MessageBuilder, Path};
 use meclaw_core::{Cell, CellEmission, JsonValue, OutputSink};
 use meclaw_testing::ColonyHandle;
-use meclaw_testing::free_port;
+use meclaw_testing::surface_listener;
 use meclaw_testing::voice_client::VoiceClient;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -77,33 +77,41 @@ const AUDIO_GATE: usize = FRAME_BYTES;
 /// The lane the flood of [`backpressure_loses_nothing`] travels on.
 const PARTIAL_LANE: &str = "partial";
 
+/// The mount every cell in this file registers. Since `voice@2.0.0` it is the
+/// only door, and each fixture puts one listener in front of it
+/// ([`meclaw_testing::surface_listener`]).
+const MOUNT: &str = "voice";
+
 /// Mailbox of the paced listener — small on purpose. The colony default is
 /// 1000 (`docs/config.md`, `mailbox_size`), which a flood of 500 would fit into
 /// without ever making the router wait; four makes the block a structural
 /// certainty instead of a hope.
 const LISTENER_MAILBOX: usize = 4;
 
-/// A listener with nothing behind it but the provider under test.
+/// A mounted cell behind a listener of its own, with nothing else in the way
+/// but the provider under test.
 struct Live {
-    port: u16,
+    /// `ws://<listener>/<mount>` — the prefix the socket route hangs off.
+    ws_base: String,
     task: tokio::task::JoinHandle<()>,
+    listener: tokio::task::JoinHandle<()>,
     _reconfig_tx: mpsc::Sender<VoiceReconfig>,
 }
 
 impl Drop for Live {
     fn drop(&mut self) {
         self.task.abort();
+        self.listener.abort();
     }
 }
 
-/// Start `run_io` on a free port and wait until it says it bound.
+/// Start `run_io`, put a listener in front of it and wait for the mount.
 async fn start(stt: Arc<dyn SttProvider>, tts: Option<Arc<dyn TtsProvider>>) -> Live {
-    let port = free_port();
-    let (events_tx, mut events_rx) = mpsc::channel(64);
+    let surfaces = Arc::new(meclaw_colony::SurfaceRegistry::new());
+    let (events_tx, _events_rx) = mpsc::channel(64);
     let (reconfig_tx, reconfig_rx) = mpsc::channel(64);
-    let io = VoiceIo::new(
-        "127.0.0.1".to_string(),
-        port,
+    let mut io = VoiceIo::new(
+        MOUNT.to_string(),
         stt,
         tts,
         Mode::Auto,
@@ -111,26 +119,30 @@ async fn start(stt: Arc<dyn SttProvider>, tts: Option<Arc<dyn TtsProvider>>) -> 
         Duration::from_secs(30),
         events_tx,
     );
+    io.cell_path = Path::new("/voice");
+    io.surfaces = Arc::clone(&surfaces);
     let task = tokio::spawn(run_io(io, reconfig_rx));
-    match tokio::time::timeout(MARKER, events_rx.recv())
-        .await
-        .expect("the I/O half reports a verdict on its bind")
-        .expect("the events channel stays open")
-    {
-        VoiceEvent::Bound(addr) => assert!(
-            addr.ends_with(&port.to_string()),
-            "bound somewhere else: {addr}"
-        ),
-        VoiceEvent::BindFailed(why) => panic!("the listener did not come up: {why}"),
-        _ => panic!("the first event of a listener is its bind verdict"),
-    }
+    let (addr, listener) = surface_listener(Arc::clone(&surfaces)).await;
+    await_mount(&surfaces).await;
     // Held: dropping the sender would close the reconfig channel under the
     // I/O half, which is a shutdown signal, not an idle one.
     Live {
-        port,
+        ws_base: format!("ws://{addr}/{MOUNT}"),
         task,
+        listener,
         _reconfig_tx: reconfig_tx,
     }
+}
+
+/// Wait until a cell has put its mount on `surfaces`.
+async fn await_mount(surfaces: &Arc<meclaw_colony::SurfaceRegistry>) {
+    tokio::time::timeout(MARKER, async {
+        while surfaces.table().await.is_empty() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the cell registers its mount within the failure marker");
 }
 
 /// Nearest-rank percentile — every printed number is one that was measured,
@@ -153,12 +165,10 @@ fn percentile(values: &[f64], p: f64) -> f64 {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn echo_roundtrip_is_byte_identical() {
     let live = start(Arc::new(EchoStt::new()), None).await;
-    let (mut client, hello) = VoiceClient::connect(&format!(
-        "ws://127.0.0.1:{}/ws?session=echo-calibration",
-        live.port
-    ))
-    .await
-    .expect("the echo wire accepts a connection");
+    let (mut client, hello) =
+        VoiceClient::connect(&format!("{}/ws?session=echo-calibration", live.ws_base))
+            .await
+            .expect("the echo wire accepts a connection");
 
     assert_eq!(hello["protocol"], "meclaw-voice/1");
     assert_eq!(hello["stt"], "echo");
@@ -213,12 +223,10 @@ async fn echo_roundtrip_is_byte_identical() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn streaming_in_real_time_keeps_the_clock_of_the_audio() {
     let live = start(Arc::new(EchoStt::new()), None).await;
-    let (mut client, _) = VoiceClient::connect(&format!(
-        "ws://127.0.0.1:{}/ws?session=echo-realtime",
-        live.port
-    ))
-    .await
-    .expect("connect");
+    let (mut client, _) =
+        VoiceClient::connect(&format!("{}/ws?session=echo-realtime", live.ws_base))
+            .await
+            .expect("connect");
 
     let pcm = vec![0u8; 16_000 * 2 * 300 / 1000];
     let started = Instant::now();
@@ -423,7 +431,10 @@ struct Fixture {
     _td: tempfile::TempDir,
     h: ColonyHandle,
     egress: mpsc::Receiver<Message>,
-    port: u16,
+    /// `ws://<listener>/<mount>`.
+    ws_base: String,
+    /// The listener the fixture's mounts are reached on.
+    listener: tokio::task::JoinHandle<()>,
     /// How many messages the paced listener has finished handling.
     seen: Arc<AtomicUsize>,
     /// One receipt per message the paced listener has handled. The listener
@@ -501,10 +512,11 @@ impl Fixture {
         )
         .expect("write the root hive");
 
-        let port = params
-            .get("port")
-            .and_then(Value::as_u64)
-            .expect("the fixture params must name a port") as u16;
+        let mount = params
+            .get("mount")
+            .and_then(Value::as_str)
+            .expect("the fixture params must name a mount")
+            .to_string();
         std::fs::write(
             root.join("voice/config.json"),
             meclaw_core::serde_json::to_string_pretty(&json!({
@@ -531,13 +543,15 @@ impl Fixture {
         )
         .expect("write the voice cell");
 
+        // One table for the cell and for the listener in front of it: the
+        // colony spawns the cell, the cell registers its mount here, and the
+        // helper's listener is what a client reaches it through.
+        let surfaces = Arc::new(meclaw_colony::SurfaceRegistry::new());
+        let voice: Arc<dyn CellFactory> = Arc::new(VoiceCellFactory::new(Arc::clone(&surfaces)));
         let mut factories: Vec<(String, Arc<dyn CellFactory>)> =
-            vec![("voice".to_string(), Arc::new(VoiceCellFactory))];
+            vec![("voice".to_string(), Arc::clone(&voice))];
         let mut registry = CellFactoryRegistry::new();
-        registry.insert(
-            "voice".into(),
-            Arc::new(VoiceCellFactory) as Arc<dyn CellFactory>,
-        );
+        registry.insert("voice".into(), voice);
         if paced_listener {
             let listener: Arc<dyn CellFactory> = Arc::new(PacedCounterFactory {
                 seen: seen.clone(),
@@ -551,11 +565,13 @@ impl Fixture {
             .await
             .expect("the colony boots with a voice cell");
 
+        let (addr, listener) = surface_listener(Arc::clone(&surfaces)).await;
         Self {
             _td: td,
             h,
             egress,
-            port,
+            ws_base: format!("ws://{addr}/{mount}"),
+            listener,
             seen,
             handled: paced_listener.then_some(handled_rx),
         }
@@ -588,18 +604,18 @@ impl Fixture {
 
     fn ws_url(&self, query: &str) -> String {
         if query.is_empty() {
-            format!("ws://127.0.0.1:{}/ws", self.port)
+            format!("{}/ws", self.ws_base)
         } else {
-            format!("ws://127.0.0.1:{}/ws?{query}", self.port)
+            format!("{}/ws?{query}", self.ws_base)
         }
     }
 
-    /// Connect, retrying while the listener is still coming up.
+    /// Connect, retrying while the cell is still registering.
     ///
-    /// The I/O half binds the port when the cell's task starts, so the first
-    /// attempt can lose that race and get `ConnectionRefused` — the absence of
-    /// an answer, not an answer. A lasting failure still reports at the
-    /// deadline with its real error.
+    /// The I/O half puts its mount on the table when the cell's task starts, so
+    /// the first attempt can lose that race and read the helper's `404` — the
+    /// absence of an answer, not an answer. A lasting failure still reports at
+    /// the deadline with its real error.
     async fn connect(&self, query: &str) -> (VoiceClient, Value) {
         let url = self.ws_url(query);
         let deadline = Instant::now() + DEADLINE;
@@ -676,6 +692,7 @@ impl Fixture {
     }
 
     async fn shutdown(self) {
+        self.listener.abort();
         self.h.shutdown().await;
     }
 }
@@ -732,10 +749,9 @@ fn body_text(m: &Message) -> String {
 }
 
 /// Params for a cell whose STT is the echo provider and that has no TTS.
-fn echo_params(port: u16) -> Value {
+fn echo_params(mount: &str) -> Value {
     json!({
-        "port": port,
-        "bind": "127.0.0.1",
+        "mount": mount,
         "stt": {"provider": "echo"}
     })
 }
@@ -759,8 +775,7 @@ fn echo_params(port: u16) -> Value {
 async fn bad_audio_frame_is_reported_and_the_connection_stays() {
     let stt = fakes::deepgram(fakes::flux_quiet()).await;
     let tts = fakes::cartesia(fakes::cartesia_silent()).await;
-    let port = free_port();
-    let mut fx = Fixture::boot(fakes::both_params(port, &stt, &tts)).await;
+    let mut fx = Fixture::boot(fakes::both_params(MOUNT, &stt, &tts)).await;
     let (mut client, _) = fx.connect("session=odd").await;
 
     for expected in 1..=2u64 {
@@ -834,8 +849,7 @@ async fn bad_audio_frame_is_reported_and_the_connection_stays() {
 async fn session_replaced_4409() {
     let stt = fakes::deepgram(fakes::flux_quiet()).await;
     let tts = fakes::cartesia(fakes::cartesia_chunks(4, 20)).await;
-    let port = free_port();
-    let mut fx = Fixture::boot(fakes::both_params(port, &stt, &tts)).await;
+    let mut fx = Fixture::boot(fakes::both_params(MOUNT, &stt, &tts)).await;
     let (mut first, hello_a) = fx.connect("session=twin").await;
     assert_eq!(hello_a["session_id"], "twin");
 
@@ -887,9 +901,8 @@ async fn one_turn_per_end_of_turn() {
     let script = fakes::update(script, "guten tag");
     let script = fakes::update(script, "guten tag zusammen");
     let fake = fakes::deepgram(fakes::end_of_turn(script, "guten tag zusammen")).await;
-    let port = free_port();
     let quiet_tts = fakes::cartesia(fakes::cartesia_silent()).await;
-    let mut fx = Fixture::boot(fakes::both_params(port, &fake, &quiet_tts)).await;
+    let mut fx = Fixture::boot(fakes::both_params(MOUNT, &fake, &quiet_tts)).await;
     let (mut client, hello) = fx.connect("session=turn-1").await;
     assert_eq!(hello["stt"], "deepgram");
 
@@ -955,9 +968,8 @@ async fn no_partial_on_turn_lane() {
     let script = fakes::update(script, "halb");
     let script = fakes::eager(script, "halb fertig");
     let fake = fakes::deepgram(fakes::end_of_turn(script, "halb fertig")).await;
-    let port = free_port();
     let quiet_tts = fakes::cartesia(fakes::cartesia_silent()).await;
-    let mut fx = Fixture::boot(fakes::both_params(port, &fake, &quiet_tts)).await;
+    let mut fx = Fixture::boot(fakes::both_params(MOUNT, &fake, &quiet_tts)).await;
     let (mut client, _) = fx.connect("session=lanes").await;
     client.send_audio(&vec![0u8; 640]).await.expect("audio");
 
@@ -1004,12 +1016,11 @@ async fn hold_release_boundary() {
     let script = fakes::end_of_turn(script, "a");
     let script = fakes::end_of_turn(script, "b");
     let fake = fakes::deepgram(fakes::update(script, "c")).await;
-    let port = free_port();
     let quiet_tts = fakes::cartesia(fakes::cartesia_silent()).await;
     // This test is about the BUFFER, not about the drain: `0` says "cut on the
     // release frame", so the turn it asserts on is the one the frame produced
     // and not one a cap produced a second and a half later.
-    let mut params = fakes::both_params(port, &fake, &quiet_tts);
+    let mut params = fakes::both_params(MOUNT, &fake, &quiet_tts);
     params["release_grace_ms"] = json!(0);
     let mut fx = Fixture::boot(params).await;
     let (mut client, hello) = fx.connect("session=hold-1&mode=hold").await;
@@ -1077,9 +1088,8 @@ async fn a_final_after_release_lands_in_the_same_turn() {
     // Held until the audio the test sends AFTER the release arrives.
     let script = fakes::gate(script, AUDIO_GATE * 2);
     let fake = fakes::deepgram(fakes::end_of_turn(script, "a b c")).await;
-    let port = free_port();
     let quiet_tts = fakes::cartesia(fakes::cartesia_silent()).await;
-    let mut fx = Fixture::boot(fakes::both_params(port, &fake, &quiet_tts)).await;
+    let mut fx = Fixture::boot(fakes::both_params(MOUNT, &fake, &quiet_tts)).await;
     let (mut client, _) = fx.connect("session=grace-1&mode=hold").await;
 
     client.hold().await.expect("open the boundary");
@@ -1128,9 +1138,8 @@ async fn the_next_hold_starts_empty_after_the_previous_take() {
     let script = fakes::update(script, "zweiter take");
     let script = fakes::gate(script, AUDIO_GATE * 4);
     let fake = fakes::deepgram(fakes::end_of_turn(script, "second take whole")).await;
-    let port = free_port();
     let quiet_tts = fakes::cartesia(fakes::cartesia_silent()).await;
-    let mut fx = Fixture::boot(fakes::both_params(port, &fake, &quiet_tts)).await;
+    let mut fx = Fixture::boot(fakes::both_params(MOUNT, &fake, &quiet_tts)).await;
     let (mut client, _) = fx.connect("session=grace-2&mode=hold").await;
 
     for (open_partial, expected) in [
@@ -1176,9 +1185,8 @@ async fn the_next_hold_starts_empty_after_the_previous_take() {
 async fn the_release_grace_cap_ends_a_turn_the_provider_never_ends() {
     let script = fakes::flux_after_audio(AUDIO_GATE);
     let fake = fakes::deepgram(fakes::update(script, "a b")).await;
-    let port = free_port();
     let quiet_tts = fakes::cartesia(fakes::cartesia_silent()).await;
-    let mut params = fakes::both_params(port, &fake, &quiet_tts);
+    let mut params = fakes::both_params(MOUNT, &fake, &quiet_tts);
     params["release_grace_ms"] = json!(200);
     let mut fx = Fixture::boot(params).await;
     let (mut client, _) = fx.connect("session=grace-cap&mode=hold").await;
@@ -1219,11 +1227,10 @@ async fn the_release_grace_cap_ends_a_turn_the_provider_never_ends() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn release_without_speech_emits_nothing() {
     let fake = fakes::deepgram(fakes::flux_quiet()).await;
-    let port = free_port();
     let quiet_tts = fakes::cartesia(fakes::cartesia_silent()).await;
     // Nothing was said, so there is nothing for a provider to finish: `0` cuts
     // on the frame and this test does not pay for a grace it is not about.
-    let mut params = fakes::both_params(port, &fake, &quiet_tts);
+    let mut params = fakes::both_params(MOUNT, &fake, &quiet_tts);
     params["release_grace_ms"] = json!(0);
     let mut fx = Fixture::boot(params).await;
     let (mut client, _) = fx.connect("session=hold-empty&mode=hold").await;
@@ -1285,9 +1292,8 @@ async fn backpressure_loses_nothing() {
         script = fakes::update(script, &format!("word {i}"));
     }
     let fake = fakes::deepgram(script).await;
-    let port = free_port();
     let quiet_tts = fakes::cartesia(fakes::cartesia_silent()).await;
-    let mut params = fakes::both_params(port, &fake, &quiet_tts);
+    let mut params = fakes::both_params(MOUNT, &fake, &quiet_tts);
     // The wire's own operation timeout, raised to this file's failure-marker
     // convention. At its 5 s default it is a semantic discriminator about
     // *clients* — a socket that takes nothing for five seconds has a dead
@@ -1388,8 +1394,7 @@ async fn backpressure_loses_nothing() {
 async fn cancel_mid_speak() {
     let stt = fakes::deepgram(fakes::flux_quiet()).await;
     let tts = fakes::cartesia(fakes::cartesia_chunks(20, 50)).await;
-    let port = free_port();
-    let mut fx = Fixture::boot(fakes::both_params(port, &stt, &tts)).await;
+    let mut fx = Fixture::boot(fakes::both_params(MOUNT, &stt, &tts)).await;
     let (mut client, hello) = fx.connect("session=speak-1").await;
     assert_eq!(hello["tts"], "cartesia");
 
@@ -1459,8 +1464,7 @@ async fn barge_in_cancels_speak() {
     // so the barge-in below is triggered by the test, not by a race.
     let stt = fakes::deepgram(fakes::speech_started(fakes::flux_after_audio(AUDIO_GATE))).await;
     let tts = fakes::cartesia(fakes::cartesia_chunks(20, 50)).await;
-    let port = free_port();
-    let fx = Fixture::boot(fakes::both_params(port, &stt, &tts)).await;
+    let fx = Fixture::boot(fakes::both_params(MOUNT, &stt, &tts)).await;
     let (mut client, _) = fx.connect("session=barge-1").await;
 
     fx.speak("barge-1", "I am now telling something at great length.")
@@ -1505,8 +1509,7 @@ async fn speak_end_is_a_lane_whoever_waits_orders() {
     // ── ordered: one `speak_end`, reason `done`, and it names the synthesis.
     let stt = fakes::deepgram(fakes::flux_quiet()).await;
     let tts = fakes::cartesia(fakes::cartesia_chunks(3, 5)).await;
-    let port = free_port();
-    let mut params = fakes::both_params_default(port, &stt, &tts);
+    let mut params = fakes::both_params_default(MOUNT, &stt, &tts);
     params["emit_speak_end"] = json!(true);
     let mut fx = Fixture::boot(params).await;
     let (mut client, _) = fx.connect("session=end-1").await;
@@ -1548,8 +1551,7 @@ async fn speak_end_is_a_lane_whoever_waits_orders() {
     // ── not ordered: the shipped default emits nothing on the lane at all.
     let stt = fakes::deepgram(fakes::flux_quiet()).await;
     let tts = fakes::cartesia(fakes::cartesia_chunks(3, 5)).await;
-    let port = free_port();
-    let mut fx = Fixture::boot(fakes::both_params_default(port, &stt, &tts)).await;
+    let mut fx = Fixture::boot(fakes::both_params_default(MOUNT, &stt, &tts)).await;
     let (mut client, _) = fx.connect("session=end-2").await;
     fx.speak("end-2", "Ein kurzer Satz.").await;
     let end = client
@@ -1571,8 +1573,7 @@ async fn speak_end_is_a_lane_whoever_waits_orders() {
 /// never told its answer went nowhere cannot retry or complain.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn speak_unknown_session_is_error_lane() {
-    let port = free_port();
-    let mut fx = Fixture::boot(echo_params(port)).await;
+    let mut fx = Fixture::boot(echo_params(MOUNT)).await;
     let (_client, _) = fx.connect("session=real").await;
 
     fx.speak("nope", "Who is hearing this?").await;
@@ -1598,13 +1599,12 @@ async fn speak_unknown_session_is_error_lane() {
 /// context is a wiring fault, an unknown session is a race with a hang-up.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn speak_missing_session_is_error_lane() {
-    let port = free_port();
     // Optional on purpose. With the shipped `required: true` the substrate
     // refuses this message at the delivery boundary (`ConsumesViolation`) and
     // the cell never sees it — so the refusal below is unreachable in any
     // colony that declares the context required, which the shipped template
     // does. The other half of that fact is pinned right after.
-    let mut fx = Fixture::boot_with(echo_params(port), false).await;
+    let mut fx = Fixture::boot_with(echo_params(MOUNT), false).await;
 
     let mut hop = meclaw_core::serde_json::Map::new();
     hop.insert("route".into(), json!("in_speak"));
@@ -1646,8 +1646,7 @@ async fn partials_stay_on_the_socket_without_a_listener() {
     let script = fakes::update(script, "eins zwei");
     let stt = fakes::deepgram(fakes::update(script, "eins zwei drei")).await;
     let tts = fakes::cartesia(fakes::cartesia_silent()).await;
-    let port = free_port();
-    let mut fx = Fixture::boot(fakes::both_params_default(port, &stt, &tts)).await;
+    let mut fx = Fixture::boot(fakes::both_params_default(MOUNT, &stt, &tts)).await;
     let (mut client, _) = fx.connect("session=quiet-lane").await;
     client
         .send_audio(&vec![0u8; AUDIO_GATE])
@@ -1696,8 +1695,7 @@ async fn partials_stay_on_the_socket_without_a_listener() {
 /// gets. A reader of the closed code list would otherwise expect the emission.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_required_session_context_is_refused_before_the_cell() {
-    let port = free_port();
-    let mut fx = Fixture::boot(echo_params(port)).await;
+    let mut fx = Fixture::boot(echo_params(MOUNT)).await;
 
     let mut hop = meclaw_core::serde_json::Map::new();
     hop.insert("route".into(), json!("in_speak"));
@@ -1858,17 +1856,16 @@ mod fakes {
     /// dead-letters visibly at the channel container, once per interim. So a
     /// colony that wants the lane orders it, and a test that asserts on the
     /// lane orders it here rather than leaning on a default that moved.
-    pub fn both_params(port: u16, stt: &MockDeepgram, tts: &MockCartesia) -> Value {
-        let mut params = both_params_default(port, stt, tts);
+    pub fn both_params(mount: &str, stt: &MockDeepgram, tts: &MockCartesia) -> Value {
+        let mut params = both_params_default(mount, stt, tts);
         params["emit_partials"] = json!(true);
         params
     }
 
     /// The same, with `emit_partials` left at whatever the default is.
-    pub fn both_params_default(port: u16, stt: &MockDeepgram, tts: &MockCartesia) -> Value {
+    pub fn both_params_default(mount: &str, stt: &MockDeepgram, tts: &MockCartesia) -> Value {
         json!({
-            "port": port,
-            "bind": "127.0.0.1",
+            "mount": mount,
             "stt": stt_params(stt),
             "tts": {
                 "provider": "cartesia",

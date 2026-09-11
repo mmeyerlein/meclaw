@@ -1,4 +1,4 @@
-# `freeswitch@1.1.0`
+# `freeswitch@2.0.0`
 
 A telephone as one **channel** of a person, in two halves inside one hive.
 
@@ -12,9 +12,9 @@ telephone (`context.channel = 'phone'`, `hop.platform = 'phone'`), because that
 is a kind of room and not a vendor. Migration for a colony that already has the
 old node: the migration is § *The migration from `phone@1.0.0`* at the end.
 
-* the **media half** is a `voice` cell, unchanged: it binds a WebSocket port,
-  takes audio in and gives audio back, and puts ordinary text turns on the
-  topology.
+* the **media half** is a `voice` cell: it answers on the mount `phone` of the
+  colony's one listener, takes audio in and gives audio back, and puts ordinary
+  text turns on the topology.
 * the **signalling half** is a small state machine — one `code` cell that offers
   the tools, one that keeps the book, one `web_fetch` cell that talks to the
   switch and one `store` that holds the calls.
@@ -36,9 +36,9 @@ the trunk, and `mod_audio_stream` connects to the media half as a WebSocket
 
 | path | type | from |
 |---|---|---|
-| the template root itself | `hive`, `ports: []` | the address. No port; the two connect points are the one exception this template pronounces about itself |
+| the template root itself | `hive`, `ports: []` | the address. The two connect points are the one exception this template pronounces about itself |
 | `voice` | `ref` | the `voice` template — the media half, with `audio_out_frame_ms: 20` and `emit_speak_end: true` ordered here |
-| `dial` | `code` | the offer: `call` and `hangup`, and the menu entry that makes them callable |
+| `dial` | `code` | the offer: `call`, `hangup` and the three line tools, and the menu entry that makes them callable |
 | `signal` | `code` | the book: every lane becomes a store bundle, and the store's answer becomes a turn, a command at the switch, or a tool result |
 | `gateway` | `web_fetch` | the one command channel to `mod_xml_rpc` |
 | `calls` | `store` | the calls this channel has going |
@@ -48,7 +48,7 @@ the trunk, and `mod_audio_stream` connects to the media half as a WebSocket
 | direction | what travels |
 |---|---|
 | in, `in_speak` | the finished assistant turn, to be spoken into the call. `context.call_id` picks the connection, exactly as it does for a `voice` channel standing on its own |
-| in, `call_incoming` | somebody is ringing this member. `hop` carries `call_uuid` and `number`. This is THE turn of an inbound call — a number in no `callers` entry gets no turn and its leg is put down, and since 1.1.0 a call that arrives while the line is busy gets what `params.second_call` says it gets (§ *What a second call gets*) |
+| in, `call_incoming` | somebody is ringing this member. `hop` carries `call_uuid`, `number` and — since 2.0.0 — `user_id`, the member the switch put the caller through as. This is THE turn of an inbound call — a call with no `user_id` and no `callers` entry gets no turn and its leg is put down, and since 1.1.0 a call that arrives while the line is busy gets what `params.second_call` says it gets (§ *What a second call gets*) |
 | in, `call_ringing` | the switch is ringing a number this channel dialled. It moves the row and raises no turn |
 | in, `call_answered` | somebody picked up. `hop` carries `call_uuid`. A turn for a call this channel PLACED; for an inbound call it moves the row and raises no turn, because `call_incoming` already said it |
 | in, `call_ended` | the line is down, from either end. `hop` carries `call_uuid` and `cause`. It moves the row and raises no turn |
@@ -102,7 +102,10 @@ thing that ended. Where it IS written down is the book: `calls` carries the
 row's `state` and its `cause`, and that is the record of the line this hive has
 always kept. `call_ringing` was the shape all along.
 
-## The two tools
+## The five tools
+
+Two are about a **call**, three are about the **line** — which numbers reach
+this member at all, and what a caller types before they do.
 
 ```
 call(number, purpose)   ring somebody up. `number` in international form,
@@ -110,7 +113,19 @@ call(number, purpose)   ring somebody up. `number` in international form,
 hangup()                end the call that is running. If the assistant is in
                         the middle of a sentence, the line stays up until that
                         sentence is finished -- see *Hanging up* below.
+
+add_number(number)      let that number through to this line. It rings nobody.
+set_pin(pin)            ask every caller for those 4-8 digits first.
+disable_pin()           stop asking.
 ```
+
+The three line tools write **the switch's own table** and read nothing back
+(§ *What leaves for the switch*). Their receipt says which command **left**, the
+way a `call` receipt says which number is ringing rather than that somebody
+picked up. A switch that refuses the write — no `mod_db`, a wrong realm, an
+XML-RPC that answers `401` — comes back as one refusal on this channel naming
+the operation (`line_write_failed`), so a row that was not written is not a
+silence.
 
 `call` answers **immediately**, with the session the conversation will run
 under — not when the telephone is picked up. The outcome arrives as a turn
@@ -126,19 +141,25 @@ sentence, and it is deliberately absent there too — *What is not here* says wh
 
 ## Who is on the line
 
-`params.callers` on `./signal` maps **number → sender id**:
+**The switch says so, and since 2.0.0 that is the first answer.** A
+`call_incoming` carrying `hop.user_id` is trusted: the dialplan asked for the
+PIN, looked the number up in the switch's own table and stamped the member it
+found there. The switch is the proxy, and an identity a proxy verified is the
+identity of that call — the number is never read as one while a stamp is there.
+
+`params.callers` on `./signal` is the **fallback**, for a dialplan that stamps
+nothing. It maps **number → sender id**:
 
 ```json
 {"callers": {"+493012345678": "alex", "+491701234567": "robin"}}
 ```
 
-The id becomes `hop.user_id` on every turn the signalling half raises, and the
-member's firewall allowlists senders by exactly that key. **A number with no
-entry gets no id**, and an incoming call from it is refused with
-`unknown_caller` — one `error` out of the rim, and no turn. That is deliberate:
-a turn without a sender is a turn a member that allowlists one person refuses
-anyway, and a refusal that says *which* number rang is worth more than a rejected
-turn.
+Either way the id becomes `hop.user_id` on every turn the signalling half
+raises, and the member's firewall allowlists senders by exactly that key. **A
+call with neither** — no stamp and no entry — is refused with `unknown_caller`:
+one `error` out of the rim, and no turn. That is deliberate: a turn without a
+sender is a turn a member that allowlists one person refuses anyway, and a
+refusal that says *which* number rang is worth more than a rejected turn.
 
 **And the refused leg is put down** (GH #614): one `uuid_kill` on the UUID the
 dialplan named, in the same breath as the refusal. Refusing and doing nothing
@@ -165,12 +186,12 @@ tool v-lanes and their way back.
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "channels/freeswitch", "template": "freeswitch@1.1.0",
+  "add_nodes": [{"name": "channels/freeswitch", "template": "freeswitch@2.0.0",
                  "override_params": {
-                   "voice": {"port": 7910, "bind": "0.0.0.0"},
                    "signal": {"dial_prefix": "sofia/gateway/fs02/",
-                              "voice_ws_url": "ws://<colony-host>:7910/",
+                              "voice_ws_url": "ws://<colony-host>:<listener-port>/phone/ws",
                               "caller_id_number": "<the number this member calls from>",
+                              "line_user_id": "<the person's sender id>",
                               "callers": {"<a number>": "<the person's sender id>"}}}}],
   "add_edges": [
     {"from": "./channels/freeswitch", "to": "./channels",
@@ -200,7 +221,7 @@ tool v-lanes and their way back.
                                   "call_id": "has(hop.call_id) ? hop.call_id : (has(context.call_id) ? context.call_id : '')",
                                   "session_id": "has(hop.session_id) ? hop.session_id : (has(context.session_id) ? context.session_id : '')"}}},
     {"from": "./assistants/<gen>/talky", "to": "./channels/freeswitch/dial", "lane": "tool",
-     "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && (hop.tool_name == 'call' || hop.tool_name == 'hangup')",
+     "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && (hop.tool_name == 'call' || hop.tool_name == 'hangup' || hop.tool_name == 'add_number' || hop.tool_name == 'set_pin' || hop.tool_name == 'disable_pin')",
      "modifier": {"set_context": {"tool_caller": "'talky'", "assistant": "'<gen>'"},
                   "delete_context": ["col_phase", "consult_class", "consult_id", "tool_answerer"]}},
     {"from": "./assistants/<gen>/talky", "to": "./channels/freeswitch/dial", "lane": "schemas",
@@ -396,7 +417,7 @@ POST /messages
 
 | `hop.route` | when the dialplan sends it | what the channel does |
 |---|---|---|
-| `call_incoming` | an inbound leg arrives, before it is answered | one turn *“Incoming call from …”* — **if the line is free, or the policy takes it** (§ *What a second call gets*); a queued or refused call raises no turn and leaves a receipt instead. For a number in no `callers` entry: one `unknown_caller` error **and** a `uuid_kill` on that leg, before the policy is ever asked |
+| `call_incoming` | an inbound leg arrives, before it is answered | one turn *“Incoming call from …”* — **if the line is free, or the policy takes it** (§ *What a second call gets*); a queued or refused call raises no turn and leaves a receipt instead. `hop.user_id` is the member the switch put the caller through as and is trusted where it is there. For a call with neither that nor a `callers` entry: one `unknown_caller` error **and** a `uuid_kill` on that leg, before the policy is ever asked |
 | `call_ringing` | an outbound leg starts ringing | moves the row, raises nothing |
 | `call_answered` | either leg is answered — the same place the audio stream is started | for a call this channel PLACED: one turn *“… answered. Purpose of this call: …”*. For an INBOUND one: moves the row, raises nothing — `call_incoming` was the turn |
 | `call_ended` | the leg hangs up | moves the row, `state` and `cause`, and raises nothing |
@@ -405,6 +426,132 @@ POST /messages
 outbound call the channel mints it and hands it to the switch as
 `origination_uuid`, so both ends of the wire already agree before the telephone
 rings.
+
+**Four extensions serve every line of every colony, because the table is the
+register.** The switch is the proxy: it holds the numbers, it asks for the PIN, it
+decides which colony and which door a caller reaches, and it stamps the member it
+found. This colony holds none of that. The rows are written by the three line
+tools (§ *What leaves for the switch*) and read here, once per call — a number row
+carries `<user_id>|<stream URL>`, so **adding a colony is adding a row**:
+
+```xml
+<!-- dialplan/public/00_meclaw.xml -->
+<extension name="meclaw_line">
+  <!-- FIRST the dialled number, so the re-hunts below do not land here. -->
+  <condition field="destination_number" expression="^\+?\d+$"/>
+  <!-- Then the row, keyed by the number that rang: <user_id>|<stream URL>.
+       Actions AND anti-actions are children of this condition, the LAST one:
+       FreeSWITCH collects both as children of a condition and silently ignores
+       anything that sits at extension level. -->
+  <condition field="${db(select/meclaw_lines/${caller_id_number})}"
+             expression="^([^|]+)\|(.+)$">
+    <action application="set" data="meclaw_user=$1" inline="true"/>
+    <action application="set" data="meclaw_ws_url=$2" inline="true"/>
+    <action application="set" inline="true"
+            data="meclaw_wants=${db(select/meclaw_lines/pin.${meclaw_user})}"/>
+    <action application="answer"/>
+    <action application="sleep" data="300"/>
+    <action application="execute_extension" data="meclaw_ask XML ${context}"/>
+    <anti-action application="answer"/>
+    <anti-action application="playback" data="ivr/ivr-call_cannot_be_completed_as_dialed.wav"/>
+    <anti-action application="hangup" data="CALL_REJECTED"/>
+  </condition>
+</extension>
+
+<extension name="meclaw_ask">
+  <condition field="destination_number" expression="^meclaw_ask$"/>
+  <!-- A line with a PIN: ask for it (three tries, eight seconds each), then
+       hunt again with the digits in hand. A line without one goes straight on,
+       and that hand-over is this condition's anti-action. -->
+  <condition field="${meclaw_wants}" expression="^.+$">
+    <action application="play_and_get_digits"
+            data="4 8 3 8000 # ivr/ivr-please_enter_pin_followed_by_pound.wav ivr/ivr-that_was_an_invalid_entry.wav meclaw_pin ^\d{4,8}$"/>
+    <action application="execute_extension" data="meclaw_check XML ${context}"/>
+    <anti-action application="execute_extension" data="meclaw_connect XML ${context}"/>
+  </condition>
+</extension>
+
+<extension name="meclaw_check">
+  <condition field="destination_number" expression="^meclaw_check$"/>
+  <!-- Compared as TEXT. `${cond(a == b ? …)}` compares numerically where both
+       sides look numeric, so a stored `0123` would be satisfied by `00123`.
+       Both variables are cleared on BOTH paths: a channel variable is in the
+       XML CDR of this call. -->
+  <condition field="${meclaw_pin}" expression="^${meclaw_wants}$">
+    <action application="unset" data="meclaw_wants"/>
+    <action application="unset" data="meclaw_pin"/>
+    <action application="execute_extension" data="meclaw_connect XML ${context}"/>
+    <anti-action application="unset" data="meclaw_wants"/>
+    <anti-action application="unset" data="meclaw_pin"/>
+    <anti-action application="playback" data="ivr/ivr-that_was_an_invalid_entry.wav"/>
+    <anti-action application="hangup" data="CALL_REJECTED"/>
+  </condition>
+</extension>
+
+<extension name="meclaw_connect">
+  <condition field="destination_number" expression="^meclaw_connect$"/>
+  <!-- The API answers on the same listener as the stream, so its address comes
+       out of the same row: the authority is the capture, and the scheme is the
+       PLAINTEXT one the param default spells (`ws://host:port/mount/ws`). A
+       `wss://` listener wants `https` here and a second extension for it. A URL
+       with no path does not match at all, and then the call is refused rather
+       than posted to a nonsense address. -->
+  <condition field="${meclaw_ws_url}" expression="^ws://([^/]+)/.+$">
+    <action application="set" data="meclaw_api=http://$1/messages"/>
+    <action application="set"
+            data="api_result=${uuid_audio_stream(${uuid} start ${meclaw_ws_url}?session=${uuid}&amp;sample_rate=8000 mono 8000)}"/>
+    <!-- `content-type application/json` is not optional: without it mod_curl
+         posts form-encoded and `POST /messages` answers 415. -->
+    <action application="curl"
+            data="${meclaw_api} content-type application/json post {&quot;target&quot;:&quot;<member>/channels/freeswitch&quot;,&quot;hop&quot;:{&quot;route&quot;:&quot;call_incoming&quot;,&quot;call_uuid&quot;:&quot;${uuid}&quot;,&quot;number&quot;:&quot;${caller_id_number}&quot;,&quot;user_id&quot;:&quot;${meclaw_user}&quot;},&quot;body&quot;:{&quot;messages&quot;:[]}}"/>
+    <action application="park"/>
+    <anti-action application="playback" data="ivr/ivr-call_cannot_be_completed_as_dialed.wav"/>
+    <anti-action application="hangup" data="CALL_REJECTED"/>
+  </condition>
+</extension>
+```
+
+**The walk, once, because the order is the whole trick.** A hunt evaluates
+**every** condition of an extension before it runs a single action, and it runs
+the collected actions afterwards — so a `set` that a later condition has to read
+carries `inline="true"` and runs during the hunt. Actions and anti-actions are
+collected as children of a **condition**; at extension level they are dropped
+without a word, which is why every block above sits inside its extension's last
+condition. `execute_extension` starts a **fresh hunt** with `destination_number`
+set to the extension it names, which is why each one tests that name first:
+without it the re-hunt would match `meclaw_line` again — the row is still there
+and `caller_id_number` has not changed — and the call would loop through
+`answer`/`sleep` for ever. The compare cannot be part of the asking hunt, because
+nobody has typed anything when its conditions are evaluated. The four paths:
+
+* **No row.** `meclaw_line`'s second condition fails: answer, announcement,
+  `CALL_REJECTED`. Nothing else is reached.
+* **A row without a PIN.** `meclaw_line` sets the three variables, answers and
+  hands over; `meclaw_ask`'s second condition finds `meclaw_wants` empty and its
+  anti-action hands over to `meclaw_connect`, which starts the stream and posts
+  the `call_incoming`.
+* **A row with a PIN, entered right.** `meclaw_ask` asks and hands over;
+  `meclaw_check` matches, clears both PIN variables and hands over to
+  `meclaw_connect`.
+* **A row with a PIN, entered wrong.** `meclaw_check`'s condition fails: its
+  anti-actions clear both variables, play the announcement and hang up with
+  `CALL_REJECTED`.
+
+**What is measured and what is not.** The rows, the three tools that write them
+and the `user_id` this hive trusts are measured
+(`freeswitch_channel_places_a_call_and_hears_the_line.rs`). The XML above is read
+against FreeSWITCH's own parsing rules and **not** against a running switch: it
+is the shape to start from, not a tested configuration. Five of those rules are
+what it is built on — every condition of a hunt is evaluated before any action
+runs unless the action carries `inline="true"`; actions and anti-actions are
+collected as children of a condition and ignored anywhere else; `execute_extension`
+starts a fresh hunt with `destination_number` set to the extension it names, which
+is why each one guards on that name first; `$1`…`$9` are the capture references and
+`${1}` is a channel variable; and `mod_curl`'s form is
+`curl <url> content-type <mime> post <data>`, without which the post is
+form-encoded and `POST /messages` answers `415`. A switch serving two colonies
+needs no second variable anywhere: both colonies' rows sit in the same table and
+each names its own listener.
 
 **If meclaw does not answer, the dialplan falls back to the mailbox.** That
 belongs in the dialplan and not here — a `curl --max-time` and a condition on its
@@ -415,7 +562,7 @@ kills that leg itself rather than leaving it parked (see *Who is on the line*).
 
 ## What leaves for the switch
 
-Five commands, all as a GET at `mod_xml_rpc`'s `/webapi` endpoint — `web_fetch`
+Six commands, all as a GET at `mod_xml_rpc`'s `/webapi` endpoint — `web_fetch`
 implements GET and nothing else (`docs/cell-types.md` § `web_fetch`), and
 `/webapi/<command>?<args>` is exactly a GET. The endpoint, its credentials and
 its host live in **one** provider lane, `${FREESWITCH_XMLRPC_BASE_URL}`, which is
@@ -433,11 +580,80 @@ GET <base>/webapi/uuid_break?<uuid>%20all
 GET <base>/webapi/uuid_audio_stream?<uuid>%20pause
 GET <base>/webapi/uuid_audio_stream?<uuid>%20resume
 GET <base>/webapi/uuid_broadcast?<uuid>%20<queue_hold_media>%20aleg
+GET <base>/webapi/db?insert/<db_realm>/<number>/<line_user_id>|<voice_ws_url>
+GET <base>/webapi/db?insert/<db_realm>/pin.<line_user_id>/<pin>
+GET <base>/webapi/db?delete/<db_realm>/pin.<line_user_id>
 ```
 
-Six lines, five commands: `uuid_kill` appears twice because a refused call is
+Ten lines, six commands. `uuid_kill` appears twice because a refused call is
 ended with a CAUSE — `USER_BUSY` is what the caller hears as a busy signal, and
-a bare kill is a line that died for no reason they can name.
+a bare kill is a line that died for no reason they can name — `uuid_audio_stream`
+twice for the pause and the resume of a waiting caller, and `db` three times
+because a line has three things somebody can say about it.
+
+**The last three are the line tools, and they write the SWITCH's table.**
+`mod_db` takes `db insert/<realm>/<key>/<value>` and `db delete/<realm>/<key>`,
+so `/webapi/db?<args>` is that command as a GET. Two shapes of row live in the
+realm `params.db_realm` (`meclaw_lines`):
+
+* one keyed by a **number**, carrying two fields —
+  `<line_user_id>|<voice_ws_url>`: who the caller is put through as, and the
+  whole stream URL the switch is to connect to. Host and mount are inside it, so
+  **one row is everything the dialplan needs about a line** and adding a colony
+  is adding a row rather than a variable in the dialplan.
+* one keyed by the **member** under a `pin.` prefix, carrying the digits
+  `set_pin` wrote, which `disable_pin` deletes. That is the only place a PIN
+  lives: `set_pin(pin)` is told no number, so the key it can address without
+  being told one is the member it already knows.
+
+`add_number` needs a number and writes the first; `set_pin` and `disable_pin`
+address the second. The prefix is a **dot** and not a slash for the same reason
+the URL in a value is safe: `mod_db` splits its command into **four** tokens on
+`/` and the value is the last of them
+(`switch_separate_string(mydata, '/', argv, 4)` in `mod_db.c`, and
+`separate_string_char_delim` stops splitting once the array is full), so slashes
+inside a value stay where they are while a slash in a **key** would shift the
+value one field along. It is also what keeps the two key spaces apart in one
+realm, so a `line_user_id` that reads like a dialled number cannot land on a
+line.
+
+**The PIN row's value is compared as an anchored regex** —
+`expression="^${meclaw_wants}$"` in the dialplan — so it has to be digits and
+nothing else. `set_pin` enforces `^\d{4,8}$` for exactly that reason: anchoring
+is not escaping, and a `.*` written into the row by hand would satisfy every
+entry.
+
+**The PIN is stored as the switch stores it — plain, in its own database, on the
+switch host.** That is the proxy's store, the way an `htpasswd` file is nginx's,
+and the guard around it is that host's own access control. Hashing it would need
+a script module in the dialplan and is not in this version.
+
+**Where else it rests, said out loud.** Three places beside that row, and an
+operator should know all three before pointing a switch at this:
+
+* **The channel variables of the call.** The dialplan above puts the expected PIN
+  in `meclaw_wants` and the entered one in `meclaw_pin`, and a channel variable
+  ends up in the XML CDR of that call. That is why `meclaw_check` clears both on
+  **both** of its paths — the compare is over either way, and a CDR file is a
+  different exposure from a database row. One path no action reaches: a caller who
+  hangs up while the prompt is playing leaves the expected PIN in that call's CDR,
+  because the channel is gone before anything can unset it.
+* **The colony's message log.** `set_pin` reaches the switch as an ordinary
+  `switch` command, so the `db insert` URL — PIN included — is a message like any
+  other, and the central message log in `colony.db` keeps messages. The tool call
+  the model made carries it too.
+* **Whether the row outlives a restart is the switch's business.** `mod_db` keeps
+  its tables where the switch's own database lives, and which backing that is
+  (the SQLite files under its `db/` directory, or an ODBC or PostgreSQL table) is
+  configured on the host. Check it there before treating the table as a register
+  nobody ever has to write again.
+
+What this colony does **not** keep is a register: nothing here reads a row back,
+and there is no tool that lists one. What it does keep is the call table, which
+is a log of calls that happened.
+
+**There is no third field.** A number row is two fields and the PIN lives in the
+`pin.` row alone, so there is one place to look and one place to change.
 
 **`api_on_answer`, not `execute_on_answer`, and `uuid_audio_stream`, not
 `uuid_audio_fork`** (GH #603, defect 2). Starting the stream is an **API
@@ -562,11 +778,14 @@ silent. **What is NOT here is a clock** — see *What is not here*.
 
 | knob | where | default | what it is |
 |---|---|---|---|
-| `port`, `bind`, `emit_partials`, `stt`, `tts` | `voice` | see `templates/voice/README.md` | the media half |
+| `emit_partials`, `stt`, `tts` | `voice` | see `templates/voice/README.md` | the media half |
+| `mount` | `voice` | `phone` | ordered here: the door the media half answers on, on the colony's one listener. `phone` and not the template's own `voice`, so a member that also grows a browser voice channel keeps that name for it |
 | `audio_out_frame_ms` | `voice` | `20` | ordered here: `mod_audio_stream` aborts the call on an outbound frame longer than about 100 ms |
 | `emit_speak_end` | `voice` | `true` | ordered here: it is what *Hanging up* is built on. Off in the `voice` template itself |
 | `fs_api_base_url` | `signal` | `${FREESWITCH_XMLRPC_BASE_URL}` | the switch's control endpoint, credentials included. The one provider lane |
-| `voice_ws_url` | `signal` | `ws://127.0.0.1:7900/` | where `mod_audio_stream` reaches the media half, *seen from the machine FreeSWITCH runs on*. The path is the cell's socket route, so it ends in `/ws`; `?session=<uuid>&sample_rate=<fork_sample_rate>` is appended |
+| `voice_ws_url` | `signal` | `ws://127.0.0.1:7777/phone/ws` | where `mod_audio_stream` reaches the media half, *seen from the machine FreeSWITCH runs on*. Since `voice@2.0.0` the media half has no port of its own: the form is `ws://<listener>/<mount>/ws`, and `?session=<uuid>&sample_rate=<fork_sample_rate>` is appended. It is also the second field of the row `add_number` writes |
+| `db_realm` | `signal` | `meclaw_lines` | the realm of the switch's own table the three line tools write |
+| `line_user_id` | `signal` | `""` | the member a caller of this line is put through as: the first field of a number row and the key of the PIN row. Empty means the line tools write nothing and say so (`line_unconfigured`) |
 | `dial_prefix` | `signal` | `sofia/gateway/fs02/` | what goes in front of the number in the dial string |
 | `caller_id_number` | `signal` | `""` | the number this member calls from. Empty leaves it to the gateway |
 | `answer_app` | `signal` | `&park()` | what the answered leg is handed to |
@@ -686,12 +905,49 @@ new exits, and `hangup` takes a `call_id`. Both halves of the channel also stamp
 `hop.call_id`, and the media half's pin moves with it, to the `voice` version
 that reads `context.call_id` — the pin itself stands in `voice/config.json`.
 
-Migrating a colony on `1.0.1` is `swap_nodes` onto `freeswitch@1.1.0` plus three
+Migrating a colony on `1.0.1` is `swap_nodes` onto `freeswitch@1.1.1` plus three
 edits in the installing manifest: promote `call_id` instead of `voice_session`,
 drop the `set_context` on the answer edge, and add the two receipt edges. The
 first two are optional for one version, since the media half still reads
 `context.session_id`; the third is not, and without it every inbound call
 dead-letters one receipt.
+
+**`1.1.1` moves the media half's pin** ([#639](https://github.com/mmeyerlein/meclaw/issues/639)).
+Third place: no lane, no tool, no dialplan event and no param of this hive moves.
+The `voice` cell it contains can now be reached under a mount name on the
+colony's one listener, and the pin in `voice/config.json` moves with it. The
+mount it asks for is `phone`, not the `voice` the template defaults to: a member
+with a browser voice channel and a telephone therefore gets two mounts by
+default, `voice` for the screen's half and `phone` for this one, and neither has
+to be overridden for both to register. A colony on `1.1.0` migrates with
+`swap_nodes` and nothing else.
+
+**`2.0.0` makes the switch the proxy** ([#616](https://github.com/mmeyerlein/meclaw/issues/616)).
+First place, because two things a caller wired against are different: the media
+half answers on a **mount** and no longer on a port of its own
+([#654](https://github.com/mmeyerlein/meclaw/issues/654)), and `call_incoming`
+now carries an identity this hive **trusts** — `hop.user_id`, the
+member the switch put the caller through as, with `params.callers` left as the
+fallback for a dialplan that stamps none.
+
+What moves with it: three tools beside `call` and `hangup` — `add_number`,
+`set_pin`, `disable_pin` — which write the switch's own table and nothing here
+(§ *What leaves for the switch*); two params on `./signal` (`db_realm`,
+`line_user_id`); a `voice_ws_url` default that spells the new form
+(`ws://127.0.0.1:7777/phone/ws`) and doubles as the second field of a row; and one
+dialplan contract, written out as XML, that serves every line of every colony from
+that one table (§ *What the dialplan owes*).
+
+There is **no switchboard**. Which number belongs to which member, and what a
+caller types before they are put through, are the proxy's business — this colony
+holds no register of them and no PIN at all, and there is no tool that reads one
+back.
+
+Migrating a colony on `1.1.1`: `swap_nodes` onto `freeswitch@2.0.0`, then give
+`./signal` a `line_user_id` (without it the three new tools refuse by name and
+nothing else changes), and point `voice_ws_url` at the colony's listener and this
+hive's mount instead of at a port. The dialplan keeps working unchanged as long
+as it goes on stamping nothing: `callers` still answers who is on the line.
 
 ### The migration from `phone@1.0.0`
 
@@ -700,7 +956,7 @@ exported, so for almost everybody this section is history. A colony that *did* g
 in two steps and keeps its call table:
 
 1. `swap_nodes` the node onto the new template
-   (`{"match": {"name": "channels/phone"}, "template": "freeswitch@1.1.0"}`),
+   (`{"match": {"name": "channels/phone"}, "template": "freeswitch@2.0.0"}`),
    which leaves the `store` where it is.
 2. Rewrite the edges of the installing manifest above: they name the node, and
    the node's name is what changed. The receipt edges go in at the same time.

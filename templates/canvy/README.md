@@ -1,8 +1,9 @@
-# `canvy@2.2.0`
+# `canvy@2.3.0`
 
 > **Deprecated since GH #455.** This template fuses two things the library now keeps apart: a SURFACE (a screen, which belongs to a person and is shared by everybody who writes to it) and a VIEW of the colony (which is one application among many). Those are `display` and `colony-view` in the table next door. `canvy` is not removed and not going to break -- an instance grown from it keeps running, because instantiation copies -- but it takes no further work, and a new screen should be a `display` with `colony-view` writing onto it.
 
-One interactive canvas of the colony, served on a port of its own. A timer takes
+One interactive canvas of the colony, reached at `/<mount>/` on the colony's one
+listener. A timer takes
 a topology snapshot, a `code` cell turns it into display objects, and a `web`
 cell holds those objects and serves the page. The browser owns two things and
 neither of them is the picture: the drag, and where you are looking.
@@ -12,7 +13,7 @@ The first — and so far only — thing it draws is the colony itself.
 ```
 clock (timer)    ->  probe (code)  ->  layout (code)  ->  web (display)
      every minute        the colony's       objects,          the page,
-                         graph endpoint     not markup        on its own port
+                         graph endpoint     not markup        under its mount
 ```
 
 ## What changed in 2.0.0, and why the first digit moved
@@ -25,7 +26,7 @@ cell held the positions, and the page was served by the HTTP API under
 |---|---|
 | `render` (code) emitted markup | `layout` (code) emits **objects** |
 | `store` held positions and the snapshot | the display's own object tree holds both |
-| served by `--api` under `/surface/…` | served by the `web` cell on **its own port** |
+| served by `--api` under `/surface/…` | served by the `web` cell under **its own mount** |
 | a drag was two `code` cell calls (~34 ms) | a drag is a **local write** inside the display |
 | the camera was written back to the store | the camera never leaves the browser |
 
@@ -108,7 +109,7 @@ that matters:
    mailbox inside twenty seconds ([#161](https://github.com/mmeyerlein/meclaw/issues/161)).
 
 **`web`** is a reference to [`web`](../web/) with one default overridden:
-the port. It holds four tables — objects, components, pages, assets — renders
+the mount. It holds four tables — objects, components, pages, assets — renders
 its pages once into a materialised tree, and serves them from that. **A page
 load therefore costs no cell call at all**: a colony that is wedged still serves
 its picture, and the browser then visibly fails to *connect*, which is a state a
@@ -201,8 +202,8 @@ inside it; a caller names the hive and a lane on `hop.route`.
 | `in_refresh` | in | take the topology snapshot now, instead of at the next tick |
 | `event` | out | something a person did in the browser that this hive does not handle itself |
 
-Nothing has to point at canvy at all: the way in is the HTTP port the display
-owns. `in_refresh` exists for the case where a mutation has just landed and
+Nothing has to point at canvy at all: the way in is `/<mount>/` on the colony's
+listener. `in_refresh` exists for the case where a mutation has just landed and
 waiting a minute is silly.
 
 Nothing inside consumes `event`, and that is deliberate — a browser event nobody
@@ -210,41 +211,39 @@ wired for dead-letters as `no_route`, recorded and self-localising, which is
 state (2) of [#284](https://github.com/mmeyerlein/meclaw/issues/284) rather than
 a silence.
 
-### The port
+### The mount
 
-The display's port is the one knob an instance almost always sets. The template
-ships `7810`; a second canvas in the same colony needs a different one, because
-two displays sharing a port is a bind race rather than a configuration.
+The display's mount is the one knob an instance almost always sets. The template
+ships `canvy`, so the canvas is at `/canvy/` on the colony's listener; a second
+canvas in the same colony needs a different name, because two displays sharing
+one is a mount collision rather than a configuration.
 
 ```json
-{"add_nodes": [{"path": "/ops", "name": "canvy", "template": "canvy@2.2.0",
-                "override_params": {"web": {"port": 7900}}}]}
+{"add_nodes": [{"path": "/ops", "name": "canvy", "template": "canvy@2.3.0",
+                "override_params": {"web": {"mount": "ops-canvy"}}}]}
 ```
 
-**RETRACTED (GH #410, `canvy@2.1.0`).** Up to `canvy@2.0.1` this page said:
-*"The port is **immutable once the cell exists**: a params update naming it is
-refused, loudly and without partial apply, because rebinding a live display
-would move it out from under whatever reverse proxy is pointed at it."* **That
-refusal is withdrawn** — the `web` template rebinds a running listener. The port is
-still chosen here, at instantiation, and it is still the identity that keeps two
-canvases apart; it is simply no longer irreversible. To move a live canvas, send
-its display cell a params update:
+**SUPERSEDED (`canvy@2.3.0`).** Up to `canvy@2.2.0` the knob here was the
+display's `port`, and this page explained how a params update moved a running
+listener. Both `port` and `bind` have left the [`web`](../web/) cell: a display
+owns a name on the colony's one listener, not a socket of its own, and a
+document that still carries either key is refused with the migration named.
+Renaming a canvas is still a params update to its display cell — it takes
+effect on that cell's next life, because the name is registered once per life:
 
 ```json
-{"params": {"bind": "0.0.0.0", "port": 7901}}
+{"params": {"mount": "ops-canvy"}}
 ```
 
 The canvas keeps its `cell.db` — every node position a person dragged is exactly
-where it was — and the open browsers reconnect on their own. This is what
-`MIGRATION.md` step 1's "pick a free port" no longer costs you if you pick the
-wrong one.
+where it was.
 
 ### Auth and TLS are somebody else's job, permanently
 
-The display binds `127.0.0.1` by default and grows no authentication story ever
-(R-W8-2). Put a reverse proxy in front of it and one location block is the whole
-access rule for one canvas — which is also why two canvases are two hives on two
-ports rather than two paths on one.
+The display grows no authentication story ever (R-W8-2). Put a reverse proxy in
+front of the colony's listener and one location block is the whole access rule
+for one canvas — two canvases are two hives under two mounts, which is what
+makes such a rule complete for one of them.
 
 ### The one absolute lane
 

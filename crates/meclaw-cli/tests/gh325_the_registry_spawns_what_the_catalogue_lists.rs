@@ -85,10 +85,12 @@ fn the_catalogue_lists_exactly_the_types_the_registry_can_spawn() {
          not the tree's capability",
     );
 
-    let registry: BTreeSet<String> = meclaw_cli::factories::built_in_factories()
-        .keys()
-        .map(|k| k.to_string())
-        .collect();
+    let registry: BTreeSet<String> = meclaw_cli::factories::built_in_factories(
+        std::sync::Arc::new(meclaw_colony::SurfaceRegistry::new()),
+    )
+    .keys()
+    .map(|k| k.to_string())
+    .collect();
 
     assert_eq!(
         listed,

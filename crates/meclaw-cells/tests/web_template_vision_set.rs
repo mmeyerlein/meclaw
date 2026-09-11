@@ -185,9 +185,11 @@ fn the_demo_page_renders_every_component_in_the_set() {
     }
 
     assert!(
-        body.contains("<link rel=\"stylesheet\" href=\"/vision.css\">"),
+        body.contains("<link rel=\"stylesheet\" href=\"vision.css\">"),
         "the demo page must name the token sheet, or it is the set with no \
-         design on it: {body}"
+         design on it. The href is RELATIVE since web@2.0.0: the page is \
+         materialised before any request, so it cannot know the mount it will \
+         be served under -- the shell's `<base>` is what resolves it: {body}"
     );
 }
 

@@ -8,6 +8,7 @@ pub mod ask;
 pub mod bridge;
 pub mod factories;
 pub mod lease;
+mod mux;
 pub mod vault_cli;
 pub use factories::built_in_factories;
 /// GH #84: the trip policy is a field of [`WatchdogTuning`] and of `colony.json`,
@@ -621,7 +622,10 @@ pub async fn run_with_hooks_tuned(
         let mut tree_declares_restricted = false;
 
         // 1. Filesystem-Bootstrap-Plan (additiv).
-        let factories = built_in_factories();
+        // A table of its own: `--validate` plans and spawns nothing, so no cell
+        // ever mounts on it.
+        let factories =
+            built_in_factories(std::sync::Arc::new(meclaw_colony::SurfaceRegistry::new()));
         // A5b (Phase-16 W1b): `--validate` lists unknown (unregistered) nodes on
         // a Reboot, so it must consult the REAL persisted overlay + boot state
         // (not an empty dry-run overlay). On a FirstBoot the overlay is empty and
@@ -859,7 +863,10 @@ pub async fn run_with_hooks_tuned(
     // Step 5.1 — root-hive guard: direct mode requires `/` as a hive scope.
     // Checked via the bootstrap plan (no side effect, identical to --validate).
     if is_direct_mode {
-        let factories = built_in_factories();
+        // The guard only plans; the table the running colony uses is minted
+        // below, where the factories that spawn cells are built.
+        let factories =
+            built_in_factories(std::sync::Arc::new(meclaw_colony::SurfaceRegistry::new()));
         let plan_overlay = meclaw_colony::read_registry_overlay(&db_path)
             .unwrap_or_else(|_| meclaw_colony::RegistryOverlay::new());
         let plan_boot_state = meclaw_colony::probe_boot_state(&db_path)
@@ -928,7 +935,11 @@ pub async fn run_with_hooks_tuned(
     // Channels: inbox for ColonyMsg::Route/Shutdown, outputs for CellEmission.
     let (inbox_tx, inbox_rx) = tokio::sync::mpsc::channel(1024);
     let (outputs_tx, outputs_rx) = tokio::sync::mpsc::channel(1024);
-    let factories = built_in_factories();
+    // The process's mount table (ADR-0031): minted once, here, and handed to
+    // the surface factories. The one listener and `GET /colony/surfaces` read
+    // the same `Arc`.
+    let surfaces = std::sync::Arc::new(meclaw_colony::SurfaceRegistry::new());
+    let factories = built_in_factories(std::sync::Arc::clone(&surfaces));
     let root_path = cli.root.clone();
 
     // Phase-13.5 A7: read colony.json (absent → defaults; broken → hard boot fail).
@@ -998,10 +1009,11 @@ pub async fn run_with_hooks_tuned(
     // GH #383 — `--api` opens no second door any more. GH #159 gave this branch a
     // marked egress channel and a `Dispatcher`, because a surface was rendered by a
     // cell and the HTML had to travel back through the HTTP layer that asked for it.
-    // A display is a `web` cell now: it owns its own listener, so its answer never
-    // leaves the colony as a message at all, and `--api` is back to serving the
-    // operator UI and the colony endpoints. `EgressPolicy::Marked` stays in the
-    // substrate — this was its only caller, not its only reason.
+    // A display is a `web` cell now: it serves its own mount on this listener, so
+    // its answer never leaves the colony as a message at all, and this branch is
+    // back to serving the operator UI and the colony endpoints.
+    // `EgressPolicy::Marked` stays in the substrate — this was its only caller,
+    // not its only reason.
     //
     // Direct-Mode's own door (`with_egress`, above) is untouched: it is the stdio
     // bridge's way out and always was a different policy (`All`, root only).
@@ -1420,23 +1432,38 @@ pub async fn run_with_hooks_tuned(
         });
         // Phase-12-X T18: the same blob store (instantiated above) goes to the
         // router for the multipart path of POST /messages.
-        let router = meclaw_api::router::build_router(colony, blob_store, message_default_ttl);
+        let router = meclaw_api::router::build_router(
+            colony,
+            blob_store,
+            message_default_ttl,
+            std::sync::Arc::clone(&surfaces),
+        );
 
         let listener = tokio::net::TcpListener::bind(bind_addr).await?;
         let local_addr = listener.local_addr()?;
+        // GH #644: the one listener publishes where it is, so `/colony/surfaces`
+        // can name the address a proxy has to point at. Before the hook, not
+        // after: a test that waits on the hook and reads `/colony/surfaces` at
+        // once would otherwise be racing this line for a `listener: null`.
+        surfaces.set_listener(local_addr);
         if let Some(tx) = addr_hook {
             let _ = tx.send(local_addr);
         }
 
-        meclaw_api::axum::serve(listener, router)
-            .with_graceful_shutdown(signal_future)
-            .await?;
+        // The socket is not the API's alone any more: `mux::serve` reads each
+        // connection's first request line and hands the stream to the cell that
+        // mounted the segment it names, or serves the API router on it
+        // (ADR-0031).
+        mux::serve(listener, router, surfaces, signal_future).await;
     } else {
         // Headless (no --api): no HTTP listener. Wait for ctrl_c/SIGTERM/hook.
         signal_future.await;
     }
 
-    // Graceful Colony-Shutdown after axum has stopped accepting + drained:
+    // Graceful Colony-Shutdown after the listener has stopped accepting AND
+    // drained its API connections (GH #644: `mux::serve` returns once every
+    // request it still owed an answer is answered, or after its drain cap;
+    // connections a cell was handed belong to the cell and are not waited for):
     // send Shutdown → Colony drains in-flight work + fires ack → join the task.
     // Timeouts prevent indefinite hangs if Colony is wedged.
     //

@@ -1,6 +1,6 @@
 {"schema": {"id": "text", "parent": "text", "component": "text", "ord": "int", "props": "json"}}
 {"id": "root", "parent": null, "component": "stack", "ord": 0, "props": {"stylesheet": true}}
-{"id": "welcome", "parent": "root", "component": "text", "ord": 0, "props": {"body": "This display is served by its own cell, on its own port. Send it object.create to put something here, or open /demo to see the component set."}}
+{"id": "welcome", "parent": "root", "component": "text", "ord": 0, "props": {"body": "This display is served by its own cell, under its own mount on the colony's listener. Send it object.create to put something here, or open /demo to see the component set."}}
 {"id": "demo", "parent": null, "component": "stack", "ord": 0, "props": {"stylesheet": true}}
 {"id": "demo-page", "parent": "demo", "component": "stack", "ord": 0, "props": {}}
 {"id": "demo-heading", "parent": "demo-page", "component": "heading", "ord": 10, "props": {"text": "Vision", "lead": true}}

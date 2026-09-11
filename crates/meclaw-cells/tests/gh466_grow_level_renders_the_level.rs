@@ -224,13 +224,13 @@ fn levels() -> Vec<Level> {
             index: 0,
         },
         // GH #543 — the two devices a member always gets, at the names the
-        // renderer gives them and on the port `screen_port_base` hands the
-        // first member of an organisation.
+        // renderer gives them and under the mount the OS hands out for that
+        // member's screen.
         Level {
             name: "screen",
             params: json!({"scope": "/os/orgs/acme/members/alex", "level": "screen",
                    "name": "display",
-                   "override_params": {"web": {"port": 7900}}}),
+                   "override_params": {"web": {"mount": "alex-display"}}}),
             file: "grow-screen.json",
             index: 0,
         },

@@ -29,6 +29,17 @@ Release detail is in [CHANGELOG.md](CHANGELOG.md) and the
 
 ## Now
 
+v0.35.0 takes the port away from a surface cell. A colony has one listener, and
+a display or a voice door is reached under a name on it, `/<mount>/` for the
+page and `/<mount>/ws` for the socket: `params.port` and `params.bind` leave the
+`web` and the `voice` type, and a document that still carries one is refused
+with the migration in the message. The OS hands out a mount per member instead
+of a port, a proxy may move a display onto a domain path and say so with
+`X-Forwarded-Prefix`, and in front of a telephone the switch is the proxy — it
+maps number and PIN to a colony's listener and the mount of its telephone half
+and stamps who is calling. What the release contains is the
+[`[0.35.0]`](CHANGELOG.md) section of the changelog.
+
 v0.34.0 is the documentation with one shape and a quick start that asks for
 the key. The README is a hub, `docs/` has a concept layer between the start
 page and the reference files, and every page answers one question in the same
@@ -93,10 +104,9 @@ The first colony built on that release turned up four repairs, and v0.30.1
 carries them: a member wish is one submission again, and `--validate` reads the
 `override_params` a `ref` marker carries.
 
-Nothing is cut and waiting. Four designs, a dispatcher in front of several
-colonies, a lane across a colony boundary, erasure of one member across every
-store, and a persona regression gate, are specified with plans and proposed ADRs
-and wait for their build wave.
+Nothing is cut and waiting. Three designs, a lane across a colony boundary,
+erasure of one member across every store, and a persona regression gate, are
+specified with plans and proposed ADRs and wait for their build wave.
 
 The streams below carry what comes next; the tracker carries the rest.
 
@@ -114,14 +124,6 @@ Findings from running the thing.
 - The message-header size watch. Headers carry no cap by design, so the watch
   is the instrument: it fires on drift past ~100 KB on a single hop, and the
   last reading was 5.4 KB max. *(register: header-size)*
-- One trunk, several colonies. A telephone reaches the one colony it belongs to
-  only if something in front of them resolves the caller, and today nothing
-  does: the channel maps a number to a sender inside the single colony it runs
-  in, so a second household means editing the dialplan. The shape is a
-  dispatcher that resolves caller number plus a device PIN — a caller id alone
-  is a claim the far end makes — hands the leg to that colony at the switch, and
-  lets a colony sign on and off without the trunk being touched. Designed, not
-  built. [#616](https://github.com/mmeyerlein/meclaw/issues/616)
 - A gate for what the assistant is like. Nothing today guards tone, brevity,
   refusal, what is remembered and when the colony speaks: a model swap, a prompt
   edit or a changed seed passes every gate green, and the drift is noticed weeks
@@ -211,6 +213,9 @@ there.
 One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- v0.35.0: no port for a surface cell. One listener, a mount per surface, a
+  prefix-aware shell under `/<mount>/`, the OS handing out mounts instead of
+  ports, and a switch that is the proxy in front of several colonies.
 - v0.34.0: the documentation has one shape and the quick start asks for the
   key. README as a hub, a concept layer in `docs/`, the why pages rewritten,
   the reference files with heads; `start.sh` boots the shell and getting

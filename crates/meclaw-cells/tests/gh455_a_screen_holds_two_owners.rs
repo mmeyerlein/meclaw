@@ -23,7 +23,11 @@ use meclaw_cells::web::WebCellFactory;
 use meclaw_colony::{CellFactory, ContractView, SpawnedCellKind};
 use meclaw_core::serde_json::{Value, json};
 use meclaw_core::{Body, CellEmission, MessageBuilder, Path};
-use meclaw_testing::free_port;
+use meclaw_testing::{surface_listener, wait_for_mount};
+
+/// The name this fixture's display answers to. The port in every URL below is
+/// the LISTENER's: a `web` cell has none since `web@2.0.0`.
+const MOUNT: &str = "display";
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
@@ -709,7 +713,9 @@ fn distinct_keys_across_different_parents_are_fine() {
 // ──────────────────────────────────────────────── (e) it reaches a real page
 
 struct Live {
+    /// The port of the one listener in front of the cell.
     port: u16,
+    _listener: tokio::task::JoinHandle<()>,
     cell_dir: std::path::PathBuf,
     mailbox: mpsc::Sender<meclaw_core::Message>,
     out_rx: mpsc::Receiver<CellEmission>,
@@ -722,13 +728,13 @@ struct Live {
 /// template's own demo seed with it. Believing otherwise is how GH #402
 /// shipped.
 async fn start(cell_dir: &std::path::Path) -> Live {
-    let port = free_port();
+    let surfaces = Arc::new(meclaw_colony::SurfaceRegistry::new());
     let (out_tx, out_rx) = mpsc::channel::<CellEmission>(64);
     let (inbox_tx, _inbox_rx) = mpsc::channel(8);
-    let spawned = Arc::new(WebCellFactory)
+    let spawned = Arc::new(WebCellFactory::new(Arc::clone(&surfaces)))
         .spawn_cell(
             Path::new("/display/web"),
-            json!({ "port": port }),
+            json!({ "mount": MOUNT }),
             out_tx,
             cell_dir.to_path_buf(),
             ContractView::default(),
@@ -750,23 +756,30 @@ async fn start(cell_dir: &std::path::Path) -> Live {
         panic!("Active");
     };
 
-    // An empty display has no page and answers 404 -- which is still the
-    // listener answering. Waiting for a 200 would wait for a bootstrap this
-    // test has not sent yet.
+    // An empty display has no page and answers 404 -- which is still the cell
+    // answering. Waiting for a 200 would wait for a bootstrap this test has
+    // not sent yet.
+    wait_for_mount(&surfaces, MOUNT).await;
+    let (addr, listener) = surface_listener(Arc::clone(&surfaces)).await;
+    let port = addr.port();
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        if reqwest::get(format!("http://127.0.0.1:{port}/"))
+        if reqwest::get(format!("http://127.0.0.1:{port}/{MOUNT}/"))
             .await
             .is_ok()
         {
             break;
         }
-        assert!(Instant::now() < deadline, "the cell never bound its port");
+        assert!(
+            Instant::now() < deadline,
+            "the cell never answered on its mount"
+        );
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
 
     Live {
         port,
+        _listener: listener,
         cell_dir: cell_dir.to_path_buf(),
         mailbox: sender,
         out_rx,
@@ -869,7 +882,7 @@ async fn both_views_reach_a_real_display() {
     drop(conn);
 
     // ...and the page a browser gets.
-    let body = reqwest::get(format!("http://127.0.0.1:{}/", live.port))
+    let body = reqwest::get(format!("http://127.0.0.1:{}/{MOUNT}/", live.port))
         .await
         .expect("get")
         .text()

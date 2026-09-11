@@ -248,12 +248,8 @@ PIN-web-bundle-destructive-de	docs/cell-types.md	**Was das fuer ein Bundle heiss
 PIN-web-bundle-destructive-en	docs/cell-types.en.md	What that means for a bundle that clears and rebuilds (GH #405)	pinned	a_bundle_whose_creates_are_all_refused_still_applies_its_deletes
 PIN-web-bundle-two-sends-de	docs/cell-types.md	ein zerstoerendes Bundle wird als ZWEI geschickt	pinned	the_documented_recipe_sends_two_bundles_and_keeps_the_tree
 PIN-web-bundle-two-sends-en	docs/cell-types.en.md	a destructive bundle is sent as TWO	pinned	the_documented_recipe_sends_two_bundles_and_keeps_the_tree
-PIN-web-rebind-runtime-de	docs/cell-types.md	**`port` und `bind` sind zur Laufzeit änderbar — und damit wird eine Zusage zurückgenommen (GH #410).**	pinned	a_params_update_moves_the_port_of_a_running_display
-PIN-web-rebind-runtime-en	docs/cell-types.en.md	`port` and `bind` change at runtime, and this retracts a promise (GH #410).	pinned	a_params_update_moves_the_port_of_a_running_display
-PIN-web-rebind-move-then-write-de	docs/cell-types.md	**Die Reihenfolge ist verschieben, dann schreiben.**	pinned	a_bind_nothing_can_resolve_leaves_the_old_listener_serving
-PIN-web-rebind-move-then-write-en	docs/cell-types.en.md	The order is move, then write.	pinned	a_bind_nothing_can_resolve_leaves_the_old_listener_serving
-PIN-web-rebind-boot-failure-de	docs/cell-types.md	**Ein fehlgeschlagener Bind ist per Nachricht heilbar.**	pinned	a_display_that_could_not_bind_at_boot_is_moved_by_a_message
-PIN-web-rebind-boot-failure-en	docs/cell-types.en.md	A failed bind is curable by message.	pinned	a_display_that_could_not_bind_at_boot_is_moved_by_a_message
+PIN-web-mount-no-port-de	docs/cell-types.md	**`port` und `bind` gibt es seit `web@2.0.0` nicht mehr, und ein Dokument, das eines von beiden trägt, wird beim Parsen abgelehnt.**	pinned	parse_refuses_port_and_bind_since_2_0_0
+PIN-web-mount-no-port-en	docs/cell-types.en.md	`port` and `bind` are gone since `web@2.0.0`, and a document carrying either is refused at parse.	pinned	parse_refuses_port_and_bind_since_2_0_0
 PIN-code-warm-semantics-de	docs/cell-types.md	Ein Warm-Runner ändert Latenz, nie Semantik	pinned	warm_answers_the_same_bytes_as_cold
 PIN-code-warm-semantics-en	docs/cell-types.en.md	A warm runner changes latency, never semantics	pinned	warm_answers_the_same_bytes_as_cold
 PIN-code-resident-serial-de	docs/cell-types.md	genau ein** Kind, strikt serieller FIFO	pinned	twenty_messages_come_back_in_the_order_they_went_in
@@ -346,5 +342,49 @@ PIN-voice-credential-redacted-de	docs/cell-types.md	ist in `Debug`, in Logs und 
 PIN-voice-credential-redacted-en	docs/cell-types.en.md	is redacted in `Debug`, in logs and in error messages	pinned	debug_redacts_secrets
 PIN-voice-providers-immutable-de	docs/cell-types.md	ein Update, das eines von beiden nennt, wird also als unbekannt abgelehnt	pinned	overlay_refuses_stt_update
 PIN-voice-providers-immutable-en	docs/cell-types.en.md	an update naming one is refused as unknown	pinned	overlay_refuses_stt_update
-PIN-voice-port-zero-refused-de	docs/cell-types.md	`0` wird abgelehnt, genau wie bei `web`	pinned	parse_refuses_port_zero
-PIN-voice-port-zero-refused-en	docs/cell-types.en.md	`0` is refused, exactly as in `web`	pinned	parse_refuses_port_zero
+#
+# Added 2026-09-10 (wave "no port for a surface cell", GH #653). The docs half of
+# the wave rewrote the `web` and `voice` reference pages around the mount; these
+# rows pin what those pages now promise against the tests the code strands
+# (#645, #654) landed. `port` and `bind` are gone from both types, so the rows
+# that pinned the rebind paragraphs left with them (see the 2026-08-25 block
+# above).
+PIN-web-shell-under-mount-de	docs/cell-types.md	Die Zelle liefert unter einem Mount aus. `params.mount` nennt ihn	pinned	a_web_cell_serves_its_shell_under_its_mount
+PIN-web-shell-under-mount-en	docs/cell-types.en.md	The cell serves under a mount. `params.mount` names it	pinned	a_web_cell_serves_its_shell_under_its_mount
+PIN-web-two-mounts-one-listener-de	docs/cell-types.md	jede mit ihrer eigenen `web`-Zelle unter ihrem eigenen Mount	pinned	two_web_cells_serve_two_mounts_on_one_listener
+PIN-web-two-mounts-one-listener-en	docs/cell-types.en.md	each with its own `web` cell under its own mount	pinned	two_web_cells_serve_two_mounts_on_one_listener
+PIN-web-mount-required-de	docs/cell-types.md	Der Name, den diese Instanz am Listener der Colony hält; die Anzeige liegt unter `/<mount>/`	pinned	a_mount_is_required
+PIN-web-mount-required-en	docs/cell-types.en.md	The name this instance holds on the colony's listener; the display is at `/<mount>/`	pinned	a_mount_is_required
+PIN-web-mount-grammar-de	docs/cell-types.md	die Anzeige liegt unter `/<mount>/`. `[a-z0-9-]{1,64}`, und die Segmente, die die API besitzt	pinned	a_mount_outside_the_grammar_is_refused
+PIN-web-mount-grammar-en	docs/cell-types.en.md	the display is at `/<mount>/`. `[a-z0-9-]{1,64}`, and the segments the API owns	pinned	a_mount_outside_the_grammar_is_refused
+PIN-web-mount-next-life-de	docs/cell-types.md	Eine Änderung von `mount` wirkt im nächsten Leben.	pinned	a_mount_update_is_read_by_the_next_life
+PIN-web-mount-next-life-en	docs/cell-types.en.md	A `mount` change takes effect on the next life.	pinned	a_mount_update_is_read_by_the_next_life
+PIN-web-prefix-base-de	docs/cell-types.md	Jede Anfrage berechnet eine Basis, den bereinigten `X-Forwarded-Prefix`, den ein Proxy schickt, plus `/<mount>`	pinned	a_forwarded_prefix_moves_every_link_of_the_shell
+PIN-web-prefix-base-en	docs/cell-types.en.md	Every request computes a base, the sanitised `X-Forwarded-Prefix` a proxy sends plus `/<mount>`	pinned	a_forwarded_prefix_moves_every_link_of_the_shell
+PIN-web-prefix-base-overview-de	docs/meclaw-overview.md	Die Basis ist der bereinigte `X-Forwarded-Prefix`, den ein Proxy schickt, plus	pinned	a_forwarded_prefix_moves_every_link_of_the_shell
+PIN-web-prefix-base-overview-en	docs/meclaw-overview.en.md	The base is the sanitised `X-Forwarded-Prefix` a proxy sends plus `/<mount>`	pinned	a_forwarded_prefix_moves_every_link_of_the_shell
+PIN-web-prefix-malformed-de	docs/cell-types.md	oder einer mit Schrägstrich am Ende, wird ignoriert statt geglaubt	pinned	a_malformed_forwarded_prefix_is_ignored
+PIN-web-prefix-malformed-en	docs/cell-types.en.md	or one with a trailing slash, is ignored rather than trusted	pinned	a_malformed_forwarded_prefix_is_ignored
+PIN-web-route-under-base-de	docs/cell-types.md	die Basis wird davon wieder abgezogen, `page.set`-Routen bleiben also Namen	pinned	a_route_is_taken_from_the_join_url_under_the_base
+PIN-web-route-under-base-en	docs/cell-types.en.md	the base is stripped off it again, so `page.set` routes stay names	pinned	a_route_is_taken_from_the_join_url_under_the_base
+PIN-web-identity-header-de	docs/cell-types.md	Der Request-Header, dessen Wert auf jedem semantischen Browser-Ereignis als `hop.user_id` mitreist. Leer stempelt nichts	pinned	an_identity_header_becomes_hop_user_id
+PIN-web-identity-header-en	docs/cell-types.en.md	The request header whose value rides every semantic browser event as `hop.user_id`. Empty stamps nothing	pinned	an_identity_header_becomes_hop_user_id
+PIN-web-identity-header-overview-de	docs/meclaw-overview.md	Ist `params.identity_header` gesetzt, reist der Wert dieses Request-Headers als	pinned	an_identity_header_becomes_hop_user_id
+PIN-web-identity-header-overview-en	docs/meclaw-overview.en.md	With `params.identity_header` set, the value of that request header	pinned	an_identity_header_becomes_hop_user_id
+PIN-surfaces-mount-table-de	docs/meclaw-overview.md	veröffentlicht die Mount-Tabelle, eine Zeile pro Fläche	pinned	the_mount_table_and_its_traefik_document
+PIN-surfaces-mount-table-en	docs/meclaw-overview.en.md	publishes the mount table, one row per surface	pinned	the_mount_table_and_its_traefik_document
+PIN-voice-mount-no-port-de	docs/cell-types.md	wird bei der Validierung abgelehnt, mit der Migration in der Meldung: `port: removed in voice 2.0.0	pinned	parse_refuses_port_and_bind_since_2_0_0
+PIN-voice-mount-no-port-en	docs/cell-types.en.md	is refused at validation with the migration in the message: `port: removed in voice 2.0.0	pinned	parse_refuses_port_and_bind_since_2_0_0
+PIN-voice-serves-under-its-mount-de	docs/cell-types.md	liefert unter dem Mount aus, den ihre eigenen `params` nennen	pinned	a_mounted_voice_cell_registers_on_its_life_and_serves_a_handed_stream
+PIN-voice-serves-under-its-mount-en	docs/cell-types.en.md	serves under the mount named in its own `params`	pinned	a_mounted_voice_cell_registers_on_its_life_and_serves_a_handed_stream
+PIN-voice-mount-required-de	docs/cell-types.md	Der Mount-Name am einen Listener der Colony: der Socket unter `/<mount>/ws`	pinned	parse_requires_a_mount
+PIN-voice-mount-required-en	docs/cell-types.en.md	The mount name on the colony's one listener: the socket at `/<mount>/ws`	pinned	parse_requires_a_mount
+PIN-voice-mount-grammar-de	docs/cell-types.md	die Testseite unter `/<mount>/`. `[a-z0-9-]{1,64}`, und die Segmente, die die API besitzt	pinned	parse_refuses_a_reserved_or_malformed_mount
+PIN-voice-mount-grammar-en	docs/cell-types.en.md	the test page at `/<mount>/`. `[a-z0-9-]{1,64}`, and the segments the API owns	pinned	parse_refuses_a_reserved_or_malformed_mount
+PIN-voice-mount-collision-de	docs/cell-types.md	ein Mount, den eine andere Zelle bereits hält, registriert nichts, wird dem Handler gemeldet und lässt die Hälfte weiterlaufen	pinned	a_mount_another_cell_holds_is_refused_and_the_half_stays_alive
+PIN-voice-mount-collision-en	docs/cell-types.en.md	a mount another cell already holds registers nothing, is reported to the handler and leaves the half running	pinned	a_mount_another_cell_holds_is_refused_and_the_half_stays_alive
+PIN-web-prefix-malformed-overview-de	docs/meclaw-overview.md	wird ignoriert, und ebenso die zwei Formen, die die Grammatik selbst durchlässt	pinned	a_malformed_forwarded_prefix_is_ignored
+PIN-web-prefix-malformed-overview-en	docs/meclaw-overview.en.md	or one with a trailing slash, is ignored, and so are the two shapes	pinned	a_malformed_forwarded_prefix_is_ignored
+PIN-surfaces-mount-table-endpoint-de	docs/meclaw-overview.md	die Mount-Tabelle der Surface-Zellen (`?format=traefik`: als Traefik-HTTP-Provider-Dokument)	pinned	the_mount_table_and_its_traefik_document
+PIN-surfaces-mount-table-endpoint-en	docs/meclaw-overview.en.md	the mount table of the surface cells (`?format=traefik`: as a Traefik HTTP-provider document)	pinned	the_mount_table_and_its_traefik_document
+PIN-web-two-mounts-cells-page	docs/cells.en.md	a colony opens a second display by instantiating the type again under another mount	pinned	two_web_cells_serve_two_mounts_on_one_listener

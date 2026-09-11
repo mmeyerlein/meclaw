@@ -1,8 +1,11 @@
-//! The I/O half of the `voice` cell: the listener, the session registry, and
-//! the loop that keeps both alive for the cell's whole life (wave voice-cell).
+//! The I/O half of the `voice` cell: the mount, the session registry, and the
+//! loop that keeps both alive for the cell's whole life (wave voice-cell).
 //!
-//! This half owns the axum server, the WebSocket connections it accepts and the
-//! provider sockets those connections drive. It holds no cell state, no
+//! This half owns the mount the cell is reached under, the WebSocket
+//! connections handed to it under that name and the provider sockets those
+//! connections drive. It binds nothing: since `voice@2.0.0` a surface cell has
+//! no port of its own and is reached at `/<mount>/…` on the colony's one
+//! listener (ADR-0031, superseding ADR-0014). It holds no cell state, no
 //! `cell.db` handle and no `OutputSink`; what it learns from the outside world
 //! it pushes to the handler as a [`VoiceEvent`], and what the handler decides
 //! comes back as a [`VoiceReconfig`].
@@ -28,11 +31,10 @@
 //!
 //! # Who is allowed to wait for a client (GH #593)
 //!
-//! [`run_io`] is not. It reads the handler's commands and the `Rebind` that
-//! moves the listener out of the same loop, so a wait for one client is a wait
-//! for the listener — and a `Rebind` queued behind a client that had stopped
-//! reading was simply never seen, until the handler's ack timeout refused a
-//! perfectly good update.
+//! [`run_io`] is not. It reads the handler's commands and the streams the
+//! colony's listener hands over out of the same loop, so a wait for one client
+//! is a wait for every other client's first frame — and a command queued behind
+//! a client that had stopped reading was simply never seen.
 //!
 //! So delivery is two hops. The registry does not hold a connection's own
 //! channel; it holds the queue of a [`deliver`] task, one per connection, and
@@ -53,8 +55,8 @@
 //! commands went with the session, so a colony reading its own lanes can tell a
 //! caller who hung up from a client that stopped reading.
 
-use axum::Router;
-use meclaw_colony::IoLivenessMark;
+use meclaw_colony::{HandedConnection, IoLivenessMark, Registration, SurfaceEntry};
+use meclaw_core::Path;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -64,7 +66,7 @@ use tokio::sync::{Mutex, mpsc, watch};
 
 use crate::voice::cell::{VoiceEvent, VoiceReconfig};
 use crate::voice::contract::{SttProvider, TtsProvider};
-use crate::voice::service::router;
+use crate::voice::service::{VoiceLinkOpener, mounted_router};
 use crate::voice::wire::{CLOSE_SESSION_REPLACED, Mode, ServerFrame, SpeakEndReason};
 
 /// What one connection task can be told to do.
@@ -151,42 +153,43 @@ pub struct VoiceIoShared {
     pub events_tx: mpsc::Sender<VoiceEvent>,
     /// Issue #7: proof that a provider round trip happened.
     pub liveness: IoLivenessMark,
-    /// Who is connected, and how many disconnects are still unspoken.
+    /// Who is connected.
     sessions: Mutex<Registry>,
-    /// What is left to wait for, as a channel rather than a number.
+    /// Resolves when the I/O half is gone; nobody ever sends on it.
     ///
-    /// A rebind has to announce its new address *after* the connections the old
-    /// one accepted have reported themselves gone — otherwise the handler reads
-    /// `Bound` and only later learns that half its session table is dead. The
-    /// number published here is [`Registry::outstanding`], so [`Self::drained`]
-    /// can wait for zero without asking again and again.
-    live: watch::Sender<usize>,
+    /// # Why a channel nobody ever sends on
+    ///
+    /// The substrate ends a long-running cell by **aborting** `run_io` the
+    /// moment its handler half returns (`cell_task_long_running`), so a line
+    /// after the loop is not a shutdown path — a dropped future is. Everything
+    /// that has to happen on the way out therefore hangs off a `Drop`: the
+    /// mount off [`MountGuard`], the handed HTTP connections off a `JoinSet`,
+    /// and the upgraded sockets off this. An upgraded WebSocket is the one
+    /// nothing here can abort — axum's `on_upgrade` runs it on a task of its
+    /// own — so it watches this instead and closes itself with `1001`.
+    ///
+    /// A caller whose socket reads a close frame knows the call is over. One
+    /// whose socket merely stops answering holds a line nobody is on, which is
+    /// what a respawn must not cost a person on the telephone.
+    ///
+    /// The arm is polled once per **iteration** of the connection's own
+    /// `select!` loop, `biased` and first, so it wins the iteration it is in —
+    /// and the close is as prompt as that iteration, no prompter. A connection
+    /// parked inside an arm body stays parked: `send_frame` on a socket the
+    /// client has stopped reading, or `audio_tx.send` while the recognition
+    /// provider is behind, reaches the select point only when that send returns.
+    /// That window is GH #593's wedged client, and it is a property of the loop
+    /// rather than of this channel.
+    ///
+    /// `None` in a fixture built by hand: nothing watches, nothing closes.
+    shutdown: Option<watch::Receiver<()>>,
 }
 
-/// The connection table and the reports it still owes.
-///
-/// # Why the second number
-///
-/// A connection leaves the table and *then* emits its `Disconnected`, so the
-/// table alone goes empty one moment too early. With one connection that was
-/// invisible; with two, the second could empty the table and publish zero while
-/// the first was still between its own removal and its own emit — and the
-/// rebind would announce `Bound` in that gap. Counting the unspoken reports
-/// alongside the live entries closes it: the number only reaches zero when
-/// every connection is both gone and *reported* gone.
+/// The connection table: who is connected, under which session identity.
 #[derive(Default)]
 struct Registry {
     /// Who is connected, under which session identity.
     live: HashMap<String, SessionHandle>,
-    /// Disconnects that have been decided but not yet emitted.
-    pending_reports: usize,
-}
-
-impl Registry {
-    /// Live connections plus disconnects still owed.
-    fn outstanding(&self) -> usize {
-        self.live.len() + self.pending_reports
-    }
 }
 
 impl VoiceIoShared {
@@ -203,15 +206,10 @@ impl VoiceIoShared {
         dispatch: mpsc::Sender<ToConnection>,
     ) -> Option<mpsc::Sender<ToConnection>> {
         let mut registry = self.sessions.lock().await;
-        let displaced = registry
+        registry
             .live
             .insert(session_id.to_string(), SessionHandle { conn_id, dispatch })
-            .map(|old| old.dispatch);
-        // `send_replace`, not `send`: this sender has no receiver of its own,
-        // and `send` would refuse — silently leaving the count at zero and a
-        // rebind never waiting for anything.
-        let _ = self.live.send_replace(registry.outstanding());
-        displaced
+            .map(|old| old.dispatch)
     }
 
     /// Give up `session_id`, but only if `conn_id` still holds it.
@@ -220,17 +218,11 @@ impl VoiceIoShared {
     /// unconditional remove would delete the live entry. The verdict is also
     /// what decides who reports the `Disconnected`: the task that really left
     /// the table, exactly once.
-    /// Whoever removes the entry owes the report, and the debt is booked in the
-    /// same critical section — so the entry is never gone and unaccounted for,
-    /// not even between two instructions.
     async fn release(&self, session_id: &str, conn_id: u64) -> bool {
         let mut registry = self.sessions.lock().await;
         match registry.live.get(session_id) {
             Some(h) if h.conn_id == conn_id => {
                 registry.live.remove(session_id);
-                registry.pending_reports += 1;
-                // Unchanged total: one live entry became one owed report.
-                let _ = self.live.send_replace(registry.outstanding());
                 true
             }
             _ => false,
@@ -242,10 +234,10 @@ impl VoiceIoShared {
     /// The question a report has to ask before it is sent. A `Speak` that could
     /// not be delivered is answered with a failed `SpeakEnded` *for a session
     /// identity* — and that identity may have moved on: a client that
-    /// reconnects with the same `?session=` displaces the old connection, and a
-    /// rebind evicts every one of them. Reporting without asking would hand the
-    /// **new** connection's session the failure of the old one's synthesis, or
-    /// speak for a session that is already gone.
+    /// reconnects with the same `?session=` displaces the old connection.
+    /// Reporting without asking would hand the **new** connection's session the
+    /// failure of the old one's synthesis, or speak for a session that is
+    /// already gone.
     async fn holds(&self, session_id: &str, conn_id: u64) -> bool {
         self.sessions
             .lock()
@@ -253,40 +245,6 @@ impl VoiceIoShared {
             .live
             .get(session_id)
             .is_some_and(|h| h.conn_id == conn_id)
-    }
-
-    /// Settle what [`Self::release`] booked, after the report went out.
-    ///
-    /// Called *after* the disconnect has been emitted, never before: a waiter
-    /// released by the count would otherwise run ahead of the event it is
-    /// waiting for, which is the whole thing [`Self::drained`] exists to
-    /// prevent.
-    async fn finish_report(&self, reported: bool) {
-        let mut registry = self.sessions.lock().await;
-        if reported {
-            registry.pending_reports = registry.pending_reports.saturating_sub(1);
-        }
-        let _ = self.live.send_replace(registry.outstanding());
-    }
-
-    /// Wait until nothing is left to wait for, or until `limit` runs out.
-    ///
-    /// The bound is the point: a client whose socket is wedged must cost a
-    /// rebind a moment, not the listener. What is still registered when the
-    /// deadline passes is reported by its own task whenever it does end.
-    async fn drained(&self, limit: Duration) {
-        let mut live = self.live.subscribe();
-        if *live.borrow_and_update() == 0 {
-            return;
-        }
-        let _ = tokio::time::timeout(limit, async {
-            while live.changed().await.is_ok() {
-                if *live.borrow_and_update() == 0 {
-                    return;
-                }
-            }
-        })
-        .await;
     }
 
     /// Hand one session's [`deliver`] task a command, without ever waiting on
@@ -350,11 +308,10 @@ impl VoiceIoShared {
     /// One command that will never reach its client, and the end of the session
     /// it was addressed to.
     ///
-    /// The only `.await` this leaves in a [`next_round`] arm is [`Self::emit`],
-    /// and that one is the handler waiting for itself: the events channel is
-    /// the handler's own seam, block-only by the spec, and the handler's rebind
-    /// already carries the timeout that breaks that cycle. What #593 was about
-    /// — waiting for a *client* — is gone from this loop.
+    /// The only `.await` this leaves in the command loop is [`Self::emit`], and
+    /// that one is the handler waiting for itself: the events channel is the
+    /// handler's own seam, block-only by the spec. What #593 was about —
+    /// waiting for a *client* — is gone from this loop.
     async fn undeliverable(&self, session_id: &str, conn_id: u64, cmd: ToConnection, why: &str) {
         report_undeliverable(self, session_id, conn_id, cmd, why).await;
         self.drop_session(session_id, conn_id).await;
@@ -369,65 +326,14 @@ impl VoiceIoShared {
             })
             .await;
         }
-        // Only now: the count is what a rebind waits on, and it must not fall
-        // to zero until the disconnect it stands for has actually been
-        // reported.
-        self.finish_report(reported).await;
     }
 
-    /// Drop, and report, whoever is still in the table after a rebind waited.
+    /// A watch on this life, for a task nothing here can abort.
     ///
-    /// [`Self::drained`] gives the connections of the old listener a bounded
-    /// moment to report themselves gone. Whoever has not is on a socket that no
-    /// longer has a listener behind it and cannot be reached — a wedged client
-    /// is exactly that case. Leaving the row would leak it into the handler's
-    /// session table for the rest of the cell's life, which is the very thing
-    /// the drain exists to prevent, so the rebind reports it instead: after a
-    /// rebind, no connection of the old address is left, and every one of them
-    /// was announced.
-    async fn evict_remaining(&self) {
-        let gone: Vec<String> = {
-            let mut registry = self.sessions.lock().await;
-            if registry.live.is_empty() {
-                return;
-            }
-            let ids: Vec<String> = registry.live.keys().cloned().collect();
-            // Dropping the handles drops their dispatch senders, which ends the
-            // `deliver` tasks and, with them, the connections' own channels.
-            registry.live.clear();
-            registry.pending_reports += ids.len();
-            let _ = self.live.send_replace(registry.outstanding());
-            ids
-        };
-        for session_id in &gone {
-            self.emit(VoiceEvent::Disconnected {
-                session_id: session_id.clone(),
-            })
-            .await;
-        }
-        let mut registry = self.sessions.lock().await;
-        registry.pending_reports = registry.pending_reports.saturating_sub(gone.len());
-        let _ = self.live.send_replace(registry.outstanding());
-    }
-
-    /// Ask every live connection to close with `code`.
-    ///
-    /// The table is deliberately **not** emptied here. Each connection task
-    /// removes its own entry when it ends and reports the `Disconnected` that
-    /// goes with it; a drain would delete the entries first, every
-    /// [`Self::release`] would then find nothing, and no disconnect would ever
-    /// reach the handler — whose own session table would keep growing across
-    /// rebinds and could never answer `unknown_session`. What is still there
-    /// once the rebind's bounded wait is over is emptied by
-    /// [`Self::evict_remaining`], which reports every row it removes.
-    async fn close_all(&self, code: u16) {
-        let handles: Vec<mpsc::Sender<ToConnection>> = {
-            let registry = self.sessions.lock().await;
-            registry.live.values().map(|h| h.dispatch.clone()).collect()
-        };
-        for tx in handles {
-            deliver_close(tx, code);
-        }
+    /// See [`Self::shutdown`] for why the channel exists and why nobody ever
+    /// sends on it.
+    pub(crate) fn shutdown(&self) -> Option<watch::Receiver<()>> {
+        self.shutdown.clone()
     }
 
     /// Emit one event to the handler, blocking on a full channel.
@@ -471,10 +377,6 @@ fn next_conn_id() -> u64 {
 
 /// Everything the I/O half owns, handed over once per spawn by `split_io`.
 pub struct VoiceIo {
-    /// The address to bind.
-    pub bind: String,
-    /// The port to bind.
-    pub port: u16,
     /// The speech-to-text adapter, shared by every connection.
     pub stt: Arc<dyn SttProvider>,
     /// The text-to-speech adapter, or `None` with the echo provider.
@@ -512,6 +414,23 @@ pub struct VoiceIo {
     /// The mark the I/O half sets after every successful provider round trip
     /// (issue #7). Attached by `LongRunningCell::attach_liveness`.
     pub liveness: meclaw_colony::io_liveness::IoLivenessMark,
+    /// The name this cell registers on the mount table, from `params.mount`.
+    ///
+    /// The only door the cell has. Read once, at the top of the life — a name
+    /// that moved takes effect on the next one (ruling O-P-2, see
+    /// [`crate::voice::params::VoiceParams`]).
+    pub mount: String,
+    /// Where this cell sits in the tree, for the registry entry.
+    ///
+    /// The mount table refuses a name another path holds and lets the holder
+    /// replace its own entry, which is what a respawn is — so the entry has to
+    /// carry the path even though the cell never learns anything from it.
+    pub cell_path: Path,
+    /// The process's mount table, set by the factory.
+    ///
+    /// A table of this half's own by default, so a cell built outside a colony
+    /// (a fixture, a unit test) registers somewhere harmless instead of nowhere.
+    pub surfaces: Arc<meclaw_colony::SurfaceRegistry>,
     /// The command seam from the handler.
     ///
     /// **Contract addendum for strand t4.** The substrate hands `run_io` a
@@ -534,8 +453,7 @@ impl VoiceIo {
     /// respawn corridor (phase-5 tripwire).
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        bind: String,
-        port: u16,
+        mount: String,
         stt: Arc<dyn SttProvider>,
         tts: Option<Arc<dyn TtsProvider>>,
         default_mode: Mode,
@@ -544,8 +462,7 @@ impl VoiceIo {
         events_tx: mpsc::Sender<VoiceEvent>,
     ) -> Self {
         Self {
-            bind,
-            port,
+            mount,
             stt,
             tts,
             default_mode,
@@ -556,72 +473,59 @@ impl VoiceIo {
             release_grace_ms: crate::voice::params::DEFAULT_RELEASE_GRACE_MS,
             events_tx,
             liveness: meclaw_colony::io_liveness::IoLivenessMark::disabled(),
+            // Replaced by the factory, which is the only caller that knows it.
+            // A half built by hand registers nothing, so nothing reads this.
+            cell_path: Path::new(""),
+            surfaces: Arc::new(meclaw_colony::SurfaceRegistry::new()),
             from_handler: None,
         }
     }
 }
 
-/// What ended one serving round.
-enum Round {
-    /// The params moved: serve this address next. Carried as an address rather
-    /// than an open listener, because the old socket is only released when the
-    /// round's `serve` future is dropped.
-    Rebind {
-        /// The address to bind.
-        bind: String,
-        /// The port to bind.
-        port: u16,
-        /// Where the handler waits for the verdict.
-        ack: tokio::sync::oneshot::Sender<Result<(), String>>,
-    },
-    /// The server future ended while the cell is still live (GH #592).
-    ///
-    /// Not a reason to return, and handled exactly like a bind that failed:
-    /// report it and go on in a round with no listener, so a later `Rebind`
-    /// can still put the cell back on the air.
-    ServeEnded,
-    /// The cell is going away.
-    Done,
+/// Holds a mount for exactly as long as the I/O half that registered it.
+///
+/// The ordinary end is still the explicit `unregister` when the handler goes
+/// away, and this changes nothing about it. What it covers is every OTHER end:
+/// a panic in the handler half, the `message_timeout` backstop, an abort. None
+/// of them runs that arm, and the entry that stayed behind kept a live
+/// [`VoiceLinkOpener`] over shared state nobody serves — a page joining in that
+/// window was admitted and then heard nothing.
+struct MountGuard {
+    /// The table the mount stands in.
+    surfaces: Arc<meclaw_colony::SurfaceRegistry>,
+    /// The name this life registered.
+    mount: String,
+    /// The token this life registered under. A spent one removes nothing, which
+    /// is what makes a respawn's entry safe from the previous life's guard.
+    registration: Registration,
 }
 
-/// The I/O loop: bind, serve, and stay up for the cell's whole life.
-///
-/// **A1′**: this function must not return voluntarily while the cell is live.
-/// Only the handler closing the reconfigure channel ends it — a server future
-/// that ends is reported like a failed bind and leaves the next round without
-/// a listener (GH #592), never a return. A round with no
-/// listener is an ordinary round — a port that was taken at boot costs no
-/// restart, because a later `Rebind` can still name one this cell can have
-/// (the shape `web` arrived at in GH #410, for the same reason).
-pub async fn run_io(io: VoiceIo, reconfig_rx: mpsc::Receiver<VoiceReconfig>) {
-    run_io_with(io, reconfig_rx, serve_forever).await
-}
-
-/// Serve `router` on `l` until the server future ends.
-///
-/// The one place the axum server future is built, and the reason it is a
-/// function: `axum::serve` without graceful shutdown does not end on its own,
-/// so what [`run_io_with`] does when it *does* end is otherwise unreachable
-/// and untestable. A test passes a factory that ends at once (GH #592). This
-/// is a seam, not a mock — the shipped path is this function and nothing else.
-pub(crate) async fn serve_forever(l: tokio::net::TcpListener, router: Router) {
-    // Not swallowed: the round is about to be reported as `listener ended`,
-    // and this is the only place the reason for it exists.
-    if let Err(e) = std::future::IntoFuture::into_future(axum::serve(l, router)).await {
-        tracing::error!(error = %e, "voice: the server stopped with an error");
+impl Drop for MountGuard {
+    fn drop(&mut self) {
+        // A `Drop` cannot await, and the registry is behind an `Arc`, so the
+        // removal is a task of its own. Only on a runtime thread: a guard
+        // dropped outside one has no executor to spawn onto, and a process
+        // without a runtime has no mount table left to keep tidy either.
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let surfaces = Arc::clone(&self.surfaces);
+        let mount = std::mem::take(&mut self.mount);
+        let registration = self.registration;
+        handle.spawn(async move {
+            surfaces.unregister(&mount, &registration).await;
+        });
     }
 }
 
-/// [`run_io`] with the server future left open as a parameter — see
-/// [`serve_forever`] for why.
-pub(crate) async fn run_io_with<F, Fut>(
-    mut io: VoiceIo,
-    mut reconfig_rx: mpsc::Receiver<VoiceReconfig>,
-    serve_factory: F,
-) where
-    F: Fn(tokio::net::TcpListener, Router) -> Fut + Send,
-    Fut: std::future::Future<Output = ()> + Send,
-{
+/// The I/O loop: register the mount, serve what the listener hands over, and
+/// stay up for the cell's whole life.
+///
+/// **A1′**: this function must not return voluntarily while the cell is live.
+/// Only the handler closing one of its two command channels ends it. There is
+/// no second round any more and nothing to rebind: the cell owns no socket, and
+/// a mount that moved is read by the next life (ruling O-P-2).
+pub async fn run_io(mut io: VoiceIo, mut reconfig_rx: mpsc::Receiver<VoiceReconfig>) {
     // Two command seams, one loop. The substrate hands `run_io` its own
     // `reconfig_rx`, but only `handle` is given the matching sender — and this
     // cell issues most of its commands from `handle_event`. So the cell mints
@@ -631,6 +535,13 @@ pub(crate) async fn run_io_with<F, Fut>(
     // outside a colony leaves `from_handler` empty and speaks on the
     // substrate's channel alone.
     let mut from_handler = io.from_handler.take();
+    // The two ends of the way out, and both are LOCALS of this future on
+    // purpose: the substrate aborts `run_io` when the handler half returns, so
+    // what runs at shutdown is what a dropped future drops, never a line after
+    // the loop. `shutdown_tx` closes for the upgraded sockets; `connections`
+    // aborts the handed HTTP ones.
+    let (shutdown_tx, shutdown_rx) = watch::channel(());
+    let mut connections = tokio::task::JoinSet::new();
     let shared = Arc::new(VoiceIoShared {
         stt: io.stt,
         tts: io.tts,
@@ -643,150 +554,124 @@ pub(crate) async fn run_io_with<F, Fut>(
         events_tx: io.events_tx,
         liveness: io.liveness,
         sessions: Mutex::new(Registry::default()),
-        live: watch::channel(0).0,
+        shutdown: Some(shutdown_rx),
     });
-    let mut bind = io.bind;
-    let mut port = io.port;
+    let mount = io.mount;
+    let cell_path = io.cell_path;
+    let surfaces = io.surfaces;
 
-    let mut listener = match bind_addr(&bind, port).await {
-        Ok(l) => Some(l),
+    // The mount goes on the table once per life, at the top of it (ADR-0031):
+    // whoever has a connection to hand over must find this cell as soon as it
+    // exists, and a name taken by another cell is an operator's mistake to read
+    // — not a reason to tear the cell down. The cell then serves nobody and
+    // says so, and a `params` update naming a free name is served by this same
+    // task on the next life.
+    //
+    // The token comes back with the receiver and is what the unregister at the
+    // end of this life must carry: a respawn that registered while this half was
+    // still draining holds a newer one, and a spent token removes nothing.
+    // It is kept in a [`MountGuard`], so an end that never reaches the ordinary
+    // arm — a panic, the backstop, an abort — takes the mount with it as well.
+    let entry = SurfaceEntry {
+        kind: "voice",
+        cell_path,
+        // A topic on a display's socket is answered by the same admission the
+        // socket door runs, on the same shared state (GH #643).
+        links: Some(Arc::new(VoiceLinkOpener {
+            shared: shared.clone(),
+        })),
+    };
+    let (mut handoff, registration) = match surfaces.register(&mount, entry).await {
+        Ok((rx, held)) => (
+            Some(rx),
+            Some(MountGuard {
+                surfaces: Arc::clone(&surfaces),
+                mount: mount.clone(),
+                registration: held,
+            }),
+        ),
         Err(e) => {
-            shared.emit(VoiceEvent::BindFailed(e)).await;
-            None
+            shared.emit(VoiceEvent::MountFailed(e.to_string())).await;
+            (None, None)
         }
     };
 
-    loop {
-        let round = match listener.take() {
-            Some(l) => {
-                let bound = l
-                    .local_addr()
-                    .map(|a| a.to_string())
-                    .unwrap_or_else(|_| "unknown".to_string());
-                shared.emit(VoiceEvent::Bound(bound)).await;
-
-                // The scope matters: `serve` owns the listener and the socket
-                // is only released when `serve` is dropped, which happens at
-                // the end of this block — before the next address is bound.
-                let serve = serve_factory(l, router(shared.clone()));
-                tokio::pin!(serve);
-                tokio::select! {
-                    _ = &mut serve => Round::ServeEnded,
-                    r = next_round(&shared, &mut reconfig_rx, &mut from_handler) => r,
-                }
-            }
-            // Nothing to serve on, and still not a reason to return: the
-            // reconfigure channels keep being drained, so a later address can
-            // still arrive.
-            None => next_round(&shared, &mut reconfig_rx, &mut from_handler).await,
-        };
-
-        let (next_bind, next_port, ack) = match round {
-            Round::Rebind { bind, port, ack } => (bind, port, ack),
-            // A1': the server future ending is not the cell ending. The socket
-            // is already released — `serve` was dropped with the block above —
-            // so this is the same state a failed bind leaves behind, reported
-            // the same way, with the address that stopped answering. The live
-            // connections keep their tasks: nothing moved, and a connection
-            // outlives the listener that accepted it.
-            Round::ServeEnded => {
-                shared
-                    .emit(VoiceEvent::BindFailed(format!(
-                        "{bind}:{port}: listener ended"
-                    )))
-                    .await;
-                continue;
-            }
-            Round::Done => {
-                shared.close_all(1001).await;
-                return;
-            }
-        };
-
-        // The old socket is closed at this point, so this is the first moment
-        // the new address can be bound.
-        let attempt = bind_addr(&next_bind, next_port).await;
-        // Answered before anything else: the handler is parked on this oneshot
-        // and drains no events while it waits, so the `Bound` above must not be
-        // able to reach a full events channel ahead of the verdict.
-        let _ = ack.send(attempt.as_ref().map(|_| ()).map_err(String::clone));
-        listener = match attempt {
-            Ok(l) => {
-                bind = next_bind;
-                port = next_port;
-                // Every live connection was accepted on a socket that no longer
-                // exists. Dropping them is the honest state: the client
-                // reconnects against the address it now resolves to, and a
-                // registry still naming them would address connections nobody
-                // can reach.
-                //
-                // Waited out rather than merely asked for: the handler must
-                // read `Disconnected` for the old connections *before* the
-                // `Bound` of the address they are not on, or its own session
-                // table would carry rows for sockets nobody can reach.
-                shared.close_all(1001).await;
-                shared.drained(shared.external_timeout).await;
-                // A connection nobody is reading cannot report itself gone in
-                // time. It is dropped here, like every other connection of the
-                // old address, rather than left in a table that outlives the
-                // socket it names.
-                shared.evict_remaining().await;
-                Some(l)
-            }
-            // The value passed the parser and still cannot be a listening
-            // address. Put the cell back where it was, so a typo costs a moment
-            // rather than the listener.
-            Err(e) => {
-                shared.emit(VoiceEvent::BindFailed(e)).await;
-                match bind_addr(&bind, port).await {
-                    Ok(l) => Some(l),
-                    Err(e) => {
-                        shared.emit(VoiceEvent::BindFailed(e)).await;
-                        None
-                    }
-                }
-            }
-        };
-    }
+    // One round, for the whole life: this returns when the handler is gone —
+    // and usually not even that, because the substrate aborts this future the
+    // moment the handler returns. Both ways out are the same way out, because
+    // everything that has to happen is a `Drop`:
+    //
+    // * `registration` gives the mount back ([`MountGuard`]), so the listener
+    //   stops handing streams to a cell that is going;
+    // * `connections` is a `JoinSet`, so every handed connection that did not
+    //   upgrade — an in-flight `GET /<mount>/info`, an idle keep-alive socket,
+    //   the second connection a browser pools — ends with it. Detached, they
+    //   outlived the cell: a respawn answered a client out of the previous
+    //   life's tables, and the client never learned it had to reconnect.
+    //   `axum::serve` took its connections with it when the round dropped it,
+    //   and this set is how that survives the move to a handed stream;
+    // * `shutdown_tx` closes, and every upgraded socket — which no `JoinSet`
+    //   here holds, because axum's `on_upgrade` runs it — reads that and sends
+    //   its client a close frame ([`VoiceIoShared::shutdown`]).
+    //
+    // A line after this call would run on exactly one of the two paths, which
+    // is why the three drops below are all there is.
+    serve_until_the_handler_goes(
+        &shared,
+        &mut reconfig_rx,
+        &mut from_handler,
+        &mut handoff,
+        &mount,
+        &mut connections,
+    )
+    .await;
+    drop(shutdown_tx);
+    drop(connections);
+    drop(registration);
 }
 
-/// Bind one address, with the failure text an operator can act on.
-async fn bind_addr(addr: &str, port: u16) -> Result<tokio::net::TcpListener, String> {
-    tokio::net::TcpListener::bind((addr, port))
-        .await
-        .map_err(|e| format!("{addr}:{port}: {e}"))
-}
-
-/// Serve the handler's commands until one of them ends the round.
+/// Serve the handler's commands and the streams the listener hands over, until
+/// the handler goes away.
 ///
 /// Everything addressed at a session is dispatched here and the loop continues;
-/// only a `Rebind` — or the handler going away — ends a round.
-async fn next_round(
+/// only the handler going away — either seam closing — ends it.
+async fn serve_until_the_handler_goes(
     shared: &Arc<VoiceIoShared>,
     reconfig_rx: &mut mpsc::Receiver<VoiceReconfig>,
     from_handler: &mut Option<mpsc::Receiver<VoiceReconfig>>,
-) -> Round {
+    handoff: &mut Option<mpsc::Receiver<HandedConnection>>,
+    mount: &str,
+    connections: &mut tokio::task::JoinSet<()>,
+) {
     loop {
         let command = tokio::select! {
             // `biased;` so the order is a decision, not a coin toss: the
-            // substrate's own seam first. It is a tiebreak, not the fix — in
-            // this cell *both* seams can carry a `Rebind` (the cell mints its
-            // own channel and sends every command on it; a fixture built
-            // without a colony speaks on the substrate's), so no ordering
-            // between the two channels could keep a rebind from queueing
-            // behind a frame. What keeps it moving is that no arm below waits
-            // on a client any more (GH #593).
+            // substrate's own seam first. It is a tiebreak rather than a fix —
+            // what keeps this loop moving is that no arm below waits on a
+            // client (GH #593).
             biased;
 
             c = reconfig_rx.recv() => c,
             c = recv_opt(from_handler) => c,
+
+            // A connection the colony's listener accepted for this cell's
+            // mount. Served on a task of its own, for the whole life of the
+            // connection: nothing in this loop ends it, and the life around
+            // the loop owns it (see the `JoinSet` in [`run_io`]).
+            Some(handed) = recv_opt_handed(handoff) => {
+                let router = mounted_router(shared.clone(), mount);
+                connections.spawn(crate::handed::serve_handed(handed.stream, router));
+                continue;
+            }
+
+            // Reaping, so the set does not grow with every request that was
+            // ever answered. Guarded, because `join_next` on an empty set is
+            // `None` at once and would spin this loop.
+            Some(_) = connections.join_next(), if !connections.is_empty() => continue,
         };
         match command {
             // A closed channel is the handler going away, on either seam.
-            None => return Round::Done,
-            Some(VoiceReconfig::Rebind { bind, port, ack }) => {
-                return Round::Rebind { bind, port, ack };
-            }
+            None => return,
             Some(VoiceReconfig::ToClient { session_id, frame }) => {
                 shared
                     .send_to(&session_id, ToConnection::Frame(frame))
@@ -835,6 +720,16 @@ async fn next_round(
 /// Receive from the cell's own command channel, or wait forever when the cell
 /// did not mint one.
 async fn recv_opt(rx: &mut Option<mpsc::Receiver<VoiceReconfig>>) -> Option<VoiceReconfig> {
+    match rx {
+        None => std::future::pending().await,
+        Some(rx) => rx.recv().await,
+    }
+}
+
+/// Receive a handed connection, or wait forever when this cell has no mount.
+async fn recv_opt_handed(
+    rx: &mut Option<mpsc::Receiver<HandedConnection>>,
+) -> Option<HandedConnection> {
     match rx {
         None => std::future::pending().await,
         Some(rx) => rx.recv().await,
@@ -998,6 +893,448 @@ pub(crate) fn new_connection_slot() -> (
 mod tests {
     use super::*;
     use crate::voice::providers::echo::EchoStt;
+    use meclaw_colony::HandedConnection;
+
+    /// A mount another cell holds is refused out loud, and the life goes on.
+    ///
+    /// The one error path of the mount work, and the only assertion about it
+    /// used to be a negative one. Two things rot silently without this: the
+    /// wrong variant, and an early `return` creeping into the `Err` arm — a
+    /// taken name is explicitly not allowed to end a cell that a `params`
+    /// update could still put on a free one.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_mount_another_cell_holds_is_refused_and_the_half_stays_alive() {
+        const MARKER: Duration = Duration::from_secs(30);
+        let surfaces = Arc::new(meclaw_colony::SurfaceRegistry::new());
+        // Somebody else is already on `voice`.
+        let (_squatter_rx, _squatter) = surfaces
+            .register(
+                "voice",
+                SurfaceEntry {
+                    kind: "voice",
+                    cell_path: Path::new("/elsewhere/voice"),
+                    links: None,
+                },
+            )
+            .await
+            .expect("the mount was free");
+
+        let (events_tx, mut events_rx) = mpsc::channel::<VoiceEvent>(32);
+        let (reconfig_tx, reconfig_rx) = mpsc::channel::<VoiceReconfig>(8);
+        let mut io = VoiceIo::new(
+            "voice".to_string(),
+            Arc::new(EchoStt::new()),
+            None,
+            Mode::Auto,
+            MARKER,
+            MARKER,
+            events_tx,
+        );
+        io.cell_path = Path::new("/v");
+        io.surfaces = surfaces.clone();
+        let join = tokio::spawn(run_io(io, reconfig_rx));
+
+        // Exactly one refusal, and it names the mount and the holder.
+        match tokio::time::timeout(MARKER, events_rx.recv())
+            .await
+            .expect("the refusal is reported")
+            .expect("the channel is open")
+        {
+            VoiceEvent::MountFailed(detail) => {
+                assert!(
+                    detail.contains("voice"),
+                    "the refusal names the mount; got {detail}"
+                );
+                assert!(
+                    detail.contains("/elsewhere/voice"),
+                    "and who holds it; got {detail}"
+                );
+            }
+            other => panic!("expected MountFailed; got {other:?}"),
+        }
+
+        // The life goes on, and the receipt is positive rather than a clock:
+        // an `ArmReleaseGrace` with no delay is a command only a loop that is
+        // still reading its seam can answer, and its answer comes back on the
+        // events channel with the token it was given. That is what a later
+        // `params` update with a free name needs, and it is what the sleep
+        // this replaces could only hope for.
+        reconfig_tx
+            .send(VoiceReconfig::ArmReleaseGrace {
+                session_id: "nobody".to_string(),
+                ms: 0,
+                token: 7,
+            })
+            .await
+            .expect("the half still takes a command");
+        match tokio::time::timeout(MARKER, events_rx.recv())
+            .await
+            .expect("the parked half answers within the failure marker")
+            .expect("the channel is open")
+        {
+            VoiceEvent::ReleaseGraceExpired { token, .. } => assert_eq!(
+                token, 7,
+                "A1′: a taken mount must not end the I/O half, and the answer is the \
+                 token the command carried"
+            ),
+            other => panic!("expected the command's own answer; got {other:?}"),
+        }
+        assert!(
+            !join.is_finished(),
+            "A1′: a taken mount must not end the I/O half"
+        );
+
+        // The squatter still holds the name, and this half never took it.
+        let table = surfaces.table().await;
+        assert_eq!(table.len(), 1, "one holder, and it is not this cell");
+        assert_eq!(table[0].mount, "voice");
+
+        drop(reconfig_tx);
+        tokio::time::timeout(MARKER, join)
+            .await
+            .expect("ends")
+            .expect("no panic");
+        assert_eq!(
+            surfaces.table().await.len(),
+            1,
+            "a half that never registered removes nothing on its way out"
+        );
+    }
+
+    /// ADR-0031: the mount is in the table for the whole life of the I/O half,
+    /// and a stream handed to it is answered by the cell's own router under the
+    /// mount's prefix.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_mounted_voice_cell_registers_on_its_life_and_serves_a_handed_stream() {
+        const MARKER: Duration = Duration::from_secs(30);
+        let surfaces = Arc::new(meclaw_colony::SurfaceRegistry::new());
+        let (events_tx, mut events_rx) = mpsc::channel::<VoiceEvent>(32);
+        let (reconfig_tx, reconfig_rx) = mpsc::channel::<VoiceReconfig>(8);
+        let mut io = VoiceIo::new(
+            "voice".to_string(),
+            Arc::new(EchoStt::new()),
+            None,
+            Mode::Auto,
+            MARKER,
+            MARKER,
+            events_tx,
+        );
+        io.cell_path = meclaw_core::Path::new("/v");
+        io.surfaces = surfaces.clone();
+        let join = tokio::spawn(run_io(io, reconfig_rx));
+        // The mount is in the table before anything else happens.
+        tokio::time::timeout(MARKER, async {
+            while surfaces.table().await.is_empty() {
+                tokio::time::sleep(Duration::from_millis(10)).await
+            }
+        })
+        .await
+        .expect("registered");
+        assert_eq!(surfaces.table().await[0].mount, "voice");
+        // A stream handed in is answered by the cell's router under /voice.
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = l.local_addr().expect("addr");
+        let handoff = surfaces.take_handoff("voice").await.expect("mounted");
+        tokio::spawn(async move {
+            let (s, p) = l.accept().await.expect("accept");
+            handoff
+                .send(HandedConnection { stream: s, peer: p })
+                .await
+                .expect("handed");
+        });
+        let info: meclaw_core::serde_json::Value =
+            reqwest::get(format!("http://{addr}/voice/info"))
+                .await
+                .expect("get")
+                .json()
+                .await
+                .expect("json");
+        assert_eq!(info["protocol"], "meclaw-voice/1");
+        assert!(
+            events_rx.try_recv().is_err(),
+            "a mount that was free is reported by nothing at all"
+        );
+        drop(reconfig_tx);
+        tokio::time::timeout(MARKER, join)
+            .await
+            .expect("ends")
+            .expect("no panic");
+        // Waited out rather than read once: the mount leaves on the
+        // [`MountGuard`]'s `Drop`, which cannot await and therefore hands the
+        // removal to a task of its own. That is the shape every way out shares
+        // — the substrate ABORTS this future rather than letting a line after
+        // the loop run — and it is one scheduler turn away from here.
+        tokio::time::timeout(MARKER, async {
+            while !surfaces.table().await.is_empty() {
+                tokio::time::sleep(Duration::from_millis(10)).await
+            }
+        })
+        .await
+        .expect("the mount leaves with the half");
+    }
+
+    /// A handed stream does not outlive the life that was serving it.
+    ///
+    /// The defect this pins: each handed connection was served on a DETACHED
+    /// `tokio::spawn`, so a socket that never upgraded — an idle keep-alive
+    /// connection, a browser's second pooled one, an `/info` poller — kept its
+    /// task and its clone of this life's shared state after `run_io` returned.
+    /// The client was never told to reconnect, and a respawn answered it out
+    /// of the tables of a cell that no longer existed. `axum::serve` took its
+    /// connections with it when the round dropped it; the `JoinSet` in
+    /// [`run_io`] is how that survives the move to a handed stream.
+    ///
+    /// The receipt is the socket itself: a read that returns zero bytes is the
+    /// close, and it has to arrive inside the failure marker rather than at
+    /// the end of the process.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_handed_connection_is_closed_when_the_handler_goes() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        const MARKER: Duration = Duration::from_secs(30);
+        let surfaces = Arc::new(meclaw_colony::SurfaceRegistry::new());
+        let (events_tx, _events_rx) = mpsc::channel::<VoiceEvent>(32);
+        let (reconfig_tx, reconfig_rx) = mpsc::channel::<VoiceReconfig>(8);
+        let mut io = VoiceIo::new(
+            "voice".to_string(),
+            Arc::new(EchoStt::new()),
+            None,
+            Mode::Auto,
+            MARKER,
+            MARKER,
+            events_tx,
+        );
+        io.cell_path = meclaw_core::Path::new("/v");
+        io.surfaces = surfaces.clone();
+        let join = tokio::spawn(run_io(io, reconfig_rx));
+        tokio::time::timeout(MARKER, async {
+            while surfaces.table().await.is_empty() {
+                tokio::time::sleep(Duration::from_millis(10)).await
+            }
+        })
+        .await
+        .expect("registered");
+
+        // One stream, handed over the way the colony's listener hands it.
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = l.local_addr().expect("addr");
+        let handoff = surfaces.take_handoff("voice").await.expect("mounted");
+        let feeder = tokio::spawn(async move {
+            while let Ok((stream, peer)) = l.accept().await {
+                if handoff
+                    .send(HandedConnection { stream, peer })
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+
+        // A KEEP-ALIVE request: no `Connection: close`, so the connection is
+        // the cell's to end and not the client's. Reading the answer proves the
+        // stream really reached the cell's router.
+        let mut client = tokio::net::TcpStream::connect(addr).await.expect("connect");
+        client
+            .write_all(b"GET /voice/info HTTP/1.1\r\nHost: x\r\n\r\n")
+            .await
+            .expect("write the request");
+        let mut answer = [0u8; 512];
+        let read = tokio::time::timeout(MARKER, client.read(&mut answer))
+            .await
+            .expect("the mount answers within the failure marker")
+            .expect("read");
+        assert!(
+            String::from_utf8_lossy(&answer[..read]).starts_with("HTTP/1.1 200 OK"),
+            "the handed stream was served: {:?}",
+            String::from_utf8_lossy(&answer[..read])
+        );
+
+        // An UPGRADED socket beside it. This one no `JoinSet` here holds —
+        // axum's `on_upgrade` runs it on a task of its own — so it is the half
+        // of the promise the set cannot keep, and the watch is.
+        let (mut ws, _) =
+            tokio_tungstenite::connect_async(format!("ws://{addr}/voice/ws?session=held"))
+                .await
+                .expect("the mount answers a websocket");
+        let _hello = tokio::time::timeout(MARKER, futures_util::StreamExt::next(&mut ws))
+            .await
+            .expect("hello arrives")
+            .expect("a frame")
+            .expect("not an error");
+
+        // The handler goes. Both connections are this life's, so both end with
+        // it — and the substrate would ABORT this future rather than let a line
+        // after the loop run, which is why nothing here relies on one.
+        drop(reconfig_tx);
+        tokio::time::timeout(MARKER, join)
+            .await
+            .expect("run_io returns")
+            .expect("no panic");
+
+        // The upgraded socket is told, not merely dropped: a caller that reads
+        // a close frame knows the call is over.
+        let closed_ws = tokio::time::timeout(MARKER, async {
+            loop {
+                match futures_util::StreamExt::next(&mut ws).await {
+                    Some(Ok(tokio_tungstenite::tungstenite::Message::Close(f))) => return Some(f),
+                    Some(Ok(_)) => continue,
+                    Some(Err(_)) | None => return None,
+                }
+            }
+        })
+        .await
+        .expect("the websocket hears about it inside the failure marker");
+        let frame = closed_ws.expect("a close FRAME, not a socket that merely stopped answering");
+        assert_eq!(
+            frame.map(|f| u16::from(f.code)),
+            Some(1001),
+            "the code is the one the ordinary end of this half uses"
+        );
+        let mut rest = Vec::new();
+        let closed = tokio::time::timeout(MARKER, client.read_to_end(&mut rest))
+            .await
+            .expect("the socket closes inside the failure marker")
+            .expect("read");
+        assert_eq!(
+            closed, 0,
+            "a connection of a life that is over must not stay open; got {rest:?}"
+        );
+        feeder.abort();
+    }
+
+    /// And the same on the path the substrate actually takes: an ABORT.
+    ///
+    /// `cell_task_long_running` aborts `run_io` the moment the handler half
+    /// returns, so a line after the loop is not a shutdown path — a dropped
+    /// future is. This is the same promise as the test above, proven on the way
+    /// out that leaves no code of ours running at all.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_aborted_io_half_closes_the_sockets_it_was_serving() {
+        use futures_util::StreamExt;
+
+        const MARKER: Duration = Duration::from_secs(30);
+        let surfaces = Arc::new(meclaw_colony::SurfaceRegistry::new());
+        let (events_tx, _events_rx) = mpsc::channel::<VoiceEvent>(32);
+        let (_reconfig_tx, reconfig_rx) = mpsc::channel::<VoiceReconfig>(8);
+        let mut io = VoiceIo::new(
+            "voice".to_string(),
+            Arc::new(EchoStt::new()),
+            None,
+            Mode::Auto,
+            MARKER,
+            MARKER,
+            events_tx,
+        );
+        io.cell_path = meclaw_core::Path::new("/v");
+        io.surfaces = surfaces.clone();
+        let join = tokio::spawn(run_io(io, reconfig_rx));
+        tokio::time::timeout(MARKER, async {
+            while surfaces.table().await.is_empty() {
+                tokio::time::sleep(Duration::from_millis(10)).await
+            }
+        })
+        .await
+        .expect("registered");
+
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = l.local_addr().expect("addr");
+        let handoff = surfaces.take_handoff("voice").await.expect("mounted");
+        let feeder = tokio::spawn(async move {
+            while let Ok((stream, peer)) = l.accept().await {
+                if handoff
+                    .send(HandedConnection { stream, peer })
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        let (mut ws, _) =
+            tokio_tungstenite::connect_async(format!("ws://{addr}/voice/ws?session=aborted"))
+                .await
+                .expect("the mount answers a websocket");
+        let _hello = tokio::time::timeout(MARKER, ws.next())
+            .await
+            .expect("hello arrives")
+            .expect("a frame")
+            .expect("not an error");
+
+        join.abort();
+
+        let frame = tokio::time::timeout(MARKER, async {
+            loop {
+                match ws.next().await {
+                    Some(Ok(tokio_tungstenite::tungstenite::Message::Close(f))) => return Some(f),
+                    Some(Ok(_)) => continue,
+                    Some(Err(_)) | None => return None,
+                }
+            }
+        })
+        .await
+        .expect("the socket hears about the abort inside the failure marker")
+        .expect("a close FRAME, not a socket that merely stopped answering");
+        assert_eq!(frame.map(|f| u16::from(f.code)), Some(1001));
+        feeder.abort();
+    }
+
+    /// An ABORTED I/O half takes its mount with it too (GH #639).
+    ///
+    /// The ordinary end unregisters on `Round::Done`. Every other end does not
+    /// reach that arm: a panic in the handler half, the `message_timeout`
+    /// backstop, any abort. The entry then stood in the table with a live
+    /// opener over dead shared state — a page joining in that window was
+    /// ADMITTED, got its `hello` and heard nothing after it, while a stream
+    /// handed to the mount met a receiver nobody holds. A cell whose task dies
+    /// stops answering the instant it dies, and the asymmetry is the defect: the
+    /// mount kept saying yes.
+    ///
+    /// Aborting the task is the cheapest way to state "the future was dropped
+    /// without that arm running", and it covers all three causes at once.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_aborted_io_half_takes_its_mount_off_the_table() {
+        const MARKER: Duration = Duration::from_secs(30);
+        let surfaces = Arc::new(meclaw_colony::SurfaceRegistry::new());
+        let (events_tx, _events_rx) = mpsc::channel::<VoiceEvent>(32);
+        let (_reconfig_tx, reconfig_rx) = mpsc::channel::<VoiceReconfig>(8);
+        let mut io = VoiceIo::new(
+            "voice".to_string(),
+            Arc::new(EchoStt::new()),
+            None,
+            Mode::Auto,
+            MARKER,
+            MARKER,
+            events_tx,
+        );
+        io.cell_path = meclaw_core::Path::new("/v");
+        io.surfaces = surfaces.clone();
+        let join = tokio::spawn(run_io(io, reconfig_rx));
+        tokio::time::timeout(MARKER, async {
+            while surfaces.table().await.is_empty() {
+                tokio::time::sleep(Duration::from_millis(10)).await
+            }
+        })
+        .await
+        .expect("the mount is registered");
+
+        // No `Round::Done`, no shutdown channel closed: the future is simply
+        // gone.
+        join.abort();
+        tokio::time::timeout(MARKER, async {
+            while !surfaces.table().await.is_empty() {
+                tokio::time::sleep(Duration::from_millis(10)).await
+            }
+        })
+        .await
+        .expect("the mount leaves with the aborted half, and does not outlive it");
+    }
 
     /// GH #601 — a client that stops taking what is queued for it loses the
     /// connection, and the cell says so instead of writing a log line.
@@ -1036,7 +1373,7 @@ mod tests {
             events_tx,
             liveness: meclaw_colony::io_liveness::IoLivenessMark::disabled(),
             sessions: Mutex::new(Registry::default()),
-            live: watch::channel(0).0,
+            shutdown: None,
         });
 
         // A connection nobody reads: the receiver is held and never polled, so
@@ -1098,103 +1435,5 @@ mod tests {
             extra.push(format!("{ev:?}"));
         }
         assert!(extra.is_empty(), "one client, one verdict: {extra:?}");
-    }
-
-    /// GH #592 — A1′: a server future that ends parks the round, it does not
-    /// end `run_io`.
-    ///
-    /// `axum::serve` without graceful shutdown never finishes on its own, so
-    /// the arm that used to answer it with `Round::Done` was unreachable in
-    /// practice — and the "io-finish-first" loss class it opened was therefore
-    /// invisible. The [`serve_forever`] seam makes it reachable: a factory
-    /// whose server ends the moment it is polled drives the loop through the
-    /// case on its very first round.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn gh592_a_finished_server_parks_instead_of_ending_the_io_half() {
-        /// The failure-marker window (30 s convention): only ever longer than a
-        /// healthy run takes, so it discriminates nothing but a hang.
-        const MARKER: Duration = Duration::from_secs(30);
-
-        let port = meclaw_testing::free_port();
-        let (events_tx, mut events_rx) = mpsc::channel::<VoiceEvent>(32);
-        let (reconfig_tx, reconfig_rx) = mpsc::channel::<VoiceReconfig>(8);
-        let (commands_tx, commands_rx) = mpsc::channel::<VoiceReconfig>(8);
-        let mut io = VoiceIo::new(
-            "127.0.0.1".to_string(),
-            port,
-            Arc::new(EchoStt::new()),
-            None,
-            Mode::Auto,
-            Duration::from_secs(5),
-            Duration::from_secs(5),
-            events_tx,
-        );
-        io.from_handler = Some(commands_rx);
-
-        let join = tokio::spawn(run_io_with(io, reconfig_rx, |_l, _r| async {}));
-
-        // The round begins as any other does, and then the server stops.
-        let bound = events_rx.recv().await;
-        assert!(
-            matches!(bound, Some(VoiceEvent::Bound(_))),
-            "the first round binds before it serves; got {bound:?}"
-        );
-        let ended = events_rx.recv().await;
-        let Some(VoiceEvent::BindFailed(why)) = ended else {
-            panic!("a server that stopped must be reported like a bind that failed; got {ended:?}")
-        };
-        assert!(
-            why.contains("listener ended") && why.contains(&port.to_string()),
-            "the report names the address that stopped answering; got {why:?}"
-        );
-
-        // The point of the issue: the half is still there, parked without a
-        // listener rather than returned.
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        assert!(
-            !join.is_finished(),
-            "A1′: `run_io` must not return while the handler is still live"
-        );
-
-        // And it is still listening to its handler: a later address is served.
-        let next = meclaw_testing::free_port();
-        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
-        commands_tx
-            .send(VoiceReconfig::Rebind {
-                bind: "127.0.0.1".to_string(),
-                port: next,
-                ack: ack_tx,
-            })
-            .await
-            .expect("the parked half still reads its command channel");
-        // Under the failure-marker window, not open-ended: a regression here
-        // would be a parked half that never answers, and a hung test says less
-        // than a failed one.
-        let verdict = tokio::time::timeout(MARKER, ack_rx)
-            .await
-            .expect("the parked half answers its rebind")
-            .expect("a verdict");
-        assert!(
-            verdict.is_ok(),
-            "a free address is bindable from the parked state"
-        );
-        let rebound = tokio::time::timeout(MARKER, events_rx.recv())
-            .await
-            .expect("the rebind is reported");
-        let Some(VoiceEvent::Bound(addr)) = rebound else {
-            panic!("the rebind puts the cell back on the air; got {rebound:?}")
-        };
-        assert!(
-            addr.ends_with(&format!(":{next}")),
-            "bound to the new address; got {addr:?}"
-        );
-
-        // Only the handler going away ends it — either seam closing is that.
-        drop(reconfig_tx);
-        drop(commands_tx);
-        tokio::time::timeout(MARKER, join)
-            .await
-            .expect("closing the command channels is what ends `run_io`")
-            .expect("and it ends without panicking");
     }
 }

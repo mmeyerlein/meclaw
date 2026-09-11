@@ -339,8 +339,8 @@ you what it *would* have done before you let it do anything.
 
 ## Step four: the colony draws itself
 
-`grow-canvy.json` adds [`canvy@2.2.0`](../../templates/canvy/) — a timer, two `code` cells and a
-`web` cell that serves one interactive canvas of this colony on a port of its own:
+`grow-canvy.json` adds [`canvy@2.3.0`](../../templates/canvy/) — a timer, two `code` cells and a
+`web` cell that serves one interactive canvas of this colony under a name of its own:
 
 ```bash
 curl -s -X POST http://127.0.0.1:7777/colony/mutations \
@@ -348,25 +348,25 @@ curl -s -X POST http://127.0.0.1:7777/colony/mutations \
      -d @examples/meclaw-os/grow-canvy.json
 ```
 
-Then open `http://127.0.0.1:7811/` and drag the boxes around. Every cell the three steps above
+Then open `http://127.0.0.1:7777/canvy/` and drag the boxes around. Every cell the three steps above
 grew is in there, in its hive, with its edges — and where you put a box is where it stays,
 because a position is a prop of an object inside the display and the layout cell reads back
 what the display already holds before it writes.
 
-**One node, no edge, and a port override.** The node is no edge's business: the way in is the
-HTTP port the display owns, which is also the whole access story — put a reverse proxy in front
-of it, because the display binds loopback and grows no authentication ever. The override is
-there because the port is the one knob an instance almost always sets:
+**One node, no edge, and a mount override.** The node is no edge's business: the way in is
+`/canvy/` on the colony's one listener — the same port the API answers on — which is also the
+whole access story, so put a reverse proxy in front of that listener; the display grows no
+authentication ever. The override is there because the mount is the one knob an instance
+almost always sets:
 
 ```json
-"override_params": {"web": {"port": 7811}}
+"override_params": {"web": {"mount": "canvy"}}
 ```
 
-The template's own default is `7810`; this example takes `7811` so that a canvas you already
-run elsewhere on the default keeps it. A port is settled at instantiation — two displays
-sharing one is a bind race rather than a configuration. **The "and immutable afterwards" half
-of that sentence is withdrawn** (GH #410): a running display moves to another address on a
-params update, keeping its `cell.db` and every hand-placed object.
+The template ships the same name, and this example spells it out anyway, because a second
+canvas in the same colony needs a different one: two displays sharing a mount is a collision
+rather than a configuration. Renaming a canvas is a params update to its display cell and
+takes effect on that cell's next life, keeping its `cell.db` and every hand-placed object.
 
 The `event` lane out of the hive is **not** wired here, for the reason the rest of this example
 gives: something a person does in the browser that this colony has no consumer for
@@ -413,7 +413,7 @@ becomes a manifest, reaches the gate, asks, and stops there. The receipt an oper
 the one the front door renders; nothing is applied, and nothing is lost silently. A colony
 that wants the round to finish wires `ask` to a broker, `in_verdict` back, and `mutate` on to
 the mutation door — which is exactly the shape
-[`meclaw-os@1.8.5`](../../templates/meclaw-os/) ships, and the reason a shell is the thing you
+[`meclaw-os@1.8.7`](../../templates/meclaw-os/) ships, and the reason a shell is the thing you
 grow when you want an OS rather than an agent with a door.
 
 ```bash
@@ -444,7 +444,7 @@ A built colony arrives in two stages instead.
 seed-ref/
 ├── colony.json            substrate defaults. two lines.
 ├── main/config.json       type: "hive", ONE edge, and not one cell
-└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@1.8.5"}}
+└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@1.8.7"}}
 ```
 
 ```bash
@@ -460,7 +460,7 @@ The third file is a **declaration, not a cell**. The first start resolves it aga
 template library and grows it — the capability broker, the control loop, the baumeister, the
 submitter, the front door, the empty `orgs` container and the forty-eight edges between them —
 through the very resolution and staging a mutation takes. Then the marker is **gone**: what stands at its
-address is [`meclaw-os@1.8.5`](../../templates/meclaw-os/). A second boot finds nothing to grow.
+address is [`meclaw-os@1.8.7`](../../templates/meclaw-os/). A second boot finds nothing to grow.
 
 **The one edge is the whole birth topology.** `./os -> /colony/mutations`, on the `mutate` lane
 and nothing else. It cannot be added by a mutation on any scope — an edge *is* a mutation — so it

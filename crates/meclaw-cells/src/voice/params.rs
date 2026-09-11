@@ -1,5 +1,5 @@
-//! The `voice` cell's params: where it listens, how it ends a turn, and which
-//! two providers it speaks to.
+//! The `voice` cell's params: the name it is reached under, how it ends a turn,
+//! and which two providers it speaks to.
 //!
 //! Model names and thresholds are **params with defaults**, never constants
 //! with meaning (R-V4): a colony that wants another model says so in its
@@ -16,9 +16,18 @@ use crate::params_overlay::OverlayParams;
 use crate::voice::wire::Mode;
 use meclaw_core::JsonValue;
 
-/// The highest port number there is. Named rather than inlined so the refusal
-/// message and the check cannot drift apart.
-const MAX_PORT: u64 = 65535;
+/// What a document that still names `port` or `bind` is told, with `{key}`
+/// filled in.
+///
+/// Named rather than inlined so the two refusals cannot drift apart, and so the
+/// sentence an operator reads is the sentence the test asserts.
+const REMOVED_KEY: &str = "{key}: removed in voice 2.0.0 — the cell is reached at /<mount>/ on \
+                           the colony's listener; drop the key and name a mount";
+
+/// The keys `voice@2.0.0` removed. A document naming one is refused with
+/// [`REMOVED_KEY`] rather than with `unknown params key`: an operator upgrading
+/// a colony needs the migration, not a typo report.
+const REMOVED_KEYS: &[&str] = &["port", "bind"];
 
 /// Default outbound frame length in milliseconds, and the reason it is 20.
 ///
@@ -69,8 +78,7 @@ const MAX_AUDIO_OUT_FRAME_MS: u64 = 1000;
 /// Every key a `voice` cell's params may name. Anything else is a typo, and a
 /// typo that is silently ignored is a setting an operator believes in.
 const KNOWN_PARAMS_KEYS: &[&str] = &[
-    "port",
-    "bind",
+    "mount",
     "default_mode",
     "barge_in",
     "emit_partials",
@@ -87,13 +95,18 @@ const KNOWN_PARAMS_KEYS: &[&str] = &[
 /// Everything a `voice` cell needs to serve one WebSocket endpoint.
 #[derive(Debug, Clone)]
 pub struct VoiceParams {
-    /// The TCP port this instance owns. Required, and `0` is refused — the same
-    /// reason the `web` cell gives: `0` means "assign me anything", and a
-    /// client cannot be told in advance where the cell went.
-    pub port: u16,
-    /// The address to bind. Loopback by default: the cell has no auth story,
-    /// so its default must not be reachable off-host.
-    pub bind: String,
+    /// The name this instance is reached under on the colony's one listener:
+    /// `/<mount>/ws`, `/<mount>/info`, `/<mount>/`.
+    ///
+    /// **The only door**, and therefore required since `voice@2.0.0`: a surface
+    /// cell gets no port of its own, not even as an option, because the mount is
+    /// the other way (ADR-0031 supersedes ADR-0014).
+    ///
+    /// `[a-z0-9-]{1,64}` and none of the segments the API owns
+    /// (`meclaw_colony::surfaces::mount_is_valid`). Mutable, and a change takes
+    /// effect on the **next life**: the I/O half registers the name once, when
+    /// it starts, and nothing in this cell re-registers a running one.
+    pub mount: String,
     /// The mode a connection starts in when its URL carries no `?mode=`.
     pub default_mode: Mode,
     /// Whether `SpeechStarted` cancels a running synthesis (`auto` mode only).
@@ -442,35 +455,49 @@ impl VoiceParams {
     /// Parse + validate. Shares its path with `validate_params` and
     /// `spawn_cell` (parser invariant, `meclaw_colony::CellFactory`).
     ///
-    /// Refuses: a non-object, port `0` or a missing `port`, an empty `bind`, a
-    /// missing `stt`, a missing `tts` unless `stt.provider == "echo"`, an
-    /// unknown provider name, an unknown key anywhere, a `turn_detection`
-    /// outside the three the provider knows, and an unresolved `${…}` in any
-    /// secret — that last message names the KEY, never the value.
+    /// Refuses: a non-object, a document still naming `port` or `bind` (with the
+    /// migration in the message), a missing or `null` `mount`, a `mount` outside
+    /// `[a-z0-9-]{1,64}` or naming a segment the API owns, a missing `stt`, a
+    /// missing `tts` unless `stt.provider == "echo"`, an unknown provider name,
+    /// an unknown key anywhere, a `turn_detection` outside the three the
+    /// provider knows, and an unresolved `${…}` in any secret — that last
+    /// message names the KEY, never the value.
     pub fn parse(v: &JsonValue) -> Result<Self, String> {
         let obj = v.as_object().ok_or("params: must be object")?;
 
-        let port_raw = obj
-            .get("port")
-            .ok_or("port: required (the port this voice endpoint owns, 1..=65535)")?;
-        let port = port_raw
-            .as_u64()
-            .filter(|p| (1..=MAX_PORT).contains(p))
-            .ok_or_else(|| format!("port: must be an integer in 1..={MAX_PORT}, got {port_raw}"))?
-            as u16;
-
-        let bind = obj
-            .get("bind")
-            .map(|b| {
-                b.as_str()
-                    .map(str::to_string)
-                    .ok_or_else(|| format!("bind: must be a string, got {b}"))
-            })
-            .transpose()?
-            .unwrap_or_else(|| "127.0.0.1".to_string());
-        if bind.is_empty() {
-            return Err("bind: must not be empty".to_string());
+        // Before anything else, and before the unknown-key sweep at the bottom:
+        // an operator who upgraded a colony has to read the migration, not
+        // `unknown params key`. A `null` counts as naming the key — an
+        // `override_params` merge cannot remove one, so `"port": null` is a
+        // document that still carries it.
+        for key in REMOVED_KEYS {
+            if obj.contains_key(*key) {
+                return Err(REMOVED_KEY.replace("{key}", key));
+            }
         }
+
+        let mount = match obj.get("mount").filter(|v| !v.is_null()) {
+            Some(mount_raw) => {
+                let name = mount_raw
+                    .as_str()
+                    .ok_or_else(|| format!("mount: must be a string, got {mount_raw}"))?;
+                if !meclaw_colony::surfaces::mount_is_valid(name) {
+                    return Err(
+                        "mount: must be 1..=64 characters from [a-z0-9-] and none of the \
+                         reserved names (colony, messages, health, ui, live, @client)"
+                            .to_string(),
+                    );
+                }
+                name.to_string()
+            }
+            None => {
+                return Err(
+                    "mount: required (the name this voice endpoint is reached under at \
+                     /<mount>/ on the colony's listener)"
+                        .to_string(),
+                );
+            }
+        };
 
         let default_mode = match obj.get("default_mode") {
             None => Mode::Auto,
@@ -529,8 +556,7 @@ impl VoiceParams {
         }
 
         let parsed = Self {
-            port,
-            bind,
+            mount,
             default_mode,
             barge_in,
             emit_partials,
@@ -725,11 +751,11 @@ fn read_positive_u64(
 
 /// The runtime params-update overlay of a `voice` cell.
 ///
-/// It carries the ten mutable keys **and** the two provider sub-objects
+/// It carries the mutable keys **and** the two provider sub-objects
 /// verbatim, and the second half is a consequence of how `apply_update` works
 /// rather than a choice: the merge base is the *serialised current params*, so
 /// a key that is missing here is missing from the merge. An update naming only
-/// `port` would then be re-parsed against a document with no `stt` in it and
+/// `barge_in` would then be re-parsed against a document with no `stt` in it and
 /// refused with `stt: required` — a refusal about a key the operator never
 /// touched (the `web` cell learned this the same way, GH #410).
 ///
@@ -746,11 +772,12 @@ fn read_positive_u64(
 ///
 /// # When an accepted update takes effect
 ///
-/// Persistence is immediate for all ten; **effect** is not, and the split is
-/// worth knowing before an operator waits for one that will not come.
+/// Persistence is immediate for all of them; **effect** is not, and the split
+/// is worth knowing before an operator waits for one that will not come.
 ///
-/// - `port` / `bind` move the listener during the update itself, and only a
-///   bind that took is written (see [`crate::voice::cell::VoiceCell`]).
+/// - `mount` is written down and read on the next life (ruling O-P-2): the I/O
+///   half registers the name once, when it starts, and a name that moved under
+///   an open link would leave the client holding a door that no longer exists.
 /// - `barge_in` / `emit_partials` are handed to every open session as part of
 ///   the update; a call in progress changes behaviour on its next event. This
 ///   is how the `partial` lane is turned on at all: it is off by default
@@ -758,8 +785,7 @@ fn read_positive_u64(
 ///   them here or in `override_params`, and one without a listener never
 ///   dead-letters an interim it nobody asked for.
 /// - `external_timeout_ms` takes effect immediately where the handler owns the
-///   deadline — the wait on a rebind acknowledgement, and the `cell.db` query
-///   timeout.
+///   deadline — the `cell.db` query timeout.
 /// - `audio_out_frame_ms` reaches the wire on the next respawn, like both
 ///   timeouts: the I/O half reads it once, when it is built from the effective
 ///   params of the life about to start, and no message in this cell rebuilds a
@@ -786,10 +812,10 @@ fn read_positive_u64(
 ///   life runs on it.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct VoiceOverlay {
-    /// The TCP port this instance listens on. Mutable.
-    pub port: u16,
-    /// The address this instance binds. Mutable (rebind).
-    pub bind: String,
+    /// The name this instance is reached under on the colony's one listener.
+    /// Mutable, and read on the next life: the registration happens once, when
+    /// the I/O half starts.
+    pub mount: String,
     /// The mode new connections start in. Mutable.
     pub default_mode: Mode,
     /// Whether speech cancels a running synthesis. Mutable.
@@ -826,8 +852,7 @@ pub struct VoiceOverlay {
 impl OverlayParams for VoiceOverlay {
     /// Every key an update may name. `stt` and `tts` are deliberately absent.
     const KNOWN_KEYS: &'static [&'static str] = &[
-        "port",
-        "bind",
+        "mount",
         "default_mode",
         "barge_in",
         "emit_partials",
@@ -851,8 +876,7 @@ impl OverlayParams for VoiceOverlay {
         let p = VoiceParams::parse(raw)?;
         let obj = raw.as_object().ok_or("params: must be object")?;
         Ok(Self {
-            port: p.port,
-            bind: p.bind,
+            mount: p.mount,
             default_mode: p.default_mode,
             barge_in: p.barge_in,
             emit_partials: p.emit_partials,
@@ -875,7 +899,7 @@ mod tests {
 
     fn minimal() -> JsonValue {
         json!({
-            "port": 7900,
+            "mount": "voice",
             "stt": {"provider": "deepgram", "api_key": "k"},
             "tts": {"provider": "cartesia", "api_key": "k", "voice": "v"}
         })
@@ -884,8 +908,7 @@ mod tests {
     #[test]
     fn parse_minimal_deepgram_cartesia() {
         let p = VoiceParams::parse(&minimal()).expect("a minimal config parses");
-        assert_eq!(p.port, 7900);
-        assert_eq!(p.bind, "127.0.0.1");
+        assert_eq!(p.mount, "voice");
         assert_eq!(p.default_mode, Mode::Auto);
         assert!(p.barge_in);
         assert!(
@@ -925,20 +948,105 @@ mod tests {
         assert_eq!(c.voice, "v");
     }
 
+    /// `voice@2.0.0`: the two keys are gone, and a document that still names
+    /// one is refused by name with the migration in the message. Silently
+    /// ignoring them would leave an operator with a cell nobody can reach on the
+    /// address they wrote down.
     #[test]
-    fn parse_refuses_port_zero() {
-        let mut raw = minimal();
-        raw["port"] = json!(0);
-        assert!(VoiceParams::parse(&raw).is_err(), "0 means 'pick one'");
-        let mut missing = minimal();
-        missing.as_object_mut().unwrap().remove("port");
-        let err = VoiceParams::parse(&missing).unwrap_err();
-        assert!(err.starts_with("port: required"), "got {err}");
+    fn parse_refuses_port_and_bind_since_2_0_0() {
+        for (key, value) in [
+            ("port", json!(7900)),
+            ("port", json!(null)),
+            ("bind", json!("0.0.0.0")),
+        ] {
+            let mut raw = json!({"mount": "voice", "stt": {"provider": "echo"}});
+            raw[key] = value.clone();
+            let Err(err) = VoiceParams::parse(&raw) else {
+                panic!("{key} is gone, so a document that still names it is refused");
+            };
+            assert_eq!(
+                err,
+                format!(
+                    "{key}: removed in voice 2.0.0 — the cell is reached at /<mount>/ on the \
+                     colony's listener; drop the key and name a mount"
+                ),
+                "{key} = {value}"
+            );
+        }
+    }
+
+    /// The mount is the only door, so it is required.
+    #[test]
+    fn parse_requires_a_mount() {
+        let err = VoiceParams::parse(&json!({"stt": {"provider": "echo"}})).expect_err("no door");
+        assert!(err.starts_with("mount: required"), "{err}");
+        let err = VoiceParams::parse(&json!({"mount": null, "stt": {"provider": "echo"}}))
+            .expect_err("a null mount is no mount");
+        assert!(err.starts_with("mount: required"), "{err}");
+    }
+
+    #[test]
+    fn parse_accepts_a_mount_as_the_only_door() {
+        let p = VoiceParams::parse(&json!({"mount": "voice", "stt": {"provider": "echo"}}))
+            .expect("the mount is the door");
+        assert_eq!(p.mount, "voice");
+    }
+
+    #[test]
+    fn parse_refuses_a_reserved_or_malformed_mount() {
+        for bad in ["colony", "Voice", "a/b", ""] {
+            let err = VoiceParams::parse(&json!({"mount": bad, "stt": {"provider": "echo"}}))
+                .expect_err("refused");
+            assert!(err.starts_with("mount: "), "{bad:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn the_overlay_knows_mount_and_nothing_of_a_port() {
+        assert!(VoiceOverlay::KNOWN_KEYS.contains(&"mount"));
+        for gone in REMOVED_KEYS {
+            assert!(
+                !VoiceOverlay::KNOWN_KEYS.contains(gone),
+                "{gone} is no longer a key an update may name"
+            );
+            assert!(
+                !KNOWN_PARAMS_KEYS.contains(gone),
+                "{gone} is no longer a params key"
+            );
+        }
+    }
+
+    /// A mounted cell has to survive its own respawn: the overlay is replayed by
+    /// serialising it and parsing the result, and the door has to come back out
+    /// of that round trip. Measured here rather than reasoned about.
+    #[test]
+    fn a_mount_survives_the_replay_and_a_rename_applies() {
+        let raw = json!({"mount": "voice", "stt": {"provider": "echo"}});
+        let current = VoiceOverlay::parse(&raw).expect("the mount parses");
+        let replayed = meclaw_core::serde_json::to_value(&current).expect("serialize");
+        assert_eq!(replayed["mount"], json!("voice"));
+        let back = VoiceOverlay::parse(&replayed).expect("the replayed overlay parses again");
+        assert_eq!(back.mount, "voice");
+
+        let mut rename = meclaw_core::serde_json::Map::new();
+        rename.insert("mount".into(), json!("voice-b"));
+        let (merged, overlay) =
+            crate::params_overlay::apply_update(&current, &rename).expect("a mount update applies");
+        assert_eq!(merged.mount, "voice-b");
+        assert_eq!(overlay, vec![("mount".to_string(), json!("voice-b"))]);
+
+        // Closing the only door is refused: the merged params would name none.
+        let mut close = meclaw_core::serde_json::Map::new();
+        close.insert("mount".into(), json!(null));
+        assert!(
+            crate::params_overlay::apply_update(&current, &close).is_err(),
+            "a cell reachable through no door is refused, update or not"
+        );
     }
 
     #[test]
     fn parse_refuses_missing_tts_unless_echo() {
-        let echo = json!({"port": 7900, "stt": {"provider": "echo"}});
+        let echo = json!({"mount": "voice", "stt": {"provider": "echo"}});
         let p = VoiceParams::parse(&echo).expect("echo needs no voice to speak with");
         assert!(p.tts.is_none());
 
@@ -951,12 +1059,12 @@ mod tests {
     /// R-V21: `"tts": null` is how a flat override says "no text-to-speech".
     #[test]
     fn tts_null_counts_as_absent_for_echo() {
-        let echo = json!({"port": 7900, "stt": {"provider": "echo"}, "tts": null});
+        let echo = json!({"mount": "voice", "stt": {"provider": "echo"}, "tts": null});
         let p = VoiceParams::parse(&echo).expect("an echo instance overridden to silence");
         assert!(p.tts.is_none());
 
         let deaf = json!({
-            "port": 7900,
+            "mount": "voice",
             "stt": {"provider": "deepgram", "api_key": "k"},
             "tts": null
         });
@@ -983,7 +1091,7 @@ mod tests {
         // appears in a refusal, because there is nothing left to refuse it for.
         let mut resolved = minimal();
         resolved["stt"]["api_key"] = json!("dg-supersecret");
-        resolved["port"] = json!(0);
+        resolved["mount"] = json!("Voice");
         let err = VoiceParams::parse(&resolved).unwrap_err();
         assert!(!err.contains("supersecret"), "got {err}");
     }
@@ -1029,14 +1137,14 @@ mod tests {
     fn parse_refuses_an_unknown_turn_detection() {
         for good in ["server_vad", "semantic_vad", "none"] {
             let raw = json!({
-                "port": 7900,
+                "mount": "voice",
                 "stt": {"provider": "openai", "api_key": "k", "turn_detection": good},
                 "tts": {"provider": "openai", "api_key": "k"}
             });
             assert!(VoiceParams::parse(&raw).is_ok(), "{good} is a real value");
         }
         let raw = json!({
-            "port": 7900,
+            "mount": "voice",
             "stt": {"provider": "openai", "api_key": "k", "turn_detection": "vad"},
             "tts": {"provider": "openai", "api_key": "k"}
         });
@@ -1082,7 +1190,7 @@ mod tests {
         assert_eq!(c.base_url, cartesia::DEFAULT_BASE_URL);
 
         let openai = VoiceParams::parse(&json!({
-            "port": 7900,
+            "mount": "voice",
             "stt": {"provider": "openai", "api_key": "k"},
             "tts": {"provider": "openai", "api_key": "k"}
         }))
@@ -1105,7 +1213,7 @@ mod tests {
     fn elevenlabs_tts_parses_with_its_own_defaults() {
         use crate::voice::providers::elevenlabs;
         let raw = json!({
-            "port": 7900,
+            "mount": "voice",
             "stt": {"provider": "echo"},
             "tts": {"provider": "elevenlabs", "api_key": "k", "voice": "v"}
         });
@@ -1135,7 +1243,7 @@ mod tests {
     #[test]
     fn elevenlabs_refuses_an_unresolved_or_url_shaped_voice() {
         let base = json!({
-            "port": 7900,
+            "mount": "voice",
             "stt": {"provider": "echo"},
             "tts": {"provider": "elevenlabs", "api_key": "k", "voice": "v"}
         });
@@ -1163,7 +1271,7 @@ mod tests {
     fn elevenlabs_refuses_a_rate_the_vendor_does_not_serve() {
         use crate::voice::providers::elevenlabs;
         let base = json!({
-            "port": 7900,
+            "mount": "voice",
             "stt": {"provider": "echo"},
             "tts": {"provider": "elevenlabs", "api_key": "k", "voice": "v"}
         });
@@ -1305,16 +1413,16 @@ mod tests {
     }
 
     #[test]
-    fn a_port_only_update_does_not_lose_the_provider() {
+    fn a_mount_only_update_does_not_lose_the_provider() {
         // The merge base is the serialised current params, so the overlay has
         // to carry `stt` even though no update may name it.
         use crate::params_overlay::apply_update;
         let current = <VoiceOverlay as OverlayParams>::parse(&minimal()).expect("parses");
         let mut update = meclaw_core::serde_json::Map::new();
-        update.insert("port".into(), json!(7901));
-        let (merged, overlay) = apply_update(&current, &update).expect("a port update applies");
-        assert_eq!(merged.port, 7901);
-        assert_eq!(overlay, vec![("port".to_string(), json!(7901))]);
+        update.insert("mount".into(), json!("voice-b"));
+        let (merged, overlay) = apply_update(&current, &update).expect("a mount update applies");
+        assert_eq!(merged.mount, "voice-b");
+        assert_eq!(overlay, vec![("mount".to_string(), json!("voice-b"))]);
         let back = VoiceParams::parse(
             &meclaw_core::serde_json::to_value(&merged).expect("the overlay serializes"),
         )

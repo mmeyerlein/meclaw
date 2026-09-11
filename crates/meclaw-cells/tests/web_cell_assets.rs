@@ -25,7 +25,7 @@
 use meclaw_cells::web::WebCellFactory;
 use meclaw_colony::{CellFactory, ContractView, SpawnedCellKind};
 use meclaw_core::{CellEmission, Path, serde_json::json};
-use meclaw_testing::free_port;
+use meclaw_testing::{surface_listener, wait_for_mount};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
@@ -109,27 +109,32 @@ fn seed_one_asset(cell_dir: &std::path::Path, path: &str, content_type: &str, bo
 /// reconfig channel, which is exactly the shutdown signal `run_io` waits on. In
 /// a real colony the registry holds these ends.
 struct Booted {
-    port: u16,
+    /// Where this display's own URLs start: the listener, plus its mount.
+    base: String,
     join: tokio::task::JoinHandle<()>,
+    _listener: tokio::task::JoinHandle<()>,
     _sender: mpsc::Sender<meclaw_core::Message>,
     _stop_tx: tokio::sync::oneshot::Sender<()>,
 }
 
 impl Booted {
     fn url(&self, path: &str) -> String {
-        format!("http://127.0.0.1:{}{path}", self.port)
+        format!("{}{path}", self.base)
     }
 }
 
-/// Spawn one `web` cell over `cell_dir` on a free port.
-fn boot(cell_dir: &std::path::Path) -> Booted {
-    let port = free_port();
+/// The name this fixture's display answers to on the colony's listener.
+const MOUNT: &str = "screen";
+
+/// Spawn one `web` cell over `cell_dir` and put one listener in front of it.
+async fn boot(cell_dir: &std::path::Path) -> Booted {
+    let surfaces = Arc::new(meclaw_colony::SurfaceRegistry::new());
     let (out_tx, _out_rx) = mpsc::channel::<CellEmission>(8);
     let (inbox_tx, _inbox_rx) = mpsc::channel(8);
-    let spawned = Arc::new(WebCellFactory)
+    let spawned = Arc::new(WebCellFactory::new(Arc::clone(&surfaces)))
         .spawn_cell(
             Path::new("/web"),
-            json!({ "port": port }),
+            json!({ "mount": MOUNT }),
             out_tx,
             cell_dir.to_path_buf(),
             ContractView::default(),
@@ -140,7 +145,7 @@ fn boot(cell_dir: &std::path::Path) -> Booted {
             None,
             64,
         )
-        .expect("a web cell with a valid port must spawn");
+        .expect("a web cell with a valid mount must spawn");
     let SpawnedCellKind::Active {
         join,
         sender,
@@ -150,9 +155,14 @@ fn boot(cell_dir: &std::path::Path) -> Booted {
     else {
         panic!("web cells spawn Active — one that waited for a message is a blank screen");
     };
+    // The name before the request: the cell registers at the top of its I/O
+    // half, and a GET that overtakes it reads the listener's own `404`.
+    wait_for_mount(&surfaces, MOUNT).await;
+    let (addr, listener) = surface_listener(Arc::clone(&surfaces)).await;
     Booted {
-        port,
+        base: format!("http://{addr}/{MOUNT}"),
         join,
+        _listener: listener,
         _sender: sender,
         _stop_tx: stop_tx,
     }
@@ -160,8 +170,8 @@ fn boot(cell_dir: &std::path::Path) -> Booted {
 
 /// GET until the server answers at all, then return that answer.
 ///
-/// The listener comes up in a spawned task, so the first request can lose the
-/// race with `TcpListener::bind`. 30 s is the repo's failure-marker convention.
+/// The listener and the cell come up in spawned tasks, so the first request can
+/// lose the race. 30 s is the repo's failure-marker convention.
 async fn get_once(url: &str) -> reqwest::Response {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
@@ -179,8 +189,8 @@ async fn get_once(url: &str) -> reqwest::Response {
 /// GET until the server answers **200**, then return that answer.
 ///
 /// A 404 is a legitimate transient here and only here: `run_io` and the
-/// handler's `on_start` are two tasks spawned back to back, so the listener can
-/// bind a moment before the first snapshot — of pages or of assets — is
+/// handler's `on_start` are two tasks spawned back to back, so the mount can be
+/// on the table a moment before the first snapshot — of pages or of assets — is
 /// published. Retrying on 404 would hide a route that never works if the
 /// deadline were open-ended; it is not, and a snapshot that never arrives fails
 /// this in bounded time with the last status named.
@@ -210,7 +220,7 @@ async fn a_seeded_asset_is_served_with_its_row_content_type_and_body() {
     seed_one_page(&cell_dir, "hello");
     seed_one_asset(&cell_dir, "/vision.css", CSS_TYPE, CSS);
 
-    let booted = boot(&cell_dir);
+    let booted = boot(&cell_dir).await;
     let resp = get_ok(&booted.url("/vision.css")).await;
     assert_eq!(resp.status().as_u16(), 200, "a GET on a seeded asset path");
 
@@ -246,7 +256,7 @@ async fn a_path_that_is_neither_page_nor_asset_stays_the_same_404() {
     seed_one_page(&cell_dir, "hello");
     seed_one_asset(&cell_dir, "/vision.css", CSS_TYPE, CSS);
 
-    let booted = boot(&cell_dir);
+    let booted = boot(&cell_dir).await;
     // The listener answers `503 starting` on purpose until the first page
     // snapshot is there, and an undeclared path can never turn that into a
     // 200 -- so the negative probe below has to start AFTER the cell is
@@ -282,7 +292,7 @@ async fn a_page_and_an_asset_do_not_shadow_each_other() {
     seed_one_page(&cell_dir, "hello");
     seed_one_asset(&cell_dir, "/vision.css", CSS_TYPE, CSS);
 
-    let booted = boot(&cell_dir);
+    let booted = boot(&cell_dir).await;
 
     let page = get_ok(&booted.url("/")).await;
     let ctype = page

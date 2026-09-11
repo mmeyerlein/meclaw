@@ -27,7 +27,7 @@
 //!    emitted bundle is put into an actual `web` cell and the page is fetched
 //!    over HTTP: one box per colony cell, one line per edge, and the hook
 //!    mounted on markup that carries `phx-hook`. Once against an empty display
-//!    and once against one carrying `web@1.1.0`'s seeded demo, which is what
+//!    and once against one carrying `web@2.0.0`'s seeded demo, which is what
 //!    `canvy/web` actually is — the case that was missing, and the whole of
 //!    GH #402.
 //!
@@ -38,7 +38,11 @@ use meclaw_cells::web::WebCellFactory;
 use meclaw_colony::{CellFactory, ContractView, SpawnedCellKind};
 use meclaw_core::serde_json::{Value, json};
 use meclaw_core::{Body, CellEmission, MessageBuilder, Path};
-use meclaw_testing::free_port;
+use meclaw_testing::{surface_listener, wait_for_mount};
+
+/// The name this fixture's display answers to. The port in every URL below is
+/// the LISTENER's: a `web` cell has none since `web@2.0.0`.
+const MOUNT: &str = "canvy";
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
@@ -425,20 +429,20 @@ fn the_hive_is_sealed_and_states_two_lanes() {
     );
 }
 
-/// The display is a REFERENCE, and the one default it overrides is the port.
+/// The display is a REFERENCE, and the one default it overrides is the mount.
 #[test]
-fn the_display_is_a_reference_with_its_port_overridden() {
+fn the_display_is_a_reference_with_its_mount_overridden() {
     let Some(root) = shipped_canvy() else { return };
     let web = read_json(&root.join("web/config.json"));
     assert_eq!(web["cell"]["type"], "ref");
-    assert_eq!(web["cell"]["template"], "web@1.1.0");
+    assert_eq!(web["cell"]["template"], "web@2.0.0");
     // `override_params` sits top-level beside `cell`, keyed by the cells of the
     // REFERENCED template — `""` is its root (docs/config.md § Template
     // reference). Not inside `cell` (that key list is closed) and not inside
     // `params` (a ref has none).
     assert!(
-        web["override_params"][""]["port"].as_u64().is_some(),
-        "the display's port is the one default an instance almost always sets: {web}"
+        web["override_params"][""]["mount"].as_str().is_some(),
+        "the display's mount is the one default an instance almost always sets: {web}"
     );
     assert!(
         web.get("params").is_none(),
@@ -608,7 +612,7 @@ fn an_empty_display_is_bootstrapped_by_the_same_pass() {
 /// A `query` that answers with SOMEBODY ELSE'S root is the bootstrap case too
 /// (GH #402).
 ///
-/// `canvy/web` is a `ref` to `web@1.1.0`, and that template seeds a demo:
+/// `canvy/web` is a `ref` to `web@2.0.0`, and that template seeds a demo:
 /// `pages.jsonl` declares `("/", "root", "Vision")`. So the `query` a fresh
 /// `canvy` sends **succeeds**, and until this test the layout read success as
 /// "the display is already mine": the bootstrap branch never ran, the
@@ -625,7 +629,7 @@ fn a_display_holding_a_foreign_page_is_bootstrapped_too() {
     let ask = ask_pass(&root, fixture_graph());
     let ctx = layout_context(ask["header"]["canvy_graph"].as_str().unwrap());
 
-    // The shipped `web@1.1.0` seed, in the shape `query` answers with: a page
+    // The shipped `web@2.0.0` seed, in the shape `query` answers with: a page
     // at `/` rooted at `root`, with the demo's own objects under it. Not one of
     // them is a `canvy` object, and none of them is the id `canvy`.
     let foreign = json!({
@@ -876,7 +880,9 @@ fn the_acknowledgement_of_a_patch_ends_the_round() {
 // ─────────────────────────────────────────── and it fills a real display
 
 struct Live {
+    /// The port of the one listener in front of the cell.
     port: u16,
+    _listener: tokio::task::JoinHandle<()>,
     cell_dir: std::path::PathBuf,
     mailbox: mpsc::Sender<meclaw_core::Message>,
     out_rx: mpsc::Receiver<CellEmission>,
@@ -886,18 +892,18 @@ struct Live {
 
 /// A `web` cell over `cell_dir`. With an empty directory the database starts
 /// empty; hand it a `seed/` and the cell seeds itself from it, which is what a
-/// real `canvy/web` gets — the ref brings `web@1.1.0`'s own demo seed with it.
+/// real `canvy/web` gets — the ref brings `web@2.0.0`'s own demo seed with it.
 /// This comment used to claim the opposite ("a ref directory carries no seed"),
 /// and believing it is how GH #402 shipped: every test here started from a
 /// state no instance is ever in.
 async fn start(cell_dir: &std::path::Path) -> Live {
-    let port = free_port();
+    let surfaces = Arc::new(meclaw_colony::SurfaceRegistry::new());
     let (out_tx, out_rx) = mpsc::channel::<CellEmission>(64);
     let (inbox_tx, _inbox_rx) = mpsc::channel(8);
-    let spawned = Arc::new(WebCellFactory)
+    let spawned = Arc::new(WebCellFactory::new(Arc::clone(&surfaces)))
         .spawn_cell(
             Path::new("/canvy/web"),
-            json!({ "port": port }),
+            json!({ "mount": MOUNT }),
             out_tx,
             cell_dir.to_path_buf(),
             ContractView::default(),
@@ -920,22 +926,29 @@ async fn start(cell_dir: &std::path::Path) -> Live {
     };
 
     // An empty display has no page, so it answers 404 — which is still the
-    // listener answering. Waiting for a 200 here would wait for the bootstrap
-    // this test has not sent yet.
+    // cell answering. Waiting for a 200 here would wait for the bootstrap this
+    // test has not sent yet.
+    wait_for_mount(&surfaces, MOUNT).await;
+    let (addr, listener) = surface_listener(Arc::clone(&surfaces)).await;
+    let port = addr.port();
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        if reqwest::get(format!("http://127.0.0.1:{port}/"))
+        if reqwest::get(format!("http://127.0.0.1:{port}/{MOUNT}/"))
             .await
             .is_ok()
         {
             break;
         }
-        assert!(Instant::now() < deadline, "the cell never bound its port");
+        assert!(
+            Instant::now() < deadline,
+            "the cell never answered on its mount"
+        );
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
 
     Live {
         port,
+        _listener: listener,
         cell_dir: cell_dir.to_path_buf(),
         mailbox: sender,
         out_rx,
@@ -1028,7 +1041,7 @@ async fn the_pipeline_fills_a_real_display() {
     drop(conn);
 
     // …and the page a browser gets.
-    let body = reqwest::get(format!("http://127.0.0.1:{}/", live.port))
+    let body = reqwest::get(format!("http://127.0.0.1:{}/{MOUNT}/", live.port))
         .await
         .expect("get")
         .text()
@@ -1069,7 +1082,7 @@ async fn the_pipeline_fills_a_real_display() {
 /// GH #402 end to end, over the display a real instance actually gets.
 ///
 /// The test above starts the `web` cell with an EMPTY database, and that is not
-/// what `canvy/web` is: it is a `ref` to `web@1.1.0`, whose `seed/` ships a demo
+/// what `canvy/web` is: it is a `ref` to `web@2.0.0`, whose `seed/` ships a demo
 /// — `pages.jsonl` declares `("/", "root", "Vision")` and seventeen objects
 /// under it. So every canvy ever instantiated from the shipped template met a
 /// display that already had a page, the `query` succeeded, the bootstrap branch
@@ -1149,7 +1162,7 @@ async fn a_display_that_ships_a_demo_still_gets_the_picture() {
     );
 
     // The page a browser gets is the colony, not a 404 and not the demo.
-    let page = reqwest::get(format!("http://127.0.0.1:{}/", live.port))
+    let page = reqwest::get(format!("http://127.0.0.1:{}/{MOUNT}/", live.port))
         .await
         .expect("get")
         .text()
@@ -1252,7 +1265,7 @@ async fn a_second_tick_patches_the_page_it_already_serves() {
     let reply = apply(&mut live, &calls_of(&next[0])).await;
     assert_eq!(reply["header"]["bundle_errors"], json!(0), "{reply}");
 
-    let body = reqwest::get(format!("http://127.0.0.1:{}/", live.port))
+    let body = reqwest::get(format!("http://127.0.0.1:{}/{MOUNT}/", live.port))
         .await
         .expect("get")
         .text()
@@ -1306,7 +1319,7 @@ async fn a_drag_survives_the_next_tick() {
     apply(&mut live, &boot_calls).await;
 
     // Drag `a/one` to 4321,1234 — the two events the hook sends on release.
-    let page = reqwest::get(format!("http://127.0.0.1:{}/", live.port))
+    let page = reqwest::get(format!("http://127.0.0.1:{}/{MOUNT}/", live.port))
         .await
         .expect("get")
         .text()
@@ -1317,10 +1330,12 @@ async fn a_drag_survives_the_next_tick() {
     let end = start_at + page[start_at..].find('"').expect("quote");
     let token = page[start_at..end].to_string();
     let topic = format!("lv:{}", meclaw_surface::session::container_id("/canvy/web"));
-    let (mut ws, _) =
-        tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{}/live/websocket", live.port))
-            .await
-            .expect("connect");
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!(
+        "ws://127.0.0.1:{}/{MOUNT}/live/websocket",
+        live.port
+    ))
+    .await
+    .expect("connect");
     ws.send(WsMessage::Text(
         json!(["1", "1", topic, "phx_join", {"session": token, "url": "/"}])
             .to_string()

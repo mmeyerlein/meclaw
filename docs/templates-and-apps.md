@@ -28,7 +28,7 @@ means instantiating the new version beside the old one and moving the edges.
 ## What an app is
 
 An app is a sealed hive at the rim of a member, instantiated by an ordinary mutation into that
-member's `./apps` container. It has no port, no secret and no channel of its own. There are
+member's `./apps` container. It has no mount, no secret and no channel of its own. There are
 exactly three ways it plugs in: it may observe what the conversation carries, offer a tool to
 the member's assistant, and write to a screen. It is never an interception. Every edge it gets
 is an additional one, so a path that existed before the app fires exactly as it did before,

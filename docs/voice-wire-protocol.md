@@ -14,7 +14,7 @@ which lanes it emits and which params it reads, is `cell-types.md` § `voice`.
 ## The connection
 
 ```
-ws://<bind>:<port>/ws?session=<id>&mode=<auto|hold>&sample_rate=<hz>&encoding=<name>
+ws://<listener>/<mount>/ws?session=<id>&mode=<auto|hold>&sample_rate=<hz>&encoding=<name>
 ```
 
 All five are optional.
@@ -31,8 +31,12 @@ A phone edge such as FreeSWITCH passes its call UUID here, and every emission of
 the connection then carries it as `hop.session_id`:
 
 ```
-uuid_audio_stream <call-uuid> start ws://host:port/ws?session=<call-uuid>&sample_rate=8000 mono 8000
+uuid_audio_stream <call-uuid> start ws://<listener>/<mount>/ws?session=<call-uuid>&sample_rate=8000 mono 8000
 ```
+
+The switch is the proxy on that path: it maps the number a caller dialled, and
+the PIN it asked for, to one colony's listener and to the mount of that
+colony's telephone media half.
 
 `mod_audio_stream` sends 8 kHz mono PCM16 that way -- the rate a telephone call
 already is, and the two the module knows are `8k` and `16k` anyway. The
@@ -61,22 +65,64 @@ The two directions are negotiated separately, and the asymmetry is deliberate:
   synthesis provider cannot do the rate, its own stands and `hello.audio_out`
   says so. One connection may therefore run at two rates.
 
-`GET /info` names both sets (`audio_in_rates`, `audio_out_rates`), so a client
-reads what it may ask for instead of provoking a refusal to find out.
+`GET /<mount>/info` names both sets (`audio_in_rates`, `audio_out_rates`), so a
+client reads what it may ask for instead of provoking a refusal to find out.
 
-This listener has no authentication and no TLS. It binds loopback by default;
-anything else belongs behind a reverse proxy, the same stance the `web` cell
-takes.
+The colony's listener has no authentication and no TLS. Anything reachable off
+the host belongs behind a reverse proxy, the same stance the `web` cell takes.
 
-Three routes exist:
+Three routes exist under the mount:
 
 | Route | Answer |
 |---|---|
-| `GET /ws` | The WebSocket upgrade described here. A plain `GET` is a `400`. |
-| `GET /` | The built-in browser test page (see below). |
-| `GET /info` | The `hello` declaration as JSON, without a connection (see below). |
+| `GET /<mount>/ws` | The WebSocket upgrade described here. A plain `GET` is a `400`. |
+| `GET /<mount>/` | The built-in browser test page (see below). |
+| `GET /<mount>/info` | The `hello` declaration as JSON, without a connection (see below). |
 
 Anything else is a `404`.
+
+## The same protocol on a display's socket
+
+Since `voice@1.5.0` a page can carry the call. A `display` joins the topic
+`voice:<call>` on the LiveView socket it already holds, and the `web` cell hands
+those frames to the cell mounted under the name the join asks for. No second
+mount in the URL, no second connection.
+
+| Join payload key | Meaning |
+|---|---|
+| `mount` | The mount name of the `voice` cell to reach. Default `voice`. |
+| `mode` | As in the query string. |
+| `sample_rate` | As in the query string, and binding the same way. |
+| `encoding` | As in the query string. |
+
+The **session is the topic suffix** -- everything after `voice:` -- so nothing
+else in the payload names the call. Three events carry everything:
+
+| Event | Direction | Payload |
+|---|---|---|
+| `frame` | both | one text frame of this protocol, as an object |
+| `audio` | both | one binary frame, as bytes |
+| `close` | server to client | `{"code": …, "reason": …}`, then `phx_close` on the topic |
+
+A join answers `ok {}` and `hello` follows as the first `frame` push, so a client
+has one handler for every frame. A text `frame` push is replied to with `ok {}`.
+A binary push is **not**: the page sends those through `Socket.push` with an empty
+`ref`, because a reply would arm a timer per 20 ms of audio. The way back is the
+serializer's broadcast form, which needs no reference either.
+
+Everything else is what it is on a socket of the cell's own: every frame table in
+this document, both modes, `4409` as `close {"code": 4409}`, `client_too_slow` by
+the same count. A refusal is the same sentence, decided by the same admission,
+because both doors run that one admission -- a mount nothing holds answers
+`no surface is mounted as "<mount>"`. It carries no status number: on a topic a
+refusal is a `phx_reply error` with the reason in it. One socket holds at most
+four live links, and the fifth join is refused with
+`too many voice topics on this socket`; a topic that was left, or one the cell
+closed, is not one of the four.
+
+What a browser needs: a **secure context** for the microphone, which means an
+`https://` origin or `localhost` / `127.0.0.1`. On a plain `http://` LAN address
+there is no microphone to open, and `display@2.0.0` says so on the page.
 
 ## Audio frames
 
@@ -193,7 +239,7 @@ debt and is thrown away, whether it lands inside the next boundary or outside
 every boundary, so pressing the key again early and pressing it late are the
 same. The debt is written off if the recognition session dies first.
 
-`release_grace_ms` is declared in `hello` and by `GET /info`, so a client knows
+`release_grace_ms` is declared in `hello` and by `GET /<mount>/info`, so a client knows
 the upper bound it is waiting on instead of guessing one.
 
 In both modes the invariant is the same: one `turn` per boundary, and never a
@@ -246,7 +292,7 @@ The `turn` frame is a mirror: the same text left the cell as a message into the
 colony at that moment, and the answer that comes back as `speak_start` … audio
 … `speak_end` is what the colony sent back.
 
-## `GET /info`
+## `GET /<mount>/info`
 
 The `hello` declaration without opening a connection. A client can ask what it
 would be told before it commits to a session, and an operator can read the
@@ -278,7 +324,7 @@ describes the cell itself and a single synthesis does not change it.
 
 ## Built-in test page
 
-`GET /` serves a self-contained browser test page on the same listener as the
+`GET /<mount>/` serves a self-contained browser test page on the same listener as the
 socket, with no build step, no CDN and no files on disk. Open it, choose `hold`
 or `auto`, press connect, and the `hello` frame's audio formats and provider
 names appear above the log.
@@ -292,8 +338,8 @@ button cuts a synthesis off.
 
 The microphone needs a secure context. Browsers hand out `getUserMedia` only on
 `https://` or on `localhost`, so the page works when it is reached as
-`http://localhost:<port>/`, over an SSH tunnel for instance, or through a TLS
-proxy in front of the cell. A LAN IP over plain `http` will load the page and
+`http://localhost:<port>/<mount>/`, over an SSH tunnel for instance, or through
+a TLS proxy in front of the listener. A LAN IP over plain `http` will load the page and
 then fail to get a microphone. That is a browser rule, and the cell cannot grant
 an exception to it.
 

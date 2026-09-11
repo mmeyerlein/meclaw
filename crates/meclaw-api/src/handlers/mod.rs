@@ -22,6 +22,7 @@ pub mod message_log;
 pub mod messages;
 pub mod mutations;
 pub mod registry;
+pub mod surfaces;
 pub mod templates;
 pub mod trace;
 

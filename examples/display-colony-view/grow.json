@@ -6,10 +6,10 @@
         "add_nodes": [
           {
             "name": "display",
-            "template": "display@1.1.0",
+            "template": "display@2.0.0",
             "override_params": {
               "web": {
-                "port": 7899
+                "mount": "display"
               }
             }
           },

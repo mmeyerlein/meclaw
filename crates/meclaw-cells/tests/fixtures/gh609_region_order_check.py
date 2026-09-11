@@ -30,6 +30,10 @@ COUNT = [0]
 ROOT = "display.root"
 MAIN = "display.region.main"
 ASIDE = "display.region.aside"
+# The microphone hangs under the root beside the regions, behind both of them
+# (GH #643). It is named here so the checks below can say what the root holds
+# WITHOUT counting it as a column.
+MIC = "display.mic"
 
 
 def ok(name, cond, detail=""):
@@ -250,10 +254,13 @@ def main():
     loop.view(AMBIENT, "ambient", "Ambient", region="aside")
 
     ok("both regions hang under the root",
-       sorted(loop.screen.children(ROOT)) == sorted([MAIN, ASIDE]),
+       sorted(loop.screen.children(ROOT)) == sorted([MAIN, ASIDE, MIC]),
        loop.screen.children(ROOT))
     ok("the root holds them in declaration order, main first",
-       loop.screen.children(ROOT) == [MAIN, ASIDE],
+       [c for c in loop.screen.children(ROOT) if c != MIC] == [MAIN, ASIDE],
+       loop.screen.children(ROOT))
+    ok("and the microphone stands behind both columns",
+       loop.screen.children(ROOT)[-1] == MIC,
        loop.screen.children(ROOT))
     ok("the two regions do not share an `ord`",
        loop.screen.objects[MAIN]["ord"] != loop.screen.objects[ASIDE]["ord"],

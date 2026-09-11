@@ -39,7 +39,7 @@
 
 use axum::Router;
 use axum::extract::{State, WebSocketUpgrade};
-use axum::http::{StatusCode, header};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use meclaw_surface::{bundle, session};
@@ -168,10 +168,13 @@ impl ViewerRegistry {
 /// answered over a channel — that code is retired (GH #396), the shape is not.
 #[derive(Clone)]
 pub struct WebIo {
-    /// The address to bind.
-    pub bind: String,
-    /// The port this instance owns.
-    pub port: u16,
+    /// The name this display is reached under on the colony's listener. Every
+    /// link the shell writes starts with it, and the router this half serves a
+    /// handed stream with is nested under `/<mount>`.
+    pub mount: String,
+    /// The request header a proxy in front puts the viewer's identity in, or
+    /// empty for none. Read once per socket upgrade — see [`identity_of`].
+    pub identity_header: String,
     /// The cell's own path — the identity the session token is minted for.
     pub cell_path: Arc<str>,
     /// The rendered pages, as last published by the handler half.
@@ -223,22 +226,52 @@ pub struct WebIo {
     /// cloneable, and a receiver is not — so it lives behind an `Option` in an
     /// `Arc<Mutex<…>>` that only `run_io` ever touches.
     pub pushes: Arc<Mutex<Option<mpsc::Receiver<WebReconfig>>>>,
+    /// The process's mount table, set by the factory (ADR-0031).
+    ///
+    /// The socket loop reaches a surface that mounted on it through this; a
+    /// display built outside a colony gets a table of its own.
+    pub surfaces: Arc<meclaw_colony::SurfaceRegistry>,
+    /// Closes when this cell's I/O half goes away. Filled by [`run_io`], which
+    /// keeps the sending end among its own locals.
+    ///
+    /// # Why a channel nobody ever sends on
+    ///
+    /// The substrate ends a long-running cell by **aborting** `run_io` the
+    /// moment its handler half returns (`cell_task_long_running`), so code
+    /// after the loop is not a shutdown path — a dropped future is. Everything
+    /// that has to happen on the way out therefore hangs off a `Drop`: the
+    /// mount off [`MountGuard`], the accept loop and its connections off a
+    /// `JoinSet`, and the sockets off this. An upgraded WebSocket is the one
+    /// that cannot be aborted from here at all — axum's `on_upgrade` runs it
+    /// on a task of its own — so it watches this instead and closes itself.
+    ///
+    /// A browser that reads a close frame reconnects to the next life. One
+    /// whose socket merely stops answering draws its last picture until
+    /// somebody reloads the tab, which is what a respawn must not cost a wall
+    /// screen.
+    pub shutdown: Option<watch::Receiver<()>>,
 }
 
 impl WebIo {
     /// Build the I/O state for a cell at `cell_path`.
+    ///
+    /// Eight arguments, because every one of them is a channel end or a value
+    /// the factory alone knows: the same shape [`crate::voice::io::VoiceIo::new`]
+    /// carries, and grouping them into a struct would only move the list.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
-        bind: String,
-        port: u16,
+        mount: String,
+        identity_header: String,
         cell_path: &str,
         pages: watch::Receiver<Arc<PageMap>>,
         assets: watch::Receiver<Arc<AssetMap>>,
         ready: watch::Receiver<bool>,
         pushes: mpsc::Receiver<WebReconfig>,
+        surfaces: Arc<meclaw_colony::SurfaceRegistry>,
     ) -> Self {
         Self {
-            bind,
-            port,
+            mount,
+            identity_header,
             cell_path: Arc::from(cell_path),
             pages,
             assets,
@@ -249,6 +282,10 @@ impl WebIo {
             // can observe the `None`.
             events_tx: None,
             pushes: Arc::new(Mutex::new(Some(pushes))),
+            surfaces,
+            // Minted by `run_io`, which is the only side that knows when this
+            // half goes away.
+            shutdown: None,
         }
     }
 }
@@ -312,13 +349,96 @@ const CONNECTION_STATE_CSS: &str = concat!(
     "font:11.5px/1.4 ui-sans-serif,system-ui,sans-serif;pointer-events:none;}",
 );
 
-/// The dead render this cell serves, origin-relative.
+/// The longest `X-Forwarded-Prefix` this cell will read, in characters after
+/// the leading slash. A proxy path deeper than this is a mistake, not a mount
+/// point.
+const PREFIX_MAX: usize = 200;
+
+/// Whether a proxy's prefix is one this cell will write into its own links.
+///
+/// The grammar is `^/[A-Za-z0-9._~/-]{0,200}$` without a trailing slash — path
+/// characters that need no escaping, and nothing else. Everything a value could
+/// smuggle into an HTML attribute or a URL (a quote, a `?`, a `#`, a `%`, a
+/// space) is therefore outside it, so a malformed value is **ignored** rather
+/// than sanitised into something that looks plausible (O-P-3).
+///
+/// # The two shapes the character set does not catch
+///
+/// A prefix is written into a `<base href>` and into a `<script src>`, and two
+/// shapes built entirely from allowed characters are not paths at all:
+///
+/// * **`//host`** is protocol-relative. `//evil.com` passes the character set,
+///   and the shell would then write
+///   `<script src="//evil.com/screen/@client/…">` — a script tag pointed at a
+///   host the *requester* named. The header reaches this cell from whoever
+///   spoke HTTP to the listener, and a cache in front keyed on the URL alone
+///   is the classic `X-Forwarded-*` poisoning shape.
+/// * **`..`** walks the base up. `/a/../..` is three allowed segments and one
+///   silent escape from the path an operator configured.
+///
+/// Both are refused rather than normalised, for the reason the whole function
+/// exists: this cell does not know what the proxy in front meant, and a
+/// repaired prefix is a guess about somebody else's configuration.
+fn prefix_is_usable(prefix: &str) -> bool {
+    let Some(rest) = prefix.strip_prefix('/') else {
+        return false;
+    };
+    if rest.len() > PREFIX_MAX || prefix.ends_with('/') {
+        return false;
+    }
+    // The leading empty segment is what makes `//host` protocol-relative.
+    if prefix.starts_with("//") {
+        return false;
+    }
+    if rest.split('/').any(|segment| segment == "..") {
+        return false;
+    }
+    rest.chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '~' | '/' | '-'))
+}
+
+/// Where this display's own URLs start, for the request `headers` describe.
+///
+/// Two parts: what a reverse proxy says it stripped (`X-Forwarded-Prefix`, the
+/// one header read for this — O-P-3) and the mount the colony's listener
+/// reaches this cell under. Without a proxy the base is `/<mount>`; behind
+/// `location ^~ /egon/` with `X-Forwarded-Prefix /egon` it is `/egon/<mount>`,
+/// and every link the shell writes moves with it.
+///
+/// A header the grammar refuses is ignored, never trusted and never repaired:
+/// the value comes from whoever spoke HTTP to the listener, and a client that
+/// can reach the port directly can set it too.
+pub(crate) fn base_of(headers: &HeaderMap, mount: &str) -> String {
+    let prefix = headers
+        .get("x-forwarded-prefix")
+        .and_then(|v| v.to_str().ok())
+        .filter(|p| prefix_is_usable(p))
+        .unwrap_or("");
+    format!("{prefix}/{mount}")
+}
+
+/// The dead render this cell serves, relative to `base`.
 ///
 /// `body` is the materialised page, already rendered — so this is a string
 /// concatenation and nothing else. The LiveView client attaches to the same
 /// markup on connect rather than replacing it, which is what makes the first
 /// paint the real page instead of a spinner.
-pub(crate) fn shell(cell_path: &str, title: &str, body: &str) -> String {
+///
+/// Every URL in it is written from `base` ([`base_of`]) rather than from the
+/// origin root: this cell no longer owns an origin, it owns a mount inside one,
+/// and a page that linked `/live` would join whatever else the listener has
+/// there.
+///
+/// # Why the head carries a `<base>`
+///
+/// The page body is materialised **before** any request arrives, so nothing in
+/// it can know the mount, let alone the prefix a proxy stripped from this one
+/// request. A component that wants the cell's own stylesheet therefore writes
+/// a RELATIVE URL (`vision.css`), and `<base>` is what makes that resolve to
+/// the same file from `/<mount>/` and from `/<mount>/a/b` alike. Without it a
+/// page one segment deep would ask for `/<mount>/a/vision.css`, and an asset
+/// row would be unreachable from exactly the pages that are not the root.
+pub(crate) fn shell(base: &str, cell_path: &str, title: &str, body: &str) -> String {
     let container = session::container_id(cell_path);
     let token = session::mint(cell_path);
 
@@ -326,6 +446,7 @@ pub(crate) fn shell(cell_path: &str, title: &str, body: &str) -> String {
         "<!doctype html>\n<html lang=\"en\">\n<head>\n\
          <meta charset=\"utf-8\">\n\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
+         <base href=\"{base}/\">\n\
          <meta name=\"csrf-token\" content=\"{token}\">\n\
          <title>{title}</title>\n\
          <style>{states}</style>\n\
@@ -333,12 +454,12 @@ pub(crate) fn shell(cell_path: &str, title: &str, body: &str) -> String {
          <div id=\"{container}\" data-phx-main data-phx-session=\"{token}\" data-phx-static=\"\">\n\
          {body}\n\
          </div>\n\
-         <script src=\"/@client/phoenix.min.js\"></script>\n\
-         <script src=\"/@client/phoenix_live_view.min.js\"></script>\n\
+         <script src=\"{base}/@client/phoenix.min.js\"></script>\n\
+         <script src=\"{base}/@client/phoenix_live_view.min.js\"></script>\n\
          <script>\n\
          (function () {{\n\
          var csrf = document.querySelector(\"meta[name=csrf-token]\").content;\n\
-         var socket = new LiveView.LiveSocket(\"/live\", Phoenix.Socket, {{\n\
+         var socket = new LiveView.LiveSocket(\"{base}/live\", Phoenix.Socket, {{\n\
          params: {{_csrf_token: csrf}},\n\
          hooks: window.SurfaceHooks || {{}}\n\
          }});\n\
@@ -350,6 +471,11 @@ pub(crate) fn shell(cell_path: &str, title: &str, body: &str) -> String {
         token = esc(&token),
         title = esc(title),
         container = esc(&container),
+        // Sanitised before it got here — the grammar in `prefix_is_usable`
+        // admits no character HTML would have to escape — and escaped anyway,
+        // because a value that came off the wire is escaped where it is
+        // written, not where it was checked.
+        base = esc(base),
         // A compile-time constant with no `<` in it: nothing here comes from a
         // `config.json`, so there is nothing to escape.
         states = CONNECTION_STATE_CSS,
@@ -401,14 +527,28 @@ async fn get_client(axum::extract::Path(file): axum::extract::Path<String>) -> R
 /// Either way this is R-W8-4(a)'s request path: two published snapshots, no
 /// database, no cell call — a wedged colony still serves its pages and its
 /// files.
-async fn get_path(State(io): State<WebIo>, uri: axum::http::Uri) -> Response {
+async fn get_path(State(io): State<WebIo>, headers: HeaderMap, uri: axum::http::Uri) -> Response {
+    serve_path(&io, &headers, uri.path())
+}
+
+/// `GET /<mount>/` — the display's own root.
+///
+/// Its own route because `nest` does not answer the prefix WITH a trailing
+/// slash: the nested router would be handed an empty path and match nothing,
+/// and `/<mount>/` is exactly the URL a person types and a `<base href>`
+/// resolves against. It is the same handler over the route `/`.
+async fn get_root(State(io): State<WebIo>, headers: HeaderMap) -> Response {
+    serve_path(&io, &headers, "/")
+}
+
+/// The body of [`get_path`]: one path, both declared surfaces.
+fn serve_path(io: &WebIo, headers: &HeaderMap, path: &str) -> Response {
     // Before the first publish this display has nothing to say about any route,
     // and saying `404` would be claiming it does (GH #395). The window closes on
     // its own; a caller that waits gets the page.
     if !*io.ready.borrow() {
         return starting();
     }
-    let path = uri.path();
 
     let pages = io.pages.borrow().clone();
     if let Some(page) = pages.get(path) {
@@ -423,7 +563,12 @@ async fn get_path(State(io): State<WebIo>, uri: axum::http::Uri) -> Response {
                 // response has no validators, so in practice it means "fetch".
                 (header::CACHE_CONTROL, "no-cache"),
             ],
-            shell(&io.cell_path, &page.title, &page.rendered_body()),
+            shell(
+                &base_of(headers, &io.mount),
+                &io.cell_path,
+                &page.title,
+                &page.rendered_body(),
+            ),
         )
             .into_response();
     }
@@ -478,12 +623,38 @@ fn starting() -> Response {
     (StatusCode::SERVICE_UNAVAILABLE, "starting\n").into_response()
 }
 
-/// `GET /live/websocket` — the LiveView transport.
+/// Who the proxy says is on this connection, if the operator named a header.
+///
+/// Read at the upgrade and kept for the whole connection: a socket is one
+/// browser tab, and the identity of the person in front of it does not change
+/// mid-frame. With no `identity_header` param nothing is read and nothing is
+/// stamped (O-P-4), and a header the proxy did not send stamps nothing either.
+fn identity_of(headers: &HeaderMap, identity_header: &str) -> Option<String> {
+    if identity_header.is_empty() {
+        return None;
+    }
+    headers
+        .get(identity_header)
+        .and_then(|v| v.to_str().ok())
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
+}
+
+/// `GET /<mount>/live/websocket` — the LiveView transport.
 ///
 /// The phoenix client appends exactly `/websocket` to the socket URL it is
-/// handed, so the shell says `/live` and the route is this. A plain GET here is
-/// a 400 rather than a 404: the path is right, the request is not.
-async fn get_socket(State(io): State<WebIo>, upgrade: Option<WebSocketUpgrade>) -> Response {
+/// handed, so the shell says `<base>/live` and the route is this. A plain GET
+/// here is a 400 rather than a 404: the path is right, the request is not.
+///
+/// The upgrade request is also where the connection learns two things it can
+/// read nowhere else: the base its page was served under (the join payload
+/// carries the browser's URL, which carries the proxy's prefix) and who the
+/// proxy says is looking.
+async fn get_socket(
+    State(io): State<WebIo>,
+    headers: HeaderMap,
+    upgrade: Option<WebSocketUpgrade>,
+) -> Response {
     let Some(up) = upgrade else {
         return (
             StatusCode::BAD_REQUEST,
@@ -496,10 +667,12 @@ async fn get_socket(State(io): State<WebIo>, upgrade: Option<WebSocketUpgrade>) 
         return (StatusCode::SERVICE_UNAVAILABLE, "no handler\n").into_response();
     };
     let viewers = io.viewers.clone();
-    up.on_upgrade(move |ws| run_connection(ws, io, events_tx, viewers))
+    let base = base_of(&headers, &io.mount);
+    let user_id = identity_of(&headers, &io.identity_header);
+    up.on_upgrade(move |ws| run_connection(ws, io, events_tx, viewers, base, user_id))
 }
 
-/// The cell's router.
+/// The cell's router, as it is reached under `/<mount>` — see [`mounted_router`].
 pub(crate) fn router(io: WebIo) -> Router {
     Router::new()
         // The transport, before the page wildcard: `/live/websocket` is not a
@@ -516,89 +689,86 @@ pub(crate) fn router(io: WebIo) -> Router {
         .with_state(io)
 }
 
-/// What ended one serving round.
-enum Round {
-    /// The params moved (GH #410): serve this address next. Carried as an
-    /// address rather than as an open listener because the old socket is only
-    /// released when the round's `serve` future is dropped, and the new one is
-    /// bound after that.
-    Rebind {
-        /// The address to bind.
-        bind: String,
-        /// The port to bind.
-        port: u16,
-        /// Where the handler is waiting for the verdict.
-        ack: tokio::sync::oneshot::Sender<Result<(), String>>,
-    },
-    /// The server future ended while the cell is still live (GH #592).
-    ///
-    /// Not a reason to return, and handled exactly like a bind that failed:
-    /// report it and go on in a round with no listener, so a later `Rebind`
-    /// can still put the display back on the air.
-    ServeEnded,
-    /// The cell is going away.
-    Done,
+/// The cell's router under the name the listener hands it connections for.
+///
+/// The nest is the whole of the mount: `/screen/` reaches `get_path` with the
+/// path `/`, `/screen/live/websocket` reaches the socket, and the display sees
+/// its own route grammar unchanged behind it. Two displays on one listener are
+/// therefore two nests, and neither can be reached under the other's name.
+pub(crate) fn mounted_router(io: WebIo) -> Router {
+    let mount = io.mount.clone();
+    let root: Router = Router::new()
+        .route(&format!("/{mount}/"), get(get_root))
+        .with_state(io.clone());
+    root.nest(&format!("/{mount}"), router(io))
 }
 
-/// The I/O loop: bind, serve, and stay up for the cell's whole life.
+/// Holds a mount for exactly as long as the I/O half that registered it.
+///
+/// It is the ONE place the name is given back. The ordinary end drops it by
+/// hand at the bottom of [`run_io`], so the order against the serving task is
+/// a decision rather than a scope; every OTHER end — a panic in the handler
+/// half, the `message_timeout` backstop, an abort — drops it too, and that is
+/// what the guard is for. An entry left standing would keep taking the
+/// listener's connections for a display nobody serves: a page loading into a
+/// socket that never answers, which is worse than a `404` from a name nothing
+/// holds. The voice cell's guard is the same object for the same reason.
+struct MountGuard {
+    /// The table the mount stands in.
+    surfaces: Arc<meclaw_colony::SurfaceRegistry>,
+    /// The name this life registered.
+    mount: String,
+    /// The token this life registered under. A spent one removes nothing, which
+    /// is what makes a respawn's entry safe from the previous life's guard.
+    registration: meclaw_colony::Registration,
+}
+
+impl Drop for MountGuard {
+    fn drop(&mut self) {
+        // A `Drop` cannot await, and the registry is behind an `Arc`, so the
+        // removal is a task of its own. Only on a runtime thread: a guard
+        // dropped outside one has no executor to spawn onto, and a process
+        // without a runtime has no mount table left to keep tidy either.
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let surfaces = Arc::clone(&self.surfaces);
+        let mount = std::mem::take(&mut self.mount);
+        let registration = self.registration;
+        handle.spawn(async move {
+            surfaces.unregister(&mount, &registration).await;
+        });
+    }
+}
+
+/// The I/O loop: register the mount, serve what the listener hands over, and
+/// stay up for the cell's whole life.
 ///
 /// **A1′**: this function must not return voluntarily while the cell is live.
 /// A clean early return would silence the I/O side while the handler keeps
 /// running and open the "io-finish-first" loss class the trait documents. Only
-/// the shutdown signal — the handler closing the reconfig channel — ends it. A
-/// server future that ends is not that signal (GH #592): it is reported like a
-/// failed bind and the next round simply has no listener.
+/// the shutdown signal — the handler closing the reconfig channel — ends it.
 ///
-/// # Why this is a loop (GH #410)
+/// # Why there is no listener here any more (`web@2.0.0`)
 ///
-/// A display moves to another address by being told to, not by being rebuilt.
-/// One iteration is one listening address; a `Rebind` on the reconfig channel
-/// ends the iteration and the next one begins on the new socket, with the same
-/// router over the same published snapshots — so the pages, the files and the
-/// readiness seam are literally the same objects before and after the move, and
-/// the GH #395 window cannot reopen: `ready` was published long before and is
-/// never taken back.
+/// A display owned a port until `web@1.1.0`, bound it here, and moved it with a
+/// `Rebind` round. It owns a **name** now: the colony's one listener peeks the
+/// first path segment of every connection it accepts and hands the stream,
+/// unread, to whoever registered that name. So this half binds nothing, and a
+/// port collision — the failure the round machinery existed to recover from —
+/// cannot happen to a display at all. What can is a name another cell holds,
+/// and that is reported once, as [`WebEvent::MountFailed`]: the cell stays
+/// alive, serves nobody, and an operator reads which name collided.
 ///
-/// A round with **no** listener is an ordinary round. That is what makes a
-/// failed bind recoverable by message rather than only by restart: a display
-/// whose port was taken at boot keeps its task, keeps draining the diffs its
-/// handler produces, and starts serving the moment an update names an address
-/// it can have. Before this it parked until shutdown, and a port collision cost
-/// a restart to fix.
+/// The registration happens once per life and is released with it (O-P-2): a
+/// `mount` a params update names takes effect on the next life, because a live
+/// remount would move a running display out from under the proxy rule pointed
+/// at it while its viewers hold sockets on the old name.
 pub async fn run_io(
     io: WebIo,
     events_tx: mpsc::Sender<WebEvent>,
-    reconfig_rx: mpsc::Receiver<WebReconfig>,
-) {
-    run_io_with(io, events_tx, reconfig_rx, serve_forever).await
-}
-
-/// Serve `router` on `l` until the server future ends.
-///
-/// The one place the axum server future is built, and the reason it is a
-/// function: `axum::serve` without graceful shutdown does not end on its own,
-/// so what [`run_io_with`] does when it *does* end is otherwise unreachable
-/// and untestable. A test passes a factory that ends at once (GH #592). This
-/// is a seam, not a mock — the shipped path is this function and nothing else.
-pub(crate) async fn serve_forever(l: tokio::net::TcpListener, router: Router) {
-    // Not swallowed: the round is about to be reported as `listener ended`,
-    // and this is the only place the reason for it exists.
-    if let Err(e) = std::future::IntoFuture::into_future(axum::serve(l, router)).await {
-        tracing::error!(error = %e, "web: the server stopped with an error");
-    }
-}
-
-/// [`run_io`] with the server future left open as a parameter — see
-/// [`serve_forever`] for why.
-pub(crate) async fn run_io_with<F, Fut>(
-    io: WebIo,
-    events_tx: mpsc::Sender<WebEvent>,
     mut reconfig_rx: mpsc::Receiver<WebReconfig>,
-    serve_factory: F,
-) where
-    F: Fn(tokio::net::TcpListener, Router) -> Fut + Send,
-    Fut: std::future::Future<Output = ()> + Send,
-{
+) {
     // The listener half learns where to send browser events only here, because
     // this is where the channel exists.
     let mut io = io;
@@ -611,159 +781,134 @@ pub(crate) async fn run_io_with<F, Fut>(
         .take()
         .expect("run_io takes the push receiver exactly once");
     // Cloned once, before the loop: the resync needs the published pages, and
-    // `io` is moved into the router on every round and written on a rebind.
+    // `io` is cloned into a router per handed connection.
     let pages = io.pages.clone();
     // Who owes a whole-tree resync (GH #414), for as long as the I/O half
-    // lives — NOT for as long as one round does (GH #594). A round ends on a
-    // rebind or on a server that stopped, and both of those deliberately keep
-    // their viewers: a move that failed leaves the display exactly where they
-    // are looking, and a server that ended (GH #592) leaves their connection
-    // tasks running. A set that started over with the round would hand those
-    // very viewers positional diffs against a tree they never re-fetched, for
-    // as long as the tab stayed open. It lives here rather than in the
-    // registry because it is the fan-out's bookkeeping and nothing else reads
-    // it — one owner, no lock.
+    // lives. It lives here rather than in the registry because it is the
+    // fan-out's bookkeeping and nothing else reads it — one owner, no lock.
     let mut dirty: HashMap<String, Addressed> = HashMap::new();
 
-    let mut listener = match bind_addr(&io.bind, io.port).await {
-        Ok(l) => Some(l),
-        Err(e) => {
-            let _ = events_tx.send(WebEvent::BindFailed(e)).await;
-            None
+    let surfaces = Arc::clone(&io.surfaces);
+    let mount = io.mount.clone();
+    // The name goes on the table before anything can be handed over, once per
+    // life (ADR-0031). A name another cell holds is an operator's mistake to
+    // read — not a reason to tear the cell down, which is the stance a port
+    // collision used to get. The token comes back with the receiver and is what
+    // the unregister at the end of this life must carry: a respawn that
+    // registered while this half was still draining holds a newer one, and a
+    // spent token removes nothing. It is kept in a [`MountGuard`], so an end
+    // that never reaches the shutdown arm takes the mount with it as well.
+    let mut registration: Option<MountGuard> = None;
+    let handoff: Option<mpsc::Receiver<meclaw_colony::HandedConnection>> = {
+        let entry = meclaw_colony::SurfaceEntry {
+            kind: "web",
+            cell_path: meclaw_core::Path::new(&io.cell_path),
+            // A display answers pages and sockets, never a topic link: it is
+            // the side that OPENS one, on somebody else's mount (GH #643).
+            links: None,
+        };
+        match surfaces.register(&mount, entry).await {
+            Ok((rx, held)) => {
+                registration = Some(MountGuard {
+                    surfaces: Arc::clone(&surfaces),
+                    mount: mount.clone(),
+                    registration: held,
+                });
+                Some(rx)
+            }
+            Err(e) => {
+                let _ = events_tx.send(WebEvent::MountFailed(e.to_string())).await;
+                None
+            }
         }
     };
 
-    loop {
-        let round = match listener.take() {
-            Some(l) => {
-                let bound = l
-                    .local_addr()
-                    .map(|a| a.to_string())
-                    .unwrap_or_else(|_| "unknown".to_string());
-                let _ = events_tx.send(WebEvent::Bound(bound)).await;
-
-                // The scope matters. `serve` owns the listener, and the socket
-                // is only released when `serve` is dropped — which happens at
-                // the end of this block, BEFORE the next address is bound.
-                // Binding while the old socket is still open would fail for the
-                // ordinary move (`0.0.0.0:P` collides with `127.0.0.1:P`), so
-                // the order is not an optimisation.
-                //
-                // `IntoFuture` rather than the `Serve` value: pinning it here is
-                // what lets the round end without ending the task, and what
-                // makes the socket's release a point in the code rather than a
-                // guess about when a `select!` drops its arms.
-                let serve = serve_factory(l, router(io.clone()));
-                tokio::pin!(serve);
-                // Three things end a round, and only the handler going away
-                // ends the cell: the server stopping (GH #592 — a round
-                // without a listener, not a return), the handler closing the
-                // reconfig channel (the shutdown signal), or a `Rebind`.
+    // The accepted connections get a task of their own, and that is not
+    // tidiness: the loop below carries the fan-out, whose `push_one` takes a
+    // diff OFF the push channel before it reaches its viewers. A `select!` arm
+    // that fired on every incoming request would cancel that future between
+    // the two, and the diff would be gone — GH #414's loss class, re-opened at
+    // the rate of a page load. Two tasks cannot cancel each other.
+    // The two ends of the way out. Both are LOCALS of this future on purpose:
+    // the substrate aborts `run_io` when the handler half returns, so what
+    // runs at shutdown is what a dropped future drops — never a line after the
+    // loop.
+    let (shutdown_tx, shutdown_rx) = watch::channel(());
+    io.shutdown = Some(shutdown_rx);
+    let mut serving = tokio::task::JoinSet::new();
+    if let Some(mut rx) = handoff {
+        let io = io.clone();
+        serving.spawn(async move {
+            // Each connection is served for its whole life on a task of its
+            // own: a WebSocket lives as long as the tab, and this loop has to
+            // be back at `recv` before the next request arrives.
+            //
+            // The tasks live in a `JoinSet` rather than detached, and that is
+            // what makes them end WITH the cell: dropping a `JoinSet` aborts
+            // everything in it, and this one is a local of the task the
+            // shutdown below aborts. A display that is going away has to take
+            // its sockets with it — a browser left holding an open LiveView
+            // socket draws the last snapshot forever and never reconnects to
+            // the next life, because nothing ever told it the connection
+            // ended. Until `web@1.1.0` the dropped `axum::serve` did this.
+            let mut connections = tokio::task::JoinSet::new();
+            loop {
                 tokio::select! {
-                    _ = &mut serve => Round::ServeEnded,
-                    r = next_round(&mut reconfig_rx) => r,
-                    _ = fan_out(&mut pushes, &viewers, &pages, &mut dirty) => Round::Done,
+                    handed = rx.recv() => match handed {
+                        Some(handed) => {
+                            connections.spawn(crate::handed::serve_handed(
+                                handed.stream,
+                                mounted_router(io.clone()),
+                            ));
+                        }
+                        // The registry dropped the sender: a respawn of this
+                        // cell registered over this entry. Nothing more will
+                        // arrive, and the connections that are still open go
+                        // with this task when it is aborted.
+                        None => break,
+                    },
+                    // Reaping, so the set does not grow with every tab that
+                    // was ever opened. Guarded, because `join_next` on an
+                    // empty set is `None` at once and would spin.
+                    Some(_) = connections.join_next(), if !connections.is_empty() => {}
                 }
             }
-            // Nothing to serve on, and still not a reason to return. The diffs
-            // keep being drained: the handler pushes one per write whether or
-            // not anybody can see them, and a receiver nobody reads would fill
-            // and block the only writer of the `cell.db`.
-            None => tokio::select! {
-                r = next_round(&mut reconfig_rx) => r,
-                _ = fan_out(&mut pushes, &viewers, &pages, &mut dirty) => Round::Done,
-            },
-        };
-
-        let (bind, port, ack) = match round {
-            Round::Rebind { bind, port, ack } => (bind, port, ack),
-            // A1': the server future ending is not the cell ending. The socket
-            // is already released — `serve` was dropped with the block above —
-            // so this is the same state a bind failure leaves behind, and it is
-            // reported the same way, with the address that stopped answering.
-            Round::ServeEnded => {
-                let _ = events_tx
-                    .send(WebEvent::BindFailed(format!(
-                        "{}:{}: listener ended",
-                        io.bind, io.port
-                    )))
-                    .await;
-                continue;
-            }
-            Round::Done => return,
-        };
-
-        // The old socket is closed at this point, so this is the first moment
-        // the new address can be bound.
-        let attempt = bind_addr(&bind, port).await;
-        // Answered before anything else, and deliberately: the handler is
-        // parked on this oneshot and drains no events while it waits, so the
-        // `Bound` line above must not be able to reach a full events channel
-        // ahead of the verdict.
-        let _ = ack.send(attempt.as_ref().map(|_| ()).map_err(String::clone));
-        listener = match attempt {
-            Ok(l) => {
-                io.bind = bind;
-                io.port = port;
-                // Every joined viewer was accepted on a socket that no longer
-                // exists — the connection tasks outlive the listener that
-                // accepted them, so this is a decision and not a consequence.
-                // Dropping them is the honest state: the client reconnects
-                // against the address its page now resolves to, and a registry
-                // still naming them would fan diffs at connections nobody can
-                // reach. Only on a real move: a failed one left the display
-                // exactly where its viewers are looking.
-                for tx in viewers.drain().await {
-                    let _ = tx.try_send(ViewerMsg::Close);
-                }
-                // The debts go with them: nobody is owed a tree on a
-                // connection that no longer exists, and the ids of the next
-                // viewers are not these.
-                dirty.clear();
-                Some(l)
-            }
-            // The value passed the parser and still cannot be a listening
-            // address. The handler has the verdict already and will refuse the
-            // update to whoever sent it; this half's job is to put the display
-            // back where it was, so a typo costs a moment of downtime rather
-            // than the listener. If even that address is gone now, the next
-            // round is a listener-less one — reachable, and still movable.
-            Err(e) => {
-                let _ = events_tx.send(WebEvent::BindFailed(e)).await;
-                match bind_addr(&io.bind, io.port).await {
-                    Ok(l) => Some(l),
-                    Err(e) => {
-                        let _ = events_tx.send(WebEvent::BindFailed(e)).await;
-                        None
-                    }
-                }
-            }
-        };
+        });
     }
+
+    // Only the handler going away ends this half (A1′) — and usually not even
+    // that: the substrate aborts this future the moment the handler returns.
+    // Both ways out are the same way out, because everything that has to
+    // happen is a `Drop`:
+    //
+    // * `registration` gives the mount back (`MountGuard`), so the listener
+    //   stops handing connections to a cell that is going;
+    // * `serving` is a `JoinSet`, so the accept loop and every plain HTTP
+    //   connection inside its own set end with it;
+    // * `shutdown_tx` closes, and every upgraded WebSocket — which no
+    //   `JoinSet` here holds — reads that and sends its client a close frame.
+    //
+    // A line after this `select!` would run on exactly one of the two paths,
+    // which is why there is none.
+    tokio::select! {
+        _ = wait_for_shutdown(&mut reconfig_rx) => {}
+        _ = fan_out(&mut pushes, &viewers, &pages, &mut dirty) => {}
+    }
+    drop(shutdown_tx);
+    drop(serving);
+    drop(registration);
 }
 
-/// Bind one address, with the failure text an operator can act on.
-async fn bind_addr(addr: &str, port: u16) -> Result<tokio::net::TcpListener, String> {
-    tokio::net::TcpListener::bind((addr, port))
-        .await
-        .map_err(|e| format!("{addr}:{port}: {e}"))
-}
-
-/// Wait for whatever ends this serving round on the reconfig channel.
+/// Wait for the handler to go away.
 ///
-/// A `Rebind` closes nothing here — the old listener is still open, owned by
-/// the `serve` future in the caller's scope. The **new** address is bound after
-/// this returns, which is why a failure to bind it can still fall back.
-async fn next_round(reconfig_rx: &mut mpsc::Receiver<WebReconfig>) -> Round {
+/// The reconfig channel carries nothing else since `web@2.0.0` — the `Rebind`
+/// that moved a listener went with the listener — so its closing is the whole
+/// of its remaining job. A `Push` arriving here would mean a caller outside
+/// this cell built the wiring; it is dropped with a line rather than silently.
+async fn wait_for_shutdown(reconfig_rx: &mut mpsc::Receiver<WebReconfig>) {
     loop {
         match reconfig_rx.recv().await {
-            // The handler is gone when this channel closes.
-            None => return Round::Done,
-            Some(WebReconfig::Rebind { bind, port, ack }) => {
-                return Round::Rebind { bind, port, ack };
-            }
-            // Diffs travel on the cell's own push channel; one arriving here
-            // would mean a caller outside this cell built the wiring.
+            None => return,
             Some(WebReconfig::Push { route, .. }) => tracing::warn!(
                 %route,
                 "web: a diff arrived on the reconfig channel and was dropped"
@@ -795,12 +940,7 @@ async fn push_one(
     pages: &watch::Receiver<Arc<PageMap>>,
     dirty: &mut HashMap<String, Addressed>,
 ) {
-    let WebReconfig::Push { route, diff } = push else {
-        // Rebinds travel on the substrate's reconfig channel, which is the only
-        // one the handler sends them on.
-        tracing::warn!("web: a rebind arrived on the push channel and was dropped");
-        return;
-    };
+    let WebReconfig::Push { route, diff } = push;
     for a in viewers.on_route(&route).await {
         let behind = dirty.contains_key(&a.id);
         let payload = match behind.then(|| whole_tree(pages, &a.route)).flatten() {
@@ -1105,7 +1245,7 @@ mod tests {
     /// screen to say the picture had stopped moving.
     #[test]
     fn the_shell_styles_the_runtimes_own_connection_states() {
-        let html = shell("/web", "Home", "<h1>hello</h1>");
+        let html = shell("/screen", "/web", "Home", "<h1>hello</h1>");
 
         let head = html.split("</head>").next().expect("the shell has a head");
         assert!(
@@ -1128,254 +1268,89 @@ mod tests {
             "the hint has to be readable prose, not a colour change alone"
         );
     }
-    /// GH #592 — A1′: a server future that ends parks the round, it does not
-    /// end `run_io`.
-    ///
-    /// `axum::serve` without graceful shutdown never finishes on its own, so
-    /// the arm that used to answer it with `Round::Done` was unreachable in
-    /// practice — and the "io-finish-first" loss class it opened was therefore
-    /// invisible. The [`serve_forever`] seam makes it reachable: a factory
-    /// whose server ends the moment it is polled drives the loop through the
-    /// case on its very first round.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn gh592_a_finished_server_parks_instead_of_ending_the_io_half() {
-        use std::time::Duration;
 
-        /// The failure-marker window (30 s convention): only ever longer than a
-        /// healthy run takes, so it discriminates nothing but a hang.
-        const MARKER: Duration = Duration::from_secs(30);
+    /// The base a request is answered from, and the one header that moves it.
+    #[test]
+    fn a_forwarded_prefix_is_read_only_when_it_is_a_path() {
+        let bare = HeaderMap::new();
+        assert_eq!(base_of(&bare, "screen"), "/screen");
 
-        let port = meclaw_testing::free_port();
-        let (events_tx, mut events_rx) = mpsc::channel::<WebEvent>(32);
-        let (reconfig_tx, reconfig_rx) = mpsc::channel::<WebReconfig>(8);
-        let (pushes_tx, pushes_rx) = mpsc::channel::<WebReconfig>(8);
-        let (_pages_tx, pages) = watch::channel(Arc::new(PageMap::new()));
-        let (_assets_tx, assets) = watch::channel(Arc::new(AssetMap::new()));
-        let (_ready_tx, ready) = watch::channel(true);
-        let io = WebIo::new(
-            "127.0.0.1".to_string(),
-            port,
-            "/web",
-            pages,
-            assets,
-            ready,
-            pushes_rx,
-        );
+        let mut moved = HeaderMap::new();
+        moved.insert("x-forwarded-prefix", "/egon".parse().expect("a header"));
+        assert_eq!(base_of(&moved, "screen"), "/egon/screen");
 
-        let join = tokio::spawn(run_io_with(io, events_tx, reconfig_rx, |_l, _r| async {}));
-
-        // The round begins as any other does, and then the server stops.
-        // `WebEvent` carries a oneshot and is not `Debug`, so the arms say what
-        // was expected instead of printing what arrived.
-        match events_rx.recv().await {
-            Some(WebEvent::Bound(_)) => {}
-            _ => panic!("the first round binds before it serves"),
+        // Everything else is ignored rather than repaired: the value comes off
+        // the wire, and a client that reaches the listener can set it too.
+        for bad in [
+            "egon",             // not a path
+            "/egon/",           // a trailing slash would double
+            "/",                // the same, at the root
+            "/e%2Fgon",         // an escape this cell will not write
+            "/egon?x=1",        // a query string
+            "/egon\"><script>", // the reason the grammar is narrow
+            "//evil.com",       // protocol-relative: a host, not a path
+            "//evil.com/egon",  // the same, dressed as a prefix
+            "/..",              // one segment up, out of the mount
+            "/egon/../..",      // and the walk that hides inside a path
+            "/../egon",         // wherever the segment stands
+        ] {
+            let mut h = HeaderMap::new();
+            let Ok(value) = bad.parse() else { continue };
+            h.insert("x-forwarded-prefix", value);
+            assert_eq!(
+                base_of(&h, "screen"),
+                "/screen",
+                "{bad:?} must be ignored, not written into a link"
+            );
         }
-        let Some(WebEvent::BindFailed(why)) = events_rx.recv().await else {
-            panic!("a server that stopped must be reported like a bind that failed")
-        };
-        assert!(
-            why.contains("listener ended") && why.contains(&port.to_string()),
-            "the report names the address that stopped answering; got {why:?}"
+        let mut too_deep = HeaderMap::new();
+        too_deep.insert(
+            "x-forwarded-prefix",
+            format!("/{}", "a".repeat(PREFIX_MAX + 1))
+                .parse()
+                .expect("a header"),
         );
-
-        // The point of the issue: the half is still there, parked without a
-        // listener rather than returned.
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        assert!(
-            !join.is_finished(),
-            "A1′: `run_io` must not return while the handler is still live"
-        );
-
-        // And it is still listening to its handler: a later address is served.
-        let next = meclaw_testing::free_port();
-        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
-        reconfig_tx
-            .send(WebReconfig::Rebind {
-                bind: "127.0.0.1".to_string(),
-                port: next,
-                ack: ack_tx,
-            })
-            .await
-            .expect("the parked half still reads its reconfigure channel");
-        // Under the failure-marker window, not open-ended: a regression here
-        // would be a parked half that never answers, and a hung test says less
-        // than a failed one.
-        let verdict = tokio::time::timeout(MARKER, ack_rx)
-            .await
-            .expect("the parked half answers its rebind")
-            .expect("a verdict");
-        assert!(
-            verdict.is_ok(),
-            "a free address is bindable from the parked state"
-        );
-        let rebound = tokio::time::timeout(MARKER, events_rx.recv())
-            .await
-            .expect("the rebind is reported");
-        let Some(WebEvent::Bound(addr)) = rebound else {
-            panic!("the rebind puts the display back on the air")
-        };
-        assert!(
-            addr.ends_with(&format!(":{next}")),
-            "bound to the new address; got {addr:?}"
-        );
-
-        // Only the handler going away ends it.
-        drop(reconfig_tx);
-        drop(pushes_tx);
-        tokio::time::timeout(MARKER, join)
-            .await
-            .expect("closing the command channel is what ends `run_io`")
-            .expect("and it ends without panicking");
+        assert_eq!(base_of(&too_deep, "screen"), "/screen");
     }
 
-    /// GH #594 — a viewer that owes a whole-tree resync still owes it after the
-    /// round restarts.
-    ///
-    /// The mark GH #414 sets says "this browser is behind"; the frame it is
-    /// owed is its page's whole tree, because a positional diff patches a
-    /// picture it never received. That mark used to live in the fan-out's own
-    /// scope, so every re-entry into the round started with an empty one — and
-    /// both ways out of a round deliberately KEEP their viewers: a rebind that
-    /// failed leaves the display exactly where they are looking, and a server
-    /// that stopped (GH #592) leaves their connection tasks running. Exactly
-    /// those viewers were then fed diffs against a stale tree, silently, for as
-    /// long as the tab stayed open.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn gh594_a_viewers_resync_mark_survives_a_round_restart() {
-        use std::time::Duration;
-
-        /// The failure-marker window (30 s convention): only ever longer than a
-        /// healthy run takes, so it discriminates nothing but a hang.
-        const MARKER: Duration = Duration::from_secs(30);
-
-        let port = meclaw_testing::free_port();
-        let (events_tx, mut events_rx) = mpsc::channel::<WebEvent>(32);
-        let (reconfig_tx, reconfig_rx) = mpsc::channel::<WebReconfig>(8);
-        let (pushes_tx, pushes_rx) = mpsc::channel::<WebReconfig>(8);
-        let (_pages_tx, pages) = watch::channel(page_map());
-        let (_assets_tx, assets) = watch::channel(Arc::new(AssetMap::new()));
-        let (_ready_tx, ready) = watch::channel(true);
-        let io = WebIo::new(
-            "127.0.0.1".to_string(),
-            port,
-            "/web",
-            pages,
-            assets,
-            ready,
-            pushes_rx,
-        );
-        let viewers = io.viewers.clone();
-
-        // A server that never ends on its own, holding its listener the way
-        // `serve_forever` does: the round below has to be ended by the rebind
-        // and by nothing else.
-        let join = tokio::spawn(run_io_with(
-            io,
-            events_tx,
-            reconfig_rx,
-            |l, _r| async move {
-                let _l = l;
-                std::future::pending::<()>().await;
-            },
-        ));
-        match events_rx.recv().await {
-            Some(WebEvent::Bound(_)) => {}
-            _ => panic!("the first round binds before it serves"),
-        }
-
-        // `a-wedged` sorts before `b-witness`, and `on_route` visits in id
-        // order — so a frame at the witness proves the wedged one was already
-        // tried. No sleep, no guess.
-        let (wedged, mut wedged_rx) = viewer("/", 1);
-        let (witness, mut witness_rx) = viewer("/", 8);
-        viewers.insert("a-wedged".to_string(), wedged).await;
-        viewers.insert("b-witness".to_string(), witness).await;
-
-        // The first diff fills the wedged viewer's only slot; the second cannot
-        // fit, and dropping it is what marks it.
-        pushes_tx
-            .send(diff_push("0", "<i>a</i>"))
-            .await
-            .expect("push");
-        pushes_tx
-            .send(diff_push("0", "<i>b</i>"))
-            .await
-            .expect("push");
-        let _ = witness_rx.recv().await.expect("the witness sees the first");
-        let _ = witness_rx.recv().await.expect("and the second");
-
-        // The round restarts with its viewers kept: an address that cannot be
-        // bound puts the display back where it was.
-        let occupied = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-            .await
-            .expect("a socket to collide with");
-        let taken = occupied.local_addr().expect("its address").port();
-        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
-        reconfig_tx
-            .send(WebReconfig::Rebind {
-                bind: "127.0.0.1".to_string(),
-                port: taken,
-                ack: ack_tx,
-            })
-            .await
-            .expect("the half reads its reconfigure channel");
-        let verdict = tokio::time::timeout(MARKER, ack_rx)
-            .await
-            .expect("a round that never answers is the regression, not a hang")
-            .expect("a verdict");
+    /// Every URL the shell writes starts at the base, and that is what makes a
+    /// display reachable under a proxy path at all.
+    #[test]
+    fn the_shell_writes_its_links_from_the_base() {
+        let html = shell("/egon/screen", "/web", "Home", "<h1>hello</h1>");
         assert!(
-            verdict.is_err(),
-            "the address is held by this test, so the move must fail"
+            html.contains("\"/egon/screen/live\""),
+            "the socket URL rides the base; shell was:\n{html}"
         );
-        let Ok(Some(WebEvent::BindFailed(_))) =
-            tokio::time::timeout(MARKER, events_rx.recv()).await
-        else {
-            panic!("a failed rebind is reported")
-        };
-        let Ok(Some(WebEvent::Bound(addr))) = tokio::time::timeout(MARKER, events_rx.recv()).await
-        else {
-            panic!("and the display goes back on the air where it was")
-        };
         assert!(
-            addr.ends_with(&format!(":{port}")),
-            "the fallback is the address it was already on; got {addr:?}"
+            html.contains("src=\"/egon/screen/@client/phoenix.min.js\"")
+                && html.contains("src=\"/egon/screen/@client/phoenix_live_view.min.js\""),
+            "and so do the bundles; shell was:\n{html}"
         );
+        assert!(
+            !html.contains("\"/live\"") && !html.contains("\"/@client/"),
+            "nothing may be written from the origin root any more; shell was:\n{html}"
+        );
+    }
 
-        // Only now does the browser catch up: the slot the dropped frame needed
-        // is free again, and the mark has had to survive a whole round.
-        let first = tokio::time::timeout(MARKER, wedged_rx.recv())
-            .await
-            .expect("the frame that fit is already in the channel")
-            .expect("a frame");
-        let ViewerMsg::Frame(first) = first else {
-            panic!("a frame, not a close")
-        };
-        assert_eq!(payload(&first), json!({"0": "<i>a</i>"}));
-
-        pushes_tx
-            .send(diff_push("0", "<i>c</i>"))
-            .await
-            .expect("push");
-        let got = tokio::time::timeout(MARKER, wedged_rx.recv())
-            .await
-            .expect("a marked viewer must still be served")
-            .expect("a frame");
-        let ViewerMsg::Frame(f) = got else {
-            panic!("a frame, not a close")
-        };
+    /// The identity header is read only when an operator named one (O-P-4).
+    #[test]
+    fn an_identity_is_read_only_from_the_header_the_operator_named() {
+        let mut h = HeaderMap::new();
+        h.insert("x-forwarded-user", "alex".parse().expect("a header"));
         assert_eq!(
-            payload(&f),
-            page_map().get("/").expect("route").packed_tree(),
-            "after a round restart the viewer that lost a frame is STILL owed \
-             the whole tree — a diff here patches a picture it never received"
+            identity_of(&h, "X-Forwarded-User").as_deref(),
+            Some("alex"),
+            "the lookup is case-insensitive, as HTTP header names are"
         );
-
-        drop(reconfig_tx);
-        drop(pushes_tx);
-        tokio::time::timeout(MARKER, join)
-            .await
-            .expect("closing the command channels ends the half")
-            .expect("and it ends without panicking");
+        assert_eq!(identity_of(&h, ""), None, "no param, no identity");
+        assert_eq!(identity_of(&h, "X-Other"), None, "a header nobody sent");
+        let mut empty = HeaderMap::new();
+        empty.insert("x-forwarded-user", "".parse().expect("a header"));
+        assert_eq!(
+            identity_of(&empty, "X-Forwarded-User"),
+            None,
+            "an empty value names nobody"
+        );
     }
 }

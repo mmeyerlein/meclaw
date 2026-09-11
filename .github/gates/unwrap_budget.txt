@@ -15,6 +15,12 @@
 # have taken were paid off instead of pinned: `split_io` is typed
 # `Option<VoiceIo>` rather than unwrapped, and the session lookup in `handle`
 # uses a let-else.
+#
+# meclaw-testing 46 -> 45 (#653, 2026-09-11): back to what the tree measures.
+# The 46 was pinned for an `expect` on the bind in `surface_listener` (#654); the
+# fixture that shipped retries `free_port` instead and ends in an explicit
+# `panic!` with the port and the error, which this ceiling does not count. A pin
+# above the measurement measures nothing.
 
 meclaw 0
 meclaw-api 2

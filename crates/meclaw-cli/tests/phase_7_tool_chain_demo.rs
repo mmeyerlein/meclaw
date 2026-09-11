@@ -107,7 +107,9 @@ async fn phase_7_tool_chain_web_fetch_to_file_to_bash() {
 
     // All five factories — built_in_factories() is the wiring from T1.
     let factories: Vec<(String, std::sync::Arc<dyn meclaw_colony::CellFactory>)> =
-        built_in_factories().into_iter().collect();
+        built_in_factories(std::sync::Arc::new(meclaw_colony::SurfaceRegistry::new()))
+            .into_iter()
+            .collect();
     let h = meclaw_testing::ColonyHandle::new_with_factories_at(&td, factories);
     // Phase-11 T16: populate the templates registry with the three tool-chain cells.
     setup_tool_chain_templates(&td, &h).await;

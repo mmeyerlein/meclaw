@@ -30,7 +30,11 @@ use meclaw_cells::web::WebCellFactory;
 use meclaw_colony::{CellFactory, ContractView, SpawnedCellKind};
 use meclaw_core::serde_json::{Value, json};
 use meclaw_core::{Body, CellEmission, MessageBuilder, Path};
-use meclaw_testing::free_port;
+use meclaw_testing::{surface_listener, wait_for_mount};
+
+/// The name this fixture's display answers to. The port in every URL below is
+/// the LISTENER's: a `web` cell has none since `web@2.0.0`.
+const MOUNT: &str = "screen";
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
@@ -158,7 +162,9 @@ fn bootstrap_calls(root: &std::path::Path) -> Vec<Value> {
 }
 
 struct Live {
+    /// The port of the one listener in front of the cell.
     port: u16,
+    _listener: tokio::task::JoinHandle<()>,
     cell_dir: std::path::PathBuf,
     mailbox: mpsc::Sender<meclaw_core::Message>,
     out_rx: mpsc::Receiver<CellEmission>,
@@ -169,13 +175,13 @@ struct Live {
 /// A `web` cell with an empty database — what a canvy instance starts with,
 /// since a ref directory carries no seed — bootstrapped by the shipped bundle.
 async fn start(root: &std::path::Path, cell_dir: &std::path::Path) -> Live {
-    let port = free_port();
+    let surfaces = Arc::new(meclaw_colony::SurfaceRegistry::new());
     let (out_tx, out_rx) = mpsc::channel::<CellEmission>(64);
     let (inbox_tx, _inbox_rx) = mpsc::channel(8);
-    let spawned = Arc::new(WebCellFactory)
+    let spawned = Arc::new(WebCellFactory::new(Arc::clone(&surfaces)))
         .spawn_cell(
             Path::new(CELL_PATH),
-            json!({ "port": port }),
+            json!({ "mount": MOUNT }),
             out_tx,
             cell_dir.to_path_buf(),
             ContractView::default(),
@@ -197,20 +203,27 @@ async fn start(root: &std::path::Path, cell_dir: &std::path::Path) -> Live {
         panic!("Active");
     };
 
+    wait_for_mount(&surfaces, MOUNT).await;
+    let (addr, listener) = surface_listener(Arc::clone(&surfaces)).await;
+    let port = addr.port();
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        if reqwest::get(format!("http://127.0.0.1:{port}/"))
+        if reqwest::get(format!("http://127.0.0.1:{port}/{MOUNT}/"))
             .await
             .is_ok()
         {
             break;
         }
-        assert!(Instant::now() < deadline, "the cell never bound its port");
+        assert!(
+            Instant::now() < deadline,
+            "the cell never answered on its mount"
+        );
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
 
     let mut live = Live {
         port,
+        _listener: listener,
         cell_dir: cell_dir.to_path_buf(),
         mailbox: sender,
         out_rx,
@@ -257,7 +270,7 @@ fn topic() -> String {
 }
 
 async fn join_page(port: u16, join_ref: &str) -> Ws {
-    let body = reqwest::get(format!("http://127.0.0.1:{port}/"))
+    let body = reqwest::get(format!("http://127.0.0.1:{port}/{MOUNT}/"))
         .await
         .expect("get")
         .text()
@@ -269,7 +282,7 @@ async fn join_page(port: u16, join_ref: &str) -> Ws {
     let token = body[start..end].to_string();
 
     let (mut ws, _) =
-        tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/live/websocket"))
+        tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/{MOUNT}/live/websocket"))
             .await
             .expect("connect");
     ws.send(WsMessage::Text(

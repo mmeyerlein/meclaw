@@ -48,7 +48,12 @@ fn raw_colony_app() -> (
         templates_root: std::path::PathBuf::new(),
     });
     let (blob_store, blob_td) = common::test_blob_store();
-    let app = meclaw_api::router::build_router(api_colony, blob_store, 9);
+    let app = meclaw_api::router::build_router(
+        api_colony,
+        blob_store,
+        9,
+        std::sync::Arc::new(meclaw_colony::SurfaceRegistry::new()),
+    );
     (app, inbox_rx, blob_td)
 }
 

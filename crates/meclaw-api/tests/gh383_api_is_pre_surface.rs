@@ -94,8 +94,12 @@ fn router() -> (axum::Router, tempfile::TempDir) {
         templates_root: std::path::PathBuf::new(),
     });
     let (blob_store, td) = common::test_blob_store();
-    let app =
-        meclaw_api::router::build_router(colony, blob_store, meclaw_core::MESSAGE_DEFAULT_TTL);
+    let app = meclaw_api::router::build_router(
+        colony,
+        blob_store,
+        meclaw_core::MESSAGE_DEFAULT_TTL,
+        std::sync::Arc::new(meclaw_colony::SurfaceRegistry::new()),
+    );
     (app, td)
 }
 

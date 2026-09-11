@@ -131,6 +131,7 @@ REGION_INDEX = dict((name, i) for i, name in enumerate(REGIONS))
 # belongs to, because deletion sweeps by prefix.
 ROOT_ID = "display.root"
 REGION_PREFIX = "display.region."
+MIC_ID = "display.mic"
 VIEW_PREFIX = "view."
 PAGE_ROUTE = "/"
 PAGE_TITLE = "display"
@@ -177,7 +178,7 @@ ERRORS = (
 # component that writes `glass--thin` is refused at definition time.
 
 # The two columns, as the display's OWN rule rather than a line in the token
-# sheet: `/vision.css` belongs to the `web` template and describes a design
+# sheet: `vision.css` belongs to the `web` template and describes a design
 # language, while "main is wide and aside is narrow" is a statement about THIS
 # screen. It travels in the shell so that a display needs nothing installed
 # beside it. Written with no two `{` adjacent, because `{{` is the component
@@ -195,11 +196,29 @@ LAYOUT_CSS = (
     " @media (max-width: 60rem)"
     " { .display-columns { flex-direction: column; }"
     ' .display-columns > [data-region="aside"] { flex: 1 1 auto; } }'
+    # The microphone sits out of the columns, bottom right, because it belongs to
+    # the SCREEN rather than to anything standing on it: a person looks for the
+    # button in the same place whatever is up. Fixed rather than absolute, so it
+    # stays put on a long page.
+    " .display-mic { position: fixed; right: 16px; bottom: 16px; z-index: 8;"
+    " display: flex; flex-direction: column; align-items: flex-end; gap: 4px;"
+    " font: 13px/1.4 ui-sans-serif, system-ui, sans-serif; }"
+    " .display-mic-button { padding: 10px 18px; border-radius: 999px;"
+    " border: 1px solid currentColor; background: rgba(255,255,255,0.86);"
+    " cursor: pointer; touch-action: none; -webkit-user-select: none;"
+    " user-select: none; }"
+    # The pressed state is the only feedback that the key is down, so it is a
+    # real change and not a hover: an attribute the client writes.
+    ' .display-mic-button[aria-pressed="true"] { background: #b3261e;'
+    " color: #ffffff; }"
+    " .display-mic-button:disabled { opacity: 0.5; cursor: default; }"
+    " .display-mic-line { max-width: 22rem; text-align: right; }"
+    " .display-mic-state { opacity: 0.6; font-size: 11.5px; }"
     "</style>"
 )
 
 SHELL_TEMPLATE = (
-    '{{#if stylesheet}}<link rel="stylesheet" href="/vision.css">{{/if}}'
+    '{{#if stylesheet}}<link rel="stylesheet" href="vision.css">{{/if}}'
     + LAYOUT_CSS
     + '<div class="stack display-columns">{{children}}</div>'
 )
@@ -216,6 +235,172 @@ PROSE_TEMPLATE = (
 CUSTOM_TEMPLATE = (
     '<div class="view" data-view="{{view_id}}" data-owner="{{owner}}">'
     "{{children}}</div>"
+)
+
+# The name of the `voice` cell this screen speaks to, from `params.voice_mount`.
+# A module-level default, so a caller that says nothing gets the shipped name;
+# the dispatcher below replaces it with what this cell was configured with, once
+# per message. It is a MOUNT and not a path: the button joins `voice:<call>` on
+# this page's own socket, and the `web` cell hands the frames to whichever cell
+# holds that name in the process (GH #643).
+VOICE_MOUNT = "voice"
+
+# The button, its transcript line and its state line. `phx-hook` is what makes
+# the client below run against this element; the mount rides as a data attribute,
+# so the page needs no configuration of its own.
+MIC_TEMPLATE = (
+    '<div class="display-mic" id="display-mic" phx-hook="DisplayMic"'
+    ' data-mount="{{mount}}">'
+    '<button type="button" class="display-mic-button" aria-pressed="false">'
+    "hold to talk</button>"
+    '<span class="display-mic-line" data-role="transcript"></span>'
+    '<span class="display-mic-state" data-role="state"></span>'
+    "</div><script>{{&client_js}}</script>"
+)
+
+# The browser half, in plain browser APIs: no library, no CDN, nothing installed.
+#
+# It rides in the component as a raw prop, the pattern `colony-view` uses, and
+# that is not decoration: the script runs in the DEAD render, before the shell's
+# socket constructor reads `window.SurfaceHooks`, and a morph never re-runs it. A
+# hook registered any later would never be found.
+#
+# What it does: takes the socket the page already holds, joins `voice:<call>` on
+# it, reads the `hello` push for the two rates it has to adapt to, cuts 20 ms
+# PCM16 frames out of the microphone in an `AudioWorklet` and pushes them as
+# binary with an empty `ref`, and schedules what comes back gap-free through an
+# `AudioContext` at the rate that was declared. The counters on
+# `window.__displayMic` are there to be read by a test driving a real browser.
+#
+# Three things it does NOT hide. Without a secure context there is no microphone
+# at all, and the button says so instead of failing silently; a REFUSED microphone
+# says so too, because an unhandled rejection there left the button doing nothing
+# and looking fine. And the worklet's decimation is nearest-sample: adequate for
+# speech into a recogniser at 16 kHz from a 48 kHz device, and what the built-in
+# test page does. It is not a filter.
+#
+# Two things it undoes. The playback context is built when `hello` names its rate,
+# which is not a gesture -- so the first press resumes it, because a context that
+# started suspended has a clock that does not run and the gap-free scheduling
+# would schedule against it. And `destroyed()` gives every life back: the two
+# window listeners, the microphone's tracks, both contexts and the channel.
+# LiveView re-mounts a hook after a reconnect, and a wall screen reconnects all
+# day.
+MIC_CLIENT_JS = (
+    "(function (root) {\n"
+    "  var hook = {\n"
+    "    mounted: function () {\n"
+    "      var el = this.el, mount = el.dataset.mount || \"voice\";\n"
+    "      var st = { sent: 0, played: 0, turns: 0, speakEnd: 0, hello: null, code: null };\n"
+    "      root.__displayMic = st;\n"
+    "      var line = el.querySelector('[data-role=\"transcript\"]'), state = el.querySelector('[data-role=\"state\"]'), btn = el.querySelector(\"button\");\n"
+    "      var socket = root.SurfaceSocket && root.SurfaceSocket.getSocket && root.SurfaceSocket.getSocket();\n"
+    "      if (!socket) { state.textContent = \"no socket\"; return; }\n"
+    "      var call = \"c\" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);\n"
+    "      var topic = \"voice:\" + call;\n"
+    "      var chan = socket.channel(topic, { mount: mount, mode: \"hold\", sample_rate: 16000 });\n"
+    "      var ctx = null, mctx = null, worklet = null, stream = null, playAt = 0;\n"
+    "      function frame(obj) { chan.push(\"frame\", obj); }\n"
+    "      chan.on(\"frame\", function (f) {\n"
+    "        if (f.type === \"hello\") {\n"
+    "          st.hello = f;\n"
+    "          // A rejoin says hello again. Closing the old context first is what keeps\n"
+    "          // a screen that reconnects all day from running into the browser's own\n"
+    "          // cap on how many a page may have.\n"
+    "          if (ctx) { try { ctx.close(); } catch (e) { /* already closed */ } }\n"
+    "          ctx = new (root.AudioContext || root.webkitAudioContext)({ sampleRate: f.audio_out ? f.audio_out.sample_rate : 24000 });\n"
+    "          state.textContent = f.stt + (f.tts ? \"/\" + f.tts : \"\");\n"
+    "        }\n"
+    "        else if (f.type === \"partial\") { line.textContent = f.text; }\n"
+    "        else if (f.type === \"turn\") { st.turns++; line.textContent = f.text; }\n"
+    "        else if (f.type === \"speak_start\") { playAt = 0; }\n"
+    "        else if (f.type === \"speak_end\") { st.speakEnd++; }\n"
+    "        else if (f.type === \"error\") { state.textContent = f.code; }\n"
+    "      });\n"
+    "      chan.on(\"audio\", function (buf) {\n"
+    "        if (!ctx) return;\n"
+    "        var pcm = new Int16Array(buf), f32 = new Float32Array(pcm.length);\n"
+    "        for (var i = 0; i < pcm.length; i++) f32[i] = pcm[i] / 32768;\n"
+    "        var b = ctx.createBuffer(1, f32.length, ctx.sampleRate); b.getChannelData(0).set(f32);\n"
+    "        var src = ctx.createBufferSource(); src.buffer = b; src.connect(ctx.destination);\n"
+    "        var t = Math.max(ctx.currentTime + 0.02, playAt); src.start(t); playAt = t + b.duration; st.played++;\n"
+    "      });\n"
+    "      chan.on(\"close\", function (c) { st.code = c.code; state.textContent = \"closed \" + c.code; btn.disabled = true; });\n"
+    "      chan.join().receive(\"error\", function (e) { state.textContent = (e && e.reason) || \"refused\"; btn.disabled = true; });\n"
+    "      function sendAudio(ab) { socket.push({ topic: topic, event: \"audio\", payload: ab, ref: \"\", join_ref: chan.joinRef() }); st.sent++; }\n"
+    "      var WORKLET = \"class P extends AudioWorkletProcessor{constructor(o){super();this.rate=o.processorOptions.rate;this.acc=[];this.pos=0}process(i){var ch=i[0]&&i[0][0];if(!ch)return true;var r=sampleRate/this.rate;for(var k=0;k<ch.length;k+=r){this.acc.push(Math.max(-1,Math.min(1,ch[Math.floor(k)])))}var n=Math.floor(this.rate/50);while(this.acc.length>=n){var out=new Int16Array(n);for(var j=0;j<n;j++)out[j]=this.acc[j]*32767;this.acc=this.acc.slice(n);this.port.postMessage(out.buffer,[out.buffer])}return true}}registerProcessor('mic',P);\";\n"
+    "      async function openMic() {\n"
+    "        if (!root.isSecureContext) { state.textContent = \"microphone needs https or localhost\"; return false; }\n"
+    "        try {\n"
+    "          stream = await navigator.mediaDevices.getUserMedia({ audio: true });\n"
+    "        } catch (e) {\n"
+    "          // A refused or missing microphone is the ordinary case, not a crash:\n"
+    "          // an unhandled rejection here left the button doing nothing at all,\n"
+    "          // which is the silence this line exists against.\n"
+    "          state.textContent = \"microphone refused\";\n"
+    "          return false;\n"
+    "        }\n"
+    "        var rate = (st.hello && st.hello.audio_in && st.hello.audio_in.sample_rate) || 16000;\n"
+    "        mctx = new (root.AudioContext || root.webkitAudioContext)();\n"
+    "        try {\n"
+    "          await mctx.audioWorklet.addModule(URL.createObjectURL(new Blob([WORKLET], { type: \"text/javascript\" })));\n"
+    "          var src = mctx.createMediaStreamSource(stream);\n"
+    "          worklet = new AudioWorkletNode(mctx, \"mic\", { processorOptions: { rate: rate } });\n"
+    "        } catch (e) {\n"
+    "          state.textContent = \"no audio worklet\";\n"
+    "          return false;\n"
+    "        }\n"
+    "        worklet.port.onmessage = function (e) { if (holding) sendAudio(e.data); };\n"
+    "        src.connect(worklet); return true;\n"
+    "      }\n"
+    "      var holding = false;\n"
+    "      async function down() {\n"
+    "        if (holding || btn.disabled) return;\n"
+    "        // The playback context was built on join, which is not a gesture: under\n"
+    "        // an autoplay policy it starts suspended and its clock does not run, so\n"
+    "        // the gap-free scheduling would schedule against a stopped clock. This is\n"
+    "        // the first gesture there is, so it is where it gets resumed.\n"
+    "        if (ctx && ctx.state === \"suspended\") { try { await ctx.resume(); } catch (e) { /* nothing to resume */ } }\n"
+    "        if (mctx && mctx.state === \"suspended\") { try { await mctx.resume(); } catch (e) { /* nothing to resume */ } }\n"
+    "        if (!worklet && !(await openMic())) return;\n"
+    "        holding = true; btn.setAttribute(\"aria-pressed\", \"true\"); frame({ type: \"hold\" });\n"
+    "      }\n"
+    "      function up() { if (!holding) return; holding = false; btn.setAttribute(\"aria-pressed\", \"false\"); frame({ type: \"release\" }); }\n"
+    "      // A display is a surface other people's components render onto, so the\n"
+    "      // window-wide key must keep its hands off their controls -- and off the\n"
+    "      // button once a refusal or a close disabled it.\n"
+    "      function typing(e) {\n"
+    "        var t = e.target;\n"
+    "        if (!t || t === root || t === document.body) return false;\n"
+    "        var tag = (t.tagName || \"\").toLowerCase();\n"
+    "        return tag === \"input\" || tag === \"textarea\" || tag === \"select\" || t.isContentEditable === true;\n"
+    "      }\n"
+    "      function keydown(e) { if (e.code !== \"Space\" || e.repeat || btn.disabled || typing(e)) return; e.preventDefault(); down(); }\n"
+    "      function keyup(e) { if (e.code !== \"Space\" || typing(e)) return; e.preventDefault(); up(); }\n"
+    "      btn.addEventListener(\"pointerdown\", down); btn.addEventListener(\"pointerup\", up); btn.addEventListener(\"pointerleave\", up);\n"
+    "      root.addEventListener(\"keydown\", keydown);\n"
+    "      root.addEventListener(\"keyup\", keyup);\n"
+    "      st.down = down; st.up = up; st.cancel = function () { frame({ type: \"cancel\" }); };\n"
+    "      // What a re-mount has to undo. LiveView re-mounts a hook after a reconnect,\n"
+    "      // and without this the listeners, the microphone and the contexts of every\n"
+    "      // previous life stay open.\n"
+    "      this.__displayMicTeardown = function () {\n"
+    "        root.removeEventListener(\"keydown\", keydown);\n"
+    "        root.removeEventListener(\"keyup\", keyup);\n"
+    "        holding = false;\n"
+    "        if (stream) { stream.getTracks().forEach(function (t) { t.stop(); }); stream = null; }\n"
+    "        if (worklet) { try { worklet.port.onmessage = null; worklet.disconnect(); } catch (e) { /* gone */ } worklet = null; }\n"
+    "        if (mctx) { try { mctx.close(); } catch (e) { /* gone */ } mctx = null; }\n"
+    "        if (ctx) { try { ctx.close(); } catch (e) { /* gone */ } ctx = null; }\n"
+    "        try { chan.leave(); } catch (e) { /* the socket may be gone already */ }\n"
+    "      };\n"
+    "    },\n"
+    "    destroyed: function () {\n"
+    "      if (this.__displayMicTeardown) { this.__displayMicTeardown(); this.__displayMicTeardown = null; }\n"
+    "    }\n"
+    "  };\n"
+    "  root.SurfaceHooks = Object.assign(root.SurfaceHooks || {}, { DisplayMic: hook });\n"
+    "})(window);\n"
 )
 
 
@@ -274,6 +459,18 @@ def components():
             "name": "display-view-custom",
             "template": CUSTOM_TEMPLATE,
             "prop_schema": {"view_id": "text", "owner": "text"},
+            "editable": [],
+            "layer": "content",
+        },
+        {
+            # The microphone (GH #643). `client_js` is typed `"html"` because
+            # that is what makes a prop RAW: a script rendered escaped is a
+            # script that does nothing. Everything else on this screen stays
+            # escaped, and `mount` with it -- a mount name is configuration and
+            # must not be able to close a tag.
+            "name": "display-mic",
+            "template": MIC_TEMPLATE,
+            "prop_schema": {"mount": "text", "client_js": "html"},
             "editable": [],
             "layer": "content",
         },
@@ -1002,6 +1199,18 @@ def build(views, have=None):
             "keep": [],
         }
 
+    # The microphone, behind the regions and outside both of them: it belongs to
+    # the screen and not to a column, and its own stylesheet takes it out of the
+    # flow. Written on every tick like a region, because it is structural in the
+    # same way -- a screen HAS a microphone, whether or not anybody is talking.
+    want[MIC_ID] = {
+        "component": "display-mic",
+        "parent": ROOT_ID,
+        "ord": len(REGIONS) * ORD_STEP,
+        "props": {"mount": VOICE_MOUNT, "client_js": MIC_CLIENT_JS},
+        "keep": [],
+    }
+
     for region, i, row in seated(views, have):
         _, owner, view_id, wrapper, content, view = row
         parent = REGION_PREFIX + region
@@ -1165,7 +1374,15 @@ def pass_read(body, ctx):
 
 
 def main():
+    global VOICE_MOUNT
     doc = json.load(sys.stdin)
+    # The one param this cell reads. It names the `voice` cell the screen's
+    # microphone joins, so one screen can be pointed at a voice cell that was
+    # mounted under another name -- and a screen with no voice cell beside it
+    # simply has a button whose join is refused, out loud, on the page.
+    params = doc.get("params") or {}
+    if isinstance(params, dict):
+        VOICE_MOUNT = str(params.get("voice_mount") or "voice")
     body = doc.get("body") or {}
     envelope = doc.get("envelope") or {}
     header = envelope.get("header") or {}

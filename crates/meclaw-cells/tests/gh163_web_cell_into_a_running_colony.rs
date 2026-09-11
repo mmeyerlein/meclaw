@@ -3,8 +3,9 @@
 //! This file was `meclaw-colony/tests/gh163_surface_into_a_running_colony.rs`.
 //! GH #383 retired the mechanism its headline claim was written against — the
 //! `/surface/*` route, the `cell.surface` declaration and the marked answer that
-//! travelled back through the HTTP API — and replaced it with a `web` cell that
-//! owns its own listener. **The lesson survives the mechanism**, which is why
+//! travelled back through the HTTP API — and replaced it with a `web` cell of its
+//! own (which owned a port then and holds a mount since `web@2.0.0`).
+//! **The lesson survives the mechanism**, which is why
 //! this is a rewrite and not a deletion: what #163 was really about is that
 //! nothing about a display may require a colony's *first* boot.
 //!
@@ -42,7 +43,10 @@ use meclaw_core::serde_json::{Value, json};
 use meclaw_core::{Message, MessageBuilder, Path, Uuid};
 use meclaw_testing::ColonyHandle;
 use meclaw_testing::factories::echo::EchoCellFactory;
-use meclaw_testing::free_port;
+use meclaw_testing::{surface_listener, wait_for_mount};
+
+/// The name the installed display answers to on the colony's one listener.
+const MOUNT: &str = "screen";
 use meclaw_testing::mocks::EchoMockCell;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -74,13 +78,13 @@ fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
 }
 
 /// Install the **shipped** `templates/web/` into a temporary library, with one
-/// value changed: the port.
+/// value changed: the mount.
 ///
-/// The port is the only edit, and it is an edit rather than an `override_params`
-/// entry so that what is under test stays the installation and not the override
-/// grammar. Everything else — the contract block, the seed, the stylesheet — is
-/// the shipped file.
-async fn install_web_template(td: &tempfile::TempDir, h: &ColonyHandle, port: u16) {
+/// The mount is the only edit, and it is an edit rather than an
+/// `override_params` entry so that what is under test stays the installation
+/// and not the override grammar. Everything else — the contract block, the
+/// seed, the stylesheet — is the shipped file.
+async fn install_web_template(td: &tempfile::TempDir, h: &ColonyHandle) {
     let shipped = core_root().join("templates/web");
     assert!(
         shipped.join("config.json").is_file(),
@@ -94,12 +98,12 @@ async fn install_web_template(td: &tempfile::TempDir, h: &ColonyHandle, port: u1
         &std::fs::read_to_string(tpl.join("config.json")).expect("read the shipped config"),
     )
     .expect("the shipped config is JSON");
-    cfg["params"]["port"] = json!(port);
+    cfg["params"]["mount"] = json!(MOUNT);
     std::fs::write(
         tpl.join("config.json"),
         meclaw_core::serde_json::to_string_pretty(&cfg).expect("serialise"),
     )
-    .expect("write the ported config");
+    .expect("write the mounted config");
 
     let (ack_tx, ack_rx) = oneshot::channel();
     h.inbox_tx
@@ -152,23 +156,18 @@ async fn registry_paths(h: &ColonyHandle) -> Vec<String> {
         .collect()
 }
 
-/// GET the URL until it answers or the deadline passes.
-///
-/// The listener comes up inside the spawned cell's I/O task, so the first
-/// request can lose the race with `TcpListener::bind`. The generous window is
-/// the repo's 30 s failure-marker convention: a cell that never binds still
-/// fails in bounded time.
 /// GET, waiting out BOTH of a fresh display's start-up windows.
 ///
 /// A `web` cell has two of them, and they close in this order:
 ///
-/// 1. **Nothing is listening yet.** The I/O half binds the port when the cell's
-///    task starts, so a request that arrives first gets `ConnectionRefused` —
-///    the absence of an answer rather than an answer.
-/// 2. **Listening, but the page map is still empty.** The listener answers out
-///    of a published snapshot, and the handler publishes it in `on_start`. The
-///    bind does not wait for that publish, so there is a window in which the
-///    display is up and cannot yet speak for any route. This test caught it
+/// 1. **The name is not on the table yet.** The I/O half registers the mount
+///    when the cell's task starts, so a request that arrives first reads the
+///    listener's own `404` for a name nobody holds. `wait_for_mount` closes
+///    this one at the call site; the retry covers whatever is left of it.
+/// 2. **Mounted, but the page map is still empty.** The cell answers out of a
+///    published snapshot, and the handler publishes it in `on_start`. The
+///    registration does not wait for that publish, so there is a window in
+///    which the display is reachable and cannot yet speak for any route. This test caught it
 ///    roughly one run in three (W8, GH #395).
 ///
 /// **Window 2 used to answer `404`**, which is why this helper retried one.
@@ -217,13 +216,13 @@ async fn a_web_cell_instantiated_by_mutation_serves_in_the_same_boot() {
     )
     .expect("write the root hive");
 
-    let port = free_port();
-    let factory: Arc<dyn CellFactory> = Arc::new(WebCellFactory);
+    let surfaces = Arc::new(meclaw_colony::SurfaceRegistry::new());
+    let factory: Arc<dyn CellFactory> = Arc::new(WebCellFactory::new(Arc::clone(&surfaces)));
     let h = ColonyHandle::new_with_factories_at(&td, vec![("web".to_string(), factory)]);
     let mut registry = CellFactoryRegistry::new();
     registry.insert(
         "web".into(),
-        Arc::new(WebCellFactory) as Arc<dyn CellFactory>,
+        Arc::new(WebCellFactory::new(Arc::clone(&surfaces))) as Arc<dyn CellFactory>,
     );
     bootstrap_from_filesystem(td.path(), &registry, &h.runtime())
         .await
@@ -235,11 +234,11 @@ async fn a_web_cell_instantiated_by_mutation_serves_in_the_same_boot() {
         "the point of the exercise is that the display did NOT exist at boot, got {before:?}"
     );
 
-    install_web_template(&td, &h, port).await;
+    install_web_template(&td, &h).await;
 
     let outcome = send_mutation(
         &h,
-        json!({"scope": "/", "diff": {"add_nodes": [{"name": "display", "template": "web@1.1.0"}]}}),
+        json!({"scope": "/", "diff": {"add_nodes": [{"name": "display", "template": "web@2.0.0"}]}}),
     )
     .await;
     assert!(
@@ -253,7 +252,11 @@ async fn a_web_cell_instantiated_by_mutation_serves_in_the_same_boot() {
         "the instantiated display must be registered, got {after:?}"
     );
 
-    let resp = get_with_retry(&format!("http://127.0.0.1:{port}/")).await;
+    // The listener goes up only now: before the mutation there was no mount to
+    // hand anything to, which is the state the first half of this test asserts.
+    wait_for_mount(&surfaces, MOUNT).await;
+    let (addr, listener) = surface_listener(Arc::clone(&surfaces)).await;
+    let resp = get_with_retry(&format!("http://{addr}/{MOUNT}/")).await;
     assert_eq!(
         resp.status().as_u16(),
         200,
@@ -267,6 +270,7 @@ async fn a_web_cell_instantiated_by_mutation_serves_in_the_same_boot() {
     );
 
     h.shutdown().await;
+    listener.abort();
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -501,7 +505,7 @@ fn a_template_may_not_declare_a_lane_to_the_trace_endpoint() {
 /// canvas: both of its unusual lanes resolve at a deeply nested scope. Guarded
 /// like every other template-reading test (GH #49).
 ///
-/// Since `canvy@2.0.0` the hive holds a `cell.type: "ref"` to `web@1.1.0`
+/// Since `canvy@2.0.0` the hive holds a `cell.type: "ref"` to `web@2.0.0`
 /// (W8 Task 13), so the resolution needs the real library rather than an empty
 /// registry — and a tree that does not carry the referenced template skips, for
 /// the same reason a tree without the canvas does.

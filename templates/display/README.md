@@ -1,7 +1,7 @@
-# `display@1.1.0`
+# `display@2.0.0`
 
-One screen, on a port of its own, that many agents and applications write onto
-at the same time. A **view** is a named, owned, optionally expiring piece of
+One screen, reached at `/<mount>/` on the colony's one listener, that many
+agents and applications write onto at the same time. A **view** is a named, owned, optionally expiring piece of
 that screen: whoever sends one owns it, replaces it under the same name, and
 takes it down again. Nobody who writes to it needs to know that anybody else
 does.
@@ -10,7 +10,7 @@ does.
 in_view / in_withdraw  ->  compose (code)  <->  views (store)
                                  |                what is up
                                  v
-                              web (display)   the page, on its own port
+                              web (display)   the page, under its mount
 ```
 
 ## What it is not
@@ -282,6 +282,7 @@ can trip either refusal.
 | `display-region` | `content` | one per region, a direct child of the root, and the parent of every view standing in it |
 | `display-view-prose` | `navigation` | a glass card with an optional title and a paragraph |
 | `display-view-custom` | `content` | the wrapper an application's own tree hangs in |
+| `display-mic` | `content` | the hold-to-talk button, its transcript line and its state line, plus the browser half that runs them |
 
 **The region is on that list because a view hangs under a region rather than
 under the root** -- that is what makes a column a place. It used to be on it for
@@ -299,6 +300,38 @@ what lets an application put its own glass pane inside a view.
 None of them is `editable`. A prop a browser may write is an authorisation
 an application grants over its **own** component; the frame around it is not a
 thing anybody drags.
+
+## Talking to the screen
+
+The screen carries a button. Hold it -- pointer or space bar -- and what you say
+goes to a `voice` cell; let go and the transcript appears on the line beside the
+button, and the answer is played back through it.
+
+There is no second port and no second connection. The button joins a
+`voice:<call>` topic on the socket the page is already holding, and the `web`
+cell hands those frames to whichever cell in the process is mounted under the
+name this scope was given. That name is `params.voice_mount` of the `compose`
+cell, `voice` by default, so a screen can be pointed at a voice cell that was
+mounted as something else. With nothing mounted under the name, the join is
+refused and the button says so on the page rather than failing quietly. One
+socket holds at most four live calls at once, and a fifth join is refused with
+`too many voice topics on this socket` until one of the four is given up.
+
+The frames are the wire protocol's own, unchanged -- `docs/voice-wire-protocol.md`
+is the whole of it, and both modes, `4409` and `client_too_slow` mean there what
+they mean on a socket of the voice cell's own.
+
+Two browser rules travel with it. A microphone needs a **secure context**: an
+`https://` origin, or `localhost` / `127.0.0.1`. Reached over a LAN address on
+plain `http://`, the button says the microphone needs https or localhost instead
+of asking for a permission the browser will not grant. And the sample rates come
+from the `hello` frame, because the cell never resamples: the page adapts, cutting
+20 ms PCM16 frames at the rate that was declared.
+
+What is not here: no transcript history, no list of turns, no way to scroll back.
+The line beside the button holds the last thing that was heard and nothing more.
+A conversation on the screen is a view like any other, put up by whoever owns it
+on the `partial` lane of the agent it belongs to.
 
 ## `ttl_ms` expires a view, it does not remove it
 
@@ -341,11 +374,25 @@ agent. So it stands beside the agents rather than inside one:
   as an ordinary `in_turn` carrying `hop.kind`, one under `apps/` reaches the app
   on the lane it arrived on, and one that is neither leaves the member on
   `error`. That is the whole return path, and it needs no registry.
-- **One port per screen.** Two screens are two instances on two ports, not two
-  routes on one, which is what makes a single reverse-proxy location block a
-  complete access statement for one of them. The `7899` in this template is the
-  first port, not the only one; a second screen takes its own with
-  `override_params`.
+- **And the viewer's identity, where a proxy named one.** With `identity_header`
+  set, every semantic event of that connection carries `hop.user_id`. A `hop` is
+  single-hop, so the out-edge of the screen owes it a promotion into the context
+  -- `"user_id": "has(hop.user_id) ? hop.user_id : ''"` beside the two channel
+  keys in its `set_context`, the same line a channel's entry edge carries
+  (`examples/organism/grow-screen.json`). Without it the identity is gone one hop
+  past the screen.
+- **What `<base href>` means for a component.** The page carries
+  `<base href="<prefix>/<mount>/">`, so a relative URL in any component
+  resolves under this screen — and a bare `#fragment` resolves against the base
+  as well, which makes `href="#foo"` on `/display/a` a navigation to
+  `/display/#foo` rather than a scroll. No shipped component writes either; an
+  application that wants a fragment link writes it in full (`href="a#foo"`).
+- **One mount per screen.** Two screens are two instances under two names on
+  the colony's one listener. The `display` in this template is the first name,
+  not the only one; a second screen takes its own with `override_params.web.mount`,
+  and its page is then at `/<that name>/`. Since `web@2.0.0` there is no port to
+  hand out: a single reverse-proxy location block in front of the listener is
+  still a complete access statement, and it now reads `location ^~ /<mount>/`.
 
 The hive is the address: `params.ports` is empty, so no edge reaches a cell
 inside it. A caller names the hive and a lane on `hop.route`.
@@ -367,13 +414,14 @@ the lane it was on in `hop.kind`.
 ## Authentication is external, forever
 
 This scope does not authenticate, and it is not going to (R-W8-2). Put a reverse
-proxy in front of it -- nginx, traefik, caddy -- and let that terminate TLS and
-decide who gets through. The default bind is `127.0.0.1`, because a surface that
-never authenticates must not be reachable off-host by default; setting `bind` to
-`0.0.0.0` is a decision somebody makes on purpose, and since the display cell
-can rebind a running listener it is a decision that can also be taken back.
+proxy in front of the colony's listener -- nginx, traefik, caddy -- and let that
+terminate TLS and decide who gets through. Since `web@2.0.0` the screen binds
+nothing itself, so where the colony listens is one decision for the whole
+colony rather than one per screen. A proxy that serves the screen under a path
+of its own says so with `X-Forwarded-Prefix`, and every link the page writes
+moves with it.
 
-Whoever reaches the port sees the screen and can write whatever a component
+Whoever reaches the mount sees the screen and can write whatever a component
 declared `editable`. There is no allowlist, no rate limit and no session of its
 own. Anything in the object tree is on a page, and the page is served to whoever
-reaches the port -- a view is not a place for a secret.
+reaches the mount -- a view is not a place for a secret.

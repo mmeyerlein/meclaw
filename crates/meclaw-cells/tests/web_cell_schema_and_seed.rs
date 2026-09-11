@@ -10,7 +10,6 @@
 use meclaw_cells::web::WebCellFactory;
 use meclaw_colony::{CellFactory, ContractView, SpawnedCellKind};
 use meclaw_core::{CellEmission, Path, serde_json::json};
-use meclaw_testing::free_port;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
@@ -57,15 +56,16 @@ fn write_seed(cell_dir: &std::path::Path) {
 /// Spawn a web cell on `cell_dir`, hold it briefly, then stop it.
 ///
 /// The handles are held for the length of the closure and dropped after: that
-/// drop is what closes the mailbox and brings the listener down, so the next
-/// spawn in the same test can reuse the port.
-async fn spawn_and_settle(cell_dir: &std::path::Path, port: u16) {
+/// drop is what closes the mailbox and ends the cell, so the next spawn in the
+/// same test finds its mount free.
+async fn spawn_and_settle(cell_dir: &std::path::Path) {
+    let surfaces = Arc::new(meclaw_colony::SurfaceRegistry::new());
     let (out_tx, _out_rx) = mpsc::channel::<CellEmission>(8);
     let (inbox_tx, _inbox_rx) = mpsc::channel(8);
-    let spawned = Arc::new(WebCellFactory)
+    let spawned = Arc::new(WebCellFactory::new(surfaces))
         .spawn_cell(
             Path::new("/web"),
-            json!({ "port": port }),
+            json!({ "mount": "screen" }),
             out_tx,
             cell_dir.to_path_buf(),
             ContractView::default(),
@@ -106,7 +106,7 @@ async fn the_four_tables_exist_after_a_spawn() {
     let cell_dir = td.path().join("web");
     std::fs::create_dir_all(&cell_dir).expect("create cell dir");
 
-    spawn_and_settle(&cell_dir, free_port()).await;
+    spawn_and_settle(&cell_dir).await;
 
     for table in ["objects", "components", "pages", "assets"] {
         let n: i64 = query_one(
@@ -131,7 +131,7 @@ async fn a_seeded_cell_carries_its_rows() {
     std::fs::create_dir_all(&cell_dir).expect("create cell dir");
     write_seed(&cell_dir);
 
-    spawn_and_settle(&cell_dir, free_port()).await;
+    spawn_and_settle(&cell_dir).await;
 
     let components: i64 = query_one(&cell_dir, "SELECT count(*) FROM components");
     let pages: i64 = query_one(&cell_dir, "SELECT count(*) FROM pages");
@@ -161,7 +161,7 @@ async fn a_second_spawn_on_the_same_directory_does_not_seed_again() {
     std::fs::create_dir_all(&cell_dir).expect("create cell dir");
     write_seed(&cell_dir);
 
-    spawn_and_settle(&cell_dir, free_port()).await;
+    spawn_and_settle(&cell_dir).await;
     let after_first: i64 = query_one(&cell_dir, "SELECT count(*) FROM objects");
     assert_eq!(after_first, 1);
 
@@ -176,7 +176,7 @@ async fn a_second_spawn_on_the_same_directory_does_not_seed_again() {
         .expect("insert mark");
     }
 
-    spawn_and_settle(&cell_dir, free_port()).await;
+    spawn_and_settle(&cell_dir).await;
 
     let after_second: i64 = query_one(&cell_dir, "SELECT count(*) FROM objects");
     assert_eq!(
@@ -206,8 +206,8 @@ fn a_broken_seed_file_is_refused_before_the_cell_spawns() {
     )
     .expect("write");
 
-    let err = WebCellFactory
-        .validate_cell_dir(&json!({ "port": 7800 }), &cell_dir)
+    let err = WebCellFactory::default()
+        .validate_cell_dir(&json!({ "mount": "screen" }), &cell_dir)
         .expect_err("a header-less seed file must be refused");
     assert!(
         err.contains("schema"),
@@ -228,8 +228,8 @@ fn a_seed_file_for_a_table_the_cell_does_not_have_is_refused() {
     )
     .expect("write");
 
-    let err = WebCellFactory
-        .validate_cell_dir(&json!({ "port": 7800 }), &cell_dir)
+    let err = WebCellFactory::default()
+        .validate_cell_dir(&json!({ "mount": "screen" }), &cell_dir)
         .expect_err("an unknown seed table must be refused");
     assert!(
         err.contains("widgets"),

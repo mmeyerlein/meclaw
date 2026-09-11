@@ -27,7 +27,7 @@ use meclaw_cells::web::WebCellFactory;
 use meclaw_colony::{CellFactory, ContractView, SpawnedCellKind};
 use meclaw_core::serde_json::{Value, json};
 use meclaw_core::{CellEmission, Path};
-use meclaw_testing::free_port;
+use meclaw_testing::{surface_listener, wait_for_mount};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
@@ -75,8 +75,15 @@ fn seed(cell_dir: &std::path::Path) {
     .expect("pages");
 }
 
+/// The name this fixture's display answers to on the colony's one listener.
+/// The port in every URL below is the LISTENER's: a `web` cell has none since
+/// `web@2.0.0`.
+const MOUNT: &str = "screen";
+
 struct Live {
+    /// The port of the one listener in front of the cell.
     port: u16,
+    _listener: tokio::task::JoinHandle<()>,
     _mailbox: mpsc::Sender<meclaw_core::Message>,
     out_rx: mpsc::Receiver<CellEmission>,
     _stop: tokio::sync::oneshot::Sender<()>,
@@ -84,13 +91,18 @@ struct Live {
 }
 
 async fn start(cell_dir: &std::path::Path) -> Live {
-    let port = free_port();
+    start_with(cell_dir, json!({ "mount": MOUNT })).await
+}
+
+/// [`start`], with the params spelled out — for the identity header.
+async fn start_with(cell_dir: &std::path::Path, params: meclaw_core::JsonValue) -> Live {
+    let surfaces = Arc::new(meclaw_colony::SurfaceRegistry::new());
     let (out_tx, out_rx) = mpsc::channel::<CellEmission>(64);
     let (inbox_tx, _inbox_rx) = mpsc::channel(8);
-    let spawned = Arc::new(WebCellFactory)
+    let spawned = Arc::new(WebCellFactory::new(Arc::clone(&surfaces)))
         .spawn_cell(
             Path::new("/web"),
-            json!({ "port": port }),
+            params,
             out_tx,
             cell_dir.to_path_buf(),
             ContractView::default(),
@@ -111,9 +123,12 @@ async fn start(cell_dir: &std::path::Path) -> Live {
     else {
         panic!("Active");
     };
+    wait_for_mount(&surfaces, MOUNT).await;
+    let (addr, listener) = surface_listener(Arc::clone(&surfaces)).await;
+    let port = addr.port();
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        if let Ok(r) = reqwest::get(format!("http://127.0.0.1:{port}/")).await
+        if let Ok(r) = reqwest::get(format!("http://127.0.0.1:{port}/{MOUNT}/")).await
             && r.status().is_success()
         {
             break;
@@ -123,6 +138,7 @@ async fn start(cell_dir: &std::path::Path) -> Live {
     }
     Live {
         port,
+        _listener: listener,
         _mailbox: sender,
         out_rx,
         _stop: stop_tx,
@@ -135,7 +151,7 @@ type Ws =
 
 /// Join the page, and hand back the socket plus the session token it used.
 async fn join_page(port: u16) -> (Ws, String) {
-    let body = reqwest::get(format!("http://127.0.0.1:{port}/"))
+    let body = reqwest::get(format!("http://127.0.0.1:{port}/{MOUNT}/"))
         .await
         .expect("get")
         .text()
@@ -147,7 +163,7 @@ async fn join_page(port: u16) -> (Ws, String) {
     let token = body[start..end].to_string();
 
     let (mut ws, _) =
-        tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/live/websocket"))
+        tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/{MOUNT}/live/websocket"))
             .await
             .expect("connect");
     let topic = format!("lv:{}", meclaw_surface::session::container_id("/web"));
@@ -292,4 +308,97 @@ async fn two_page_loads_carry_two_session_ids() {
     assert_ne!(id_a, id_b, "two page loads are two sessions");
 
     live.join.abort();
+}
+
+/// Join the page with one extra header on the upgrade, the way a proxy sends
+/// one.
+async fn join_page_as(port: u16, header: Option<(&str, &str)>) -> Ws {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let body = reqwest::get(format!("http://127.0.0.1:{port}/{MOUNT}/"))
+        .await
+        .expect("get")
+        .text()
+        .await
+        .expect("text");
+    let marker = "data-phx-session=\"";
+    let start = body.find(marker).expect("token") + marker.len();
+    let end = start + body[start..].find('"').expect("quote");
+    let token = body[start..end].to_string();
+
+    let mut request = format!("ws://127.0.0.1:{port}/{MOUNT}/live/websocket")
+        .into_client_request()
+        .expect("a websocket request");
+    if let Some((name, value)) = header {
+        request.headers_mut().insert(
+            tokio_tungstenite::tungstenite::http::HeaderName::from_bytes(name.as_bytes())
+                .expect("a header name"),
+            value.parse().expect("a header value"),
+        );
+    }
+    let (mut ws, _) = tokio_tungstenite::connect_async(request)
+        .await
+        .expect("connect");
+    let topic = format!("lv:{}", meclaw_surface::session::container_id("/web"));
+    ws.send(WsMessage::Text(
+        json!(["1", "1", topic, "phx_join", {"session": token, "url": "/"}])
+            .to_string()
+            .into(),
+    ))
+    .await
+    .expect("join");
+    let _ = ws.next().await.expect("open").expect("frame");
+    ws
+}
+
+/// O-P-4: an operator names the header their proxy writes, and every semantic
+/// event of that connection says who was looking.
+///
+/// The two halves are one test on purpose. A cell told nothing stamps nothing —
+/// that is what makes the stamp worth reading — and the same page, the same
+/// event and the same header prove both, so a `user_id` that leaked in from
+/// somewhere else could not pass the second half.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_identity_header_becomes_hop_user_id() {
+    let td = TempDir::new().expect("td");
+
+    let named = td.path().join("named");
+    std::fs::create_dir_all(&named).expect("dir");
+    seed(&named);
+    let mut live = start_with(
+        &named,
+        json!({ "mount": MOUNT, "identity_header": "X-Forwarded-User" }),
+    )
+    .await;
+    let mut ws = join_page_as(live.port, Some(("X-Forwarded-User", "alex"))).await;
+    send_event(&mut ws, "action", json!({"name": "start"})).await;
+    let emission = tokio::time::timeout(Duration::from_secs(30), live.out_rx.recv())
+        .await
+        .expect("a semantic event must reach the out-edges")
+        .expect("emission");
+    assert_eq!(
+        emission.content["header"]["user_id"],
+        json!("alex"),
+        "the header the proxy sent rides as hop.user_id: {}",
+        emission.content["header"]
+    );
+    live.join.abort();
+
+    // The same page and the same header, with no param naming it: a header a
+    // client can set without a proxy is not an identity.
+    let unnamed = td.path().join("unnamed");
+    std::fs::create_dir_all(&unnamed).expect("dir");
+    seed(&unnamed);
+    let mut plain = start(&unnamed).await;
+    let mut ws = join_page_as(plain.port, Some(("X-Forwarded-User", "alex"))).await;
+    send_event(&mut ws, "action", json!({"name": "start"})).await;
+    let emission = tokio::time::timeout(Duration::from_secs(30), plain.out_rx.recv())
+        .await
+        .expect("the event still leaves")
+        .expect("emission");
+    let header = &emission.content["header"];
+    assert!(
+        header.get("user_id").is_none(),
+        "nothing was named, so nothing is claimed: {header}"
+    );
+    plain.join.abort();
 }

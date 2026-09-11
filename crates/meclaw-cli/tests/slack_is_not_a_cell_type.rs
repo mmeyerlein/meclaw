@@ -14,9 +14,10 @@
 //!
 //! It went 14 → 15 with the `web` type (GH #380, ADR-0014), and the same test
 //! applies: the thing it adds cannot be a parameter of an existing type. A
-//! `web` cell **owns a TCP listener** — it binds a port from its own `params`
+//! `web` cell **serves an HTTP surface** — it registers a mount name of its own
 //! and holds its own `cell.db`, and several instances coexist in one colony,
-//! each on its own port. There is no existing type for that to be a variant of:
+//! each under its own mount (`web@2.0.0`; until then each bound a port of its
+//! own, ADR-0031). There is no existing type for that to be a variant of:
 //! the nearest neighbour, `proxy`, owns an OUTBOUND connection to somebody
 //! else's platform, which is the opposite direction and a different lifetime.
 //! Note what did NOT happen here — HTTP did not become a platform variant of
@@ -27,7 +28,7 @@ use meclaw_cli::factories::built_in_factories;
 
 #[test]
 fn slack_did_not_add_a_cell_type() {
-    let reg = built_in_factories();
+    let reg = built_in_factories(std::sync::Arc::new(meclaw_colony::SurfaceRegistry::new()));
     assert_eq!(
         reg.len(),
         16,
@@ -44,11 +45,11 @@ fn slack_did_not_add_a_cell_type() {
     );
     assert!(
         reg.contains_key("web"),
-        "the web cell type owns a listener of its own (GH #380, ADR-0014)"
+        "the web cell type serves a surface of its own (GH #380, ADR-0031)"
     );
     assert!(
         reg.contains_key("voice"),
-        "the voice cell type owns a listener of its own (wave voice-cell)"
+        "the voice cell type serves a surface of its own (wave voice-cell, ADR-0031)"
     );
     for vendor in ["deepgram", "cartesia", "openai"] {
         assert!(

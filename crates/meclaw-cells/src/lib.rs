@@ -8,6 +8,7 @@ pub mod boundary;
 pub mod code;
 pub mod edit;
 pub mod file;
+pub mod handed;
 pub mod harness;
 pub mod llm;
 pub mod mcp;

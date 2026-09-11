@@ -1,4 +1,4 @@
-# `builder@1.7.4`
+# `builder@1.8.0`
 
 The intake that turns a structural wish into a **manifest** — an ordered list of
 mutation declarations, ready to be submitted by whoever asked for it.
@@ -341,10 +341,10 @@ on a `channel` (§ *A round is provenance*).
 | `override_params` | optional | addressed per cell of the template (`{"cogny/brain": {"temperature": 0.2}}`) |
 | `birth` | optional | `active` or `inactive` — the door's own vocabulary, written top-level on the `add_nodes` entry. A name the door does not know is refused here as `birth_unknown`, one hop from the wish that made it, rather than at the door one hop from the manifest. The default is the door's (`active`) for every level except `channel`, which is born **asleep** |
 | `subscribe` | optional, `assistant` | draw the identity door as well — since #561 four v-lanes: one push from the member's own `./affinity` into each brain rim of the generation, and one `pack_ack` drain back from each. It is not part of the level and is not counted in the table above; see § *The identity door is opt-in* |
-| — | never for `member` | there is **no** parameter that turns the screen off, chooses what fills it or names its port. A member always gets both devices, and what fills them is the builder's own configuration (§ *A member grows a screen and an app, and the OS hands out the port*) |
+| — | never for `member` | there is **no** parameter that turns the screen off, chooses what fills it or names its door. A member always gets both devices, and what fills them is the builder's own configuration (§ *A member grows a screen and an app, and the OS hands out the mount*) |
 | `credential` | optional, `assistant` | grow the generation with **no key of its own** — four more v-lanes to the member's own broker, the grants that answer them, and both credential params on both brains. `{"cred_ref": …, "subject": …, "expires_at": …}` are required inside it, `rule_id` and `rate_per_min` optional. Since `1.6.1` it is drawn in the SAME declaration as the generation, which stands at the member for it; the four edges are not counted in the table above; see § *The credential lanes are opt-in too, and they ride in the level's own declaration* |
 
-### A member grows a screen and an app, and the OS hands out the port
+### A member grows a screen and an app, and the OS hands out the mount
 
 Since `1.7.0` a `grow_level` wish for a **member** grows the person **and** the
 two devices that person speaks through
@@ -359,8 +359,8 @@ devices:
   {"scope": "/os/orgs/acme/members",
    "diff": {"add_nodes": [{"name": "alex", "template": "…"}], "…": "…"}},
   {"scope": "/os/orgs/acme/members/alex/channels",
-   "diff": {"add_nodes": [{"name": "display", "template": "display@1.1.0",
-                           "override_params": {"web": {"port": 7900}}}], "…": "…"}},
+   "diff": {"add_nodes": [{"name": "display", "template": "display@2.0.0",
+                           "override_params": {"web": {"mount": "alex-display"}}}], "…": "…"}},
   {"scope": "/os/orgs/acme/members/alex/apps",
    "diff": {"add_nodes": [{"name": "colony-view", "template": "colony-view@1.1.0"}], "…": "…"}}]}
 ```
@@ -373,7 +373,7 @@ and *never mentioned* are the same wish — and there is no third state to
 express.
 
 **What fills them is the builder's, not the wish's.** `member_screen_template`,
-`member_app_template` and `screen_port_base` are `params` of the `recipes` cell,
+`member_app_template` and `screen_mount` are `params` of the `recipes` cell,
 overridable per instance with `override_params`, and the recipe reads them off
 its own stdin. That keeps the rule the fast lane has always run under: it is
 **told** which template to instantiate, because what a level should be filled
@@ -382,24 +382,54 @@ colony carrying one organisation those are the same statement; the substrate has
 no per-org surface at all (an org is a namespace, `HiveParams` is
 `deny_unknown_fields`, and no read endpoint hands params out).
 
-**The port is measured, and the OS is what hands it out.** `screen_port_base +
-<the member's index in its organisation>`, written as `override_params` on the
-screen's own node. The index is not in the wish: `tally` asks `/colony/graph`
-for `<org>/members` and counts the direct children before the renderer runs. A
-colony carries many organisations and **one** OS, and the OS is what allocates
-what is system-near — a port, an address, a socket. The allocation in this
-builder is the first form of that responsibility, because the builder is part of
-the OS (ADR-0022).
+**The name is the OS's to hand out.** `screen_mount` with `{member}` filled in
+— `alex-display` for the member `alex` — written as `override_params` on the
+screen's own node. A colony carries many organisations and **one** OS, and the
+OS is what allocates what is system-near: since `web@2.0.0` that is a name on
+the colony's one listener rather than a port. The allocation in this builder is
+the first form of that responsibility, because the builder is part of the OS
+(ADR-0022).
+
+**The screen is namespaced per member, the microphone is not.** The button on a
+screen talks to the mount named in the display's own `compose.voice_mount`
+(default `voice`), and the OS does not render that name per member the way it
+renders `screen_mount`. One OS-grown screen needs nothing; an operator who grows
+a second sets `voice_mount` per screen — and mounts that member's `voice` cell
+under the matching name — or both buttons speak into one door.
+
+**Two organisations with a member of the same name render the same name, and
+the builder has no knob for the organisation today.** `{member}` is the only
+substitution, and `recipes` is one cell in the one builder a colony has, so a
+richer pattern renders the same string for both organisations. The second
+registration answers `MountFailed`, the cell keeps its task and its page is not
+reachable; the diagnosis is that event in the journal, not a boot failure. Two
+things get a colony out of it: a member name that is distinct colony-wide, or a
+hand-written manifest that gives the second screen its own
+`override_params.web.mount`.
+
+**A member's name has to render a mount.** `[a-z0-9-]{1,64}`, and none of
+`colony`, `messages`, `health`, `ui`, `live`, `@client` — narrower than a node
+name, so `Alex` and `alex_1` are legal members whose screens have no legal door.
+The recipe checks the rendered name and refuses the whole wish as
+`wish_incomplete`, naming the grammar and asking for another name. It is refused
+**before** anything is rendered on purpose: a manifest rolls forward with no
+rollback, so a wish that got past here would commit the person and then lose its
+devices at the door.
+
+The member is still **counted** before the renderer runs, and the count is
+still what a wish is refused over when it cannot be taken. `tally` asks
+`/colony/graph` for `<org>/members` and counts the direct children; what the
+number is no longer spent on is the address, because a member's own name is
+unique inside its organisation by construction.
 
 **A count that could not be taken is named, never rounded down.** If the graph
 read is refused, comes back without its tag, or the parked round is gone,
 `tally` answers on `error` with `hop.error_code = count_unavailable` and the
 build stops there — the wish reaches no renderer and no manifest is drafted, so
 what a caller sees is a named refusal rather than a member. `recipes` speaks the
-same code for the same event one cell later: an index or a `screen_port_base`
-that arrived *unreadable* (present, and not a number) refuses instead of
-rendering. An **absent** index is not that case and never was — nobody counted,
-so this is the first member and the base port is the answer.
+same code for the same event one cell later: an index that arrived *unreadable*
+(present, and not a number) refuses instead of rendering. An **absent** index is
+not that case and never was — nobody counted, so this is the first member.
 
 **One wish is one submission, because the order is semantics.** The devices draw
 into `<member>/channels` and `<member>/apps`, scopes only the declaration in

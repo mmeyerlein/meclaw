@@ -1,4 +1,4 @@
-# Migrating a `canvy` instance from 1.x to `canvy@2.2.0`
+# Migrating a `canvy` instance from 1.x to `canvy@2.3.0`
 
 **A 1.x instance is not upgraded in place.** Every address the template offered
 was removed — the server-rendered markup, the `store` cell that held the
@@ -36,19 +36,17 @@ after.
 
 ## Before you start
 
-- **The two instances do not collide.** 1.x owned no port; it was served by the
-  HTTP API under `/surface/<cell path>`. 2.0.0's display owns a port of its own
-  (the template ships `7810`), so both can run side by side for as long as you
-  want to compare them.
-- **RETRACTED (GH #410, `canvy@2.1.0`): the display's port is immutable once
-  the cell exists.** Up to `canvy@2.0.1` this step said: *"Pick a free one at
-  instantiation; a later params update naming it is refused without partial
-  apply."* **That refusal is withdrawn.** Pick a free one anyway — but if you
-  pick wrongly, or if you later want the new canvas on the address the old one
-  had, send the display cell `{"params": {"port": 7810}}` instead of rebuilding
-  it. Positions survive, because the `cell.db` is untouched. Until the old
-  canvas is retired, a second location block on the reverse proxy is still the
-  simpler answer.
+- **The two instances do not collide.** 1.x was served by the HTTP API under
+  `/surface/<cell path>`; since `canvy@2.3.0` the display answers at `/<mount>/`
+  on the colony's one listener (the template ships `canvy`), so both can run
+  side by side for as long as you want to compare them.
+- **SUPERSEDED (`canvy@2.3.0`): the display's port.** Up to `canvy@2.2.0` this
+  step was about picking a free port, and about moving a running listener with
+  a params update. The [`web`](../web/) cell has neither `port` nor `bind` any
+  more: it owns a name on the colony's one listener. Pick a free NAME instead; if you pick wrongly, or if you later
+  want the new canvas under the name the old one had, send the display cell
+  `{"params": {"mount": "canvy"}}` — it takes effect on that cell's next life,
+  and positions survive because the `cell.db` is untouched.
 - **Find the old store.** The positions live in the `cell.db` of the 1.x
   instance's `store` cell — the directory named `store` inside the old hive's
   directory, under the colony root. Not the hive's directory, and not another
@@ -58,10 +56,10 @@ after.
 
 ---
 
-## 1. Instantiate `canvy@2.2.0` beside the old hive
+## 1. Instantiate `canvy@2.3.0` beside the old hive
 
 A mutation, into a running colony. Give the node a name that does not collide
-with the old one and the display a free port:
+with the old one and the display a free mount:
 
 ```json
 {
@@ -70,8 +68,8 @@ with the old one and the display a free port:
     "add_nodes": [
       {
         "name": "canvy2",
-        "template": "canvy@2.2.0",
-        "override_params": {"web": {"port": 7811}}
+        "template": "canvy@2.3.0",
+        "override_params": {"web": {"mount": "canvy2"}}
       }
     ]
   }
@@ -89,7 +87,7 @@ file you can post as it stands — into a colony with no canvas yet, so its node
 is simply called `canvy`.
 
 **Nothing has to point at it.** The hive declares no ports, so no edge reaches a
-cell inside it and the way in is the HTTP port the display owns. If you had an
+cell inside it and the way in is `/<mount>/` on the colony's listener. If you had an
 edge asking the old canvas for a fresh snapshot, draw the same lane at the new
 hive path — the lane is `in_refresh` and the hive path is the address.
 
@@ -106,8 +104,9 @@ curl -s -X POST http://127.0.0.1:7777/messages \
           "body": {"messages": []}}'
 ```
 
-Open `http://127.0.0.1:7811/`. You should see the whole colony, laid out by the
-flow layout — every box in a computed spot, none of them yours yet.
+Open `http://127.0.0.1:7777/canvy2/` — the colony's own listener, plus the
+mount step 1 gave the new canvas. You should see the whole colony, laid out by
+the flow layout — every box in a computed spot, none of them yours yet.
 
 **This step is not optional and it is not cosmetic.** A migration patch is an
 `object.update`, and an update names an object that has to exist: replaying the
@@ -335,7 +334,7 @@ found the hard way ([#403](https://github.com/mmeyerlein/meclaw/issues/403)).
   the export can be re-run at any time. The new display's positions are just
   props; re-sending an older bundle overwrites them.
 - **Undo the instantiation**: `remove_nodes` on the new hive's cells, the same
-  shape as step 5. The port is released when the display's task stops.
+  shape as step 5. The mount is released when the display's task stops.
 
 ---
 

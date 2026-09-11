@@ -31,6 +31,7 @@ fn app_from(test_h: &meclaw_testing::ColonyHandle) -> (Router, tempfile::TempDir
         api_colony_from(test_h),
         blob_store,
         meclaw_core::MESSAGE_DEFAULT_TTL,
+        std::sync::Arc::new(meclaw_colony::SurfaceRegistry::new()),
     );
     (app, td)
 }

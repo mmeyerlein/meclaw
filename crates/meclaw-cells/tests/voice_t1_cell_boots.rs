@@ -1,4 +1,4 @@
-//! Wave voice-cell, strand t1: the cell exists, refuses loudly, and binds.
+//! Wave voice-cell, strand t1: the cell exists, refuses loudly, and mounts.
 //!
 //! Two claims, and they are deliberately on different sides of the dual task.
 //!
@@ -24,12 +24,16 @@ use meclaw_cells::voice::wire::Mode;
 use meclaw_colony::{CellFactory, ContractView, DbConn, LongRunningCell, SpawnedCellKind};
 use meclaw_core::serde_json::json;
 use meclaw_core::{Body, CellEmission, MessageBuilder, OriginSink, OutputSink, Path, Uuid};
-use meclaw_testing::free_port;
+use meclaw_testing::surface_listener;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 const CELL_PATH: &str = "/main/members/tester/channels/voice";
+
+/// The mount the fixtures of this file register. Since `voice@2.0.0` it is the
+/// cell's only door.
+const MOUNT: &str = "voice";
 
 /// An echo-provider cell with no colony around it.
 ///
@@ -37,13 +41,12 @@ const CELL_PATH: &str = "/main/members/tester/channels/voice";
 /// the tests below are about what reaches the lane, so they have to start from
 /// a cell whose lane is on.
 fn echo_cell(path: &Path) -> VoiceCell {
-    let raw = json!({"port": 7900, "stt": {"provider": "echo"}, "emit_partials": true});
+    let raw = json!({"mount": MOUNT, "stt": {"provider": "echo"}, "emit_partials": true});
     let params = VoiceParams::parse(&raw).expect("the echo config parses");
     let stt = build_stt(&params.stt, ProviderTimeouts::default()).expect("the echo provider");
     let (events_tx, _events_rx) = mpsc::channel(8);
     let io = VoiceIo::new(
-        params.bind.clone(),
-        params.port,
+        params.mount.clone(),
         stt,
         None,
         Mode::Auto,
@@ -108,20 +111,18 @@ async fn a_body_without_an_assistant_turn_is_refused_by_name() {
     );
 }
 
-/// The whole cell, through its factory: the listener has to be up.
+/// The whole cell, through its factory: the mount has to be reachable.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-// Un-ignored by strand t4: the I/O half binds now (the one line t4 changed in
-// this file).
-async fn a_voice_cell_spawned_by_its_factory_serves_its_port() {
+async fn a_voice_cell_spawned_by_its_factory_serves_its_mount() {
     let td = tempfile::tempdir().expect("tempdir");
-    let port = free_port();
+    let surfaces = Arc::new(meclaw_colony::SurfaceRegistry::new());
     let (out_tx, _out_rx) = mpsc::channel::<CellEmission>(64);
     let (inbox_tx, _inbox_rx) = mpsc::channel(8);
 
-    let spawned = Arc::new(VoiceCellFactory)
+    let spawned = Arc::new(VoiceCellFactory::new(Arc::clone(&surfaces)))
         .spawn_cell(
             Path::new(CELL_PATH),
-            json!({"port": port, "stt": {"provider": "echo"}}),
+            json!({"mount": MOUNT, "stt": {"provider": "echo"}}),
             out_tx,
             td.path().to_path_buf(),
             ContractView::default(),
@@ -137,17 +138,22 @@ async fn a_voice_cell_spawned_by_its_factory_serves_its_port() {
         panic!("a voice cell is an eager, long-running kind");
     };
 
+    let (addr, listener) = surface_listener(Arc::clone(&surfaces)).await;
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        if reqwest::get(format!("http://127.0.0.1:{port}/"))
+        // The helper answers `404 not found` for a segment nobody mounted, so
+        // the discriminator is the STATUS and not the absence of an answer.
+        let answered = reqwest::get(format!("http://{addr}/{MOUNT}/info"))
             .await
-            .is_ok()
-        {
+            .map(|r| r.status().is_success())
+            .unwrap_or(false);
+        if answered {
             break;
         }
-        assert!(Instant::now() < deadline, "the cell never bound its port");
+        assert!(Instant::now() < deadline, "the cell never took its mount");
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
+    listener.abort();
     join.abort();
 }
 
@@ -381,90 +387,6 @@ async fn every_connection_bound_emission_carries_session_id() {
     );
 }
 
-/// A `bind` the socket will not take is refused, and nothing is written.
-///
-/// The spec's rebind rule (§ 2, the `web` cell's GH #410 shape) has an order in
-/// it: merge, **move**, then persist. Getting that order wrong is not a cosmetic
-/// bug — a `cell.db` overlay naming an address the cell was never on comes back
-/// on the next respawn, and the endpoint then boots with no listener at all.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_bind_that_does_not_take_is_refused_and_not_persisted() {
-    use meclaw_cells::voice::cell::VoiceReconfig;
-
-    // A real listener on the port, so the refusal is about an address that is
-    // genuinely taken rather than about a mock saying no.
-    let occupied = std::net::TcpListener::bind("127.0.0.1:0").expect("hold a port");
-    let busy_port = occupied.local_addr().expect("its address").port();
-
-    let path = Path::new(CELL_PATH);
-    let mut cell = echo_cell(&path);
-    // The I/O half's command seam, taken here so this test can answer the
-    // rebind the way a failed bind would.
-    let mut io = cell
-        .split_io()
-        .expect("split_io hands over the i/o half once");
-    let mut from_handler = io.from_handler.take().expect("the handler's command seam");
-    tokio::spawn(async move {
-        while let Some(cmd) = from_handler.recv().await {
-            if let VoiceReconfig::Rebind { ack, .. } = cmd {
-                let _ = ack.send(Err(format!("address in use (port {busy_port})")));
-            }
-        }
-    });
-
-    let mut db = db();
-    let (tx, mut rx) = mpsc::channel::<CellEmission>(8);
-    let sink = OutputSink::new(
-        tx,
-        path.clone(),
-        Uuid::now_v7(),
-        Uuid::now_v7(),
-        64,
-        meclaw_core::Headers::new(),
-        None,
-    );
-    let (reconfig_tx, _reconfig_rx) = mpsc::channel(8);
-
-    let msg = MessageBuilder::new(path.clone())
-        .body(Body::Inline(json!({"params": {"port": busy_port}})))
-        .build();
-    cell.handle(msg, &sink, &mut db, &reconfig_tx).await;
-
-    let mut emissions = Vec::new();
-    while let Ok(em) = rx.try_recv() {
-        emissions.push(em);
-    }
-    assert_eq!(
-        emissions.len(),
-        1,
-        "a refused update is answered, not dropped"
-    );
-    assert_eq!(
-        error_code(&emissions[0]).as_deref(),
-        Some("invalid_input"),
-        "got {:?}",
-        emissions[0].content
-    );
-    let detail = emissions[0]
-        .content
-        .get("meta")
-        .and_then(|m| m.get("detail"))
-        .and_then(|v| v.as_str())
-        .unwrap_or_default();
-    assert!(
-        detail.starts_with("bind failed:"),
-        "the refusal says it was the socket, not the parser: {detail}"
-    );
-
-    let rows = db
-        .call(|c| {
-            c.query_row("SELECT COUNT(*) FROM params", [], |r| r.get::<_, i64>(0))
-                .unwrap_or(-1)
-        })
-        .await;
-    assert_eq!(rows, 0, "a move that did not happen is not remembered");
-}
-
 /// SHOULD 3: an accepted flag update reaches the calls that are already up.
 ///
 /// The failure mode is the half-applied setting: `barge_in: false` accepted,
@@ -487,10 +409,6 @@ async fn a_flag_update_reaches_open_sessions() {
         while let Some(cmd) = from_handler.recv().await {
             let name = match cmd {
                 VoiceReconfig::CancelSpeak { .. } => "cancel",
-                VoiceReconfig::Rebind { ack, .. } => {
-                    let _ = ack.send(Ok(()));
-                    "rebind"
-                }
                 _ => "other",
             };
             let _ = seen_tx.send(name).await;

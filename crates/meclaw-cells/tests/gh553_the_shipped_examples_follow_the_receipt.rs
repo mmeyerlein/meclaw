@@ -34,7 +34,7 @@ use meclaw_core::JsonValue;
 use meclaw_core::serde_json::{Value, json};
 use meclaw_core::{Message, Path, Uuid};
 use meclaw_testing::ColonyHandle;
-use meclaw_testing::free_port;
+use meclaw_testing::{surface_listener, wait_for_mount};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -386,19 +386,21 @@ async fn the_display_example_draws_its_first_picture_from_the_grow_receipt() {
          no other producer"
     );
 
-    // The one thing the run has to bend: the shipped port is a fixed 7899, and a
-    // test that took it would collide with a second run on the same box.
-    let port = free_port();
-    let mut grow = read_json(&ex.join("grow.json"));
-    for node in grow["manifest"][0]["diff"]["add_nodes"]
-        .as_array_mut()
+    // Nothing has to be bent any more: the shipped declaration names a MOUNT,
+    // and a mount is a name inside this colony's own listener rather than a
+    // port a second run on the same box would collide with. The example is
+    // therefore run exactly as it ships.
+    let grow = read_json(&ex.join("grow.json"));
+    let mount = grow["manifest"][0]["diff"]["add_nodes"]
+        .as_array()
         .expect("add_nodes")
-    {
-        if node["name"] == json!("display") {
-            node["override_params"]["web"]["port"] = json!(port);
-        }
-    }
+        .iter()
+        .find(|n| n["name"] == json!("display"))
+        .and_then(|n| n["override_params"]["web"]["mount"].as_str())
+        .expect("the shipped example names the screen's mount")
+        .to_string();
 
+    let surfaces = Arc::new(meclaw_colony::SurfaceRegistry::new());
     let factories = || -> Vec<(String, Arc<dyn CellFactory>)> {
         vec![
             (
@@ -407,7 +409,10 @@ async fn the_display_example_draws_its_first_picture_from_the_grow_receipt() {
             ),
             ("store".to_string(), Arc::new(StoreCellFactory)),
             ("timer".to_string(), Arc::new(TimerCellFactory)),
-            ("web".to_string(), Arc::new(WebCellFactory)),
+            (
+                "web".to_string(),
+                Arc::new(WebCellFactory::new(Arc::clone(&surfaces))),
+            ),
         ]
     };
     let h = ColonyHandle::new_with_factories_at(&td, factories());
@@ -437,7 +442,9 @@ async fn the_display_example_draws_its_first_picture_from_the_grow_receipt() {
 
     // The receipt of THAT mutation is what draws the first picture. No tick, no
     // `in_refresh`, nothing sent by hand.
-    let url = format!("http://127.0.0.1:{port}/");
+    wait_for_mount(&surfaces, &mount).await;
+    let (addr, _listener) = surface_listener(Arc::clone(&surfaces)).await;
+    let url = format!("http://{addr}/{mount}/");
     let deadline = Instant::now() + Duration::from_secs(30);
     let mut last = String::new();
     loop {

@@ -116,15 +116,16 @@ drain: identity and meaning belong to the member's `affinity`, observations to t
 member's `memory-hive`, the screen to the member's `firewall`. Anything an organisation
 seems to need is either one member's or the shell's.
 
-**And a port is the shell's.** The same test answers the question GH #543 asked: a screen
-owns a TCP port, every member grows a screen, and the number cannot come from here. A port
-is **system-near** — scarce, colony-wide, and two holders of one is a collision rather than
-a disagreement — and a colony carries many organisations and exactly one OS. So an
-organisation holds no port band and assigns no port; it **asks the OS**
+**And the mount is the shell's.** The same test answers the question GH #543 asked: a
+screen answers under a name on the colony's one listener, every member grows a screen, and
+that name cannot come from here. A mount is **system-near** — scarce, colony-wide, and two
+holders of one is a collision rather than a disagreement — and a colony carries many
+organisations and exactly one OS. So an organisation holds no band of names and assigns
+none; it **asks the OS**
 (ADR-0022). Today that ask
-is implicit: the `builder` at the shell level gives every member it grows
-`screen_port_base` plus that member's index in this organisation, counted off
-`/colony/graph`. This level stays what it is — a namespace — and that is why it needs no
+is implicit: the `builder` at the shell level gives every member it grows a
+screen under `screen_mount` with the member filled in (`alex-display`), and
+counts the member off `/colony/graph` before it renders anything. This level stays what it is — a namespace — and that is why it needs no
 configuration surface of its own, which is fortunate, because it has none to have.
 
 **The one exception, and it is not an exception to the rule.** A group that owns an
