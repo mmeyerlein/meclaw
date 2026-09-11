@@ -114,6 +114,19 @@ fn the_briefing_and_the_catalogue_agree_with_the_contract() {
     );
 
     // ── The mechanism. ──────────────────────────────────────────────────────
+    // The generator lives under workshop/, which never ships. In a public
+    // clone the sentence half above is the whole test, and the catalogue half
+    // is proven where the file is (the gate host). A presence guard, the same
+    // form as gh308 and gh325: the file decides, never a flag — and the skip
+    // says so (final review M-5).
+    let generator = repo("workshop/tools/build_librarian_seed.py");
+    if !generator.exists() {
+        eprintln!(
+            "SKIPPED: {} is not in this tree — the catalogue half runs in the private tree",
+            generator.display()
+        );
+        return;
+    }
     let td = tempfile::TempDir::new().unwrap();
     let marked = td.path().join("marked");
     write_template(
