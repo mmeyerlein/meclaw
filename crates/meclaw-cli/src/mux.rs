@@ -374,6 +374,66 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_mount_whose_reader_is_gone_answers_that_it_is_busy() {
+        // GH #660: the sentence both long-running cells' teardown relies on.
+        // A cell that is going drops the receiving end of its handoff channel
+        // BEFORE it gives the mount back, so there is a window in which the
+        // name is still on the table and nothing reads it. A connection
+        // arriving in that window has to be refused — the alternative is a
+        // `try_send` that lands in a queue nobody will ever empty, and a client
+        // that waits for an answer no one owes it any more.
+        let surfaces = Arc::new(SurfaceRegistry::new());
+        let (rx, _held) = surfaces
+            .register(
+                "voice",
+                SurfaceEntry {
+                    kind: "voice",
+                    cell_path: Path::new("/v"),
+                    links: None,
+                },
+            )
+            .await
+            .expect("the mount is free");
+        // The I/O half ends: its receiver falls, its registration does not.
+        // That is the window, held open for the length of this test.
+        drop(rx);
+        assert!(
+            surfaces.table().await.iter().any(|r| r.mount == "voice"),
+            "the window is only a window while the name is still registered"
+        );
+
+        let api = Router::new().route("/health", get(|| async { "api here" }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind a throwaway port");
+        let addr = listener.local_addr().expect("the bound address");
+        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(serve(listener, api, surfaces, async move {
+            let _ = stop_rx.await;
+        }));
+
+        let answer = tokio::time::timeout(
+            Duration::from_secs(30),
+            reqwest::get(format!("http://{addr}/voice/info")),
+        )
+        .await
+        .expect("a mount nobody reads answers instead of swallowing the client")
+        .expect("the request itself went through");
+        assert_eq!(answer.status(), 503);
+        assert_eq!(
+            answer.text().await.expect("text"),
+            "surface busy\n",
+            "and it is the mount's refusal, not the API fallback's 404"
+        );
+
+        let _ = stop_tx.send(());
+        tokio::time::timeout(Duration::from_secs(30), server)
+            .await
+            .expect("the accept loop ends on shutdown")
+            .expect("no panic");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_mount_that_reads_nothing_answers_that_it_is_busy() {
         let surfaces = Arc::new(SurfaceRegistry::new());
         // The receiver is held and never read: the handoff channel fills up, and

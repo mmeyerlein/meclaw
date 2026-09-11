@@ -946,6 +946,60 @@ async fn queue_holds_the_second_call_and_runs_it_when_the_first_ends() {
     );
 }
 
+/// GH #665 (OR-A12) — the caller put through from the queue gets the SAME
+/// sentence as one who found the line free.
+///
+/// For the model the situation is identical: somebody is on the line, greet
+/// them. A second wording would be a second promise on the same surface, free to
+/// drift on its own (§ 2d). What separates the two cases is already where it
+/// belongs — in the receipt, `call_accepted` with `"dequeued"`, which the test
+/// above asserts.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_dequeued_caller_is_on_the_line_too() {
+    if skip() {
+        return;
+    }
+    let mut c = start_tuned(vec![ok("+OK\n"); 12], |p| {
+        p["second_call"] = json!("queue");
+    })
+    .await;
+
+    let first = rings(&mut c, "call-a").await;
+    let announced = turns(&first);
+    assert_eq!(announced.len(), 1, "the free line is one turn: {first:#?}");
+
+    let _ = rings(&mut c, "call-b").await;
+    let got = round(
+        &mut c,
+        json!({"mode": "ev", "ev": "call_ended", "call_uuid": "call-a",
+               "number": KNOWN, "cause": "NORMAL_CLEARING"}),
+    )
+    .await;
+    let promoted = turns(&got);
+    assert_eq!(promoted.len(), 1, "the promotion is one turn: {got:#?}");
+    assert_eq!(
+        promoted[0], announced[0],
+        "one sentence for one situation: a caller who waited is on the line \
+         exactly as one who did not, and two wordings would be two promises to \
+         keep in step"
+    );
+    assert!(
+        promoted[0].contains("The caller is on the line. Greet them.")
+            && !promoted[0].contains(KNOWN)
+            && !promoted[0].contains(KNOWN_USER)
+            && !promoted[0].contains('?'),
+        "and it is the repaired sentence — the situation, no question, and \
+         nobody named in it: the number and the member travel on the hop \
+         (GH #665): {:?}",
+        promoted[0]
+    );
+    assert_eq!(
+        hop_of(&only(&got, "surface_got_in_turn"), "got_state"),
+        "live",
+        "carrying the state the promotion booked in the same bundle: {got:#?}"
+    );
+}
+
 /// **A caller who hangs up while waiting leaves a receipt, and promotes
 /// nobody.** No capacity came free — the call in front is still running.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

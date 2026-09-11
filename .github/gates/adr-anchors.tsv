@@ -104,3 +104,13 @@ adr	status	anchor_home	target
 0031-a-surface-mounts-by-name.md	accepted	self	test:parse_refuses_port_and_bind_since_2_0_0
 0031-a-surface-mounts-by-name.md	accepted	self	test:a_forwarded_prefix_moves_every_link_of_the_shell
 0031-a-surface-mounts-by-name.md	accepted	self	test:an_identity_header_becomes_hop_user_id
+0032-a-default-that-has-no-meaning-is-declared.md	accepted	self	test:a_node_grown_without_its_operator_set_param_is_refused
+0032-a-default-that-has-no-meaning-is-declared.md	accepted	self	code:MutationError::OperatorParamUnset
+0033-a-class-may-have-more-than-one-version.md	accepted	self	test:a_new_version_registers_beside_the_old_one
+0033-a-class-may-have-more-than-one-version.md	accepted	self	code:ScannerError::DuplicateVersion
+0034-a-screens-design-language-travels-in-the-screen.md	accepted	self	test:the_design_language_is_the_same_bytes_in_three_places
+0034-a-screens-design-language-travels-in-the-screen.md	accepted	self	code:templates/display/compose/display-dna.css
+0035-a-scope-recognises-its-own-outdated-vocabulary.md	accepted	self	test:a_swapped_scope_redefines_its_vocabulary_without_a_bootstrap
+0035-a-scope-recognises-its-own-outdated-vocabulary.md	accepted	self	code:compose.VOCAB
+0036-the-ground-of-the-page-belongs-to-the-screen.md	accepted	self	test:an_app_paints_only_its_own_view
+0036-the-ground-of-the-page-belongs-to-the-screen.md	accepted	self	test:the_readme_names_the_rule_the_cell_does_not_enforce

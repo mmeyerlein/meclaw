@@ -134,6 +134,6 @@ decision for the whole colony.
   whole focus model.
 - **Not multi-screen.** One screen, and this example writes into one of its two
   columns: `main`, the wide one. `aside` is there and stays empty, which costs
-  the page nothing (`display@2.0.0`).
+  the page nothing (`display@2.1.0`).
 - **Not a model.** There is no `llm` cell in this colony at all, so it costs
   nothing to run and needs no provider key.

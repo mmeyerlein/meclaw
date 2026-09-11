@@ -607,6 +607,84 @@ pub fn check_override_params(
     Ok(())
 }
 
+/// GH #661 — the params this cell's contract declares `operator_set`.
+///
+/// Read off [`CellNode::config`], which is the fully parsed `config.json` of the
+/// cell — the declaration is therefore reachable at the checking place without
+/// reading a file twice. It lives in `contract.settings` and not in the
+/// `description` block: the latter is dropped in silence by `ParsedConfig`
+/// (*specified, not built* — GH #254), so the door could not read it even if it
+/// wanted to, while `contract.settings` is substrate-enforced, is broken out per
+/// param, and with `secret` already carries this form of statement.
+pub fn operator_set_keys(cell: &CellNode) -> Vec<&str> {
+    cell.config
+        .get("contract")
+        .and_then(|c| c.get("settings"))
+        .and_then(|s| s.as_object())
+        .map(|s| {
+            s.iter()
+                .filter(|(_, v)| v.get("operator_set").and_then(|b| b.as_bool()) == Some(true))
+                .map(|(k, _)| k.as_str())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// GH #661 (ADR-0032) — every `operator_set` param of `cell` the entry brings no
+/// value for, collected.
+///
+/// "Brings no value" means exactly one thing: the entry does not write the key
+/// into `override_params` (flat on a single-cell template, addressed on a
+/// subtree), and no `ref` marker on the way in set it as a default
+/// ([`SubtreeTemplate::ref_overrides`]). What is checked is the ACT and not the
+/// value — an entry setting the param to exactly the shipped default comes
+/// through, because that is the one honest thing an operator can say about such
+/// a param, and reading it as an omission would make the declaration
+/// unanswerable (OR-A2).
+///
+/// COLLECTING rather than `Result`, because stage 4 collects: three unset params
+/// are three named violations in one refusal rather than three round trips.
+///
+/// `cell_key` is the address the entry would have written at: `Some(rel_path)`
+/// for the addressed form of a subtree template, `None` for the flat form of a
+/// single-cell template — the same distinction
+/// [`check_override_params`] already makes.
+pub fn check_operator_set_params(
+    cell: &CellNode,
+    cell_key: Option<&str>,
+    template: &str,
+    params: Option<&JsonValue>,
+    ref_defaults: Option<&JsonValue>,
+    out: &mut Vec<MutationError>,
+) {
+    let named = |v: Option<&JsonValue>, key: &str| {
+        v.and_then(|p| p.as_object())
+            .is_some_and(|o| o.contains_key(key))
+    };
+    for key in operator_set_keys(cell) {
+        if named(params, key) || named(ref_defaults, key) {
+            continue;
+        }
+        let addressed = match cell_key {
+            Some(k) => format!("override_params['{k}']['{key}']"),
+            None => format!("override_params['{key}']"),
+        };
+        let shipped = cell
+            .config
+            .get("contract")
+            .and_then(|c| c.get("settings"))
+            .and_then(|s| s.get(key))
+            .and_then(|spec| spec.get("default"))
+            .map(std::string::ToString::to_string)
+            .unwrap_or_else(|| "none".to_string());
+        out.push(MutationError::OperatorParamUnset(format!(
+            "`{addressed}` is missing: `{template}` declares `{key}` as `operator_set`, so its \
+             shipped default (`{shipped}`) is a shape and not a working value. Set it on this \
+             entry, or grow the node somewhere it can mean something."
+        )));
+    }
+}
+
 /// Render a cell's param names for an error message: `'a', 'b'`, or the literal
 /// `none` for a cell that declares no params at all.
 fn render_param_list(known: &[&str]) -> String {

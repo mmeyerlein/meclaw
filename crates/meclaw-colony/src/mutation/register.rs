@@ -6,10 +6,17 @@
 //!
 //! Two invariants carry the whole module:
 //!
-//! 1. **The target path is built, never taken.** `{templates_root}/local/<name>/`
-//!    is composed from the resolved `--templates` root and the clamped name. No
-//!    field of the body becomes a path segment, so there is nothing to escape
-//!    from and nothing to sanitise.
+//! 1. **The target path is built, never taken.**
+//!    `{templates_root}/local/<name>@<version>/` is composed from the resolved
+//!    `--templates` root, the clamped name and the version the entry's own
+//!    `template.json` declares; `{templates_root}/local/<name>/` when it
+//!    declares none. No field of the body becomes a path segment, so there is
+//!    nothing to escape from and nothing to sanitise — `@` cannot arrive from
+//!    the body either, because `name_is_well_formed` forbids it and the version
+//!    is the parsed one. Siblings, not `local/<name>/<version>/` as a child
+//!    (GH #664): the scan stops descending at a `template.json`, so under the
+//!    child form a `local/<name>/` that is already live would hide every
+//!    version beneath it.
 //! 2. **The shipped library is out of reach.** Writing under `local/` and only
 //!    there is what "the shipped library is off limits" means concretely — a
 //!    declaration can never overwrite `talky`, because it never addresses the
@@ -52,10 +59,16 @@ fn file_path_is_contained(rel: &str) -> bool {
 /// filesystem — construction is the whole refusal surface.
 #[derive(Debug, Clone)]
 pub struct TemplateRegistration {
-    /// The template's own name, `^[a-z][a-z0-9-]{1,63}$`. It is also the
-    /// directory name under `{templates_root}/local/`, which is why the
-    /// pattern forbids `/`, `.` and `..` rather than filtering them later.
+    /// The template's own name, `^[a-z][a-z0-9-]{1,63}$`. Together with the
+    /// version it is also the directory name under `{templates_root}/local/`,
+    /// which is why the pattern forbids `/`, `.` and `..` rather than
+    /// filtering them later.
     pub name: String,
+    /// The `version` the shipped `template.json` declares, `None` when it
+    /// declares none. Always a version `resolve` can read — [`parse_entry`]
+    /// refuses any other. The library is keyed by `(name, version)` since
+    /// GH #664, so this is half of the entry's identity, not decoration.
+    pub version: Option<String>,
     /// Relative path inside the template → file content, verbatim.
     pub files: BTreeMap<String, String>,
 }
@@ -123,30 +136,109 @@ pub fn parse_entry(entry: &Value) -> Result<TemplateRegistration, MutationError>
             "add_templates[] '{name}' carries no config.json at its root. A              template.json says the directory is a template; the root              config.json says what an instance of it IS — one cell, or the              hive whose params.graph wires the rest. Files in subdirectories              are the cells INSIDE that hive and cannot stand in for it"
         )));
     }
+    // The version is read from the entry's OWN `template.json` — the bytes
+    // `stage_registrations` hands to the scanner's parser one step later, so a
+    // registration and a rescan cannot disagree about which version arrived.
+    // A `template.json` that is not JSON at all is refused there, by that
+    // parser, with the message it writes; here it simply carries no version.
+    let version = files
+        .get("template.json")
+        .and_then(|raw| meclaw_core::serde_json::from_str::<Value>(raw).ok())
+        .and_then(|v| {
+            v.get("version")
+                .and_then(|x| x.as_str())
+                .map(str::to_string)
+        });
+    // A version the resolver cannot read is a version nobody can reach. It used
+    // to register into `local/<name>/` with the unreadable string in its
+    // registry row, and after that NO form answered: `@<that string>` is not a
+    // reference `resolve` parses, and the bare name finds neither a parsable
+    // versioned candidate nor an unversioned one. An unreachable registration
+    // is worse than a refusal, so it is refused here, before anything is
+    // written (ruling of 2026-09-11).
+    if let Some(v) = version.as_deref()
+        && let Err(e) = crate::templates::parse_simple_version(v)
+    {
+        return Err(MutationError::Schema(format!(
+            "add_templates[] '{name}' ships a template.json declaring the \
+             version '{v}', which is not a version a reference can name: \
+             {e}. It would register into the library and answer to nothing"
+        )));
+    }
     Ok(TemplateRegistration {
         name: name.to_string(),
+        version,
         files,
     })
 }
 
-/// Refuse a name the registry already answers to — at this entry's position.
+/// Refuse a `name@version` the registry already answers to — at this entry's
+/// position.
 ///
 /// Separate from [`parse_entry`] because it needs the registry snapshot, which
 /// a later manifest entry sees differently from an earlier one.
+///
+/// Since GH #664 the library is keyed by `(name, version)`, so a NEW version of
+/// a registered class is taken rather than refused. Two refusals remain, both
+/// under `template_name_taken` — a narrower refusal under one code is additive,
+/// a second code would be a second answer to one question:
+///
+/// 1. the identical `name@version` is already registered;
+/// 2. an entry without a version arrives while versioned entries of that name
+///    exist, or the mirror case. A version `resolve` cannot read never reaches
+///    here — [`parse_entry`] refuses it before this.
 pub fn refuse_if_taken(
     reg: &TemplateRegistration,
     templates: &crate::templates::TemplatesRegistry,
 ) -> Result<(), MutationError> {
-    if templates.resolve(&reg.name).is_ok() {
-        return Err(MutationError::TemplateNameTaken(format!(
-            "a template named '{}' is already registered. A duplicate name is a \
-             hard scan failure (GH #277), so writing it would break the NEXT \
-             rescan for everybody and nothing at this moment would say so — the \
-             entry is refused here instead",
-            reg.name
-        )));
+    let existing: Vec<&crate::templates::TemplateEntry> = templates
+        .entries_iter()
+        .filter(|e| e.name == reg.name)
+        .collect();
+    if existing.is_empty() {
+        return Ok(());
     }
-    Ok(())
+    let known: Vec<&str> = existing
+        .iter()
+        .map(|e| e.version.as_deref().unwrap_or("(no version)"))
+        .collect();
+    match reg.version.as_deref() {
+        Some(v) => {
+            if templates.resolve(&format!("{}@{v}", reg.name)).is_ok() {
+                return Err(MutationError::TemplateNameTaken(format!(
+                    "'{}@{v}' is already registered. A new version registers \
+                     beside it; the same one would be two answers to one \
+                     reference",
+                    reg.name
+                )));
+            }
+            if existing.iter().any(|e| e.version.is_none()) {
+                return Err(MutationError::TemplateNameTaken(format!(
+                    "'{}' is registered without a version, so a second entry of \
+                     that class cannot name its own. An unversioned entry beside \
+                     a versioned one is a reference nobody can pin",
+                    reg.name
+                )));
+            }
+            Ok(())
+        }
+        None => {
+            if existing.iter().any(|e| e.version.is_some()) {
+                return Err(MutationError::TemplateNameTaken(format!(
+                    "'{}' is registered with versions ({}), so a second entry of \
+                     that class names its own. An unversioned entry beside a \
+                     versioned one is a reference nobody can pin",
+                    reg.name,
+                    known.join(", ")
+                )));
+            }
+            Err(MutationError::TemplateNameTaken(format!(
+                "'{}' is already registered. A new version registers beside it; \
+                 the same one would be two answers to one reference",
+                reg.name
+            )))
+        }
+    }
 }
 
 /// Every registration of one mutation, written but not yet visible.
@@ -317,7 +409,12 @@ pub fn stage_registrations(
                 "the local template root could not be created: {e}"
             )));
         }
-        let target = local.join(&reg.name);
+        // GH #664: one rule, not two — a versioned entry always builds a
+        // versioned directory, the first registration of a new name included.
+        let target = local.join(match reg.version.as_deref() {
+            Some(v) => format!("{}@{v}", reg.name),
+            None => reg.name.clone(),
+        });
         if target.exists() {
             // Not a registry hit (that is `template_name_taken` from
             // `refuse_if_taken`) but a directory no row names: the residue of an
@@ -327,6 +424,28 @@ pub fn stage_registrations(
                 "'{}' already lies in the local template root and no registry row \
                  names it. It is refused rather than overwritten (No-Delete); \
                  clear it by hand if it is residue",
+                target
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| reg.name.clone())
+            )));
+        }
+        // Fix round 1 to GH #664: `refuse_if_taken` runs against the registry
+        // as it stood BEFORE the diff, and the target check below compares
+        // PATHS — which differ since a versioned entry builds a versioned
+        // directory. So the refusal of an unpinnable entry beside versioned
+        // ones had to be repeated here, against what this diff has staged
+        // itself, or it held only for diffs with one entry.
+        if staged
+            .pending
+            .iter()
+            .any(|(_, _, p)| p.name == reg.name && p.version.is_none() != reg.version.is_none())
+        {
+            return Err(MutationError::TemplateNameTaken(format!(
+                "add_templates[] declares '{}' twice in one diff, once with a \
+                 version and once without. An unversioned entry beside a \
+                 versioned one is a reference nobody can pin, whether the other \
+                 entry is already registered or arrives in the same diff",
                 reg.name
             )));
         }
@@ -340,7 +459,10 @@ pub fn stage_registrations(
                 "add_templates[] declares '{}' twice in one diff. Both entries \
                  would become the same directory under the local template root, \
                  so one of them is a name nobody could resolve",
-                reg.name
+                target
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| reg.name.clone())
             )));
         }
         staged.pending.push((stage_dir, target, parsed));

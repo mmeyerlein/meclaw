@@ -105,8 +105,9 @@ takes one daemon at a time. The port is the first free one from `7777` up.
 meclaw --root <colony> --templates <templates> --daemon --api 127.0.0.1:<port>
 ```
 
-The pid goes to `<colony>/daemon.pid`, stdout to `daemon.out`, the tracing
-log to `log.jsonl`, and the script polls `GET /health` until it answers.
+The pid goes to `<colony>/daemon.pid` and the tracing stream to two places:
+`daemon.out`, which holds what the colony writes to stderr, and `log.jsonl`
+beside it in JSON. The script polls `GET /health` until it answers.
 **The first start can stay silent for about 40 seconds** while the 30 MB
 binary comes off cold disk; every later start answers in under a second.
 By hand, `--daemon` runs in the foreground and stops on Ctrl-C, so the next

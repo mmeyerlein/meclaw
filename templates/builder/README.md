@@ -1,4 +1,4 @@
-# `builder@1.8.0`
+# `builder@1.9.0`
 
 The intake that turns a structural wish into a **manifest** — an ordered list of
 mutation declarations, ready to be submitted by whoever asked for it.
@@ -53,7 +53,6 @@ address them.
 |---|---|---|
 | `classify` | `code` | Reads the tool arguments and decides the CLASS: a named recipe whose parameters are complete, or everything else. Calls no model. |
 | `recipes` | `code` | The fast lane. Renders one of four predefined recipes straight into a manifest, deterministically — including the whole transit edge set of a composition level. |
-| `tally` | `code` | How many members does this organisation already carry? The one lookup the fast lane makes: it parks the wish in the round table, asks `/colony/graph`, counts the DIRECT children of the members container and stamps `hop.member_index` on the wish before `recipes` sees it. Only a MEMBER wish takes this hop. |
 | `builder-librarian` | `ref builder-librarian` | Retrieval over the corpus. Referenced, never copied (ADR-0011). |
 | `brief` | `code` | Assembles the authoring prompt: the retrieved sections become instructions, the request stays a user turn. It emits twice — the prompt to the composer, and the same question and the same instruction tree into the round table, because round 1 onwards is briefed by the loop and not by this cell. |
 | `compose` | `llm` | The model call of the design lane — asked once per round, not once per build. |
@@ -125,6 +124,14 @@ where an incomplete sentence belongs.
 is assembled, one model call is made, and its answer is read. Retrieval is an
 ENHANCEMENT: a corpus that is down comes back marked `degraded`, the composer is
 TOLD it is working without patterns, and the build carries on.
+
+**Since `1.9.0` the lane asks before it submits.** A param a template declares
+`operator_set` has no usable default, and the mutation door refuses a node grown
+without it with `operator_param_unset`. The briefing states that rule and the
+catalogue marks the params it applies to — `[operator-set]` after the name on the
+`PARAMS —` line — so a wish that does not name the value comes back as
+`wish_incomplete`, with the question, instead of being drafted and refused a
+round later.
 
 The briefing carries a **grammar** as well as a vocabulary: the diff keys that
 exist, the ENTRY SHAPE of an `add_nodes` entry (`name` and `template`, both
@@ -359,10 +366,10 @@ devices:
   {"scope": "/os/orgs/acme/members",
    "diff": {"add_nodes": [{"name": "alex", "template": "…"}], "…": "…"}},
   {"scope": "/os/orgs/acme/members/alex/channels",
-   "diff": {"add_nodes": [{"name": "display", "template": "display@2.0.0",
+   "diff": {"add_nodes": [{"name": "display", "template": "display@2.1.0",
                            "override_params": {"web": {"mount": "alex-display"}}}], "…": "…"}},
   {"scope": "/os/orgs/acme/members/alex/apps",
-   "diff": {"add_nodes": [{"name": "colony-view", "template": "colony-view@1.1.0"}], "…": "…"}}]}
+   "diff": {"add_nodes": [{"name": "colony-view", "template": "colony-view@1.1.1"}], "…": "…"}}]}
 ```
 
 **There is no way to ask for a member without them.** A person in this substrate
@@ -416,20 +423,15 @@ The recipe checks the rendered name and refuses the whole wish as
 rollback, so a wish that got past here would commit the person and then lose its
 devices at the door.
 
-The member is still **counted** before the renderer runs, and the count is
-still what a wish is refused over when it cannot be taken. `tally` asks
-`/colony/graph` for `<org>/members` and counts the direct children; what the
-number is no longer spent on is the address, because a member's own name is
-unique inside its organisation by construction.
-
-**A count that could not be taken is named, never rounded down.** If the graph
-read is refused, comes back without its tag, or the parked round is gone,
-`tally` answers on `error` with `hop.error_code = count_unavailable` and the
-build stops there — the wish reaches no renderer and no manifest is drafted, so
-what a caller sees is a named refusal rather than a member. `recipes` speaks the
-same code for the same event one cell later: an index that arrived *unreadable*
-(present, and not a number) refuses instead of rendering. An **absent** index is
-not that case and never was — nobody counted, so this is the first member.
+**Since `1.9.0` a member wish reads nothing at all.** Until `1.8.1` the fast
+lane counted the members an organisation already carried, off `/colony/graph`,
+and stamped the number on the wish; a screen was reached by a port made from it.
+Since `display@2.0.0` a screen is reached under a name, and the name is the
+member's own — so the number was measured, paid for with one colony round trip
+and two store operations per member wish, and spent on nothing. The cell that
+measured it, its second route out of the switch and the refusal that named an
+unreadable number are all gone; what refuses a member wish now is a name that
+renders no mount, and nothing else.
 
 **One wish is one submission, because the order is semantics.** The devices draw
 into `<member>/channels` and `<member>/apps`, scopes only the declaration in

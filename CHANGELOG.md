@@ -12,6 +12,262 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.36.0] — 2026-09-12
+
+The screen brings its own design language. `display@2.1.0` ships the token
+sheet as a file of its own and carries it inside the shell, together with a
+vocabulary of twenty-six components that an application names in its tree
+without defining; a compose cell swapped for a newer one recognises a page
+whose vocabulary is older than its own and redefines it in the same bundle; and
+the two faces the sheet names are an operator asset, declared by one directory
+or not at all. Under the screen, the builder and the substrate close what the
+first colonies on 0.35.0 found: a template can say which of its params have no
+usable default, and the door refuses a node grown without them; a class may
+carry more than one version in the library; a colony writes to stderr and keeps
+`log.jsonl` beside it; a member wish counts nothing any more; the arrival turn
+of a telephone call says the caller is on the line; a mistyped key in a swap is
+refused instead of committed; and an inspector's sheet no longer paints the
+page it stands on.
+
+### Breaking
+
+- **The builder no longer counts members** (`builder@1.9.0`, `meclaw-os@1.8.9`
+  for the pin). A caller that subscribed to `hop.error_code = count_unavailable`
+  on the builder's `error` lane no longer receives it; a member wish that would
+  have raised it is now rendered. Nothing shipped consumed the code —
+  `meclaw-os` routes the `error` lane whole (GH #663).
+
+- **`add_templates` refuses a `version` no reference can name.** An entry whose
+  `template.json` declares a `version` that is not `major.minor.patch` is
+  rejected with `schema`, pre-destructive — where it used to register. Such an
+  entry then answered to nothing: `@<that string>` is not a reference the
+  resolver parses, and the bare name found neither a readable version nor an
+  unversioned entry, so the class sat in the catalogue and no `add_nodes`
+  reached it. **Migration: give the template a three-digit version.** Nothing in
+  the shipped library is affected — every `template.json` under `templates/`
+  already declares `major.minor.patch` — and a template that declares no
+  `version` at all stays legal. This is the one narrowing of the operation;
+  everything else about it is additive (GH #664).
+
+### Added
+
+- **A colony writes to stderr, and keeps `log.jsonl` beside it.** Only the file
+  was written before, so under an init system `journalctl -u` showed the service
+  lifecycle and nothing of the colony's own life, while the file it wrote
+  instead was rotated by nobody. Without a flag both sinks are on now: stderr
+  carries one compact line per event, where the init system owns the ring buffer
+  and the rotation, and the file stays JSON and stays `jq`-able,
+  so every script that reads it keeps working. `--log-stderr <auto|off>` and
+  `--log-file <auto|off>` switch a sink off, `--log` still names the file's path
+  and `--log-level`/`--log-filter` still set its filter. `RUST_LOG` now has an
+  effect and steers the stderr half alone, so a variable in a runner's
+  environment cannot redirect what a script reads out of the file. A substituted
+  `${VAR}` value reaches neither sink, pinned for both (GH #662).
+- **A param that has no usable default says so, and the door enforces it**
+  (`operator_set` in `contract.settings`, `error_code`
+  `operator_param_unset`). A template's `params` are defaults, and a wish that
+  leaves them alone is legal — but some are not defaults in any useful sense: a
+  URL pointing at localhost, an empty identity, an empty allowlist. Measured on
+  0.35.0: a wish that described the wiring of a telephone channel grew its
+  signal half with every shipped value, committed green, and left a colony with
+  a channel that would never have reached any switch. A `SettingSpec` can now
+  carry `operator_set: true` — *this value has no meaning until an operator sets
+  it; the shipped `default` is a shape, not a working value* — and a mutation
+  that grows a node from that template without setting it is refused
+  pre-destructively, at both doors that grow one (`add_nodes` and the
+  instantiate form of `swap_nodes[].with`), whoever submitted it. What is
+  checked is the act and not the value: setting the param to exactly the shipped
+  default passes. Unset params are collected, so three are named in one refusal.
+  The design lane reads the declaration a round earlier: the briefing states the
+  rule and the catalogue marks the params with `[operator-set]`, so a wish that
+  does not name the value comes back as `wish_incomplete` with the question.
+  Additive — a template that says nothing behaves exactly as it did (GH #661,
+  ADR-0032).
+
+- **A class may have more than one version, and `add_templates` takes the new
+  one.** The library is keyed by name AND version: a new version of a registered
+  class registers beside the old one, which stays where it is and stays
+  resolvable. The write goes to `{templates_root}/local/<name>@<version>/` — the
+  colony builds that path from the clamped name and the version the entry's own
+  `template.json` declares, and `local/<name>/` when it declares none. Two
+  refusals remain, both under the existing `error_code` `template_name_taken`:
+  the identical `name@version`, and an entry nobody can pin — one without a
+  version while versioned entries of that name exist, or the mirror case. The
+  scan follows: two `template.json` abort it when they share a name AND a
+  version (`ScannerError::DuplicateVersion`), two versions of one name are two
+  entries of one class. A bare reference still has exactly one answer, given by
+  the resolver (highest version) rather than by an aborted scan. Directories
+  already lying under `local/<name>/` are untouched and stay resolvable; there is
+  no migration and no `remove_templates` (GH #664, ADR-0033).
+
+- **The screen brings its own design language** (`display@2.1.0`). The only
+  sheet a display page linked was the `web` template's `/vision.css`, the base
+  language of every surface a colony can have, and every application that
+  wanted the screen to look like one thing sent that look as `client_css` on its
+  own view — four applications, four copies of one sheet. The `display`
+  template now ships the sheet as a file of its own,
+  `compose/display-dna.css`, and carries it inside the `display-shell`
+  definition: one `<style>` block, the screen's layout first and the sheet
+  last, so it re-tokenises `/vision.css` at equal specificity. With the sheet
+  comes the vocabulary it is written against: a catalogue of twenty-six
+  components — four windows (`display-pane`, `display-panel`,
+  `display-overlay`, `display-ornament`, the only glass in the catalogue) and
+  twenty-two pieces of content, from `display-value` to `display-progress` —
+  that an application names in its tree without defining, bringing in
+  `components[]` only what is its own. `display-view-prose` wears the catalogue
+  (`display-pane` outside, `display-kicker` and `display-text` inside); the
+  custom wrapper stays a bare content shell, so an application may hang its own
+  pane in it. Every class the thirty-one templates write has a rule in what the
+  shell ships — the custom wrapper no longer writes the class `view` and
+  `display-document` no longer writes `display-document-page`, neither of which
+  any sheet ever had a rule for — and the shell at the shipped defaults stays
+  under 80,000 bytes raw. `web` does not move: `/vision.css` remains the base
+  language, loaded first. Two applications outside this repository move to the
+  screen's vocabulary in the same wave (GH #669, ADR-0034).
+- **A screen recognises its own outdated vocabulary** (`display@2.1.0`). The
+  compose cell defined its components on the bootstrap pass only — the page has
+  no `/`, or a root that is not this cell's — so a compose cell swapped for a
+  newer version found a page that was already its own and kept sending views
+  against the vocabulary the old code had defined. The root now carries `vocab`,
+  a twelve-character fingerprint of the definitions as JSON, computed once at
+  import. A read pass whose root holds another fingerprint sends every
+  `component.define` again and brings the root up to date in the same bundle;
+  the next pass sees the two agree and sends nothing. Once per change of
+  vocabulary, never per tick — the same economy an application's components
+  already had. The price is the one a redefinition always has: every route of
+  the `web` cell re-renders, once (GH #670, ADR-0035).
+- **The faces are an operator asset** (`display@2.1.0`, `params.font_base`).
+  The sheet names Inter and Fraunces at the head of two fallback stacks and
+  declares neither. `font_base` is the directory the two files are served from,
+  relative to the page's own base, and the compose cell builds the two
+  `@font-face` rules from it as a raw prop of the shell. Empty, the shipped
+  default, declares nothing: the fallback stacks carry the type and the page
+  makes no request. The file names are fixed, `inter.woff2` and
+  `fraunces.woff2`, so what an operator provides is one directory. No font file
+  ships in this repository, and a test walks `templates/` to keep it so
+  (GH #672).
+
+### Changed
+
+- **A member wish reads nothing off the tree** (`builder@1.9.0`,
+  `meclaw-os@1.8.9` for the pin). The fast lane counted the members an
+  organisation already carried so the screen every member gets could be given a
+  port nobody else held. Since `display@2.0.0` a screen owns no port and answers
+  under a name made from the member's own, so the count was still measured — one
+  `/colony/graph` round trip and two store operations per member wish — and
+  spent on nothing. The counting cell, the six edges it stood on, the second
+  route out of the switch that fed it and the refusal that named an unreadable
+  number are gone; what refuses a member wish now is a name that renders no
+  mount, and nothing else. A member wish costs no colony round trip and no store
+  operation (GH #663).
+
+### Fixed
+
+- **The inspector paints its own view and not the page** (`colony-view@1.1.1`,
+  GH #671). A view's `client_css` goes into the page raw, and `colony-view`'s
+  sheet wrote `html,body{ margin:0; height:100%; background:… }` and two
+  document-level `@media (prefers-color-scheme)` blocks on `body` — so one
+  application set the ground of the page for every other view standing beside
+  it on the same screen, and for the screen itself, on every re-emit of the
+  view. A hand-run
+  bridge had attributed the block to the host page; measured, it came from the
+  application. The three document rules are gone, and the view's root carries
+  the height it needs inside a slot (`position:relative; height:62vh;
+  min-height:22rem`) instead of `position:absolute; inset:0`. The palette and
+  the depth tints stay on `.colony-view`. The rule behind it is named in the
+  `web` template's README as one the cell does not check — `html`, `body`,
+  `:root` and a document-level colour-scheme query belong to the screen, and a
+  CSS parser in the cell would be a second language in the substrate — and it is
+  pinned on the shipped sheet instead: a test refuses any selector whose subject
+  is the document, and a second one asserts that no ops path has grown a
+  selector check behind the sentence (ADR 0036). `web` stays `2.0.0`.
+- **The scan refuses a `version` no reference can name** (GH #668). The walk over
+  `templates/` read a `template.json`'s `version` verbatim, so a descriptor
+  placed by hand with `"version": "1.0"` was registered and then unreachable:
+  `resolve` parses a reference with `parse_simple_version`, so neither the bare
+  name nor `name@1.0` ever answered. Since GH #664 the registration door refuses
+  exactly that with `schema`; the scan gives the same answer now. It SKIPS the
+  entry rather than aborting — a library is a directory anyone may write into,
+  and one descriptor must not cost a colony its boot — and the skip is named,
+  with the path, the version and the reason. Every shipped template carries
+  three digits, so nothing in the tree moves.
+- **The arrival turn of an inbound call says what is true** (`freeswitch@2.0.2`).
+  The dialplan answers an inbound leg at once and streams it, and the template's
+  README has said since `1.0.1` that `call_incoming` is the one turn of such a
+  call — the moment a person is on the line. The turn itself read `Incoming call
+  from <number>.` with `call_state: incoming`, and named only the number.
+  Measured on a real call: the assistant read it as a notice to the owner and
+  answered *"Incoming call from …. Shall I pick up?"* — into the line, to a
+  caller who was already connected, who replied that they were already on. Three
+  turns lost before the conversation began. The turn now reads `The caller is on
+  the line. Greet them.` and carries `call_state: live`, at both arrival places:
+  the free line and the caller put through from the queue. No question, because
+  a model answers what it is handed; nobody named in it, because the number and
+  the member id travel in `hop`, not in the text, so nothing reads an id out
+  loud; `live`, because that is the state the row is booked into in the same
+  second (GH #665).
+- **`freeswitch` declares the three params an operator has to set**
+  (`freeswitch@2.0.2`). `voice_ws_url`, `line_user_id` and `callers` ship a
+  value that is a shape and not a working one — a URL pointing at localhost, an
+  empty identity, an empty allowlist — so they now carry `operator_set` and a
+  channel grown without them is refused at the door instead of committing
+  something that reaches no switch. `dial_prefix` is deliberately not among
+  them: the gateway it names works (GH #661).
+- **A mistyped key in a swap no longer commits in silence.**
+  `add_nodes[].override_params` runs through the override-key check of GH #294:
+  a key the template does not declare is refused pre-destructively. Its twin on
+  the swap side did not, although staging maps `swap_nodes[].with.params` onto
+  the same contract before it writes the new node's overlay — so a typo in a
+  swap committed, the node ran with the shipped default, and nothing said a
+  word. Both doors ask the same question now, with the same `error_code` and the
+  same receipt shape (GH #666).
+- **In `hold` mode the recognition session lives per hold** (`voice@2.0.1`,
+  `freeswitch@2.0.1` for the pin of its media half). The session used to open
+  with the connection, so a push-to-talk page that nobody spoke into ran into
+  the provider's own idle deadline (`provider_idle_timeout_ms`, 30 s by
+  default): an `stt_failed` frame, one retry, the same ending again, and a
+  `1011` that closed the socket — a page left alone for a minute had a dead
+  button until it was reloaded. Now the session opens with the first `hold`,
+  and one that ends with the key up is dropped in silence; the next `hold`
+  opens a new one and the audio behind the frame waits in the queue. `auto`
+  mode, which telephony runs, is unchanged: there the session is the call
+  (GH #657).
+- **The screen's hold-to-talk button says what it is waiting for**
+  (`display@2.0.1`). Three moments used to pass in silence: while the browser
+  was asking for the microphone the page said nothing, so a press that was
+  waiting on a permission prompt looked like a press that did nothing; a key let
+  go before that answer arrived vanished without a word; and a closed call
+  disabled the button for the life of the page. Now the line under the button
+  reads `asking for the microphone…`, then `press again` when the permission
+  came too late for that press, and a close leaves the button alive — the next
+  press joins a new call. A refused join stays final, because that answer is
+  about the screen and not about one call (GH #658).
+- **The design lane's briefing states the modifier grammar** (`builder@1.8.1`,
+  `meclaw-os@1.8.8` for the pin). The briefing described an `add_edges` entry as
+  two endpoints "plus an optional `condition` and `modifier`" and stopped there:
+  `set_context`, `set_hop`, `delete_context`, `delete_hop` and `lane` appeared
+  in it zero times, so the one compartment that decides what an edge does to a
+  message was named and never explained. Measured on a colony built entirely
+  through that lane: four build requests, all four committed, and 13 of 25
+  contract edges drawn wrong — bare identifiers where a CEL value needs its own
+  quotes, promotions written into `set_hop` where the context is what survives
+  the next hop, and no v-lane carrying its `lane` field. The briefing now names
+  the five keys, which compartment each one writes, that a failed modifier skips
+  the whole edge, and that a lane is a field rather than a condition (GH #599;
+  the validation half of that issue stays open).
+- **A `voice` mount in its teardown window answers `503 surface busy`** instead
+  of swallowing the connection. The handoff channel used to fall only when the
+  I/O half returned, which is after the mount registration goes: in the window
+  between the two a late connection was handed into a queue nobody reads any
+  more and got no answer at all, neither a status nor a close. The channel is
+  now closed before the registration, so the listener gives the answer it
+  already promises for a mount whose reader is gone. An upgraded socket ends
+  with the cell in the same window: every connection closes itself with `1001`
+  when the half ends, and the next life registers the mount again and answers a
+  new socket. Both promises now have a test; the listener's peek constants
+  turned crate-private and the drop order in `web` and `voice` carries its
+  reason as a comment (GH #660).
+
 ## [0.35.0] — 2026-09-11
 
 A surface cell has no port. A colony has one listener, and everything on it

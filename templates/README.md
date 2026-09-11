@@ -23,21 +23,21 @@ the reasoning.
 | [`archive-bridge`](archive-bridge/) | 1.1.0 | Turns an `llm`'s last answer into a store-native insert and swallows the store's reply echo, so an append-only archive costs one cell and no loop. |
 | [`argus`](argus/) | 1.1.0 | The colony's control loop: a charter of goals as rows, a deterministic measurement, a judge that simulates before it decides, and keep-or-revert after the window. |
 | [`assistant`](assistant/) | 2.6.0 | One generation of one person's agent as a composition level, holding the conversation surface, the reasoning core and the tool surface as three refs and no container of its own. |
-| [`builder`](builder/) | 1.8.0 | The intake that turns a structural wish into a manifest somebody else submits, on a fast lane of parameterised recipes and a design lane that consults `builder-librarian`. Its `grow_level` recipe renders the transit edges a new level gets from its parent, and the doors of a container level carry `context.org` or `context.member` beside the lane, so a second member of one organisation is a second address. |
+| [`builder`](builder/) | 1.9.0 | The intake that turns a structural wish into a manifest somebody else submits, on a fast lane of parameterised recipes and a design lane that consults `builder-librarian`. Its `grow_level` recipe renders the transit edges a new level gets from its parent, and the doors of a container level carry `context.org` or `context.member` beside the lane, so a second member of one organisation is a second address. |
 | [`builder-librarian`](builder-librarian/) | 2.2.0 | Lexical retrieval over the builder's knowledge base in one sealed hive: an FTS5 corpus, a BM25 retriever and a catalogue cell, with no embeddings and no model. A catalogue row carries `CONTRACT --`, `STORES --` and `PARAMS --`, the three demands the mutation door enforces. |
 | [`canvy`](canvy/) | 2.3.0 | One interactive canvas of the colony, reached under its own mount on the listener. Deprecated since [#455](https://github.com/mmeyerlein/meclaw/issues/455), which withdraws it: a screen belongs to a person and a view of the colony is one application among many, so use `display` and `colony-view`. |
 | [`clock`](clock/) | 1.0.1 | A periodic tick from one `timer` cell that carries one schedule and decides nothing. |
 | [`cogny`](cogny/) | 5.0.1 | One hive holding the agent core, a `collector`, a `dispatcher`, one `llm` brain and a `schemas` cell, for one class of question: synthesis, multi-step work, research. |
 | [`collector`](collector/) | 4.1.0 | Context assembly in a hive of two cells: it decides in one place what enters an agent's context window and what leaves it, and folds each tool round back in. |
-| [`colony-view`](colony-view/) | 1.1.0 | One app that draws the colony: a committed mutation triggers a topology snapshot, a `code` cell turns it into one component tree, and the view leaves the hive towards a display. |
+| [`colony-view`](colony-view/) | 1.1.1 | One app that draws the colony: a committed mutation triggers a topology snapshot, a `code` cell turns it into one component tree, and the view leaves the hive towards a display. |
 | [`daily-digest`](daily-digest/) | 2.1.0 | Scheduled fetch-and-forward in one hive, where a timer fires a schedule, a `web_fetch` reads the URL, a `code` cell formats and a proxy delivers, and a caller may also ask out of turn. |
 | [`dispatcher`](dispatcher/) | 1.2.0 | The fan-out half of a tool loop in one `code` cell: it turns a brain's bundle of tool calls into messages a graph can route. |
-| [`display`](display/) | 2.0.0 | One screen, reached under its own mount on the colony's listener, that many agents and applications write onto at the same time, where a view is a named, owned, optionally expiring piece of that screen, and a hold-to-talk button speaks to a mounted `voice` cell over the page's own socket. |
+| [`display`](display/) | 2.1.0 | One screen, reached under its own mount on the colony's listener, that many agents and applications write onto at the same time, where a view is a named, owned, optionally expiring piece of that screen, a hold-to-talk button speaks to a mounted `voice` cell over the page's own socket, and the screen brings its own design language and a catalogue of twenty-six components an application may name without defining them. |
 | [`door`](door/) | 1.0.2 | The first cell of a colony: a `code` cell that names the first lane, because `set_hop` is an edge's job and above the first cell there is no edge. |
 | [`fetcher`](fetcher/) | 1.0.0 | One `web_fetch` cell for an outbound HTTP GET, with five knobs and no target. |
 | [`firewall`](firewall/) | 2.3.0 | Deterministic screening on an ingress channel drawn as topology: every inbound turn ends on `pass` with the body byte-identical, or on `reject` naming the rule that fired. |
-| [`freeswitch`](freeswitch/) | 2.0.0 | A telephone as one channel of a person, in two halves inside one hive: a `voice` cell carries the media on its mount and a small state machine of a `code` cell keeps the calls. |
-| [`meclaw-os`](meclaw-os/) | 1.8.7 | The colony shell: the outermost of the four composition levels, four occupants, one empty container and the transit graph between them, and no cell of its own. |
+| [`freeswitch`](freeswitch/) | 2.0.2 | A telephone as one channel of a person, in two halves inside one hive: a `voice` cell carries the media on its mount and a small state machine of a `code` cell keeps the calls. |
+| [`meclaw-os`](meclaw-os/) | 1.8.9 | The colony shell: the outermost of the four composition levels, four occupants, one empty container and the transit graph between them, and no cell of its own. |
 | [`member`](member/) | 1.7.0 | One person as a composition level, holding the memory, the curated record, the screen and the keys, plus three open containers for that person's assistants, channels and apps. |
 | [`memory-drain`](memory-drain/) | 2.0.6 | The adapter between a write batch and the central memory, for bulk import of foreign history, and nothing shipped wires it (ADR-0012). |
 | [`memory-hive`](memory-hive/) | 3.4.0 | A member's memory in fifteen cells: every turn becomes an append-only episode written without a model, and the read path answers only with rows the current round could have heard. |
@@ -56,7 +56,7 @@ the reasoning.
 | [`terminal`](terminal/) | 1.0.1 | The last cell of a lane: a `code` cell that accepts anything and emits nothing, which turns an undecided destination into a documented stop instead of a dead letter. |
 | [`tools`](tools/) | 1.4.2 | The tool surface of one assistant, one node with one contract, `tool_call` in and `tool_result` out, that also hands back the schemas of the tools it serves. |
 | [`vault`](vault/) | 1.3.0 | A secret store in one cell with no operation that returns a secret: `use` signs on the broker's behalf so the secret stays home, and `deliver` hands out a ciphertext sealed to a key that dies with the task. |
-| [`voice`](voice/) | 2.0.0 | A spoken conversation behind one cell, one WebSocket surface and one pair of provider credentials, where the connection is the session: opening the socket mints an id and closing it ends the session. |
+| [`voice`](voice/) | 2.0.1 | A spoken conversation behind one cell, one WebSocket surface and one pair of provider credentials, where the connection is the session: opening the socket mints an id and closing it ends the session. |
 | [`web`](web/) | 2.0.0 | A display in one cell, reached at `/<mount>/` on the colony's one listener, with a token stylesheet shipped as seed data, so a colony opens a second display by instantiating this template again under another mount. |
 
 ## Writing one
@@ -78,6 +78,13 @@ the reasoning.
    same mutation wires it. The next mutation that NAMES it wakes it, and only one that names it:
    a mutation elsewhere in the tree leaves it asleep however far its recompute reaches, and a
    restart brings it back the way it was ([#491](https://github.com/mmeyerlein/meclaw/issues/491)).
+7. A class may carry more than one version
+   ([#664](https://github.com/mmeyerlein/meclaw/issues/664)). The library is keyed by name and
+   version, so a new version registers beside the one already there, in a directory named
+   `<name>@<version>`; a bare reference resolves to the highest of them and `<name>@<version>` to
+   exactly that one. Refused are the same `name@version` twice, and an unversioned entry beside
+   versioned ones of the same name. There is no archive outside the scan and none is planned: it
+   would be a second library, and the one in front of you already holds every version.
 
 New templates arrive by the same rule that governs everything else in this repository: a subtree
 plus its gates, and the substrate stays as it is. See

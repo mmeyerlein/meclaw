@@ -888,6 +888,16 @@ pub async fn run_io(
     // * `shutdown_tx` closes, and every upgraded WebSocket — which no
     //   `JoinSet` here holds — reads that and sends its client a close frame.
     //
+    // The ORDER of the three is deliberate. `shutdown_tx` goes first, so every
+    // socket that had already upgraded gets its close frame while the tasks
+    // around it are still standing. `registration` goes last, so a connection
+    // arriving during the teardown still finds the name on the table and reads
+    // `503 surface busy` at the registration (`surfaces::listener`,
+    // `refuse_busy`, the answer a mount whose handoff channel is closed gives)
+    // rather than the API fallback's `404`. A `503` says "this name is here and
+    // cannot take you now"; a `404` says "no such display", which is the one
+    // thing that is not true at that moment.
+    //
     // A line after this `select!` would run on exactly one of the two paths,
     // which is why there is none.
     tokio::select! {

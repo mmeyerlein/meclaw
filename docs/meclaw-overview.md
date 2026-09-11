@@ -742,13 +742,13 @@ it dispatches (GH #432).
 
 | Operation | Effect |
 |---|---|
-| `add_nodes` | Instantiate new cells in the scope (template reference, optional `override_params`). On a **single-cell template** `override_params` is a flat params object. On a **subtree template** it is addressed (GH #140): the keys are the paths of the cells inside the template, `""` being the subtree root, as in `{"assemble": {…}, "window": {…}}`. A key that names no cell of the template is rejected pre-destructively with `schema`, and the message lists the cells that do exist. One level down the same rule holds (GH #294, ruling Q6): every param key of an override entry must be a param the addressed cell carries under `params` in its template `config.json`, otherwise `schema`, and the message names the param, the cell, its cell type, the template and the params that do exist. It is a pure existence check on the template's raw `params` object, so instance substitution is irrelevant here; types and a `because` may arrive later as declarations. A cell with no `params` block has the empty set and refuses every override. Both forms go through the same check in validation, so they cannot drift apart. The wrong notation is named as a notation (GH #436): the path-keyed form on a single-cell template is refused with the sentence that a single-cell template takes a flat params object, under the same `error_code` (`schema`) and at the same pre-destructive position. Consequence for template authors: a param that is meant to be set per instance has to be declared in the template, and a default value is enough (`null` is a legal placeholder for an opt-in such as `ports`). `${ctx.*}` substitution remains the way for values the template itself distributes. Optional `birth` (GH #437) takes `"active"` (the default) or `"inactive"` and sets the entry's instantiation activity, not its hot/cold status. A node born inactive is registered, addressable and persisted inactive; **no task** is built, so a long-running cell does not open its upstream at birth. On a subtree the declaration holds for every cell of the tree, because a unit is born whole. An unknown value is rejected pre-destructively with `schema`. The declaration is durable (GH #491): it leaves a marker in the registry that every connectivity recompute honours, and it survives a restart. The wake is the existing reconnect, with no new operation and no new message, by the next mutation that addresses the node itself; a mutation elsewhere in the tree leaves it asleep. `swap_nodes[].with` has no `birth`, because a successor born inactive would leave the swapped edges pointing at nothing. |
+| `add_nodes` | Instantiate new cells in the scope (template reference, optional `override_params`). On a **single-cell template** `override_params` is a flat params object. On a **subtree template** it is addressed (GH #140): the keys are the paths of the cells inside the template, `""` being the subtree root, as in `{"assemble": {…}, "window": {…}}`. A key that names no cell of the template is rejected pre-destructively with `schema`, and the message lists the cells that do exist. One level down the same rule holds (GH #294, ruling Q6): every param key of an override entry must be a param the addressed cell carries under `params` in its template `config.json`, otherwise `schema`, and the message names the param, the cell, its cell type, the template and the params that do exist. It is a pure existence check on the template's raw `params` object, so instance substitution is irrelevant here; types and a `because` may arrive later as declarations. A cell with no `params` block has the empty set and refuses every override. Both forms go through the same check in validation, so they cannot drift apart. The wrong notation is named as a notation (GH #436): the path-keyed form on a single-cell template is refused with the sentence that a single-cell template takes a flat params object, under the same `error_code` (`schema`) and at the same pre-destructive position. Consequence for template authors: a param that is meant to be set per instance has to be declared in the template, and a default value is enough (`null` is a legal placeholder for an opt-in such as `ports`). `${ctx.*}` substitution remains the way for values the template itself distributes. Optional `birth` (GH #437) takes `"active"` (the default) or `"inactive"` and sets the entry's instantiation activity, not its hot/cold status. A node born inactive is registered, addressable and persisted inactive; **no task** is built, so a long-running cell does not open its upstream at birth. On a subtree the declaration holds for every cell of the tree, because a unit is born whole. An unknown value is rejected pre-destructively with `schema`. The declaration is durable (GH #491): it leaves a marker in the registry that every connectivity recompute honours, and it survives a restart. The wake is the existing reconnect, with no new operation and no new message, by the next mutation that addresses the node itself; a mutation elsewhere in the tree leaves it asleep. `swap_nodes[].with` has no `birth`, because a successor born inactive would leave the swapped edges pointing at nothing. A param the template declares `operator_set` has to be SET by the entry, otherwise `operator_param_unset` (GH #661): such a value has no meaning until an operator sets it, so growing the node with the shipped default is refused rather than committed. Checked is the act — the shipped default is a legal value to set. An `adopt` entry names no template and is exempt; a resume is not, because it writes the template's params again. |
 | `remove_nodes` | **Addresses cells.** Removes every edge naming the matched path itself at one end, so the node is disconnected and marked inactive. Registry entry, filesystem and `cell_id` remain (no-delete). **Correction (GH #390):** this said "including subtree cascade at hives"; that is retracted, in both of the halves a reader took from it. (1) A hive path is not a `remove_nodes` target. `match.name` is resolved against the cell registry only; `swap_nodes` beside it asks the hive scopes too, `remove_nodes` does not. A hive has no registry row, so the entry is `match_no_hit`, and because validation is all-or-nothing the whole mutation fails on it, the well-formed entries beside it included. Edges with a hive at one end go through `remove_edges`, whose pattern is evaluated against the edge table and does not care what kind of node an endpoint is. (2) Edges do not cascade. Removal runs on exact path equality, so an edge between two **descendants** of the matched node survives. That is the same intent `swap_nodes` states (GH #256): the disconnected unit stays internally whole and therefore re-connectable instead of hollow. What does cascade over the subtree is the connectivity recompute: if a hive thereby loses its last boundary-crossing edge, its entire subtree flips to `active = false` and the tasks below it end. Reading "cascade" as "every edge below it goes" leaves edges standing that you believe are gone; the worked recipe for dissolving a hive is in `rewiring.md` § Disconnect the old hive. |
 | `add_edges` | New edges in colony's edge table, scoped. Endpoints are paths relative to the `scope`, at any depth; `.` names the scope root itself (GH #487), the very spelling a `params.graph` uses for its own level. Optional fields as in the bootstrap schema: `condition`, `modifier` and, since v0.18.0 (GH #283), `default` (boolean, absent means `false`). `"default": true` puts the edge into the second routing phase; a non-boolean value is `edge_schema`, and an unguarded default edge commits with a `warn` log line. |
 | `remove_edges` | Remove edges from the edge table, scoped; `match.from` and `match.to` read the same endpoint vocabulary as `add_edges`, `.` included (GH #487). Applied **before** `add_edges`, so an edge can be replaced in one mutation with the lane never missing in between. The other way round, the `match` pattern deleted the edge the same diff had just inserted (GH #158). |
-| `swap_nodes` | **Graph swap**: swings all external edges of an implementation (`match`) atomically onto another (`with`), the other being either freshly instantiated from a template or an already existing cell. The old cell remains disconnected and preserved (no-delete; swappable back at any time by swinging the edges back). `swap_nodes` is a pure edge and topology diff: no `config.json` rewrite of an existing cell, no `cell.db` migration, no `cell_id` takeover (the new implementation has its own identity), and it inherits the atomicity model of the edge mutation. What "external" means for a subtree (GH #256): an edge is external when its other endpoint lies outside the subtree rooted at `match`. The wiring with which that root serves its own children (`<unit>` to `<unit>/<cell>` and back) is internal and is not carried along; it stays with the unit it belongs to. The old unit is thereby preserved whole, which is what makes swinging the edges back restore a working unit. On a leaf the difference is invisible, which is why it went unnoticed until GH #256. Conditions for the instantiate form: the `with` target path is free in the registry and on the filesystem, and the template named is not a single hive cell (`hive_template_single_cell`, GH #572; a hive has no factory and enters the world only as the root of a multi-cell subtree, and a subtree template is refused at this door with `schema` anyway). A directory already lying there that no registry row names (a hand-placed tree, the residue of an aborted migration) is refused by name rather than overwritten; taking it over is done with an `add_nodes` at the same path (a resume) or an `add_nodes[].adopt` stating the `cell.type` expected there. |
+| `swap_nodes` | **Graph swap**: swings all external edges of an implementation (`match`) atomically onto another (`with`), the other being either freshly instantiated from a template or an already existing cell. The old cell remains disconnected and preserved (no-delete; swappable back at any time by swinging the edges back). `swap_nodes` is a pure edge and topology diff: no `config.json` rewrite of an existing cell, no `cell.db` migration, no `cell_id` takeover (the new implementation has its own identity), and it inherits the atomicity model of the edge mutation. What "external" means for a subtree (GH #256): an edge is external when its other endpoint lies outside the subtree rooted at `match`. The wiring with which that root serves its own children (`<unit>` to `<unit>/<cell>` and back) is internal and is not carried along; it stays with the unit it belongs to. The old unit is thereby preserved whole, which is what makes swinging the edges back restore a working unit. On a leaf the difference is invisible, which is why it went unnoticed until GH #256. Conditions for the instantiate form: the `with` target path is free in the registry and on the filesystem, and the template named is not a single hive cell (`hive_template_single_cell`, GH #572; a hive has no factory and enters the world only as the root of a multi-cell subtree, and a subtree template is refused at this door with `schema` anyway). A directory already lying there that no registry row names (a hand-placed tree, the residue of an aborted migration) is refused by name rather than overwritten; taking it over is done with an `add_nodes` at the same path (a resume) or an `add_nodes[].adopt` stating the `cell.type` expected there. `with.params` runs through the same override-key check as `add_nodes[].override_params` (GH #666): a key the named template does not declare is refused pre-destructively with `schema`, in the flat form, because the instantiate form takes a single-cell template. It asks the `operator_set` question too (GH #661): a param the named template declares as operator-set has to be in `with.params`, otherwise `operator_param_unset` — the door that grows a node is the same door whichever operation reaches it. |
 | `move_nodes` | **Relocation**: moves a cell to a different address, as in `{"match": {"name": "fetch"}, "to": "helpdesk/fetch"}`. A path is a cell's identity, which is why this is the only operation that changes one: the directory is moved with `rename(2)`, carrying `config.json`, `cell.id` and `cell.db`; the registry row is re-addressed by an UPDATE (`cell_id`, `created_at` and `instantiated_at` survive); and every edge naming the old path names the new one afterwards, condition and modifier verbatim. One committed mutation, with no window in which the lane is wired twice or not at all. Against `swap_nodes`: a swap swings edges onto a different implementation with its own identity and its own `cell.db`; a move keeps the same cell at a different address. Conditions: the target lies inside the mutation scope, the target is free (registry, hive scopes, filesystem), its parent directory already exists, and the source is not a hive and has nothing beneath it (a half-moved hive would leave its children addressed under a path that no longer exists, so it is refused by name). The parent hive's `params.graph` is not rewritten: since GH #168 the persisted edge table is the boot topology on a reboot, so the file is seed and not state. |
-| `add_templates` | **Put a reusable template into the running colony's instance-local library** (GH #440). An entry is `{"name": …, "files": {"<relpath>": "<content>", …}}` and `template.json` is mandatory. The write always goes to `{templates_root}/local/<name>/`: the colony **builds** that path and never takes one from a field of the body, which is what puts the shipped library out of reach. The operation claims no address and vacates none, so it contributes nothing to the post_state. It runs first in the diff, so an `add_nodes` of the same diff can resolve the template by name; one level up the same holds inside a manifest, where a later entry resolves what an earlier one registered, and that is why the registration is a declaration and not a side channel. Two refusals, both pre-destructive: a name outside `^[a-z][a-z0-9-]{1,63}$` or a file path that climbs out of the directory is `invalid_template_name`; a name the registry already answers is `template_name_taken`, at its position rather than as an abort of the next rescan for everybody. The write is staging plus one `rename(2)`, so a concurrent rescan can never pick up a half-written `template.json`. A refused entry leaves nothing on disk. The files are not substituted (GH #611): `files` carries the bytes of the class and no value of this mutation, so it is written byte for byte, and every `${…}` in it binds at instantiation or at read time. The entry's other fields are substituted like every other part of the diff. |
+| `add_templates` | **Put a reusable template into the running colony's instance-local library** (GH #440). An entry is `{"name": …, "files": {"<relpath>": "<content>", …}}` and `template.json` is mandatory. The write goes to `{templates_root}/local/<name>@<version>/` — or `{templates_root}/local/<name>/` when the entry's `template.json` declares no version: the colony **builds** that path from the clamped name and the parsed version and never takes one from a field of the body, which is what puts the shipped library out of reach. The operation claims no address and vacates none, so it contributes nothing to the post_state. It runs first in the diff, so an `add_nodes` of the same diff can resolve the template by name; one level up the same holds inside a manifest, where a later entry resolves what an earlier one registered, and that is why the registration is a declaration and not a side channel. Three refusals, all pre-destructive: a name outside `^[a-z][a-z0-9-]{1,63}$` or a file path that climbs out of the directory is `invalid_template_name`; a `template.json` declaring a `version` that is not `major.minor.patch` is `schema`, because such an entry would register into the library and answer to no reference at all; an entry the registry already answers is `template_name_taken`, at its position rather than as an abort of the next rescan for everybody. Since GH #664 the library is keyed by name AND version, so a **new** version of a registered class registers beside the old one, which stays where it is and stays resolvable; what remains refused is the identical `name@version`, and an entry nobody can pin — one without a version while versioned entries of that name exist, or the mirror case. The write is staging plus one `rename(2)`, so a concurrent rescan can never pick up a half-written `template.json`. A refused entry leaves nothing on disk. The files are not substituted (GH #611): `files` carries the bytes of the class and no value of this mutation, so it is written byte for byte, and every `${…}` in it binds at instantiation or at read time. The entry's other fields are substituted like every other part of the diff. |
 | `seed_rows` | **Put rows into a store of a running colony** (GH #456). An entry is `{"target": "<path of a store>", "table": "<a table that store declares>", "rows": [ {…} ]}`. The eighth operation is the only one that changes what is inside a cell rather than where cells are, and it exists for the class of rows that are permissions and keys rather than data: an `access` policy row, a grant, a firewall rule, a subscriber. Those rows used to reach a running colony as a bare store message, a path with three holes: no digest, no access verdict before the write, and no `mutation_log` row. Through this door they have all three. It is checked against the post_state: the target is a registered `store` cell (any other type is `seed_target_not_a_store`, and so is a target where nothing stands), the table is named by its `params.schema` (otherwise `seed_table_undeclared`, and the refusal names the tables that do exist), and every key of every row is a declared column (otherwise `schema`). The target may have been created by the same diff. The operation claims no address and vacates none, so it contributes nothing to the post_state; it runs last in the diff, immediately before the commit, so that every refusal that can still happen has happened. Idempotent by declaration: a row already present, column for column, is counted and not written a second time. A store's declared tables carry no primary key, so nothing else would be idempotent, and `meclaw --apply` of the same manifest twice is therefore a no-op. It is the same seed mechanic and not a second one: the same JSON to SQL binding the staging seeder uses, the table built from the same declared column list, and a store-owned table left standing without its key is repaired by `ensure_keyed_table` at the next wake (GH #255). The write goes into the target's `cell.db` even while the cell is awake: the colony is the write authority, WAL plus `busy_timeout` serialise the second connection, and a `store` holds no in-memory view that could go stale. A `params.write_surface: "internal"` bounds messages, not this door: the reach here is the mutation scope and the access verdict over it. |
 
 The match pattern for `remove_*` and `swap_nodes` references nodes and edges by properties (`name`,
@@ -945,12 +945,15 @@ a future code. Notes on the substrate codes:
   climbs out of the template directory. Pre-destructive, emitted by
   `mutation::register::parse_entry`. The colony builds the target path and takes none from the body,
   hence a refusal, not a sanitisation.
-- `template_name_taken` (GH #440): an `add_templates[]` entry names a template the registry already
-  answers to. Refused at its position: the entries before it stay applied, the ones after it are
-  never looked at. The same code carries a directory that already lies under `local/<name>/` without
-  a registry row naming it, refused by name rather than overwritten, and since GH #443 two entries
-  of one `add_templates` array naming the same template, checked against what this mutation has
-  itself staged.
+- `template_name_taken` (GH #440, narrowed by GH #664): an `add_templates[]` entry names a
+  `name@version` the registry already answers to, or an entry nobody can pin — one without a version
+  while versioned entries of that name exist, or the mirror case. A new version of a registered name
+  is taken and registers beside the old one. Refused at its position: the entries before it stay
+  applied, the ones after it are never looked at. The same code carries a directory that already lies
+  under the target name without a registry row naming it, refused by name rather than overwritten,
+  and since GH #443 two entries of one `add_templates` array naming the same target, checked against
+  what this mutation has itself staged — as are two entries of one array naming one class once with
+  a version and once without, which build different targets and are refused on the class instead.
 - `v_lane_no_connect_point` (GH #559): a v-lane ends inside a hive whose contract does not name the
   endpoint for that lane in an `at`. The opening is pronounced by the target itself and never taken
   by the caller; a contract without an `at` never produces this code.
@@ -959,6 +962,16 @@ a future code. Notes on the substrate codes:
   lane may not be passed by.
 - `v_lane_unanchored` (GH #559): a `swap_nodes` replaces a subtree a v-lane ends in, and the new
   form has no such relative path or does not name it for this lane. The whole swap is refused.
+- `operator_param_unset` (GH #661): an instantiating diff entry grows a node from a template that
+  declares a param `operator_set` in its `contract.settings`, and brings no value for it. Such a
+  param has no meaning until an operator sets it — the shipped `default` is a shape and not a
+  working value — so the entry is refused rather than the node grown with it. Checked is the act and
+  not the value: setting the param to exactly the shipped default passes. It holds at both
+  instantiating doors (`add_nodes[].template` and the instantiate form of `swap_nodes[].with`) and
+  for a resume, which stages the template tree again; an `add_nodes[].adopt` entry names no template
+  and is exempt. Pre-destructive and collecting, emitted at stage 4 by
+  `subtree::check_operator_set_params` — three unset params are three named violations in one
+  refusal. The message names the address, the template, the key and the shipped default.
 - `hive_template_single_cell` (GH #572): an instantiating diff entry names a template whose root is
   a hive with nothing under it. A hive has no factory and enters the world only as the root of a
   multi-cell subtree. It holds at both instantiating doors (`add_nodes[].template` and the
@@ -1345,6 +1358,8 @@ phase column below states in which phase a flag is first declared and becomes fu
 | `--log <path>` | 0 | `<root>/log.jsonl` | Tracing JSONL path |
 | `--log-level <level>` | 0 | `info` (`colony.json log_default_level` is not consulted today) | Tracing level |
 | `--log-filter <filter>` | 0 | none | `RUST_LOG`-style filter |
+| `--log-stderr <auto\|off>` | GH #662 | `auto` | The tracing stream on stderr, one compact line per event. `off` leaves stderr untouched |
+| `--log-file <auto\|off>` | GH #662 | `auto` | The JSONL file at `--log`. `off` opens no file and creates no directory for one |
 | `--version` | 0 | none | Version info |
 | `--help` | 0 | none | Help |
 | `--env <path>` | 6 | `<root>/.env` | `.env` file for variable substitution |
@@ -1365,6 +1380,13 @@ phase column below states in which phase a flag is first declared and becomes fu
 | `--vault-key-source <SOURCE>` | GH #151 | `auto` | Where the vault passphrase comes from. It says SOURCE deliberately: the switch must never be able to carry key material. Default `auto`, where a credentials directory (systemd) wins, else the terminal prompts |
 | `--vault-key-file <PATH>` | GH #151 | none | Key file for `--vault-key-source plainfile`. Refused unless it is unreadable by group and others, the same answer ssh gives |
 
+Both sinks are on without a flag, and they answer to different owners. stderr belongs to whatever
+started the process — under an init system that is the ring buffer, the rotation and
+`journalctl -u`, none of which the colony has to build. The file belongs to the colony, stays JSON and
+therefore stays `jq`-able. `RUST_LOG` steers the stderr half alone; the file keeps `--log-filter` or
+`--log-level`, so a variable already set in a runner's environment cannot redirect what a proof script
+reads out of the file.
+
 The colony has no subcommands (`meclaw start`, `meclaw mutate` and the like). nginx-style:
 one binary, many flags, one mode switch (`--daemon`, `--validate`, `--sandbox-probe`). Operations
 are the outside world's business, whether systemd, a wrapper script or a builder LLM.
@@ -1380,8 +1402,8 @@ be a client, never an operating mode.
 **Info-only flags are side-effect-free**: `--version` and `--help` print their information to stdout
 and exit with 0, without initializing the tracing subscriber, without filesystem writes (in
 particular no `log.jsonl` creation), without subprocess spawn. They act before the subscriber setup.
-Tests for the subscriber setup path happen via direct unit tests of the setup function, not via CLI
-subprocess calls.
+The subscriber may be installed only once per process, so the setup path is tested through child
+processes of the real binary, not from inside the library.
 
 ### `meclaw ask`
 
@@ -2907,11 +2929,14 @@ store, collector and loopback edge.
 Templates are cells, or whole subtrees including hive scope markers, under `templates/`. Their role
 is class or blueprint. The directory structure within `templates/` is freely choosable; the scanner
 finds templates by the `template.json` file. Identification is by name, because template-internal
-graphs need stable name references and UUIDs are assigned only after instantiation. The name is
-unique across `templates/`: if two `template.json`s declare the same `name`,
-the scan aborts with an error (`ScannerError::DuplicateName`), regardless of depth and `version` (GH #277).
-Versioning is optional, with a directory name `<name>@<version>` or simply `<name>/`, which counts
-as unversioned.
+graphs need stable name references and UUIDs are assigned only after instantiation. Name and version
+together are unique across `templates/`: if two `template.json`s declare the same `name` and the same
+`version`, the scan aborts with an error (`ScannerError::DuplicateVersion`), regardless of depth
+(GH #664; until then the name alone was unique, GH #277). Two different versions of one name are two
+entries of one class, and a bare reference still has exactly one answer — the resolver gives it (the
+highest version, R3). Versioning is optional, with a directory name `<name>@<version>` or simply
+`<name>/`, which counts as unversioned; an unversioned entry beside versioned ones of the same name
+is refused at the door that writes it, because nobody could pin it.
 
 ### The `template.json` index
 
@@ -3006,21 +3031,31 @@ inside the template, GH #140). `${ctx.X}` is mutation-wide, because one mutation
 - The scan is recursive with no exclusion. `scan_templates_dir`
   (`crates/meclaw-colony/src/templates/scanner.rs`) walks the whole tree below `templates/`, and
   every directory with a `template.json` is registered regardless of depth and parent name.
-  `templates/drafts/<name>/` is therefore fully instantiable, whatever the name suggests. Draft and
+  `templates/drafts/<name>/` is therefore fully instantiable, whatever the name suggests. The one
+  exception is a `version` the resolver cannot read: that entry is skipped with its reason instead
+  of registration, because it would sit in the library and answer to no reference at all — the same
+  rule `add_templates` applies at its own door (GH #668). Draft and
   staging material does not belong below `templates/`; builder staging lies in `<root>/staging/` and
   is promoted via `rename(2)`.
 
 ### Resolution `name@version`
 
 ```json
-"template": "llm-openai"           // → the one registered version
+"template": "llm-openai"           // → the highest registered version
 "template": "llm-openai@2.1.0"     // → exactly this version
 ```
 
-Without a version you get the one version registered under that name. Correction (GH #277): the
-earlier rule "Without a version: the highest SemVer version" is dead under the uniqueness rule and
-lives on only as a tie-break inside `TemplatesRegistry::resolve`, for a registry built by some means
-other than the scan. SemVer ranges (`^`, `~`) are post-roadmap.
+Rule R3, in the resolver's own order: `@<version>` is an exact match, and a reference whose version
+is not `major.minor.patch` resolves to nothing like any other miss (`template_missing`). Without a
+version the highest registered version wins; an unversioned entry is picked only when the name has
+no versioned entry at all ("unversioned is less than any version"). SemVer ranges (`^`, `~`) are
+post-roadmap.
+
+What GH #277 (ruling Q7) added here was that a bare name had exactly one candidate, because the scan
+refused a second `template.json` of the same name whatever its version said. GH #664 took that back
+in its scope: name and version together are unique, a class may carry several versions, and the one
+answer to a bare name is the resolver's business again. A class that carries a version only ever has
+versioned entries, because the door that writes one refuses an unversioned entry beside them.
 
 On errors: a template referenced but not in the registry fails the instantiation, sends an error
 message to `reply_to` if set, and the mutation is rejected, with a batch mutation rejected entirely.
@@ -3066,9 +3101,12 @@ post-roadmap.
 Templates are read-only classes and are never automatically removed.
 
 A template is added at runtime with `add_templates` (GH #440). It enters the instance-local library
-(`{templates_root}/local/<name>/`) as a mutation declaration and is resolvable from that same
-mutation onwards, while the shipped library is out of reach because the target path is built rather
-than taken. It becomes visible only when the mutation commits (GH #443): the files land in the
+(`{templates_root}/local/<name>@<version>/`, or `local/<name>/` when it declares no version) as a
+mutation declaration and is resolvable from that same mutation onwards, while the shipped library is
+out of reach because the target path is built rather than taken. A new version of a class that is
+already registered lands beside the old one (GH #664); the old one stays where it is and stays
+resolvable, which is why there is nothing to remove and no `remove_templates` to do it with. It
+becomes visible only when the mutation commits (GH #443): the files land in the
 mutation's own staging area, a later entry of the same diff resolves against them there, and the
 `rename(2)` into the library runs immediately before the commit flush, so a refusal further down the
 same mutation leaves the library as it found it.
@@ -4002,16 +4040,17 @@ This corrects an older version of this paragraph that said templates never arriv
 - Trace reconstruction via `parent_message_id` chaining in the central message log: a flat `SELECT`,
   with the parent-child tree built client-side or UI-side (index `idx_msglog_parent`).
 - Blobs separately as JSON files.
-- An operations log at `{root}/log.jsonl`.
+- An operations log at `{root}/log.jsonl`, and the same stream on stderr.
 
 ## Logging
 
-The default is `{root}/log.jsonl` (JSON Lines, append-only, created by colony at start if not
-present). The engine is `tracing` plus `tracing-subscriber` with a JSON formatter, and every
-subsystem (colony routing, cell tasks, HTTP API) writes into the same stream. Overrides are the CLI
-flags `--log <path>`, `--log-level <level>` (default `info`) and `--log-filter <expr>`, a per-module
-filter such as `meclaw_core=debug,meclaw_colony=info`. Rotation is an operations matter via external
-`logrotate` or similar.
+The stream goes to two places at once: `{root}/log.jsonl` (JSON Lines, append-only, created by colony
+at start if not present) and stderr, in a compact one-line format. The engine is `tracing` plus
+`tracing-subscriber`, and every subsystem (colony routing, cell tasks, HTTP API) writes into the same
+stream. Overrides are the CLI flags `--log <path>`, `--log-level <level>` (default `info`),
+`--log-filter <expr>`, a per-module filter such as `meclaw_core=debug,meclaw_colony=info`, and the two
+sink switches `--log-stderr` and `--log-file`. Rotation of the file is an operations matter via
+external `logrotate` or similar; the stderr half is rotated by whoever collects it.
 
 ```json
 {"ts":"2026-05-17T14:32:15.123Z","level":"error","event":"mutation_failed","error_code":"template_missing","scope":"/main","mutation_id":"01HXY...","correlation_id":"01HXZ...","details":{"template":"llm-anthropic@2.1.0"}}
@@ -4021,7 +4060,7 @@ Three logs coexist and complement each other.
 
 | Log | Path | Purpose |
 |---|---|---|
-| Operations log | `{root}/log.jsonl` | the tracing stream of all subsystems, for operator and debug use, grep- and jq-friendly |
+| Operations log | `{root}/log.jsonl` and stderr | the tracing stream of all subsystems, for operator and debug use; the file is grep- and jq-friendly, the stderr half is what an init system collects |
 | Mutation log | a table in `colony.db` | a structured audit trail of only the mutations, queryable via the API `GET /mutations` |
 | Message log | a table in `colony.db` | every routed message with `trace_id`, `parent_message_id`, `from_path` and `to_path`, filterable by path prefix for scoped tracing |
 

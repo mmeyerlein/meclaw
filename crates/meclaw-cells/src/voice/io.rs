@@ -612,10 +612,25 @@ pub async fn run_io(mut io: VoiceIo, mut reconfig_rx: mpsc::Receiver<VoiceReconf
     //   and this set is how that survives the move to a handed stream;
     // * `shutdown_tx` closes, and every upgraded socket — which no `JoinSet`
     //   here holds, because axum's `on_upgrade` runs it — reads that and sends
-    //   its client a close frame ([`VoiceIoShared::shutdown`]).
+    //   its client a close frame ([`VoiceIoShared::shutdown`]);
+    // * `handoff` is the receiving end of the channel the listener hands
+    //   streams over, and dropping it CLOSES that channel.
+    //
+    // The ORDER of the four is deliberate. `shutdown_tx` goes first, so every
+    // socket that had already upgraded gets its close frame while the tasks
+    // around it are still standing. `handoff` goes before `registration`, and
+    // that pair is the point: in the window between them the name is still on
+    // the table and its channel is already closed, so the listener's `try_send`
+    // fails and the connection reads `503 surface busy` (`surfaces::listener`,
+    // `refuse_busy`) instead of the API fallback's `404`. The other order would
+    // leave an open channel with nobody reading it — the `try_send` would land
+    // in the queue and the connection would be swallowed without an answer.
+    // A `503` says "this name is here and cannot take you now"; the `404` would
+    // say "no such mount", which is the one thing that is not true at that
+    // moment.
     //
     // A line after this call would run on exactly one of the two paths, which
-    // is why the three drops below are all there is.
+    // is why the four drops below are all there is.
     serve_until_the_handler_goes(
         &shared,
         &mut reconfig_rx,
@@ -627,6 +642,7 @@ pub async fn run_io(mut io: VoiceIo, mut reconfig_rx: mpsc::Receiver<VoiceReconf
     .await;
     drop(shutdown_tx);
     drop(connections);
+    drop(handoff);
     drop(registration);
 }
 

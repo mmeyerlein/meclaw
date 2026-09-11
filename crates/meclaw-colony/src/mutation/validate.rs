@@ -1653,6 +1653,16 @@ fn collect_add_node_addresses(
         }
     }
 
+    // GH #661 (ADR-0032): and the other direction of the same question — not
+    // "does this key exist" but "is the key that HAS to be set missing". It runs
+    // OUTSIDE the `override_params` block above on purpose: the measured entry
+    // carried no `override_params` at all, which is exactly the shape that block
+    // never sees. An `adopt` entry never reaches this function (the caller
+    // `continue`s on it, and it names no template to have a declaration); a
+    // RESUME does, because it stages the template tree again and writes
+    // `config.json` again, which is how the silent defaults get there.
+    collect_operator_set_params(entry, n, template, templates, out);
+
     // Ebene 2: cell.type for resolved template must be in factories.
     // Use entry.name (resolved name, e.g. "echo") not raw template string
     // (e.g. "echo@1.0.0") as ct_map key — fixes R3 versioned-ref mismatch.
@@ -1679,6 +1689,51 @@ fn collect_add_node_addresses(
     // fact, same code, the other door.
     if let Err(error) = reject_if_single_cell_hive_template(entry, template, templates, ct_map) {
         out.push(error);
+    }
+}
+
+/// GH #661 — every `operator_set` param the entry leaves unset, across every
+/// cell of the staged subtree.
+///
+/// The address form follows the template's shape, the way
+/// [`crate::mutation::subtree::check_override_params`] does: flat on a
+/// single-cell template, keyed by the cell's path on a subtree. A `ref` marker's
+/// own `override_params` counts as a value — it is the default layer under the
+/// mutation, so a param a ref already sets is a param an operator set once, at
+/// the place where the composition was authored.
+///
+/// A template that does not parse is stage 2's verdict and is silent here; the
+/// pipeline stops at stage 2 long before stage 4 runs.
+fn collect_operator_set_params(
+    entry: &crate::templates::TemplateEntry,
+    n: &JsonValue,
+    template: &str,
+    templates: &crate::templates::TemplatesRegistry,
+    out: &mut Vec<MutationError>,
+) {
+    let Ok(parsed) = crate::mutation::subtree::parse_subtree(&entry.filesystem_path, templates)
+    else {
+        return;
+    };
+    let over = n.get("override_params");
+    let flat = parsed.cells.len() == 1;
+    for cell in &parsed.cells {
+        let (cell_key, params) = if flat {
+            (None, over)
+        } else {
+            (
+                Some(cell.rel_path.as_str()),
+                over.and_then(|o| o.get(&cell.rel_path)),
+            )
+        };
+        crate::mutation::subtree::check_operator_set_params(
+            cell,
+            cell_key,
+            template,
+            params,
+            parsed.ref_overrides.get(&cell.rel_path),
+            out,
+        );
     }
 }
 
@@ -2106,6 +2161,54 @@ fn validate_swap_with_entry_full(
         // whose root is a hive AND which has nested cells is refused here as
         // `schema` by the line above, and that verdict does not change.
         reject_if_single_cell_hive_template(entry, template, templates, ct_map)?;
+
+        // GH #666: the params of an instantiating swap go through the very key
+        // check an `add_nodes` entry's `override_params` goes through (GH #294).
+        // `stage.rs` maps `with.params` onto that same contract before staging
+        // it (`m.insert("override_params", …)`), but the #294 arm only ever
+        // looked at `add_nodes` — so a mistyped key committed here, the node
+        // spawned with the shipped default, and nothing said a word. Same
+        // helper, same `error_code`, same stage: one question, one answer.
+        //
+        // The flat address form (`cell_key: None`) is the only one this branch
+        // can reach: `reject_if_subtree_template` stands above it, so what is
+        // left is a single-cell template with nothing to address.
+        // GH #661 (ADR-0032, OR-A3): and the other direction of the same
+        // question at this door — an `operator_set` param the entry leaves
+        // alone. The parse is shared with the key check above, which is why the
+        // two live in one block: both doors that grow a node from a template ask
+        // both questions, and the measured defect is the same at either.
+        let parsed = crate::mutation::subtree::parse_subtree(&entry.filesystem_path, templates)?;
+        if let Some(cell) = parsed.cells.first() {
+            if let Some(params) = with_obj.get("params") {
+                crate::mutation::subtree::check_override_params(cell, None, template, params)?;
+            }
+            let mut unset = Vec::new();
+            crate::mutation::subtree::check_operator_set_params(
+                cell,
+                None,
+                template,
+                with_obj.get("params"),
+                parsed.ref_overrides.get(&cell.rel_path),
+                &mut unset,
+            );
+            // COLLECTED, like stage 4 itself and like the add door beside it.
+            // The `Result` form this door speaks carries one error, so the
+            // violations are joined into one — `\n`-separated, which is the
+            // shape the collecting pipeline puts on the wire for the same code.
+            // Returning only the first would send the submitter round once per
+            // param and make the briefing's own sentence false at one of the two
+            // doors it names (*naming every such param of the entry at once*).
+            if !unset.is_empty() {
+                return Err(MutationError::OperatorParamUnset(
+                    unset
+                        .iter()
+                        .map(MutationError::message)
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                ));
+            }
+        }
     } else if has_template {
         // ── `template` without `name` ────────────────────────────────────
         // The instantiate form REQUIRES `name` (paket-2 graph-swap: t3 needs an

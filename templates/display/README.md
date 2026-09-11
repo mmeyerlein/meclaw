@@ -1,4 +1,4 @@
-# `display@2.0.0`
+# `display@2.1.0`
 
 One screen, reached at `/<mount>/` on the colony's one listener, that many
 agents and applications write onto at the same time. A **view** is a named, owned, optionally expiring piece of
@@ -134,11 +134,22 @@ statics for n slots, and the `web` README says as much: a root with one child is
 "a composition CHOICE now rather than a constraint".
 
 The **layout** is this scope's own, and it travels in the `display-shell`
-template as one `<style>` block rather than as a rule in `/vision.css`: the
-token sheet belongs to the `web` template and describes a design language,
-while *main is wide and aside is narrow* is a statement about this screen. Two
-flex columns, the aside at `clamp(15rem, 22%, 24rem)`, `display: none` while it
-is empty, and stacked one above the other under 60rem.
+template rather than as a rule in `/vision.css`: that sheet belongs to the
+`web` template and describes the base language of every surface, while *main
+is wide and aside is narrow* is a statement about this screen. Two flex
+columns, the aside at `clamp(15rem, 22%, 24rem)`, `display: none` while it is
+empty, and stacked one above the other under 60rem.
+
+The shell carries it in **one `<style>` block, together with the design
+language**: first the layout (where the columns and the microphone sit), then
+the faces built from `params.font_base` (below), then the sheet
+`compose/display-dna.css`, byte for byte. The sheet comes last on purpose --
+it re-tokenises `/vision.css` at equal specificity, so it needs no stacked
+`:root` to win. The file is the source; `compose.py` carries the same bytes in
+`KIT_CSS`, and a test compares the two with the copy inside `config.json`. So
+the language reaches a screen the way everything else does, by
+`component.define`, and a change to it is a change to a file in this template
+and a new version, never a message a hand sends to a running colony.
 
 ## What is on the screen: the `views` table
 
@@ -276,13 +287,27 @@ can trip either refusal.
 
 ## The components this scope defines
 
+Five the screen is made of, and a catalogue of **twenty-six** an application may
+name in its tree without defining them: four windows and twenty-two pieces of
+content, the vocabulary the sheet is written against.
+
 | component | layer | what it is |
 |---|---|---|
-| `display-shell` | `content` | the page root. `stylesheet` emits the link to the token sheet, and the shell carries this scope's own two-column rule |
+| `display-shell` | `content` | the page root. `stylesheet` emits the link to the base sheet, `faces` carries the `@font-face` rules built from `params.font_base`, and `vocab` a fingerprint of this list |
 | `display-region` | `content` | one per region, a direct child of the root, and the parent of every view standing in it |
-| `display-view-prose` | `navigation` | a glass card with an optional title and a paragraph |
+| `display-view-prose` | `navigation` | a `display-pane` with an optional title and a paragraph |
 | `display-view-custom` | `content` | the wrapper an application's own tree hangs in |
 | `display-mic` | `content` | the hold-to-talk button, its transcript line and its state line, plus the browser half that runs them |
+| `display-pane`, `display-panel`, `display-overlay`, `display-ornament` | `navigation` | the four windows, and the only glass in the catalogue: a pane in the flow, a taller panel, an overlay above the page, an ornament that is a thing rather than a place |
+| `display-value`, `display-text`, `display-voice`, `display-kicker`, `display-list`, `display-item`, `display-table`, `display-weather`, `display-clock`, `display-timer`, `display-chat`, `display-chat-line`, `display-notification`, `display-media`, `display-document`, `display-status`, `display-action`, `display-choice`, `display-option`, `display-chart`, `display-stack`, `display-progress` | `content` | the twenty-two pieces of content a window holds, each with the props its `prop_schema` declares |
+
+**The root carries a fingerprint of this list**, `vocab`, twelve hex characters
+over the definitions as JSON. The definitions travel on the bootstrap pass, and
+they travel again when a running screen's root holds another fingerprint: a
+compose cell swapped for a newer version finds a page that is already its own
+and defines the whole list again, once per change of vocabulary and never per
+tick. The same economy an application's components have -- they travel when
+they changed -- for the screen's own language.
 
 **The region is on that list because a view hangs under a region rather than
 under the root** -- that is what makes a column a place. It used to be on it for
@@ -300,6 +325,17 @@ what lets an application put its own glass pane inside a view.
 None of them is `editable`. A prop a browser may write is an authorisation
 an application grants over its **own** component; the frame around it is not a
 thing anybody drags.
+
+## `params.font_base`
+
+The sheet names two faces, Inter and Fraunces, at the head of two fallback
+stacks, and declares neither. `font_base` is the directory the two files are
+served from, relative to the page's own base, and the compose cell builds the
+two `@font-face` rules from it. Empty, the shipped default, means no
+`@font-face` at all: the fallback stacks carry the type and the page makes no
+request. The file names are fixed, `inter.woff2` and `fraunces.woff2`, so what
+an operator provides is one directory, named with or without its trailing
+slash. No font file ships in this repository.
 
 ## Talking to the screen
 
@@ -327,6 +363,31 @@ plain `http://`, the button says the microphone needs https or localhost instead
 of asking for a permission the browser will not grant. And the sample rates come
 from the `hello` frame, because the cell never resamples: the page adapts, cutting
 20 ms PCM16 frames at the rate that was declared.
+
+### What the button says, since 2.0.1
+
+The line under the button is the only thing a person has to go on, so it speaks
+at all three moments a press can end somewhere other than a turn.
+
+- **While the browser is asking**, it says `asking for the microphone…`. The
+  permission prompt opens inside the gesture, on a screen that has never been
+  given the microphone before, and the press cannot become a hold until it is
+  answered. A page that said nothing there looked like a page that does nothing.
+- **When the answer came after the key went up**, it says `press again`. The
+  microphone is open now and the gesture is over; the next press is a whole
+  take, and nothing was recorded of the one that asked for it.
+- **While it holds**, it says `listening…`, and the line goes back to naming the
+  providers when the key comes up. A waiting sentence that stays on the screen
+  after the wait is over is the same lie as a screen that says nothing.
+- **While it joins**, it says `joining…`. A press waits for the join to be
+  acknowledged before it holds: the frames of a hold are buffered until then,
+  the raw audio pushes behind them are not, and audio that overtook its own
+  `hold` would reach the cell with no boundary open.
+- **When the call closed**, it says `closed <code>` and the button stays alive.
+  A close ends a CALL, not the screen: the next press joins a new one. Only a
+  REFUSED join is final — no mount under that name, or no room on the socket —
+  because that answer is about this screen rather than about one call, and
+  pressing again cannot change it.
 
 What is not here: no transcript history, no list of turns, no way to scroll back.
 The line beside the button holds the last thing that was heard and nothing more.
@@ -378,9 +439,24 @@ agent. So it stands beside the agents rather than inside one:
   set, every semantic event of that connection carries `hop.user_id`. A `hop` is
   single-hop, so the out-edge of the screen owes it a promotion into the context
   -- `"user_id": "has(hop.user_id) ? hop.user_id : ''"` beside the two channel
-  keys in its `set_context`, the same line a channel's entry edge carries
-  (`examples/organism/grow-screen.json`). Without it the identity is gone one hop
-  past the screen.
+  keys in its `set_context`, the same line a channel's entry edge carries.
+  Without it the identity is gone one hop past the screen. The whole edge, as
+  `examples/organism/grow-screen.json` writes it:
+
+  ```json
+  {
+    "from": "./display",
+    "to": ".",
+    "condition": "has(hop.route) && (hop.route == 'event' || hop.route == 'receipt')",
+    "modifier": {
+      "set_context": {
+        "channel_node": "'display'",
+        "channel": "'display'",
+        "user_id": "has(hop.user_id) ? hop.user_id : ''"
+      }
+    }
+  }
+  ```
 - **What `<base href>` means for a component.** The page carries
   `<base href="<prefix>/<mount>/">`, so a relative URL in any component
   resolves under this screen — and a bare `#fragment` resolves against the base

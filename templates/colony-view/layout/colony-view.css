@@ -52,11 +52,10 @@
   --hive9:rgba(245,130,95,.075); --hive10:rgba(190,190,190,.090);
 }
 
-html,body{ margin:0; height:100%; background:#fbfbfa; }
-@media (prefers-color-scheme: dark){ :root:not([data-theme=light]) body{ background:#17181b; } }
-:root[data-theme=dark] body{ background:#17181b; }
-
-.colony-view{ position:absolute; inset:0; background:var(--bg); color:var(--ink);
+/* The view's own size, inside whatever slot a screen gives it. Nothing here
+   reaches the document: `html`, `body` and `:root` belong to the screen, and a
+   view that wrote them would paint over every other view beside it (#671). */
+.colony-view{ position:relative; height:62vh; min-height:22rem; background:var(--bg); color:var(--ink);
   font:13px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
   cursor:grab; }            /* the empty canvas pans */
 .colony-view.panning{ cursor:grabbing; }
@@ -117,8 +116,8 @@ html,body{ margin:0; height:100%; background:#fbfbfa; }
   color:var(--muted); font:11px system-ui,sans-serif; }
 
 /* The detail panel. Fixed to the right edge rather than a flex column, because
-   the canvas is one absolutely-positioned element inside a LiveView container and
-   the SVG has to keep the whole width to scale into. */
+   the canvas is one positioned element inside a view slot and the SVG has to
+   keep the whole width to scale into. */
 .colony-view .detail{ position:absolute; top:0; right:0; width:330px; max-height:100%;
   overflow:auto; padding:12px 14px; box-sizing:border-box;
   background:var(--panel);

@@ -44,6 +44,7 @@ const DISPLAY_FILES: &[&str] = &[
     "views/config.json",
     "compose/config.json",
     "compose/compose.py",
+    "compose/display-dna.css",
 ];
 
 /// Every file `colony-view` is made of.

@@ -322,7 +322,7 @@ pub async fn run_connection(
     link: ClientLink,
     shared: Arc<VoiceIoShared>,
     session_id: String,
-    mode: Mode,
+    mut mode: Mode,
     negotiated: Negotiated,
     conn_id: u64,
     to_conn_tx: mpsc::Sender<ToConnection>,
@@ -360,11 +360,21 @@ pub async fn run_connection(
     }
 
     // The echo path has no provider to lose, so it has no session to restart.
-    let mut stt = if echo {
+    //
+    // Neither has a `hold` connection yet (GH #657): there the session belongs
+    // to the hold rather than to the connection, and a page that is looked at
+    // before anybody speaks would otherwise spend its whole life paying a
+    // provider's idle deadline for silence it was designed to produce.
+    let mut stt = if echo || mode == Mode::Hold {
         None
     } else {
         Some(SttSession::start(&shared, input))
     };
+    // Whether a `hold` boundary is open (GH #657). The turn machine keeps its
+    // own copy — it owns what a boundary MEANS — and this one answers a
+    // narrower question the connection has to answer alone: whether a session
+    // that just ended was carrying a held key or nobody's silence.
+    let mut holding = false;
     let mut stt_retried = false;
     let mut retry_at: Option<Instant> = None;
     let mut speaking: Option<Speaking> = None;
@@ -506,7 +516,12 @@ pub async fn run_connection(
 
             () = sleep_until_opt(retry_at) => {
                 retry_at = None;
-                stt = Some(SttSession::start(&shared, input));
+                // In `hold` a retry the client is not holding for would open a
+                // session nobody feeds, and it would die of the same idle
+                // deadline a moment later. The next `hold` opens one.
+                if mode != Mode::Hold || holding {
+                    stt = Some(SttSession::start(&shared, input));
+                }
             }
 
             event = next_stt_event(&mut stt) => {
@@ -524,6 +539,26 @@ pub async fn run_connection(
                     // recognised any more — so both take the retry path.
                     None => {
                         let Some(session) = stt.take() else { break };
+                        // GH #657: in `hold` mode a session that ends with no
+                        // key held ended the way the arrangement intends.
+                        // Between two holds no audio flows, so the provider's
+                        // idle deadline is certain to expire — and telling a
+                        // page that its microphone failed, then closing the
+                        // socket under it, is how a loaded screen used to end
+                        // up with a dead button after one minute of quiet. The
+                        // session is dropped in silence and the next `hold`
+                        // opens a new one.
+                        if mode == Mode::Hold && !holding {
+                            drop(session);
+                            // And it costs no retry: the budget exists for a
+                            // provider that refuses twice in a row, not for a
+                            // connection that outlives a day of quiet holds.
+                            // Without this a single failure in the morning
+                            // makes the next one in the evening a `1011` —
+                            // the dead button this task was built against.
+                            stt_retried = false;
+                            continue;
+                        }
                         let (event, detail) = session.outcome(shared.external_timeout).await;
                         shared.emit(VoiceEvent::Stt {
                             session_id: session_id.clone(),
@@ -584,11 +619,26 @@ pub async fn run_connection(
                             if sink.send(Outgoing::Binary(bytes)).await.is_err() {
                                 break;
                             }
-                        } else if let Some(session) = stt.as_ref() {
-                            // Blocks when the provider is behind — that is the
-                            // backpressure, and it reaches the client as TCP.
-                            if session.audio_tx.send(bytes).await.is_err() {
-                                tracing::debug!(%session_id, "voice: the recognition session is gone");
+                        } else {
+                            // Audio with nowhere to go opens the door itself
+                            // (GH #657), and only in `hold` mode: there a
+                            // session ends whenever the key is up, so a client
+                            // that keeps its capture graph running between two
+                            // holds must not stream into a session that is not
+                            // there. In `auto` this cannot fire: the session is
+                            // opened with the connection or with the switch
+                            // that asked for `auto`, and the gap a retry leaves
+                            // is the retry's to fill.
+                            if stt.is_none() && retry_at.is_none() && mode == Mode::Hold {
+                                stt = Some(SttSession::start(&shared, input));
+                            }
+                            if let Some(session) = stt.as_ref() {
+                                // Blocks when the provider is behind — that is
+                                // the backpressure, and it reaches the client
+                                // as TCP.
+                                if session.audio_tx.send(bytes).await.is_err() {
+                                    tracing::debug!(%session_id, "voice: the recognition session is gone");
+                                }
                             }
                         }
                         // Between a lost session and its retry there is nowhere
@@ -596,11 +646,69 @@ pub async fn run_connection(
                         // retry and is a second of it.
                     }
                     Incoming::Text(text) => {
-                        if handle_text(&shared, &session_id, &mut sink, echo, &text)
-                            .await
-                            .is_err()
-                        {
-                            break;
+                        match handle_text(&shared, &session_id, &mut sink, echo, &text).await {
+                            Err(()) => break,
+                            // The boundary frames are the only ones this loop
+                            // reads at all; what they MEAN is still the turn
+                            // machine's business (GH #657).
+                            // Only in `hold`: in `auto` the turn machine
+                            // answers this frame with `wrong_mode` and draws no
+                            // boundary, and a connection that marked itself as
+                            // holding anyway would ignore the `mode` frame that
+                            // usually follows — leaving the two halves in two
+                            // modes, which is this whole task's defect again.
+                            Ok(Some(ClientFrame::Hold)) if mode == Mode::Hold => {
+                                holding = true;
+                                // A new hold is a new attempt, and the one
+                                // retry belongs to it: the budget exists for a
+                                // provider that refuses twice while somebody is
+                                // speaking, not for a page that has been open
+                                // since this morning. Without this line a
+                                // single failure hours ago turns the next one
+                                // into a `1011` — the dead button again.
+                                stt_retried = false;
+                                // The channel exists the moment the session
+                                // does, so the audio frames behind this text
+                                // frame queue up in it rather than waiting for
+                                // a provider socket to come up.
+                                if stt.is_none() && retry_at.is_none() && !echo {
+                                    stt = Some(SttSession::start(&shared, input));
+                                }
+                            }
+                            // `cancel` does NOT close it: the turn machine
+                            // leaves the boundary standing (it drops the queue
+                            // and the synthesis, nothing else), and a
+                            // connection that thought otherwise would read the
+                            // next provider death as nobody's silence while
+                            // the client is still holding the key down.
+                            Ok(Some(ClientFrame::Release)) => {
+                                holding = false;
+                            }
+                            // The mode of this connection is not frozen at the
+                            // handshake (GH #657 review): the built-in page
+                            // switches it on a live socket, and the two arms
+                            // above decide on it. Outside a hold, because that
+                            // is exactly where the turn machine accepts the
+                            // switch — inside one it refuses, and the two
+                            // copies must not drift apart.
+                            Ok(Some(ClientFrame::Mode { mode: wanted })) if !holding => {
+                                mode = wanted;
+                                // In `auto` the session IS the connection:
+                                // there is no `hold` to open one, and a client
+                                // that switched its radio streams from the next
+                                // frame on. So the switch is where it opens —
+                                // without this the audio of a page that asked
+                                // for `auto` goes nowhere, silently and for as
+                                // long as the socket lives.
+                                if mode == Mode::Auto
+                                    && stt.is_none()
+                                    && retry_at.is_none()
+                                    && !echo
+                                {
+                                    stt = Some(SttSession::start(&shared, input));
+                                }
+                            }
+                            Ok(_) => {}
                         }
                     }
                     Incoming::Close => break,
@@ -690,7 +798,10 @@ pub async fn run_connection(
 
 /// One text frame from the client.
 ///
-/// Returns `Err(())` when the socket is gone. An unparseable frame is answered
+/// Returns the frame that was handed on, or `None` for one that was answered
+/// with an error instead — the caller reads it to keep the one piece of turn
+/// state a connection has of its own (GH #657), and a refused frame must not
+/// move it. `Err(())` when the socket is gone. An unparseable frame is answered
 /// and the connection stays: a client that sent nonsense once can be told so.
 async fn handle_text(
     shared: &Arc<VoiceIoShared>,
@@ -698,7 +809,7 @@ async fn handle_text(
     sink: &mut Sink,
     echo: bool,
     text: &str,
-) -> Result<(), ()> {
+) -> Result<Option<ClientFrame>, ()> {
     let frame = match meclaw_core::serde_json::from_str::<ClientFrame>(text) {
         Ok(f) => f,
         Err(e) => {
@@ -707,7 +818,7 @@ async fn handle_text(
                 detail: e.to_string(),
                 bad_frames: None,
             };
-            return send_frame(sink, &frame).await;
+            return send_frame(sink, &frame).await.map(|()| None);
         }
     };
     if echo
@@ -721,17 +832,17 @@ async fn handle_text(
             detail: "the echo provider has no turns and nothing to say".to_string(),
             bad_frames: None,
         };
-        return send_frame(sink, &frame).await;
+        return send_frame(sink, &frame).await.map(|()| None);
     }
     // Everything else is the handler's call: it owns the turn machine and is
     // the only emitter.
     shared
         .emit(VoiceEvent::Control {
             session_id: session_id.to_string(),
-            frame,
+            frame: frame.clone(),
         })
         .await;
-    Ok(())
+    Ok(Some(frame))
 }
 
 /// Start one synthesis, or report at once why there is none.

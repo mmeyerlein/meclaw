@@ -165,14 +165,20 @@ fn write_template(templates: &std::path::Path, name: &str, version: &str) {
 }
 
 /// The declaration form: no path, no root, no version field on the entry — the
-/// target is always `{templates_root}/local/<name>/` and the version lives in
-/// the `template.json` that ships with the entry.
+/// version lives in the `template.json` that ships with the entry, and the
+/// target is built from both (`{templates_root}/local/<name>@<version>/`,
+/// GH #664).
 fn register_named(name: &str) -> Value {
+    register_named_at(name, "1.0.0")
+}
+
+/// The same form with the version spelled out, for the cases that turn on it.
+fn register_named_at(name: &str, version: &str) -> Value {
     json!({"scope": "/", "ctx": {}, "diff": {
         "add_templates": [
             {"name": name,
              "files": {
-                 "template.json": format!(r#"{{"name": "{name}", "version": "1.0.0"}}"#),
+                 "template.json": format!(r#"{{"name": "{name}", "version": "{version}"}}"#),
                  "config.json": CELL_CONFIG,
              }}
         ]
@@ -182,6 +188,10 @@ fn register_named(name: &str) -> Value {
 fn register_note_unit() -> Value {
     register_named("note-unit")
 }
+
+/// Where `register_named` lands: the entry ships version `1.0.0`, so the
+/// directory carries it (GH #664).
+const NOTE_UNIT_DIR: &str = "local/note-unit@1.0.0";
 
 /// The template staging area a registration builds in before it moves the
 /// tree into the library with one `rename(2)`. After a commit AND after a
@@ -238,7 +248,10 @@ async fn the_mutation_door_writes_under_the_resolved_templates_root() {
 
     assert!(outcome.is_committed(), "outcome: {outcome:?}");
     assert!(
-        elsewhere.join("local/note-unit/template.json").is_file(),
+        elsewhere
+            .join(NOTE_UNIT_DIR)
+            .join("template.json")
+            .is_file(),
         "the template landed outside the root the colony was told to use",
     );
     assert!(
@@ -259,7 +272,7 @@ async fn a_registered_template_is_on_disk_and_in_colony_db() {
     let outcome = send_mutation(&colony, register_note_unit()).await;
     assert!(outcome.is_committed(), "outcome: {outcome:?}");
 
-    let dir = templates.join("local/note-unit");
+    let dir = templates.join(NOTE_UNIT_DIR);
     assert!(dir.join("template.json").is_file(), "template.json missing");
     assert!(dir.join("config.json").is_file(), "config.json missing");
     assert!(
@@ -327,7 +340,8 @@ async fn the_shipped_library_is_out_of_reach() {
     rescan(&colony, &templates).await.expect("rescan");
 
     let before = std::fs::read_to_string(templates.join("talky/template.json")).expect("read");
-    let outcome = send_mutation(&colony, register_named("talky")).await;
+    // The version the library already holds: taken, and it says so.
+    let outcome = send_mutation(&colony, register_named_at("talky", "4.2.2")).await;
     assert_eq!(
         error_code(&outcome),
         Some("template_name_taken"),
@@ -337,6 +351,22 @@ async fn the_shipped_library_is_out_of_reach() {
         std::fs::read_to_string(templates.join("talky/template.json")).expect("read"),
         before,
         "a shipped template was rewritten",
+    );
+
+    // GH #664: a DIFFERENT version of a shipped class is a legitimate second
+    // entry — and it is the sharper form of this test's sentence. It is taken,
+    // it lands under `local/`, and the shipped directory is still untouched:
+    // out of reach is about the bytes, not about the name.
+    let beside = send_mutation(&colony, register_named_at("talky", "4.3.0")).await;
+    assert!(beside.is_committed(), "{beside:?}");
+    assert!(
+        templates.join("local/talky@4.3.0/template.json").is_file(),
+        "the new version did not land under local/",
+    );
+    assert_eq!(
+        std::fs::read_to_string(templates.join("talky/template.json")).expect("read"),
+        before,
+        "a shipped template was rewritten by a version registered beside it",
     );
 
     colony.shutdown().await;
@@ -432,7 +462,10 @@ async fn a_taken_name_stops_the_manifest_at_its_own_position() {
     assert_eq!(remaining, 1, "{outcome:?}");
     // Entry 1 stays applied — a manifest rolls forward, there is no rollback.
     assert!(
-        templates.join("local/note-unit/template.json").is_file(),
+        templates
+            .join(NOTE_UNIT_DIR)
+            .join("template.json")
+            .is_file(),
         "the refusal undid an entry that had committed",
     );
     assert!(

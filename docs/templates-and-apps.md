@@ -43,6 +43,11 @@ in the tree and a fixed set of edge classes. `colony-view` is the one the librar
 committed mutation triggers a topology snapshot, a `code` cell turns it into one component
 tree, and the view leaves the hive towards a display.
 
+A screen brings its own design language: the sheet and the vocabulary of components it is
+written against travel in the `display` template. An application names those components in
+its view without defining them, so a view that wants to look like the screen carries no sheet
+of its own.
+
 ## Installing one
 
 One mutation, scope `<member>`, shortened to the three edges that carry the shape:
@@ -70,6 +75,12 @@ own door has to keep leaving through the member's guarded default exit. The seco
 the container to the instance. The third is the way out, and the screen is named here rather
 than in the app, because an app is display-blind. If the app is one you wrote, `add_templates`
 in the same diff registers the class before it is instantiated.
+
+A newer version of a class you already installed registers beside the old one rather than
+replacing it, in its own `<name>@<version>` directory, and both stay resolvable. A
+`swap_nodes` then moves a running node over to it — `match` names the node, `with.template`
+names `<app>@<new version>`, and `with.name` is a name of its own, because the node being
+swapped out keeps its address and stays there, disconnected and whole, for the way back.
 
 ## Where to read on
 

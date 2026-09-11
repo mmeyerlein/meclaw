@@ -83,6 +83,8 @@ fn cli_for(root: &std::path::Path, blobs: &std::path::Path, bind: SocketAddr) ->
         log: None,
         log_level: "warn".into(),
         log_filter: None,
+        log_stderr: meclaw_cli::LogSink::Auto,
+        log_file: meclaw_cli::LogSink::Auto,
         env: None,
         templates: None,
         rescan_templates: false,

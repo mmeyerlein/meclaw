@@ -1,4 +1,4 @@
-//! `voice@2.0.0` — the template, its declared surface, and the binding manifest
+//! `voice@2.0.1` — the template, its declared surface, and the binding manifest
 //! its README hands a reader.
 //!
 //! Three things can drift apart here and each of them costs a reader a wrong
@@ -126,7 +126,7 @@ fn the_template_declares_a_long_running_voice_cell() {
         "a cell holding a socket is not bounded by a message timeout"
     );
     assert_eq!(tpl["name"], json!("voice"));
-    assert_eq!(tpl["version"], json!("2.0.0"));
+    assert_eq!(tpl["version"], json!("2.0.1"));
     // ADR-0031: the shipped instance is reached under a mount name, and the
     // name is a declared setting like every other knob.
     assert_eq!(cfg["params"]["mount"], json!("voice"));
@@ -350,7 +350,7 @@ fn the_readme_manifest_binds_the_three_lanes_and_the_way_back() {
         .expect("add_nodes is a list");
     assert_eq!(nodes.len(), 1, "one channel is one node");
     assert_eq!(nodes[0]["name"], json!("channels/voice"));
-    assert_eq!(nodes[0]["template"], json!("voice@2.0.0"));
+    assert_eq!(nodes[0]["template"], json!("voice@2.0.1"));
 
     let edges = manifest["diff"]["add_edges"]
         .as_array()
@@ -716,7 +716,7 @@ async fn the_readme_manifest_grows_the_channel_it_describes() {
     ack_rx
         .await
         .expect("rescan acked")
-        .expect("the library must register voice@2.0.0");
+        .expect("the library must register voice@2.0.1");
 
     let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
     h.inbox_tx

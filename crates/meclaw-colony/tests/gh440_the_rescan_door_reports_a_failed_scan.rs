@@ -1,7 +1,8 @@
 //! GH #440 (Ruling L3-S): a rescan that ABORTED must not answer `ok`.
 //!
-//! `scan_templates_dir` refuses a duplicate template name and names both
-//! directories (GH #277, ruling Q7 — that refusal stays). The EDA door has
+//! `scan_templates_dir` refuses a duplicate `name@version` and names both
+//! directories (GH #664 narrowed the rule from `name` to `(name, version)`;
+//! the refusal and its words stay). The EDA door has
 //! always forwarded those words verbatim. The HTTP door did not: its ack was
 //! `oneshot::Sender<()>`, so `post_rescan` had exactly one return value and it
 //! said `ok`. An operator whose tree carried two `talky`s learned nothing here
@@ -25,8 +26,11 @@ fn write(dir: &std::path::Path, rel: &str, body: &str) {
     std::fs::write(p, body).expect("write");
 }
 
-/// Two directories, one name. The scan must abort and say both paths.
-fn two_templates_of_one_name(templates: &std::path::Path) {
+/// Two directories, one `name@version`. The scan must abort and say both
+/// paths. The versions are IDENTICAL on purpose: since GH #664 two different
+/// versions of one name are two entries of one class and the scan carries
+/// them, so a fixture with `1.0.0` and `2.0.0` would no longer abort at all.
+fn two_templates_of_one_name_and_version(templates: &std::path::Path) {
     write(
         templates,
         "one/template.json",
@@ -40,7 +44,7 @@ fn two_templates_of_one_name(templates: &std::path::Path) {
     write(
         templates,
         "two/template.json",
-        r#"{"name":"ledger-unit","version":"2.0.0"}"#,
+        r#"{"name":"ledger-unit","version":"1.0.0"}"#,
     );
     write(
         templates,
@@ -87,10 +91,10 @@ async fn shutdown(b: Booted) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_duplicate_name_reaches_the_caller_of_the_rescan_message() {
+async fn a_duplicate_version_reaches_the_caller_of_the_rescan_message() {
     let td = tempfile::TempDir::new().expect("tempdir");
     let templates = td.path().join("templates");
-    two_templates_of_one_name(&templates);
+    two_templates_of_one_name_and_version(&templates);
 
     let booted = boot(td.path());
 
@@ -106,12 +110,12 @@ async fn a_duplicate_name_reaches_the_caller_of_the_rescan_message() {
     let outcome = ack_rx.await.expect("ack");
 
     let err = outcome.expect_err(
-        "the scan aborted on a duplicate name, so the ack must carry the refusal — \
+        "the scan aborted on a duplicate name@version, so the ack must carry the refusal — \
          an `Ok(())` here is the defect: the caller cannot tell a finished scan \
          from an aborted one",
     );
     assert!(
-        err.contains("DuplicateName")
+        err.contains("DuplicateVersion")
             && err.contains("ledger-unit")
             // The two directory paths are the half an operator acts on: without
             // them the message names a collision nobody can locate. The fixture

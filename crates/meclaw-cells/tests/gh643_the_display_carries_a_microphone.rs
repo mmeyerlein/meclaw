@@ -1,4 +1,4 @@
-//! GH #643 — `display@2.0.0` carries a microphone, on the shipped bytes.
+//! GH #643 — `display@2.1.0` carries a microphone, on the shipped bytes.
 //!
 //! The whole template boots: the compose cell out of `params.script_inline`, the
 //! store beside it, and a real `web` cell serving the page under its mount. One
@@ -244,6 +244,52 @@ async fn the_page_carries_the_hook_the_mount_and_the_topic() {
         page.contains("hold to talk"),
         "a person has to be able to see what the button is for:\n{page}"
     );
+
+    // GH #658 — the three states the button owes a person, on the shipped
+    // bytes. Each one is a moment that used to pass in silence, and silence on
+    // a screen is indistinguishable from a screen that is broken.
+    assert!(
+        page.contains("asking for the microphone"),
+        "the permission prompt opens INSIDE the gesture, so the page has to say \
+         that it is waiting for an answer:\n{page}"
+    );
+    assert!(
+        page.contains("press again"),
+        "a press that ended before the permission arrived is a press that did \
+         nothing, and the person is the only one who can repeat it:\n{page}"
+    );
+    assert!(
+        page.contains("\"closed \" + c.code; joined = false;"),
+        "a close ends the CALL: the hook notes it and lets the next press join \
+         a new one:\n{page}"
+    );
+    assert!(
+        !page.contains("\"closed \" + c.code; btn.disabled = true;"),
+        "and the close handler must not be what kills the button — that is the \
+         one-minute fuse a screen nobody spoke into used to run into:\n{page}"
+    );
+    assert!(
+        page.contains("if (!joined && !(await join()))"),
+        "the rejoin hangs on the press, not on a timer — and it waits for the \
+         join to be acknowledged before the hold goes out: a text push is \
+         buffered until then and a raw binary push is not, so audio sent in \
+         that window is dropped or arrives ahead of its own hold:\n{page}"
+    );
+    assert!(
+        page.contains("|| \"refused\"; btn.disabled = true;"),
+        "a REFUSED join stays final: that answer is about this screen and this \
+         mount, and pressing again cannot change it:\n{page}"
+    );
+    assert!(
+        page.contains("state.textContent = \"listening"),
+        "and the waiting sentence goes when the hold begins — a screen that \
+         still says it is asking for a microphone it already has is the same \
+         lie as one that said nothing:\n{page}"
+    );
+    assert!(
+        page.contains("function sendAudio(ab) { if (!joined) return;"),
+        "and no frame leaves for a topic this page is not on:\n{page}"
+    );
     listener.abort();
     h.shutdown().await;
 }
@@ -256,10 +302,13 @@ fn the_template_says_it_carries_a_microphone() {
     }
     let template = read_json(&repo("templates/display/template.json"));
     assert_eq!(
-        template["version"], "2.0.0",
+        template["version"], "2.1.0",
         "the screen shipped the microphone at 1.2.0 — a new component is a \
-         minor version — and moved to 2.0.0 when its own port went with \
-         `web@2.0.0`, which is a removal on the address a person types"
+         minor version — moved to 2.0.0 when its own port went with \
+         `web@2.0.0`, to 2.0.1 for what the button says while it waits \
+         (GH #658), which is a repair, and to 2.1.0 for the design language, \
+         the catalogue and `params.font_base` (GH #669, #670, #672), which a \
+         caller can name — a minor version again"
     );
     let purpose = template["description"]["purpose"]
         .as_str()
@@ -271,7 +320,7 @@ fn the_template_says_it_carries_a_microphone() {
     );
     let readme = std::fs::read_to_string(repo("templates/display/README.md")).expect("README");
     assert!(
-        readme.starts_with("# `display@2.0.0`"),
+        readme.starts_with("# `display@2.1.0`"),
         "the README heads with the version it describes"
     );
     assert!(

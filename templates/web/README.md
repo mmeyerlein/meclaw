@@ -287,6 +287,14 @@ The rules are about the class vocabulary, not about CSS in general: a component
 that reaches for `backdrop-filter` in an inline `style` is outside what they can
 see, and pretending otherwise would be worse than saying so.
 
+One more rule of the same kind, and this one the cell does not check either. A
+view's `client_css` goes into the page raw. It describes the view.
+`html`, `body`, `:root` and a document-level `@media (prefers-color-scheme)`
+belong to the screen that holds the page; a view that writes one of them paints
+over every other view standing beside it. Reading a stylesheet for that would be
+a second language in the substrate, so the rule is named here and pinned on the
+shipped sheet instead (GH #671).
+
 ## What ships in the seed
 
 | file | rows |

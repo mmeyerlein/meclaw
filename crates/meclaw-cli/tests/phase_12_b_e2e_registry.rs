@@ -28,6 +28,8 @@ async fn e2e_get_registry_via_real_colony_returns_200_empty() {
         log: None,
         log_level: "warn".into(),
         log_filter: None,
+        log_stderr: meclaw_cli::LogSink::Auto,
+        log_file: meclaw_cli::LogSink::Auto,
         env: None,
         templates: None,
         rescan_templates: false,

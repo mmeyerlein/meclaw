@@ -47,7 +47,7 @@ fn a_manifest_file_registering_a_template_applies_from_the_command_line() {
     );
     assert!(
         root.path()
-            .join("templates/local/note-unit/template.json")
+            .join("templates/local/note-unit@1.0.0/template.json")
             .is_file(),
         "stdout: {}\nstderr: {}",
         String::from_utf8_lossy(&out.stdout),

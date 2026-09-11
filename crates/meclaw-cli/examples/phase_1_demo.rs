@@ -17,7 +17,15 @@ use meclaw_testing::topologies::phase_1::build_phase_1_topology;
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> anyhow::Result<()> {
     let log_path = std::path::PathBuf::from("./target/phase_1_demo.log.jsonl");
-    let _guard = meclaw_cli::setup_subscriber(&log_path, "info", None, false, 6669)?;
+    let _guard = meclaw_cli::setup_subscriber(
+        &log_path,
+        "info",
+        None,
+        false,
+        6669,
+        meclaw_cli::LogSink::Auto,
+        meclaw_cli::LogSink::Auto,
+    )?;
 
     tracing::info!(event = "phase_1_demo_starting");
     let mut topo = build_phase_1_topology().await;

@@ -144,7 +144,7 @@ sys.stdout.write(json.dumps({
     "messages": doc["body"].get("messages", [])}))
 "#;
 
-/// The SCREEN — `display@2.0.0`, doubled at the one judgement this file needs:
+/// The SCREEN — `display@2.0.1`, doubled at the one judgement this file needs:
 /// is what arrived on `in_view` a VIEW?
 ///
 /// The shipped `compose` reads `view_id`, `kind` and `content` out of the body
@@ -369,7 +369,7 @@ fn build_tree(td: &tempfile::TempDir, member: &std::path::Path, assistant: &std:
         &format!("main/person/channels/{SCREEN_NAME}/config.json"),
         &double(
             SCREEN,
-            "Test double for display@2.0.0, one screen of this person.",
+            "Test double for display@2.0.1, one screen of this person.",
         ),
     );
     write(

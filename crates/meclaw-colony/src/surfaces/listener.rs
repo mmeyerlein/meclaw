@@ -37,10 +37,10 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch;
 
 /// How long a connection may take to send its request line before it is dropped.
-pub const PEEK_TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const PEEK_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The most bytes peeked for the request line.
-pub const PEEK_MAX: usize = 4096;
+pub(crate) const PEEK_MAX: usize = 4096;
 
 /// How long the peek loop waits before looking at an incomplete request line
 /// again.
@@ -69,7 +69,7 @@ const SURFACE_BUSY: &[u8] =
 /// `axum::serve` waits, and it is deliberately long: the errors of the other
 /// class, the ones that belong to a single connection, never reach it (see
 /// [`is_connection_error`]).
-pub const ACCEPT_BACKOFF: Duration = Duration::from_secs(1);
+pub(crate) const ACCEPT_BACKOFF: Duration = Duration::from_secs(1);
 
 /// How long a shutdown waits for the fallback connections that are still in
 /// flight.
@@ -78,7 +78,7 @@ pub const ACCEPT_BACKOFF: Duration = Duration::from_secs(1);
 /// cap is there so a client that never reads its answer cannot hold the process
 /// open. Connections a cell was handed are NOT waited for: the stream belongs to
 /// the cell, and the cell's own life decides it. Neither is a connection that had
-/// asked for nothing — it is dropped instead, so this cap and [`PEEK_TIMEOUT`]
+/// asked for nothing — it is dropped instead, so this cap and `PEEK_TIMEOUT`
 /// never add up; that both happen to be five seconds means nothing, and one moves
 /// without the other.
 pub const DRAIN_CAP: Duration = Duration::from_secs(5);
@@ -105,7 +105,7 @@ pub trait Fallback: Send + Sync + 'static {
 /// pause. Paying the resource-class pause here would let one such client hold
 /// the whole accept loop down, and it would write a line per attempt.
 /// `axum::serve` splits the two classes the same way.
-pub fn is_connection_error(e: &std::io::Error) -> bool {
+pub(crate) fn is_connection_error(e: &std::io::Error) -> bool {
     matches!(
         e.kind(),
         std::io::ErrorKind::ConnectionRefused
@@ -141,7 +141,7 @@ fn find_crlf(head: &[u8]) -> Option<usize> {
 /// fallback, which answers them the way it answers any other request it does not
 /// like. A request for `/` has an empty first segment, which is a segment no
 /// mount may be called.
-pub fn first_segment(head: &[u8]) -> Option<&str> {
+pub(crate) fn first_segment(head: &[u8]) -> Option<&str> {
     let line_end = find_crlf(head)?;
     let line = std::str::from_utf8(&head[..line_end]).ok()?;
     let mut words = line.split(' ');

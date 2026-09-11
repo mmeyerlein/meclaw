@@ -122,7 +122,7 @@ closed, is not one of the four.
 
 What a browser needs: a **secure context** for the microphone, which means an
 `https://` origin or `localhost` / `127.0.0.1`. On a plain `http://` LAN address
-there is no microphone to open, and `display@2.0.0` says so on the page.
+there is no microphone to open, and `display@2.1.0` says so on the page.
 
 ## Audio frames
 
@@ -213,11 +213,18 @@ end-of-turn does not un-send that `turn`; the continuation becomes the next one.
 Speech starting while the cell is speaking cancels the synthesis when `barge_in`
 is on.
 
-In `hold` the client decides. Audio flows to the provider continuously, so the
-recognition session stays warm, but only what happens between `hold` and
+In `hold` the client decides, and only what happens between `hold` and
 `release` counts: provider end-of-turns append to a buffer, `partial` frames
 show buffer plus current interim, and `release` produces exactly one `turn` from
 the whole thing.
+
+Since `voice@2.0.1` the recognition session lives per hold: it opens with the
+first `hold` rather than with the connection, and a session that ends while no
+key is held is not a failure — no `error`, no `1011`, and the next `hold` opens
+a new one. Between two holds no audio flows, so the provider's own idle deadline
+(`provider_idle_timeout_ms`) is certain to expire, and a page that is looked at
+before anybody speaks used to be told its microphone had failed and have its
+socket closed under it.
 
 `release` does not deliver the `turn`. It says that no new audio belongs to this
 turn; the provider still owes the end of what it was already sent, and it takes
@@ -317,7 +324,9 @@ wiring with `curl`.
 `mode` is the cell's configured default and never a connection's mode, and there
 is no `session_id`, because nothing was opened. `audio_in`/`audio_out` are what
 a client that asks for nothing gets; `audio_in_rates`/`audio_out_rates` are what
-it could ask for. `audio_out` and `tts` are `null`
+it could ask for. This route ignores a query string, so the rates it names are
+the providers' own; a connection that asked for one reads its two rates out of
+its own `hello` instead. `audio_out` and `tts` are `null`
 when no text-to-speech provider is configured, `audio_out_rates` too, and
 `audio_out_frame_ms` is `0` there for the same reason. `speak_plain` is reported either way, because it
 describes the cell itself and a single synthesis does not change it.

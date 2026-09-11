@@ -4,7 +4,7 @@
 //! issue the whole diff went through the full substitution pass first, so the
 //! file bodies of a declaration were rewritten on the way in: a `config.json`
 //! that referenced the colony's API key as `${SECRET_API_KEY}` arrived under
-//! `{templates_root}/local/<name>/` with the key in CLEAR TEXT, and every
+//! `{templates_root}/local/<name>@<version>/` with the key in CLEAR TEXT, and every
 //! further registration of that derived class copied it again. The mirror
 //! image of the same bug refused a registration outright — a README that only
 //! MENTIONS `${…}` in prose was read as a placeholder and answered
@@ -13,7 +13,7 @@
 //!
 //! What the fix asserts here, in the order the issue names it:
 //!
-//! 1. the file under `local/<name>/` is byte-identical to the declaration, and
+//! 1. the file under `local/<name>@<version>/` is byte-identical to the declaration, and
 //!    no sentinel appears anywhere under the root (the dumb, literal sweep);
 //! 2. a README whose prose carries `${…}` registers, untouched;
 //! 3. an instance grown from such a class still gets the environment's value —
@@ -224,7 +224,7 @@ async fn a_registered_config_keeps_its_environment_placeholder() {
     .await;
     assert_committed(&outcome);
 
-    let registered = templates.join("local/note-unit/config.json");
+    let registered = templates.join("local/note-unit@1.0.0/config.json");
     assert_eq!(
         read(&registered),
         cell_config(),
@@ -253,7 +253,7 @@ async fn a_readme_that_only_mentions_a_placeholder_registers_untouched() {
     .await;
     assert_committed(&outcome);
     assert_eq!(
-        read(&templates.join("local/note-unit/README.md")),
+        read(&templates.join("local/note-unit@1.0.0/README.md")),
         README,
         "prose about a variable is prose, not a binding",
     );

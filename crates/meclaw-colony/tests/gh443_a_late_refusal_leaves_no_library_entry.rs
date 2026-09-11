@@ -3,7 +3,7 @@
 //! `add_templates` runs first in `handle_mutation`, because a later entry of
 //! the same diff has to be able to RESOLVE what it declared. Until this issue
 //! the declaration also became VISIBLE first — one `rename(2)` into
-//! `{templates_root}/local/<name>/` at the very top of the mutation — so every
+//! `{templates_root}/local/<name>@<version>/` at the very top of the mutation — so every
 //! refusal below it left the directory behind while the receipt said
 //! `rejected` and `colony.db` held no row. The operator was then told to clear
 //! residue by hand, and the retry of the very same manifest hit
@@ -189,6 +189,12 @@ fn read_templates_table(root: &std::path::Path) -> Vec<TemplateRowView> {
     rows.map(|r| r.expect("row")).collect()
 }
 
+/// Where a `declaration` lands: it ships version `1.0.0`, and since GH #664 the
+/// directory carries the version the entry declares.
+fn library_dir(name: &str) -> String {
+    format!("local/{name}@1.0.0")
+}
+
 /// One `add_templates[]` entry in the declaration form.
 fn declaration(name: &str) -> Value {
     json!({"name": name,
@@ -225,7 +231,7 @@ fn declare_only(name: &str) -> Value {
 /// staged bytes, no registry row.
 fn assert_no_trace(root: &std::path::Path, templates: &std::path::Path, name: &str) {
     assert!(
-        !templates.join("local").join(name).exists(),
+        !templates.join(library_dir(name)).exists() && !templates.join("local").join(name).exists(),
         "a refused declaration left '{name}' in the library",
     );
     assert!(
@@ -301,7 +307,7 @@ async fn a_refusal_at_the_second_declaration_leaves_the_first_invisible() {
     let templates = td.path().join("templates");
     // Residue nobody has a registry row for: `add_templates` refuses it by
     // name rather than overwriting it (No-Delete).
-    std::fs::create_dir_all(templates.join("local/taken")).expect("mkdir");
+    std::fs::create_dir_all(templates.join(library_dir("taken"))).expect("mkdir");
     let colony = boot_colony_with_templates_root(td.path(), &templates).await;
 
     let outcome = send_mutation(
@@ -318,7 +324,7 @@ async fn a_refusal_at_the_second_declaration_leaves_the_first_invisible() {
     );
     assert_no_trace(td.path(), &templates, "note-unit");
     assert!(
-        std::fs::read_dir(templates.join("local/taken"))
+        std::fs::read_dir(templates.join(library_dir("taken")))
             .expect("the pre-existing directory was removed")
             .next()
             .is_none(),
@@ -376,7 +382,7 @@ async fn the_same_declaration_retries_clean_after_a_late_refusal() {
         "the retry needed hand-clearing first: {outcome:?}",
     );
 
-    let dir = templates.join("local/note-unit");
+    let dir = templates.join(library_dir("note-unit"));
     assert!(dir.join("template.json").is_file(), "template.json missing");
     assert!(dir.join("config.json").is_file(), "config.json missing");
     assert!(staging_is_empty(td.path()), "the commit left staged bytes");
@@ -417,7 +423,10 @@ async fn a_committed_manifest_entry_survives_a_refusal_in_a_later_entry() {
     );
 
     assert!(
-        templates.join("local/note-unit/template.json").is_file(),
+        templates
+            .join(library_dir("note-unit"))
+            .join("template.json")
+            .is_file(),
         "the refusal in entry 2 undid entry 1",
     );
     assert_no_trace(td.path(), &templates, "second-unit");
@@ -445,7 +454,7 @@ async fn a_declaration_and_its_instance_commit_together_in_one_diff() {
     .await;
     assert!(outcome.is_committed(), "outcome: {outcome:?}");
 
-    let dir = templates.join("local/note-unit");
+    let dir = templates.join(library_dir("note-unit"));
     assert!(
         dir.join("config.json").is_file(),
         "the class is not in the library"

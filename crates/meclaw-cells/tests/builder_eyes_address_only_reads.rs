@@ -5,14 +5,13 @@
 //! this hive reaches the control plane, and what reaches the read plane is
 //! written down.
 //!
-//! Two cells are on that list, and the second one is not a widening of the
-//! first. `./eyes` is the COMPOSER's pair of eyes: a model asked `graph_read`,
-//! and the answer goes back into a round. `./tally` (GH #543) is the FAST
-//! lane's one lookup, has no model behind it and asks exactly one question —
-//! how many members does this organisation already carry, so the screen every
-//! member gets can be given a port nobody else holds. Both take the same road
-//! for the same reason: a `/colony` answer starts a fresh trace, so the round
-//! travels in `query.tag` and comes home to the cell that asked.
+//! One cell is on that list. `./eyes` is the COMPOSER's pair of eyes: a model
+//! asked `graph_read`, and the answer goes back into a round — a `/colony`
+//! answer starts a fresh trace, so the round travels in `query.tag` and comes
+//! home to the cell that asked. A second reader stood here until GH #663: the
+//! fast lane counted the members of an organisation to give a screen a port,
+//! and since a screen is reached under a name the count was measured and spent
+//! on nothing. The fast lane reads nothing at all now.
 
 use meclaw_core::serde_json::Value;
 use std::path::PathBuf;
@@ -21,7 +20,7 @@ const EYE_ENDPOINTS: &[&str] = &["/colony/graph", "/colony/registry", "/colony/l
 
 /// The cells of this hive that may address `/colony` at all. A closed list —
 /// adding to it is a decision, not a side effect.
-const READERS: &[&str] = &["./eyes", "./tally"];
+const READERS: &[&str] = &["./eyes"];
 
 fn hive() -> Value {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../templates/builder/config.json");

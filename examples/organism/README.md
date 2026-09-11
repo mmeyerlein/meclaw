@@ -48,7 +48,7 @@ organism/
 │   ├── colony.json            byte-identical to seed/colony.json
 │   └── main/
 │       ├── config.json        byte-identical to seed/main/config.json
-│       └── os/config.json     type: "ref", template: "meclaw-os@1.8.7"
+│       └── os/config.json     type: "ref", template: "meclaw-os@1.8.9"
 ├── grow-os.json               1. the shell.        1 node,  0 edges
 ├── grow-org.json              2. an organisation.  1 node, 18 edges
 ├── grow-member.json           3. a person.         1 node, 18 edges
@@ -68,7 +68,7 @@ principle of GH #26: a tree is grown, not checked in.
 ## What grows
 
 ```
-/os                                 meclaw-os@1.8.7   the shell
+/os                                 meclaw-os@1.8.9   the shell
 ├── access                            → access@2.5.0        the capability broker
 ├── argus                             → argus@1.1.0         the control loop
 └── orgs                              (empty container)
@@ -115,7 +115,7 @@ is a separate act.
 
 ```json
 {"scope": "/",
- "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.8.7"}],
+ "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.8.9"}],
           "add_edges": []}}
 ```
 
@@ -472,10 +472,10 @@ declarations**.
 ```json
 {"manifest": [
   {"scope": "/os/orgs/acme/members/alex/channels",
-   "diff": {"add_nodes": [{"name": "display", "template": "display@2.0.0",
+   "diff": {"add_nodes": [{"name": "display", "template": "display@2.1.0",
                            "override_params": {"web": {"mount": "alex-display"}}}], "…": "…"}},
   {"scope": "/os/orgs/acme/members/alex/apps",
-   "diff": {"add_nodes": [{"name": "colony-view", "template": "colony-view@1.1.0"}], "…": "…"}}]}
+   "diff": {"add_nodes": [{"name": "colony-view", "template": "colony-view@1.1.1"}], "…": "…"}}]}
 ```
 
 **Since [#543](https://github.com/mmeyerlein/meclaw/issues/543) nobody writes this file by
@@ -616,7 +616,7 @@ nothing until an operator turns on exactly what they mean.
 shall stand.
 
 ```json
-{"cell": {"type": "ref", "template": "meclaw-os@1.8.7"}}
+{"cell": {"type": "ref", "template": "meclaw-os@1.8.9"}}
 ```
 
 That is a **declaration, not a cell**. The FIRST `meclaw --root ./examples/organism/seed-ref`

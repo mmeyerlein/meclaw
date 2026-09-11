@@ -1,4 +1,4 @@
-//! `freeswitch@2.0.0` — a telephone as a CHANNEL of a person: it turns the facts
+//! `freeswitch@2.0.2` — a telephone as a CHANNEL of a person: it turns the facts
 //! about the line a person could ANSWER into TURNS, books the rest, and offers
 //! the assistant five tools of its own.
 //!
@@ -927,9 +927,23 @@ async fn an_incoming_call_becomes_a_turn_and_a_stranger_is_refused() {
     let turn = only(&got, "surface_got_in_turn");
     assert_eq!(hop_of(&turn, "got_session"), INBOUND_UUID);
     assert_eq!(hop_of(&turn, "got_user"), KNOWN_USER);
+    let text = hop_of(&turn, "got_text");
+    assert_eq!(
+        text, "The caller is on the line. Greet them.",
+        "the turn says what the situation is, and names nobody in its text \
+         (GH #665): the number and the identity the switch verified ride on the \
+         hop, asserted right above — a turn is answered, and an id inside it is \
+         read back to the caller: {turn:#?}"
+    );
     assert!(
-        hop_of(&turn, "got_text").contains(KNOWN),
-        "the turn names who is ringing: {turn:#?}"
+        !text.contains(KNOWN) && !text.contains(KNOWN_USER),
+        "neither the number nor the member reaches the text: {text}"
+    );
+    assert!(
+        !text.contains('?'),
+        "and it asks nothing: a model answers what it is handed, and the answer \
+         goes into a line the caller is already on — measured on a real call \
+         (GH #665): {text}"
     );
 
     let got = round(
@@ -984,7 +998,12 @@ async fn an_inbound_call_answered_at_once_raises_one_turn() {
     )
     .await;
     let turn = only(&got, "surface_got_in_turn");
-    assert_eq!(hop_of(&turn, "got_state"), "incoming");
+    assert_eq!(
+        hop_of(&turn, "got_state"),
+        "live",
+        "the row is booked `live` in the same second this turn is raised, so \
+         that is the state it carries (GH #665)"
+    );
     assert_eq!(hop_of(&turn, "got_session"), INBOUND_UUID);
 
     // The same call, answered by the dialplan a moment later. Nothing is said.
@@ -1262,9 +1281,16 @@ async fn a_call_incoming_with_a_user_id_is_trusted() {
          about it: {turn:#?}"
     );
     assert_eq!(hop_of(&turn, "got_session"), INBOUND_UUID);
+    let text = hop_of(&turn, "got_text");
+    assert_eq!(
+        text, "The caller is on the line. Greet them.",
+        "the same sentence a known caller gets — and it names neither the \
+         number that rang nor the identity it was put through as, both of which \
+         travel on the hop (GH #665): {turn:#?}"
+    );
     assert!(
-        hop_of(&turn, "got_text").contains(STRANGER),
-        "the turn still names the number that rang: {turn:#?}"
+        !text.contains(STRANGER) && !text.contains("the-verified-one"),
+        "nothing in the text can be read out loud: {text}"
     );
     // and nothing was put down: the positive control of the refusal above is
     // that the same number without a stamp reaches `uuid_kill`.

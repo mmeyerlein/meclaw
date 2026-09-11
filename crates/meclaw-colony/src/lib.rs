@@ -100,7 +100,7 @@ pub use persist::colony_db::{ColonyDb, RegistryOverlay, read_registry_overlay};
 pub use runtime::ColonyRuntime;
 pub use stateful_cell::StatefulCell;
 pub use stateless_cell::StatelessCell;
-pub use surfaces::listener::{Fallback, serve};
+pub use surfaces::listener::Fallback;
 pub use surfaces::{
     HandedConnection, Link, LinkFrame, LinkOpener, LinkRefused, LinkRequest, MountRefused,
     MountRow, Registration, SurfaceEntry, SurfaceRegistry,

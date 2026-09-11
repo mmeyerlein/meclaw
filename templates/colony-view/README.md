@@ -1,4 +1,4 @@
-# `colony-view@1.1.0`
+# `colony-view@1.1.1`
 
 The colony, drawn. A committed mutation takes a topology snapshot, a `code` cell
 turns it into one view, and a display holds it and serves the page. The browser

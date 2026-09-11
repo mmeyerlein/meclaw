@@ -480,6 +480,15 @@ pub enum MutationError {
     /// (`add_nodes[].template` and `swap_nodes[].with.template`), instead of
     /// staging a directory the apply arm then cannot spawn. Pre-destructive.
     HiveTemplateSingleCell(String),
+    /// GH #661 (ADR-0032): an instantiating diff entry grows a node from a
+    /// template that declares a param `operator_set` in its `contract.settings`
+    /// and brings no value for it. Such a param has no meaning until an operator
+    /// sets it — the shipped `default` is a shape and not a working value — so
+    /// the entry is refused rather than the node grown with it. What is checked
+    /// is the ACT and not the value: setting the param to exactly the shipped
+    /// default comes through. Raised at stage 4 and COLLECTING, so three unset
+    /// params are three named violations in one refusal. Pre-destructive.
+    OperatorParamUnset(String),
 }
 
 impl MutationError {
@@ -519,6 +528,7 @@ impl MutationError {
             Self::VLaneMandatoryHop(_) => "v_lane_mandatory_hop",
             Self::VLaneUnanchored(_) => "v_lane_unanchored",
             Self::HiveTemplateSingleCell(_) => "hive_template_single_cell",
+            Self::OperatorParamUnset(_) => "operator_param_unset",
         }
     }
 
@@ -560,6 +570,7 @@ impl MutationError {
             | Self::VLaneMandatoryHop(s)
             | Self::VLaneUnanchored(s)
             | Self::HiveTemplateSingleCell(s)
+            | Self::OperatorParamUnset(s)
             | Self::SeedTargetNotAStore(s)
             | Self::SeedTableUndeclared(s) => s.clone(),
             Self::ScopeOutOfBounds { path } => path.as_str().to_string(),
@@ -666,6 +677,7 @@ mod tests {
             MutationError::VLaneMandatoryHop("x".into()).error_code(),
             MutationError::VLaneUnanchored("x".into()).error_code(),
             MutationError::HiveTemplateSingleCell("x".into()).error_code(),
+            MutationError::OperatorParamUnset("x".into()).error_code(),
         ];
 
         // The ones the lifecycle path emits, pinned individually in `colony.rs`.
@@ -721,6 +733,8 @@ mod tests {
             "v_lane_unanchored",
             // GH #572: a hive alone is not a cell anything can spawn.
             "hive_template_single_cell",
+            // GH #661: a declared default that has no meaning until it is set.
+            "operator_param_unset",
         ]
         .into_iter()
         .collect();
@@ -740,7 +754,7 @@ mod tests {
              `error_code` is documented as an ENUM, so a caller matching on it \
              would meet a token the contract never named"
         );
-        assert_eq!(spec.len(), 32, "the documented enum is 32 tokens wide");
+        assert_eq!(spec.len(), 33, "the documented enum is 33 tokens wide");
     }
 
     #[test]
@@ -782,6 +796,10 @@ mod tests {
         assert_eq!(
             MutationError::RequirementMissing("x".into()).error_code(),
             "requirement_missing"
+        );
+        assert_eq!(
+            MutationError::OperatorParamUnset("x".into()).error_code(),
+            "operator_param_unset"
         );
     }
 

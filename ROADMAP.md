@@ -29,6 +29,16 @@ Release detail is in [CHANGELOG.md](CHANGELOG.md) and the
 
 ## Now
 
+v0.36.0 gives the screen its own design language. `display@2.1.0` ships the
+token sheet and a vocabulary of twenty-six components that an application names
+without defining, a swapped-in compose cell brings an older page's vocabulary
+up to date, and the two faces the sheet names are an operator asset. Under it,
+a template can mark the params that have no usable default and the door refuses
+a node grown without them, a class may carry more than one version in the
+library, a colony logs to stderr as well as to its file, and a member wish
+counts nothing any more. What the release contains is the
+[`[0.36.0]`](CHANGELOG.md) section of the changelog.
+
 v0.35.0 takes the port away from a surface cell. A colony has one listener, and
 a display or a voice door is reached under a name on it, `/<mount>/` for the
 page and `/<mount>/ws` for the socket: `params.port` and `params.bind` leave the
@@ -213,6 +223,10 @@ there.
 One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- v0.36.0: the screen brings its own design language. A token sheet and a
+  component vocabulary in `display@2.1.0`, a vocabulary fingerprint on the root,
+  faces as an operator asset; `operator_set` params, more than one version per
+  class, stderr logging, and a member wish that counts nothing.
 - v0.35.0: no port for a surface cell. One listener, a mount per surface, a
   prefix-aware shell under `/<mount>/`, the OS handing out mounts instead of
   ports, and a switch that is the proxy in front of several colonies.

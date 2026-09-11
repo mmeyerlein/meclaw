@@ -27,6 +27,8 @@ async fn validate_skips_http_bind_even_with_api_flag() {
         log: None,
         log_level: "warn".into(),
         log_filter: None,
+        log_stderr: meclaw_cli::LogSink::Auto,
+        log_file: meclaw_cli::LogSink::Auto,
         env: None,
         templates: None,
         rescan_templates: false,

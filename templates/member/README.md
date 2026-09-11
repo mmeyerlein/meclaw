@@ -651,7 +651,7 @@ behaves like, and it is a channel **of the person** — which is precisely why t
 of their agents may hold views on it at the same time. A screen owned by a
 generation would go dark on a swap and could not be shared at all.
 
-Since GH #459 the cell that stands there is real: [`display@2.0.0`](../display/).
+Since GH #459 the cell that stands there is real: [`display@2.1.0`](../display/).
 **Two** edges instantiate one — one fewer than a chat channel costs — and the
 second of them says the only thing a chat channel's edges do not:
 

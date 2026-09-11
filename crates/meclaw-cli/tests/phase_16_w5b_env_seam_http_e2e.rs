@@ -112,6 +112,8 @@ async fn cli_env_seam_carries_through_boot_mutation_and_adoption() {
         log: None,
         log_level: "warn".into(),
         log_filter: None,
+        log_stderr: meclaw_cli::LogSink::Auto,
+        log_file: meclaw_cli::LogSink::Auto,
         env: Some(alt_env.clone()),
         templates: None,
         rescan_templates: true,

@@ -360,7 +360,7 @@ def main():
        'data-region="aside"]:empty' in src)
     ok("a narrow screen stacks the two columns",
        "@media (max-width: 60rem)" in src and "flex-direction: column" in src)
-    style = src[src.find("LAYOUT_CSS"):src.find("SHELL_TEMPLATE")]
+    style = src[src.find("LAYOUT_RULES"):src.find("SHELL_TEMPLATE")]
     ok("the stylesheet carries no `{{`, which the component language would eat",
        "{{" not in style)
 

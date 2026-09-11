@@ -70,6 +70,12 @@ async fn answer_404(stream: &mut TcpStream) -> std::io::Result<()> {
 /// every task on it. There is no graceful drain to wait for: a test's listener
 /// owes nobody an answer after the test.
 ///
+/// What `abort()` ends is the ACCEPT LOOP, not the connections already handed
+/// over: those run on tasks of their own, held by the mount's own cell, and
+/// they end with that cell or with the test's runtime. A test that aborts the
+/// listener and waits for an open socket to die waits for the runtime. Let the
+/// cell end instead — that is what closes its sockets.
+///
 /// # Panics
 ///
 /// If the port it was given cannot be bound — which means the machine is not one

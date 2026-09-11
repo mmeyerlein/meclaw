@@ -23,10 +23,9 @@
 //! 2. **The mount is HANDED OUT, never wished for.** `screen_mount` with
 //!    `{member}` filled in, written on the screen's own node — since GH #655 a
 //!    surface cell has no port and is reached at `/<mount>/` on the colony's one
-//!    listener. The member is still counted before the renderer runs, and an
-//!    index that arrived unreadable is still what a wish is refused over — what
-//!    the number is no longer spent on is the address, because a member's name
-//!    is unique inside its organisation by construction.
+//!    listener. Since GH #663 nothing is measured off the tree for it at all: a
+//!    member's name is unique inside its organisation by construction, so the
+//!    count that used to hand out the port was taken and spent on nothing.
 //! 3. **The roll-forward holds.** The screen draws into `<member>/channels`, a
 //!    scope only the declaration in front of it creates, and a manifest rolls
 //!    forward with no rollback — so the order is not a preference: submitted on
@@ -56,7 +55,6 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 
 const RECIPES: &str = "templates/builder/recipes/config.json";
-const TALLY: &str = "templates/builder/tally/config.json";
 const CLASSIFY: &str = "templates/builder/classify/config.json";
 
 /// The organisation the examples are written for, and the member they grow.
@@ -78,7 +76,6 @@ fn read_json(p: &std::path::Path) -> Value {
 fn shipped() -> bool {
     [
         RECIPES,
-        TALLY,
         CLASSIFY,
         "examples/organism/grow-member.json",
         "examples/organism/grow-screen.json",
@@ -99,15 +96,13 @@ fn library_is_complete() -> bool {
 // the renderer
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// Every emission of `recipes` for one wish, with `hop.member_index` stamped
-/// the way the counting cell stamps it.
-fn run_recipes(payload: Value, member_index: &str) -> Vec<Value> {
+/// Every emission of `recipes` for one wish.
+fn run_recipes(payload: Value) -> Vec<Value> {
     emit_all(
         &shipped_script(repo(RECIPES).to_str().expect("utf-8 path")),
         &json!({
             "target": "/os/builder/recipes",
-            "header": {"hop": {"route": "recipe", "member_index": member_index},
-                       "context": {}},
+            "header": {"hop": {"route": "recipe"}, "context": {}},
             "ttl": 64,
             "messages": [{"origin": "tool", "type": "tool_result", "id": "",
                           "text": payload.to_string()}],
@@ -117,8 +112,8 @@ fn run_recipes(payload: Value, member_index: &str) -> Vec<Value> {
 
 /// The manifest emissions of one wish, in the order they left the cell. The
 /// `bind` leg is not a manifest and is filtered out here rather than counted.
-fn manifests(payload: Value, member_index: &str) -> Vec<Value> {
-    run_recipes(payload, member_index)
+fn manifests(payload: Value) -> Vec<Value> {
+    run_recipes(payload)
         .into_iter()
         .filter(|m| m["header"]["operation"] == json!("recipe"))
         .collect()
@@ -154,7 +149,7 @@ fn a_member_wish_renders_the_member_and_then_its_screen() {
     if !shipped() {
         return;
     }
-    let out = manifests(member_wish(&member_template()), "0");
+    let out = manifests(member_wish(&member_template()));
     assert_eq!(
         out.len(),
         1,
@@ -201,41 +196,28 @@ fn a_member_wish_renders_the_member_and_then_its_screen() {
 /// not in the template — the builder, which is part of the OS, fills its own
 /// `screen_mount` in with the member's name. What it handed out before was a
 /// port, `screen_port_base + <index>`; the display has none to be given any
-/// more.
+/// more, and since GH #663 the index it was made of is not measured either.
 #[test]
 fn the_os_hands_out_the_mount() {
     if !shipped() {
         return;
     }
     let template = member_template();
-    let mount_of = |index: &str| -> Value {
-        manifests(member_wish(&template), index)[0]["manifest"][1]["diff"]["add_nodes"][0]
-            ["override_params"]["web"]["mount"]
+    let screen = || -> Value {
+        manifests(member_wish(&template))[0]["manifest"][1]["diff"]["add_nodes"][0]
+            ["override_params"]
             .clone()
     };
     assert_eq!(
-        mount_of("0"),
+        screen()["web"]["mount"],
         json!("alex-display"),
-        "the member's own name is what the screen is reached under"
-    );
-    assert_eq!(
-        mount_of("7"),
-        json!("alex-display"),
-        "and the index no longer decides it: a member's name is unique inside \
-         its organisation by construction, so two screens are two names \
+        "the member's own name is what the screen is reached under, and nothing \
+         the tree has to be asked for decides it: a member's name is unique \
+         inside its organisation by construction, so two screens are two names \
          without arithmetic"
     );
-    // What the index still decides is whether anything is rendered at all: an
-    // unreadable one is a refusal, which
-    // `an_unreadable_index_refuses_instead_of_rendering_a_member` measures.
     assert!(
-        mount_of("").as_str().is_some(),
-        "an absent index is a first member, not a refusal"
-    );
-    assert!(
-        manifests(member_wish(&template), "0")[0]["manifest"][1]["diff"]["add_nodes"][0]
-            ["override_params"]["web"]["port"]
-            .is_null(),
+        screen()["web"]["port"].is_null(),
         "a surface cell has no port since GH #655, so the OS hands out none"
     );
 }
@@ -284,9 +266,8 @@ fn the_screen_manifest_is_the_shipped_example() {
     if !shipped() {
         return;
     }
-    // The example is written for the first member of its organisation, which
-    // is the index this comparison renders at. The mount it carries names the
-    // member rather than a band position, so there is nothing to read back.
+    // The mount the example carries names the member rather than a position in
+    // a band, so there is nothing to read off the tree for it.
     let want = read_json(&repo("examples/organism/grow-screen.json"));
     let decls = want["manifest"].as_array().expect("a manifest of two");
     assert_eq!(
@@ -303,7 +284,7 @@ fn the_screen_manifest_is_the_shipped_example() {
             .is_some(),
         "the screen example names a mount"
     );
-    let got = manifests(member_wish(&member_template()), "0");
+    let got = manifests(member_wish(&member_template()));
     // The devices are the TAIL of the one manifest a member wish renders
     // (GH #585); the example file stays the operator-applicable half of it.
     let rendered: Vec<Value> = got[0]["manifest"].as_array().expect("the one manifest")[1..]
@@ -330,12 +311,9 @@ fn the_way_back_from_a_screen_is_part_of_the_assistant_level() {
     // `in_turn` door is guarded on `context.assistant` and a screen event
     // carries none. Measured on a live colony: without it a screen event
     // reaches the container and stops there.
-    let out = manifests(
-        json!({"recipe": "grow_level", "request": "…",
+    let out = manifests(json!({"recipe": "grow_level", "request": "…",
                "params": {"scope": "/os/orgs/acme/members/alex", "level": "assistant",
-                          "name": "scribe", "template": "a-template@1.0.0"}}),
-        "0",
-    );
+                          "name": "scribe", "template": "a-template@1.0.0"}}));
     assert_eq!(
         out.len(),
         1,
@@ -417,12 +395,9 @@ fn a_display_receipt_reaches_the_generation_exactly_once() {
     }
     let assistants = "/os/orgs/acme/members/alex/assistants";
     let generation = format!("{assistants}/scribe");
-    let out = manifests(
-        json!({"recipe": "grow_level", "request": "…",
+    let out = manifests(json!({"recipe": "grow_level", "request": "…",
                "params": {"scope": "/os/orgs/acme/members/alex", "level": "assistant",
-                          "name": "scribe", "template": "a-template@1.0.0"}}),
-        "0",
-    );
+                          "name": "scribe", "template": "a-template@1.0.0"}}));
     let table = table_of(&out[0]["manifest"][0], assistants);
     let here = Path::new(assistants);
     let owner = format!("{generation}/talky");
@@ -474,13 +449,12 @@ fn a_display_receipt_reaches_the_generation_exactly_once() {
 }
 
 /// One run of `recipes` with the builder's own `params` handed in.
-fn run_recipes_with(payload: Value, member_index: &str, params: Value) -> Vec<Value> {
+fn run_recipes_with(payload: Value, params: Value) -> Vec<Value> {
     emit_all(
         &shipped_script(repo(RECIPES).to_str().expect("utf-8 path")),
         &json!({
             "target": "/os/builder/recipes",
-            "header": {"hop": {"route": "recipe", "member_index": member_index},
-                       "context": {}},
+            "header": {"hop": {"route": "recipe"}, "context": {}},
             "ttl": 64,
             "params": params,
             "messages": [{"origin": "tool", "type": "tool_result", "id": "",
@@ -554,7 +528,7 @@ fn a_member_name_that_renders_no_mount_refuses_the_whole_wish() {
         let wish = json!({"recipe": "grow_level", "request": "grow a member",
                           "params": {"scope": ORG, "level": "member", "name": name,
                                      "template": template}});
-        let out = run_recipes(wish, "0");
+        let out = run_recipes(wish);
         assert_eq!(
             out.len(),
             1,
@@ -590,7 +564,6 @@ fn a_member_name_that_renders_no_mount_refuses_the_whole_wish() {
         json!({"recipe": "grow_level", "request": "…",
                "params": {"scope": ORG, "level": "member", "name": "live",
                           "template": template}}),
-        "0",
         json!({"screen_mount": "{member}"}),
     );
     assert!(
@@ -614,273 +587,9 @@ fn a_member_name_that_renders_no_mount_refuses_the_whole_wish() {
     // agrees that it is a mount
     assert!(meclaw_colony::surfaces::mount_is_valid("alex-display"));
     assert_eq!(
-        manifests(member_wish(&template), "0")[0]["manifest"][1]["diff"]["add_nodes"][0]["override_params"]
+        manifests(member_wish(&template))[0]["manifest"][1]["diff"]["add_nodes"][0]["override_params"]
             ["web"]["mount"],
         json!("alex-display")
-    );
-}
-
-/// A number that arrived unreadable is NAMED, never rounded down to zero.
-///
-/// The silent version of this is the failure class the counting exists to
-/// prevent: a member placed at a position nobody measured is a member placed
-/// at a guess.
-///
-/// This test had a second half until the display lost its port, and it is gone
-/// with the knob it guarded: the builder's `screen_port_base` could itself be
-/// unreadable, and that was refused with the same code. There is no such value
-/// to be wrong any more.
-#[test]
-fn an_unreadable_index_refuses_instead_of_rendering_a_member() {
-    if !shipped() {
-        return;
-    }
-    let template = member_template();
-
-    // The index the counting cell stamped is not a number.
-    let out = run_recipes(member_wish(&template), "abc");
-    assert_eq!(
-        out.len(),
-        1,
-        "a refusal answers ONCE and drafts nothing: {out:?}"
-    );
-    assert_eq!(out[0]["header"]["error_code"], json!("count_unavailable"));
-    assert!(
-        out[0]["manifest"].is_null(),
-        "no manifest slot on a refusal — an empty manifest is a failure wearing \
-         the face of an honest answer"
-    );
-
-    // and an ABSENT index is not that case: nobody counted, so this is the
-    // first member, and the wish renders.
-    let absent = emit_all(
-        &shipped_script(repo(RECIPES).to_str().expect("utf-8 path")),
-        &json!({
-            "target": "/os/builder/recipes",
-            "header": {"hop": {"route": "recipe"}, "context": {}},
-            "ttl": 64,
-            "messages": [{"origin": "tool", "type": "tool_result", "id": "",
-                          "text": member_wish(&template).to_string()}],
-        }),
-    )
-    .into_iter()
-    .filter(|m| m["header"]["operation"] == json!("recipe"))
-    .collect::<Vec<_>>();
-    assert_eq!(
-        absent[0]["manifest"][1]["diff"]["add_nodes"][0]["override_params"]["web"]["mount"],
-        json!("alex-display"),
-        "an absent index means nobody counted, which is a statement and not a \
-         guess: this is the first member, and its screen is named after it"
-    );
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
-// the counting cell
-// ──────────────────────────────────────────────────────────────────────────────
-
-/// One leg of `tally`, driven the way the hive drives it.
-fn run_tally(hop: Value, context: Value, body: Value) -> Vec<Value> {
-    let mut input = json!({
-        "target": "/os/builder/tally",
-        "header": {"hop": hop, "context": context},
-        "ttl": 64,
-    });
-    for (k, v) in body.as_object().expect("a body object") {
-        input[k] = v.clone();
-    }
-    if input["messages"].is_null() {
-        input["messages"] = json!([]);
-    }
-    emit_all(
-        &shipped_script(repo(TALLY).to_str().expect("utf-8 path")),
-        &input,
-    )
-}
-
-/// The three legs of the count, with a real `/colony/graph` answer in the
-/// middle. What is measured is that the index the cell stamps is the number of
-/// members the graph showed — not a number the wish carried.
-fn index_from(nodes: Vec<&str>) -> String {
-    let wish = json!({"recipe": "grow_level", "request": "…",
-                      "params": {"scope": ORG, "level": "member", "name": MEMBER,
-                                 "template": "member@1.7.0"}});
-    // leg 1: the wish arrives, the round is parked and the graph is asked
-    let first = run_tally(
-        json!({"route": "count", "recipe": "grow_level"}),
-        json!({}),
-        json!({"messages": [{"origin": "tool", "type": "tool_result", "id": "",
-                             "text": wish.to_string()}]}),
-    );
-    let ask = first
-        .iter()
-        .find(|m| m["header"]["route"] == json!("graph"))
-        .expect("the counting cell asks /colony/graph");
-    assert_eq!(
-        ask["query"]["scope"],
-        json!("/os/orgs/acme/members"),
-        "the count is taken over the organisation's own members container"
-    );
-    let tag = ask["query"]["tag"]
-        .as_str()
-        .expect("the round travels in the tag: a colony answer carries nothing else")
-        .to_string();
-
-    // leg 2: the answer comes back on a fresh trace, with an EMPTY context
-    let second = run_tally(
-        json!({}),
-        json!({}),
-        json!({"graph": {"scope": "/os/orgs/acme/members", "tag": tag,
-                         "nodes": nodes.iter().map(|p| json!({"path": p, "cell_type": "hive"}))
-                                       .collect::<Vec<_>>(),
-                         "edges": []}}),
-    );
-    let read = second
-        .iter()
-        .find(|m| m["header"]["route"] == json!("cstore"))
-        .expect("the counting cell reads its parked round back");
-    read["header"]["member_index"]
-        .as_str()
-        .expect("the index rides in the hop so the store hop cannot lose it")
-        .to_string()
-}
-
-#[test]
-fn the_index_is_the_number_of_members_the_graph_showed() {
-    if !shipped() {
-        return;
-    }
-    assert_eq!(
-        index_from(vec![]),
-        "0",
-        "an organisation with no members yet gives the first one the base port"
-    );
-    assert_eq!(
-        index_from(vec!["/os/orgs/acme/members/blake"]),
-        "1",
-        "one member standing means the next index is 1"
-    );
-    assert_eq!(
-        index_from(vec![
-            "/os/orgs/acme/members/blake",
-            "/os/orgs/acme/members/blake/talky",
-            "/os/orgs/acme/members/blake/channels",
-            "/os/orgs/acme/members/casey",
-        ]),
-        "2",
-        "a member is a DIRECT child of the container: counting every node under \
-         the prefix would count a person's own furniture as people"
-    );
-}
-
-#[test]
-fn the_wish_survives_the_colony_round_trip_with_the_index_stamped() {
-    if !shipped() {
-        return;
-    }
-    let wish = json!({"recipe": "grow_level", "request": "grow a member named alex",
-                      "params": {"scope": ORG, "level": "member", "name": MEMBER,
-                                 "template": "member@1.7.0"}});
-    let parked = run_tally(
-        json!({"route": "count", "recipe": "grow_level"}),
-        json!({"build_caller": "/os/operator/intake"}),
-        json!({"messages": [{"origin": "tool", "type": "tool_result", "id": "",
-                             "text": wish.to_string()}]}),
-    );
-    let park = parked
-        .iter()
-        .find(|m| m["header"]["route"] == json!("cstore"))
-        .expect("the wish is parked before the colony is asked");
-    let op: Value = meclaw_core::serde_json::from_str(
-        park["messages"][0]["text"].as_str().expect("the store op"),
-    )
-    .expect("json");
-    assert_eq!(op["operation"], json!("insert"));
-    let row_turn: Value =
-        meclaw_core::serde_json::from_str(op["row"]["turn"].as_str().expect("the parked turn"))
-            .expect("json");
-    assert_eq!(
-        row_turn["caller"]["build_caller"],
-        json!("/os/operator/intake"),
-        "the door the answer goes back to is parked with the wish: a colony \
-         answer starts a fresh trace, so a caller that is not written down is a \
-         caller that is gone"
-    );
-
-    // the last leg: the round table answers, and the wish leaves for `recipes`
-    let handed = run_tally(
-        json!({"operation": "select"}),
-        json!({"store_origin": "tally", "tally_tag": "t-1", "member_index": "3"}),
-        json!({"messages": [{"origin": "tool", "type": "tool_result", "id": "t-round",
-                             "text": json!([{"build_id": "t-1", "iter": 0, "role": "wish",
-                                             "turn": json!({"payload": wish,
-                                                            "caller": {"build_caller": "/os/operator/intake"}})
-                                                     .to_string(),
-                                             "fired": 0, "recorded_at": "z"}]).to_string()}]}),
-    );
-    let on = handed
-        .iter()
-        .find(|m| m["header"]["route"] == json!("recipe"))
-        .expect("the wish goes on to the renderer");
-    assert_eq!(
-        on["header"]["member_index"],
-        json!("3"),
-        "the index the graph was read for is what the renderer is told"
-    );
-    assert_eq!(
-        on["header"]["build_caller"],
-        json!("/os/operator/intake"),
-        "and the caller is put back on the hop, so the edge into `recipes` can \
-         restore it: a modifier that reads a missing key fails and SKIPS"
-    );
-    let text = on["messages"][0]["text"].as_str().expect("the wish");
-    let back: Value = meclaw_core::serde_json::from_str(text).expect("json");
-    assert_eq!(
-        back, wish,
-        "the wish that reaches the renderer is the wish that arrived"
-    );
-}
-
-#[test]
-fn the_switch_sends_a_member_wish_to_be_counted_first() {
-    if !shipped() {
-        return;
-    }
-    let out = emit_all(
-        &shipped_script(repo(CLASSIFY).to_str().expect("utf-8 path")),
-        &json!({
-            "target": "/os/builder/classify",
-            "header": {"hop": {"route": "in_build"}, "context": {}},
-            "ttl": 64,
-            "messages": [{"origin": "tool", "type": "tool_call", "id": "c1",
-                "text": json!({"request": "…", "recipe": "grow_level",
-                    "params": {"scope": ORG, "level": "member", "name": MEMBER,
-                               "template": "member@1.7.0"}}).to_string()}],
-        }),
-    );
-    assert_eq!(
-        out[0]["header"]["route"],
-        json!("count"),
-        "a member wish takes the counting hop first — the count is what a \
-         member wish is refused over when it cannot be taken, and the renderer \
-         reads nothing itself"
-    );
-    let other = emit_all(
-        &shipped_script(repo(CLASSIFY).to_str().expect("utf-8 path")),
-        &json!({
-            "target": "/os/builder/classify",
-            "header": {"hop": {"route": "in_build"}, "context": {}},
-            "ttl": 64,
-            "messages": [{"origin": "tool", "type": "tool_call", "id": "c1",
-                "text": json!({"request": "…", "recipe": "grow_level",
-                    "params": {"scope": "/os", "level": "org", "name": "acme",
-                               "template": "org@1.3.0"}}).to_string()}],
-        }),
-    );
-    assert_eq!(
-        other[0]["header"]["route"],
-        json!("recipe"),
-        "every other level goes straight to the renderer: nothing else needs a \
-         number the tree has to be read for"
     );
 }
 
@@ -1086,8 +795,8 @@ fn applied(o: &MutationDoorOutcome) -> usize {
     }
 }
 
-/// The paths `/colony/graph` reports under a scope — the same read the counting
-/// cell makes, made here to feed the counting cell a real answer.
+/// The paths `/colony/graph` reports under a scope, so a claim about what the
+/// grown tree holds is measured rather than asserted.
 async fn graph_nodes(h: &ColonyHandle, scope: &str) -> Vec<String> {
     let (ack_tx, ack_rx) = oneshot::channel::<meclaw_colony::api_dto::ReadGraphReply>();
     h.inbox_tx
@@ -1106,11 +815,10 @@ async fn graph_nodes(h: &ColonyHandle, scope: &str) -> Vec<String> {
         .collect()
 }
 
-/// The whole claim, against a real colony: the index is read off the tree, the
-/// three declarations apply in the order they were rendered, and only in that
-/// order.
+/// The whole claim, against a real colony: the three declarations apply in the
+/// order they were rendered, and only in that order.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_screen_lands_after_the_member_and_the_index_is_read_off_the_tree() {
+async fn the_screen_lands_after_the_member_in_that_order() {
     if !shipped() || !library_is_complete() {
         return;
     }
@@ -1126,14 +834,13 @@ async fn the_screen_lands_after_the_member_and_the_index_is_read_off_the_tree() 
         "the organisation must be committed before a member is grown into it"
     );
 
-    // The count, taken the way the counting cell takes it.
     let before = graph_nodes(&h, "/os/orgs/acme/members").await;
     assert!(
         before.is_empty(),
-        "the organisation has no members yet, so the first index is 0: {before:?}"
+        "the organisation has no members yet: {before:?}"
     );
 
-    let out = manifests(member_wish(&member_template()), "0");
+    let out = manifests(member_wish(&member_template()));
     let decls = out[0]["manifest"].as_array().expect("the one manifest");
     let whole = json!({"manifest": decls});
     let devices = json!({"manifest": decls[1..]});
@@ -1169,8 +876,8 @@ async fn the_screen_lands_after_the_member_and_the_index_is_read_off_the_tree() 
         );
     }
 
-    // and the index of the NEXT member is 1, read off the tree rather than
-    // counted by this file
+    // and the member stands as ONE direct child of the container, which is
+    // what makes its name — and therefore its screen's door — unique
     let members = graph_nodes(&h, "/os/orgs/acme/members").await;
     let direct: BTreeSet<&str> = members
         .iter()
@@ -1180,7 +887,7 @@ async fn the_screen_lands_after_the_member_and_the_index_is_read_off_the_tree() 
     assert_eq!(
         direct.len(),
         1,
-        "one member stands, so the next member is index 1: {direct:?}"
+        "exactly one member stands under the container: {direct:?}"
     );
     h.shutdown().await;
 }

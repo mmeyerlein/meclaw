@@ -77,8 +77,8 @@ PIN-always-edge-en	docs/meclaw-overview.en.md	is **not a default: it is an alway
 PIN-default-edge-de	docs/meclaw-overview.md	feuert genau dann, wenn keine reguläre Out-Edge desselben Senders	pinned	a_default_edge_stays_silent_while_a_regular_edge_fires
 PIN-default-edge-en	docs/meclaw-overview.en.md	fires exactly when no regular out-edge of the same sender	pinned	a_default_edge_stays_silent_while_a_regular_edge_fires
 PIN-default-edge-guard	docs/meclaw-overview.en.md	the guard decides which part of that traffic it consumes	pinned	an_eight_way_tool_surface_needs_no_negation_chain
-PIN-template-name-unique-de	docs/meclaw-overview.md	bricht der Scan mit einem Fehler ab	pinned	walk_refuses_two_templates_declaring_one_name
-PIN-template-name-unique-en	docs/meclaw-overview.en.md	the scan aborts with an error	pinned	walk_refuses_two_templates_declaring_one_name
+PIN-template-name-unique-de	docs/meclaw-overview.md	bricht der Scan mit einem Fehler ab	pinned	walk_refuses_two_templates_declaring_one_name_and_version
+PIN-template-name-unique-en	docs/meclaw-overview.en.md	the scan aborts with an error	pinned	walk_refuses_two_templates_declaring_one_name_and_version
 PIN-ref-type-de	docs/config.md	Was in der Instanz landet, ist der Inhalt des referenzierten Templates an der Position der Referenz	pinned	parse_subtree_places_the_referenced_templates_content_at_the_ref_position
 PIN-ref-type-en	docs/config.en.md	What lands in the instance is the referenced template's content at the reference's position	pinned	parse_subtree_places_the_referenced_templates_content_at_the_ref_position
 PIN-provenance-chain-de	docs/config.md	nennt das **referenzierte** Template, nicht das Composite darüber	pinned	which_cells_are_instances_of_collector_has_an_answer
@@ -238,6 +238,8 @@ PIN-web-starting-503-de	docs/cell-types.md	antwortet eine Anfrage mit `503`, nie
 PIN-web-starting-503-en	docs/cell-types.en.md	a request is `503`, never `404`	pinned	before_the_first_publish_the_display_answers_503_not_404
 PIN-web-ready-then-404-de	docs/cell-types.md	ist wieder `404`, sobald der erste Snapshot veröffentlicht ist	pinned	after_the_first_publish_a_route_that_does_not_exist_is_404_again
 PIN-web-ready-then-404-en	docs/cell-types.en.md	goes back to `404` the moment the first snapshot is published	pinned	after_the_first_publish_a_route_that_does_not_exist_is_404_again
+PIN-web-mount-collision-de	docs/cell-types.md	registriert nichts: die Hälfte meldet es und läuft weiter	pinned	two_web_cells_one_mount_the_second_is_refused
+PIN-web-mount-collision-en	docs/cell-types.en.md	registers nothing: the half reports it and keeps running	pinned	two_web_cells_one_mount_the_second_is_refused
 PIN-seed-owns-schema-refused-de	docs/meclaw-overview.md	ist eine Verweigerung und kein stilles Nichts	pinned	a_seed_beside_a_type_that_cannot_load_it_is_refused_by_name
 PIN-seed-owns-schema-refused-en	docs/meclaw-overview.en.md	is a refusal, not a quiet nothing	pinned	a_seed_beside_a_type_that_cannot_load_it_is_refused_by_name
 PIN-seed-owns-schema-six-de	docs/meclaw-overview.md	deklarieren sie und haben bewusst **keinen** Loader	pinned	the_six_declare_that_they_own_their_schema
@@ -271,14 +273,20 @@ CLB-one-message-election	templates/collector/README.md	exactly one reads a compl
 # pre-destructive refusals, and the order across manifest entries. The rescan
 # door's new 422 rides along -- it is the same wave's repair (ruling L3-S) and
 # it is a status code, which is exactly the kind of statement a caller matches on.
-PIN-add-templates-target-built-de	docs/meclaw-overview.md	der Pfad wird von der Colony **gebaut**, nie aus einem Feld des Bodys übernommen	pinned	the_mutation_door_writes_under_the_resolved_templates_root
-PIN-add-templates-target-built-en	docs/meclaw-overview.en.md	the colony **builds** that path and never takes one from a field of the body	pinned	the_mutation_door_writes_under_the_resolved_templates_root
-PIN-add-templates-name-taken-de	docs/meclaw-overview.md	ein Name, den die Registry schon beantwortet, ist `template_name_taken`	pinned	a_taken_name_is_refused_and_leaves_nothing_behind
-PIN-add-templates-name-taken-en	docs/meclaw-overview.en.md	a name the registry already answers is `template_name_taken`	pinned	a_taken_name_is_refused_and_leaves_nothing_behind
+PIN-add-templates-target-built-de	docs/meclaw-overview.md	der Pfad wird von der Colony aus dem geklammerten Namen und der geparsten Version **gebaut**, nie aus einem Feld des Bodys übernommen	pinned	the_mutation_door_writes_under_the_resolved_templates_root
+PIN-add-templates-target-built-en	docs/meclaw-overview.en.md	the colony **builds** that path from the clamped name and the parsed version and never takes one from a field of the body	pinned	the_mutation_door_writes_under_the_resolved_templates_root
+PIN-add-templates-name-taken-de	docs/meclaw-overview.md	ein Eintrag, den die Registry schon beantwortet, ist `template_name_taken`	pinned	a_taken_name_is_refused_and_leaves_nothing_behind
+PIN-add-templates-name-taken-en	docs/meclaw-overview.en.md	an entry the registry already answers is `template_name_taken`	pinned	a_taken_name_is_refused_and_leaves_nothing_behind
+PIN-add-templates-new-version-de	docs/meclaw-overview.md	eine **neue** Version einer registrierten Klasse registriert sich also neben der alten	pinned	a_new_version_registers_beside_the_old_one
+PIN-add-templates-new-version-en	docs/meclaw-overview.en.md	a **new** version of a registered class registers beside the old one	pinned	a_new_version_registers_beside_the_old_one
+PIN-resolve-bare-name-highest-de	docs/meclaw-overview.md	Ohne Version gewinnt die höchste registrierte Version	pinned	a_bare_name_resolves_to_the_newer_and_a_pin_resolves_exactly
+PIN-resolve-bare-name-highest-en	docs/meclaw-overview.en.md	the highest registered version wins	pinned	a_bare_name_resolves_to_the_newer_and_a_pin_resolves_exactly
+PIN-add-templates-unreadable-version-de	docs/meclaw-overview.md	die nicht `major.minor.patch` ist, ist `schema`	pinned	a_version_the_resolver_cannot_read_is_refused_at_the_door
+PIN-add-templates-unreadable-version-en	docs/meclaw-overview.en.md	that is not `major.minor.patch` is `schema`	pinned	a_version_the_resolver_cannot_read_is_refused_at_the_door
 PIN-add-templates-order-de	docs/meclaw-overview.md	ein späterer Eintrag löst auf, was ein früherer registriert hat	pinned	a_later_declaration_resolves_what_an_earlier_one_registered
 PIN-add-templates-order-en	docs/meclaw-overview.en.md	a later entry resolves what an earlier one registered	pinned	a_later_declaration_resolves_what_an_earlier_one_registered
-PIN-rescan-door-422-de	docs/meclaw-overview.md	wenn er abbrach (GH #440)	pinned	a_duplicate_name_reaches_the_caller_of_the_rescan_message
-PIN-rescan-door-422-en	docs/meclaw-overview.en.md	when it aborted (GH #440)	pinned	a_duplicate_name_reaches_the_caller_of_the_rescan_message
+PIN-rescan-door-422-de	docs/meclaw-overview.md	wenn er abbrach (GH #440)	pinned	a_duplicate_version_reaches_the_caller_of_the_rescan_message
+PIN-rescan-door-422-en	docs/meclaw-overview.en.md	when it aborted (GH #440)	pinned	a_duplicate_version_reaches_the_caller_of_the_rescan_message
 PIN-birth-state-de	docs/meclaw-overview.md	sofern der Eintrag nichts anderes deklariert	pinned	a_long_running_cell_born_inactive_is_registered_and_never_spawns
 PIN-birth-state-en	docs/meclaw-overview.en.md	unless the entry declares otherwise	pinned	a_long_running_cell_born_inactive_is_registered_and_never_spawns
 PIN-birth-wake-de	docs/meclaw-overview.md	Wecksemantik eines	pinned	the_next_mutation_that_names_it_wakes_it
@@ -388,3 +396,20 @@ PIN-web-prefix-malformed-overview-en	docs/meclaw-overview.en.md	or one with a tr
 PIN-surfaces-mount-table-endpoint-de	docs/meclaw-overview.md	die Mount-Tabelle der Surface-Zellen (`?format=traefik`: als Traefik-HTTP-Provider-Dokument)	pinned	the_mount_table_and_its_traefik_document
 PIN-surfaces-mount-table-endpoint-en	docs/meclaw-overview.en.md	the mount table of the surface cells (`?format=traefik`: as a Traefik HTTP-provider document)	pinned	the_mount_table_and_its_traefik_document
 PIN-web-two-mounts-cells-page	docs/cells.en.md	a colony opens a second display by instantiating the type again under another mount	pinned	two_web_cells_serve_two_mounts_on_one_listener
+PIN-voice-socket-ends-with-the-cell-de	docs/cell-types.md	Ein hochgestuftes Socket endet mit der Zelle	pinned	an_upgraded_socket_ends_with_the_cell
+PIN-voice-socket-ends-with-the-cell-en	docs/cell-types.en.md	An upgraded socket ends with the cell	pinned	an_upgraded_socket_ends_with_the_cell
+# Added 2026-09-11 (GH #661, ADR-0032). `operator_set` is the one statement
+# inside `contract.settings` the substrate acts on, and `operator_param_unset`
+# is what the door answers with. Both halves of both documents are pinned:
+# the declaration in `config*`, the refusal in `meclaw-overview*`.
+PIN-operator-set-declared-de	docs/config.md	dieser Wert hat keine Bedeutung, bis ein Operator ihn setzt	pinned	a_node_grown_without_its_operator_set_param_is_refused
+PIN-operator-set-declared-en	docs/config.en.md	this value has no meaning until an operator sets it	pinned	a_node_grown_without_its_operator_set_param_is_refused
+PIN-operator-param-unset-de	docs/meclaw-overview.md	ein instanziierender Diff-Eintrag lässt einen Knoten aus einem	pinned	a_swap_that_regrows_the_class_is_refused_the_same_way
+PIN-operator-param-unset-en	docs/meclaw-overview.en.md	an instantiating diff entry grows a node from a template that	pinned	a_swap_that_regrows_the_class_is_refused_the_same_way
+#
+# GH #668 -- the scan and the registration door give ONE answer. A `version`
+# `parse_simple_version` cannot read is refused at `add_templates` since #664;
+# the walk over `templates/` skips it with a named reason instead of taking it
+# into the registry, where it would answer to no reference at all.
+PIN-scan-unreadable-version-de	docs/meclaw-overview.md	wird mit seinem Grund übersprungen statt registriert	pinned	a_version_no_reference_can_name_is_skipped_with_its_reason
+PIN-scan-unreadable-version-en	docs/meclaw-overview.en.md	that entry is skipped with its reason instead	pinned	a_version_no_reference_can_name_is_skipped_with_its_reason

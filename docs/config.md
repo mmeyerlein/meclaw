@@ -360,7 +360,7 @@ The `contract` keys are organized by enforcement level. Not all of them are subs
 | Key | Enforcement |
 |---|---|
 | `emits` | **substrate-enforced**: validated always-on at the `code` type; not for the remaining emitting cell types (see § Schema format and validation; contract validation for the rest is a roadmap defer). |
-| `version`, `settings`, `consumes` | **substrate-enforced**: presence and JSON type at config load (boot hard fail; mutation reject `contract_incomplete`). |
+| `version`, `settings`, `consumes` | **substrate-enforced**: presence and JSON type at config load (boot hard fail; mutation reject `contract_incomplete`). One statement inside `settings` is enforced beyond presence: a param marked `operator_set` has to be set by the entry that grows the node (§ `SettingSpec`). |
 | `capabilities` | **discovery-only** *(specified, not built — see GH #254)*: hint for builder composer/audit tools, **no runtime check** until the hardening (see the `capabilities` note below). The key is unchecked and also unread: `ContractBlock` (`crates/meclaw-colony/src/config.rs`) has no such field, the key is dropped silently at config load, and no API exposes it. |
 | `write_surface` | **substrate-enforced, opt-in** (GH #260). `"internal"` bounds the writes the substrate answers before `handle()` to the cell's parent scope; an absent key means `"open"`, so no effect (see below). |
 | `transfer` | **substrate-enforced, opt-in** (GH #314). `"none"` exempts this cell's `cell.db` from the `transfer` body slot, export as well as import; an absent key means `"all"`, so no effect (see below). |
@@ -560,12 +560,15 @@ Declares which tools the cell offers to its LLM (or external consumers) *(specif
 
 ```json
 {
-  "type":        "string|number|boolean|object|array",
-  "secret":      false,
-  "default":     "<value>",
-  "description": "<text>"
+  "type":         "string|number|boolean|object|array",
+  "secret":       false,
+  "operator_set": false,
+  "default":      "<value>",
+  "description":  "<text>"
 }
 ```
+
+`operator_set` (default `false`) says of one param: this value has no meaning until an operator sets it; the shipped `default` is a shape, not a working value. It is the one statement in `settings` the substrate acts on. A mutation that grows a node from this template and brings no value for the param is refused at the door with `operator_param_unset`, pre-destructively, whoever submitted it — the design lane, a hand-written manifest, `--apply`. What is checked is the act and not the value: an entry that sets the param to exactly the shipped default passes, because setting it is the statement the declaration asks for. The check runs at birth, at both doors that grow a node from a template (`add_nodes` and the instantiate form of `swap_nodes[].with`); a param update afterwards is cell content with no header gate and is not judged by it.
 
 #### Flags
 

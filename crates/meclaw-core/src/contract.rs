@@ -197,6 +197,14 @@ pub struct SettingSpec {
     /// Secret marker (default false).
     #[serde(default)]
     pub secret: bool,
+    /// Operator-set marker (default false): this value has no meaning until an
+    /// operator sets it; the shipped `default` is a shape, not a working value.
+    ///
+    /// The one statement inside `settings` the substrate acts on (GH #661,
+    /// ADR-0032): a mutation that grows a node from this template and brings no
+    /// value for the param is refused at the door with `operator_param_unset`.
+    #[serde(default)]
+    pub operator_set: bool,
     /// Optional default value.
     #[serde(default)]
     pub default: Option<serde_json::Value>,
@@ -845,6 +853,30 @@ mod tests {
         );
         assert!(
             validate_consumes(&serde_json::json!({"messages": []}), &headers, &compiled).is_ok()
+        );
+    }
+
+    /// GH #661 — the fifth field of a `SettingSpec`, and what a template that
+    /// says nothing means. Absent is `false`, so every shipped contract keeps
+    /// parsing to exactly what it parsed to before.
+    #[test]
+    fn a_setting_declares_whether_an_operator_has_to_set_it() {
+        let marked: SettingSpec = serde_json::from_value(serde_json::json!({
+            "type": "string", "secret": false, "operator_set": true,
+            "default": "ws://127.0.0.1:7777/line", "description": "where the line is"
+        }))
+        .expect("a spec carrying the field parses");
+        assert!(marked.operator_set);
+
+        let plain: SettingSpec = serde_json::from_value(serde_json::json!({
+            "type": "string", "default": ""
+        }))
+        .expect("and one that says nothing still parses");
+        assert!(
+            !plain.operator_set,
+            "a contract that makes no statement makes the FALSE statement, never \
+             an unset one — otherwise every shipped template would have to be \
+             touched to keep meaning what it means"
         );
     }
 }

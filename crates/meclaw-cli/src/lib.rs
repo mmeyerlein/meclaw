@@ -15,44 +15,93 @@ pub use factories::built_in_factories;
 /// so the CLI re-exports the substrate's type instead of mirroring it.
 pub use meclaw_colony::watchdog::{HostWitness, WatchdogOnTrip, WatchdogTrip, WorkItem};
 
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use tracing_appender::non_blocking::WorkerGuard;
 
-/// Initialize the **global** tracing subscriber with two layers:
+/// Which sinks the subscriber installs (GH #662).
+///
+/// `auto` is what a caller gets without a flag — the sink is there. `off`
+/// leaves it out. Two answers today, and the enum keeps a third one reachable
+/// without burning a flag name on a single boolean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+#[value(rename_all = "lower")]
+pub enum LogSink {
+    /// The sink is installed.
+    Auto,
+    /// The sink is left out.
+    Off,
+}
+
+/// The filter both sinks fall back to: `--log-filter` if given, else
+/// `--log-level`.
+fn fixed_filter(
+    level: &str,
+    filter: Option<&str>,
+) -> anyhow::Result<tracing_subscriber::EnvFilter> {
+    use tracing_subscriber::EnvFilter;
+    Ok(match filter {
+        Some(expr) => EnvFilter::try_new(expr)?,
+        None => EnvFilter::try_new(level)?,
+    })
+}
+
+/// The filter of the stderr layer (GH #662, OR-A8): `RUST_LOG` when it is set,
+/// else the same expression the file gets.
+///
+/// The variable steers this sink and no other. The file's filter stays with
+/// `--log-filter`/`--log-level`, because the proof scripts that read the file
+/// run on machines where `RUST_LOG` may already mean something else, and a
+/// silently redirected file is a green gate over a missing event.
+fn stderr_filter(
+    level: &str,
+    filter: Option<&str>,
+) -> anyhow::Result<tracing_subscriber::EnvFilter> {
+    // An exported-but-empty `RUST_LOG` is a wrapper-script accident, not an
+    // instruction to go quiet: it would build a filter with no directives and
+    // silence the default sink without anybody saying `--log-stderr off`.
+    if let Some(expr) = std::env::var("RUST_LOG")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+    {
+        // Lossy, and never fallible. An explicit `--log-filter` may refuse a
+        // typo, because somebody typed it for this run; `RUST_LOG` is ambient,
+        // and a typo in a wrapper's environment must not decide whether the
+        // colony boots. A directive that does not parse is dropped, the rest
+        // of the expression still applies, and an expression that yields
+        // nothing usable falls back to the `ERROR` directive below.
+        return Ok(tracing_subscriber::EnvFilter::builder()
+            .with_default_directive(tracing_subscriber::filter::LevelFilter::ERROR.into())
+            .parse_lossy(expr));
+    }
+    fixed_filter(level, filter)
+}
+
+/// Initialize the **global** tracing subscriber with up to three layers:
 ///   1. `console-subscriber` for tokio-console async-task observability
 ///      (requires `--cfg tokio_unstable`, set in `.cargo/config.toml` Phase 0).
-///   2. JSON `fmt` layer writing non-blocking to `log_path` via `tracing-appender`.
+///   2. JSON `fmt` layer writing non-blocking to `log_path` via `tracing-appender`,
+///      unless `file` is [`LogSink::Off`].
+///   3. compact `fmt` layer on stderr, unless `stderr` is [`LogSink::Off`]
+///      (GH #662). Under an init system this is the layer `journalctl -u` reads,
+///      which is why it is plain lines and not a second JSON stream.
 ///
-/// Returns the `WorkerGuard` for the non-blocking writer — caller MUST keep it
-/// alive for the duration of the process (Drop flushes pending writes). Calling
-/// twice in the same process is an error (`set_global_default` may only be set
-/// once). Tests that need a fresh subscriber must run in separate processes
-/// (integration tests do; multiple `#[test]` fns in the same crate share state).
+/// Returns the `WorkerGuard` of the non-blocking writer — caller MUST keep it
+/// alive for the duration of the process (Drop flushes pending writes). `None`
+/// when there is no file to flush. Calling twice in the same process is an
+/// error (`set_global_default` may only be set once). Tests that need a fresh
+/// subscriber must run in separate processes (integration tests do; multiple
+/// `#[test]` fns in the same crate share state).
 pub fn setup_subscriber(
     log_path: &Path,
     level: &str,
     filter: Option<&str>,
     tokio_console: bool,
     tokio_console_port: u16,
-) -> anyhow::Result<WorkerGuard> {
-    use tracing_subscriber::EnvFilter;
+    stderr: LogSink,
+    file: LogSink,
+) -> anyhow::Result<Option<WorkerGuard>> {
     use tracing_subscriber::prelude::*;
-
-    if let Some(parent) = log_path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        std::fs::create_dir_all(parent)?;
-    }
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log_path)?;
-    let (non_blocking, guard) = tracing_appender::non_blocking(file);
-
-    let env_filter = match filter {
-        Some(expr) => EnvFilter::try_new(expr)?,
-        None => EnvFilter::try_new(level)?,
-    };
 
     // U10: build the layer only on opt-in; check the port up front (a clear
     // error message instead of a panic on an occupied port). `None` ⇒ an
@@ -64,14 +113,49 @@ pub fn setup_subscriber(
             .spawn()
     });
 
-    let fmt_layer = tracing_subscriber::fmt::layer()
-        .json()
-        .with_writer(non_blocking)
-        .with_filter(env_filter);
+    let mut guard = None;
+    let file_layer = match file {
+        LogSink::Off => None,
+        LogSink::Auto => {
+            if let Some(parent) = log_path.parent()
+                && !parent.as_os_str().is_empty()
+            {
+                std::fs::create_dir_all(parent)?;
+            }
+            let sink = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(log_path)?;
+            let (non_blocking, worker) = tracing_appender::non_blocking(sink);
+            guard = Some(worker);
+            Some(
+                tracing_subscriber::fmt::layer()
+                    .json()
+                    .with_writer(non_blocking)
+                    .with_filter(fixed_filter(level, filter)?),
+            )
+        }
+    };
+
+    let stderr_layer = match stderr {
+        LogSink::Off => None,
+        LogSink::Auto => Some(
+            tracing_subscriber::fmt::layer()
+                .compact()
+                // The colour codes are for a human at a console. Whatever
+                // collects this stream instead -- a file, a journal -- would
+                // get every line prefixed with an escape sequence, and a
+                // `grep '^2026'` over it would find nothing.
+                .with_ansi(std::io::stderr().is_terminal())
+                .with_writer(std::io::stderr)
+                .with_filter(stderr_filter(level, filter)?),
+        ),
+    };
 
     tracing_subscriber::registry()
         .with(console_layer)
-        .with(fmt_layer)
+        .with(file_layer)
+        .with(stderr_layer)
         .try_init()
         .map_err(|e| anyhow::anyhow!("set_global_default failed: {e}"))?;
 
@@ -133,6 +217,26 @@ pub struct Cli {
     /// `RUST_LOG`-style per-module filter expression.
     #[arg(long = "log-filter")]
     pub log_filter: Option<String>,
+
+    /// Tracing lines on stderr, where the init system picks them up. Default
+    /// `auto`; `off` is for the deployment that wants the file alone.
+    #[arg(
+        long = "log-stderr",
+        value_enum,
+        value_name = "SINK",
+        default_value_t = LogSink::Auto
+    )]
+    pub log_stderr: LogSink,
+
+    /// The JSONL file at `--log`. Default `auto`; `off` writes no file and
+    /// creates no directory for one.
+    #[arg(
+        long = "log-file",
+        value_enum,
+        value_name = "SINK",
+        default_value_t = LogSink::Auto
+    )]
+    pub log_file: LogSink,
 
     /// `.env` file for variable substitution. Default: `<root>/.env`.
     #[arg(long, value_name = "PATH")]
@@ -334,6 +438,8 @@ pub async fn entrypoint(mut cli: Cli) -> anyhow::Result<()> {
         cli.log_filter.as_deref(),
         cli.tokio_console,
         cli.tokio_console_port,
+        cli.log_stderr,
+        cli.log_file,
     )?;
     run(cli).await
 }

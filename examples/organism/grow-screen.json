@@ -6,7 +6,7 @@
         "add_nodes": [
           {
             "name": "display",
-            "template": "display@2.0.0",
+            "template": "display@2.1.0",
             "override_params": {
               "web": {
                 "mount": "alex-display"
@@ -46,7 +46,7 @@
         "add_nodes": [
           {
             "name": "colony-view",
-            "template": "colony-view@1.1.0"
+            "template": "colony-view@1.1.1"
           }
         ],
         "add_edges": [

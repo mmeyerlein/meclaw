@@ -398,19 +398,19 @@ async fn answer_when_the_turn_lands(
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_browser_holds_the_button_and_the_colony_answers() {
-    if !library_ships() || !have_python() {
-        return;
-    }
-    let mut live = boot().await;
+/// Drive the page once and hand back the driver's counter line, or `None` when
+/// this host has nothing to drive it with.
+///
+/// `mode` is the driver's third argument: `None` for the plain run, `"rejoin"`
+/// for the one that lets the cell close the topic in between.
+async fn drive(live: &mut Live, mode: Option<&str>) -> Option<String> {
     put_a_view_up(&live.h).await;
     wait_for_the_microphone(live.port).await;
 
     let script = repo("workshop/tools/display-mic-browser.mjs");
     if !script.is_file() {
         println!("SKIP the driver does not ship in this tree");
-        return;
+        return None;
     }
 
     // The answer goes in as soon as the turn comes out, so the page has a
@@ -419,21 +419,20 @@ async fn a_browser_holds_the_button_and_the_colony_answers() {
     let egress = std::mem::replace(&mut live.egress, mpsc::channel(1).1);
     let speaking = tokio::spawn(answer_when_the_turn_lands(inbox, egress));
 
-    let run = tokio::time::timeout(
-        DRIVER_LIMIT,
-        tokio::process::Command::new("node")
-            .arg(&script)
-            .arg(format!("http://127.0.0.1:{}/{SCREEN_MOUNT}/", live.port))
-            .arg(SAID)
-            // The timeout path panics and drops this future, which does NOT kill
-            // the child on its own -- node would keep running and the browser with
-            // it. That is the leak the 90 s bound exists to prevent, so the bound
-            // has to take the process with it. Node kills the browser itself, by
-            // PID, on every exit path it now has.
-            .kill_on_drop(true)
-            .output(),
-    )
-    .await;
+    let mut command = tokio::process::Command::new("node");
+    command
+        .arg(&script)
+        .arg(format!("http://127.0.0.1:{}/{SCREEN_MOUNT}/", live.port))
+        .arg(SAID);
+    if let Some(mode) = mode {
+        command.arg(mode);
+    }
+    // The timeout path panics and drops this future, which does NOT kill the
+    // child on its own -- node would keep running and the browser with it. That
+    // is the leak the 90 s bound exists to prevent, so the bound has to take the
+    // process with it. Node kills the browser itself, by PID, on every exit path
+    // it now has.
+    let run = tokio::time::timeout(DRIVER_LIMIT, command.kill_on_drop(true).output()).await;
     speaking.abort();
 
     let out = match run {
@@ -441,7 +440,7 @@ async fn a_browser_holds_the_button_and_the_colony_answers() {
         // No node on this host is the same kind of absence as no browser.
         Ok(Err(e)) => {
             println!("SKIP node is not on this host: {e}");
-            return;
+            return None;
         }
         Ok(Ok(out)) => out,
     };
@@ -452,7 +451,7 @@ async fn a_browser_holds_the_button_and_the_colony_answers() {
         // would print it twice.
         Some(3) => {
             println!("{}", stderr.trim());
-            return;
+            return None;
         }
         Some(0) => {}
         other => panic!("the browser driver failed ({other:?}):\n{stdout}\n{stderr}"),
@@ -461,20 +460,63 @@ async fn a_browser_holds_the_button_and_the_colony_answers() {
     let line = stdout
         .lines()
         .find(|l| l.starts_with("BROWSER "))
-        .unwrap_or_else(|| panic!("the driver printed no counters:\n{stdout}\n{stderr}"));
+        .unwrap_or_else(|| panic!("the driver printed no counters:\n{stdout}\n{stderr}"))
+        .to_string();
     println!("{line}");
-    let read = |key: &str| -> u64 {
-        line.split_whitespace()
-            .find_map(|part| part.strip_prefix(key))
-            .and_then(|v| v.parse().ok())
-            .unwrap_or_else(|| panic!("{key} is not in {line:?}"))
+    Some(line)
+}
+
+/// One number out of a `BROWSER …` line.
+fn counter(line: &str, key: &str) -> u64 {
+    line.split_whitespace()
+        .find_map(|part| part.strip_prefix(key))
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(|| panic!("{key} is not in {line:?}"))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_browser_holds_the_button_and_the_colony_answers() {
+    if !library_ships() || !have_python() {
+        return;
+    }
+    let mut live = boot().await;
+    let Some(line) = drive(&mut live, None).await else {
+        return;
     };
     assert!(
-        read("sent=") > 0,
+        counter(&line, "sent=") > 0,
         "the page's own worklet cut frames and pushed them: {line}"
     );
     assert!(
-        read("turns=") >= 1,
+        counter(&line, "turns=") >= 1,
         "the transcript the page shows came back over its own socket: {line}"
+    );
+}
+
+/// GH #658 — and the same page, after the cell closed its topic underneath it.
+///
+/// A `4409` is a real close from the cell: a second link claiming the same call
+/// displaces the first. The page used to disable its button on it, for the life
+/// of the page. Now the next press joins a NEW call, and this is the only place
+/// that can prove it: the vendored Phoenix client refuses a second `join()` on
+/// the same channel instance, so the rejoin is a browser fact, not a string in
+/// a rendered page.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_browser_rejoins_after_the_cell_closed_the_topic() {
+    if !library_ships() || !have_python() {
+        return;
+    }
+    let mut live = boot().await;
+    let Some(line) = drive(&mut live, Some("rejoin")).await else {
+        return;
+    };
+    assert!(
+        line.contains("closed=4409"),
+        "the cell really closed the first topic, and the page saw the code: {line}"
+    );
+    assert!(
+        counter(&line, "turns=") >= 2,
+        "one turn before the close and one after it, on a call that did not \
+         exist when the page was loaded: {line}"
     );
 }

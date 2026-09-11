@@ -1,4 +1,4 @@
-# `freeswitch@2.0.0`
+# `freeswitch@2.0.2`
 
 A telephone as one **channel** of a person, in two halves inside one hive.
 
@@ -86,7 +86,15 @@ inbound call showed what that costs, twice in the same minute:
   that said the same thing. The assistant answered both and **the caller heard
   two greetings**. So the announcement of an inbound call is
   `call_incoming` — the moment a person is on the line — and the
-  `call_answered` behind it moves the row and says nothing;
+  `call_answered` behind it moves the row and says nothing. Since `2.0.2` it
+  also **sounds** like that moment: the turn used to read *“Incoming call from
+  …”* with `call_state: incoming`, the assistant read it as a notice to the
+  owner and asked *“Shall I pick up?”* into a line the caller was already on.
+  It now reads *“The caller is on the line. Greet them.”* with
+  `call_state: live` — no question, and nobody named in the text: a turn is
+  answered, so a number or a member id inside it is read back to the caller.
+  Both travel on the hop (`hop.number`, `hop.user_id`), where the member's
+  firewall reads them (GH #665);
 * `call_ended` raised a third turn, and the sentence that argued for it — *an
   agent that goes on talking into a call that ended is the failure this lane
   exists to prevent* — is exactly the failure it caused. **A generation reads a
@@ -186,7 +194,7 @@ tool v-lanes and their way back.
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "channels/freeswitch", "template": "freeswitch@2.0.0",
+  "add_nodes": [{"name": "channels/freeswitch", "template": "freeswitch@2.0.2",
                  "override_params": {
                    "signal": {"dial_prefix": "sofia/gateway/fs02/",
                               "voice_ws_url": "ws://<colony-host>:<listener-port>/phone/ws",
@@ -417,7 +425,7 @@ POST /messages
 
 | `hop.route` | when the dialplan sends it | what the channel does |
 |---|---|---|
-| `call_incoming` | an inbound leg arrives, before it is answered | one turn *“Incoming call from …”* — **if the line is free, or the policy takes it** (§ *What a second call gets*); a queued or refused call raises no turn and leaves a receipt instead. `hop.user_id` is the member the switch put the caller through as and is trusted where it is there. For a call with neither that nor a `callers` entry: one `unknown_caller` error **and** a `uuid_kill` on that leg, before the policy is ever asked |
+| `call_incoming` | an inbound leg arrives, and the dialplan has already answered it | one turn *“The caller is on the line. Greet them.”* — the caller and the member ride on `hop.number`/`hop.user_id` and are named nowhere in the text — with `call_state: live` — **if the line is free, or the policy takes it** (§ *What a second call gets*); a queued or refused call raises no turn and leaves a receipt instead. `hop.user_id` is the member the switch put the caller through as and is trusted where it is there. For a call with neither that nor a `callers` entry: one `unknown_caller` error **and** a `uuid_kill` on that leg, before the policy is ever asked |
 | `call_ringing` | an outbound leg starts ringing | moves the row, raises nothing |
 | `call_answered` | either leg is answered — the same place the audio stream is started | for a call this channel PLACED: one turn *“… answered. Purpose of this call: …”*. For an INBOUND one: moves the row, raises nothing — `call_incoming` was the turn |
 | `call_ended` | the leg hangs up | moves the row, `state` and `cause`, and raises nothing |
@@ -483,7 +491,11 @@ carries `<user_id>|<stream URL>`, so **adding a colony is adding a row**:
     <action application="execute_extension" data="meclaw_connect XML ${context}"/>
     <anti-action application="unset" data="meclaw_wants"/>
     <anti-action application="unset" data="meclaw_pin"/>
-    <anti-action application="playback" data="ivr/ivr-that_was_an_invalid_entry.wav"/>
+    <!-- A file of its own, not the one `play_and_get_digits` plays: that one
+         says "those digits are not a PIN-shaped number", this one says "that
+         was not the PIN". A caller who hears the same sentence for both learns
+         nothing from either. -->
+    <anti-action application="playback" data="ivr/ivr-access_denied.wav"/>
     <anti-action application="hangup" data="CALL_REJECTED"/>
   </condition>
 </extension>
@@ -534,8 +546,11 @@ nobody has typed anything when its conditions are evaluated. The four paths:
   `meclaw_check` matches, clears both PIN variables and hands over to
   `meclaw_connect`.
 * **A row with a PIN, entered wrong.** `meclaw_check`'s condition fails: its
-  anti-actions clear both variables, play the announcement and hang up with
-  `CALL_REJECTED`.
+  anti-actions clear both variables, play `ivr/ivr-access_denied.wav` and hang
+  up with `CALL_REJECTED`. That is a different file from the one
+  `play_and_get_digits` plays on a malformed entry
+  (`ivr/ivr-that_was_an_invalid_entry.wav`), because the two refusals are two
+  different things: the digits were not PIN-shaped, or they were not the PIN.
 
 **What is measured and what is not.** The rows, the three tools that write them
 and the `user_id` this hive trusts are measured
@@ -783,19 +798,30 @@ silent. **What is NOT here is a clock** — see *What is not here*.
 | `audio_out_frame_ms` | `voice` | `20` | ordered here: `mod_audio_stream` aborts the call on an outbound frame longer than about 100 ms |
 | `emit_speak_end` | `voice` | `true` | ordered here: it is what *Hanging up* is built on. Off in the `voice` template itself |
 | `fs_api_base_url` | `signal` | `${FREESWITCH_XMLRPC_BASE_URL}` | the switch's control endpoint, credentials included. The one provider lane |
-| `voice_ws_url` | `signal` | `ws://127.0.0.1:7777/phone/ws` | where `mod_audio_stream` reaches the media half, *seen from the machine FreeSWITCH runs on*. Since `voice@2.0.0` the media half has no port of its own: the form is `ws://<listener>/<mount>/ws`, and `?session=<uuid>&sample_rate=<fork_sample_rate>` is appended. It is also the second field of the row `add_number` writes |
+| `voice_ws_url` **[operator-set]** | `signal` | `ws://127.0.0.1:7777/phone/ws` | where `mod_audio_stream` reaches the media half, *seen from the machine FreeSWITCH runs on*. Since `voice@2.0.0` the media half has no port of its own: the form is `ws://<listener>/<mount>/ws`, and `?session=<uuid>&sample_rate=<fork_sample_rate>` is appended. It is also the second field of the row `add_number` writes. The dialplan below captures `^ws://` and nothing else, so a `wss://` listener is refused there rather than dialled — it wants `https` for the API address and a second extension of its own |
 | `db_realm` | `signal` | `meclaw_lines` | the realm of the switch's own table the three line tools write |
-| `line_user_id` | `signal` | `""` | the member a caller of this line is put through as: the first field of a number row and the key of the PIN row. Empty means the line tools write nothing and say so (`line_unconfigured`) |
+| `line_user_id` **[operator-set]** | `signal` | `""` | the member a caller of this line is put through as: the first field of a number row and the key of the PIN row. Empty means the line tools write nothing and say so (`line_unconfigured`) |
 | `dial_prefix` | `signal` | `sofia/gateway/fs02/` | what goes in front of the number in the dial string |
 | `caller_id_number` | `signal` | `""` | the number this member calls from. Empty leaves it to the gateway |
 | `answer_app` | `signal` | `&park()` | what the answered leg is handed to |
-| `fork_sample_rate` | `signal` | `8000` | the stream's rate, and the rate the media half is asked to recognise at — the same number goes into `?sample_rate=` of the fork URL, so the two cannot disagree (GH #619). `8000` because a call already is 8 kHz. Written as a number because the `api_on_answer` value is one line at the switch; `"8k"` works too (`mod_audio_stream.c` v1.0.3 l. 170-177) and is read, not refused |
+| `fork_sample_rate` | `signal` | `8000` | the stream's rate, and the rate the media half is asked to recognise at — the same number goes into `?sample_rate=` of the fork URL, so the two cannot disagree (GH #619). `8000` because a call already is 8 kHz. Written as a number because the `api_on_answer` value is one line at the switch; `"8k"` works too (`mod_audio_stream.c` v1.0.3 l. 170-177) and is read, not refused. A dialplan that also sets `STREAM_SAMPLE_RATE` sets it to this number: a single `?sample_rate=` answers both directions — binding inbound, a wish outbound — so the media half declares in `hello.audio_out.sample_rate` what actually comes back — with `?sample_rate=16000` that is 16000 whenever the synthesis provider serves it, and playing it back at another rate is the same audio read at the wrong speed |
 | `ring_timeout_ms` | `signal` | `45000` | travels as `originate_timeout`. The clock is the switch's |
-| `callers` | `signal` | `{}` | number → sender id |
+| `callers` **[operator-set]** | `signal` | `{}` | number → sender id |
 | `second_call` | `signal` | `busy` | what an inbound call gets while the line is busy: `busy`, `queue` or `parallel` |
 | `capacity` | `signal` | `1` | how many calls may run at once. Read for every policy, so `busy` is `parallel` with `1` |
 | `queue_hold_media` | `signal` | `local_stream://moh` | what a waiting caller hears, as a `uuid_broadcast` source. A recorded announcement is a `file_string://…` |
 | `external_timeout_ms` | `gateway` | `60000` | must exceed `ring_timeout_ms`: the originate answer arrives when the ringing stops |
+
+**Since `2.0.2` three of them are declared `operator_set`** (GH #661). The three
+marked above ship a value that is a SHAPE and not a working one: a URL pointing
+at the machine the cell happens to run on, an empty identity, an empty allowlist.
+A colony built with all three untouched has a telephone channel that reaches no
+switch, and that is what was measured. A mutation that grows this hive without
+setting them is refused at the door with `operator_param_unset`, naming all of
+them at once, before anything is staged — so name them on the `add_nodes` entry
+that grows the channel. Setting one to exactly the shipped value counts as
+setting it; leaving it out does not. `dial_prefix` is deliberately not among
+them: the gateway it names works.
 
 ## What is not here
 
@@ -943,7 +969,7 @@ caller types before they are put through, are the proxy's business — this colo
 holds no register of them and no PIN at all, and there is no tool that reads one
 back.
 
-Migrating a colony on `1.1.1`: `swap_nodes` onto `freeswitch@2.0.0`, then give
+Migrating a colony on `1.1.1`: `swap_nodes` onto `freeswitch@2.0.2`, then give
 `./signal` a `line_user_id` (without it the three new tools refuse by name and
 nothing else changes), and point `voice_ws_url` at the colony's listener and this
 hive's mount instead of at a port. The dialplan keeps working unchanged as long
@@ -956,7 +982,7 @@ exported, so for almost everybody this section is history. A colony that *did* g
 in two steps and keeps its call table:
 
 1. `swap_nodes` the node onto the new template
-   (`{"match": {"name": "channels/phone"}, "template": "freeswitch@2.0.0"}`),
+   (`{"match": {"name": "channels/phone"}, "template": "freeswitch@2.0.2"}`),
    which leaves the `store` where it is.
 2. Rewrite the edges of the installing manifest above: they name the node, and
    the node's name is what changed. The receipt edges go in at the same time.

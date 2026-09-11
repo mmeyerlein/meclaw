@@ -7,7 +7,10 @@ pub mod version;
 
 pub use registry::{ResolveError, TemplateEntry, TemplatesRegistry};
 pub use requires::{RequiredKey, RequiresError, TemplateRequires, read_requires};
-pub use scanner::{ScannedTemplate, ScannerError, parse_template_json, scan_templates_dir};
+pub use scanner::{
+    ScannedTemplate, ScannerError, SkippedTemplate, parse_template_json, scan_templates_dir,
+    scan_templates_dir_with_skips,
+};
 pub use version::{SimpleVersion, VersionError, parse_simple_version};
 
 use crate::persist::colony_db::{ColonyDb, TemplateRow};

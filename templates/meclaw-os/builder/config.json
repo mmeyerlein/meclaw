@@ -1,6 +1,6 @@
 {
   "cell": {
     "type": "ref",
-    "template": "builder@1.8.0"
+    "template": "builder@1.9.0"
   }
 }

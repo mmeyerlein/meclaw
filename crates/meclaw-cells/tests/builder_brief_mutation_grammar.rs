@@ -1011,3 +1011,138 @@ fn the_briefing_says_a_removal_does_not_take_the_name_out_of_the_caller() {
         );
     }
 }
+
+// --- GH #599: the modifier grammar, and the field that declares a lane -------
+//
+// Measured on one colony built entirely through the design lane: four build
+// requests, all four committed, and 13 of 25 contract edges drawn wrong. The defects were exactly the rules the briefing
+// never stated — bare identifiers as `set_context` values, promotions written
+// into `set_hop` where the contract wants `set_context`, an identity defaulting
+// to `''` instead of the sender, no v-lane carrying its `lane` field,
+// `delete_hop` where the key lives in the context, and one lane with no
+// `hop.route` guard. Nothing was refused and nothing warned: `modifier` was
+// named in the briefing twice, both times as a key, and `set_context`,
+// `set_hop`, `delete_context`, `delete_hop` and `"lane"` were not there at all.
+
+/// The briefing states what a modifier is made of, and that its values are CEL.
+#[test]
+fn the_briefing_states_the_modifier_grammar() {
+    for text in [briefed(), degraded()] {
+        assert!(
+            text.contains("MODIFIERS"),
+            "the compartment that decides what an edge DOES to a message was \
+             named and never explained; the block belongs in the head, where a \
+             degraded run still has it"
+        );
+        for key in ["set_context", "set_hop", "delete_context", "delete_hop"] {
+            assert!(
+                text.contains(key),
+                "the briefing has to name {key}: a composer that has not read \
+                 the word writes the operation into the other compartment"
+            );
+        }
+        assert!(
+            text.contains("'phone'"),
+            "a modifier VALUE is a CEL expression, so a literal string carries \
+             its own quotes — shown, because 'every value is CEL' is a sentence \
+             every bare identifier would also have agreed with"
+        );
+        assert!(
+            text.contains("SKIPS THE WHOLE EDGE"),
+            "what a failed modifier costs is the whole edge, silently; without \
+             that sentence the quoting rule reads like style"
+        );
+        // And the defensive form is shown on a key where an empty fallback is
+        // harmless. `user_id` is the one where it is not: an identity that
+        // falls back to `''` is a sender nobody allowed, and the firewall of
+        // the member refuses the turn — which is defect 3 of the measured
+        // thirteen, so a briefing that taught it would teach the defect.
+        assert!(
+            !text.contains("has(hop.user_id) ? hop.user_id : ''"),
+            "the example must not be the one that empties an identity"
+        );
+        assert!(
+            text.contains("An identity falls back to an identity"),
+            "and the rule that keeps somebody from writing it anyway has to be \
+             in the text"
+        );
+    }
+}
+
+/// And that a v-lane is a FIELD, not a condition.
+#[test]
+fn the_briefing_says_a_lane_is_a_field() {
+    for text in [briefed(), degraded()] {
+        assert!(
+            text.contains("\"lane\""),
+            "a v-lane is declared by the `lane` field on the edge entry; the \
+             lane written into the condition instead validates and wires \
+             nothing"
+        );
+        assert!(
+            text.contains("has(hop.route) && hop.route =="),
+            "and it is guarded on the route the REQUESTER stamps, which is the \
+             lane's own name"
+        );
+        // The two halves are not the same guard, and the briefing said they
+        // were. A return edge guarded on the lane it is about to WRITE never
+        // fires — a new instance of the defect class #599 exists against.
+        assert!(
+            text.contains("ANSWERER"),
+            "the edge back is guarded on what the answering cell stamped, not \
+             on the lane the caller listens on"
+        );
+        assert!(
+            text.contains("'ack'") || text.contains("hop.operation"),
+            "and the briefing shows what that looks like, because 'what the \
+             answerer stamped' is a sentence every wrong guard also agrees with"
+        );
+    }
+    // The mechanism, on the tree: the shipped v-lane example carries both
+    // halves, so the briefing describes a form somebody can copy.
+    if let Some(v) = shipped_json("examples/organism/grow-credentials.json") {
+        let edge = &v["diff"]["add_edges"][0];
+        assert_eq!(
+            edge["lane"], "credential_request",
+            "the example declares its lane in the field"
+        );
+        assert!(
+            edge["condition"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("hop.route == 'credential_request'"),
+            "the lane out is guarded on the name the REQUESTER stamps, which is \
+             the lane's own: {:?}",
+            edge["condition"]
+        );
+        assert!(
+            edge["modifier"]["set_hop"]["route"]
+                .as_str()
+                .unwrap_or_default()
+                .starts_with('\''),
+            "and writes the lane it restamps as a CEL string literal: {:?}",
+            edge["modifier"]["set_hop"]["route"]
+        );
+        // The other direction, and the reason LANES needed two sentences: the
+        // way back is guarded on what the ANSWERER stamped, and the lane the
+        // caller listens on is written in the modifier. A return edge guarded
+        // on `in_sealed` would never fire.
+        let back = &v["diff"]["add_edges"][1];
+        assert_eq!(back["lane"], "in_sealed", "the way back is a v-lane too");
+        let guard = back["condition"].as_str().unwrap_or_default();
+        assert!(
+            guard.contains("hop.route == 'ack'"),
+            "guarded on the answer: {guard:?}"
+        );
+        assert!(
+            !guard.contains("'in_sealed'"),
+            "and never on the lane it is about to write: {guard:?}"
+        );
+        assert_eq!(
+            back["modifier"]["set_hop"]["route"], "'in_sealed'",
+            "which is what the modifier is for"
+        );
+    } else {
+        panic!("the v-lane example this rule is read off must ship");
+    }
+}
