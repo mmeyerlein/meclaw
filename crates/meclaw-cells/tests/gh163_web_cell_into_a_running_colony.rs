@@ -238,7 +238,7 @@ async fn a_web_cell_instantiated_by_mutation_serves_in_the_same_boot() {
 
     let outcome = send_mutation(
         &h,
-        json!({"scope": "/", "diff": {"add_nodes": [{"name": "display", "template": "web@2.0.0"}]}}),
+        json!({"scope": "/", "diff": {"add_nodes": [{"name": "display", "template": "web@2.0.1"}]}}),
     )
     .await;
     assert!(

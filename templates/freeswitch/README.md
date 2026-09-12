@@ -1,4 +1,4 @@
-# `freeswitch@2.0.2`
+# `freeswitch@2.0.3`
 
 A telephone as one **channel** of a person, in two halves inside one hive.
 
@@ -194,7 +194,7 @@ tool v-lanes and their way back.
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "channels/freeswitch", "template": "freeswitch@2.0.2",
+  "add_nodes": [{"name": "channels/freeswitch", "template": "freeswitch@2.0.3",
                  "override_params": {
                    "signal": {"dial_prefix": "sofia/gateway/fs02/",
                               "voice_ws_url": "ws://<colony-host>:<listener-port>/phone/ws",
@@ -447,16 +447,17 @@ carries `<user_id>|<stream URL>`, so **adding a colony is adding a row**:
 <extension name="meclaw_line">
   <!-- FIRST the dialled number, so the re-hunts below do not land here. -->
   <condition field="destination_number" expression="^\+?\d+$"/>
-  <!-- Then the row, keyed by the number that rang: <user_id>|<stream URL>.
+  <!-- Then the row, by the PAIR: the realm is the number that was dialled, the
+       key is the number that is calling, the value <user_id>|<stream URL>.
        Actions AND anti-actions are children of this condition, the LAST one:
        FreeSWITCH collects both as children of a condition and silently ignores
        anything that sits at extension level. -->
-  <condition field="${db(select/meclaw_lines/${caller_id_number})}"
+  <condition field="${db(select/meclaw_lines_${destination_number}/${caller_id_number})}"
              expression="^([^|]+)\|(.+)$">
     <action application="set" data="meclaw_user=$1" inline="true"/>
     <action application="set" data="meclaw_ws_url=$2" inline="true"/>
     <action application="set" inline="true"
-            data="meclaw_wants=${db(select/meclaw_lines/pin.${meclaw_user})}"/>
+            data="meclaw_wants=${db(select/meclaw_lines_${destination_number}/pin.${meclaw_user})}"/>
     <action application="answer"/>
     <action application="sleep" data="300"/>
     <action application="execute_extension" data="meclaw_ask XML ${context}"/>
@@ -552,6 +553,35 @@ nobody has typed anything when its conditions are evaluated. The four paths:
   (`ivr/ivr-that_was_an_invalid_entry.wav`), because the two refusals are two
   different things: the digits were not PIN-shaped, or they were not the PIN.
 
+**The row is addressed by the pair (dialled number, caller number), and the
+realm carries the first half** (GH #667). `mod_db` addresses a row by realm and
+key, so the block above reads
+`db(select/meclaw_lines_${destination_number}/${caller_id_number})`: one realm
+per number the switch answers on, named `meclaw_lines_<dialled number>` — the
+number as it stands in `destination_number` on that switch, `+` included if the
+trunk delivers one, since the first condition above admits both and the realm
+has to match it character for character — and inside it the caller's number as
+the key. Both directions fall out of that without a change to any cell: one
+caller reaches different colonies on different numbers, and one number serves
+many callers on many colonies. A colony behind such a switch names the realm of
+the line it is reached on in `params.db_realm`, so that `add_number`, `set_pin`
+and `disable_pin` write into the realm the dialplan reads for that number
+(§ *What leaves for the switch*); the PIN row sits in the same realm, which is
+why the second `db(select/…)` above names it too. One hive names one realm, so
+one hive is one line: a colony reached on two numbers behind such a switch
+carries two `freeswitch` nodes, one per number.
+The shipped default, `meclaw_lines`, is the one-number case — one switch,
+one number, and a block that reads `db(select/meclaw_lines/${caller_id_number})`
+instead, keyed by the caller alone, because with one number there is nothing
+else to tell apart. With the default realm, replace
+`meclaw_lines_${destination_number}` by `meclaw_lines` in both lookups of the
+block above — or set `db_realm` to `meclaw_lines_<dialled number>` and keep the
+block as it stands. Copied as it stands against the default realm, the block
+selects an empty row on every call and hangs up with `CALL_REJECTED`, and
+nothing in the log says why. `freeswitch@2.0.2` shipped the caller-only form as
+the block itself, so one caller number reached one colony whichever number they
+had dialled.
+
 **What is measured and what is not.** The rows, the three tools that write them
 and the `user_id` this hive trusts are measured
 (`freeswitch_channel_places_a_call_and_hears_the_line.rs`). The XML above is read
@@ -565,7 +595,8 @@ is why each one guards on that name first; `$1`…`$9` are the capture reference
 `${1}` is a channel variable; and `mod_curl`'s form is
 `curl <url> content-type <mime> post <data>`, without which the post is
 form-encoded and `POST /messages` answers `415`. A switch serving two colonies
-needs no second variable anywhere: both colonies' rows sit in the same table and
+needs no second variable anywhere: both colonies' rows sit in the same table —
+one realm when they share a number, one realm per number when they do not — and
 each names its own listener.
 
 **If meclaw does not answer, the dialplan falls back to the mailbox.** That
@@ -609,7 +640,8 @@ because a line has three things somebody can say about it.
 **The last three are the line tools, and they write the SWITCH's table.**
 `mod_db` takes `db insert/<realm>/<key>/<value>` and `db delete/<realm>/<key>`,
 so `/webapi/db?<args>` is that command as a GET. Two shapes of row live in the
-realm `params.db_realm` (`meclaw_lines`):
+realm `params.db_realm` (`meclaw_lines`, or `meclaw_lines_<dialled number>`
+behind a switch that answers on more than one number):
 
 * one keyed by a **number**, carrying two fields —
   `<line_user_id>|<voice_ws_url>`: who the caller is put through as, and the
@@ -629,7 +661,7 @@ the URL in a value is safe: `mod_db` splits its command into **four** tokens on
 `separate_string_char_delim` stops splitting once the array is full), so slashes
 inside a value stay where they are while a slash in a **key** would shift the
 value one field along. It is also what keeps the two key spaces apart in one
-realm, so a `line_user_id` that reads like a dialled number cannot land on a
+realm, so a `line_user_id` that reads like a caller number cannot land on a
 line.
 
 **The PIN row's value is compared as an anchored regex** —
@@ -657,11 +689,20 @@ operator should know all three before pointing a switch at this:
   `switch` command, so the `db insert` URL — PIN included — is a message like any
   other, and the central message log in `colony.db` keeps messages. The tool call
   the model made carries it too.
-* **Whether the row outlives a restart is the switch's business.** `mod_db` keeps
-  its tables where the switch's own database lives, and which backing that is
-  (the SQLite files under its `db/` directory, or an ODBC or PostgreSQL table) is
-  configured on the host. Check it there before treating the table as a register
-  nobody ever has to write again.
+* **A realm is persistent: the row is in the switch's database, not in its
+  memory.** `mod_db` keeps its rows in the `db_data` table of its own database —
+  `call_limit.db` under the switch's `db/` directory by default, or the ODBC DSN
+  `db.conf` names — and on load (`do_config` in `mod_db.c`) it creates that table
+  only where it is missing and purges `limit_data` alone; nothing touches
+  `db_data`. So a line row and a PIN row outlive a restart of the switch and a
+  reload of the module, and through `mod_db` a row ends in exactly two ways: a
+  `db delete` on its key, or a `db insert` on the same key, which overwrites it
+  (the insert is a delete of that key followed by the insert, under a unique
+  index on `(data_key, realm)`). What reaches the row past the module — the
+  file removed, the DSN pointed elsewhere, a statement run against the backend
+  — is the host's business: which backing holds the rows is configured there,
+  so check it before treating the table as a register nobody ever has to write
+  again.
 
 What this colony does **not** keep is a register: nothing here reads a row back,
 and there is no tool that lists one. What it does keep is the call table, which
@@ -799,7 +840,7 @@ silent. **What is NOT here is a clock** — see *What is not here*.
 | `emit_speak_end` | `voice` | `true` | ordered here: it is what *Hanging up* is built on. Off in the `voice` template itself |
 | `fs_api_base_url` | `signal` | `${FREESWITCH_XMLRPC_BASE_URL}` | the switch's control endpoint, credentials included. The one provider lane |
 | `voice_ws_url` **[operator-set]** | `signal` | `ws://127.0.0.1:7777/phone/ws` | where `mod_audio_stream` reaches the media half, *seen from the machine FreeSWITCH runs on*. Since `voice@2.0.0` the media half has no port of its own: the form is `ws://<listener>/<mount>/ws`, and `?session=<uuid>&sample_rate=<fork_sample_rate>` is appended. It is also the second field of the row `add_number` writes. The dialplan below captures `^ws://` and nothing else, so a `wss://` listener is refused there rather than dialled — it wants `https` for the API address and a second extension of its own |
-| `db_realm` | `signal` | `meclaw_lines` | the realm of the switch's own table the three line tools write |
+| `db_realm` | `signal` | `meclaw_lines` | the realm of the switch's own table the three line tools write. Behind a shared switch a colony names the realm of the line it is reached on, `meclaw_lines_<dialled number>` — the number as it stands in `destination_number` on that switch, `+` included if the trunk delivers one — so `add_number`/`set_pin`/`disable_pin` write the realm the dialplan reads for that number (§ *What the dialplan owes*). The default is the one-number case |
 | `line_user_id` **[operator-set]** | `signal` | `""` | the member a caller of this line is put through as: the first field of a number row and the key of the PIN row. Empty means the line tools write nothing and say so (`line_unconfigured`) |
 | `dial_prefix` | `signal` | `sofia/gateway/fs02/` | what goes in front of the number in the dial string |
 | `caller_id_number` | `signal` | `""` | the number this member calls from. Empty leaves it to the gateway |
@@ -969,7 +1010,7 @@ caller types before they are put through, are the proxy's business — this colo
 holds no register of them and no PIN at all, and there is no tool that reads one
 back.
 
-Migrating a colony on `1.1.1`: `swap_nodes` onto `freeswitch@2.0.2`, then give
+Migrating a colony on `1.1.1`: `swap_nodes` onto `freeswitch@2.0.3`, then give
 `./signal` a `line_user_id` (without it the three new tools refuse by name and
 nothing else changes), and point `voice_ws_url` at the colony's listener and this
 hive's mount instead of at a port. The dialplan keeps working unchanged as long
@@ -982,7 +1023,7 @@ exported, so for almost everybody this section is history. A colony that *did* g
 in two steps and keeps its call table:
 
 1. `swap_nodes` the node onto the new template
-   (`{"match": {"name": "channels/phone"}, "template": "freeswitch@2.0.2"}`),
+   (`{"match": {"name": "channels/phone"}, "template": "freeswitch@2.0.3"}`),
    which leaves the `store` where it is.
 2. Rewrite the edges of the installing manifest above: they name the node, and
    the node's name is what changed. The receipt edges go in at the same time.

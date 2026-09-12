@@ -149,7 +149,7 @@ async fn grow_the_display(h: &ColonyHandle) {
         .send(ColonyMsg::Mutation {
             payload: json!({
                 "scope": "/",
-                "diff": {"add_nodes": [{"name": NODE, "template": "web@2.0.0"}]}
+                "diff": {"add_nodes": [{"name": NODE, "template": "web@2.0.1"}]}
             }),
             reply_to: None,
             trace_id: Uuid::now_v7(),

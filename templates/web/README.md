@@ -1,4 +1,4 @@
-# `web@2.0.0`
+# `web@2.0.1`
 
 A display as one cell, with a name of its own. One `web` cell, one `cell.db`,
 one mount on the colony's listener, and a token stylesheet in the visionOS
@@ -62,17 +62,26 @@ trailing slash, ignores it if it is anything else, and writes every URL it emits
 mount. So one nginx block
 
 ```nginx
-location ^~ /egon/ {
-    proxy_set_header X-Forwarded-Prefix /egon;
-    proxy_pass http://127.0.0.1:7777;
+location ^~ /alpha/ {
+    proxy_pass http://127.0.0.1:7777/;
+    proxy_set_header X-Forwarded-Prefix /alpha;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
 }
 ```
 
-serves the display at `https://host/egon/<mount>/`, and the page a browser gets
-knows it. **A page's own links should be relative** for the same reason the
-shipped stylesheet link is: a page is materialised before any request, so
-nothing in it can know the prefix, and `<base>` is what makes a relative URL
-resolve under the mount from any route depth.
+serves the display at `https://host/alpha/<mount>/`, and the page a browser
+gets knows it. **The proxy must strip the prefix it announces**: the header
+says what was taken off the path, and the listener routes by the first segment
+of what arrives, so `/alpha/<mount>/` forwarded whole reaches no mount. In
+nginx the trailing slash on `proxy_pass` is what does the stripping. And the
+three upgrade lines carry the LiveView socket; without them the page renders
+and never connects, because what reaches `/<mount>/live/websocket` is then a
+plain GET. **A page's own links should be relative** for the same reason the shipped
+stylesheet link is: a page is materialised before any request, so nothing in it
+can know the prefix, and `<base>` is what makes a relative URL resolve under the
+mount from any route depth.
 
 **A page load costs no cell call.** What is served is a snapshot the handler half
 published: no database read, no message, no diff work. A colony that is wedged
@@ -96,7 +105,7 @@ second display takes its own. The template is one cell, so `override_params`
 takes the flat form -- there is no path inside it to address:
 
 ```json
-{"name": "web-two", "template": "web@2.0.0",
+{"name": "web-two", "template": "web@2.0.1",
  "override_params": {"mount": "screen"}}
 ```
 

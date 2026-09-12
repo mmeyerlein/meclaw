@@ -158,7 +158,7 @@ async fn the_page_carries_the_hook_the_mount_and_the_topic() {
         }),
     );
     copy_tree(&repo("templates/display"), &root.join("main/screen"));
-    // The display refs `web@2.0.0`, so the template it grows from has to be on
+    // The display refs `web@2.0.1`, so the template it grows from has to be on
     // disk before the boot resolves the ref (GH #424).
     copy_tree(&repo("templates/web"), &root.join("templates/web"));
     patch(&root.join("main/screen/web/config.json"), |v| {

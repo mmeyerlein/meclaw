@@ -5,7 +5,7 @@
 //! PROMISES, and every question is asked of the **substrate's own reader**
 //! rather than of a second opinion written in this file:
 //!
-//! 1. **The descriptor resolves.** `web@2.0.0` — the reference a mutation
+//! 1. **The descriptor resolves.** `web@2.0.1` — the reference a mutation
 //!    writes down.
 //! 2. **The config is a persistent `web` cell with a mount of its own**, read
 //!    through `meclaw_colony::ParsedConfig` (the reader every boot and every

@@ -39,6 +39,13 @@ library, a colony logs to stderr as well as to its file, and a member wish
 counts nothing any more. What the release contains is the
 [`[0.36.0]`](CHANGELOG.md) section of the changelog.
 
+The first days on that release turned up five repairs, and v0.36.1 carries
+them: a cell a swap reactivated can be swapped away again, the dialplan contract
+is keyed by the pair (dialled number, caller number), the `web` README's proxy
+example strips the prefix and carries the socket, the export audit refuses a
+test that reaches into a directory the export never carries, and the origin of
+a mounted `web` cell is written down.
+
 v0.35.0 takes the port away from a surface cell. A colony has one listener, and
 a display or a voice door is reached under a name on it, `/<mount>/` for the
 page and `/<mount>/ws` for the socket: `params.port` and `params.bind` leave the
@@ -223,6 +230,10 @@ there.
 One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- v0.36.1: the repairs the first days on 0.36.0 turned up. A reactivated cell
+  can be swapped away again, the dialplan is keyed by the pair, the proxy
+  example strips its prefix, and the export audit sees every never-exported
+  root.
 - v0.36.0: the screen brings its own design language. A token sheet and a
   component vocabulary in `display@2.1.0`, a vocabulary fingerprint on the root,
   faces as an operator asset; `operator_set` params, more than one version per

@@ -1519,16 +1519,16 @@ A subdomain that carries several colonies gives each one a path of its own and n
 the header, so the shell keeps writing links the browser can follow:
 
 ```nginx
-location ^~ /egon/ {
+location ^~ /alpha/ {
     proxy_pass http://127.0.0.1:7777/;
-    proxy_set_header X-Forwarded-Prefix /egon;
+    proxy_set_header X-Forwarded-Prefix /alpha;
     proxy_http_version 1.1;
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "upgrade";
 }
 ```
 
-The display is then at `https://<host>/egon/alex-display/`. Several displays behind one domain
+The display is then at `https://<host>/alpha/alex-display/`. Several displays behind one domain
 share one browser origin, so cookies, storage and whatever tells two members apart are the proxy's
 business, and a page that keeps something in browser storage keys it by mount.
 

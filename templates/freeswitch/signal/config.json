@@ -41,7 +41,7 @@
         "type": "string",
         "secret": false,
         "default": "meclaw_lines",
-        "description": "The realm of the SWITCH's own table the three line tools write, through `mod_xml_rpc`'s `/webapi/db` (`mod_db`). The switch is the proxy: a number is what a person dials and a PIN is what they type, and both belong to the machine that answers the telephone. This colony stores neither -- what it contributes to a row is which member the line belongs to and which mount its media half answers on."
+        "description": "The realm of the SWITCH's own table the three line tools write, through `mod_xml_rpc`'s `/webapi/db` (`mod_db`). The switch is the proxy: a number is what a person dials and a PIN is what they type, and both belong to the machine that answers the telephone. This colony stores neither -- what it contributes to a row is which member the line belongs to and which mount its media half answers on. The dialplan reads the row by the PAIR (dialled number, caller number), with the realm carrying the dialled number: behind a shared switch a colony names the realm of the line it is reached on, `meclaw_lines_<dialled number>` -- the number as it stands in `destination_number` on that switch, `+` included if the trunk delivers one -- so the three tools write the realm the dialplan reads for that number. The default is the one-number case, one switch with one number."
       },
       "line_user_id": {
         "type": "string",

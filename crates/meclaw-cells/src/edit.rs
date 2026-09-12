@@ -503,8 +503,8 @@ impl CellFactory for EditCellFactory {
         let (tx, rx) = mpsc::channel::<meclaw_core::Message>(mailbox_capacity);
         // Phase-13.5 Lifecycle-3b Task 3 + P3-A4 funnel: initial dispatcher via
         // `build_stateless_task` (owns the peace-keep-alive; stateless → no
-        // cell.db → death_ack on dispatcher task-end). RespawnFn passes
-        // `colony_inbox = None`.
+        // cell.db → death_ack on dispatcher task-end). The live stop pair goes
+        // back on the `Active` tuple; the respawn below re-notifies its own.
         let (join, peace_rx, stop_tx, death_ack_rx, backstop_rx) = build_stateless_task(
             path.clone(),
             rx,
@@ -521,6 +521,7 @@ impl CellFactory for EditCellFactory {
         let respawn_canon = canon.clone();
         let respawn_outputs_tx = outputs_tx.clone();
         let respawn_blob = blob_store.clone();
+        let respawn_inbox = colony_inbox_tx.clone();
         let respawn_mailbox_capacity = mailbox_capacity;
         // Slice 2: the cell's OWN pre-compiled consumes views (Arc-clone).
         let respawn_consumes = contract.consumes.clone();
@@ -533,21 +534,26 @@ impl CellFactory for EditCellFactory {
             let p = respawn_path.clone();
             let o = respawn_outputs_tx.clone();
             let b = respawn_blob.clone();
-            // Stateless respawn is intentionally bare (no renotify, colony_inbox
-            // = None). Dropping stop_tx/death_ack_rx is behaviorally identical to
-            // the old bare `None,None,None` spawn (stop-fut parks, death_ack
-            // unobserved). Peace-keep-alive lives in the helper.
-            let (join, peace_rx, _stop_tx, _death_ack_rx, backstop_rx) = build_stateless_task(
-                p,
+            // GH #676 (class of #673): a respawn (crash-restart /
+            // reconnect-eager, e.g. a swap swinging back to this node) mints a
+            // FRESH live stop pair that the frozen `RespawnFn` 4-tuple cannot
+            // return. Dropping it left the reactivated cell un-stoppable until
+            // a restart — every later disconnect tripped the interim guard. So
+            // the closure hands the pair back via `renotify_stop_wiring` (sync
+            // try_send, never await — this runs inside the await-free respawn
+            // corridor), exactly like the other factories.
+            let (join, peace_rx, stop_tx, death_ack_rx, backstop_rx) = build_stateless_task(
+                p.clone(),
                 rx,
                 o,
                 cell,
                 max_concurrency,
                 message_timeout,
-                None,
+                Some(respawn_inbox.clone()),
                 b,
                 respawn_consumes.clone(),
             );
+            meclaw_colony::renotify_stop_wiring(&respawn_inbox, p, stop_tx, death_ack_rx);
             (tx, join, peace_rx, backstop_rx)
         });
 

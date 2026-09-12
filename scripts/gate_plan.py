@@ -74,8 +74,9 @@ STATIONS (S strand, I integration, R release, C ci)
                     judges the tree its receipt was written over; the release
                     audit keeps the `master` default. The dry run is seconds
                     and surfaces the cheap
-                    findings of R2b/R5/R10 -- dead template references in
-                    tests, name/domain patterns, relative links -- in the
+                    findings of R2b/R2c/R5/R10 -- dead template references
+                    in tests, tests reaching into a never-exported root,
+                    name/domain patterns, relative links -- in the
                     integration pass instead of an hour later in the release
 
 USAGE
@@ -971,8 +972,9 @@ def plan(paths, mode, repo=None):
         #
         # Integration runs the SAME audit with `--skip-cargo`: R8/R9/R12-class
         # work drops out, nothing is built (cargo:0), and what remains are the
-        # cheap rules -- R2b dead template references in tests, R5 name/domain
-        # patterns, R10 relative links. Those used to surface only in the
+        # cheap rules -- R2b dead template references in tests, R2c tests
+        # reaching into a never-exported root, R5 name/domain patterns, R10
+        # relative links. Those used to surface only in the
         # release pass, an hour after the integration pass had declared the
         # wave done (v0.30.0).
         #

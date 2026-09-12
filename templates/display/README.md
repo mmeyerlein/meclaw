@@ -13,6 +13,53 @@ in_view / in_withdraw  ->  compose (code)  <->  views (store)
                               web (display)   the page, under its mount
 ```
 
+## What the screen is for: display hygiene
+
+A guideline before the mechanics, because every later decision on this screen
+is measured against it.
+
+**Focus is the state of the whole screen**, not the highlighting of one active
+element. It answers which information should be visible at this moment -- and
+which, deliberately, should not. The screen must look clearly structured, calm
+and relevant at every moment. Visible is only what has concrete use in the
+current context; everything else is hidden, reduced or moved to the back. That
+principle is *display hygiene*, and it is a continuous duty of the display
+system rather than a one-off design choice: every planned or executed change
+of the screen asks what is relevant to the member right now, what has
+priority, what supports the current task, what merely distracts, and what can
+disappear entirely without losing anything the member needs. The screen is
+always reduced to the minimum necessary information state.
+
+**The screen has no agenda of its own.** It is not a source of information.
+Its content comes from applications, from the member's agents and from system
+states with immediate display relevance, and it shows nothing permanently only
+because interfaces traditionally do. A clock is an application like any other
+and obeys the same rules of priority, focus and visibility: in a high-focus
+situation it is noise and goes; on an otherwise empty screen it may stand.
+
+**Priority is dynamic.** No fixed hierarchy, and the member's main agent does
+not automatically outrank everything -- a calendar with an imminent appointment
+may matter more than the agent's current output. Whoever judges takes the
+current context, the member's activity, time relevance, urgency, importance,
+running interactions, the cost of an interruption, the member's own
+preferences and the current focus level into account, and decides not only how
+something is shown but whether, when and ahead of what.
+
+**Display hygiene is personal.** Members differ in what they want shown,
+prioritised, arranged or hidden; those preferences are learned and kept. A
+correction the member has to repeat is not a situational correction any more
+but, probably, one of that member's display rules, and it becomes part of the
+persistent profile that shapes later decisions.
+
+**The guiding sentence:** *show as little as possible at every moment -- and
+everything that truly matters at that moment.* Relevance is not static; it
+arises from context, time, priority, activity and the member's preferences.
+
+Today (`display@2.1.0`) the sheet gives every window the same weight and the
+compose cell judges nothing. The judgement -- states, lifecycle, the reduction
+to the minimum -- is what the next version of this template brings, and this
+section is the measure it is built against.
+
 ## What it is not
 
 - **Not a window manager.** Nothing overlaps, nothing has a z-order, nothing is

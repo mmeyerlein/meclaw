@@ -12,6 +12,86 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.36.1] — 2026-09-12
+
+A patch release: the repairs the first days on 0.36.0 turned up, and the gap the
+0.36.0 release itself exposed. A cell that a swap reactivated can be swapped away
+again without a restart — `code` and the five stateless cells now hand their stop
+wiring back the way every other factory does. The FreeSWITCH dialplan contract
+resolves a call by the pair (dialled number, caller number), so one switch can
+serve many colonies on many numbers with no change to any cell. The `web` README's
+proxy example strips the prefix it announces and carries the socket. The export
+audit refuses a test that reaches into a directory the export never carries — the
+class that made the 0.36.0 public CI red while every private gate was green. And
+the design of the one listener writes down the origin of a mounted `web` cell.
+Nothing in the contract moved — no migration is needed from 0.36.0.
+
+### Fixed
+
+- **The web README's nginx example strips the prefix it announces**
+  (`web@2.0.1`, GH #677). The block's `proxy_pass` had no trailing slash, so the
+  prefix reached the listener and its first segment was no mount; the example
+  now ends in `/`, names a neutral prefix, and says in words that the proxy has
+  to strip what `X-Forwarded-Prefix` announces. A drift lock reads the block out
+  of the README and proves both halves against a real cell.
+- **The dialplan contract resolves a call by the pair (dialled number, caller
+  number)** (`freeswitch@2.0.3`). The `meclaw_line` block in the template's
+  README keyed the switch's line table by the caller alone —
+  `db(select/meclaw_lines/${caller_id_number})` — and checked the dialled number
+  only for being a number, so one caller number reached one colony whichever
+  number they had dialled. The block now reads
+  `db(select/meclaw_lines_${destination_number}/${caller_id_number})`: one
+  `mod_db` realm per dialled number, the caller as the key, the PIN row in the
+  same realm. A colony behind a shared switch names the realm of the line it is
+  reached on in `params.db_realm` (`meclaw_lines_<dialled number>`), so
+  `add_number`, `set_pin` and `disable_pin` write the realm the dialplan reads
+  for that number; the caller-only form stays as the one-number case and the
+  shipped default. One caller reaching different colonies on different numbers
+  and one number serving many callers on many colonies both fall out of it, and
+  no cell changes. The README also says, against `mod_db.c`, that a realm is
+  persistent: the rows are in the switch's database, a module load touches
+  `db_data` only to create it where it is missing, and a row ends by a delete or
+  by an insert on the same key (GH #667).
+- **A `code` cell reactivated by a swap can be swapped away again** (GH #673).
+  A `code` leaf swapped away by name and swung back with the existing-node form
+  came back active, and a second swing forward was refused with
+  `stop_wiring_unavailable` until the colony restarted. The `code` factory's
+  respawn closure built its dispatcher without the colony inbox and dropped the
+  fresh stop pair, so the reactivated node had nothing a later disconnect could
+  stop it with; the stateful and long-running factories hand the pair back
+  through `renotify_stop_wiring`, and `code` now does the same (the five other
+  stateless factories carried the same closure; see GH #676 below). A test swings a `code`
+  leaf forward, back and forward again in one colony lifetime. Substrate-internal,
+  no contract surface moves.
+- **The five stateless cells `bash`, `edit`, `file`, `web_fetch` and `web_search`
+  keep their stop wiring after a swap reactivates them** (GH #676). Same class
+  as #673: each factory's respawn closure built its dispatcher without the
+  colony inbox and dropped the fresh stop pair, so a leaf swung back by a swap
+  refused the next swing forward with `stop_wiring_unavailable` until the
+  colony restarted. The five closures now hand the pair back through
+  `renotify_stop_wiring`, in the form the #673 fix gave `code`. A test swings
+  each of the five forward, back and forward again in one colony lifetime.
+  Substrate-internal, no contract surface moves.
+- **The export audit refuses a test that reaches into a directory the export
+  never carries** ([#675](https://github.com/mmeyerlein/meclaw/issues/675)).
+  The 0.36.0 release passed every private gate and the dry audit, and the
+  public CI was red on one test that ran a generator under `workshop/` —
+  a root that never ships, and one the audit had no rule for: R2b judges
+  `templates/`, R2c judged `plans/` alone, R2d judges `docs/`. R2c now covers
+  every root the export refuses outright (`plans/`, `ideas/`, `archive/`,
+  `workshop/`), matching the path form — a literal that starts with the root,
+  a `../../<root>` chain, or `repo("<root>")` — and not a mention in an
+  assertion message. A hit is green only with both a presence guard in the
+  test (an existence probe on the same path, which the test returns early
+  on) and an entry in the audit's exception list that says why; a guard
+  without the entry is red, and so is an entry without the guard, and so is
+  an `include_str!` of such a path, which no guard can save. The probe has
+  to name what it protects: the root itself, or an identifier the file binds
+  from the root reference. Measured over the tree: five exported tests read
+  `workshop/` behind a guard, each now listed; the pre-fix shape of the
+  0.36.0 test is red under the rule, with or without a stray `.exists()`
+  elsewhere in the file. The synthetic self-test carries the outcomes.
+
 ## [0.36.0] — 2026-09-12
 
 The screen brings its own design language. `display@2.1.0` ships the token

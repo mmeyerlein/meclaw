@@ -36,7 +36,7 @@ the reasoning.
 | [`door`](door/) | 1.0.2 | The first cell of a colony: a `code` cell that names the first lane, because `set_hop` is an edge's job and above the first cell there is no edge. |
 | [`fetcher`](fetcher/) | 1.0.0 | One `web_fetch` cell for an outbound HTTP GET, with five knobs and no target. |
 | [`firewall`](firewall/) | 2.3.0 | Deterministic screening on an ingress channel drawn as topology: every inbound turn ends on `pass` with the body byte-identical, or on `reject` naming the rule that fired. |
-| [`freeswitch`](freeswitch/) | 2.0.2 | A telephone as one channel of a person, in two halves inside one hive: a `voice` cell carries the media on its mount and a small state machine of a `code` cell keeps the calls. |
+| [`freeswitch`](freeswitch/) | 2.0.3 | A telephone as one channel of a person, in two halves inside one hive: a `voice` cell carries the media on its mount and a small state machine of a `code` cell keeps the calls. |
 | [`meclaw-os`](meclaw-os/) | 1.8.9 | The colony shell: the outermost of the four composition levels, four occupants, one empty container and the transit graph between them, and no cell of its own. |
 | [`member`](member/) | 1.7.0 | One person as a composition level, holding the memory, the curated record, the screen and the keys, plus three open containers for that person's assistants, channels and apps. |
 | [`memory-drain`](memory-drain/) | 2.0.6 | The adapter between a write batch and the central memory, for bulk import of foreign history, and nothing shipped wires it (ADR-0012). |
@@ -57,7 +57,7 @@ the reasoning.
 | [`tools`](tools/) | 1.4.2 | The tool surface of one assistant, one node with one contract, `tool_call` in and `tool_result` out, that also hands back the schemas of the tools it serves. |
 | [`vault`](vault/) | 1.3.0 | A secret store in one cell with no operation that returns a secret: `use` signs on the broker's behalf so the secret stays home, and `deliver` hands out a ciphertext sealed to a key that dies with the task. |
 | [`voice`](voice/) | 2.0.1 | A spoken conversation behind one cell, one WebSocket surface and one pair of provider credentials, where the connection is the session: opening the socket mints an id and closing it ends the session. |
-| [`web`](web/) | 2.0.0 | A display in one cell, reached at `/<mount>/` on the colony's one listener, with a token stylesheet shipped as seed data, so a colony opens a second display by instantiating this template again under another mount. |
+| [`web`](web/) | 2.0.1 | A display in one cell, reached at `/<mount>/` on the colony's one listener, with a token stylesheet shipped as seed data, so a colony opens a second display by instantiating this template again under another mount. |
 
 ## Writing one
 

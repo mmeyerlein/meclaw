@@ -330,7 +330,7 @@ async fn boot(
     for (name, f) in factories(surfaces) {
         registry.insert(name, f);
     }
-    // The scan comes BEFORE the boot: the display refs `web@2.0.0`, and a growth
+    // The scan comes BEFORE the boot: the display refs `web@2.0.1`, and a growth
     // at boot time resolves against the templates table in `colony.db`, which is
     // empty until somebody fills it (GH #424).
     let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();

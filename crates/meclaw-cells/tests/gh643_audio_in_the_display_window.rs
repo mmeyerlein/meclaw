@@ -211,7 +211,7 @@ async fn boot() -> Live {
     );
 
     copy_tree(&repo("templates/display"), &root.join("main/screen"));
-    // The display refs `web@2.0.0`, and a ref resolves against the templates
+    // The display refs `web@2.0.1`, and a ref resolves against the templates
     // table, which is empty until somebody fills it (GH #424).
     copy_tree(&repo("templates/web"), &root.join("templates/web"));
     patch(&root.join("main/screen/web/config.json"), |v| {
