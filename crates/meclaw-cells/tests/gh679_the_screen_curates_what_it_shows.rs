@@ -222,6 +222,13 @@ fn state_of(calls: &[Value], id: &str) -> Option<String> {
     written(calls, id)?["state"].as_str().map(str::to_string)
 }
 
+/// The `rung` a bundle writes on `id`: the place on the ladder, which the
+/// tile and the judge read, while `state` is the canvas's word and knows
+/// only focus, urgent and hidden (spec 2.2).
+fn rung_of(calls: &[Value], id: &str) -> Option<String> {
+    written(calls, id)?["rung"].as_str().map(str::to_string)
+}
+
 fn ops(calls: &[Value]) -> Vec<String> {
     calls
         .iter()
@@ -229,10 +236,17 @@ fn ops(calls: &[Value]) -> Vec<String> {
         .collect()
 }
 
-/// Every call that carries a `state`, as `(id, state)`.
+/// Whether an id names something in the dock: a tile mirrors its window's
+/// `state`, and it is the WINDOW's rung these locks count (spec 2.2).
+fn in_dock(id: &str) -> bool {
+    id.starts_with("display.dock")
+}
+
+/// Every call on a window that carries a `state`, as `(id, state)`.
 fn states(calls: &[Value]) -> Vec<(String, String)> {
     calls
         .iter()
+        .filter(|c| !c["id"].as_str().is_some_and(in_dock))
         .filter_map(|c| {
             Some((
                 c["id"].as_str()?.to_string(),
@@ -300,26 +314,23 @@ fn exactly_one_window_has_focus() {
         "exactly one window takes the focus: {:?}",
         states(&second)
     );
-    assert_eq!(focus[0].0, pane_id("a", "a"), "the highest score in main");
     // All three windows were touched in the same pass, and a tie on `since`
     // falls to the greatest id: the prose view's, whose context is its
     // owner's (`alex`, since a prose view without a hint stands in its
-    // owner's context). So `conversation` weighs 0.5: `a` 0.35 keeps the
-    // focus as the highest in main, `b` 0.25 falls under the bar of 0.3 --
-    // hidden, and never the focus.
+    // owner's context). So `conversation` weighs 0.5: `a` 0.35 is visible
+    // and under the midpoint, `b` 0.25 falls under the bar of 0.3 -- hidden,
+    // and never the focus. The prose view, 1.0 x 0.5 = 0.5, is the highest
+    // score on the screen -- and since display 2.3.0 `aside` is drawn as the
+    // canvas (OR-D3), so the region it named does not keep it from the focus.
+    assert_eq!(focus[0].0, wrapper("p"), "the highest score on the canvas");
     assert_eq!(
         state_of(&second, &pane_id("b", "b")).as_deref(),
         Some("hidden")
     );
-    // The prose view: 1.0 x 0.5 = 0.5, visible, under the midpoint 0.65 --
-    // ambient, and in `aside` never the focus.
-    let aside = state_of(&second, &wrapper("p"));
-    assert!(
-        matches!(
-            aside.as_deref(),
-            Some("hidden") | Some("relevant") | Some("ambient")
-        ),
-        "the aside window is never the focus: {aside:?}"
+    assert_eq!(
+        rung_of(&second, &pane_id("a", "a")).as_deref(),
+        Some("ambient"),
+        "on the ladder, under the midpoint 0.65"
     );
     for id in [wrapper("p"), pane_id("a", "a"), pane_id("b", "b")] {
         assert_eq!(
@@ -387,8 +398,11 @@ fn the_curator_touches_only_windows() {
 /// A screen with the bar at 0.3 (a judge wrote it), weights on `conversation`
 /// only, and one settled window `c` in `aside` with relevance 0.3 in the
 /// `ambient` context: its score is 0.5 x 0.3 = 0.15, below the bar, hidden.
-/// The same window on a screen with an empty `main` and no judge: the floor
-/// lowers the bar to 0, and 0.15 is visible -- `ambient`, under the midpoint.
+/// A window at relevance 0.2 on a screen where no judge speaks: its context
+/// is the last touched one and weighs 1, so it scores 0.2 -- under the
+/// shipped bar of 0.3. The floor lowers the bar to 0, and the window gets a
+/// rung -- ambient, so its tile is coloured -- but not the focus: a lowered
+/// bar makes nothing large, and the canvas stays empty (spec 2.2, S1).
 #[test]
 fn a_window_below_the_bar_is_hidden() {
     if !library_ships() {
@@ -423,32 +437,32 @@ fn a_window_below_the_bar_is_hidden() {
     assert_eq!(c["score"], 0.15, "0.5 x 0.3: {c}");
     assert_eq!(c["state"], "hidden", "below the bar: {c}");
 
-    // No judge, and nothing in main: the floor lowers the bar to 0.
-    let mut floor = held.clone();
-    {
-        let root = floor
-            .as_array_mut()
-            .expect("a list")
-            .iter_mut()
-            .find(|o| o["id"] == "display.root")
-            .expect("root");
-        root["props"]["weights"] = json!(json!({"conversation": 1.0}).to_string());
-    }
-    let calls = read_pass(&views, Some(&floor), 2000).expect("python3");
+    // No judge, and nothing reaches the bar: the floor lowers it to 0.
+    let low = vec![component_view(
+        "c",
+        "aside",
+        pane("c", json!({"context": "ambient", "relevance": 0.2})),
+    )];
+    let first = read_pass(&low, Some(&base), 1000).expect("python3");
+    let mut floor = base.clone();
+    apply(&mut floor, &first);
+    let calls = read_pass(&low, Some(&floor), 2000).expect("python3");
     let c = written(&calls, &pane_id("c", "c")).expect("c is updated");
+    assert_eq!(c["score"], 0.2, "1.0 x 0.2: {c}");
     assert_eq!(
-        c["state"], "ambient",
-        "visible on an empty screen, under the midpoint: {c}"
+        c["rung"], "ambient",
+        "on the ladder on an empty screen: {c}"
     );
+    assert_eq!(c["state"], "hidden", "but not on the canvas: {c}");
     let root = written(&calls, "display.root").expect("the root is updated");
-    assert_eq!(root["focus"], 0.0, "an empty main lowers the bar: {root}");
+    assert_eq!(root["focus"], 0.0, "an empty canvas lowers the bar: {root}");
 }
 
 /// The state is the curator's word. An application may say `urgent` -- the
-/// window takes the urgent rung and nothing else is the focus -- or `hidden`.
-/// Any other word (`focus`) is dropped at the door, and the window gets the
-/// rung its score earns. Two urgent windows: the younger stays, the older is
-/// `relevant`.
+/// window takes the urgent rung and stands ABOVE the focus, which stays where
+/// it was (OR-D2) -- or `hidden`. Any other word (`focus`) is dropped at the
+/// door, and the window gets the rung its score earns. Two urgent windows:
+/// both are urgent, the younger on top.
 #[test]
 fn an_app_may_say_urgent_and_hidden_and_nothing_else() {
     if !library_ships() {
@@ -482,7 +496,7 @@ fn an_app_may_say_urgent_and_hidden_and_nothing_else() {
     ];
     let held = settle(&plain);
 
-    // `urgent` on b: b is urgent, and nobody is the focus.
+    // `urgent` on b: b is urgent, and the focus stays with a (OR-D2).
     let mut views = plain.clone();
     views[1] = component_view(
         "b",
@@ -497,9 +511,10 @@ fn an_app_may_say_urgent_and_hidden_and_nothing_else() {
         state_of(&calls, &pane_id("b", "b")).as_deref(),
         Some("urgent")
     );
-    assert!(
-        states(&calls).iter().all(|(_, s)| s != "focus"),
-        "an urgent window leaves no room for a focus: {:?}",
+    assert_eq!(
+        state_of(&calls, &pane_id("a", "a")).as_deref(),
+        Some("focus"),
+        "an urgent window stands above the focus, not in its place: {:?}",
         states(&calls)
     );
 
@@ -558,7 +573,8 @@ fn an_app_may_say_urgent_and_hidden_and_nothing_else() {
         "a claimed rung changes nothing"
     );
 
-    // Two urgent windows, a since 1000 and b since 2000: the younger stays.
+    // Two urgent windows, a since 1000 and b since 2000: both ring, and the
+    // younger stands on top of the canvas (spec 2.3).
     let mut both = plain.clone();
     both[0] = component_view(
         "a",
@@ -591,8 +607,19 @@ fn an_app_may_say_urgent_and_hidden_and_nothing_else() {
     );
     assert_eq!(
         state_of(&calls, &pane_id("a", "a")).as_deref(),
-        Some("relevant"),
-        "the older"
+        Some("urgent"),
+        "the older rings as well"
+    );
+    let ord_of = |id: &str| {
+        calls
+            .iter()
+            .find(|c| c["op"] == "object.move" && c["id"] == id)
+            .and_then(|c| c["ord"].as_i64())
+            .expect("an urgent wrapper is lifted")
+    };
+    assert!(
+        ord_of("view.alex.b") < ord_of("view.alex.a"),
+        "the younger stands on top"
     );
 }
 
@@ -665,7 +692,7 @@ fn a_touched_window_takes_the_focus_at_once() {
     assert_eq!(b["since"], 5000, "a touch is the moment of the touch: {b}");
     assert_eq!(b["state"], "focus", "the younger touch wins the tie: {b}");
     let a = written(&calls, &pane_id("a", "a")).expect("a is updated");
-    assert_eq!(a["state"], "relevant", "{a}");
+    assert_eq!(a["rung"], "relevant", "{a}");
     assert!(
         a.get("since").is_none() || a["since"] == 1000,
         "a was not touched: {a}"
@@ -751,7 +778,9 @@ fn pinned_and_relevant_until_are_hints_the_score_reads() {
     set_held(&mut held, &pane_id("b", "b"), "since", json!(1000));
     let calls = read_pass(&views, Some(&held), 1000 + 20000 + 500000).expect("python3");
     let a = written(&calls, &pane_id("a", "a")).expect("a is updated");
-    assert_eq!(a["score"], 0.7, "pinned: decay 1 far past the fade: {a}");
+    // Decay 1 far past the fade -- and the floor's weight of the touch has
+    // faded with it (OR-D-Bau-8): 0.5 x 0.7, still over the bar.
+    assert_eq!(a["score"], 0.35, "pinned: decay 1 far past the fade: {a}");
     assert_eq!(a["state"], "focus", "{a}");
     let b = written(&calls, &pane_id("b", "b")).expect("b is updated");
     assert_eq!(b["state"], "hidden", "past relevant_until, and faded: {b}");
@@ -826,11 +855,15 @@ fn the_windows_declare_the_hints_in_their_schema() {
 // ---------------------------------------------------------------------------
 // Two frames: a window leaves one strike later (Task 3)
 
+/// The window objects a bundle deletes. A tile is not one: presence ends the
+/// moment the table drops the window, so its tile goes on the leaving frame
+/// while the window itself stands one more (spec 2.2).
 fn deletes(calls: &[Value]) -> Vec<String> {
     calls
         .iter()
         .filter(|c| c["op"] == "object.delete")
         .map(|c| c["id"].as_str().unwrap_or("").to_string())
+        .filter(|id| !in_dock(id))
         .collect()
 }
 
@@ -947,7 +980,7 @@ fn a_fresh_window_takes_the_focus_on_the_next_pass() {
     assert_eq!(c["state"], "focus", "{c}");
     assert_eq!(c["age"], "settled", "{c}");
     let a = written(&calls, &pane_id("a", "a")).expect("a is updated");
-    assert_eq!(a["state"], "relevant", "{a}");
+    assert_eq!(a["rung"], "relevant", "{a}");
 }
 
 /// `a` stands relevant and visible; the judge's weights push its score under
@@ -1006,7 +1039,7 @@ fn a_window_pushed_below_the_bar_leaves_first() {
 // ---------------------------------------------------------------------------
 // The knobs (Task 5)
 
-/// The seven dials of the judgement stand in `params` and in
+/// The dials of the judgement stand in `params` and in
 /// `contract.settings` with the same default, byte for byte -- and the cell
 /// reads them: with `linger_ms: 5` and `fade_ms: 10` a window untouched for
 /// 16 ms has faded to nothing and is hidden.
@@ -1026,6 +1059,10 @@ fn the_knobs_stand_in_params_and_settings_alike() {
         "ground": "day",
         "judge": "off",
         "judge_min_interval_ms": 3000,
+        "dock_max": 7,
+        "screens": {"tv": {"display_type": "tv", "viewing_distance_m": 3.0,
+                           "physical_size_in": 55, "inputs": ["audio"]}},
+        "default_screen": "tv",
         "notice_defaults": {
             "system_error": [0.9, 60000], "error": [0.8, 60000],
             "warning": [0.7, 120000], "important_note": [0.7, 300000],
@@ -1094,16 +1131,17 @@ fn the_readme_names_the_rules_the_code_keeps() {
     }
     let readme = std::fs::read_to_string(repo("templates/display/README.md")).expect("README");
     assert!(
-        readme.starts_with("# `display@2.2.3`"),
+        readme.starts_with("# `display@2.3.2`"),
         "the H1 names the version"
     );
     for sentence in [
-        "exactly one window in `main`",
+        "exactly one window on the canvas",
         "below the bar",
         "two frames",
         "## The screen curates what it shows",
         "A judgement of relevance, not of layout.",
-        "`aside` never carries the focus rung",
+        "`aside` is accepted and drawn as canvas",
+        "decides what is large and never what exists",
     ] {
         assert!(readme.contains(sentence), "the README says: {sentence}");
     }
@@ -1111,7 +1149,7 @@ fn the_readme_names_the_rules_the_code_keeps() {
         &std::fs::read_to_string(repo("templates/display/template.json")).expect("template.json"),
     )
     .expect("template.json parses");
-    assert_eq!(template["version"], "2.2.3");
+    assert_eq!(template["version"], "2.3.2");
     assert!(
         template["description"]["purpose"]
             .as_str()
@@ -1120,9 +1158,10 @@ fn the_readme_names_the_rules_the_code_keeps() {
         "the purpose says what 2.2.0 brought: {template}"
     );
 
-    // And the mechanism: one focus in main after a settle, the aside window
-    // never it, a window under the bar hidden, and a leaving window standing
-    // one more frame.
+    // And the mechanism: one focus on the canvas after a settle (the prose
+    // view, the highest score, wherever it named its region -- OR-D3), a
+    // window under the bar hidden, and a leaving window standing one more
+    // frame.
     let Some(base) = bare_screen() else {
         return;
     };
@@ -1135,8 +1174,12 @@ fn the_readme_names_the_rules_the_code_keeps() {
         .into_iter()
         .filter(|(_, s)| s == "focus")
         .collect();
-    assert_eq!(focus.len(), 1, "exactly one window in main has the focus");
-    assert_eq!(focus[0].0, pane_id("a", "a"));
+    assert_eq!(
+        focus.len(),
+        1,
+        "exactly one window on the canvas has the focus"
+    );
+    assert_eq!(focus[0].0, wrapper("p"));
     apply(&mut held, &second);
     set_held(&mut held, "display.root", "focus", json!("0.9"));
     set_held(&mut held, "display.root", "judged_at", json!(1500));
@@ -1227,7 +1270,7 @@ fn the_floor_forgets_the_context_before_the_last_touch() {
     );
     let w = written(&fourth, &pane_id("w", "w")).expect("w is updated");
     assert_eq!(
-        w["state"], "ambient",
+        w["rung"], "ambient",
         "half the score, under the midpoint: {w}"
     );
 

@@ -33,7 +33,7 @@ use std::sync::Arc;
 const CELLS_CHECKED_IN: usize = 2;
 
 /// Plus eight from the three templates `grow.json` names: five from
-/// `display@2.2.3` (the `web` cell, the composer, the view store, and since
+/// `display@2.3.2` (the `web` cell, the composer, the view store, and since
 /// 2.2.0 the due clock and the judge, GH #679), two from `colony-view@1.1.0`
 /// (the probe and the layout `code` cell — its `refresh` timer left with
 /// 1.1.0, GH #553), one from `terminal@1`. MEASURED.

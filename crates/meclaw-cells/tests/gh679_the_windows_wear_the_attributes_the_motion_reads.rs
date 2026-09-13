@@ -6,7 +6,8 @@
 //! them: the prose view becomes a window like the three tree windows, the
 //! windows carry `data-since`/`data-score`/`data-tone`/`data-pinned`, the
 //! overlay its age, and the root the ground the operator chose. No script
-//! enters with any of it, and the vocabulary fingerprint moves exactly once.
+//! enters with any of it beyond the components `SCRIPTED` names (GH #696),
+//! and the vocabulary fingerprint moves exactly once.
 //!
 //! Skips when `python3` is absent or the templates do not ship, like every
 //! other interpreter guard in this tree (R2b).
@@ -33,8 +34,9 @@ fn library_ships() -> bool {
 }
 
 /// The shipped script's constants, asked of the script itself: the
-/// fingerprint, the five templates, whether the sheet carries a script, and
-/// the components. `None` when there is no `python3` on this host.
+/// fingerprint, the five templates, whether the sheet carries a script, the
+/// components and the names that may carry a script (GH #696). `None` when
+/// there is no `python3` on this host.
 fn probe() -> Option<Value> {
     let out = Command::new("python3")
         .arg("-c")
@@ -46,7 +48,8 @@ fn probe() -> Option<Value> {
              print(json.dumps({'vocab': m.VOCAB, 'shell': m.SHELL_TEMPLATE,\n\
                                'prose': m.PROSE_TEMPLATE, 'pane': m.PANE_TEMPLATE,\n\
                                'panel': m.PANEL_TEMPLATE, 'overlay': m.OVERLAY_TEMPLATE,\n\
-                               'kit_css': m.KIT_CSS, 'components': m.components()}))",
+                               'kit_css': m.KIT_CSS, 'components': m.components(),\n\
+                               'scripted': list(m.SCRIPTED)}))",
         )
         .arg(repo(COMPOSE))
         .output()
@@ -269,8 +272,11 @@ fn the_ground_is_a_knob_of_the_screen() {
     assert_eq!(created(&unset, "display.root")["props"]["ground"], "day");
 }
 
-/// The motion is the sheet's: no script comes with it. Exactly one component
-/// of the scope carries `client_js`, and it is the microphone that had it.
+/// The motion is the sheet's, and what is not the sheet's is NAMED. Until
+/// 2.3.0 the lock counted to one; a number is not a decision. Two components
+/// carry a script now -- the OS mark, whose hook is the gesture, and the
+/// shell, whose hook is the screen's own motion -- and nothing else may
+/// (GH #696).
 #[test]
 fn no_script_enters_with_the_motion() {
     if !library_ships() {
@@ -279,7 +285,7 @@ fn no_script_enters_with_the_motion() {
     let Some(probe) = probe() else {
         return;
     };
-    for name in ["shell", "prose", "pane", "panel", "overlay", "kit_css"] {
+    for name in ["prose", "pane", "panel", "overlay", "kit_css"] {
         let text = probe[name].as_str().expect("a string");
         assert!(!text.contains("<script"), "{name} carries no script");
         assert!(
@@ -287,6 +293,7 @@ fn no_script_enters_with_the_motion() {
             "{name} carries no javascript: url"
         );
     }
+    let allowed = ["display-os", "display-shell"];
     let with_js: Vec<&str> = probe["components"]
         .as_array()
         .expect("a list")
@@ -294,10 +301,28 @@ fn no_script_enters_with_the_motion() {
         .filter(|c| c["prop_schema"].get("client_js").is_some())
         .map(|c| c["name"].as_str().unwrap_or(""))
         .collect();
+    assert!(!with_js.is_empty(), "the screen brings its own motion");
+    for name in &with_js {
+        assert!(
+            allowed.contains(name),
+            "{name} brought a script nobody named; the list is {allowed:?}"
+        );
+    }
+    // The same set, not the same order: `SCRIPTED` is a list of names and
+    // `components()` is a list of definitions, and neither owes the other its
+    // sequence.
+    let mut named: Vec<&str> = probe["scripted"]
+        .as_array()
+        .expect("SCRIPTED")
+        .iter()
+        .map(|v| v.as_str().unwrap_or(""))
+        .collect();
+    let mut carries = with_js.clone();
+    named.sort_unstable();
+    carries.sort_unstable();
     assert_eq!(
-        with_js,
-        vec!["display-mic"],
-        "one component carries client_js"
+        named, carries,
+        "SCRIPTED names exactly what carries a script"
     );
 }
 
@@ -332,10 +357,20 @@ fn hidden_lets_a_leaving_window_play_out() {
         sheet.contains("[data-state=\"hidden\"]:not([data-age=\"leaving\"])"),
         "the hidden rule spares a leaving window"
     );
-    for state in ["ambient", "relevant", "focus", "urgent"] {
+    // The two rungs the canvas draws (spec 2.2, since 2.3.0): ambient and
+    // relevant are tiles, and a tile has no title.
+    for state in ["focus", "urgent"] {
         let rule =
             format!("[data-state=\"{state}\"] :is(.display-pane-title, .display-panel-title)");
         assert!(sheet.contains(&rule), "presence follows the rung: {rule}");
+    }
+    for state in ["ambient", "relevant"] {
+        let rule =
+            format!("[data-state=\"{state}\"] :is(.display-pane-title, .display-panel-title)");
+        assert!(
+            !sheet.contains(&rule),
+            "nothing {state} is drawn on the canvas: {rule}"
+        );
     }
     assert!(sheet.contains("[data-tone=\"accent\"]"), "tone: accent");
     assert!(sheet.contains("[data-tone=\"muted\"]"), "tone: muted");

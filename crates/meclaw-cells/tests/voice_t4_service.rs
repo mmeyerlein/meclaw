@@ -1440,6 +1440,11 @@ async fn every_speak_ends_even_when_the_client_disappears() {
 /// The handler counts on exactly one `SpeakEnded` per `Speak` it issued. A
 /// command that never reaches its client therefore has to come back as a
 /// failure — otherwise the turn machine waits for a synthesis nobody started.
+///
+/// A *provably* race-free construction would need a new observation point in
+/// the cell (how many commands `deliver` has already handed on), which is out
+/// of proportion for a test (GH #692). What remains fails loudly and legibly:
+/// the `panic!` names the event that arrived instead.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_speak_to_a_wedged_client_ends_as_a_reported_failure() {
     let cancelled = Arc::new(AtomicUsize::new(0));
@@ -1459,8 +1464,14 @@ async fn a_speak_to_a_wedged_client_ends_as_a_reported_failure() {
     }
     wedge(&mut live, &mut stuck, "stuck").await;
 
-    // Fill the connection's channel, so the synthesis order cannot slip
-    // through ahead of the backlog it is queued behind.
+    // Fill the connection's channel, so the synthesis order cannot slip through
+    // ahead of the backlog it is queued behind — paced, because the hop that
+    // waits (`deliver`) has to have taken commands off the dispatch queue before
+    // the `Speak` arrives. Unscheduled under load it does not, a FILLER is what
+    // bounces, and the session is gone before the `Speak` is even accepted
+    // (GH #692). A hundred milliseconds of flood against a two-second delivery
+    // deadline: the pacing changes which command is the last one in, nothing
+    // about what the cell promises.
     for _ in 0..100 {
         live.reconfig_tx
             .send(VoiceReconfig::ToClient {
@@ -1469,6 +1480,7 @@ async fn a_speak_to_a_wedged_client_ends_as_a_reported_failure() {
             })
             .await
             .expect("send");
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
     live.reconfig_tx
         .send(VoiceReconfig::Speak {
@@ -1479,7 +1491,28 @@ async fn a_speak_to_a_wedged_client_ends_as_a_reported_failure() {
         .await
         .expect("send");
 
-    match live.event().await {
+    // Which trigger answers the `Speak` depends on how far `deliver` got: the
+    // count (`ClientTooSlow` first, then the bounced `Speak`) or the delivery
+    // deadline (the drain reports the queued `Speak`). Both keep the promise the
+    // handler counts on — exactly one `speak_end` for the `Speak` it issued —
+    // and the ORDER is pinned where it is decided, in the burst test below.
+    let mut gave_up = 0usize;
+    let ended = loop {
+        match live.event().await {
+            VoiceEvent::ClientTooSlow { session_id, .. } => {
+                assert_eq!(session_id, "stuck");
+                gave_up += 1;
+                assert_eq!(gave_up, 1, "one give-up, not one per command");
+            }
+            end @ VoiceEvent::SpeakEnded { .. } => break end,
+            other => panic!(
+                "expected a failed SpeakEnded for the undelivered speak, got {} \
+                 (a filler bounced before the Speak was accepted, GH #692)",
+                label(&other)
+            ),
+        }
+    };
+    match ended {
         VoiceEvent::SpeakEnded {
             session_id,
             speak_id,
@@ -1492,10 +1525,7 @@ async fn a_speak_to_a_wedged_client_ends_as_a_reported_failure() {
             let detail = detail.expect("a failed speak says why");
             assert!(detail.contains("nothing was said"), "{detail}");
         }
-        other => panic!(
-            "expected a failed SpeakEnded for the undelivered speak, got {}",
-            label(&other)
-        ),
+        other => unreachable!("the loop only breaks on a SpeakEnded: {}", label(&other)),
     }
     match live.event().await {
         VoiceEvent::Disconnected { session_id } => assert_eq!(session_id, "stuck"),

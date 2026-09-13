@@ -787,8 +787,11 @@ fn the_readme_says_the_clock_sweeps() {
     let (_, mut held) = screen_with_a(1000).expect("python3");
     let leave = read_pass(&[], Some(&held), 5000).expect("python3");
     let calls = patch_calls(&leave);
+    // The window stands one more frame; its tile does not, because presence
+    // ends the moment the table drops the window (spec 2.2).
     assert!(
-        !calls.iter().any(|c| c["op"] == "object.delete"),
+        !calls.iter().any(|c| c["op"] == "object.delete"
+            && !c["id"].as_str().unwrap_or("").starts_with("display.dock")),
         "one more frame first: {calls:?}"
     );
     assert_eq!(
@@ -870,8 +873,17 @@ fn a_window_past_its_relevance_orders_no_empty_strike() {
     let past = read_pass(&views, Some(&held), 5000).expect("python3");
     let a = written(&patch_calls(&past), &pane_id("a", "a")).expect("updated");
     assert_eq!(a["score"], 0.2, "clamped after relevant_until: {a}");
+    // Under the bar the window steps off the canvas with one `leaving`
+    // frame (spec 2.2), and that frame is the next moment -- one second.
+    assert_eq!(a["age"], "leaving", "{a}");
     let due = on_route(&past, "due");
     assert_eq!(due.len(), 1, "{past:?}");
+    assert_eq!(due[0]["at"], iso_z(6000), "the leaving frame first");
+    apply(&mut held, &patch_calls(&past));
+    set_prop(&mut held, ROOT, "due", json!(""));
+    let settled = read_pass(&views, Some(&held), 6000).expect("python3");
+    let due = on_route(&settled, "due");
+    assert_eq!(due.len(), 1, "{settled:?}");
     assert_eq!(
         due[0]["at"],
         iso_z(1000 + LINGER + FADE + 1),

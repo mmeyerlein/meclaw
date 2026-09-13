@@ -2,9 +2,9 @@
 //!
 //! `ReadTrace` opens a fresh `SQLITE_OPEN_READ_ONLY` Connection on `colony.db` inside
 //! `tokio::task::spawn_blocking`. WAL allows concurrent readers, so the colony's
-//! writer thread is unaffected. The Inbox-arm awaits the JoinHandle before
-//! sending the reply — this STALLS the Colony-Inbox loop for the query duration
-//! (bounded by limit ≤ 1000). Off-Loop-Reads = Phase 14.
+//! writer thread is unaffected. Since GH #683 (ADR-0041) the inbox arm spawns
+//! the read into a task of its own and parks; the reply is sent from that task
+//! (bounded by limit ≤ 1000).
 
 use meclaw_colony::ColonyMsg;
 use meclaw_colony::api_dto::ReadTraceReply;

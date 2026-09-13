@@ -12,7 +12,102 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
-## [0.37.0] — 2026-09-14
+## [0.38.0] — 2026-09-13
+
+A minor release: the screen gets a dock, and the colony loop stops waiting on
+reads of its own log. `display@2.3.2` draws one canvas, a dock of tiles of one
+size at the right edge and the OS mark that is the hold-to-talk button;
+presence and focus are two axes, an application brings its own tile and names
+its topic, and the renderer knows which screen it is drawn on. `GET
+/colony/messages` answers from a task of its own (GH #683, ADR-0041), so a
+page of the message browser no longer silences the heartbeat. Nothing on the
+wire breaks: a screen grown from `display@2.2.x` is lifted with
+`replace_nodes`, `aside` and every hint of 2.2.x are still accepted, and the
+one component that goes — `display-mic` — is replaced by `display-os`, the
+screen's own object that no view ever named.
+
+The screen gets a dock (`display@2.3.0`). One canvas instead of two columns,
+a column of tiles of one size at the right edge that shows everything present,
+and an OS mark at the bottom right that is the hold-to-talk button. Presence
+and focus are two axes now: a judgement decides what is large and never what
+exists, so the clock keeps its tile while the weather is being read. The
+renderer knows what it is shown on, and a hook on the root runs the seconds
+of a countdown, chimes when a window arrives urgent, and draws the zoom
+between a tile and its window. Additive throughout: `aside` is still accepted,
+every hint of 2.2.x is unchanged, and a screen grown from `display@2.2.x` is
+lifted with `replace_nodes`. One component is replaced by another --
+`display-mic` by `display-os`, the screen's own object, which no view ever
+named -- and nothing else on the wire moves.
+
+### Added
+
+- **The screen has a dock** (`display@2.3.0`, GH #694, #695). Presence and
+  focus are two axes now: a window is *present* while it stands in the store
+  and has not decayed, and it is on the *canvas* while it holds the focus or
+  urgent rung. Every present window has a tile of one size in a dock at the
+  right edge, ordered by relevance, and it keeps that tile while the same
+  window is large on the canvas. A judgement decides what is large and never
+  what exists, so the clock does not leave the screen when somebody asks about
+  the weather. An application hands the screen its own tile as a child under
+  the key `tile` (`display-tile`: a glyph, a line, a value, a topic); without
+  one the screen falls back to the window's context and title. Two new hints:
+  `topic`, so a standing window on the same subject takes a fresh answer from
+  another application instead of standing beside it, and `modal`, which is now
+  the only thing that may blur the canvas -- a change of focus is not a modal
+  moment, and the rule that made it one is gone. New settings: `dock_max`,
+  `screens`, `default_screen`.
+- **An OS mark instead of a microphone capsule** (`display@2.3.0`, GH #695).
+  The mark at the bottom right is the button: press and hold to speak, release
+  to send. It has no card behind it and it does not say what was heard -- that
+  belongs to the conversation. `display-mic` is replaced by `display-os`; the
+  hook keeps its name, the gesture is unchanged, and the phases (`listening`,
+  `sending`, `speaking`, `error`) are light on the mark and a line for a
+  screen reader.
+- **The renderer knows its display** (`display@2.3.0`, GH #694). A `screens`
+  setting gives each output a type, a viewing distance, a physical size and
+  its inputs; every output is a page of its own at `/<mount>/<screen>`, and
+  the root carries `data-profile`, `data-inputs` and one `--scale` that the
+  dock, the mark and the type derive from.
+- **The screen brings its own motion** (`display@2.3.0`, GH #695). A hook on
+  the root runs the seconds of every countdown in the browser, stamps the
+  bar's `--now` once so a page loaded late is not off by however long it was
+  open, plays a two-tone chime built from oscillators when a window arrives
+  urgent (no asset ships for it), and moves a window into its tile and back --
+  a FLIP, measured before and after the patch, and nothing at all under
+  `prefers-reduced-motion`. `display-timer` carries `data-end-at` and a `now`
+  prop for it.
+- **The components that carry a script are a named list** (GH #696). The lock
+  that counted them to one reads `SCRIPTED` now: the OS mark and the shell,
+  and nothing else may.
+
+### Changed
+
+- `aside` is accepted and drawn as canvas (`display@2.3.0`): the screen has one
+  centred column and a dock beside it, and a window in focus is compact rather
+  than a strip across the width. A view that names `aside` is unaffected.
+- `urgent` no longer locks the focus (`display@2.3.0`): every urgent window
+  rings, and the focus stands beside them.
+- The OS mark reads as »OS« (`display@2.3.2`): the ring opens to the right
+  and the S sits on its rim.
+
+### Fixed
+
+- **A read of the message log no longer holds the colony loop** (GH #683,
+  ADR-0041). `ColonyMsg::ReadTrace`, `ReadLedger` and `ReadMessages` need one
+  thing from the loop's state — the path of the database file — and each opens a
+  read-only connection of its own, so awaiting them in the loop bought no
+  ordering and cost the heartbeat: on a large `colony.db` a single page of the
+  message browser was hundreds of milliseconds during which the loop could not
+  reach its interval arm, and a supervisor reads a silent loop as one that
+  stopped answering. The three reads now answer from a task of their own, at
+  most four at once, and the loop marks the hand-over in its beat stream under
+  the endpoint's name. `GET /colony/messages?resolve_blob=true`
+  additionally resolves at most 25 blob bodies per page and says so with a new
+  `blob_resolution_truncated` field; the rows beyond it keep their
+  `body_payload` uuid, and a caller that wants the rest pages for it. And a
+  sidecar is found by name rather than by scanning the blob directory.
+
+## [0.37.0] — 2026-09-13
 
 A minor release: the diff format grows by one operation and the screen learns
 to curate. `replace_nodes` lifts a standing hive — or a leaf — to a new version

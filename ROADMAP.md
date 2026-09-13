@@ -29,6 +29,17 @@ Release detail is in [CHANGELOG.md](CHANGELOG.md) and the
 
 ## Now
 
+v0.38.0 gives the screen a dock (`display@2.3.2`, GH #694, #695, #696). One
+canvas for what is in focus, a column of tiles of one size for everything that
+is present, and the OS mark at the bottom right that is the place one talks to
+the system. Presence and focus are two axes: a judgement decides what stands
+large and never what exists. An application brings its own tile and names its
+topic, so the same subject is one window across application boundaries; the
+renderer reads a profile per screen and renders the one curated state once per
+exit. With it the colony loop stops waiting on reads of its own log (GH #683,
+ADR-0041). What the release contains is the [`[0.38.0]`](CHANGELOG.md) section
+of the changelog.
+
 v0.37.0 lifts a standing hive in place (`replace_nodes`, GH #682, ADR-0040). A
 hive that is running is brought to a new version of its template under its own
 path: the outer edges stay, a child the new version leaves unchanged keeps its
@@ -159,6 +170,11 @@ Findings from running the thing.
   invariants, memory, timing — with the paid measurement committed as an
   artefact and two free stations holding the tree against it.
   [#621](https://github.com/mmeyerlein/meclaw/issues/621)
+- The negative control of the wedged-client voice test. Once in sixty loaded
+  runs `wedge()` gave up after 20 ms because every filler was answered at once,
+  before the flood it guards even started; the panic cannot yet say what came
+  back, and why a fresh `auto` connection can be without its recognition
+  session is not pinned. [#699](https://github.com/mmeyerlein/meclaw/issues/699)
 - Telling submissions apart by the door they came in at. Every question the
   broker is asked carries the same requester and the same subject whichever
   front raised it, so a rule that would open the shell to the operator and hold
@@ -240,6 +256,10 @@ there.
 One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- v0.38.0: the screen has a dock. One canvas, a column of one-size tiles for
+  everything present, the OS mark as the hold-to-talk button; presence and focus
+  as two axes, tiles and topics from the applications, a profile per screen; and
+  the colony loop no longer waits on reads of its own log.
 - v0.37.0: a standing hive is lifted in place. `replace_nodes` brings a running
   hive to a new version of its template under its own path, judges every child
   kept, replaced, added or left, and says so in the receipt; the screen

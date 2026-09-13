@@ -3,7 +3,7 @@
 //! A screen that ships a design language ships the components the language is
 //! written against, or the language styles nothing. The compose cell's
 //! `components()` is where the display's own components are defined, and this
-//! file pins what that list says: the four windows and the twenty-two content
+//! file pins what that list says: the four windows and the twenty-four content
 //! components of the kit, under the screen's own prefix, on the layer the
 //! `web` cell would demand of them, and none of them editable.
 //!
@@ -28,7 +28,7 @@ const OWN: [&str; 5] = [
     "display-region",
     "display-view-prose",
     "display-view-custom",
-    "display-mic",
+    "display-os",
 ];
 
 /// The four windows: the only glass in the catalogue, all navigation layer.
@@ -39,8 +39,8 @@ const WINDOWS: [&str; 4] = [
     "display-ornament",
 ];
 
-/// The twenty-two content components, in the kit's own order.
-const CONTENT: [&str; 22] = [
+/// The twenty-four content components, in the kit's own order.
+const CONTENT: [&str; 24] = [
     "display-value",
     "display-text",
     "display-voice",
@@ -63,6 +63,8 @@ const CONTENT: [&str; 22] = [
     "display-chart",
     "display-stack",
     "display-progress",
+    "display-dock",
+    "display-tile",
 ];
 
 fn library_ships() -> bool {
@@ -107,7 +109,7 @@ fn layer(c: &Value) -> &str {
 }
 
 /// The four windows stand in the catalogue, right after the five the screen
-/// always had (shell, region, two view wrappers, microphone).
+/// always had (shell, region, two view wrappers, the OS mark).
 #[test]
 fn the_scope_defines_the_four_windows() {
     if !library_ships() {
@@ -127,9 +129,9 @@ fn the_scope_defines_the_four_windows() {
     assert_eq!(&names[5..9], &WINDOWS, "then the four windows");
 }
 
-/// Five of the screen's own, four windows, twenty-two content components.
+/// Five of the screen's own, four windows, twenty-four content components.
 #[test]
-fn the_scope_defines_thirty_one_components() {
+fn the_scope_defines_thirty_three_components() {
     if !library_ships() {
         return;
     }
@@ -137,14 +139,14 @@ fn the_scope_defines_thirty_one_components() {
         return;
     };
     let names: Vec<&str> = all.iter().map(name).collect();
-    assert_eq!(all.len(), 31, "{names:?}");
+    assert_eq!(all.len(), 33, "{names:?}");
 }
 
-/// The catalogue is these twenty-six names and no others, held as a sorted
+/// The catalogue is these twenty-eight names and no others, held as a sorted
 /// constant: a typo in one name is a red test here and not a component an
 /// application names in vain.
 #[test]
-fn the_catalogue_names_are_exactly_the_twenty_six() {
+fn the_catalogue_names_are_exactly_the_twenty_eight() {
     if !library_ships() {
         return;
     }
@@ -156,7 +158,7 @@ fn the_catalogue_names_are_exactly_the_twenty_six() {
     let mut catalogue: Vec<&str> = all.iter().map(name).filter(|n| !OWN.contains(n)).collect();
     catalogue.sort_unstable();
     assert_eq!(catalogue, expected);
-    // And the twenty-two stand in the kit's order, after the windows.
+    // And the twenty-four stand in the kit's order, after the windows.
     let names: Vec<&str> = all.iter().map(name).collect();
     assert_eq!(&names[9..], &CONTENT, "the content components, in order");
 }
@@ -277,7 +279,7 @@ fn the_readme_and_the_catalogue_agree_with_the_scope() {
         .unwrap_or(readme.len());
     let section = &readme[start..end];
     assert!(
-        section.contains("twenty-six"),
+        section.contains("twenty-eight"),
         "the README says how many components the catalogue has"
     );
     let mut named: Vec<&str> = section
@@ -295,7 +297,7 @@ fn the_readme_and_the_catalogue_agree_with_the_scope() {
         "the README names exactly the components the scope defines"
     );
     let catalogue = all.iter().map(name).filter(|n| !OWN.contains(n)).count();
-    assert_eq!(catalogue, 26, "twenty-six, as the README says");
+    assert_eq!(catalogue, 28, "twenty-eight, as the README says");
 
     // The faces: the README's `font_base` paragraph against the contract.
     let cfg: Value = meclaw_core::serde_json::from_str(

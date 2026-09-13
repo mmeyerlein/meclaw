@@ -37,11 +37,6 @@ pub struct BlobSidecar {
 }
 
 /// On-disk blob storage. Concrete struct, no trait abstraction (Variante b).
-///
-/// Phase-12-Backlog: `read_sidecar` performs a linear `read_dir` scan to find
-/// the extension. Acceptable for development; revisit in Phase 14 if blob
-/// directories grow large (e.g., shard by uuid-prefix subdirectories or keep
-/// an index).
 pub struct DiskBlobStore {
     root: PathBuf,
     max_recursion_depth: u32,
@@ -141,17 +136,19 @@ impl DiskBlobStore {
 
     /// Reads the sidecar of an existing blob.
     ///
-    /// Performs a `read_dir` scan to find the file matching
-    /// `<blob_id>.*.meta.json`. See struct doc for the Phase-14 backlog note.
+    /// GH #683: the file is asked for by name, one probe per extension in
+    /// [`SIDECAR_EXTS`], most common first. The directory scan this replaced
+    /// read every entry of `blobs/` for every blob a page resolved — measured
+    /// 1558 entries times 100 blobs per page — and it would open any stray
+    /// file that merely shared the id's prefix. A miss on every name is
+    /// [`BlobError::NotFound`], as before.
     pub async fn read_sidecar(&self, blob_id: Uuid) -> Result<BlobSidecar, BlobError> {
-        let mut entries = tokio::fs::read_dir(&self.root).await?;
-        let prefix = blob_id.to_string();
-        while let Some(entry) = entries.next_entry().await? {
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-            if name_str.starts_with(&prefix) && name_str.ends_with(".meta.json") {
-                let bytes = tokio::fs::read(entry.path()).await?;
-                return Ok(serde_json::from_slice(&bytes)?);
+        for ext in SIDECAR_EXTS {
+            let path = self.root.join(format!("{blob_id}.{ext}.meta.json"));
+            match tokio::fs::read(&path).await {
+                Ok(bytes) => return Ok(serde_json::from_slice(&bytes)?),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e.into()),
             }
         }
         Err(BlobError::NotFound(blob_id))
@@ -190,7 +187,15 @@ impl DiskBlobStore {
     }
 }
 
-/// MIME-type → file extension. Unknown → "bin".
+/// Every extension `mime_to_ext` can produce. A sidecar is named
+/// `<blob_id>.<ext>.meta.json`, and the set of `<ext>` is closed, so the file is
+/// found by asking for it rather than by reading the directory it lives in.
+/// Ordered by frequency: the UBF offload writes `json`, everything unknown is
+/// `bin`.
+const SIDECAR_EXTS: [&str; 6] = ["json", "bin", "txt", "png", "jpg", "pdf"];
+
+/// MIME-type → file extension. Unknown → "bin". Every arm's result is a member
+/// of [`SIDECAR_EXTS`]; a new arm here is a new entry there.
 fn mime_to_ext(mime: &str) -> &'static str {
     match mime {
         "application/pdf" => "pdf",
@@ -288,5 +293,94 @@ mod tests {
         let store = DiskBlobStore::new(dir.path()).unwrap();
         let err = store.read_bytes(Uuid::now_v7()).await.unwrap_err();
         assert!(matches!(err, BlobError::NotFound(_)));
+    }
+
+    // ── GH #683: a sidecar is found by name, not by reading the directory ───
+
+    /// Every MIME type the store can write comes back through `read_sidecar`.
+    /// The set of extensions is closed (`mime_to_ext`), so every one of them
+    /// is a name the reader can ask for.
+    #[tokio::test]
+    async fn every_written_mime_type_is_found_by_its_sidecar_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = DiskBlobStore::new(dir.path()).unwrap();
+        for mime in [
+            "application/json",
+            "application/octet-stream",
+            "text/plain",
+            "image/png",
+            "image/jpeg",
+            "application/pdf",
+            "video/unknown-goes-to-bin",
+        ] {
+            let blob_ref = store
+                .write_streaming(b"payload".as_slice(), mime, None)
+                .await
+                .unwrap();
+            let sidecar = store.read_sidecar(blob_ref.blob_id).await.unwrap();
+            assert_eq!(sidecar.mime_type, mime, "the sidecar of {mime} is found");
+        }
+    }
+
+    /// The reader-contract is the sidecar, not the content: a sidecar whose
+    /// content file is gone is still found by `read_sidecar` (and `read_bytes`
+    /// then fails on the content, not on existence).
+    #[tokio::test]
+    async fn a_sidecar_without_its_content_file_is_still_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = DiskBlobStore::new(dir.path()).unwrap();
+        let blob_ref = store
+            .write_streaming(b"{}".as_slice(), "application/json", None)
+            .await
+            .unwrap();
+        std::fs::remove_file(dir.path().join(format!("{}.json", blob_ref.blob_id))).unwrap();
+        let sidecar = store.read_sidecar(blob_ref.blob_id).await.unwrap();
+        assert_eq!(sidecar.mime_type, "application/json");
+    }
+
+    /// A file that merely starts with the blob id and ends in `.meta.json` is
+    /// not a sidecar. The directory scan this replaced would have opened it
+    /// and failed on its content; asking for the sidecar by name never sees
+    /// it, and the blob is what it is: absent.
+    #[tokio::test]
+    async fn a_stray_file_beside_the_blob_id_is_not_a_sidecar() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = DiskBlobStore::new(dir.path()).unwrap();
+        let id = Uuid::now_v7();
+        std::fs::write(
+            dir.path().join(format!("{id}.stray.meta.json")),
+            b"not a sidecar",
+        )
+        .unwrap();
+        let err = store.read_sidecar(id).await.unwrap_err();
+        assert!(
+            matches!(err, BlobError::NotFound(_)),
+            "a stray file is no sidecar; got {err:?}"
+        );
+    }
+
+    /// A stray file with the same prefix beside a REAL blob does not get in
+    /// the way of the real one, whatever order the directory lists them in.
+    #[tokio::test]
+    async fn a_stray_file_does_not_shadow_a_real_sidecar() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = DiskBlobStore::new(dir.path()).unwrap();
+        let blob_ref = store
+            .write_streaming(b"{\"x\":1}".as_slice(), "application/json", None)
+            .await
+            .unwrap();
+        let id = blob_ref.blob_id;
+        std::fs::write(
+            dir.path().join(format!("{id}.aaa.meta.json")),
+            b"not a sidecar",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join(format!("{id}.zzz.meta.json")),
+            b"not a sidecar",
+        )
+        .unwrap();
+        let got = store.read_body(id).await.unwrap();
+        assert_eq!(got, serde_json::json!({"x": 1}));
     }
 }

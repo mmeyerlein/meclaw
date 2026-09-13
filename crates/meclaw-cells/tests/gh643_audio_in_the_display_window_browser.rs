@@ -4,7 +4,9 @@
 //! wiring with a Rust client. This file proves the PAGE: headless Chromium loads
 //! the display, the page's own script joins the topic on the socket it already
 //! holds, a fake microphone is opened through `getUserMedia`, an `AudioWorklet`
-//! cuts the frames, and the transcript appears on the button's own line.
+//! cuts the frames, and the turn comes back on the page's own socket. Since
+//! 2.3.0 the words are not written into the page (D-17); the hook keeps the
+//! last turn's text on its counter object, and that is what the driver reads.
 //!
 //! Nothing is installed for it. `workshop/tools/display-mic-browser.mjs` speaks
 //! CDP over the WebSocket Node has had since 22, and the browser is the one
@@ -493,7 +495,7 @@ async fn a_browser_holds_the_button_and_the_colony_answers() {
     );
     assert!(
         counter(&line, "turns=") >= 1,
-        "the transcript the page shows came back over its own socket: {line}"
+        "the turn came back over the page's own socket: {line}"
     );
 }
 

@@ -30,10 +30,12 @@ COUNT = [0]
 ROOT = "display.root"
 MAIN = "display.region.main"
 ASIDE = "display.region.aside"
-# The microphone hangs under the root beside the regions, behind both of them
-# (GH #643). It is named here so the checks below can say what the root holds
-# WITHOUT counting it as a column.
-MIC = "display.mic"
+# The dock and the OS mark hang under the root beside the regions, behind
+# both of them (spec 2.4, OR-D4). They are named here so the checks below can
+# say what the root holds WITHOUT counting either as a column.
+DOCK = "display.dock"
+OS = "display.os"
+LAYERS = (DOCK, OS)
 
 
 def ok(name, cond, detail=""):
@@ -254,13 +256,13 @@ def main():
     loop.view(AMBIENT, "ambient", "Ambient", region="aside")
 
     ok("both regions hang under the root",
-       sorted(loop.screen.children(ROOT)) == sorted([MAIN, ASIDE, MIC]),
+       sorted(loop.screen.children(ROOT)) == sorted([MAIN, ASIDE, DOCK, OS]),
        loop.screen.children(ROOT))
     ok("the root holds them in declaration order, main first",
-       [c for c in loop.screen.children(ROOT) if c != MIC] == [MAIN, ASIDE],
+       [c for c in loop.screen.children(ROOT) if c not in LAYERS] == [MAIN, ASIDE],
        loop.screen.children(ROOT))
-    ok("and the microphone stands behind both columns",
-       loop.screen.children(ROOT)[-1] == MIC,
+    ok("and the dock and the OS mark stand behind both columns, in that order",
+       loop.screen.children(ROOT)[-2:] == [DOCK, OS],
        loop.screen.children(ROOT))
     ok("the two regions do not share an `ord`",
        loop.screen.objects[MAIN]["ord"] != loop.screen.objects[ASIDE]["ord"],
@@ -354,12 +356,16 @@ def main():
 
     # ----------------------------------------------- 7. the layout is shipped
     src = open(sys.argv[1]).read()
-    ok("the shell carries this scope's own two-column rule",
-       ".display-columns" in src and 'data-region="aside"' in src)
-    ok("an empty aside takes no width",
-       'data-region="aside"]:empty' in src)
-    ok("a narrow screen stacks the two columns",
-       "@media (max-width: 60rem)" in src and "flex-direction: column" in src)
+    # Since display 2.3.0 the canvas is ONE centred column and a region box
+    # generates nothing of its own: `aside` is still accepted as a word (the
+    # order above proves it) and drawn as canvas (OR-D3).
+    layout = src[src.find("LAYOUT_RULES = ("):src.find("\n)\n", src.find("LAYOUT_RULES = ("))]
+    ok("the shell carries this scope's own one-column rule",
+       ".display-columns {" in layout and "flex-direction: column" in layout)
+    ok("a region is a place in the order, not a box on the page",
+       "[data-region] { display: contents; }" in layout)
+    ok("and no narrow column is left",
+       "clamp(15rem" not in layout and 'data-region="aside"]:empty' not in layout)
     style = src[src.find("LAYOUT_RULES"):src.find("SHELL_TEMPLATE")]
     ok("the stylesheet carries no `{{`, which the component language would eat",
        "{{" not in style)

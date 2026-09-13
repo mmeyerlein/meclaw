@@ -1,4 +1,4 @@
-# `display@2.2.3`
+# `display@2.3.2`
 
 One screen, reached at `/<mount>/` on the colony's one listener, that many
 agents and applications write onto at the same time. A **view** is a named, owned, optionally expiring piece of
@@ -59,6 +59,80 @@ Until 2.1.0 the sheet gave every window the same weight and the compose cell
 judged nothing. Since 2.2.0 the screen judges, and the next section says how;
 this one is the measure it is built against.
 
+## Three layers: canvas, dock, and the OS mark
+
+The hygiene guideline above says what may be visible. This section says where
+it stands, and it is the second measure every later mechanic is held against.
+It was set on 13 September 2026 after two viewings of the judged screen, whose
+main lesson was a loss of *visual continuity*: things appeared, disappeared,
+were replaced, and the person in front of the screen lost the feeling of what
+was still active in the system at all.
+
+**The canvas answers "what is in focus?"** It is an endless surface, the wide
+part of the screen. Elements appear on it, later move, zoom and hand focus to
+each other. A focused element is compact and clearly bounded -- roughly square
+or moderately rectangular, centred -- and never a strip across the whole
+width. While an answer is being spoken the element it belongs to stays there;
+when the interaction is over it returns to the dock.
+
+**The dock answers "what is active or relevant at all?"** It is a vertical
+column at the right edge, on its own layer above the canvas, at the same
+position and size whatever the canvas is doing. It holds tiles of ONE
+predefined size -- no free sizes, no scattered small elements. Every active or
+relevant object has a tile there, *also* while the same object is large on the
+canvas: dual representation is the rule, not the exception. The dock orders
+itself by relevance, the most relevant tile at the top and the least above the
+OS mark at the bottom; the member never sorts it, the system does. An object
+that loses focus shrinks and moves into its tile; a tile that becomes relevant
+zooms out of the dock onto the canvas. The zoom is meaning, not decoration: it
+tells the viewer that this is the same object on another level of attention.
+Only what is active or relevant has a tile. A running timer has one, a
+finished timer has none, a screen without a timer shows no timer at all;
+weather that nobody asked about for long enough leaves. There are no
+placeholders and no empty tiles. A *pinned* object is one whose tile does not
+lose its dock relevance by itself: normally relevance sinks and the tile
+eventually goes; pinned, relevance sinks and the tile stays.
+
+**The OS mark answers "how do I talk to the system, right now?"** It is the
+fixed anchor at the bottom right, the origin of the dock: a mark with no card
+or tile behind it, transparent on the canvas. Press and hold to speak, release
+to send -- the gesture every chat application on a phone already taught. The
+spoken words do not appear next to the mark. They appear where the dialogue
+lives.
+
+**The dialogue is an application.** Speech, keyboard, touch, phone: every
+input ends as a turn of a conversation, and a chat application shows those
+turns. It has a tile in the dock like any other application; holding the OS
+mark brings it onto the canvas for the transcription, releasing sends the turn
+and the answer arrives there or wakes the application the answer is about, and
+when the conversation is no longer needed it returns to its tile. The
+conversation is therefore in one place, never spread across the screen.
+
+**Blur is for modal moments only.** When something must be answered or
+finished before the member can sensibly continue, the rest of the canvas may
+blur behind it. A change of focus is not such a moment: weather in focus does
+not make the rest of the screen unsharp.
+
+**A timer is heard and then goes.** Running, it is a tile whose seconds tick
+in real seconds; shortly before it ends it rises in the dock; when it ends it
+interrupts, visibly and audibly; confirmed or stopped, it disappears.
+
+**The screen knows what it is shown on.** A phone thirty centimetres from the
+eye with touch, a monitor at arm's length with mouse and keyboard, a
+television three metres away with no input but a voice: these are not the same
+screen and are not rendered the same. The renderer carries a display profile
+-- type, physical size, resolution, pixel density, viewing distance, and which
+inputs exist (touch, pointer, keyboard, audio) -- and derives its scale from
+it. Pixel width alone says nothing: a 4K phone and a 4K television share a
+resolution and nothing else. Display and input need not be the same device
+("show me that on the television").
+
+What this section deliberately leaves open: the exact timing of zoom, move,
+reorder, appear and disappear, and the gestures a tile answers to. Those are
+tuning, and they follow the logic, not the other way round.
+
+Since 2.3.0 the mechanics below implement it.
+
 ## The screen curates what it shows
 
 **Words.** A **window** is an object of one of four components --
@@ -69,8 +143,10 @@ tree node or as slots of the `in_view` body: `context` (a word, such as
 `conversation` or `ambient`), `relevance` (0-1), `class` (one of
 `system_error`, `error`, `warning`, `important_note`, `note`), `pinned`
 (boolean), `relevant_until` (epoch milliseconds), `touched` (an epoch, as
-text), and `state`, of which it may say exactly two words -- `urgent` and
-`hidden`. Any other state word is dropped at the door. The **screen state** lives on the root: `focus`, the bar (0-1),
+text), `topic` (what the window is about, see *Topics* below), `modal`
+(boolean, the one thing that may blur the canvas), and `state`, of which it may
+say exactly two words -- `urgent` and `hidden`. Any other state word is
+dropped at the door. The **screen state** lives on the root: `focus`, the bar (0-1),
 and `weights`, a JSON map from context to 0-1. The **rung** is what the
 compose cell writes on every window as `state`: `hidden`, `ambient`,
 `relevant`, `focus` or `urgent` -- the ladder the sheet has had since 2.1.0.
@@ -92,7 +168,13 @@ the application writes the moment of the answer into `touched`, and a changed
 `touched` is a touch like any other changed prop. The child's props are not
 read on purpose: a clock that rewrites a child every twenty seconds would
 otherwise touch its window on every tick. The judge sees the value as
-`touched_at` beside the pass's own `touched` flag.
+`touched_at` beside the pass's own `touched` flag. And since 2.3.0 the value
+is read as the MOMENT of the touch when it can be: an epoch in milliseconds
+that lies inside the fade window, after the window's last touch and not in
+the future, becomes the window's `since`, so an answer stored at one moment
+whose view reaches the screen a pass later is not younger than the card that
+answer caused. Any other value -- a counter, a word -- makes the pass itself
+the moment.
 
 **The score.** For every window, on every pass:
 
@@ -107,8 +189,8 @@ score  = 0 when the app said hidden; 1 when it said urgent; else w x r x decay
 
 **The bar and the weights.** A window is visible only when `score >= focus`.
 With no judge on the screen the floor sets the bar to `focus_default` -- unless
-no window in `main` reaches it, and then the bar is 0, so what simply stands
-may show on an empty screen. The floor's weights are one rule and no memory:
+no window reaches it, and then the bar is 0, so what simply stands may show on
+an empty screen. The floor's weights are one rule and no memory:
 the context of the last touched window weighs 1, every other context weighs
 0.5. So a weather window loses half its score the moment the conversation is
 touched, and a window that stood below the bar to begin with goes at once.
@@ -116,15 +198,17 @@ Once a judge has written the map, the map stands; a touch adds only a context
 the map does not know, at 1. A window **below the bar** is `hidden`: gone from
 the page, still in the table, back on its next touch.
 
-**The rungs.** Among the visible windows, **exactly one window in `main`** has
-the focus rung: the highest score, ties broken by the youngest `since`, then
-the id. A window that arrived on this very pass is `fresh` and at most
+**The rungs.** Among the visible windows, **exactly one window on the canvas**
+has the focus rung: the highest score, ties broken by the youngest `since`,
+then the id. A window that arrived on this very pass is `fresh` and at most
 `relevant` -- it takes the focus one frame later, so the enter keyframe and the
-focus lift never fight. `aside` never carries the focus rung: a window there
-is `relevant` at or above the midpoint between the bar and 1, `ambient` below
-it, and so is every window in `main` that is not the focus. An `urgent` an
-application said stands alone: no window is the focus beside it, and of two
-urgent windows the younger keeps the word while the older is `relevant`.
+focus lift never fight. Every other visible window is `relevant` at or above
+the midpoint between the bar and 1, `ambient` below it. Since 2.3.0
+`aside` is accepted and drawn as canvas, so a window there competes for the
+focus like any other, and an `urgent` an application said no longer locks the
+focus: every urgent window rings, and the focus stands beside them. What is on
+the canvas is what holds the `focus` or the `urgent` rung; everything else
+that is present stands in the dock (below).
 
 **Two frames.** A window leaves over two frames. One the table no longer has
 is not deleted on the pass that notices: it is laid back byte for byte with `age: leaving`, so the sheet
@@ -159,7 +243,13 @@ bar and weights; the knobs as sentences. Its instructions are the guideline
 above, word for word, and the nine factors it weighs: the current context,
 the person's current activity, time relevance, urgency, importance, running
 interactions, the cost of an interruption, the person's preferences, and the
-current focus level. It answers with one JSON object -- `focus` (the bar),
+current focus level. Since 2.3.0 it also sees each window's `topic`, whether
+another application already says it, whether it brought a tile, its dock rank
+and whether it is on the canvas, and the root's `dock_overflow` and `screen`.
+The dock is not the judgement's business: it decides what is large and never
+what exists, and its `weights` are floored at 0.05 for the dock's order only,
+so a context weighed to nothing still has a readable place there. It answers
+with one JSON object -- `focus` (the bar),
 `weights` (per context), `windows[]` with an optional `hidden` or `relevance`
 per id -- and the answer comes back on the lane `in_verdict` as a pass without
 a write: the root takes the bar, the weights and `judged_at`, a named window
@@ -184,23 +274,27 @@ per hour; `judge_min_interval_ms` is the brake.
 **The knobs** stand in `params` and in `contract.settings` with the same
 default: `linger_ms` (20000), `fade_ms` (120000), `focus_default` (0.3),
 `ground` (`day`; `night` switches the sheet's night variant, and nothing
-switches it by itself), `judge` (`off`), `judge_min_interval_ms` (3000) and
-`notice_defaults` (per class, `[relevance, ttl_ms]`). They are the member's
-dials: what a member wants shown differently is another value on that
-member's own screen.
+switches it by itself), `judge` (`off`), `judge_min_interval_ms` (3000),
+`notice_defaults` (per class, `[relevance, ttl_ms]`), and since 2.3.0
+`screens` and `default_screen` (see *Screens and profiles*) and `dock_max`
+(how many tiles the dock holds before the rest is counted as overflow). They
+are the member's dials: what a member wants shown differently is another
+value on that member's own screen.
 
 ## What it is not
 
-- **Not a window manager.** Nothing overlaps, nothing has a z-order, nothing is
-  resized, and there is no camera. A screen is two columns of views, and inside
-  a column an order that is not time.
+- **Not a window manager.** Nothing is resized and the canvas has no camera.
+  Since 2.3.0 the dock and the OS mark are the only layers above it, and they
+  are the screen's own furniture rather than anything an application puts
+  there. A screen is one canvas of views and inside it an order that is not
+  time.
 - **The compose cell is not the model.** It is deterministic and offline: it
   opens no socket and, given the same table and the same display, produces
   the same bundle. The judge beside it is the one cell in this hive that asks
   a provider, and the screen stands complete without it.
-- **A judgement of relevance, not of layout.** Two columns stay two columns;
-  what the screen decides is which window is visible, how loud, and for how
-  long. Where a window stands is a band inside a column and a tie broken on
+- **A judgement of relevance, not of layout.** One canvas stays one canvas;
+  what the screen decides is which window is large, how loud, and for how
+  long. Where a window stands is a band on the canvas and a tie broken on
   `(owner, view_id)`, and an application that wants a different arrangement
   builds it inside its own view, where it belongs.
 - **Not the owner of content.** What is inside a view is whatever the sender
@@ -237,7 +331,7 @@ message has already been.
    this pass computes the layout rather than only diffing it. Then, either way,
    one bundle of `object.*` calls. The order of the screen lives in `ord`, and
    `object.update` writes props and nothing else, so a view that moved up the
-   column is patched with an `object.move` beside whatever else changed about
+   canvas is patched with an `object.move` beside whatever else changed about
    it.
 4. **The display acknowledged the patch.** Nothing is emitted, and that is what
    stops the loop. A cell that cannot recognise the reply to its own write has
@@ -260,20 +354,19 @@ The bootstrap **deletes nothing**. Those objects are not this scope's to remove,
 and another route may still point at them. `/` is re-pointed at our own root and
 the old tree is left standing.
 
-## Two regions, and an order that is not time
+## One canvas, one dock
 
-A screen has two columns, and a view names the one it wants:
+A screen is one canvas with a dock beside it. A view still names a region,
+and both words are accepted:
 
 | `region` | what it is for |
 |---|---|
-| `main` | the wide column, and the **default**. A view that names no region lands here, exactly as it did before there was a second one |
-| `aside` | the narrow column beside it, for what simply **stands**: a clock, a weather tile, a countdown. It takes no width at all while it is empty |
+| `main` | the canvas, and the **default**. A view that names no region lands here |
+| `aside` | accepted, drawn as `main` since 2.3.0. Until 2.2.3 it was a narrow column for what simply stands; what simply stands is a tile in the dock now, and a view that names `aside` is unaffected |
 
 Anything else is `invalid_view` and nothing is written. A closed list rather
 than a free string, because an unknown region is a view nobody would ever see,
-which is worse than a refusal the sender can read. The columns differ in one
-more way since 2.2.0: `aside` never carries the focus rung -- a window there is
-relevant or ambient, and may be urgent if its application says so.
+which is worse than a refusal the sender can read.
 
 **Inside a region the order is three keys, and the interesting one is the key
 that is missing.**
@@ -301,12 +394,15 @@ compose cell reads back on pass 3 anyway -- so the layout takes what the display
 holds as an *input* rather than only as something to diff against. Two
 consequences worth knowing: a page this cell has to **bootstrap** has no seats
 at all, and every view on it is new together (band, then identity); and a view
-that **changes region** is new in the region it arrives in, because a height in
-the column it came from means nothing in the column it goes to.
+that **changes region** is new in the region it arrives in, because a seat in
+the region it came from means nothing in the region it goes to. An urgent
+window is lifted into a band above every declared `ord` for as long as it
+rings, and takes a fresh seat when it stops.
 
 **The regions themselves stand in declaration order**, `main` before `aside`,
-as `ord` `0` and `10` under the page root. Both hang there directly. That used
-to be impossible -- a materialised page carried two statics whatever the child
+as `ord` `0` and `10` under the page root, and the dock and the OS mark follow
+them as `ord` `20` and `30`. All four hang there directly. That used to be
+impossible -- a materialised page carried two statics whatever the child
 count, so the closing static landed between the first child and the second and
 everything from the second on rendered outside the element meant to contain it.
 [#394](https://github.com/mmeyerlein/meclaw/issues/394) replaced that with n+1
@@ -315,13 +411,19 @@ statics for n slots, and the `web` README says as much: a root with one child is
 
 The **layout** is this scope's own, and it travels in the `display-shell`
 template rather than as a rule in `/vision.css`: that sheet belongs to the
-`web` template and describes the base language of every surface, while *main
-is wide and aside is narrow* is a statement about this screen. Two flex
-columns, the aside at `clamp(15rem, 22%, 24rem)`, `display: none` while it is
-empty, and stacked one above the other under 60rem.
+`web` template and describes the base language of every surface, while *the
+canvas is one centred column and the dock floats beside it* is a statement
+about this screen. The canvas is one flex column, centred, and a region box
+generates nothing of its own (`display: contents`), so the windows of both
+regions stand in the one column together. A window in focus is compact and
+bounded -- at most `clamp(22rem, 44vw, 40rem)` wide -- rather than a strip
+across the width. The canvas keeps a gutter on the right, the width of a tile
+and its padding, so nothing it holds runs under the dock. Where the dock and
+the OS mark sit is the sheet's business, because both derive from the
+profile's scale (below).
 
 The shell carries it in **one `<style>` block, together with the design
-language**: first the layout (where the columns and the microphone sit), then
+language**: first the layout (the one column and the region boxes), then
 the faces built from `params.font_base` (below), then the sheet
 `compose/display-dna.css`, byte for byte. The sheet comes last on purpose --
 it re-tokenises `/vision.css` at equal specificity, so it needs no stacked
@@ -331,14 +433,87 @@ the language reaches a screen the way everything else does, by
 `component.define`, and a change to it is a change to a file in this template
 and a new version, never a message a hand sends to a running colony.
 
+## Presence and focus: two axes
+
+A window is PRESENT while it stands in the `views` table and has either been
+pinned or not yet faded; presence alone puts a tile in the dock. A window is on
+the CANVAS while it holds the `focus` or the `urgent` rung. The two are
+independent: a judgement decides what is large and never what exists, so the
+clock keeps its tile while the weather is being read. And a pinned window's
+own content change is no touch: pinned means the tile stays, not that it asks
+for attention, so a clock that rewrites its time every minute wakes neither
+the floor nor the judge -- only the `touched` hint does, or another
+application's answer on the same topic.
+
+The dock's order is its own number. `rank` is the same arithmetic as the score
+-- weight times relevance times decay -- without the clamp that takes a hidden
+window to zero, and with the weight floored at 0.05 so a context weighed to
+nothing still has a readable place. Ties go to the younger window. A tile goes
+when the decay reaches zero and nothing pinned it, or when the application
+stops sending the window at all. The dock holds `dock_max` tiles, the most
+relevant at the top; what did not fit is counted on the root as
+`dock_overflow`, and the judge reads that number.
+
+The dock and the OS mark are the screen's own furniture, on layers of their own
+above the canvas, fixed at the right edge whatever the canvas does. Between a
+tile and its window the client draws the zoom: a window that comes onto the
+canvas grows out of its tile, a window that leaves shrinks back into it, and a
+tile that changes rank slides to its new place. That is a FLIP in a hook on the
+root -- measured before the patch and after it -- and under
+`prefers-reduced-motion` the hook measures nothing.
+
+## Screens and profiles
+
+A member has one screen STATE -- one `views` store, one curator, one judge, one
+dock -- and physical screens are outputs of it. `screens` names them, each with
+a type (`tv`, `monitor`, `phone`), a viewing distance, a physical size and the
+inputs it has; `default_screen` says which one `/` shows. Every output is a
+page of its own at `/<mount>/<screen>`, rendered from the same curation.
+
+The profile reaches the sheet as three things on the root: `data-profile`,
+`data-inputs` and one `--scale`. Everything the dock and the OS mark are made
+of derives from that scale, and so does the type. Pixel width alone says
+nothing -- a 4K phone and a 4K television share a resolution and nothing else --
+so no width query undoes a profile. What `data-inputs` steers is what is
+VISIBLE and nothing else: a screen with no audio keeps its mark and loses the
+light that says it is listening.
+
+## Tiles: what an application says about itself in one line
+
+A window may carry a child under the key `tile`. The screen takes it out of the
+window and puts it in the dock: a glyph, one line, an optional live value, and
+the topic it is about. One size, always. An application that says nothing gets
+a fallback -- a glyph for its context, its title or the last part of its owner
+path -- and never an empty tile: a tile exists exactly as long as its window is
+present.
+
+A tile carries the window's rung as a ring and a colour, never as a size -- a
+window under the bar is hidden on the canvas, and its tile reads as ambient:
+present, quiet. A tile is
+dimmed a little while the same window is large on the canvas, because dual
+representation is the rule; and a pinned tile shows a dot, because pinned means
+"the tile stays" and a person should be able to see that it will. A tile with
+an `end_at` shows its seconds: the browser writes the remainder into it once a
+second, and the server never ticks for it.
+
+## Topics
+
+`topic` is what a window is ABOUT: `weather:berlin`, `timer:<id>`, `chat`. Two
+applications that answer the same question say the same topic, and the screen
+keeps the standing window rather than putting a second one beside it: the
+newer window of another owner is marked, scores zero, and is rendered neither
+on the canvas nor in the dock until the standing one goes. Windows of the same
+owner are never compared -- how many windows an application has is the
+application's decision.
+
 ## What is on the screen: the `views` table
 
 | column | type | what it holds |
 |---|---|---|
 | `owner` | `text` | the `envelope.reply_to` of whoever put the view up |
 | `view_id` | `text` | that sender's own name for it, `[a-z0-9-]{1,64}` |
-| `region` | `text` | which column it stands in: `main` or `aside` |
-| `ord` | `int` | the band it asked for inside that column. `0` by default, signed |
+| `region` | `text` | which region it names: `main` or `aside` (both drawn as canvas since 2.3.0) |
+| `ord` | `int` | the band it asked for inside that region. `0` by default, signed |
 | `kind` | `text` | `prose` or `component` |
 | `content` | `json` | the prose `{title, body}`, or the root node of a component tree |
 | `components` | `json` | the `component.define` arguments the view brought with it |
@@ -511,19 +686,20 @@ can trip either refusal.
 
 ## The components this scope defines
 
-Five the screen is made of, and a catalogue of **twenty-six** an application may
-name in its tree without defining them: four windows and twenty-two pieces of
+Five the screen is made of, and a catalogue of **twenty-eight** an application may
+name in its tree without defining them: four windows and twenty-four pieces of
 content, the vocabulary the sheet is written against.
 
 | component | layer | what it is |
 |---|---|---|
-| `display-shell` | `content` | the page root. `stylesheet` emits the link to the base sheet, `faces` carries the `@font-face` rules built from `params.font_base`, `vocab` a fingerprint of this list, `ground` the sheet's `day` or `night`; `focus`, `weights`, `judged_at`, `asked_at` and `due` are the screen state the compose cell keeps there |
+| `display-shell` | `content` | the page root. `stylesheet` emits the link to the base sheet, `faces` carries the `@font-face` rules built from `params.font_base`, `vocab` a fingerprint of this list, `ground` the sheet's `day` or `night`; `focus`, `weights`, `judged_at`, `asked_at` and `due` are the screen state the compose cell keeps there; since 2.3.0 `screen`, `profile`, `inputs` and `scale` say which output this page is and what it is shown on, `screens` and `dock_overflow` are what the floor reads back, and `client_js` is the screen's own motion (the hook that runs the seconds, the chime and the zoom) |
 | `display-region` | `content` | one per region, a direct child of the root, and the parent of every view standing in it |
 | `display-view-prose` | `navigation` | a `display-pane` with an optional title and a paragraph -- a window, so it carries the five hints and the curator's `state`, `age`, `since`, `score`, `judged_relevance`, `judged_hidden` |
 | `display-view-custom` | `content` | the wrapper an application's own tree hangs in |
-| `display-mic` | `content` | the hold-to-talk button, its transcript line and its state line, plus the browser half that runs them |
-| `display-pane`, `display-panel`, `display-overlay`, `display-ornament` | `navigation` | the four windows, and the only glass in the catalogue: a pane in the flow, a taller panel, an overlay above the page, an ornament that is a thing rather than a place. The first three carry the hints (`context`, `relevance`, `class`, `pinned`, `relevant_until`) and the curator's props; pane and panel also `tone` |
+| `display-os` | `content` | the OS mark at the bottom right, which is the hold-to-talk button, its state line for a screen reader, plus the browser half that runs them |
+| `display-pane`, `display-panel`, `display-overlay`, `display-ornament` | `navigation` | the four windows, and the only glass in the catalogue: a pane in the flow, a taller panel, an overlay above the page, an ornament that is a thing rather than a place. The first three carry the hints (`context`, `relevance`, `class`, `pinned`, `relevant_until`, `topic`, `modal`) and the curator's props; pane and panel also `tone` |
 | `display-value`, `display-text`, `display-voice`, `display-kicker`, `display-list`, `display-item`, `display-table`, `display-weather`, `display-clock`, `display-timer`, `display-chat`, `display-chat-line`, `display-notification`, `display-media`, `display-document`, `display-status`, `display-action`, `display-choice`, `display-option`, `display-chart`, `display-stack`, `display-progress` | `content` | the twenty-two pieces of content a window holds, each with the props its `prop_schema` declares |
+| `display-dock`, `display-tile` | `content` | the dock at the right edge and the tiles in it, one per present window, one size: a glyph, a value and a line, ordered by rank. The compose cell writes both; an application only supplies what its tile says (`glyph`, `line`, `value`, and `end_at` for a countdown) |
 
 **The root carries a fingerprint of this list**, `vocab`, twelve hex characters
 over the definitions as JSON. The definitions travel on the bootstrap pass, and
@@ -534,7 +710,7 @@ tick. The same economy an application's components have -- they travel when
 they changed -- for the screen's own language.
 
 **The region is on that list because a view hangs under a region rather than
-under the root** -- that is what makes a column a place. It used to be on it for
+under the root** -- that is what makes a region a place. It used to be on it for
 a different reason, that the root could hold exactly one child, and that reason
 is retracted: [#394](https://github.com/mmeyerlein/meclaw/issues/394) gave a
 materialised page n+1 statics for n slots, so the root holds both regions and
@@ -563,9 +739,14 @@ slash. No font file ships in this repository.
 
 ## Talking to the screen
 
-The screen carries a button. Hold it -- pointer or space bar -- and what you say
-goes to a `voice` cell; let go and the transcript appears on the line beside the
-button, and the answer is played back through it.
+The screen carries the OS mark, and the mark is the button. Hold it -- pointer
+or space bar -- and what you say goes to a `voice` cell; let go and the turn is
+sent, and the answer is played back through it. The mark has no card behind it
+and, since 2.3.0, what was heard does not stand beside it: the conversation
+lives in the chat application, which has a tile in the dock like any other.
+The mark says its phase in light -- `listening`, `sending`, `speaking`,
+`error`, as `data-phase` on its element -- and the sentence that used to stand
+under the button is kept for a screen reader and not drawn.
 
 There is no second port and no second connection. The button joins a
 `voice:<call>` topic on the socket the page is already holding, and the `web`
@@ -591,7 +772,9 @@ from the `hello` frame, because the cell never resamples: the page adapts, cutti
 ### What the button says, since 2.0.1
 
 The line under the button is the only thing a person has to go on, so it speaks
-at all three moments a press can end somewhere other than a turn.
+at all three moments a press can end somewhere other than a turn. Since 2.3.0
+the line is said and not drawn: it stays in the page for a screen reader, and
+the mark shows the same moments as light.
 
 - **While the browser is asking**, it says `asking for the microphone…`. The
   permission prompt opens inside the gesture, on a screen that has never been
@@ -617,17 +800,14 @@ A hold survives the button moving under the pointer: the pointer is captured on
 press and released on `pointerup`, `pointercancel` or a lost capture, never on
 `pointerleave`. On a fresh screen the line is empty until the join has answered,
 and a line that appeared on press used to grow the block upward and slide the
-button out from under the pointer (GH #684, since 2.2.1); the line has a height
-before it speaks now, and a page that loses focus or goes hidden releases the
+button out from under the pointer (GH #684, since 2.2.1); since 2.3.0 the line
+is not drawn at all, and a page that loses focus or goes hidden releases the
 hold, so a key held while switching windows does not keep the microphone open.
-And the button is a fixed point (GH #689, since 2.2.2): the transcript line and
-the state line stand in a wrapper of their own that floats above the button,
-out of its flow, so a line that grows -- a long transcript, say -- moves
-nothing but itself.
+And the button is a fixed point (GH #689, since 2.2.2): nothing beside the mark
+grows, because since 2.3.0 nothing beside the mark is drawn at all.
 
-What is not here: no transcript history, no list of turns, no way to scroll back.
-The line beside the button holds the last thing that was heard and nothing more.
-A conversation on the screen is a view like any other, put up by whoever owns it
+What is not here: no transcript, no list of turns, no way to scroll back. A
+conversation on the screen is a view like any other, put up by whoever owns it
 on the `partial` lane of the agent it belongs to.
 
 ## `ttl_ms` expires a view, and the screen's own clock strikes when a view is due

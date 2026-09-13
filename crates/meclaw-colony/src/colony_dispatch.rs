@@ -220,9 +220,9 @@ pub fn handle_read_mutations_audit(
 ///
 /// Same shape as [`handle_read_trace`] — `spawn_blocking` plus a fresh
 /// `SQLITE_OPEN_READ_ONLY` connection, so the WAL reader never touches the
-/// writer thread. **Honest warning**: like every `Read*` arm it stalls the
-/// Colony-Inbox loop for the query duration; the stall is bounded by
-/// `scan_budget` (≤ 50_000 rows), not by `limit` alone.
+/// writer thread. Like every `Read*` arm it runs in a task of its own since
+/// GH #683 (ADR-0041); the loop only hands over `db_path`. The read is bounded
+/// by `scan_budget` (≤ 50_000 rows), not by `limit` alone.
 ///
 /// Two-stage query (plan § F3): the inner select narrows through an existing
 /// index (`created_at` for ordering + range, `trace_id`, `parent_message_id`,
@@ -421,8 +421,8 @@ pub(crate) fn path_prefix_range(prefix: &str) -> (String, Option<String>) {
 }
 
 /// Phase 12-B step-7.6: spawn_blocking + WAL Read-Only Connection.
-/// STALLS the Colony-Inbox loop until the JoinHandle resolves —
-/// bounded by limit ≤ 1000.
+/// Runs in a task of its own since GH #683 (ADR-0041) — the loop only hands
+/// over `db_path` — and is bounded by limit ≤ 1000.
 ///
 /// Phase 13.5-A6: extracted verbatim from `colony_task` inbox-arm — same
 /// semantics, two callers expected (inbox-arm now, outputs-arm in T3).
@@ -650,8 +650,9 @@ fn grouped_aggregate(
 ///
 /// Mirrors [`handle_read_trace`] mechanically: `spawn_blocking` plus a fresh
 /// `SQLITE_OPEN_READ_ONLY` connection with the busy budget installed by hand
-/// (GH #98 — read-only opens never run the setup functions). It STALLS the
-/// colony inbox loop for its duration, bounded by `query.scan_budget`.
+/// (GH #98 — read-only opens never run the setup functions). It runs in a task
+/// of its own since GH #683 (ADR-0041) — the loop only hands over `db_path` —
+/// and is bounded by `query.scan_budget`.
 ///
 /// Every statement reads one **bounded** sub-query
 /// (`WHERE created_at >= ?since AND created_at < ?until LIMIT ?scan_budget`),

@@ -290,8 +290,17 @@ fn a_prose_view_carries_its_hints_into_the_wrapper() {
     assert_eq!(props["class"], "important_note");
     assert_eq!(props["pinned"], true);
     assert_eq!(props["relevant_until"], 9000);
-    assert_eq!(props["score"], 0.8, "{props}");
-    assert_eq!(props["state"], "relevant", "fresh, so at most relevant");
+    // 0.5 x 0.8: a pinned window's arrival steers no weight (OR-D-Bau-5),
+    // so its context weighs the floor's default.
+    assert_eq!(props["score"], 0.4, "{props}");
+    assert_eq!(
+        props["rung"], "ambient",
+        "fresh, so at most relevant; under the midpoint"
+    );
+    assert_eq!(
+        props["state"], "hidden",
+        "and not on the canvas until it is large"
+    );
 
     let plain = prose_pass(json!({"title": "Hi", "body": "there"})).expect("python3");
     let props = created(&plain, "view.alex.p");
@@ -305,8 +314,8 @@ fn a_prose_view_carries_its_hints_into_the_wrapper() {
     assert_eq!(props["relevant_until"], 0);
     assert_eq!(props["score"], 0.5, "1.0 x 0.5: visible over a bar of 0.3");
     assert_eq!(
-        props["state"], "ambient",
-        "visible, under the midpoint 0.65"
+        props["rung"], "ambient",
+        "on the ladder, under the midpoint 0.65"
     );
 }
 

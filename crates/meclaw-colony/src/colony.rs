@@ -599,9 +599,9 @@ pub enum ColonyMsg {
     /// `SQLITE_OPEN_READ_ONLY` connection on `colony.db`. WAL allows
     /// concurrent readers; the writer thread stays unaffected.
     ///
-    /// **Honest warning**: stalls the colony inbox loop for the query duration
-    /// (bounded by `limit ≤ 1000` rows). Off-loop reads (a dedicated read task)
-    /// are phase 14.
+    /// Runs in a task of its own since GH #683 (ADR-0041): the loop only hands
+    /// over `db_path` and parks; at most `LOG_READ_PERMITS` such reads run at
+    /// once. Bounded by `limit ≤ 1000` rows.
     ReadTrace {
         /// Optional: filter by trace_id (UUID).
         trace_id: Option<Uuid>,
@@ -623,11 +623,10 @@ pub enum ColonyMsg {
     /// `spawn_blocking` + a fresh `SQLITE_OPEN_READ_ONLY` connection; the whole
     /// logic lives in `colony_dispatch::handle_read_ledger`.
     ///
-    /// **Honest warning**: stalls the colony inbox loop for the query duration.
-    /// Bounded by `query.scan_budget` (rows read per windowed sub-query), not
-    /// by a row limit — the reply carries no rows to limit. `mutation_log` has
-    /// no `created_at` index, so its window query is a scan and that budget is
-    /// the only bound on it. Off-loop reads are post-v0.1.0 (`docs/defer-register.md`).
+    /// Runs in a task of its own since GH #683 (ADR-0041): the loop only hands
+    /// over `db_path` and parks; at most `LOG_READ_PERMITS` such reads run at
+    /// once. Bounded by `query.scan_budget` (rows read per windowed sub-query),
+    /// not by a row limit — the reply carries no rows to limit.
     ReadLedger {
         /// The window and the counters to compute; every bound is clamped in
         /// the dispatch helper, so the echoed query shows what was used.
@@ -640,9 +639,10 @@ pub enum ColonyMsg {
     /// fresh `SQLITE_OPEN_READ_ONLY` connection; the entire logic lives in
     /// `colony_dispatch::handle_read_messages`.
     ///
-    /// **Honest warning**: stalls the colony inbox loop for the query duration.
-    /// Bounded by `filter.scan_budget` (≤ 50_000 rows read), not by `limit`
-    /// alone. Off-loop reads are post-v0.1.0 (`docs/defer-register.md`).
+    /// Runs in a task of its own since GH #683 (ADR-0041): the loop only hands
+    /// over `db_path` and parks; at most `LOG_READ_PERMITS` such reads run at
+    /// once. Bounded by `filter.scan_budget` (≤ 50_000 rows read), not by
+    /// `limit` alone.
     ReadMessages {
         /// Filter + paging cursor; all caps are clamped in the dispatch helper.
         filter: crate::api_dto::MessageLogFilter,
@@ -2559,6 +2559,13 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
         .mutation_receipts
         .as_ref()
         .map(|r| Path::new(&r.to));
+    // GH #683: admission control for the log reads the loop hands off, not
+    // shared state. Built once here, cloned into every spawned read, and
+    // acquired THERE — the loop never waits on it. The HTTP side waits, as it
+    // waited behind the loop before, only four abreast instead of one at a
+    // time; without it the number of concurrent scans of `colony.db` was bounded
+    // by nothing but the number of open connections.
+    let log_reads = std::sync::Arc::new(tokio::sync::Semaphore::new(LOG_READ_PERMITS));
 
     loop {
         // Deep-Audit F3: emit a liveness tick. `try_send` never blocks the loop; a
@@ -3158,22 +3165,74 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                         // GH #440: the refusal reaches the caller instead of dying here.
                         let _ = ack.send(outcome.map_err(|e| format!("{e:?}")));
                     }
+                    // GH #683: the three log reads leave the loop. Each of them needs exactly one
+                    // thing from the colony's state — the path of the database file — and opens its
+                    // own read-only connection; awaiting them here bought no ordering and no
+                    // consistency (the writer thread is a task of its own either way), and it cost
+                    // the heartbeat. A page of the message browser over a large `colony.db` is
+                    // hundreds of milliseconds during which the loop cannot reach its interval arm,
+                    // and the supervisor has one reading for a loop that says nothing: it stopped
+                    // answering. Measured 2026-09-13: 902 slow trips and one fatal one, all with
+                    // `witness=kept`, so the host was never the cause.
+                    //
+                    // The name is declared BEFORE the task is spawned: the label says what the
+                    // loop just handed off, so a reader of the beat stream sees the read, in the
+                    // spelling `dispatch_colony_endpoint` uses for the reads it still runs in the
+                    // loop (GH #571). It is a marker, not a trip caption: the loop parks right
+                    // after the spawn, a read is no longer a work item of the loop, and a trip
+                    // during one is a parked loop's trip. It costs one `try_send`.
                     ColonyMsg::ReadTrace { trace_id, path_prefix, correlation_id, only_error, since, limit, ack } => {
                         let db_path = colony_db.db_path().to_path_buf();
-                        let reply = crate::colony_dispatch::handle_read_trace(
-                            &db_path, trace_id, path_prefix, correlation_id, only_error, since, limit,
-                        ).await;
-                        let _ = ack.send(reply);
+                        beat(
+                            &heartbeat_tx,
+                            crate::watchdog::Beat::WorkingOn(crate::watchdog::WorkItem::new(
+                                "colony-read /colony/trace",
+                            )),
+                        );
+                        let admission = log_reads.clone();
+                        tokio::spawn(async move {
+                            // A closed semaphore is impossible (nothing closes it); a
+                            // failed acquire would only mean the ack falls into the void.
+                            let Ok(_permit) = admission.acquire_owned().await else { return };
+                            let reply = crate::colony_dispatch::handle_read_trace(
+                                &db_path, trace_id, path_prefix, correlation_id, only_error, since, limit,
+                            ).await;
+                            let _ = ack.send(reply);
+                        });
                     }
                     ColonyMsg::ReadLedger { query, ack } => {
                         let db_path = colony_db.db_path().to_path_buf();
-                        let reply = crate::colony_dispatch::handle_read_ledger(&db_path, query).await;
-                        let _ = ack.send(reply);
+                        beat(
+                            &heartbeat_tx,
+                            crate::watchdog::Beat::WorkingOn(crate::watchdog::WorkItem::new(
+                                "colony-read /colony/ledger",
+                            )),
+                        );
+                        let admission = log_reads.clone();
+                        tokio::spawn(async move {
+                            // A closed semaphore is impossible (nothing closes it); a
+                            // failed acquire would only mean the ack falls into the void.
+                            let Ok(_permit) = admission.acquire_owned().await else { return };
+                            let reply = crate::colony_dispatch::handle_read_ledger(&db_path, query).await;
+                            let _ = ack.send(reply);
+                        });
                     }
                     ColonyMsg::ReadMessages { filter, ack } => {
                         let db_path = colony_db.db_path().to_path_buf();
-                        let reply = crate::colony_dispatch::handle_read_messages(&db_path, filter).await;
-                        let _ = ack.send(reply);
+                        beat(
+                            &heartbeat_tx,
+                            crate::watchdog::Beat::WorkingOn(crate::watchdog::WorkItem::new(
+                                "colony-read /colony/messages",
+                            )),
+                        );
+                        let admission = log_reads.clone();
+                        tokio::spawn(async move {
+                            // A closed semaphore is impossible (nothing closes it); a
+                            // failed acquire would only mean the ack falls into the void.
+                            let Ok(_permit) = admission.acquire_owned().await else { return };
+                            let reply = crate::colony_dispatch::handle_read_messages(&db_path, filter).await;
+                            let _ = ack.send(reply);
+                        });
                     }
                     ColonyMsg::ReadGraph { scope, ack } => {
                         let reply = crate::colony_dispatch::handle_read_graph(&registry, &edges, scope);
@@ -9518,6 +9577,15 @@ pub(crate) fn enqueue_colony_receipt(
 pub(crate) fn push_dead_letter(queue: &mut VecDeque<DeadLetter>, dl: DeadLetter) {
     queue.push_back(dl);
 }
+
+/// GH #683: log reads (`ReadTrace`, `ReadLedger`, `ReadMessages`) running at
+/// once, at most. Each one holds a `spawn_blocking` thread with a read-only
+/// SQLite connection and scans up to `scan_budget` rows; four is the worker
+/// count of the shipped runtime, so a burst of pages never has more scans in
+/// flight than the host has cores for the rest. Not a `colony.json` knob: a
+/// bound a client can raise is the same defect with configuration in front of
+/// it.
+pub(crate) const LOG_READ_PERMITS: usize = 4;
 
 /// GH #165: emit one phase-carrying heartbeat, never blocking.
 ///

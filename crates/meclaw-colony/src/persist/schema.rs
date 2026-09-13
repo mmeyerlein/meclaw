@@ -508,8 +508,8 @@ mod tests {
     /// windowed tables have had all along.
     ///
     /// `/colony/ledger` reads every one of its counts out of a window
-    /// (`WHERE created_at >= ?since AND created_at < ?until LIMIT ?budget`) and
-    /// it STALLS the colony inbox loop while it does. `message_log` and
+    /// (`WHERE created_at >= ?since AND created_at < ?until LIMIT ?budget`) —
+    /// and until GH #683 it stalled the colony inbox loop while it did. `message_log` and
     /// `dead_letters` each answered that window from an index; `mutation_log`
     /// answered it with a full table scan whose only bound was the scan budget
     /// — and the two shipped callers, the control loop's meter and its probe,

@@ -6,7 +6,7 @@
         "add_nodes": [
           {
             "name": "display",
-            "template": "display@2.2.3",
+            "template": "display@2.3.2",
             "override_params": {
               "web": {
                 "mount": "alex-display"

@@ -1,4 +1,5 @@
-//! GH #643 — `display@2.1.0` carries a microphone, on the shipped bytes.
+//! GH #643 — the display carries a microphone, on the shipped bytes (E14,
+//! since 2.3.0 E36: the OS mark is the button).
 //!
 //! The whole template boots: the compose cell out of `params.script_inline`, the
 //! store beside it, and a real `web` cell serving the page under its mount. One
@@ -246,7 +247,8 @@ async fn the_page_carries_the_hook_the_mount_and_the_topic() {
     );
     assert!(
         page.contains("hold to talk"),
-        "a person has to be able to see what the button is for:\n{page}"
+        "a person has to be able to tell what the button is for -- since 2.3.0 \
+         it is the OS mark's `aria-label`, the mark itself is a glyph:\n{page}"
     );
 
     // GH #658 — the three states the button owes a person, on the shipped
@@ -263,12 +265,12 @@ async fn the_page_carries_the_hook_the_mount_and_the_topic() {
          nothing, and the person is the only one who can repeat it:\n{page}"
     );
     assert!(
-        page.contains("\"closed \" + c.code; joined = false;"),
+        page.contains("say(\"closed \" + c.code); phase(\"\"); joined = false;"),
         "a close ends the CALL: the hook notes it and lets the next press join \
          a new one:\n{page}"
     );
     assert!(
-        !page.contains("\"closed \" + c.code; btn.disabled = true;"),
+        !page.contains("say(\"closed \" + c.code); btn.disabled = true;"),
         "and the close handler must not be what kills the button — that is the \
          one-minute fuse a screen nobody spoke into used to run into:\n{page}"
     );
@@ -280,12 +282,12 @@ async fn the_page_carries_the_hook_the_mount_and_the_topic() {
          that window is dropped or arrives ahead of its own hold:\n{page}"
     );
     assert!(
-        page.contains("|| \"refused\"; btn.disabled = true;"),
+        page.contains("|| \"refused\"); phase(\"error\"); btn.disabled = true;"),
         "a REFUSED join stays final: that answer is about this screen and this \
          mount, and pressing again cannot change it:\n{page}"
     );
     assert!(
-        page.contains("state.textContent = \"listening"),
+        page.contains("say(\"listening"),
         "and the waiting sentence goes when the hold begins — a screen that \
          still says it is asking for a microphone it already has is the same \
          lie as one that said nothing:\n{page}"
@@ -306,7 +308,7 @@ fn the_template_says_it_carries_a_microphone() {
     }
     let template = read_json(&repo("templates/display/template.json"));
     assert_eq!(
-        template["version"], "2.2.3",
+        template["version"], "2.3.2",
         "the screen shipped the microphone at 1.2.0 — a new component is a \
          minor version — moved to 2.0.0 when its own port went with \
          `web@2.0.0`, to 2.0.1 for what the button says while it waits \
@@ -318,7 +320,13 @@ fn the_template_says_it_carries_a_microphone() {
          2.2.2 for a `touched` hint the screen believes and a button that \
          is a fixed point (GH #689), a repair again, and to 2.2.3 for a \
          clock order that is no longer removed and re-added under one id \
-         (GH #690), a repair"
+         (GH #690), a repair, and 2.3.0 for the dock: a layer of tiles of \
+         one size beside the canvas, an OS mark that replaces the \
+         microphone capsule, a screen profile the renderer reads, and a \
+         client that runs the seconds and the zoom (GH #694, #695) -- new \
+         abilities, a minor version -- and to 2.3.1 and 2.3.2 for an OS \
+         mark that reads as »OS«, the ring open to the right and the S on \
+         its rim, repairs"
     );
     let purpose = template["description"]["purpose"]
         .as_str()
@@ -330,22 +338,30 @@ fn the_template_says_it_carries_a_microphone() {
     );
     let readme = std::fs::read_to_string(repo("templates/display/README.md")).expect("README");
     assert!(
-        readme.starts_with("# `display@2.2.3`"),
+        readme.starts_with("# `display@2.3.2`"),
         "the README heads with the version it describes"
     );
     assert!(
         readme.contains("Talking to the screen"),
         "and says how a person speaks to it"
     );
+    assert!(
+        readme.contains("One canvas, one dock"),
+        "and says where things stand"
+    );
+    assert!(
+        readme.contains("Screens and profiles") && readme.contains("Topics"),
+        "and what a screen is and how two applications avoid saying the same thing twice"
+    );
 }
 
 /// A hold must survive the button moving under the pointer (seen on a fresh screen, 2026-09-11).
 ///
-/// On a fresh screen the state line under the button is empty; the first press
-/// writes into it, the block grows upward, the button slides out from under
-/// the pointer and `pointerleave` used to let go (GH #684). The press captures
-/// the pointer now, the line has a height before it speaks, and a hidden page
-/// releases.
+/// On a fresh screen the state line under the button was empty; the first press
+/// wrote into it, the block grew upward, the button slid out from under the
+/// pointer and `pointerleave` used to let go (GH #684). The press captures the
+/// pointer now, and a hidden page releases. Since 2.3.0 the state is said for a
+/// screen reader and not drawn at all, so nothing beside the mark can grow.
 #[test]
 fn the_hold_is_not_released_by_the_pointer_leaving() {
     if !library_ships() {
@@ -374,80 +390,9 @@ fn the_hold_is_not_released_by_the_pointer_leaving() {
     );
     let sheet =
         std::fs::read_to_string(repo("templates/display/compose/display-dna.css")).expect("sheet");
-    let state = sheet
-        .split(".display-mic-state {")
-        .nth(1)
-        .expect("state rule")
-        .split('}')
-        .next()
-        .unwrap();
     assert!(
-        state.contains("min-height"),
-        "the state line has no height before it speaks"
-    );
-}
-
-/// The button is a fixed point on the screen and its two lines float above it
-/// (GH #689). `.display-mic` is placed, not laid out: no flex column that
-/// grows upward when a line grows. The sheet gives `.display-mic-lines` its
-/// own rule -- absolute, above the button -- and the template wraps the two
-/// lines in it.
-#[test]
-fn the_button_is_anchored_and_its_lines_float_above_it() {
-    if !library_ships() {
-        return;
-    }
-    let src =
-        std::fs::read_to_string(repo("templates/display/compose/compose.py")).expect("compose.py");
-    let layout = src
-        .split("LAYOUT_RULES = (")
-        .nth(1)
-        .expect("LAYOUT_RULES")
-        .split("\n)\n")
-        .next()
-        .unwrap();
-    assert!(
-        layout.contains(".display-mic { position: fixed; right: 16px; bottom: 16px;"),
-        "the button is not a fixed point: {layout}"
-    );
-    let mic = layout
-        .split(".display-mic {")
-        .nth(1)
-        .unwrap()
-        .split('}')
-        .next()
-        .unwrap();
-    assert!(
-        !mic.contains("flex-direction: column"),
-        "the button still stacks its lines in a column: {mic}"
-    );
-    let sheet =
-        std::fs::read_to_string(repo("templates/display/compose/display-dna.css")).expect("sheet");
-    let lines = sheet
-        .split(".display-mic-lines {")
-        .nth(1)
-        .expect("the sheet has a rule for the lines")
-        .split('}')
-        .next()
-        .unwrap();
-    assert!(
-        lines.contains("position: absolute"),
-        "the lines are in the flow: {lines}"
-    );
-    assert!(
-        lines.contains("bottom: calc(100% + 8px)"),
-        "the lines do not float above the button: {lines}"
-    );
-    let template = src
-        .split("MIC_TEMPLATE = (")
-        .nth(1)
-        .expect("MIC_TEMPLATE")
-        .split("\n)\n")
-        .next()
-        .unwrap();
-    assert!(
-        template.contains("class=\"display-mic-lines\""),
-        "the template does not wrap the lines: {template}"
+        sheet.contains(".display-os-state {"),
+        "the state is still said, for a reader who cannot see the light"
     );
 }
 

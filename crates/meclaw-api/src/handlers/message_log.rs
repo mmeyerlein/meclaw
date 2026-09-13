@@ -6,7 +6,9 @@
 //! detail names the *field*, never the submitted value (secret hygiene).
 //!
 //! Blob-bodied messages keep their blob id in `body_payload`; the body itself is
-//! only fetched when the caller asks for it via `?resolve_blob=true`.
+//! only fetched when the caller asks for it via `?resolve_blob=true`, and at
+//! most [`RESOLVE_BLOB_MAX`] of them per page (GH #683) — the response says
+//! `blob_resolution_truncated: true` when it stopped short.
 
 use crate::ColonyHandle;
 use crate::handlers::clamp_limit;
@@ -23,11 +25,20 @@ use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::oneshot;
 
-/// Default rows read before residual filtering. Deliberately modest: the read
-/// stalls the Colony-Inbox loop for its duration.
+/// Default rows read before residual filtering. Deliberately modest: the scan
+/// materialises this many rows with every column, and the count probe walks
+/// the same window a second time.
 pub(crate) const DEFAULT_SCAN_BUDGET: usize = 5000;
 /// Server-side ceiling on `?scan_budget` — not overridable by the client.
 pub(crate) const MAX_SCAN_BUDGET: usize = 50_000;
+/// Bodies fetched out of the blob store for one page, at most.
+///
+/// There is no query parameter for it. A cap a client can raise is the same
+/// defect with configuration in front of it: one page of a busy screen measured
+/// 100 blobs at ~484 KB each — 48 MB of JSON parsed and re-serialised on one
+/// worker of a four-worker runtime, with no yield inside the parse of a body
+/// and none inside the final serialisation of the page.
+pub(crate) const RESOLVE_BLOB_MAX: usize = 25;
 
 /// Query params for `GET /colony/messages`.
 #[derive(Debug, Deserialize, Default)]
@@ -152,11 +163,21 @@ pub async fn get_message_log(
     };
 
     let resolve = q.resolve_blob.unwrap_or(false);
+    let mut resolved = 0usize;
+    let mut blob_resolution_truncated = false;
     let mut messages = Vec::with_capacity(reply.entries.len());
     for entry in &reply.entries {
         let mut value = serde_json::to_value(entry).unwrap_or_else(|_| json!({}));
         if resolve && entry.body_kind == "blob" {
-            attach_blob_body(&blob_store, entry.body_payload.as_deref(), &mut value).await;
+            if resolved < RESOLVE_BLOB_MAX {
+                attach_blob_body(&blob_store, entry.body_payload.as_deref(), &mut value).await;
+                resolved += 1;
+            } else {
+                // Beyond the cap the row keeps its blob id, and the page says so
+                // once rather than per row: a client that wants the rest pages
+                // for it, which is what the cursor is for.
+                blob_resolution_truncated = true;
+            }
         }
         messages.push(value);
     }
@@ -168,6 +189,7 @@ pub async fn get_message_log(
             "next": reply.next,
             "scan_budget": reply.scan_budget,
             "scan_truncated": reply.scan_truncated,
+            "blob_resolution_truncated": blob_resolution_truncated,
         })),
     )
 }

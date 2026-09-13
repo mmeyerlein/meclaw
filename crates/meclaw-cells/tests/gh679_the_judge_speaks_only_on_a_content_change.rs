@@ -512,7 +512,9 @@ fn a_verdict_expires_and_the_floor_judges_again() {
         .iter()
         .find(|call| call["id"] == pane_id("c", "c"))
         .expect("c is created");
-    assert_ne!(c["props"]["state"], "hidden", "{c}");
+    // On the ladder again: the canvas's word stays `hidden` for a window
+    // that is not the focus (spec 2.2), the rung says where it stands.
+    assert_ne!(c["props"]["rung"], "hidden", "{c}");
     assert_eq!(c["props"]["score"], 0.7);
 }
 
@@ -633,8 +635,11 @@ fn a_verdicts_hidden_fades_with_the_verdict() {
     let settle = read_pass(&views, Some(&held), 1100, "on", None).expect("python3");
     apply(&mut held, &patch_calls(&settle));
     let id = pane_id("clock", "c");
+    // On the ladder before the verdict: a pinned clock alone steers no
+    // weight (OR-D-Bau-5), scores 0.2 under a lowered bar and is ambient --
+    // present, and not on the canvas.
     assert_ne!(
-        prop_of(&held, &id, "state"),
+        prop_of(&held, &id, "rung"),
         "hidden",
         "visible before the verdict"
     );
@@ -662,8 +667,11 @@ fn a_verdicts_hidden_fades_with_the_verdict() {
         .clone();
     assert_eq!(props["judged_hidden"], false, "{props}");
     assert_eq!(props["judged_relevance"], "", "{props}");
-    assert_ne!(props["state"], "hidden", "{props}");
-    assert_eq!(props["score"], 0.4, "pinned: no decay, its own relevance");
+    assert_ne!(props["rung"], "hidden", "{props}");
+    assert_eq!(
+        props["score"], 0.2,
+        "pinned: no decay, its own relevance, the floor's default weight"
+    );
     apply(&mut held, &calls);
-    assert_ne!(prop_of(&held, &id, "state"), "hidden");
+    assert_ne!(prop_of(&held, &id, "rung"), "hidden");
 }
