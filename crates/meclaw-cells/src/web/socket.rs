@@ -277,6 +277,8 @@ pub async fn run_connection(
     let mut joined: Option<(String, String)> = None;
     // The `voice:` topics this socket holds, by topic (GH #643).
     let mut links: HashMap<String, TopicLink> = HashMap::new();
+    // Audio frames that arrived for a topic this socket does not hold (GH #697).
+    let mut unrouted_binaries: u64 = 0;
 
     loop {
         tokio::select! {
@@ -330,6 +332,19 @@ pub async fn run_connection(
                         }
                         let Some(to_cell) = links.get(&binary.topic).map(|l| l.to_cell.clone())
                         else {
+                            // Audio for a topic this link does not hold. It is
+                            // dropped, as it always was — a rejoin in flight is
+                            // the ordinary cause — but it is counted, and the
+                            // first one says so: a page whose frames go nowhere
+                            // used to be indistinguishable from one that sent
+                            // none (GH #697).
+                            unrouted_binaries = unrouted_binaries.saturating_add(1);
+                            if unrouted_binaries == 1 {
+                                tracing::warn!(
+                                    topic = %binary.topic,
+                                    "web: binary frames for a topic this socket does not hold"
+                                );
+                            }
                             continue;
                         };
                         match hand_over(
@@ -396,6 +411,14 @@ pub async fn run_connection(
     // write, and dropping the senders is what the cells read as a disconnect.
     for (_, link) in links.drain() {
         link.forwarder.abort();
+    }
+    // The count behind the one warning above, so a socket that dropped audio
+    // for the whole of its life says how much when it goes (GH #697).
+    if unrouted_binaries > 0 {
+        tracing::info!(
+            count = unrouted_binaries,
+            "web: binary frames dropped for topics this socket did not hold"
+        );
     }
     viewers.remove(&viewer_id).await;
 }

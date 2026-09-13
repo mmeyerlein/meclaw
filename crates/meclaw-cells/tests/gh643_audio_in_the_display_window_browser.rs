@@ -151,7 +151,9 @@ struct Live {
     /// The port of the one listener in front of the whole colony.
     port: u16,
     _listener: tokio::task::JoinHandle<()>,
-    _stt: MockDeepgram,
+    /// The scripted recogniser, kept readable: the drain proof counts the
+    /// bytes it saw against the milliseconds the button was held.
+    stt: MockDeepgram,
     _tts: MockCartesia,
 }
 
@@ -161,13 +163,24 @@ struct Live {
 /// cell's socket loop finds the `voice` cell in it, and neither of them knows
 /// anything about the other.
 async fn boot() -> Live {
+    boot_gated_on(FRAME_BYTES * FRAMES, 0).await
+}
+
+/// How much audio the scripted recogniser waits for before it ends the turn,
+/// and the `release_grace_ms` the voice cell is armed with.
+///
+/// The existing proofs use the exact count they send and a grace of `0`; the
+/// drain proof uses a share of what the button was held for, which is the loss
+/// it measures, and needs the shipped grace because its end of turn comes only
+/// AFTER the release.
+async fn boot_gated_on(bytes: usize, grace_ms: u64) -> Live {
     // The recogniser says nothing until ALL the audio has arrived. That is what
     // makes the printed latency a number about the path rather than about
     // `release_grace_ms`: the provider's end of turn lands next to the release
     // instead of half a second before it, which is where a real one lands.
     let stt_fake = MockDeepgram::start(
         DeepgramScript::new()
-            .require_audio_bytes(FRAME_BYTES * FRAMES)
+            .require_audio_bytes(bytes)
             .turn_info("EndOfTurn", SAID),
     )
     .await
@@ -224,7 +237,7 @@ async fn boot() -> Live {
                 // rather than the path this strand built -- the same choice
                 // `voice_t5_behaviour.rs` makes at `hold_release_boundary`, and
                 // for the same reason.
-                "release_grace_ms": 0,
+                "release_grace_ms": grace_ms,
                 "stt": {
                     "provider": "deepgram",
                     "api_key": "fake-key",
@@ -292,7 +305,7 @@ async fn boot() -> Live {
         egress,
         port: addr.port(),
         _listener: listener,
-        _stt: stt_fake,
+        stt: stt_fake,
         _tts: tts_fake,
     }
 }
@@ -410,6 +423,13 @@ async fn answer_when_the_turn_lands(
 /// `mode` is the driver's third argument: `None` for the plain run, `"rejoin"`
 /// for the one that lets the cell close the topic in between.
 async fn drive(live: &mut Live, mode: Option<&str>) -> Option<String> {
+    drive_with(live, mode, &[]).await
+}
+
+/// `drive`, with extra environment for the `node` process: the driver reads
+/// `MECLAW_MIC_AUDIO` (a wav for the fake microphone) and `MECLAW_MIC_HOLD_MS`
+/// from there, so a proof can choose what is spoken and for how long.
+async fn drive_with(live: &mut Live, mode: Option<&str>, env: &[(&str, &str)]) -> Option<String> {
     put_a_view_up(&live.h).await;
     wait_for_the_microphone(live.port).await;
 
@@ -432,6 +452,9 @@ async fn drive(live: &mut Live, mode: Option<&str>) -> Option<String> {
         .arg(SAID);
     if let Some(mode) = mode {
         command.arg(mode);
+    }
+    for (key, value) in env {
+        command.env(key, value);
     }
     // The timeout path panics and drops this future, which does NOT kill the
     // child on its own -- node would keep running and the browser with it. That
@@ -524,5 +547,84 @@ async fn a_browser_rejoins_after_the_cell_closed_the_topic() {
         counter(&line, "turns=") >= 2,
         "one turn before the close and one after it, on a call that did not \
          exist when the page was loaded: {line}"
+    );
+}
+
+/// GH #698 — the last words of a take leave the browser.
+///
+/// The fake microphone plays a four second file instead of a tone, the button
+/// is held over its whole length and a little past it, and the recogniser ends
+/// the turn only once it has seen 95 % of the milliseconds the button was down.
+/// Before the drain window that count was never reached: `up()` lowered the
+/// audio gate first, so everything still in the worklet's accumulator and in the
+/// message port's queue was dropped — 300 to 600 ms, measured on a live screen
+/// in 15 of 15 takes.
+///
+/// The structural assertion is `flushed`: it counts the frames that went out
+/// AFTER the key came up, and it cannot be positive without the window,
+/// whatever the host's load is. The byte bracket sits in the driver: it waits
+/// for the turn to carry the scripted text, which the recogniser only says once
+/// the 95 % have arrived, and without them the driver times out and this test
+/// fails there. The share itself is printed either way.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_release_drains_before_it_lets_go() {
+    /// 16 kHz mono PCM16: 32 bytes per millisecond.
+    const BYTES_PER_MS: usize = 32;
+    /// The file is 4.0 s; held 200 ms past its end, as a person does.
+    const HOLD_MS: usize = 4_200;
+    /// What has to arrive for the turn to be released. The loss this test is
+    /// about is 300–600 ms, so 95 % is above the noise and below the defect.
+    const WANT: usize = HOLD_MS * BYTES_PER_MS * 95 / 100;
+
+    if !library_ships() || !have_python() {
+        println!("SKIP no template library or no python3 on this host");
+        return;
+    }
+
+    // Derive the 16 kHz fixture into a temp dir: the tree carries the 8 kHz
+    // master only, and everything else is derived from it (`make_fixtures.py`).
+    let td = tempfile::TempDir::new().expect("tempdir");
+    let made = std::process::Command::new("python3")
+        .arg(repo("workshop/voice-smoke/make_fixtures.py"))
+        .arg("--raise-only")
+        .arg("--only")
+        .arg("f01")
+        .arg("--out-dir")
+        .arg(td.path())
+        .output();
+    let wav = td.path().join("f01-8k-up16k.wav");
+    match made {
+        Ok(out) if out.status.success() && wav.is_file() => {}
+        // No python, or a fixture that cannot be derived, is the same kind of
+        // absence as no browser: reported, not failed.
+        other => {
+            println!("SKIP the 16 kHz fixture could not be derived: {other:?}");
+            return;
+        }
+    }
+
+    let mut live = boot_gated_on(WANT, 1_500).await;
+    let Some(line) = drive_with(
+        &mut live,
+        None,
+        &[
+            ("MECLAW_MIC_AUDIO", wav.to_string_lossy().as_ref()),
+            ("MECLAW_MIC_HOLD_MS", &HOLD_MS.to_string()),
+        ],
+    )
+    .await
+    else {
+        return; // SKIP: no node, no browser
+    };
+
+    // The measurement first, so it is on record whichever way the verdict goes.
+    let seen = live.stt.received_audio_bytes();
+    println!(
+        "DRAIN held={HOLD_MS}ms want={WANT}B seen={seen}B ({:.1} %)",
+        seen as f64 * 100.0 / (HOLD_MS * BYTES_PER_MS) as f64
+    );
+    assert!(
+        counter(&line, "flushed=") >= 1,
+        "the drain window sent nothing after the key came up: {line}"
     );
 }

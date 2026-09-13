@@ -1131,7 +1131,7 @@ fn the_readme_names_the_rules_the_code_keeps() {
     }
     let readme = std::fs::read_to_string(repo("templates/display/README.md")).expect("README");
     assert!(
-        readme.starts_with("# `display@2.3.2`"),
+        readme.starts_with("# `display@2.3.3`"),
         "the H1 names the version"
     );
     for sentence in [
@@ -1149,7 +1149,7 @@ fn the_readme_names_the_rules_the_code_keeps() {
         &std::fs::read_to_string(repo("templates/display/template.json")).expect("template.json"),
     )
     .expect("template.json parses");
-    assert_eq!(template["version"], "2.3.2");
+    assert_eq!(template["version"], "2.3.3");
     assert!(
         template["description"]["purpose"]
             .as_str()

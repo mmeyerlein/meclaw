@@ -375,6 +375,11 @@ pub async fn run_connection(
     // narrower question the connection has to answer alone: whether a session
     // that just ended was carrying a held key or nobody's silence.
     let mut holding = false;
+    // What this hold has pushed at the recognition provider so far.
+    let mut hold_frames: u32 = 0;
+    let mut hold_bytes: u64 = 0;
+    // When the current hold was opened, for the one line it produces.
+    let mut hold_since: Option<Instant> = None;
     let mut stt_retried = false;
     let mut retry_at: Option<Instant> = None;
     let mut speaking: Option<Speaking> = None;
@@ -549,6 +554,22 @@ pub async fn run_connection(
                         // session is dropped in silence and the next `hold`
                         // opens a new one.
                         if mode == Mode::Hold && !holding {
+                            // The session goes in silence, but the state machine
+                            // is told: `Closed` is the only thing that writes a
+                            // provider debt off, and a debt that outlives the
+                            // socket it was owed on is paid by the end of the
+                            // NEXT take (GH #697). It reaches no client and no
+                            // error lane — `cell.rs` reports only `Failed` and
+                            // `Warning` — so this is a fact the session learns,
+                            // not a failure anybody is told about.
+                            tracing::info!(
+                                %session_id,
+                                "voice: the recognition session ended between two holds"
+                            );
+                            shared.emit(VoiceEvent::Stt {
+                                session_id: session_id.clone(),
+                                event: SttEvent::Closed,
+                            }).await;
                             drop(session);
                             // And it costs no retry: the budget exists for a
                             // provider that refuses twice in a row, not for a
@@ -632,12 +653,16 @@ pub async fn run_connection(
                             if stt.is_none() && retry_at.is_none() && mode == Mode::Hold {
                                 stt = Some(SttSession::start(&shared, input));
                             }
+                            let len = bytes.len() as u64;
                             if let Some(session) = stt.as_ref() {
                                 // Blocks when the provider is behind — that is
                                 // the backpressure, and it reaches the client
                                 // as TCP.
                                 if session.audio_tx.send(bytes).await.is_err() {
                                     tracing::debug!(%session_id, "voice: the recognition session is gone");
+                                } else if holding {
+                                    hold_frames = hold_frames.saturating_add(1);
+                                    hold_bytes = hold_bytes.saturating_add(len);
                                 }
                             }
                         }
@@ -658,6 +683,28 @@ pub async fn run_connection(
                             // usually follows — leaving the two halves in two
                             // modes, which is this whole task's defect again.
                             Ok(Some(ClientFrame::Hold)) if mode == Mode::Hold => {
+                                // Only a hold that OPENS counts: a second `hold`
+                                // inside an open boundary is refused by the turn
+                                // machine (`already_holding`) and must not zero
+                                // the numbers of the one that is running.
+                                if !holding {
+                                    hold_frames = 0;
+                                    hold_bytes = 0;
+                                    hold_since = Some(Instant::now());
+                                    // What the recognition half looked like when
+                                    // the key went down. A hold that opens onto a
+                                    // session that is not there, or onto one that
+                                    // has been sitting since the last take, is the
+                                    // difference between a lost take and a slow
+                                    // one (GH #697).
+                                    tracing::info!(
+                                        %session_id,
+                                        stt = if stt.is_some() { "reused" }
+                                              else if retry_at.is_some() { "retrying" }
+                                              else { "fresh" },
+                                        "voice: hold opened"
+                                    );
+                                }
                                 holding = true;
                                 // A new hold is a new attempt, and the one
                                 // retry belongs to it: the budget exists for a
@@ -683,6 +730,22 @@ pub async fn run_connection(
                             // the client is still holding the key down.
                             Ok(Some(ClientFrame::Release)) => {
                                 holding = false;
+                                // The one line a lost take is reconstructed from:
+                                // how much audio this hold actually pushed, and
+                                // how long it was open. No transcript, ever —
+                                // what somebody said is not log material. Only
+                                // for a hold that was open: a `release` with no
+                                // boundary is `not_holding` and has nothing to
+                                // report.
+                                if let Some(since) = hold_since.take() {
+                                    tracing::info!(
+                                        %session_id,
+                                        frames = hold_frames,
+                                        bytes = hold_bytes,
+                                        ms = since.elapsed().as_millis() as u64,
+                                        "voice: hold released"
+                                    );
+                                }
                             }
                             // The mode of this connection is not frozen at the
                             // handshake (GH #657 review): the built-in page

@@ -12,6 +12,49 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.38.1] — 2026-09-13
+
+A patch release: a held recording now arrives whole, on both sides of the
+socket. In the cell, a provider debt is only recorded while the recognition
+provider is actually inside a take, an end of turn without a transcript keeps
+the interim, a session that ends quietly between two holds writes its debt off,
+and every hold and every closed boundary leaves a line in the log — without a
+transcript (`voice@2.0.2`, `freeswitch@2.0.4` for the pin, GH #697). In the
+browser, `release` drains before it lets go, and the window is measured per take
+(`display@2.3.3`, GH #698). The wedged-client negative control of the voice
+service test waits for a happens-before it used to assume (GH #699). Nothing in
+the contract moved — no migration is needed from 0.38.0.
+
+### Fixed
+
+- **A take is no longer eaten by a debt nobody owed** (`voice@2.0.2`,
+  `freeswitch@2.0.4` for the pin of its media half, GH #697). When a boundary
+  in `hold` mode was closed by something other than the recognition provider —
+  the key again, the cap, a mode switch — the session recorded an end of turn
+  it was still owed, even when the provider had already delivered one before
+  the key came up. That debt was paid by the end of the NEXT take, which
+  therefore never became a turn: the boundary closed on its cap with nothing in
+  it, the turn number moved, and the lane saw nothing. The same debt was left
+  behind by every key pressed without a word said — a take with nothing in it
+  ate the one after it. A debt is now only
+  recorded while the provider is actually inside a take; an end of turn that
+  carries no transcript keeps the interim heard so far instead of dropping it;
+  and a recognition session that ends quietly between two holds says so, so
+  the debt it was owed is written off. The cell also says what it does: one
+  line per hold with what it pushed and how long it was open, one per boundary
+  that closed, and a boundary that closes empty is a warning. No transcript is
+  logged.
+- **The end of a take leaves the browser** (`display@2.3.3`, GH #698). Letting
+  the key go used to lower the audio gate first, so every frame still in the
+  worklet's accumulator or in the message port's queue was dropped along with
+  the capture chain's own latency — measured on a live screen as the last 300
+  to 600 ms of every take. `release` now drains before it lets go: the worklet
+  flushes what it holds, whatever arrives for one more window still goes out,
+  and the take is closed at the end of it. The window is measured rather than
+  chosen — the capture latency the browser reports for the track or the
+  context, one worklet block and the longest delivery gap of this take —
+  floored at 120 ms and capped at 600.
+
 ## [0.38.0] — 2026-09-13
 
 A minor release: the screen gets a dock, and the colony loop stops waiting on

@@ -1221,6 +1221,74 @@ async fn the_release_grace_cap_ends_a_turn_the_provider_never_ends() {
     fx.shutdown().await;
 }
 
+/// GH #698 — audio sent AFTER the release still reaches the provider.
+///
+/// The client is allowed to keep sending while a boundary drains, and it has
+/// to be: the browser cannot deliver the last frames of a take before the key
+/// comes up, because they are still in the capture chain when it does. Nothing
+/// in the cell stands in the way of that today — `release` only lowers the
+/// connection's own `holding` flag, the binary arm does not read it, and the
+/// recognition session stays open — but nothing held it in place either. The
+/// hook itself sends `release` at the END of its drain window, so in order it
+/// never sends audio after it; a client that gets the order wrong by one frame
+/// must not lose that frame, and this is the test that says so.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn audio_after_the_release_still_reaches_the_provider() {
+    // The provider says its piece after the FIRST frame and ends the turn only
+    // once the SECOND one — the one sent after the release — has arrived.
+    let script = fakes::end_of_turn(
+        fakes::gate(
+            fakes::update(fakes::flux_after_audio(AUDIO_GATE), "a b"),
+            AUDIO_GATE * 2,
+        ),
+        "a b c",
+    );
+    let fake = fakes::deepgram(script).await;
+    let quiet_tts = fakes::cartesia(fakes::cartesia_silent()).await;
+    let mut params = fakes::both_params(MOUNT, &fake, &quiet_tts);
+    // Generous on purpose (the contract's ceiling): the cap is not what this
+    // test is about, and a turn cut by it would measure the deadline instead
+    // of the audio path.
+    params["release_grace_ms"] = json!(10_000);
+    let mut fx = Fixture::boot(params).await;
+    let (mut client, _) = fx.connect("session=drain&mode=hold").await;
+
+    client.hold().await.expect("open the boundary");
+    client
+        .send_audio(&vec![0u8; AUDIO_GATE])
+        .await
+        .expect("audio");
+    wait_for_partial(&mut client, "a b").await;
+
+    client.release().await.expect("let the key go");
+    // The last words of the take, on their way while the key was coming up.
+    client
+        .send_audio(&vec![0u8; AUDIO_GATE])
+        .await
+        .expect("the drain window's audio");
+
+    let seen = fx.wait_for_route("turn", 1).await;
+    let turns: Vec<&Message> = seen
+        .iter()
+        .filter(|m| hop_route(m) == Some("turn"))
+        .collect();
+    assert_eq!(turns.len(), 1, "one boundary, one turn");
+    assert_eq!(
+        body_text(turns[0]),
+        "a b c",
+        "the turn carries what was said after the key came up"
+    );
+    assert!(
+        fake.received_audio_bytes() >= AUDIO_GATE * 2,
+        "every byte reached the provider, including the ones sent after the \
+         release: {} of {}",
+        fake.received_audio_bytes(),
+        AUDIO_GATE * 2
+    );
+
+    fx.shutdown().await;
+}
+
 /// A release with nothing in the buffer is not an empty turn on the lane. The
 /// client still gets its `turn` frame — it asked, it gets an answer — but no
 /// assistant is woken for silence.

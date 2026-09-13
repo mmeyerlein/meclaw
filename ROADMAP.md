@@ -29,6 +29,12 @@ Release detail is in [CHANGELOG.md](CHANGELOG.md) and the
 
 ## Now
 
+v0.38.1 makes a held recording arrive whole (GH #697, #698, #699): the cell
+records a provider debt only while the provider is inside a take and keeps an
+interim an empty end of turn used to drop, the browser drains before it lets
+the key go, and the voice service's negative control waits for its
+happens-before. Nothing in the contract moved.
+
 v0.38.0 gives the screen a dock (`display@2.3.2`, GH #694, #695, #696). One
 canvas for what is in focus, a column of tiles of one size for everything that
 is present, and the OS mark at the bottom right that is the place one talks to
@@ -170,11 +176,6 @@ Findings from running the thing.
   invariants, memory, timing — with the paid measurement committed as an
   artefact and two free stations holding the tree against it.
   [#621](https://github.com/mmeyerlein/meclaw/issues/621)
-- The negative control of the wedged-client voice test. Once in sixty loaded
-  runs `wedge()` gave up after 20 ms because every filler was answered at once,
-  before the flood it guards even started; the panic cannot yet say what came
-  back, and why a fresh `auto` connection can be without its recognition
-  session is not pinned. [#699](https://github.com/mmeyerlein/meclaw/issues/699)
 - Telling submissions apart by the door they came in at. Every question the
   broker is asked carries the same requester and the same subject whichever
   front raised it, so a rule that would open the shell to the operator and hold
@@ -256,6 +257,10 @@ there.
 One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- v0.38.1: a held recording arrives whole. A provider debt only while the
+  provider is inside a take, an empty end of turn keeps the interim, the browser
+  drains before it lets go, and the wedged-client control waits for its
+  happens-before.
 - v0.38.0: the screen has a dock. One canvas, a column of one-size tiles for
   everything present, the OS mark as the hold-to-talk button; presence and focus
   as two axes, tiles and topics from the applications, a profile per screen; and

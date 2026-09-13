@@ -58,11 +58,19 @@
 //! again, the cap, a mode switch — **the session remembers a provider end it is
 //! still owed** ([`SessionState::pending_provider_end`]), because the provider
 //! is still inside the turn the old audio started and its next `EndOfTurn`
-//! carries the take that has just closed. That one event pays the debt and is
-//! thrown away, wherever it lands; the debt is written off if the recognition
-//! session dies first, since a provider that is gone owes nothing. Every close
-//! also moves [`SessionState::grace_token`], which is what makes the cap that
-//! wakes up afterwards a no-op instead of a second, empty turn.
+//! carries the take that has just closed. A debt only arises while the provider
+//! really is inside a take ([`SessionState::provider_in_turn`]); one that had
+//! already delivered its end before the cut owes nothing. That one event pays
+//! the debt and is thrown away, wherever it lands; the debt is written off if
+//! the recognition session dies first, since a provider that is gone owes
+//! nothing. The window this leaves open is a provider that starts speaking
+//! only AFTER the cap: it was not inside a turn when the boundary was cut, so
+//! nothing is owed, and what it then says about the old audio lands in the
+//! next boundary. That is a provider standstill longer than the whole grace,
+//! and it is traded knowingly against the debt that ate a take on every silent
+//! press. Every close also moves [`SessionState::grace_token`], which is what
+//! makes the cap that wakes up afterwards a no-op instead of a second, empty
+//! turn.
 
 use crate::voice::contract::SttEvent;
 use crate::voice::wire::{ClientFrame, Mode, ServerFrame, SpeakEndReason, WireErrorCode};
@@ -123,6 +131,18 @@ pub struct SessionState {
     /// would eat the first real end of turn of the NEXT take — the very loss
     /// this whole boundary phase exists against.
     pub pending_provider_end: bool,
+    /// Whether the recognition provider is currently inside a turn of its own.
+    ///
+    /// Set by anything that says it started hearing something (`SpeechStarted`,
+    /// `Partial`), cleared by the end of a turn and by the death of the session.
+    /// It is the difference between a boundary that was cut out from under a
+    /// speaking provider and one that was cut after the provider had already
+    /// said everything it had — and only the first of the two leaves a debt.
+    ///
+    /// Without it the cap recorded a debt for a provider that owed nothing, and
+    /// that debt was paid by the end of the NEXT take, which therefore never
+    /// became a turn (GH #697, measured 2026-09-13).
+    pub provider_in_turn: bool,
 }
 
 impl SessionState {
@@ -140,6 +160,7 @@ impl SessionState {
             release_grace_ms,
             grace_token: 0,
             pending_provider_end: false,
+            provider_in_turn: false,
         }
     }
 }
@@ -278,6 +299,8 @@ pub fn step(state: &mut SessionState, session_id: &str, input: Input) -> Vec<Act
 fn step_stt(state: &mut SessionState, session_id: &str, event: SttEvent) -> Vec<Action> {
     match event {
         SttEvent::SpeechStarted => {
+            // The provider is inside a turn from here until it ends one.
+            state.provider_in_turn = true;
             // Barge-in is an `auto`-mode affordance: in `hold` the client's own
             // key is the interruption, and cancelling on speech there would
             // make the agent unable to finish a sentence over a cough.
@@ -288,20 +311,25 @@ fn step_stt(state: &mut SessionState, session_id: &str, event: SttEvent) -> Vec<
                 Vec::new()
             }
         }
-        SttEvent::Partial { text, eager } => match state.mode {
-            Mode::Auto => partial_actions(state, text, eager),
-            Mode::Hold => {
-                let Some(hold) = state.hold.as_mut() else {
-                    // Audio keeps flowing so the provider session stays warm,
-                    // but outside an open boundary nobody asked for a turn.
-                    return Vec::new();
-                };
-                hold.last_partial = text;
-                let combined = join_hold(hold);
-                partial_actions(state, combined, eager)
+        SttEvent::Partial { text, eager } => {
+            state.provider_in_turn = true;
+            match state.mode {
+                Mode::Auto => partial_actions(state, text, eager),
+                Mode::Hold => {
+                    let Some(hold) = state.hold.as_mut() else {
+                        // Audio keeps flowing so the provider session stays warm,
+                        // but outside an open boundary nobody asked for a turn.
+                        return Vec::new();
+                    };
+                    hold.last_partial = text;
+                    let combined = join_hold(hold);
+                    partial_actions(state, combined, eager)
+                }
             }
-        },
+        }
         SttEvent::EndOfTurn { text } => {
+            // Whatever else this event is, it is the provider leaving its turn.
+            state.provider_in_turn = false;
             // A debt is paid by the very next end of turn, before anything else
             // looks at it and whatever is open at the time: the provider is
             // finishing the take that was cut out from under it, and none of
@@ -322,12 +350,23 @@ fn step_stt(state: &mut SessionState, session_id: &str, event: SttEvent) -> Vec<
                     let Some(hold) = state.hold.as_mut() else {
                         return Vec::new();
                     };
-                    if !text.is_empty() {
+                    if text.is_empty() {
+                        // Flux can put the words in an `EagerEndOfTurn` and
+                        // nothing in the `EndOfTurn` that follows it; the
+                        // adapter defaults a missing `transcript` to `""`.
+                        // Dropping the interim on that event threw the whole
+                        // sentence away (GH #697), so it is carried into the
+                        // buffer instead: the boundary is real either way.
+                        let carried = std::mem::take(&mut hold.last_partial);
+                        if !carried.is_empty() {
+                            hold.buffer.push(carried);
+                        }
+                    } else {
                         hold.buffer.push(text);
+                        // The provider started a new turn; what it heard before
+                        // is settled, so the interim it was building is gone.
+                        hold.last_partial.clear();
                     }
-                    // The provider started a new turn; what it heard before is
-                    // settled, so the interim it was building is gone with it.
-                    hold.last_partial.clear();
                     let draining = hold.draining;
                     if draining {
                         // This is exactly what `release` was waiting for: the
@@ -359,10 +398,12 @@ fn step_stt(state: &mut SessionState, session_id: &str, event: SttEvent) -> Vec<
         // against.
         SttEvent::Closed => {
             state.pending_provider_end = false;
+            state.provider_in_turn = false;
             Vec::new()
         }
         SttEvent::Failed { detail } => {
             state.pending_provider_end = false;
+            state.provider_in_turn = false;
             vec![Action::ToClient(ServerFrame::Error {
                 code: WireErrorCode::SttFailed,
                 detail,
@@ -546,7 +587,11 @@ fn cut_hold(state: &mut SessionState, session_id: &str, debt: ProviderDebt) -> V
         return Vec::new();
     };
     state.grace_token = state.grace_token.wrapping_add(1);
-    state.pending_provider_end = debt == ProviderDebt::Owed;
+    // A debt only exists if the provider is actually inside a turn. The cap, the
+    // key pressed again and a mode switch all say "cut", but a provider that has
+    // already delivered its end owes nothing — and a debt it never had was paid
+    // by the end of the NEXT take, which then never became a turn (GH #697).
+    state.pending_provider_end = debt == ProviderDebt::Owed && state.provider_in_turn;
     let text = join_hold(&hold);
     turn_actions(state, session_id, text)
 }
@@ -1036,6 +1081,78 @@ mod tests {
             emitted_turn(&second).as_deref(),
             Some("second one whole"),
             "the take after the debt counts normally"
+        );
+    }
+
+    /// GH #697 — the take that was never emitted (measured 2026-09-13, 16:28:37).
+    ///
+    /// The provider ends its turn BEFORE the key comes up, which is the ordinary
+    /// case for a sentence that finished half a second before the speaker let go.
+    /// The cap then closes a boundary the provider had already finished, and
+    /// recorded a debt for a provider that owed nothing. That debt was paid by
+    /// the end of the NEXT take, which therefore never became a turn: the
+    /// boundary was closed by the cap with an empty text, `turn_seq` moved, and
+    /// the lane saw nothing. In the log that is a number that does not exist.
+    #[test]
+    fn a_provider_that_finished_before_the_release_owes_nothing() {
+        let mut st = hold_mode();
+
+        // Take one: everything the provider had to say, said before the key came up.
+        step(&mut st, S, Input::Control(ClientFrame::Hold));
+        step(&mut st, S, partial("what is the", false));
+        step(&mut st, S, eot("what is the capital of peru"));
+        release(&mut st);
+        let token = st.grace_token;
+        let first = step(&mut st, S, Input::ReleaseGraceExpired { token });
+        assert_eq!(
+            emitted_turn(&first).as_deref(),
+            Some("what is the capital of peru"),
+            "the cap cuts with what the provider already delivered"
+        );
+        assert!(
+            !st.pending_provider_end,
+            "and it records no debt: the provider was not inside a turn"
+        );
+
+        // Take two, whole, on the same recognition session.
+        step(&mut st, S, Input::Control(ClientFrame::Hold));
+        step(&mut st, S, partial("did you hear", false));
+        release(&mut st);
+        let second = step(&mut st, S, eot("did you hear me"));
+        assert_eq!(
+            emitted_turn(&second).as_deref(),
+            Some("did you hear me"),
+            "the second take must not be eaten by a debt nobody owed"
+        );
+        assert_eq!(
+            st.turn_seq, 2,
+            "two takes, two turns, no gap in the numbers"
+        );
+    }
+
+    /// GH #697, the other half: an `EndOfTurn` with no transcript.
+    ///
+    /// Flux's `EagerEndOfTurn`/`EndOfTurn` pair can put the words in the first
+    /// and nothing in the second, and `transcript` defaults to `""`
+    /// (`providers/deepgram.rs`). Dropping the interim on that event threw the
+    /// whole sentence away, so an empty end carries the interim into the buffer
+    /// instead of deleting it.
+    #[test]
+    fn an_end_of_turn_without_a_transcript_keeps_what_was_heard() {
+        let mut st = hold_mode();
+        step(&mut st, S, Input::Control(ClientFrame::Hold));
+        step(&mut st, S, partial("what is the capital of peru", false));
+        release(&mut st);
+
+        let actions = step(&mut st, S, eot(""));
+        assert_eq!(
+            emitted_turn(&actions).as_deref(),
+            Some("what is the capital of peru"),
+            "an end without words is a boundary, not an erasure"
+        );
+        assert!(
+            st.hold.is_none(),
+            "and it closes the boundary as any end does"
         );
     }
 

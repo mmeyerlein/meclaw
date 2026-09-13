@@ -143,14 +143,17 @@ impl SttProvider for ScriptedStt {
     }
 }
 
-/// A recognition provider that takes the audio channel and never reads it.
+/// A recognition provider that takes ONE frame, says so, and never reads again.
 ///
-/// It is how a connection is wedged on purpose: the connection task's own
-/// backpressure (`audio_tx.send`) parks it, so it stops reading its command
-/// channel — exactly the state a client that stopped reading its socket puts it
-/// in, but reached in a bounded number of frames instead of a bounded number of
-/// bytes.
-struct StallingStt;
+/// The one frame is the proof that the audio path is live — client, socket,
+/// connection task, `audio_tx`, provider — and it is what [`wedge`] waits for
+/// before it concludes anything from silence (GH #699). Everything after it
+/// fills `AUDIO_QUEUE`, and the frame that no longer fits parks the task.
+#[derive(Default)]
+struct StallingStt {
+    /// How many frames reached the provider. Never more than one.
+    seen: Arc<AtomicUsize>,
+}
 
 impl SttProvider for StallingStt {
     fn name(&self) -> &'static str {
@@ -162,14 +165,19 @@ impl SttProvider for StallingStt {
     fn run_session(
         &self,
         _format: AudioFormat,
-        audio: mpsc::Receiver<Vec<u8>>,
+        mut audio: mpsc::Receiver<Vec<u8>>,
         events: mpsc::Sender<SttEvent>,
         _liveness: IoLivenessMark,
     ) -> BoxFuture<Result<(), SttError>> {
+        let seen = Arc::clone(&self.seen);
         Box::pin(async move {
             // Held, not dropped: a closed channel would let the connection task
-            // go on. The queue has to fill and stay full.
-            let _held = (audio, events);
+            // go on with an error instead of parking.
+            let _held = events;
+            if audio.recv().await.is_some() {
+                seen.fetch_add(1, Ordering::SeqCst);
+            }
+            let _held_audio = audio;
             std::future::pending::<()>().await;
             Ok(())
         })
@@ -1316,10 +1324,13 @@ fn filler() -> ServerFrame {
 /// and prove it is parked.
 ///
 /// Positive control first — a command arrives while the task is healthy — then
-/// the recognition queue is filled so the task blocks in its own backpressure,
-/// then a negative control: a second command does not arrive. Without both
-/// halves a test could pass on a connection that was simply slow.
-async fn wedge(live: &mut Live, ws: &mut Ws, session_id: &str) {
+/// one audio frame has to reach the provider (the rendezvous: the path is live,
+/// so silence after it means parked, not lost), then the recognition queue is
+/// filled so the task blocks in its own backpressure, then a negative control:
+/// a second command does not arrive. Without both halves a test could pass on a
+/// connection that was simply slow.
+async fn wedge(live: &mut Live, ws: &mut Ws, session_id: &str, seen: &Arc<AtomicUsize>) {
+    // Positive control, unchanged: a command arrives while the task is healthy.
     live.reconfig_tx
         .send(VoiceReconfig::ToClient {
             session_id: session_id.to_string(),
@@ -1334,14 +1345,29 @@ async fn wedge(live: &mut Live, ws: &mut Ws, session_id: &str) {
         "positive control"
     );
 
-    // Fill the provider queue (32) so the task parks on a send that will never
-    // have room again. Round by round, because the task prefers its command
-    // channel to its socket: a command sent before the queue is full is still
-    // delivered, which is what the negative control below reads.
+    // The audio path first, then its silence: one frame has to have reached the
+    // provider before "no answer" may be read as "parked". Without it the
+    // control can conclude from frames that went nowhere (GH #699).
+    send_binary(ws, vec![0u8; 320]).await;
+    let deadline = tokio::time::Instant::now() + MARKER;
+    while seen.load(Ordering::SeqCst) == 0 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the first audio frame never reached the recognition provider"
+        );
+        tokio::task::yield_now().await;
+    }
+
     for round in 0..10 {
         for _ in 0..50 {
             send_binary(ws, vec![0u8; 320]).await;
         }
+        // The audio travels over TCP, the command does not, and the loop takes
+        // commands first (`biased`): without a tick between them the command can
+        // reach the task before the frames it is meant to queue behind (GH #699).
+        // A tick is a window, not a guarantee: the ten rounds are the retry, the
+        // 300 ms below the verdict.
+        tokio::time::sleep(Duration::from_millis(1)).await;
         live.reconfig_tx
             .send(VoiceReconfig::ToClient {
                 session_id: session_id.to_string(),
@@ -1349,17 +1375,29 @@ async fn wedge(live: &mut Live, ws: &mut Ws, session_id: &str) {
             })
             .await
             .expect("send");
-        // Negative control: nothing arrives any more, because the task never
-        // returns to its command channel.
-        if tokio::time::timeout(Duration::from_millis(300), ws.next())
-            .await
-            .is_err()
-        {
-            return;
-        }
+        let last = match tokio::time::timeout(Duration::from_millis(300), ws.next()).await {
+            // Nothing arrives any more: the task is parked on its queue.
+            Err(_) => return,
+            Ok(None) => panic!("round {round}: the socket ended instead of parking"),
+            Ok(Some(Err(e))) => panic!("round {round}: the socket failed instead of parking: {e}"),
+            // A close is named here, with the round and the count, instead of
+            // surfacing one round later as a bare `expect("send")`.
+            Ok(Some(Ok(WsMessage::Close(frame)))) => panic!(
+                "round {round}: the cell closed the socket instead of parking: {frame:?}, \
+                 {} frames reached the provider",
+                seen.load(Ordering::SeqCst)
+            ),
+            Ok(Some(Ok(msg))) => format!("{msg:?}"),
+        };
+        // If this fires with one frame seen and fillers still arriving, it is
+        // either the race above outlasting all ten rounds or a session the cell
+        // lost after that frame; the count alone cannot tell the two apart.
         assert!(
             round < 9,
-            "the connection task never parked on its recognition queue"
+            "the connection task never parked on its recognition queue: \
+             {} frames sent, {} reached the provider, last frame {last}",
+            (round + 1) * 50 + 1,
+            seen.load(Ordering::SeqCst),
         );
     }
 }
@@ -1385,7 +1423,7 @@ async fn every_speak_ends_even_when_the_client_disappears() {
     // Long enough that the tear-down lands INSIDE the synthesis rather than
     // after it.
     let mut live = start(
-        Arc::new(StallingStt),
+        Arc::new(StallingStt::default()),
         Some(Arc::new(ScriptedTts::new(50, 20, cancelled))),
         Mode::Auto,
     )
@@ -1448,8 +1486,10 @@ async fn every_speak_ends_even_when_the_client_disappears() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_speak_to_a_wedged_client_ends_as_a_reported_failure() {
     let cancelled = Arc::new(AtomicUsize::new(0));
+    let stalling = Arc::new(StallingStt::default());
+    let seen = Arc::clone(&stalling.seen);
     let mut live = start_with(
-        Arc::new(StallingStt),
+        stalling,
         Some(Arc::new(ScriptedTts::new(1, 0, cancelled))),
         Mode::Auto,
         Duration::from_secs(2),
@@ -1462,7 +1502,7 @@ async fn a_speak_to_a_wedged_client_ends_as_a_reported_failure() {
         VoiceEvent::Connected { session_id, .. } => assert_eq!(session_id, "stuck"),
         other => panic!("expected Connected, got {}", label(&other)),
     }
-    wedge(&mut live, &mut stuck, "stuck").await;
+    wedge(&mut live, &mut stuck, "stuck", &seen).await;
 
     // Fill the connection's channel, so the synthesis order cannot slip through
     // ahead of the backlog it is queued behind — paced, because the hop that
@@ -1563,8 +1603,10 @@ async fn event_within(live: &mut Live, limit: Duration) -> VoiceEvent {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_burst_past_both_buffers_is_given_up_on_without_waiting_for_the_deadline() {
     let cancelled = Arc::new(AtomicUsize::new(0));
+    let stalling = Arc::new(StallingStt::default());
+    let seen = Arc::clone(&stalling.seen);
     let mut live = start_with(
-        Arc::new(StallingStt),
+        stalling,
         Some(Arc::new(ScriptedTts::new(1, 0, cancelled))),
         Mode::Auto,
         Duration::from_secs(30),
@@ -1577,7 +1619,7 @@ async fn a_burst_past_both_buffers_is_given_up_on_without_waiting_for_the_deadli
         VoiceEvent::Connected { session_id, .. } => assert_eq!(session_id, "stuck"),
         other => panic!("expected Connected, got {}", label(&other)),
     }
-    wedge(&mut live, &mut stuck, "stuck").await;
+    wedge(&mut live, &mut stuck, "stuck", &seen).await;
 
     // More than the two buffers together hold (64 + 64).
     for i in 0..400 {

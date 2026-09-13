@@ -1,4 +1,4 @@
-# `voice@2.0.1`
+# `voice@2.0.2`
 
 A spoken conversation as one cell. One WebSocket surface, one pair of provider
 credentials, one wire up and one wire down. No persona, no memory, no answer of
@@ -59,7 +59,7 @@ with `edge_schema`.
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "channels/voice", "template": "voice@2.0.1",
+  "add_nodes": [{"name": "channels/voice", "template": "voice@2.0.2",
                  "override_params": {"mount": "voice"}}],
   "add_edges": [
     {"from": "./channels/voice", "to": "./channels",
@@ -200,7 +200,7 @@ install`). Until then the manifest that wants partials does both halves itself
 one key on the node:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.0.1",
+{"name": "channels/voice", "template": "voice@2.0.2",
  "override_params": {"emit_partials": true}}
 ```
 
@@ -234,7 +234,7 @@ at the switch pending — see [`freeswitch`](../freeswitch/) § *Hanging up*).
 **Both halves or neither**, exactly as for `partial`:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.0.1",
+{"name": "channels/voice", "template": "voice@2.0.2",
  "override_params": {"emit_speak_end": true}}
 ```
 
@@ -320,6 +320,12 @@ landing inside whatever boundary happened to be open when it arrived. Events
 after the cut belong to no boundary now, so the next take starts empty, and a
 key pressed again mid-drain closes the old take at once with what it has.
 
+Since 2.0.2 the cap records a debt only while the provider is actually inside
+a take: a provider that delivered its end of turn before the key came up owes
+nothing, and a debt it never owed used to be paid by the end of the NEXT take,
+which then never became a turn. An end of turn without a transcript keeps the
+interim instead of dropping it.
+
 Set `0` to cut on the `release` frame, the behaviour this template had before
 the knob existed. The value is read at the next `release`, so a params update
 never moves a deadline a turn is already waiting on.
@@ -355,7 +361,7 @@ a new name takes effect on the next life of the cell — the registration happen
 once, when the I/O half starts.
 
 ```json
-{"name": "channels/voice", "template": "voice@2.0.1",
+{"name": "channels/voice", "template": "voice@2.0.2",
  "override_params": {"mount": "voice-b"}}
 ```
 
@@ -418,7 +424,7 @@ spelling that says "not set" -- `VoiceParams::parse` reads a null `tts` exactly
 as an absent one, which is legal precisely when the recogniser is `echo`:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.0.1",
+{"name": "channels/voice", "template": "voice@2.0.2",
  "override_params": {"stt": {"provider": "echo"}, "tts": null}}
 ```
 
@@ -431,7 +437,7 @@ routes -- a self-hosted realtime transcription endpoint, a self-hosted
 `/v1/audio/speech` -- stands in for the hosted one without touching the cell:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.0.1",
+{"name": "channels/voice", "template": "voice@2.0.2",
  "override_params": {
    "tts": {"provider": "openai",
            "base_url": "http://<local-host>:<port>",
@@ -525,7 +531,7 @@ instantiating manifest's `override_params`, where it is substituted at
 instantiation exactly like the two api keys.
 
 ```json
-{"name": "channels/voice", "template": "voice@2.0.1",
+{"name": "channels/voice", "template": "voice@2.0.2",
  "override_params": {"tts": {"provider": "cartesia",
                              "api_key": "${CARTESIA_API_KEY}",
                              "voice": "${CARTESIA_VOICE}"}}}
@@ -540,7 +546,7 @@ exactly the same place, and the whole switch is one override -- the template doe
 not change, because `provider` was always a value rather than a shape:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.0.1",
+{"name": "channels/voice", "template": "voice@2.0.2",
  "override_params": {"tts": {"provider": "elevenlabs",
                              "api_key": "${ELEVENLABS_API_KEY}",
                              "voice": "${ELEVENLABS_VOICE}"}}}

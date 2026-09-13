@@ -378,6 +378,25 @@ impl VoiceCell {
         };
         let generation = state.grace_token;
         let actions = turns::step(state, session_id, input);
+        // Every closed boundary produces exactly one `Turn` frame, and the empty
+        // one produces no lane emission at all (`turns::turn_actions`). An empty
+        // turn is a take that went missing somewhere, so it is LOUD: it is the
+        // only signal the 16:28:37 incident would have left behind (GH #697).
+        for action in &actions {
+            if let Action::ToClient(ServerFrame::Turn { text, turn_id }) = action {
+                if text.is_empty() {
+                    tracing::warn!(
+                        %session_id, %turn_id,
+                        "voice: a boundary closed with nothing in it"
+                    );
+                } else {
+                    tracing::info!(
+                        %session_id, %turn_id, chars = text.chars().count(),
+                        "voice: a boundary closed"
+                    );
+                }
+            }
+        }
         // A boundary that just started draining owes itself a deadline: a
         // provider that never reports the end of the audio it was given would
         // otherwise hold a turn open for the rest of the call. The state

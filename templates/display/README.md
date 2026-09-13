@@ -1,4 +1,4 @@
-# `display@2.3.2`
+# `display@2.3.3`
 
 One screen, reached at `/<mount>/` on the colony's one listener, that many
 agents and applications write onto at the same time. A **view** is a named, owned, optionally expiring piece of
@@ -747,6 +747,14 @@ lives in the chat application, which has a tile in the dock like any other.
 The mark says its phase in light -- `listening`, `sending`, `speaking`,
 `error`, as `data-phase` on its element -- and the sentence that used to stand
 under the button is kept for a screen reader and not drawn.
+
+Since 2.3.3 the key does not cut the audio: `release` drains before it lets go.
+Letting go tells the worklet to flush, whatever still arrives goes out for one
+more measured window -- the capture latency the browser reports, one block, and
+the longest delivery gap of this take, floored at 120 ms and capped at 600 --
+and only then is the take closed. Before that, everything still in the capture
+chain when the key came up was dropped, which is where the last words of every
+take went.
 
 There is no second port and no second connection. The button joins a
 `voice:<call>` topic on the socket the page is already holding, and the `web`
