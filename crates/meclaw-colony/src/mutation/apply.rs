@@ -10,10 +10,15 @@ use super::{
     MutationError,
     rename::{atomic_rename_or_overwrite_all, rename_subtree_roots},
     stage::{StagedDir, build_staging_tree_from_templates},
+    stage_replace::{StagedReplace, stage_replace_nodes},
     subtree::StagedSubtreeMerge,
 };
 use meclaw_core::JsonValue;
 use std::collections::HashMap;
+
+/// What one apply stages and renames: the single-cell entries, the subtree
+/// merges, and (GH #682) the lifts — in the order the apply arm consumes them.
+pub type StagedPlan = (Vec<StagedDir>, Vec<StagedSubtreeMerge>, Vec<StagedReplace>);
 
 /// Apply phase AFTER validate + in_flight insert.
 ///
@@ -39,6 +44,13 @@ use std::collections::HashMap;
 /// question per instantiated cell — does this type own the schema of its
 /// `cell.db` ([`crate::CellFactory::owns_schema`])? A type that does builds and
 /// seeds its own database at first spawn, and staging writes nothing into it.
+///
+/// GH #682: the third value is the staged half of every `replace_nodes` entry
+/// ([`stage_replace_nodes`]), built BEFORE the first rename so a lift that
+/// cannot happen (a taken `<child>~<version>`, an unset `operator_set` param)
+/// refuses with the live tree untouched. Nothing of it is renamed here: a lift
+/// moves the old children aside before the new ones go in, and that order,
+/// with the registry and edge half beside it, is the apply arm's.
 #[allow(clippy::too_many_arguments)]
 pub fn apply_mutation(
     root: &std::path::Path,
@@ -53,8 +65,19 @@ pub fn apply_mutation(
     // SYNCHRONOUS, so the pulse has to be sync too. This function only passes it
     // on; the beats happen at the cell loops inside `stage`/`subtree`.
     pulse: &crate::watchdog::WorkPulse,
-) -> Result<(Vec<StagedDir>, Vec<StagedSubtreeMerge>), MutationError> {
+) -> Result<StagedPlan, MutationError> {
     let (staged, subtrees) = build_staging_tree_from_templates(
+        root,
+        mutation_id,
+        scope,
+        diff_substituted,
+        templates,
+        env,
+        ctx,
+        factories,
+        pulse,
+    )?;
+    let replaces = stage_replace_nodes(
         root,
         mutation_id,
         scope,
@@ -85,7 +108,7 @@ pub fn apply_mutation(
             live_touched = true;
         }
     }
-    Ok((staged, subtrees))
+    Ok((staged, subtrees, replaces))
 }
 
 /// Deep-Audit F2: promote a clean `Schema` rename failure to `LiveTreeMutated`
@@ -155,7 +178,7 @@ mod tests {
         // Phase-11 T16: needs a template directory + a TemplatesRegistry stub.
         let templates = setup_echo_template(&td);
         let diff = json!({"add_nodes": [{"name": "n_apply", "template": "echo"}]});
-        let (staged, _subtrees) = apply_mutation(
+        let (staged, _subtrees, _replaces) = apply_mutation(
             td.path(),
             "mid-17",
             "/",
@@ -180,7 +203,7 @@ mod tests {
     fn apply_mutation_empty_diff_returns_empty_vec() {
         let td = TempDir::new().unwrap();
         let diff = json!({});
-        let (staged, subtrees) = apply_mutation(
+        let (staged, subtrees, _replaces) = apply_mutation(
             td.path(),
             "mid-17-empty",
             "/",

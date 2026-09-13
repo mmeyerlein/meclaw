@@ -789,7 +789,7 @@ async fn knock(h: &ColonyHandle, payload: Value) -> MutationDoorOutcome {
 /// behind it untouched.
 fn applied(o: &MutationDoorOutcome) -> usize {
     match o {
-        MutationDoorOutcome::Manifest(ManifestOutcome::Committed { ids }) => ids.len(),
+        MutationDoorOutcome::Manifest(ManifestOutcome::Committed { ids, .. }) => ids.len(),
         MutationDoorOutcome::Manifest(ManifestOutcome::Rejected { ids, .. }) => ids.len(),
         _ => 0,
     }

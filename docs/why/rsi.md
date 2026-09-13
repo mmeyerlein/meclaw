@@ -5,7 +5,7 @@ into an unattended loop. That is a decision, not a gap in the schedule.
 
 ## The primitives that exist
 
-A mutation is a diff POSTed to `/colony/mutations`, carrying eight operations and no others
+A mutation is a diff POSTed to `/colony/mutations`, carrying nine operations and no others
 (`DIFF_OPERATIONS` in `crates/meclaw-colony/src/mutation/validate.rs`). A diff key no operation
 reads is refused rather than ignored, a refusal names one of 28 stable `error_code` strings, and
 it is raised before anything is staged or spawned. A rejected mutation leaves nothing behind, and

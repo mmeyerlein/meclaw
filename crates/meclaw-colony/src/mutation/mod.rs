@@ -5,6 +5,7 @@
 //! private tree.
 
 pub mod apply;
+pub mod apply_replace;
 pub mod header_views;
 pub mod hive_contract;
 pub mod hook;
@@ -18,12 +19,14 @@ pub mod rename;
 pub mod required_drains;
 pub mod seed_rows;
 pub mod stage;
+pub mod stage_replace;
 pub mod substitute;
 pub mod subtree;
 pub(crate) mod swap;
 pub mod validate;
 
 pub use manifest::{ManifestBody, ManifestError, ManifestOutcome, MutationDoorOutcome};
+pub use relocate::PlannedMove;
 
 use meclaw_core::Path;
 
@@ -591,11 +594,54 @@ pub fn resume_type_compatible(existing_type: &str, template_type: &str) -> bool 
     existing_type == template_type
 }
 
+/// GH #682 (OR-P4) — what a committed `replace_nodes` did to one child of
+/// the lifted node.
+///
+/// A lift does three things at once — keeps, replaces, grows — and leaves a
+/// fourth standing; an operator of a small colony cannot run it without
+/// being told which was which. So the receipt says it, one entry per child,
+/// with the version the child came from and the one it went to.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct NodeChange {
+    /// Absolute logical path of the child, e.g. `/os/screen/keep`. Absolute
+    /// because one diff may lift several nodes and a manifest several diffs
+    /// — a name relative to "the" hive would not say which.
+    pub path: String,
+    /// What happened to it.
+    pub verdict: NodeVerdict,
+    /// The version the child stood at before — its provenance stamp, or
+    /// `"unknown"` when it carried none; `None` for an added child.
+    pub from_version: Option<String>,
+    /// The version it stands at now; `None` for a left child. A kept child
+    /// names the same version twice.
+    pub to_version: Option<String>,
+}
+
+/// GH #682 — the four verdicts of the version diff, one per child.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NodeVerdict {
+    /// What stands is what the new version would write again — untouched,
+    /// `cell.id` and `cell.db` kept.
+    Kept,
+    /// Instantiated anew under its own name, the old one renamed beside it.
+    Replaced,
+    /// The new version names it and nothing stood — grown.
+    Added,
+    /// Stands and the new version does not name it — left where it is,
+    /// disconnected.
+    Left,
+}
+
 /// Result of `handle_mutation`: returned to the caller via the `ColonyMsg::Mutation.ack` oneshot.
 #[derive(Debug, Clone)]
 pub enum MutationOutcome {
     Committed {
         id: String,
+        /// GH #682 — one entry per child of every node this mutation
+        /// replaced, sorted by path. ADDITIVE: empty for every other
+        /// operation, and a reader that only knows `id` is unaffected.
+        changes: Vec<NodeChange>,
     },
     Rejected {
         id: Option<String>,

@@ -662,6 +662,112 @@ pub fn collect_inbound_lanes(
     }
 }
 
+/// GH #682 — the lift's half of the outward contract (Spec § 2.6): **a hive
+/// loses no lane somebody hangs on.** A `replace_nodes` re-reads the hive's
+/// declaration from another version of its template; a lane the new version
+/// ADDS is always fine, a lane it DROPS is refused while an outer edge into
+/// the hive states that lane — with `hive_contract`, before anything is
+/// staged, like the two checks beside it.
+///
+/// The renewed contract is read from the TEMPLATE directory through the one
+/// reader ([`contract_from_cell_dir`]), pre-override like every template
+/// contract read at this stage (see [`contracts_from_template_subtree`]). A
+/// standing hive without a contract has nothing to lose; a template without
+/// one constrains nothing — both pass. A leaf template has no `accepts` and
+/// passes the same way: what it lacks is not a lane it dropped. Which lane an
+/// outer edge USES is what its own modifier states (`constant_route`); an
+/// edge whose lane is computed at runtime is not judged, as everywhere here.
+pub fn collect_dropped_lanes(
+    diff: &JsonValue,
+    guard_scope: &str,
+    contracts: &[HiveContract],
+    templates: &crate::templates::TemplatesRegistry,
+    edges: &EdgeTable,
+    into: &mut crate::mutation::rejection::MutationRejection,
+) {
+    use crate::mutation::rejection::{Stage, Violation};
+
+    let Some(replaces) = diff.get("replace_nodes").and_then(|v| v.as_array()) else {
+        return;
+    };
+    for r in replaces {
+        let Some(name) = r
+            .get("match")
+            .and_then(|m| m.get("name"))
+            .and_then(|v| v.as_str())
+        else {
+            continue; // the door's `schema` refusal
+        };
+        let Some(tpl_ref) = r
+            .get("with")
+            .and_then(|w| w.get("template"))
+            .and_then(|v| v.as_str())
+        else {
+            continue;
+        };
+        let Ok(tpl) = templates.resolve(tpl_ref) else {
+            continue; // `template_missing` at the door
+        };
+        let hive_path = crate::mutation::resolve_scoped_path(guard_scope, name);
+        let Some(standing) = contracts.iter().find(|c| c.hive_path == hive_path.as_str()) else {
+            continue;
+        };
+        let renewed = contract_from_cell_dir(&tpl.filesystem_path, hive_path.as_str());
+        let dropped: Vec<&Lane> = standing
+            .accepts
+            .iter()
+            .filter(|lane| {
+                renewed
+                    .as_ref()
+                    .is_some_and(|n| !n.accepts.iter().any(|l| l.route == lane.route))
+            })
+            .collect();
+        if dropped.is_empty() {
+            continue;
+        }
+        let mut outer: Vec<&crate::edge_table::Edge> = edges
+            .iter()
+            .filter(|e| {
+                e.to.as_str() == hive_path.as_str() && !standing.is_interior(e.from.as_str())
+            })
+            .collect();
+        outer.sort_by(|a, b| a.from.as_str().cmp(b.from.as_str()));
+        for edge in outer {
+            let Some(route) = edge
+                .modifier
+                .as_ref()
+                .and_then(|m| m.source.set_hop.get("route"))
+                .and_then(|src| constant_route(src))
+            else {
+                continue;
+            };
+            let Some(lane) = dropped.iter().find(|l| l.route == route) else {
+                continue;
+            };
+            let error = MutationError::HiveContract(format!(
+                "replace_nodes '{name}': '{tpl_ref}' no longer accepts the lane '{route}' \
+                 ({because}), but the edge {from} -> {hive} states hop.route='{route}' into \
+                 the hive. A hive loses no lane somebody hangs on: take that edge off first, \
+                 or lift to a version that keeps the lane.",
+                because = lane.because,
+                from = edge.from.as_str(),
+                hive = hive_path.as_str(),
+            ));
+            let address = Some(hive_path.as_str().to_string());
+            into.push(if lane.because.is_empty() {
+                Violation::from_error(Stage::ContractLocality, &error, address)
+            } else {
+                Violation::from_error_because(
+                    Stage::ContractLocality,
+                    &error,
+                    address,
+                    lane.because.clone(),
+                )
+            });
+        }
+    }
+}
+
 /// The collecting core: every stated lane an `add_edges` entry sends into a hive
 /// that does not accept it, with the RESOLVED hive path it was sent to as its
 /// address.

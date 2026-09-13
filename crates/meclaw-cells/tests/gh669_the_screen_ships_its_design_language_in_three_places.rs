@@ -10,7 +10,7 @@
 //! library is skipped, never judged. The sheet itself is NOT part of the guard
 //! -- a sheet that disappears is a red test, not a skipped one.
 
-use meclaw_cells::web::render::{Piece, escape, parse_template};
+use meclaw_cells::web::render::render_pieces_plain;
 use meclaw_core::serde_json::{Value, json};
 
 fn repo(rel: &str) -> std::path::PathBuf {
@@ -98,53 +98,11 @@ fn shell() -> Option<Value> {
 }
 
 /// Render one component template with its props, the way the `web` cell does
-/// for one object with no children: the cell's own parser cuts the pieces (so
-/// a template it would refuse is refused here), and the walk is the cell's --
-/// escaped `{{prop}}`, raw `{{&prop}}` only where `prop_schema` says `html`,
-/// `{{#if}}` on the cell's truthiness. Only `{{children}}` is left empty, since
-/// there is no tree here. A public renderer without a database does not exist
-/// in the crate, so this is the faithful minimum.
+/// for one object with no children (`render_pieces_plain`: the cell's parser,
+/// the cell's walk, the cell's truthiness).
 fn render(template: &str, props: &Value, schema: &Value) -> String {
-    let pieces = parse_template(template)
-        .unwrap_or_else(|e| panic!("the web cell would refuse this template: {e}"));
-    let mut out = String::new();
-    render_pieces(&pieces, props, schema, &mut out);
-    out
-}
-
-fn render_pieces(pieces: &[Piece], props: &Value, schema: &Value, out: &mut String) {
-    let text = |name: &str| -> String {
-        match props.get(name) {
-            None | Some(Value::Null) => String::new(),
-            Some(Value::String(s)) => s.clone(),
-            Some(other) => other.to_string(),
-        }
-    };
-    for piece in pieces {
-        match piece {
-            Piece::Text(t) => out.push_str(t),
-            Piece::Prop(name) => out.push_str(&escape(&text(name))),
-            Piece::Raw(name) => {
-                if schema.get(name).and_then(Value::as_str) == Some("html") {
-                    out.push_str(&text(name));
-                } else {
-                    out.push_str(&escape(&text(name)));
-                }
-            }
-            Piece::Children => {}
-            Piece::If { prop, body } => {
-                let on = match props.get(prop) {
-                    None | Some(Value::Null) => false,
-                    Some(Value::Bool(b)) => *b,
-                    Some(Value::String(s)) => !s.is_empty(),
-                    Some(other) => !other.is_null(),
-                };
-                if on {
-                    render_pieces(body, props, schema, out);
-                }
-            }
-        }
-    }
+    render_pieces_plain(template, props, schema)
+        .unwrap_or_else(|e| panic!("the web cell would refuse this template: {e}"))
 }
 
 /// The shell as the screen's root renders it: the stylesheet linked, no faces.
@@ -201,8 +159,12 @@ fn the_sheet_is_the_source_of_the_design_language() {
 
     // P-B2: a window nobody assigned a state to stands at the top rung -- at
     // 0-1-0, like every rung, so the forced-colours fallback can take it back.
+    // Since GH #679 the rule covers both windows that scroll and those that
+    // do not: `:is()` on the class keeps the one class of specificity.
     assert!(
-        sheet.contains(".display-pane:where(:not([data-state]), [data-state=\"\"]) {"),
+        sheet.contains(
+            ":is(.display-pane, .display-panel):where(:not([data-state]), [data-state=\"\"]) {"
+        ),
         "the focus default is stated on the two forms of `no state`, inside `:where()`"
     );
     assert!(

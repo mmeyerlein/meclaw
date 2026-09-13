@@ -444,7 +444,7 @@ async fn knock(h: &ColonyHandle, payload: Value) -> MutationDoorOutcome {
 /// forward and stops at the first refusal, so this number IS the verdict.
 fn applied(o: &MutationDoorOutcome) -> usize {
     match o {
-        MutationDoorOutcome::Manifest(ManifestOutcome::Committed { ids }) => ids.len(),
+        MutationDoorOutcome::Manifest(ManifestOutcome::Committed { ids, .. }) => ids.len(),
         MutationDoorOutcome::Manifest(ManifestOutcome::Rejected { ids, .. }) => ids.len(),
         _ => 0,
     }

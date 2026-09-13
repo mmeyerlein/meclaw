@@ -197,6 +197,17 @@ fn only(mut out: Vec<Value>) -> Value {
     out.remove(0)
 }
 
+/// The one `patch` of a read pass. Since the due clock (GH #679) the pass may
+/// carry timer orders beside it; the patch is what the display gets.
+fn patch_of(out: Vec<Value>) -> Value {
+    let mut patches: Vec<Value> = out
+        .into_iter()
+        .filter(|e| e["header"]["route"] == "patch")
+        .collect();
+    assert_eq!(patches.len(), 1, "exactly one patch: {patches:#?}");
+    patches.remove(0)
+}
+
 /// Drive pass 1 and read the request it put on the hop.
 fn request_of(emission: &Value) -> Value {
     meclaw_core::serde_json::from_str(
@@ -839,7 +850,7 @@ async fn both_views_reach_a_real_display() {
         .as_str()
         .unwrap()
         .to_string();
-    let patch = only(run_shipped(
+    let patch = patch_of(run_shipped(
         &root,
         "compose",
         stdin_doc(

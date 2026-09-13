@@ -109,9 +109,22 @@ fn read_pass(objects: Option<&Value>) -> Option<Vec<Value>> {
     );
     let answer: Value =
         meclaw_core::serde_json::from_slice(&out.stdout).expect("the answer is JSON");
-    let calls = match &answer {
-        Value::Array(list) if list.is_empty() => Vec::new(),
-        Value::Object(emission) => emission["messages"]
+    // Since the due clock (GH #679) a read pass may answer with the patch
+    // AND up to two timer orders beside it; the patch is what the display
+    // gets, and it is the one bundle read here.
+    let emissions = match answer {
+        Value::Array(list) => list,
+        one @ Value::Object(_) => vec![one],
+        other => panic!("emissions are objects: {other}"),
+    };
+    let patches: Vec<&Value> = emissions
+        .iter()
+        .filter(|e| e["header"]["route"] == "patch")
+        .collect();
+    assert!(patches.len() <= 1, "at most one patch: {emissions:?}");
+    let calls = match patches.first() {
+        None => Vec::new(),
+        Some(emission) => emission["messages"]
             .as_array()
             .expect("a bundle has messages")
             .iter()
@@ -121,7 +134,6 @@ fn read_pass(objects: Option<&Value>) -> Option<Vec<Value>> {
                     .expect("a call is JSON")
             })
             .collect(),
-        other => panic!("one emission or none: {other}"),
     };
     Some(calls)
 }

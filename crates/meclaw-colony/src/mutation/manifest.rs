@@ -144,6 +144,10 @@ pub enum ManifestOutcome {
     Committed {
         /// One mutation id per entry, in manifest order.
         ids: Vec<String>,
+        /// GH #682 — the `changes` of every entry, joined in manifest order
+        /// (absolute paths, so the join loses nothing). ADDITIVE: empty
+        /// when no entry replaced a node.
+        changes: Vec<super::NodeChange>,
     },
     /// Entry `failed_at` (1-based) was refused.
     Rejected {

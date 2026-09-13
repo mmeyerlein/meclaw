@@ -20,6 +20,19 @@
 //! 2. `/sys/fs/cgroup/user.slice/user-<uid>.slice/user@<uid>.service`, the
 //!    delegated root of a systemd user session.
 //!
+//! A candidate counts when it hands controllers down to its children, and it
+//! also counts when it merely OFFERS them (GH #686): a system unit with
+//! `Delegate=yes` gets its directory handed over with `cgroup.controllers`
+//! filled and `cgroup.subtree_control` empty, because enabling is the
+//! delegatee's own step under cgroup v2. The daemon takes that step itself
+//! ([`adopt_root`]). The kernel enables controllers only in a directory
+//! without processes, so a daemon that is the only process there -- a unit
+//! without `DelegateSubgroup=` -- first moves itself one level down into
+//! [`DAEMON_DIR`], which stays inside the delegated boundary. That directory
+//! carries the daemon itself and is never swept. A transient user
+//! (`DynamicUser=yes`) has no `user@<uid>.service`, so for it the first
+//! candidate is the only one, and before this step it fell through.
+//!
 //! # The permission that is easy to miss
 //!
 //! Creating the directory and writing the caps is not enough. Moving a process
@@ -47,6 +60,11 @@ const CGROUP_ROOT: &str = "/sys/fs/cgroup";
 /// Prefix of every directory this module creates. Carries the daemon's pid so
 /// that a later run can tell its own leftovers from a live sibling's.
 const DIR_PREFIX: &str = "meclaw-sbx-";
+
+/// Where the daemon moves itself when it has to leave a delegated directory
+/// empty before enabling controllers in it. Not a `DIR_PREFIX` directory: it
+/// carries the daemon, and the sweep never touches it.
+const DAEMON_DIR: &str = "meclaw-daemon";
 
 /// The `cpu.max` period, in microseconds. `cpu_max_percent` is expressed
 /// against it, so 100 percent is one whole core.
@@ -110,16 +128,95 @@ fn destroy(dir: &Path) {
 /// The delegated cgroup root this process may create sub-cgroups in, or `None`
 /// when there is none.
 ///
-/// Cheap and side-effect free: it creates nothing. It also proves nothing --
-/// a writable directory is necessary but not sufficient, see the module docs.
+/// Cheap once a root is adopted: it creates no sub-cgroup. The one side effect
+/// it may have is the adoption itself (GH #686) -- enabling the offered
+/// controllers in a delegated directory, after moving this process into
+/// [`DAEMON_DIR`] when it was the only one there -- and that happens once. It
+/// proves nothing either way: a writable directory is necessary but not
+/// sufficient, see the module docs.
 pub fn delegated_root() -> Option<PathBuf> {
     // A cgroup v1 or cgroup-less host has no `cgroup.controllers` here.
     if !Path::new(CGROUP_ROOT).join("cgroup.controllers").is_file() {
         return None;
     }
-    root_candidates()
+    root_candidates().into_iter().find(|c| adopt_root(c))
+}
+
+/// A writable delegated directory whose controllers nobody enabled yet becomes
+/// a root by enabling them -- the delegatee's own step under cgroup v2
+/// (GH #686). A directory that already hands controllers down is taken as it
+/// is; one that is not writable or offers nothing is not a root.
+fn adopt_root(path: &Path) -> bool {
+    if !is_writable_dir(path) {
+        return false;
+    }
+    if has_enabled_controllers(path) {
+        return true;
+    }
+    if offered_controllers(path).is_empty() {
+        return false;
+    }
+    if enable_controllers(path).is_ok() {
+        return true;
+    }
+    evacuate_self(path).is_ok() && enable_controllers(path).is_ok()
+}
+
+/// Controllers a delegated directory offers, enabled or not.
+fn offered_controllers(path: &Path) -> Vec<String> {
+    std::fs::read_to_string(path.join("cgroup.controllers"))
+        .map(|s| s.split_whitespace().map(str::to_string).collect())
+        .unwrap_or_default()
+}
+
+/// Enable every offered controller this module writes caps for.
+fn enable_controllers(path: &Path) -> io::Result<()> {
+    let wanted = ["cpu", "memory", "pids"];
+    let line: Vec<String> = offered_controllers(path)
         .into_iter()
-        .find(|c| is_writable_dir(c) && has_enabled_controllers(c))
+        .filter(|c| wanted.contains(&c.as_str()))
+        .map(|c| format!("+{c}"))
+        .collect();
+    if line.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "no usable controller offered",
+        ));
+    }
+    std::fs::write(path.join("cgroup.subtree_control"), line.join(" "))
+}
+
+/// The kernel enables controllers only on a directory without processes: when
+/// this daemon is the only one in it, it moves itself one level down first.
+///
+/// "The only one" means exactly that -- this process is in the directory and
+/// nobody else is. A directory the daemon does not stand in (the user session
+/// root, or its unit directory once `DelegateSubgroup=` put it a level down)
+/// is never adopted this way: moving out of its own unit cgroup would take
+/// the daemon out from under `systemctl stop`.
+fn evacuate_self(path: &Path) -> io::Result<()> {
+    let procs = std::fs::read_to_string(path.join("cgroup.procs"))?;
+    let me = std::process::id().to_string();
+    let lines: Vec<&str> = procs
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    if !lines.iter().any(|l| *l == me) {
+        return Err(io::Error::other(
+            "this process does not stand in the delegated directory",
+        ));
+    }
+    if lines.iter().any(|l| *l != me) {
+        return Err(io::Error::other(
+            "the delegated directory holds other processes",
+        ));
+    }
+    let own = path.join(DAEMON_DIR);
+    if !own.is_dir() {
+        std::fs::create_dir(&own)?;
+    }
+    std::fs::write(own.join("cgroup.procs"), me)
 }
 
 /// The two places a delegated root can be, in preference order.
@@ -516,6 +613,55 @@ mod tests {
             !dir.exists(),
             "and the cgroup of a finished child is removed, not leaked"
         );
+    }
+
+    /// GH #686: a delegated directory arrives with `cgroup.controllers` filled
+    /// and `cgroup.subtree_control` empty -- enabling is the delegatee's step,
+    /// and this module takes it. A fresh sub-cgroup of the delegated root is
+    /// exactly that shape, so it stands in for the unit directory a transient
+    /// system user gets.
+    #[test]
+    fn an_empty_subtree_control_is_enabled_by_the_delegatee() {
+        const T: &str = "an_empty_subtree_control_is_enabled_by_the_delegatee";
+        let Some(root) = delegated_root() else {
+            eprintln!("[{T}] SKIPPED: no delegated cgroup root for this uid");
+            return;
+        };
+        // `<prefix><pid>-test`: the sweep reads the pid off the first segment,
+        // so a run that dies before `destroy` leaves something the next one
+        // recognises as its own leftover.
+        let dir = root.join(format!("{DIR_PREFIX}{}-test", std::process::id()));
+        if let Err(e) = std::fs::create_dir(&dir) {
+            eprintln!(
+                "[{T}] SKIPPED: cannot create a sub-cgroup under {}: {e}",
+                root.display()
+            );
+            return;
+        }
+        let result = std::panic::catch_unwind(|| {
+            assert!(
+                !has_enabled_controllers(&dir),
+                "a fresh sub-cgroup enables nothing on its own"
+            );
+            assert!(
+                !offered_controllers(&dir).is_empty(),
+                "but the parent hands it controllers to enable"
+            );
+            assert!(adopt_root(&dir), "the delegatee enables them itself");
+            assert!(
+                has_enabled_controllers(&dir),
+                "and the directory now hands controllers down to its children"
+            );
+            assert!(
+                adopt_root(&dir),
+                "a directory that already enables controllers is adopted as it is"
+            );
+        });
+        destroy(&dir);
+        assert!(!dir.exists(), "the test's sub-cgroup is removed again");
+        if let Err(e) = result {
+            std::panic::resume_unwind(e);
+        }
     }
 
     #[test]

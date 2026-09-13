@@ -1099,7 +1099,77 @@ pub struct SubtreePartition {
     pub missing_hives: Vec<CellNode>,
     /// Hive markers whose final fs directory already exists → already scoped.
     pub existing_hives: Vec<ResolvedExistingHive>,
+    /// GH #682, [`DiffMode::Replace`] only: spawnable cells the template names
+    /// that stand on disk at another version or with other bytes → replaced
+    /// under their own name, the old one renamed beside it. Always empty in
+    /// [`DiffMode::Resume`], where such a cell is simply [`Self::existing`].
+    pub changed: Vec<ChangedNode>,
+    /// GH #682, [`DiffMode::Replace`] only: nodes of the OLD tree — registry
+    /// rows under the hive path or cell directories on disk — that the new
+    /// template does not name → left standing, disconnected by the new inner
+    /// edges (No-Delete). Always empty in [`DiffMode::Resume`].
+    pub left: Vec<LeftNode>,
 }
+
+/// A child the new template names, standing on disk at another version or with
+/// other bytes: replaced under its own name, the old one renamed beside it.
+#[derive(Debug, Clone)]
+pub struct ChangedNode {
+    /// The template's child, verbatim — what the lift instantiates under the
+    /// child's own name, together with everything the template names below
+    /// it: a changed node is the rename root of its whole branch, and the
+    /// partition lists none of its descendants on their own.
+    pub node: CellNode,
+    /// On-disk final directory the child occupies today (and will occupy again
+    /// once the old one is renamed beside it).
+    pub final_path: std::path::PathBuf,
+    /// The standing child's `cell.provenance.template_version`, or
+    /// [`VERSION_UNKNOWN`] when it carries no stamp (an older instantiation) —
+    /// the suffix the old directory is renamed with.
+    pub from_version: String,
+    /// The version the template child is cut from: the last `ref` hop's for a
+    /// child that comes in through a ref, the template's own otherwise;
+    /// [`VERSION_UNVERSIONED`] when that template declares none.
+    pub to_version: String,
+}
+
+/// A child the old tree has and the new template does not: left standing,
+/// disconnected by the new inner edges (No-Delete).
+#[derive(Debug, Clone)]
+pub struct LeftNode {
+    /// Path relative to the hive, e.g. `gone` or `bump~1.0.0` — the top-most
+    /// unnamed node only; whatever stands below it is left with it.
+    pub rel_path: String,
+    /// Absolute logical path, e.g. `/alex/display/gone`.
+    pub abs_path: String,
+    /// The node's `cell.provenance.template_version` as it stands on disk, or
+    /// [`VERSION_UNKNOWN`] when there is no stamp or no directory (a registry
+    /// row alone).
+    pub version: String,
+}
+
+/// How [`classify_subtree_nodes_in`] reads a template child that already stands
+/// on disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffMode {
+    /// Per-node subtree resume (Paket-5): what stands is `existing`, full stop.
+    /// `changed` and `left` stay empty.
+    Resume,
+    /// GH #682 `replace_nodes`: what stands is `existing` only when it is what
+    /// the template would write again; otherwise `changed`. Nodes the template
+    /// does not name are `left`.
+    Replace,
+}
+
+/// The version label of a standing node that carries no provenance stamp —
+/// an instantiation older than GH #62. Version-unknown is never "the same
+/// version", so such a child is always [`SubtreePartition::changed`].
+pub const VERSION_UNKNOWN: &str = "unknown";
+
+/// The version label of a template (or `ref` hop) that declares no version.
+/// Distinct from [`VERSION_UNKNOWN`]: "this template has no version" is a
+/// fact, "the version is unknown" is a gap.
+pub const VERSION_UNVERSIONED: &str = "unversioned";
 
 /// Partition a SUBTREE template's cells and hive markers into *missing* (absent
 /// on disk → instantiate) vs *existing* (present on disk → resume), based on the
@@ -1135,6 +1205,90 @@ pub fn classify_subtree_nodes(
     template_root: &std::path::Path,
     templates: &crate::templates::TemplatesRegistry,
 ) -> Result<SubtreePartition, MutationError> {
+    classify_subtree_nodes_in(
+        root,
+        scope,
+        name,
+        template_root,
+        templates,
+        DiffMode::Resume,
+        &SubtreeOverrides::default(),
+        &[],
+    )
+}
+
+/// [`classify_subtree_nodes`] with a [`DiffMode`] — the GH #682 entry point.
+///
+/// In [`DiffMode::Resume`] this IS `classify_subtree_nodes`: `overrides` and
+/// `registered` are not read, `changed` and `left` come back empty.
+///
+/// In [`DiffMode::Replace`] every spawnable template child that stands on disk
+/// is read once more and sorted into `existing` (kept) or `changed`:
+///
+/// - **Version.** The standing child's `cell.provenance.template_version` is
+///   the `from`; the `to` is the version the template child is cut from — the
+///   last `ref` hop's for a child that comes in through a ref (the same hop
+///   [`provenance_for`] stamps), the template's own otherwise. A child with no
+///   stamp at all is version-unknown, and version-unknown is `changed`. For a
+///   ref'd child the stamp must name the same template at the same version;
+///   for a child that lives literally in the template the outer version is
+///   deliberately NOT compared — it is the version being lifted, so it differs
+///   for every child of every lift, and a kept child keeps its old stamp
+///   (F1: not written), so the comparison would never again say "same". What
+///   such a child is, is its bytes.
+/// - **Bytes.** The standing `config.json` minus what instantiation minted
+///   (`cell.id`, `cell.provenance`) against the template child's `config.json`
+///   rendered the way [`crate::mutation::stage::patch_and_substitute_config`]
+///   would write it again: the ref markers' `override_params` and this lift's
+///   `overrides` layered onto `params` (top-level key, last wins), the default
+///   sandbox block for a cell type that enforces one. A template value that
+///   carries an instance token (`${ctx.…}`, `${uuid7:…}`) was rendered per
+///   instance and cannot be re-derived here, so the token's span matches
+///   whatever stands there — the literal segments around it must stand, in
+///   order ([`template_string_matches`], which also states the limit of that).
+///   Everything else is compared as JSON values — key order and whitespace
+///   are not bytes that instantiation owns.
+/// - **Only `config.json` is compared.** A version that changes a child's
+///   `seed/` alone, or the declaration of a NESTED hive the child stands
+///   under, is invisible here: such a child is kept, and a nested hive that
+///   stands is `existing_hives` as before (spec § 2.3 renews the lifted hive's
+///   own declaration, not those below it).
+/// - **A changed node owns its subtree.** Whatever the template names below a
+///   `changed` node — kept, other, new — is neither `existing` nor `missing`
+///   nor `changed` on its own, and a hive marker below it is in neither hive
+///   list: the changed node is the rename root, and [`ChangedNode::node`]
+///   re-instantiates the whole branch (the same top-most rule `left` has).
+///
+/// `overrides` is the lift's own `with.params` (the `override_params` map of
+/// a `swap_nodes`/`replace_nodes` entry, [`SubtreeOverrides::from_add_node`]).
+/// A param the original instantiation overrode has no record on disk beyond
+/// the merged value, so a lift that does not re-supply it finds the child
+/// `changed` — which is right: the instance the lift would write is another
+/// one.
+///
+/// `left` is the union of `registered` — absolute logical paths of the
+/// registry rows under the hive, active or inactive; the caller passes what it
+/// holds, `&[]` when it holds none — and the cell directories on disk below the
+/// hive (a directory with a `config.json`, `seed/` excluded, the same rule
+/// [`parse_subtree`] reads a template by), minus every rel-path the template
+/// names. Only the top-most unnamed node is listed; a row or directory that
+/// already carries a `~<version>` suffix from an earlier lift is simply one
+/// more node the template does not name.
+///
+/// # Errors
+/// As [`classify_subtree_nodes`]; additionally [`MutationError::Schema`] when
+/// the hive's own directory cannot be walked for `left`.
+#[allow(clippy::too_many_arguments)]
+pub fn classify_subtree_nodes_in(
+    root: &std::path::Path,
+    scope: &str,
+    name: &str,
+    template_root: &std::path::Path,
+    templates: &crate::templates::TemplatesRegistry,
+    mode: DiffMode,
+    overrides: &SubtreeOverrides,
+    registered: &[Path],
+) -> Result<SubtreePartition, MutationError> {
     let template = parse_subtree(template_root, templates)?;
     let subtree_root_abs = crate::mutation::resolve_scoped_path(scope, name);
 
@@ -1146,9 +1300,29 @@ pub fn classify_subtree_nodes(
         existing: Vec::new(),
         missing_hives: Vec::new(),
         existing_hives: Vec::new(),
+        changed: Vec::new(),
+        left: Vec::new(),
     };
 
+    let outer = match mode {
+        DiffMode::Resume => None,
+        DiffMode::Replace => Some(outer_template_identity(template_root, templates)),
+    };
+
+    // GH #682: a changed node owns its subtree — nothing below it is
+    // classified on its own. `template.cells` lists a parent before its
+    // children ([`collect_cells`] pushes the node, then walks its
+    // sub-directories; a ref's content is anchored the same way), so the
+    // owners are known by the time a descendant comes up.
+    let mut changed_roots: Vec<String> = Vec::new();
+
     for node in &template.cells {
+        if changed_roots
+            .iter()
+            .any(|owner| is_self_or_rel_descendant(&node.rel_path, owner))
+        {
+            continue;
+        }
         let abs = absolute_for(&subtree_root_abs, &node.rel_path);
         let final_path = final_path_for(root, scope, name, &node.rel_path);
         let is_hive = hive_set.contains(node.rel_path.as_str());
@@ -1161,6 +1335,14 @@ pub fn classify_subtree_nodes(
             }),
             (true, false) => partition.missing_hives.push(node.clone()),
             (false, true) => {
+                if let Some(outer) = &outer
+                    && let Some(changed) =
+                        version_diff(node, &final_path, outer, &template.ref_overrides, overrides)
+                {
+                    changed_roots.push(node.rel_path.clone());
+                    partition.changed.push(changed);
+                    continue;
+                }
                 let on_disk_cell_type = read_on_disk_cell_type(&final_path);
                 let template_cell_type = node
                     .config
@@ -1179,7 +1361,366 @@ pub fn classify_subtree_nodes(
         }
     }
 
+    if mode == DiffMode::Replace {
+        partition.left = left_nodes(
+            root,
+            scope,
+            name,
+            &template,
+            &subtree_root_abs,
+            registered,
+            &changed_roots,
+        )?;
+    }
+
     Ok(partition)
+}
+
+/// The `(name, version)` a direct child of `template_root` is stamped with —
+/// the registry entry standing at that directory (what [`provenance_of`]
+/// reads), else the directory's own `template.json`, else a nameless,
+/// versionless template.
+///
+/// [`provenance_of`]: crate::mutation::stage::provenance_of
+fn outer_template_identity(
+    template_root: &std::path::Path,
+    templates: &crate::templates::TemplatesRegistry,
+) -> (String, Option<String>) {
+    if let Some(entry) = templates
+        .entries_iter()
+        .find(|e| e.filesystem_path == template_root)
+    {
+        return (entry.name.clone(), entry.version.clone());
+    }
+    match crate::templates::parse_template_json(&template_root.join("template.json")) {
+        Ok(t) => (t.name, t.version),
+        Err(_) => (String::new(), None),
+    }
+}
+
+/// The version label of an `Option<String>` version: the version itself, or
+/// [`VERSION_UNVERSIONED`].
+fn version_label(version: Option<&str>) -> String {
+    version.unwrap_or(VERSION_UNVERSIONED).to_string()
+}
+
+/// Read a standing cell directory's `config.json`. Lenient like
+/// [`read_on_disk_cell_type`]: `None` for a missing/unreadable/unparseable file.
+fn read_on_disk_config(cell_dir: &std::path::Path) -> Option<serde_json::Value> {
+    let raw = std::fs::read_to_string(cell_dir.join("config.json")).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+/// The provenance stamp a standing `config.json` carries — `None` when there
+/// is no `cell.provenance` or it does not parse.
+fn provenance_of_config(cfg: &serde_json::Value) -> Option<crate::config::NodeProvenance> {
+    let stamp = cfg.get("cell")?.get("provenance")?;
+    serde_json::from_value(stamp.clone()).ok()
+}
+
+/// GH #682: the verdict for one template child that stands on disk — `Some`
+/// when it is `changed`, `None` when it is kept. The rule is the one
+/// [`classify_subtree_nodes_in`] documents.
+fn version_diff(
+    node: &CellNode,
+    final_path: &std::path::Path,
+    outer: &(String, Option<String>),
+    ref_defaults: &HashMap<String, JsonValue>,
+    overrides: &SubtreeOverrides,
+) -> Option<ChangedNode> {
+    let (to_template, to_version) = node.ref_chain.last().cloned().unwrap_or(outer.clone());
+    let changed = |from_version: String| ChangedNode {
+        node: node.clone(),
+        final_path: final_path.to_path_buf(),
+        from_version,
+        to_version: version_label(to_version.as_deref()),
+    };
+
+    let Some(on_disk) = read_on_disk_config(final_path) else {
+        return Some(changed(VERSION_UNKNOWN.to_string()));
+    };
+    let Some(stamp) = provenance_of_config(&on_disk) else {
+        return Some(changed(VERSION_UNKNOWN.to_string()));
+    };
+    let from_version = version_label(stamp.template_version.as_deref());
+
+    // A ref'd child is an instance of the template the ref names, at the
+    // version the ref resolved to; another name or version is another child.
+    if !node.ref_chain.is_empty()
+        && (stamp.template != to_template || stamp.template_version != to_version)
+    {
+        return Some(changed(from_version));
+    }
+
+    let rendered = render_child_like_instantiation(node, ref_defaults, overrides);
+    if config_matches_rendered(&on_disk, &rendered) {
+        None
+    } else {
+        Some(changed(from_version))
+    }
+}
+
+/// The template child's `config.json` as
+/// [`crate::mutation::stage::patch_and_substitute_config`] would write it
+/// again, minus what cannot be re-derived: the ref markers' and this lift's
+/// `override_params` layered onto `params` (top-level key, last wins — and, as
+/// there, only when the template has a `params` object at all), the default
+/// sandbox block for a cell type that enforces one. `cell.id` and
+/// `cell.provenance` are not added; the comparison strips them from the other
+/// side instead.
+fn render_child_like_instantiation(
+    node: &CellNode,
+    ref_defaults: &HashMap<String, JsonValue>,
+    overrides: &SubtreeOverrides,
+) -> serde_json::Value {
+    let mut cfg = node.config.clone();
+    let mut layer = ref_defaults
+        .get(&node.rel_path)
+        .cloned()
+        .unwrap_or_else(|| JsonValue::Object(Default::default()));
+    if let Some(over) = overrides.by_rel_path.get(&node.rel_path) {
+        layer_params(&mut layer, over);
+    }
+    if let Some(params) = cfg.get_mut("params").and_then(|v| v.as_object_mut())
+        && let Some(over) = layer.as_object()
+    {
+        for (k, v) in over {
+            params.insert(k.clone(), v.clone());
+        }
+    }
+    let cell_type = cfg
+        .get("cell")
+        .and_then(|c| c.get("type"))
+        .and_then(|t| t.as_str())
+        .unwrap_or("");
+    if crate::mutation::stage::sandbox_enforcing(cell_type)
+        && let Some(obj) = cfg.as_object_mut()
+        && let Some(params) = obj
+            .entry("params")
+            .or_insert_with(|| JsonValue::Object(Default::default()))
+            .as_object_mut()
+        && params.get("sandbox").is_none()
+    {
+        params.insert(
+            "sandbox".into(),
+            crate::mutation::stage::default_sandbox_block(),
+        );
+    }
+    cfg
+}
+
+/// Whether a standing `config.json` is what the rendered template child would
+/// be written as: `cell.id` and `cell.provenance` stripped off the standing
+/// side, then [`values_match`] over the rest.
+fn config_matches_rendered(on_disk: &serde_json::Value, rendered: &serde_json::Value) -> bool {
+    let mut on_disk = on_disk.clone();
+    if let Some(cell) = on_disk.get_mut("cell").and_then(|c| c.as_object_mut()) {
+        cell.remove("id");
+        cell.remove("provenance");
+    }
+    values_match(rendered, &on_disk)
+}
+
+/// Structural equality between a template-side value and a standing one, with
+/// one tolerance: an instance token (`${ctx.…}`, `${uuid7:…}`) inside a
+/// template string was rendered per instance and matches any span of the
+/// standing string — the literal segments around it must stand, in order
+/// ([`template_string_matches`]). Objects need the same key set, arrays the
+/// same length.
+fn values_match(template: &serde_json::Value, standing: &serde_json::Value) -> bool {
+    match (template, standing) {
+        (JsonValue::String(t), JsonValue::String(s)) => template_string_matches(t, s),
+        (JsonValue::Object(t), JsonValue::Object(s)) => {
+            t.len() == s.len()
+                && t.iter()
+                    .all(|(k, tv)| s.get(k).is_some_and(|sv| values_match(tv, sv)))
+        }
+        (JsonValue::Array(t), JsonValue::Array(s)) => {
+            t.len() == s.len() && t.iter().zip(s).all(|(tv, sv)| values_match(tv, sv))
+        }
+        (t, s) => t == s,
+    }
+}
+
+/// Whether a standing string is a rendering of a template string: the
+/// template is split at its instance tokens (`${ctx.…}`, `${uuid7:…}`), and
+/// the literal segments have to stand in the standing string in order — the
+/// first as prefix, the last as suffix, the ones between somewhere after each
+/// other; only the token spans are wildcards. A template without a token has
+/// to stand literally. The `$${…}` escape and every environment token
+/// (`${VAR}`, `${VAR:-x}`) survive the instance pass literally and so are
+/// literal segments here.
+///
+/// The stated limit: a template that IS one token (`"${ctx.model}"`) matches
+/// every standing string, so a template that turned a literal into a token
+/// (1.0.0 `"sol"`, 1.1.0 `"${ctx.model}"`) reads as kept when the colony's
+/// `ctx.model` happens to render to the same. That is the reproduction the
+/// partition can do without the colony's `ctx` — which is the same at
+/// instantiation and at the lift, so the token wildcard is the right shape
+/// and a `ctx` parameter would buy nothing for the common case.
+fn template_string_matches(template: &str, standing: &str) -> bool {
+    let segments = literal_segments(template);
+    if segments.len() == 1 {
+        return segments[0] == standing;
+    }
+    let last = segments.len() - 1;
+    let mut rest = standing;
+    for (i, seg) in segments.iter().enumerate() {
+        if i == 0 {
+            let Some(after) = rest.strip_prefix(seg.as_str()) else {
+                return false;
+            };
+            rest = after;
+        } else if i == last {
+            return rest.ends_with(seg.as_str());
+        } else if let Some(at) = rest.find(seg.as_str()) {
+            rest = &rest[at + seg.len()..];
+        } else {
+            return false;
+        }
+    }
+    true
+}
+
+/// The literal segments of a template string, split at its instance tokens
+/// (`${ctx.…}`, `${uuid7:…}`) — one segment more than tokens, so a string
+/// without a token is one segment: itself. `$${` opens no token, and neither
+/// does an environment token or an unclosed `${`.
+fn literal_segments(template: &str) -> Vec<String> {
+    let mut segments = Vec::new();
+    let mut current = String::new();
+    let mut rest = template;
+    while let Some(c) = rest.chars().next() {
+        if let Some(after) = rest.strip_prefix("$${") {
+            current.push_str("$${");
+            rest = after;
+            continue;
+        }
+        if let Some(inner) = rest.strip_prefix("${")
+            && (inner.starts_with("ctx.") || inner.starts_with("uuid7:"))
+            && let Some(close) = inner.find('}')
+        {
+            segments.push(std::mem::take(&mut current));
+            rest = &inner[close + 1..];
+            continue;
+        }
+        current.push(c);
+        rest = &rest[c.len_utf8()..];
+    }
+    segments.push(current);
+    segments
+}
+
+/// GH #682: the nodes of the old tree the template does not name — see
+/// [`classify_subtree_nodes_in`]. `changed_roots` are the rel-paths of the
+/// `changed` nodes: whatever stands below one of them, named or not, moves
+/// along with its rename and is nobody's `left`.
+fn left_nodes(
+    root: &std::path::Path,
+    scope: &str,
+    name: &str,
+    template: &SubtreeTemplate,
+    subtree_root_abs: &Path,
+    registered: &[Path],
+    changed_roots: &[String],
+) -> Result<Vec<LeftNode>, MutationError> {
+    let named: std::collections::HashSet<&str> =
+        template.cells.iter().map(|c| c.rel_path.as_str()).collect();
+    let mut candidates: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+
+    let prefix = format!("{}/", subtree_root_abs.as_str());
+    for path in registered {
+        if let Some(rel) = path.as_str().strip_prefix(&prefix)
+            && !rel.is_empty()
+        {
+            candidates.insert(rel.to_string());
+        }
+    }
+
+    let hive_dir = final_path_for(root, scope, name, "");
+    let mut on_disk = Vec::new();
+    collect_on_disk_cells(&hive_dir, &hive_dir, &mut on_disk)?;
+    candidates.extend(on_disk);
+
+    let mut left = Vec::new();
+    for rel in &candidates {
+        if named.contains(rel.as_str()) {
+            continue;
+        }
+        // Below a changed node: carried along by its rename, not left.
+        if changed_roots
+            .iter()
+            .any(|owner| is_self_or_rel_descendant(rel, owner))
+        {
+            continue;
+        }
+        // Only the top-most unnamed node: an ancestor that is itself unnamed
+        // carries everything below it.
+        let under_a_left_ancestor = rel
+            .match_indices('/')
+            .any(|(i, _)| !named.contains(&rel[..i]) && candidates.contains(&rel[..i]));
+        if under_a_left_ancestor {
+            continue;
+        }
+        let dir = final_path_for(root, scope, name, rel);
+        let version = stamped_version(&dir);
+        left.push(LeftNode {
+            rel_path: rel.clone(),
+            abs_path: absolute_for(subtree_root_abs, rel).as_str().to_string(),
+            version,
+        });
+    }
+    Ok(left)
+}
+
+/// GH #682 — the version a standing cell directory is stamped with: its
+/// `cell.provenance.template_version` ([`VERSION_UNVERSIONED`] for a stamp
+/// without one), or [`VERSION_UNKNOWN`] when there is no readable stamp or
+/// no directory. What a left child and a kept child report in the receipt.
+pub(crate) fn stamped_version(dir: &std::path::Path) -> String {
+    read_on_disk_config(dir)
+        .as_ref()
+        .and_then(provenance_of_config)
+        .map(|p| version_label(p.template_version.as_deref()))
+        .unwrap_or_else(|| VERSION_UNKNOWN.to_string())
+}
+
+/// Every cell directory below `dir` (a directory holding a `config.json`,
+/// `seed/` and dot-directories excluded), as rel-paths from `hive_dir` — the
+/// on-disk mirror of the rule [`collect_cells`] reads a template by. `hive_dir`
+/// itself is not listed. A hive that does not stand on disk yields nothing.
+fn collect_on_disk_cells(
+    hive_dir: &std::path::Path,
+    dir: &std::path::Path,
+    out: &mut Vec<String>,
+) -> Result<(), MutationError> {
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    let read_dir = std::fs::read_dir(dir)
+        .map_err(|e| MutationError::Schema(format!("read_dir {}: {e}", dir.display())))?;
+    let mut sub_dirs: Vec<PathBuf> = Vec::new();
+    for entry in read_dir {
+        let entry = entry.map_err(|e| {
+            MutationError::Schema(format!("read_dir entry in {}: {e}", dir.display()))
+        })?;
+        let path = entry.path();
+        let skip = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_none_or(|n| n == "seed" || n.starts_with('.'));
+        if path.is_dir() && !skip {
+            sub_dirs.push(path);
+        }
+    }
+    sub_dirs.sort();
+    for sub in sub_dirs {
+        if sub.join("config.json").is_file() {
+            out.push(relative_path(hive_dir, &sub));
+        }
+        collect_on_disk_cells(hive_dir, &sub, out)?;
+    }
+    Ok(())
 }
 
 /// Read `cell.type` from an EXISTING on-disk cell directory's `config.json`.
@@ -1254,6 +1795,15 @@ pub enum AwakeState {
 ///
 /// The error carries the node's absolute logical path string, exactly as the
 /// single-cell resume site does (`target.as_str().to_string()`).
+///
+/// This is the RESUME guard, called on the `add_nodes` subtree path only. The
+/// `replace_nodes` path (GH #682, [`DiffMode::Replace`]) does not use it: a
+/// lift resumes nothing — a `kept` child's task is left exactly as it runs
+/// (nothing is written under it), and a `changed` child's old task is stopped
+/// through the mutation's own stop mechanics (recompute → peace-stop →
+/// death-ack), which is precisely what a running child is allowed to go
+/// through. Refusing a lift because its children are awake would refuse
+/// every lift of a working hive.
 ///
 /// # Errors
 /// Returns [`MutationError::ResumeRequiresStoppedCell`] for the first existing
@@ -1362,7 +1912,7 @@ pub fn resolve_subtree(
 /// # Errors
 /// Returns [`MutationError::Schema`] if a resolved endpoint escapes the subtree
 /// root.
-fn resolve_internal_edges(
+pub(crate) fn resolve_internal_edges(
     template: &SubtreeTemplate,
     subtree_root_abs: &Path,
 ) -> Result<Vec<ResolvedEdge>, MutationError> {
@@ -1688,7 +2238,7 @@ fn staging_dir_for(root_staging_path: &std::path::Path, rel_path: &str) -> PathB
 
 /// Absolute logical path of a cell node: the subtree root itself for `""`, else
 /// `resolve_scoped_path(subtree_root, rel_path)`.
-fn absolute_for(subtree_root_abs: &Path, rel_path: &str) -> Path {
+pub(crate) fn absolute_for(subtree_root_abs: &Path, rel_path: &str) -> Path {
     if rel_path.is_empty() {
         subtree_root_abs.clone()
     } else {
@@ -1935,7 +2485,11 @@ impl SubtreeOverrides {
     /// The synthetic `add_nodes` entry for one cell — the shape
     /// `patch_and_substitute_config` already merges. A cell with no entry gets
     /// an empty object and is byte-identical to the pre-#140 staging.
-    fn for_cell(&self, rel_path: &str) -> JsonValue {
+    ///
+    /// `pub(crate)` since GH #682: the lift renders the lifted hive's own
+    /// declaration through `patch_and_substitute_config` too, and hands it the
+    /// entry addressed at `""` in this same shape.
+    pub(crate) fn for_cell(&self, rel_path: &str) -> JsonValue {
         match self.by_rel_path.get(rel_path) {
             None => JsonValue::Object(Default::default()),
             Some(params) => {
@@ -2061,8 +2615,13 @@ pub fn stage_subtree_merge(
 /// seed is present and the cell type does not own its schema (GH #398), and
 /// classifies it into spawnable cells vs. hive scope markers — identical
 /// per-cell semantics to [`stage_subtree`].
+///
+/// `pub(crate)` since GH #682: a lift ([`crate::mutation::stage_replace`])
+/// stages its added and its changed children in exactly this form — a changed
+/// child is the rename root of its whole branch, instantiated under the
+/// template name while the old directory is renamed beside it.
 #[allow(clippy::too_many_arguments)]
-fn stage_rename_root(
+pub(crate) fn stage_rename_root(
     root: &std::path::Path,
     mutation_id: &str,
     scope: &str,
@@ -2180,7 +2739,7 @@ fn stage_rename_root(
 /// True if template `rel_path` is the rename-root `root_rel` itself or a
 /// descendant of it. The empty `root_rel` (whole-root rename-root) matches every
 /// node.
-fn is_self_or_rel_descendant(rel_path: &str, root_rel: &str) -> bool {
+pub(crate) fn is_self_or_rel_descendant(rel_path: &str, root_rel: &str) -> bool {
     if root_rel.is_empty() {
         return true;
     }
@@ -3307,6 +3866,769 @@ mod tests {
             "config.json untouched"
         );
         assert_eq!(file_hash(&inner_a_db), db_hash_before, "cell.db untouched");
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // GH #682: the version diff per child (DiffMode::Replace)
+    // ──────────────────────────────────────────────────────────────────────
+
+    /// A child's `config.json` as the `screen` fixture writes it — the same
+    /// string for both versions of `keep`, so "byte-identical" is guaranteed
+    /// and not merely apparent.
+    fn screen_child(contract_version: &str) -> String {
+        format!(
+            r#"{{"cell":{{"type":"echo_sub"}},"params":{{"echo_to":"/capture"}},"contract":{{"version":"{contract_version}","settings":{{}},"consumes":{{}}}}}}"#
+        )
+    }
+
+    /// The `screen` class in two versions, as siblings under `library/`, plus a
+    /// registry that knows both. 1.0.0 has `keep`, `bump`, `gone`; 1.1.0 has
+    /// `keep` (byte-identical), `bump` (contract 1.1.0) and `fresh` — and no
+    /// `gone`.
+    fn screen_library(
+        colony_root: &std::path::Path,
+    ) -> (
+        std::path::PathBuf,
+        std::path::PathBuf,
+        crate::templates::TemplatesRegistry,
+    ) {
+        let lib = colony_root.join("library");
+        let v100 = lib.join("screen@1.0.0");
+        let v110 = lib.join("screen@1.1.0");
+        write_json(
+            &v100.join("template.json"),
+            r#"{"name":"screen","version":"1.0.0"}"#,
+        );
+        write_json(
+            &v100.join("config.json"),
+            r#"{"cell":{"type":"hive"},"params":{"graph":{"edges":[{"from":".","to":"./keep"},{"from":"./keep","to":"./bump"},{"from":"./bump","to":"./gone"},{"from":"./gone","to":"."}]}}}"#,
+        );
+        for child in ["keep", "bump", "gone"] {
+            write_json(
+                &v100.join(child).join("config.json"),
+                &screen_child("1.0.0"),
+            );
+        }
+        write_json(
+            &v110.join("template.json"),
+            r#"{"name":"screen","version":"1.1.0"}"#,
+        );
+        write_json(
+            &v110.join("config.json"),
+            r#"{"cell":{"type":"hive"},"params":{"graph":{"edges":[{"from":".","to":"./keep"},{"from":".","to":"./fresh"},{"from":"./keep","to":"./bump"},{"from":"./bump","to":"."},{"from":"./fresh","to":"."}]}}}"#,
+        );
+        write_json(
+            &v110.join("keep").join("config.json"),
+            &screen_child("1.0.0"),
+        );
+        write_json(
+            &v110.join("bump").join("config.json"),
+            &screen_child("1.1.0"),
+        );
+        write_json(
+            &v110.join("fresh").join("config.json"),
+            &screen_child("1.0.0"),
+        );
+        let registry = crate::templates::TemplatesRegistry::from_entries(vec![
+            crate::templates::TemplateEntry {
+                template_id: "t-screen-100".into(),
+                name: "screen".into(),
+                version: Some("1.0.0".into()),
+                filesystem_path: v100.clone(),
+            },
+            crate::templates::TemplateEntry {
+                template_id: "t-screen-110".into(),
+                name: "screen".into(),
+                version: Some("1.1.0".into()),
+                filesystem_path: v110.clone(),
+            },
+        ]);
+        (v100, v110, registry)
+    }
+
+    /// Grow a subtree instance the way the mutation path does — the real
+    /// `stage_subtree` (fresh `cell.id`, substitution, provenance stamp), then
+    /// the rename into its final place — so the on-disk children carry exactly
+    /// what an instantiation leaves behind, not a hand-written imitation.
+    #[allow(clippy::too_many_arguments)]
+    fn grow_for_real(
+        colony_root: &std::path::Path,
+        mutation_id: &str,
+        scope: &str,
+        name: &str,
+        template_root: &std::path::Path,
+        template_name: &str,
+        template_version: &str,
+        ctx: &HashMap<String, String>,
+        overrides: &SubtreeOverrides,
+        registry: &crate::templates::TemplatesRegistry,
+    ) {
+        let provenance = crate::config::NodeProvenance {
+            template: template_name.to_string(),
+            template_version: Some(template_version.to_string()),
+            template_chain: Some(vec![(
+                template_name.to_string(),
+                Some(template_version.to_string()),
+            )]),
+            instantiated_at: 1_700_000_000,
+        };
+        let staged = stage_subtree(
+            colony_root,
+            mutation_id,
+            scope,
+            name,
+            template_root,
+            &HashMap::new(),
+            ctx,
+            Some(&provenance),
+            overrides,
+            registry,
+            &Default::default(),
+            &crate::watchdog::WorkPulse::silent(),
+            crate::mutation::Birth::Active,
+        )
+        .expect("stage_subtree");
+        if let Some(parent) = staged.root_final_path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::rename(&staged.root_staging_path, &staged.root_final_path).unwrap();
+    }
+
+    fn rel_paths(nodes: &[CellNode]) -> Vec<String> {
+        nodes.iter().map(|n| n.rel_path.clone()).collect()
+    }
+
+    fn existing_paths(nodes: &[ResolvedExistingNode]) -> Vec<String> {
+        nodes
+            .iter()
+            .map(|n| n.absolute_path.as_str().to_string())
+            .collect()
+    }
+
+    /// GH #682 (Task 3, the brief's partition): a screen grown at 1.0.0,
+    /// partitioned against 1.1.0 in `Replace` mode — `keep` is kept, `bump`
+    /// changed 1.0.0 → 1.1.0, `fresh` added, `gone` left.
+    #[test]
+    fn a_lift_partitions_kept_changed_added_and_left() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let colony_root = tmp.path();
+        colony_root_with_root_cell(colony_root, "main");
+        let (v100, v110, registry) = screen_library(colony_root);
+        grow_for_real(
+            colony_root,
+            "mid-grow",
+            "/alex",
+            "display",
+            &v100,
+            "screen",
+            "1.0.0",
+            &HashMap::new(),
+            &SubtreeOverrides::default(),
+            &registry,
+        );
+
+        let part = classify_subtree_nodes_in(
+            colony_root,
+            "/alex",
+            "display",
+            &v110,
+            &registry,
+            DiffMode::Replace,
+            &SubtreeOverrides::default(),
+            &[],
+        )
+        .expect("partition in Replace mode");
+
+        assert_eq!(
+            existing_paths(&part.existing),
+            vec!["/alex/display/keep"],
+            "keep stands at the same bytes: kept"
+        );
+        assert_eq!(
+            part.changed.len(),
+            1,
+            "exactly bump changed: {:?}",
+            part.changed
+        );
+        let bump = &part.changed[0];
+        assert_eq!(bump.node.rel_path, "bump");
+        assert_eq!(bump.from_version, "1.0.0");
+        assert_eq!(bump.to_version, "1.1.0");
+        assert_eq!(
+            bump.final_path,
+            crate::path_truth::resolve_cell_dir(colony_root, "/alex", "display/bump")
+        );
+        assert_eq!(rel_paths(&part.missing), vec!["fresh"], "fresh is added");
+        assert_eq!(part.left.len(), 1, "exactly gone left: {:?}", part.left);
+        assert_eq!(part.left[0].rel_path, "gone");
+        assert_eq!(part.left[0].abs_path, "/alex/display/gone");
+        assert_eq!(part.left[0].version, "1.0.0");
+        assert!(part.missing_hives.is_empty());
+        assert_eq!(part.existing_hives.len(), 1, "the hive itself stands");
+        assert_eq!(
+            part.existing_hives[0].absolute_path.as_str(),
+            "/alex/display"
+        );
+    }
+
+    /// GH #682 (orchestrator ruling): a child instantiated unchanged from the
+    /// same template version compares EQUAL — the normalisation strips exactly
+    /// what instantiation adds. Partitioning the grown 1.0.0 against 1.0.0
+    /// itself keeps every child and changes none.
+    #[test]
+    fn a_child_instantiated_unchanged_compares_equal() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let colony_root = tmp.path();
+        colony_root_with_root_cell(colony_root, "main");
+        let (v100, _v110, registry) = screen_library(colony_root);
+        grow_for_real(
+            colony_root,
+            "mid-grow",
+            "/alex",
+            "display",
+            &v100,
+            "screen",
+            "1.0.0",
+            &HashMap::new(),
+            &SubtreeOverrides::default(),
+            &registry,
+        );
+        // The instantiation really did add what the comparison has to strip.
+        let keep_cfg: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(
+                crate::path_truth::resolve_cell_dir(colony_root, "/alex", "display/keep")
+                    .join("config.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(keep_cfg["cell"]["id"].is_string(), "cell.id minted");
+        assert_eq!(keep_cfg["cell"]["provenance"]["template_version"], "1.0.0");
+
+        let part = classify_subtree_nodes_in(
+            colony_root,
+            "/alex",
+            "display",
+            &v100,
+            &registry,
+            DiffMode::Replace,
+            &SubtreeOverrides::default(),
+            &[],
+        )
+        .expect("partition against the same version");
+
+        assert_eq!(
+            existing_paths(&part.existing),
+            vec![
+                "/alex/display/bump",
+                "/alex/display/gone",
+                "/alex/display/keep"
+            ],
+            "every child is kept"
+        );
+        assert!(
+            part.changed.is_empty(),
+            "nothing changed: {:?}",
+            part.changed
+        );
+        assert!(part.missing.is_empty());
+        assert!(part.left.is_empty(), "nothing left: {:?}", part.left);
+    }
+
+    /// GH #682: the comparison mirrors the rest of what instantiation writes —
+    /// an instance token rendered from `ctx`, an `override_params` value merged
+    /// into `params`, and the default sandbox block a `code` cell receives. With
+    /// the lift re-supplying the same overrides the child is kept; without them
+    /// it is changed, because the instance the lift would write is another one.
+    /// A child with no provenance stamp is changed with its version unknown.
+    #[test]
+    fn the_comparison_mirrors_what_instantiation_writes() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let colony_root = tmp.path();
+        colony_root_with_root_cell(colony_root, "main");
+        let tpl = colony_root.join("library").join("tuned@1.0.0");
+        write_json(
+            &tpl.join("template.json"),
+            r#"{"name":"tuned","version":"1.0.0"}"#,
+        );
+        write_json(
+            &tpl.join("config.json"),
+            r#"{"cell":{"type":"hive"},"params":{"graph":{"edges":[]}}}"#,
+        );
+        write_json(
+            &tpl.join("worker").join("config.json"),
+            r#"{"cell":{"type":"code"},"params":{"model":"${ctx.model}","tick":1,"script_inline":"pass"},"contract":{"version":"1.0.0","settings":{},"consumes":{}}}"#,
+        );
+        write_json(
+            &tpl.join("plain").join("config.json"),
+            r#"{"cell":{"type":"echo"},"params":{},"contract":{"version":"1.0.0","settings":{},"consumes":{}}}"#,
+        );
+        let registry = crate::templates::TemplatesRegistry::from_entries(vec![
+            crate::templates::TemplateEntry {
+                template_id: "t-tuned".into(),
+                name: "tuned".into(),
+                version: Some("1.0.0".into()),
+                filesystem_path: tpl.clone(),
+            },
+        ]);
+        let mut ctx = HashMap::new();
+        ctx.insert("model".to_string(), "sol".to_string());
+        let overrides = SubtreeOverrides::from_add_node(
+            &serde_json::json!({"override_params": {"worker": {"tick": 5}}}),
+        );
+        grow_for_real(
+            colony_root,
+            "mid-grow",
+            "/main",
+            "t1",
+            &tpl,
+            "tuned",
+            "1.0.0",
+            &ctx,
+            &overrides,
+            &registry,
+        );
+        let worker_dir = crate::path_truth::resolve_cell_dir(colony_root, "/main", "t1/worker");
+        let worker_cfg: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(worker_dir.join("config.json")).unwrap())
+                .unwrap();
+        assert_eq!(worker_cfg["params"]["model"], "sol", "ctx rendered");
+        assert_eq!(worker_cfg["params"]["tick"], 5, "override merged");
+        assert!(
+            worker_cfg["params"]["sandbox"].is_object(),
+            "default sandbox block written"
+        );
+
+        let same = classify_subtree_nodes_in(
+            colony_root,
+            "/main",
+            "t1",
+            &tpl,
+            &registry,
+            DiffMode::Replace,
+            &overrides,
+            &[],
+        )
+        .expect("partition with the same overrides");
+        assert_eq!(
+            existing_paths(&same.existing),
+            vec!["/main/t1/plain", "/main/t1/worker"],
+            "kept: {:?}",
+            same.changed
+        );
+        assert!(same.changed.is_empty());
+
+        let without = classify_subtree_nodes_in(
+            colony_root,
+            "/main",
+            "t1",
+            &tpl,
+            &registry,
+            DiffMode::Replace,
+            &SubtreeOverrides::default(),
+            &[],
+        )
+        .expect("partition without the overrides");
+        assert_eq!(existing_paths(&without.existing), vec!["/main/t1/plain"]);
+        assert_eq!(without.changed.len(), 1);
+        assert_eq!(without.changed[0].node.rel_path, "worker");
+        assert_eq!(without.changed[0].from_version, "1.0.0");
+        assert_eq!(without.changed[0].to_version, "1.0.0");
+
+        // Strip the stamp off `plain`: an older instantiation without
+        // provenance is version-unknown, and version-unknown is changed.
+        let plain_cfg_path = crate::path_truth::resolve_cell_dir(colony_root, "/main", "t1/plain")
+            .join("config.json");
+        let mut plain_cfg: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&plain_cfg_path).unwrap()).unwrap();
+        plain_cfg["cell"]
+            .as_object_mut()
+            .unwrap()
+            .remove("provenance");
+        fs::write(&plain_cfg_path, plain_cfg.to_string()).unwrap();
+        let unstamped = classify_subtree_nodes_in(
+            colony_root,
+            "/main",
+            "t1",
+            &tpl,
+            &registry,
+            DiffMode::Replace,
+            &overrides,
+            &[],
+        )
+        .expect("partition with an unstamped child");
+        assert_eq!(existing_paths(&unstamped.existing), vec!["/main/t1/worker"]);
+        assert_eq!(unstamped.changed.len(), 1);
+        assert_eq!(unstamped.changed[0].node.rel_path, "plain");
+        assert_eq!(unstamped.changed[0].from_version, VERSION_UNKNOWN);
+    }
+
+    /// GH #682: `left` is the union of the registry rows under the hive and the
+    /// cell directories on disk that the template does not name — a row without
+    /// a directory counts, a directory without a row counts, an earlier lift's
+    /// `~<version>` sibling counts, and only the top-most left node is named.
+    #[test]
+    fn left_reads_registry_rows_and_disk_alike() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let colony_root = tmp.path();
+        colony_root_with_root_cell(colony_root, "main");
+        let (v100, v110, registry) = screen_library(colony_root);
+        grow_for_real(
+            colony_root,
+            "mid-grow",
+            "/alex",
+            "display",
+            &v100,
+            "screen",
+            "1.0.0",
+            &HashMap::new(),
+            &SubtreeOverrides::default(),
+            &registry,
+        );
+        // An earlier lift's renamed sibling, stamped at its old version, with a
+        // nested cell below it that must not be named on its own.
+        let display_dir = crate::path_truth::resolve_cell_dir(colony_root, "/alex", "display");
+        write_json(
+            &display_dir.join("bump~0.9.0").join("config.json"),
+            r#"{"cell":{"type":"echo_sub","provenance":{"template":"screen","template_version":"0.9.0","instantiated_at":1}},"params":{},"contract":{"version":"0.9.0","settings":{},"consumes":{}}}"#,
+        );
+        write_json(
+            &display_dir
+                .join("bump~0.9.0")
+                .join("inner")
+                .join("config.json"),
+            r#"{"cell":{"type":"echo_sub"},"params":{},"contract":{"version":"0.9.0","settings":{},"consumes":{}}}"#,
+        );
+        // A seed directory is data, never a cell.
+        write_json(
+            &display_dir.join("keep").join("seed").join("config.json"),
+            r#"{}"#,
+        );
+        let registered = vec![
+            Path::new("/alex/display/keep"),
+            Path::new("/alex/display/rowonly"),
+            Path::new("/alex/display"),
+            Path::new("/alex/elsewhere"),
+        ];
+
+        let part = classify_subtree_nodes_in(
+            colony_root,
+            "/alex",
+            "display",
+            &v110,
+            &registry,
+            DiffMode::Replace,
+            &SubtreeOverrides::default(),
+            &registered,
+        )
+        .expect("partition");
+
+        let mut left: Vec<(String, String, String)> = part
+            .left
+            .iter()
+            .map(|l| (l.rel_path.clone(), l.abs_path.clone(), l.version.clone()))
+            .collect();
+        left.sort();
+        assert_eq!(
+            left,
+            vec![
+                (
+                    "bump~0.9.0".to_string(),
+                    "/alex/display/bump~0.9.0".to_string(),
+                    "0.9.0".to_string()
+                ),
+                (
+                    "gone".to_string(),
+                    "/alex/display/gone".to_string(),
+                    "1.0.0".to_string()
+                ),
+                (
+                    "rowonly".to_string(),
+                    "/alex/display/rowonly".to_string(),
+                    VERSION_UNKNOWN.to_string()
+                ),
+            ]
+        );
+    }
+
+    /// GH #682 (fix round 1): only the token spans of a template string are
+    /// wildcards — the literal segments around them must stand in order. A
+    /// token the whole string consists of matches any rendering (the stated
+    /// limit: `ctx` is the colony's and the same at both moments), and the
+    /// `$${…}` escape is literal.
+    #[test]
+    fn a_template_string_matches_on_its_literal_segments() {
+        let m = |t: &str, s: &str| values_match(&serde_json::json!(t), &serde_json::json!(s));
+        // 1.0.0 `${ctx.model}` → 1.1.0 `${ctx.model}-mini`, disk `sol`: changed.
+        assert!(!m("${ctx.model}-mini", "sol"));
+        // Positive: the literal suffix stands after the rendered token.
+        assert!(m("${ctx.model}-x", "sol-x"));
+        assert!(m("a-${uuid7:s}-${ctx.k}-z", "a-0190-v-z"));
+        assert!(!m("a-${uuid7:s}-${ctx.k}-z", "b-0190-v-z"));
+        assert!(!m("a-${ctx.k}-z", "a-v-y"));
+        // The whole string is one token: any rendering, by ruling.
+        assert!(m("${ctx.model}", "sol"));
+        // Escaped token: literal on both sides, never a wildcard.
+        assert!(m("$${ctx.x}", "$${ctx.x}"));
+        assert!(!m("$${ctx.x}", "sol"));
+        // Environment tokens survive literally and compare literally.
+        assert!(m("${API_KEY}", "${API_KEY}"));
+        assert!(!m("${API_KEY}", "sol"));
+        // No token, no tolerance.
+        assert!(!m("sol", "sol-mini"));
+    }
+
+    /// GH #682 (fix round 1): a `changed` node owns its subtree — what stands
+    /// below it is neither `existing` nor `missing`; the changed node is the
+    /// rename root and re-instantiates the whole branch.
+    #[test]
+    fn a_changed_node_owns_its_subtree() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let colony_root = tmp.path();
+        colony_root_with_root_cell(colony_root, "main");
+        let lib = colony_root.join("library");
+        let v100 = lib.join("branch@1.0.0");
+        let v110 = lib.join("branch@1.1.0");
+        let leaf = r#"{"cell":{"type":"echo"},"params":{},"contract":{"version":"1.0.0","settings":{},"consumes":{}}}"#;
+        for (dir, version, a_params) in [
+            (&v100, "1.0.0", r#"{"v":1}"#),
+            (&v110, "1.1.0", r#"{"v":2}"#),
+        ] {
+            write_json(
+                &dir.join("template.json"),
+                &format!(r#"{{"name":"branch","version":"{version}"}}"#),
+            );
+            write_json(
+                &dir.join("config.json"),
+                r#"{"cell":{"type":"hive"},"params":{"graph":{"edges":[{"from":"./a","to":"./a/b"}]}}}"#,
+            );
+            write_json(
+                &dir.join("a").join("config.json"),
+                &format!(
+                    r#"{{"cell":{{"type":"echo"}},"params":{a_params},"contract":{{"version":"1.0.0","settings":{{}},"consumes":{{}}}}}}"#
+                ),
+            );
+            write_json(&dir.join("a").join("b").join("config.json"), leaf);
+        }
+        write_json(&v110.join("a").join("c").join("config.json"), leaf);
+        let registry = crate::templates::TemplatesRegistry::from_entries(vec![
+            crate::templates::TemplateEntry {
+                template_id: "t-branch-100".into(),
+                name: "branch".into(),
+                version: Some("1.0.0".into()),
+                filesystem_path: v100.clone(),
+            },
+            crate::templates::TemplateEntry {
+                template_id: "t-branch-110".into(),
+                name: "branch".into(),
+                version: Some("1.1.0".into()),
+                filesystem_path: v110.clone(),
+            },
+        ]);
+        grow_for_real(
+            colony_root,
+            "mid-grow",
+            "/main",
+            "br",
+            &v100,
+            "branch",
+            "1.0.0",
+            &HashMap::new(),
+            &SubtreeOverrides::default(),
+            &registry,
+        );
+        // What stands below `a` and is not named — a hand-grown `a/old`, an
+        // earlier lift's `a/x~0.9.0`, a registry row `a/rowonly` — moves along
+        // with the rename of `a` and is nobody's `left`.
+        let a_dir = crate::path_truth::resolve_cell_dir(colony_root, "/main", "br/a");
+        write_json(&a_dir.join("old").join("config.json"), leaf);
+        write_json(&a_dir.join("x~0.9.0").join("config.json"), leaf);
+
+        let part = classify_subtree_nodes_in(
+            colony_root,
+            "/main",
+            "br",
+            &v110,
+            &registry,
+            DiffMode::Replace,
+            &SubtreeOverrides::default(),
+            &[Path::new("/main/br/a/rowonly")],
+        )
+        .expect("partition");
+
+        let changed: Vec<&str> = part
+            .changed
+            .iter()
+            .map(|c| c.node.rel_path.as_str())
+            .collect();
+        assert_eq!(changed, vec!["a"], "a is the rename root");
+        assert!(
+            part.existing.is_empty(),
+            "a/b stands byte-equal but belongs to a: {:?}",
+            existing_paths(&part.existing)
+        );
+        assert!(
+            part.missing.is_empty(),
+            "a/c is new but belongs to a: {:?}",
+            rel_paths(&part.missing)
+        );
+        assert!(
+            part.left.is_empty(),
+            "a/old, a/x~0.9.0 and the row a/rowonly go with a: {:?}",
+            part.left
+        );
+    }
+
+    /// GH #682 (fix round 1): the ref branch of the version rule. A child that
+    /// comes in through a `ref` is kept when its stamp names the same hop
+    /// (template, version) and the bytes stand; another hop version with the
+    /// same bytes is changed, from/to being the hop versions.
+    #[test]
+    fn a_ref_child_is_judged_by_its_hop() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let colony_root = tmp.path();
+        colony_root_with_root_cell(colony_root, "main");
+        let lib = colony_root.join("library");
+        let widget = r#"{"cell":{"type":"echo"},"params":{"k":"v"},"contract":{"version":"1.0.0","settings":{},"consumes":{}}}"#;
+        let mut entries = Vec::new();
+        for version in ["1.0.0", "1.1.0"] {
+            let dir = lib.join(format!("widget@{version}"));
+            write_json(
+                &dir.join("template.json"),
+                &format!(r#"{{"name":"widget","version":"{version}"}}"#),
+            );
+            write_json(&dir.join("config.json"), widget);
+            entries.push(crate::templates::TemplateEntry {
+                template_id: format!("t-widget-{version}"),
+                name: "widget".into(),
+                version: Some(version.into()),
+                filesystem_path: dir,
+            });
+            let panel = lib.join(format!("panel@{version}"));
+            write_json(
+                &panel.join("template.json"),
+                &format!(r#"{{"name":"panel","version":"{version}"}}"#),
+            );
+            write_json(
+                &panel.join("config.json"),
+                r#"{"cell":{"type":"hive"},"params":{"graph":{"edges":[]}}}"#,
+            );
+            write_json(
+                &panel.join("w").join("config.json"),
+                &format!(r#"{{"cell":{{"type":"ref","template":"widget@{version}"}}}}"#),
+            );
+            entries.push(crate::templates::TemplateEntry {
+                template_id: format!("t-panel-{version}"),
+                name: "panel".into(),
+                version: Some(version.into()),
+                filesystem_path: panel,
+            });
+        }
+        let registry = crate::templates::TemplatesRegistry::from_entries(entries);
+        let panel_100 = lib.join("panel@1.0.0");
+        let panel_110 = lib.join("panel@1.1.0");
+        grow_for_real(
+            colony_root,
+            "mid-grow",
+            "/main",
+            "p",
+            &panel_100,
+            "panel",
+            "1.0.0",
+            &HashMap::new(),
+            &SubtreeOverrides::default(),
+            &registry,
+        );
+        let w_cfg: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(
+                crate::path_truth::resolve_cell_dir(colony_root, "/main", "p/w")
+                    .join("config.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(w_cfg["cell"]["provenance"]["template"], "widget");
+        assert_eq!(w_cfg["cell"]["provenance"]["template_version"], "1.0.0");
+
+        let same_hop = classify_subtree_nodes_in(
+            colony_root,
+            "/main",
+            "p",
+            &panel_100,
+            &registry,
+            DiffMode::Replace,
+            &SubtreeOverrides::default(),
+            &[],
+        )
+        .expect("partition against the same hop");
+        assert_eq!(existing_paths(&same_hop.existing), vec!["/main/p/w"]);
+        assert!(same_hop.changed.is_empty());
+
+        let other_hop = classify_subtree_nodes_in(
+            colony_root,
+            "/main",
+            "p",
+            &panel_110,
+            &registry,
+            DiffMode::Replace,
+            &SubtreeOverrides::default(),
+            &[],
+        )
+        .expect("partition against the other hop");
+        assert!(other_hop.existing.is_empty());
+        assert_eq!(other_hop.changed.len(), 1);
+        assert_eq!(other_hop.changed[0].node.rel_path, "w");
+        assert_eq!(other_hop.changed[0].from_version, "1.0.0");
+        assert_eq!(other_hop.changed[0].to_version, "1.1.0");
+    }
+
+    /// GH #682: `Resume` mode is the old behaviour byte for byte — a child
+    /// standing at other bytes is `existing`, and `changed`/`left` stay empty.
+    #[test]
+    fn resume_mode_knows_neither_changed_nor_left() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let colony_root = tmp.path();
+        colony_root_with_root_cell(colony_root, "main");
+        let (v100, v110, registry) = screen_library(colony_root);
+        grow_for_real(
+            colony_root,
+            "mid-grow",
+            "/alex",
+            "display",
+            &v100,
+            "screen",
+            "1.0.0",
+            &HashMap::new(),
+            &SubtreeOverrides::default(),
+            &registry,
+        );
+
+        let resumed = classify_subtree_nodes_in(
+            colony_root,
+            "/alex",
+            "display",
+            &v110,
+            &registry,
+            DiffMode::Resume,
+            &SubtreeOverrides::default(),
+            &[],
+        )
+        .expect("partition in Resume mode");
+        let plain = classify_subtree_nodes(colony_root, "/alex", "display", &v110, &registry)
+            .expect("the old entry point");
+
+        assert_eq!(
+            existing_paths(&resumed.existing),
+            vec!["/alex/display/bump", "/alex/display/keep"]
+        );
+        assert_eq!(
+            existing_paths(&resumed.existing),
+            existing_paths(&plain.existing)
+        );
+        assert_eq!(rel_paths(&resumed.missing), vec!["fresh"]);
+        assert_eq!(rel_paths(&resumed.missing), rel_paths(&plain.missing));
+        assert!(resumed.changed.is_empty() && plain.changed.is_empty());
+        assert!(resumed.left.is_empty() && plain.left.is_empty());
     }
 
     #[test]

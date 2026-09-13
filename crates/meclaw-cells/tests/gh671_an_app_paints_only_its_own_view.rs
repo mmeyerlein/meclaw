@@ -34,16 +34,23 @@ fn read(p: &std::path::Path) -> String {
 /// lands on. `:root[data-theme=dark] .colony-view` is a rule on the view and
 /// stays; `:root[data-theme=dark] body` is a rule on the document and goes.
 ///
-/// It catches the BARE document subject (`html`, `body`, `:root`); `body:not(.x)`,
-/// `body[data-x]` and `body::before` pass -- a lock against oversight, not
-/// against evasion.
+/// The subject is read by prefix, so a qualified document is the document:
+/// `body:not(.x)`, `body[data-x]`, `body::before`, `body.dark` and
+/// `:root[data-theme=dark]` are all rules that land on the document. What
+/// follows the name has to be a qualifier (`.`, `:`, `[`, `#`) or nothing,
+/// so `html-embed` and `bodyguard` are still their own elements. A lock
+/// against oversight, not against evasion.
 fn subject_is_the_document(selector: &str) -> bool {
     selector.split(',').any(|part| {
         let subject = part
             .split(|c: char| c.is_whitespace() || matches!(c, '>' | '+' | '~'))
             .rfind(|s| !s.is_empty())
             .unwrap_or("");
-        matches!(subject, "html" | "body" | ":root")
+        ["html", "body", ":root"].iter().any(|name| {
+            subject
+                .strip_prefix(name)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with(['.', ':', '[', '#']))
+        })
     })
 }
 
@@ -173,6 +180,13 @@ fn the_document_subject_is_read_off_the_last_compound() {
         ".a,\nbody",
         ":root[data-theme=dark]\nbody",
         ":root\tbody",
+        // The subject is read by prefix: a qualified document is the document.
+        "body:not(.x)",
+        "body[data-x]",
+        "body::before",
+        "body.dark",
+        ":root[data-theme=dark]",
+        "html.no-js",
     ] {
         assert!(
             subject_is_the_document(refused),
@@ -184,9 +198,12 @@ fn the_document_subject_is_read_off_the_last_compound() {
         ":root[data-theme=dark] .colony-view",
         ":root:not([data-theme=light]) .colony-view",
         "[data-phx-main].phx-loading .colony-view",
-        "body.dark",
         "html .colony-view",
         ".colony-view .node text.nm",
+        // A name that merely starts like the document is not the document.
+        "html-embed",
+        "bodyguard",
+        ".body",
     ] {
         assert!(
             !subject_is_the_document(allowed),
@@ -214,6 +231,12 @@ fn the_selector_walk_reads_nested_blocks_and_skips_comments() {
     // The two halves compose: a document rule inside an at-rule block is found.
     assert!(
         selectors("@media (x){ body{} }")
+            .iter()
+            .any(|(_, s)| subject_is_the_document(s))
+    );
+    // And a qualified document subject is found the same way.
+    assert!(
+        selectors("body:not(.x) { background: red }")
             .iter()
             .any(|(_, s)| subject_is_the_document(s))
     );

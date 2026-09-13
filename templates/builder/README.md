@@ -1,4 +1,4 @@
-# `builder@1.9.0`
+# `builder@1.10.0`
 
 The intake that turns a structural wish into a **manifest** — an ordered list of
 mutation declarations, ready to be submitted by whoever asked for it.
@@ -238,7 +238,7 @@ repairs, and a refusal a human cannot read is one they cannot answer.
 
 Growing a child into a composition level was, until `1.2.0`, a paragraph a model
 rewrote from scratch on every build: an organisation gets **20** transit edges, a
-member **20**, an assistant **23**, a channel **3**, a screen **2**, an app
+member **20**, an assistant **23**, a channel **3**, a screen **3**, an app
 **3** — and they are the same edges every time, with the child's name
 substituted in. `examples/organism` writes all six out by hand, which is what
 made them measurable.
@@ -366,7 +366,7 @@ devices:
   {"scope": "/os/orgs/acme/members",
    "diff": {"add_nodes": [{"name": "alex", "template": "…"}], "…": "…"}},
   {"scope": "/os/orgs/acme/members/alex/channels",
-   "diff": {"add_nodes": [{"name": "display", "template": "display@2.1.0",
+   "diff": {"add_nodes": [{"name": "display", "template": "display@2.2.3",
                            "override_params": {"web": {"mount": "alex-display"}}}], "…": "…"}},
   {"scope": "/os/orgs/acme/members/alex/apps",
    "diff": {"add_nodes": [{"name": "colony-view", "template": "colony-view@1.1.1"}], "…": "…"}}]}
@@ -432,6 +432,34 @@ and two store operations per member wish, and spent on nothing. The cell that
 measured it, its second route out of the switch and the refusal that named an
 unreadable number are all gone; what refuses a member wish now is a name that
 renders no mount, and nothing else.
+
+**Since `1.10.0` a screen costs three edges, and the third is the error wire
+in** ([#680](https://github.com/mmeyerlein/meclaw/issues/680),
+ADR-0039, `plans/adr/0039-a-channels-failure-reaches-the-screen-as-a-notice.md`).
+Up: `event` and `receipt`, stamped with the two channel keys and the viewer's
+`user_id`. Down: a `view` addressed by `context.channel_node`, re-stamped
+`in_view`. And down again: every `error` in the `channels` container, re-stamped
+onto the screen's `in_notice`, so a channel that failed is a system notice on
+the person's screen and not only a line in the operator's journal:
+
+```json
+{"from": ".", "to": "./display",
+ "condition": "has(hop.route) && hop.route == 'error'",
+ "modifier": {"set_hop": {"route": "'in_notice'"}}}
+```
+
+The third edge carries **no `channel_node` guard** on purpose. A failure carries
+no context of the screen it belongs to — it belongs to the member — and every
+channel failure in the container is a notice for that member's screen. It cannot
+loop: the display declares exactly two emissions, `event` and `receipt`, and
+never `error`. The member's own exit edge `./channels -> .` stays as it is, so
+the operator still sees everything the screen sees. The edge lives **here** and
+not in the `member` template because the container knows its screen only
+through the mutation that grows it: `Edge.to` is a static path, and a template
+that ships an edge onto `./display` would ship a promise about a child it never
+creates. What the screen makes of the code (`stt_failed` → *The microphone did
+not catch that.*, and the rest of the table) is the display's, not the
+builder's: [`display`](../display/) § *A channel's failure is one of them*.
 
 **One wish is one submission, because the order is semantics.** The devices draw
 into `<member>/channels` and `<member>/apps`, scopes only the declaration in

@@ -210,7 +210,7 @@ async fn committed_mutation_leaves_single_committed_row_no_reject() {
     setup_template(&h, "echo", "echo", r#"{"emitted_target":"/unset"}"#).await;
 
     let id = match send_mutation(&h, commit_payload("beta"), None, Uuid::now_v7()).await {
-        MutationOutcome::Committed { id } => id,
+        MutationOutcome::Committed { id, .. } => id,
         other => panic!("expected Committed, got {other:?}"),
     };
 

@@ -25,7 +25,7 @@ sibling `context` persists, so a value survives only if an edge promotes it.
 [`meclaw-overview.md`](meclaw-overview.md) § Headers and body, the write model.
 
 **mutation**, a body POSTed to `/colony/mutations`, carrying a `scope` and a `diff` written in
-eight operation keys. The colony validates the whole post-state in one stage, then applies it
+nine operation keys. The colony validates the whole post-state in one stage, then applies it
 while the process keeps running. [`meclaw-overview.md`](meclaw-overview.md) § Mutation format.
 
 **template vs. instance**, cells in `templates/` are classes, cells in the tree are instances.

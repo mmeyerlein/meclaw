@@ -16,7 +16,7 @@ and nothing to pay for.
 | [`organism`](organism/) | 0 → 92 | to boot | < 1 s | six declarations grow four levels of composition, 565 edges, 70 of them written by hand |
 | [`never-forgets`](never-forgets/) | 3 → 16 | to boot | < 1 s | tell it in January, ask it in March, and the model names the time range it wants |
 | [`vault-pilot`](vault-pilot/) | 2 → 8 | to boot | < 1 s | a model that holds no key, because its credential arrives sealed from the broker's vault |
-| [`display-colony-view`](display-colony-view/) | 2 → 8 | yes | < 1 s | two owners on one screen, and neither can touch the other's view |
+| [`display-colony-view`](display-colony-view/) | 2 → 10 | yes | < 1 s | two owners on one screen, and neither can touch the other's view |
 | [`telegram-research`](telegram-research/) | 10 | no | < 1 s | a multi-tool agent on a real surface, written out node by node |
 | [`memory-import`](memory-import/) | 0 → one member | to boot | < 1 s | the one door a memory comes back through, so a member is born with its past |
 

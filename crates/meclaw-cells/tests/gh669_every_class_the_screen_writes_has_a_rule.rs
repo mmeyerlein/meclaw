@@ -20,7 +20,7 @@ use std::collections::BTreeSet;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-use meclaw_cells::web::render::{Piece, escape, parse_template};
+use meclaw_cells::web::render::render_pieces_plain;
 use meclaw_core::serde_json::{Value, json};
 
 fn repo(rel: &str) -> std::path::PathBuf {
@@ -34,17 +34,10 @@ const SHEET: &str = "templates/display/compose/display-dna.css";
 
 /// The classes the catalogue borrows from `/vision.css`, the base language of
 /// every `web` cell, which the sheet re-tokenises rather than restates. A name
-/// goes on this list only when `templates/web/seed/assets.jsonl` defines it.
-const BORROWED: [&str; 8] = [
-    "glass",
-    "glass--thin",
-    "glass--thick",
-    "inner",
-    "stack",
-    "card",
-    "title-3",
-    "text",
-];
+/// goes on this list only when `templates/web/seed/assets.jsonl` defines it
+/// AND a template in the catalogue writes it: a borrowed name nobody writes
+/// is a hole this lock would not see through.
+const BORROWED: [&str; 5] = ["glass", "glass--thin", "glass--thick", "inner", "stack"];
 
 /// How many classes the catalogue wrote when this lock was written. A lower
 /// bound and not an equality: a catalogue that grows is not a red test, a
@@ -205,49 +198,11 @@ fn has_rule(rules: &str, name: &str) -> bool {
 }
 
 /// Render one component template with its props, the way the `web` cell does
-/// for one object with no children: the cell's parser, the cell's escaping,
-/// `html` as the only raw type, `{{children}}` empty.
+/// for one object with no children (`render_pieces_plain`: the cell's parser,
+/// the cell's walk, the cell's truthiness).
 fn render(template: &str, props: &Value, schema: &Value) -> String {
-    let pieces = parse_template(template)
-        .unwrap_or_else(|e| panic!("the web cell would refuse this template: {e}"));
-    let mut out = String::new();
-    render_pieces(&pieces, props, schema, &mut out);
-    out
-}
-
-fn render_pieces(pieces: &[Piece], props: &Value, schema: &Value, out: &mut String) {
-    let text = |name: &str| -> String {
-        match props.get(name) {
-            None | Some(Value::Null) => String::new(),
-            Some(Value::String(s)) => s.clone(),
-            Some(other) => other.to_string(),
-        }
-    };
-    for piece in pieces {
-        match piece {
-            Piece::Text(t) => out.push_str(t),
-            Piece::Prop(name) => out.push_str(&escape(&text(name))),
-            Piece::Raw(name) => {
-                if schema.get(name).and_then(Value::as_str) == Some("html") {
-                    out.push_str(&text(name));
-                } else {
-                    out.push_str(&escape(&text(name)));
-                }
-            }
-            Piece::Children => {}
-            Piece::If { prop, body } => {
-                let on = match props.get(prop) {
-                    None | Some(Value::Null) => false,
-                    Some(Value::Bool(b)) => *b,
-                    Some(Value::String(s)) => !s.is_empty(),
-                    Some(other) => !other.is_null(),
-                };
-                if on {
-                    render_pieces(body, props, schema, out);
-                }
-            }
-        }
-    }
+    render_pieces_plain(template, props, schema)
+        .unwrap_or_else(|e| panic!("the web cell would refuse this template: {e}"))
 }
 
 /// The bytes of `data` after gzip at level 6, the level a server sends at.

@@ -860,13 +860,13 @@ fn head_diff_keys(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// The head's list is the door's vocabulary — all eight of it, and nothing
+/// The head's list is the door's vocabulary — all nine of it, and nothing
 /// else. `DIFF_OPERATIONS` is the door's own list ("this list IS the diff
 /// vocabulary"), so an operation added there without reaching the briefing is
 /// an operation the composer cannot use, and a word in the briefing that the
 /// door does not read is a refusal waiting to happen.
 #[test]
-fn the_head_enumerates_exactly_the_eight_operations_the_door_reads() {
+fn the_head_enumerates_exactly_the_nine_operations_the_door_reads() {
     for text in [briefed(), degraded()] {
         let mut named = head_diff_keys(&text);
         named.sort();
@@ -914,6 +914,40 @@ fn the_briefing_publishes_the_form_of_both_removing_keys() {
             block.contains("match_no_hit"),
             "the refusal has to be legible before it is earned — a pattern that \
              hits nothing fails the WHOLE manifest"
+        );
+    }
+}
+
+/// GH #682 — the ninth key has a form, and the form is the ABSENCE of a key:
+/// a `replace_nodes` entry names the node it lifts and the version it lifts
+/// it to, and nothing else, because the node keeps its path. The door refuses
+/// a `with.name` under `schema` and says why, so the briefing has to say the
+/// same before a composer copies the `swap_nodes` shape one key too far.
+#[test]
+fn the_briefing_publishes_the_form_of_a_replace_nodes_entry() {
+    for text in [briefed(), degraded()] {
+        assert!(
+            text.contains("REPLACING --"),
+            "the block is missing from the head — and it has to be in the head, \
+             because a corpus outage does not make a lift wish rarer"
+        );
+        let block = &text[text.find("REPLACING --").expect("the block")..];
+        assert!(
+            block.contains("replace_nodes lifts a standing node -- a hive included -- "),
+            "the sentence names what the operation is for: a standing node, a hive included"
+        );
+        assert!(
+            block.contains("{match: {name}, with: {template, params?}}"),
+            "the form, in one breath: match by name, with a template and optional params"
+        );
+        assert!(
+            block.contains("no with.name"),
+            "the absent key is the statement — the node keeps its path — and the door \
+             refuses the key under schema, so the briefing has to say it is absent"
+        );
+        assert!(
+            block.contains("{\"match\": {\"name\": \"<the node>\"}"),
+            "a replace_nodes entry is a MATCH OBJECT around a name, like the removing keys"
         );
     }
 }

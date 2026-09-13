@@ -6,7 +6,7 @@
         "add_nodes": [
           {
             "name": "display",
-            "template": "display@2.1.0",
+            "template": "display@2.2.3",
             "override_params": {
               "web": {
                 "mount": "alex-display"
@@ -34,6 +34,16 @@
             "modifier": {
               "set_hop": {
                 "route": "'in_view'"
+              }
+            }
+          },
+          {
+            "from": ".",
+            "to": "./display",
+            "condition": "has(hop.route) && hop.route == 'error'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_notice'"
               }
             }
           }

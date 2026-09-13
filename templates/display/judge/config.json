@@ -1,0 +1,43 @@
+{
+  "cell": {
+    "type": "llm",
+    "message_timeout": 30000
+  },
+  "params": {
+    "provider": "openai",
+    "model": "${DISPLAY_JUDGE_MODEL:-}",
+    "api_key": "${DISPLAY_JUDGE_API_KEY:-}",
+    "base_url": "${DISPLAY_JUDGE_BASE_URL:-https://openrouter.ai/api/v1}",
+    "temperature": 0,
+    "max_tokens": 600,
+    "external_timeout_ms": 8000,
+    "system_order": ["instructions"],
+    "provider_extra": {"response_format": {"type": "json_object"}}
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {
+      "model": {"type": "string", "secret": false, "default": "",
+                "description": "Provider model id of the screen's judge. Empty as shipped: a screen without a judge is judged by the floor alone. Set at instantiation (`DISPLAY_JUDGE_MODEL`) or per override_params."},
+      "api_key": {"type": "string", "secret": true, "default": "",
+                  "description": "Provider API key (`DISPLAY_JUDGE_API_KEY`)."},
+      "base_url": {"type": "string", "secret": false, "default": "https://openrouter.ai/api/v1",
+                   "description": "Provider endpoint (`DISPLAY_JUDGE_BASE_URL`)."}
+    },
+    "emits": {
+      "body": {"messages": {"type": "array", "required": true}, "meta": {"type": "object", "required": false}},
+      "hop": {"finish_reason": {"type": "string", "required": true},
+              "tokens_prompt": {"type": "number", "required": false},
+              "tokens_completion": {"type": "number", "required": false},
+              "model": {"type": "string", "required": false},
+              "error_code": {"type": "string", "required": false}}
+    },
+    "consumes": {"body": {"messages": {"type": "array", "required": true}, "system": {"type": "object", "required": false}}},
+    "capabilities": ["network:llm", "db:own"]
+  },
+  "description": {
+    "purpose": "The screen's judge: a minimal model that re-judges the WHOLE screen on every content change and answers with one JSON verdict -- the bar (`focus`, 0..1), a weight per context, and per window an optional `hidden` or `relevance`. It is the master over focus (the guideline in this template's README); applications and the floor give hints.",
+    "use_when": "When `compose.judge` is `on` and a model is set. Never on a tick, never on a write that changed nothing.",
+    "not_in_scope": "No tools, no memory beyond what the root carries, no learning of preferences. A failed or late verdict changes nothing: the floor has already drawn."
+  }
+}

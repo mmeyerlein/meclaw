@@ -12,11 +12,12 @@ use meclaw_core::JsonValue;
 /// appears here and nowhere else would be accepted and never executed, and a
 /// key executed somewhere without appearing here would be refused. Adding an
 /// operation means adding its key here in the same change.
-pub const DIFF_OPERATIONS: [&str; 8] = [
+pub const DIFF_OPERATIONS: [&str; 9] = [
     "add_templates",
     "add_nodes",
     "remove_nodes",
     "swap_nodes",
+    "replace_nodes",
     "move_nodes",
     "add_edges",
     "remove_edges",
@@ -344,6 +345,12 @@ struct PathClaim {
     path: String,
     /// `add_nodes[2].name 'q'` — what a duplicate-claim message points at.
     entry: String,
+    /// `true` for an entry that PUTS a node at the path (`add_nodes`, the
+    /// instantiate form of `swap_nodes[].with`, `move_nodes[].to`); `false`
+    /// for `replace_nodes[].match`, which claims the path the node it lifts
+    /// already stands at (GH #682). Only a creating entry names the node, so
+    /// only a creating entry can spend a character the name may not carry.
+    creates: bool,
 }
 
 /// GH #195 — every path this diff CLAIMS, in the order the operator wrote them,
@@ -361,6 +368,11 @@ struct PathClaim {
 /// still this diff saying "that path is mine", and a second entry aiming there
 /// is the thing this catches.
 ///
+/// GH #682 — `replace_nodes[].match.name` is in the set for the same reason: a
+/// lift claims the path it works on, and two lifts of one node in one diff
+/// would stage the same aside name (`<name>~<version>`) twice and strict-fail
+/// on the second rename. One node is lifted once per diff.
+///
 /// Malformed entries are skipped rather than reported: their own checks raise
 /// the `Schema` errors, and reordering those would change what a broken diff is
 /// told.
@@ -375,19 +387,20 @@ fn diff_path_claims(
     obj: &meclaw_core::serde_json::Map<String, JsonValue>,
 ) -> Vec<PathClaim> {
     let mut claims: Vec<PathClaim> = Vec::new();
-    let mut push = |name: &str, entry: String| {
+    let mut push = |name: &str, entry: String, creates: bool| {
         claims.push(PathClaim {
             name: name.to_string(),
             path: crate::mutation::resolve_scoped_path(scope, name)
                 .as_str()
                 .to_string(),
             entry,
+            creates,
         });
     };
     if let Some(adds) = obj.get("add_nodes").and_then(|v| v.as_array()) {
         for (i, n) in adds.iter().enumerate() {
             if let Some(name) = n.get("name").and_then(|v| v.as_str()) {
-                push(name, format!("add_nodes[{i}].name '{name}'"));
+                push(name, format!("add_nodes[{i}].name '{name}'"), true);
             }
         }
     }
@@ -401,18 +414,64 @@ fn diff_path_claims(
                 continue;
             }
             if let Some(name) = with.get("name").and_then(|v| v.as_str()) {
-                push(name, format!("swap_nodes[{i}].with.name '{name}'"));
+                push(name, format!("swap_nodes[{i}].with.name '{name}'"), true);
             }
         }
     }
     if let Some(moves) = obj.get("move_nodes").and_then(|v| v.as_array()) {
         for (i, m) in moves.iter().enumerate() {
             if let Some(to) = m.get("to").and_then(|v| v.as_str()) {
-                push(to, format!("move_nodes[{i}].to '{to}'"));
+                push(to, format!("move_nodes[{i}].to '{to}'"), true);
+            }
+        }
+    }
+    if let Some(replaces) = obj.get("replace_nodes").and_then(|v| v.as_array()) {
+        for (i, r) in replaces.iter().enumerate() {
+            if let Some(name) = r
+                .get("match")
+                .and_then(|m| m.get("name"))
+                .and_then(|v| v.as_str())
+            {
+                push(
+                    name,
+                    format!("replace_nodes[{i}].match.name '{name}'"),
+                    false,
+                );
             }
         }
     }
     claims
+}
+
+/// GH #682 (ruling T5-R4 a) — `~` is reserved for parked nodes: every claim
+/// that CREATES a node under a name with a `~` in any of its segments, as a
+/// `schema` refusal addressed at the resolved path.
+///
+/// A lift spends the character on the aside name (`<name>~<version>`,
+/// `~<n>` behind it), and [`is_parked_path`] reads any `~` on a path as that
+/// marker — a node an operator named `a~b` could never be wired, and a node
+/// created under `a~b/` would be a row under a parked one. Refusing the
+/// character at the three creating doors keeps the marker unambiguous.
+fn collect_reserved_names(
+    scope: &str,
+    obj: &meclaw_core::serde_json::Map<String, JsonValue>,
+) -> Vec<(MutationError, Option<String>)> {
+    diff_path_claims(scope, obj)
+        .into_iter()
+        .filter(|claim| claim.creates && claim.name.contains(PARKED_MARKER))
+        .map(|claim| {
+            (
+                MutationError::Schema(format!(
+                    "{}: '{PARKED_MARKER}' is reserved for parked nodes — a replace leaves \
+                     the old cell beside its successor as <name>{PARKED_MARKER}<version>, \
+                     and a node named that way takes no edges. Nothing was written — \
+                     choose a name without '{PARKED_MARKER}'.",
+                    claim.entry
+                )),
+                Some(claim.path),
+            )
+        })
+        .collect()
 }
 
 /// GH #195 — every duplicated claim in a diff: two entries that name one path.
@@ -560,6 +619,8 @@ fn addressed_naming_and_match(
     // pre-state — a path claimed twice by one diff is a different problem from a
     // path that was already occupied, and the pre-state check cannot name it.
     let mut violations = collect_duplicate_claims(scope, obj);
+    // GH #682: and against the one character a name may not carry.
+    violations.extend(collect_reserved_names(scope, obj));
     {
         let mut refuse = |error: MutationError, address: String| {
             violations.push((error, Some(address)));
@@ -1170,6 +1231,23 @@ fn addressed_edges_and_cycle(
             }
         }
     }
+    // GH #682 — a parked node takes no edges. A `replace_nodes` leaves a
+    // changed child's old cell beside its successor as `<name>~<version>`
+    // (registry row and directory), disconnected. Its task, watcher and
+    // respawn closure are still addressed at the BIRTH path — the one the
+    // successor now holds — so wiring it would spawn a task under the
+    // successor's name and hand the successor's stop wiring to the wrong
+    // cell. So a parked row is never reused: any edge that resolves to it —
+    // an `add_edges` endpoint, an edge inside an instantiated subtree, a
+    // `swap_nodes[].with.name` the swing would land on — is refused here,
+    // pre-destructively, as `schema`. The name shape is the marker: `~` is
+    // the character a lift spends on the aside name, and nothing else in
+    // the colony mints it.
+    violations.extend(parked_endpoint_violations(
+        obj,
+        scope,
+        subtree_internal_edges,
+    ));
     // Finding 2 — NO general cycle reject. Spec overview § Validation:
     // "cycle-freedom … insofar as the application forbids cycles; meclaw-core
     // does not reject cycles in general". Tool/reply loops are legitimately
@@ -1437,6 +1515,25 @@ pub fn validate_post_state_with_templates_scoped(
         }
     }
 
+    // replace_nodes (GH #682): the in-place lift. Its `match.name` resolves
+    // against the registry AND the hive scopes (a hive is the usual target), so
+    // the match check lives in the entry validator rather than in
+    // `validate_naming_and_match` — which reads the key only as a path claim
+    // (`diff_path_claims`): one node is lifted once per diff.
+    if let Some(replaces) = obj.get("replace_nodes").and_then(|v| v.as_array()) {
+        for r in replaces {
+            validate_replace_entry(
+                scope,
+                r,
+                templates,
+                registry_names,
+                deep_registry_paths,
+                hive_match_names,
+                deep_hive_paths,
+            )?;
+        }
+    }
+
     // Edge-Schema + Cycle. Subtree contributions (T8b-2) flow through so a
     // subtree's internal graph participates in the endpoint + cycle check;
     // scope + pre-state depth paths enable R12 depth-endpoint resolution.
@@ -1580,77 +1677,7 @@ fn collect_add_node_addresses(
     out: &mut Vec<MutationError>,
 ) {
     if let Some(over) = n.get("override_params") {
-        match crate::mutation::subtree::parse_subtree(&entry.filesystem_path, templates) {
-            // A template that does not parse is a stage-2 matter
-            // ([`collect_template_resolution`]); it is reported here too because
-            // the `Result` form raised it here and the first-error identity must
-            // hold. The pipeline stops at stage 2 long before stage 4 sees it.
-            Err(error) => out.push(error),
-            Ok(parsed) => {
-                if parsed.cells.len() > 1 {
-                    match over.as_object() {
-                        None => out.push(MutationError::Schema(format!(
-                            "override_params on the subtree template '{template}' must be an \
-                             object keyed by the cells' paths inside the template (\"\" is the \
-                             subtree root)"
-                        ))),
-                        Some(obj) => {
-                            let known: Vec<&str> =
-                                parsed.cells.iter().map(|c| c.rel_path.as_str()).collect();
-                            for (key, params) in obj {
-                                let Some(cell) = parsed.cells.iter().find(|c| &c.rel_path == key)
-                                else {
-                                    out.push(MutationError::Schema(format!(
-                                        "override_params['{key}'] names no cell of the subtree \
-                                         template '{template}'. Its cells are: {}",
-                                        crate::mutation::subtree::render_cell_list(&known)
-                                    )));
-                                    continue;
-                                };
-                                if !params.is_object() {
-                                    out.push(MutationError::Schema(format!(
-                                        "override_params['{key}'] must be a params object"
-                                    )));
-                                    continue;
-                                }
-                                if let Err(error) = crate::mutation::subtree::check_override_params(
-                                    cell,
-                                    Some(key),
-                                    template,
-                                    params,
-                                ) {
-                                    out.push(error);
-                                }
-                            }
-                        }
-                    }
-                } else if let Some(cell) = parsed.cells.first() {
-                    // GH #436: the two notations of `override_params` look alike
-                    // and the wrong one used to be refused for the wrong reason.
-                    // On a single-cell template the object IS the params — a
-                    // `""` key is the path-keyed form, which belongs to a ref
-                    // marker or a subtree, and asking about a param called ""
-                    // answers a question nobody asked. Checked HERE and not in
-                    // `check_override_params`, because only the caller knows how
-                    // many cells the template has.
-                    if let Some(nested) = over.get("").and_then(|v| v.as_object()) {
-                        out.push(MutationError::Schema(format!(
-                            "override_params[''] on '{template}': this is a single-cell \
-                             template — override_params is a flat params object here \
-                             ({{\"{}\": …}}), not keyed by the paths of cells inside a \
-                             template. The path-keyed form ({{\"\": …}}) applies to a ref \
-                             marker and to a subtree template, and this template has \
-                             nothing to address.",
-                            nested.keys().next().map(|k| k.as_str()).unwrap_or("param"),
-                        )));
-                    } else if let Err(error) =
-                        crate::mutation::subtree::check_override_params(cell, None, template, over)
-                    {
-                        out.push(error);
-                    }
-                }
-            }
-        }
+        collect_override_param_addresses(entry, over, template, templates, out);
     }
 
     // GH #661 (ADR-0032): and the other direction of the same question — not
@@ -1734,6 +1761,99 @@ fn collect_operator_set_params(
             parsed.ref_overrides.get(&cell.rel_path),
             out,
         );
+    }
+}
+
+/// The key check of an `override_params` object against the template it
+/// addresses (GH #140 + GH #294 + GH #436): on a subtree template the object
+/// is keyed by the cells' paths inside the template and every key must name
+/// one of them; on a single-cell template the object IS the params, and a
+/// `""` key is the path-keyed form applied where nothing can be addressed.
+/// Every key that survives the addressing is then checked against the
+/// params of the cell it reached ([`crate::mutation::subtree::check_override_params`]).
+///
+/// One question at every door that grows a node from a template: the
+/// `add_nodes` entry's `override_params` ([`collect_add_node_addresses`]) and
+/// the `replace_nodes` entry's `with.params` ([`validate_replace_entry`]) ask
+/// it here, so the two cannot drift (GH #293).
+///
+/// A template that does not parse is a stage-2 matter
+/// ([`collect_template_resolution`]); it is reported here too because the
+/// `Result` form raised it here and the first-error identity must hold. The
+/// pipeline stops at stage 2 long before stage 4 sees it.
+fn collect_override_param_addresses(
+    entry: &crate::templates::TemplateEntry,
+    over: &JsonValue,
+    template: &str,
+    templates: &crate::templates::TemplatesRegistry,
+    out: &mut Vec<MutationError>,
+) {
+    match crate::mutation::subtree::parse_subtree(&entry.filesystem_path, templates) {
+        Err(error) => out.push(error),
+        Ok(parsed) => {
+            if parsed.cells.len() > 1 {
+                match over.as_object() {
+                    None => out.push(MutationError::Schema(format!(
+                        "override_params on the subtree template '{template}' must be an \
+                         object keyed by the cells' paths inside the template (\"\" is the \
+                         subtree root)"
+                    ))),
+                    Some(obj) => {
+                        let known: Vec<&str> =
+                            parsed.cells.iter().map(|c| c.rel_path.as_str()).collect();
+                        for (key, params) in obj {
+                            let Some(cell) = parsed.cells.iter().find(|c| &c.rel_path == key)
+                            else {
+                                out.push(MutationError::Schema(format!(
+                                    "override_params['{key}'] names no cell of the subtree \
+                                     template '{template}'. Its cells are: {}",
+                                    crate::mutation::subtree::render_cell_list(&known)
+                                )));
+                                continue;
+                            };
+                            if !params.is_object() {
+                                out.push(MutationError::Schema(format!(
+                                    "override_params['{key}'] must be a params object"
+                                )));
+                                continue;
+                            }
+                            if let Err(error) = crate::mutation::subtree::check_override_params(
+                                cell,
+                                Some(key),
+                                template,
+                                params,
+                            ) {
+                                out.push(error);
+                            }
+                        }
+                    }
+                }
+            } else if let Some(cell) = parsed.cells.first() {
+                // GH #436: the two notations of `override_params` look alike
+                // and the wrong one used to be refused for the wrong reason.
+                // On a single-cell template the object IS the params — a
+                // `""` key is the path-keyed form, which belongs to a ref
+                // marker or a subtree, and asking about a param called ""
+                // answers a question nobody asked. Checked HERE and not in
+                // `check_override_params`, because only the caller knows how
+                // many cells the template has.
+                if let Some(nested) = over.get("").and_then(|v| v.as_object()) {
+                    out.push(MutationError::Schema(format!(
+                        "override_params[''] on '{template}': this is a single-cell \
+                         template — override_params is a flat params object here \
+                         ({{\"{}\": …}}), not keyed by the paths of cells inside a \
+                         template. The path-keyed form ({{\"\": …}}) applies to a ref \
+                         marker and to a subtree template, and this template has \
+                         nothing to address.",
+                        nested.keys().next().map(|k| k.as_str()).unwrap_or("param"),
+                    )));
+                } else if let Err(error) =
+                    crate::mutation::subtree::check_override_params(cell, None, template, over)
+                {
+                    out.push(error);
+                }
+            }
+        }
     }
 }
 
@@ -1911,6 +2031,29 @@ pub fn collect_post_state_addresses(
                 &ct_map,
             ) {
                 refuse(&error, Some(match_name.to_string()));
+            }
+        }
+    }
+
+    // `replace_nodes[]` (GH #682): the same question the `Result` form asks,
+    // one entry at a time, the address being the node it lifts.
+    if let Some(replaces) = obj.get("replace_nodes").and_then(|v| v.as_array()) {
+        for (i, r) in replaces.iter().enumerate() {
+            if let Err(error) = validate_replace_entry(
+                scope,
+                r,
+                templates,
+                registry_names,
+                deep_registry_paths,
+                hive_match_names,
+                deep_hive_paths,
+            ) {
+                let address = r
+                    .get("match")
+                    .and_then(|v| v.get("name"))
+                    .and_then(|v| v.as_str())
+                    .map_or_else(|| format!("replace_nodes[{i}]"), str::to_string);
+                refuse(&error, Some(address));
             }
         }
     }
@@ -2263,6 +2406,179 @@ fn validate_swap_with_entry_full(
     Ok(())
 }
 
+/// GH #682 — validate one `replace_nodes` entry:
+/// `{"match": {"name": …}, "with": {"template": …, "params"?: …}}`.
+///
+/// A `replace_nodes` lifts a STANDING node — a hive included — to another
+/// version of its template, at the path it already has. That is the whole
+/// difference from `swap_nodes`, and it is what the form says: there is no
+/// `with.name`, because nothing is named — the node keeps its path, and the
+/// outer edges stay where they are. A `with` that carries `name` anyway is
+/// refused as `schema` with that reason, not as an unknown key, because the
+/// key is one the neighbouring door takes and the composer has to learn WHY
+/// this one does not.
+///
+/// * `match.name` is required and must hit the pre-state — the cell registry
+///   OR the hive scopes, both scope-filtered by the caller and both in their
+///   two spellings (short names and absolute paths, GH #179). A hive has no
+///   registry row and IS a valid target: lifting a hive is what the operation
+///   is for (the `swap_nodes[].match` check resolves the same way). A PARKED
+///   node (`<name>~<version>`, [`is_parked_path`]) is refused as `schema`:
+///   it is what an earlier lift left beside its successor, and the live node
+///   is the one to lift.
+/// * `with.template` is required and must resolve ([`MutationError::TemplateMissing`]).
+///   A SUBTREE template is allowed — that is the common case, a hive class —
+///   and so is a leaf template (an in-place leaf replacement). No
+///   `reject_if_subtree_template` here.
+/// * `with.params` is the `override_params` form of the template it lifts to
+///   (path-keyed on a subtree, flat on a leaf) and goes through the same key
+///   check every other door asks ([`collect_override_param_addresses`],
+///   GH #666): a mistyped key is refused, not spawned with the shipped
+///   default.
+///
+/// What the door does NOT decide: whether the standing node's own template
+/// is the same class as `with.template`, and what happens to each child.
+/// Those are the staging and apply halves of the operation, measured where
+/// they run.
+///
+/// `Result` form: the FIRST violation, like [`validate_swap_with_entry_full`]
+/// beside it — the collecting caller pushes it under the entry's `match.name`.
+fn validate_replace_entry(
+    scope: &str,
+    entry: &JsonValue,
+    templates: &crate::templates::TemplatesRegistry,
+    registry_names: &[String],
+    deep_registry_paths: &[String],
+    hive_match_names: &[String],
+    deep_hive_paths: &[String],
+) -> Result<(), MutationError> {
+    let match_name = entry
+        .get("match")
+        .and_then(|v| v.get("name"))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| MutationError::Schema("replace_nodes[].match.name missing".into()))?;
+    let in_registry = name_is_taken(scope, match_name, registry_names, deep_registry_paths);
+    let in_hives = name_is_taken(scope, match_name, hive_match_names, deep_hive_paths);
+    if !in_registry && !in_hives {
+        return Err(MutationError::MatchNoHit(match_name.into()));
+    }
+    // A parked node (what an earlier replace left beside its successor) is
+    // not lifted: its task is still addressed at the birth path, and a lift
+    // would only park a new cell under a park name that no recompute ever
+    // activates. The live node beside it is the one to lift.
+    let match_abs = crate::mutation::resolve_scoped_path(scope, match_name);
+    if is_parked_path(match_abs.as_str()) {
+        return Err(MutationError::Schema(format!(
+            "replace_nodes[].match.name '{match_name}' resolves to {}, which is a parked node \
+             from an earlier replace; lift the live node instead",
+            match_abs.as_str()
+        )));
+    }
+
+    let with_obj = entry
+        .get("with")
+        .ok_or_else(|| MutationError::Schema("replace_nodes[].with missing".into()))?
+        .as_object()
+        .ok_or_else(|| MutationError::Schema("replace_nodes[].with must be an object".into()))?;
+    if with_obj.contains_key("name") {
+        return Err(MutationError::Schema(
+            "replace_nodes[].with.name is not a field: the node keeps its path".into(),
+        ));
+    }
+    for key in with_obj.keys() {
+        if !matches!(key.as_str(), "template" | "params") {
+            return Err(MutationError::Schema(format!(
+                "replace_nodes[].with unknown key '{key}': the form is {{template, params?}}"
+            )));
+        }
+    }
+    let template = with_obj
+        .get("template")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| MutationError::Schema("replace_nodes[].with.template missing".into()))?;
+    let resolved = templates
+        .resolve(template)
+        .map_err(|_| MutationError::TemplateMissing(template.into()))?;
+
+    if let Some(params) = with_obj.get("params") {
+        let mut errors = Vec::new();
+        collect_override_param_addresses(resolved, params, template, templates, &mut errors);
+        if let Some(error) = errors.into_iter().next() {
+            return Err(error);
+        }
+    }
+    Ok(())
+}
+
+/// GH #682 — the collecting core of the parked-node rule (see the call site
+/// in [`addressed_edges_and_cycle`]): every endpoint of the diff that resolves
+/// to a path with a lift's aside name (`<name>~<version>`, or `~<n>` behind
+/// it) in any segment — the parked node itself or a row under a parked hive
+/// — with that path as its address.
+///
+/// Endpoints looked at: `add_edges[].from`/`.to` (scope-resolved, both
+/// spellings), every subtree-internal edge the diff instantiates (already
+/// absolute), and `swap_nodes[].with.name` in its existing-node form (the
+/// swing would land every external edge of the replaced node on it).
+fn parked_endpoint_violations(
+    obj: &meclaw_core::serde_json::Map<String, JsonValue>,
+    scope: &str,
+    subtree_internal_edges: &[(String, String)],
+) -> Vec<(MutationError, Option<String>)> {
+    let mut out = Vec::new();
+    let mut check = |endpoint: &str, abs: String, what: &str| {
+        if is_parked_path(&abs) {
+            out.push((
+                MutationError::Schema(format!(
+                    "{what} '{endpoint}' resolves to {abs}, which is a parked node from an \
+                     earlier replace; it takes no edges"
+                )),
+                Some(abs),
+            ));
+        }
+    };
+    if let Some(adds) = obj.get("add_edges").and_then(|v| v.as_array()) {
+        for e in adds {
+            for (key, what) in [("from", "add_edges[].from"), ("to", "add_edges[].to")] {
+                if let Some(endpoint) = e.get(key).and_then(|v| v.as_str()) {
+                    let abs = crate::mutation::resolve_scoped_path(scope, endpoint);
+                    check(endpoint, abs.as_str().to_string(), what);
+                }
+            }
+        }
+    }
+    for (from, to) in subtree_internal_edges {
+        check(from, from.clone(), "subtree internal edge from");
+        check(to, to.clone(), "subtree internal edge to");
+    }
+    if let Some(swaps) = obj.get("swap_nodes").and_then(|v| v.as_array()) {
+        for sw in swaps {
+            if let Some(name) = sw
+                .get("with")
+                .and_then(|w| w.get("name"))
+                .and_then(|v| v.as_str())
+            {
+                let abs = crate::mutation::resolve_scoped_path(scope, name);
+                check(name, abs.as_str().to_string(), "swap_nodes[].with.name");
+            }
+        }
+    }
+    out
+}
+
+/// The character a lift spends on a parked node's name (`<name>~<version>`,
+/// `<name>~<version>~<n>`), and that no operator-given name may carry
+/// ([`collect_reserved_names`]).
+pub(crate) const PARKED_MARKER: char = '~';
+
+/// True iff ANY segment of `abs` carries a lift's aside marker `~`
+/// (`/alex/display/bump~1.0.0`, `/alex/display/bump~1.0.0~2`) — a row under
+/// a parked hive (`/alex/display~1.0.0/keep`) is parked too (T5-R4 b).
+pub(crate) fn is_parked_path(abs: &str) -> bool {
+    abs.split('/')
+        .any(|segment| segment.contains(PARKED_MARKER))
+}
+
 /// A pre-state edge reduced to the fields needed for `remove_edges` match
 /// equality (Paket-5 T1/T2 / D-031).
 ///
@@ -2594,7 +2910,8 @@ pub fn validate_remove_edges(
 ///
 /// Only TOP-LEVEL diff names are checked (`add_nodes[].name`,
 /// `remove_nodes[].match.name`, `swap_nodes[].match.name`/`.with.name`,
-/// `add_edges[].from`/`.to`, `remove_edges[].match.from`/`.to`). Subtree-internal
+/// `replace_nodes[].match.name`, `add_edges[].from`/`.to`,
+/// `remove_edges[].match.from`/`.to`). Subtree-internal
 /// `params.graph` edges (which legitimately use `./` and `../` relative
 /// addressing, resolved by the subtree resolver) are NOT in scope here.
 pub fn validate_scope_containment(
@@ -2658,6 +2975,18 @@ pub fn validate_scope_containment(
             }
             if let Some(name) = s
                 .get("with")
+                .and_then(|m| m.get("name"))
+                .and_then(|v| v.as_str())
+            {
+                check(name)?;
+            }
+        }
+    }
+    // GH #682: a `replace_nodes` addresses the one path it lifts in place.
+    if let Some(rs) = obj.get("replace_nodes").and_then(|v| v.as_array()) {
+        for r in rs {
+            if let Some(name) = r
+                .get("match")
                 .and_then(|m| m.get("name"))
                 .and_then(|v| v.as_str())
             {
@@ -7058,6 +7387,106 @@ mod tests {
                 other_cond.is_default,
             ),
             "the wrapper must not invent a second identity"
+        );
+    }
+
+    /// GH #682 (T5-R4 a) — `~` is reserved for parked nodes: `is_parked_path`
+    /// reads any `~` in a name as a lift's aside marker, so a node an operator
+    /// named `a~b` could never be wired. Each of the three doors that put a
+    /// node at a new path refuses the character as `schema`, in the validate
+    /// stage, before any template is looked at; the same names without the
+    /// character pass this check.
+    #[test]
+    fn a_tilde_in_a_new_node_name_is_refused_at_every_door() {
+        let factories = factories_with(&["echo"]);
+        let registry_names: Vec<String> = vec!["t2".into()];
+        let doors = [
+            (
+                "add_nodes[0].name 'a~b'",
+                json!({"add_nodes": [{"name": "a~b", "template": "echo"}]}),
+            ),
+            (
+                "swap_nodes[0].with.name 'a~b'",
+                json!({"swap_nodes": [
+                    {"match": {"name": "t2"}, "with": {"template": "echo", "name": "a~b"}}
+                ]}),
+            ),
+            (
+                "move_nodes[0].to './unit/a~b'",
+                json!({"move_nodes": [{"match": {"name": "t2"}, "to": "./unit/a~b"}]}),
+            ),
+        ];
+        for (door, diff) in doors {
+            let err = validate_post_state_full(&diff, &factories, &registry_names).expect_err(door);
+            assert_eq!(err.error_code(), "schema", "{door}: {err:?}");
+            let text = format!("{err:?}");
+            assert!(
+                text.contains("'~' is reserved for parked nodes") && text.contains(door),
+                "{door}: the refusal names the door and the reservation: {text}"
+            );
+        }
+        // The existing-node form of `swap_nodes[].with` creates nothing and is
+        // the parked-endpoint rule's business, not this one; and a name
+        // without the character is untouched by the check.
+        let obj = json!({"add_nodes": [{"name": "a-b", "template": "echo"}],
+                         "move_nodes": [{"match": {"name": "t2"}, "to": "./unit/a_b"}]});
+        let obj = obj.as_object().unwrap();
+        assert!(collect_naming_and_match(obj, &registry_names, &[], "/", &[], &[]).is_empty());
+    }
+
+    /// GH #682 (T5-R4 b) — a row under a parked hive is parked too: the marker
+    /// is read on every segment of the path, not only the last.
+    #[test]
+    fn is_parked_path_reads_every_segment() {
+        assert!(is_parked_path("/alex/display/bump~1.0.0"));
+        assert!(is_parked_path("/alex/display/bump~1.0.0~2"));
+        assert!(is_parked_path("/alex/display~1.0.0/keep"));
+        assert!(is_parked_path("/alex/display~1.0.0/inner/deep"));
+        assert!(!is_parked_path("/alex/display/bump"));
+        assert!(!is_parked_path("/alex/display/keep/inner"));
+        assert!(!is_parked_path("/"));
+    }
+
+    /// GH #682 (T5-R4 c) — `replace_nodes[].match.name` is a path claim: two
+    /// lifts of one node in one diff would stage the same aside name twice and
+    /// strict-fail on the second rename, so the diff is refused against itself
+    /// as `naming_collision`, before anything is staged. One lift per node per
+    /// diff.
+    #[test]
+    fn two_lifts_of_one_node_in_one_diff_are_a_naming_collision() {
+        let registry_names: Vec<String> = vec!["display".into()];
+        let diff = json!({"replace_nodes": [
+            {"match": {"name": "display"}, "with": {"template": "screen@1.1.0"}},
+            {"match": {"name": "display"}, "with": {"template": "screen@1.0.0"}}
+        ]});
+        let obj = diff.as_object().unwrap();
+        let err = validate_naming_and_match(obj, &registry_names, &[], "/", &[], &[])
+            .expect_err("two lifts of one node");
+        assert_eq!(err.error_code(), "naming_collision", "{err:?}");
+        let text = format!("{err:?}");
+        assert!(
+            text.contains("replace_nodes[1].match.name 'display'")
+                && text.contains("replace_nodes[0].match.name 'display'"),
+            "{text}"
+        );
+        // A lift of a node and an `add_nodes` at the same path are two entries
+        // claiming one path as well — measured against an empty pre-state, so
+        // the collision can only come from the diff against itself.
+        let diff = json!({"replace_nodes": [
+            {"match": {"name": "display"}, "with": {"template": "screen@1.1.0"}}
+        ], "add_nodes": [{"name": "display", "template": "screen@1.1.0"}]});
+        let obj = diff.as_object().unwrap();
+        let err = validate_naming_and_match(obj, &[], &[], "/", &[], &[])
+            .expect_err("a lift beside an add at the same path");
+        assert_eq!(err.error_code(), "naming_collision", "{err:?}");
+        // One lift alone claims nothing twice.
+        let diff = json!({"replace_nodes": [
+            {"match": {"name": "display"}, "with": {"template": "screen@1.1.0"}}
+        ]});
+        let obj = diff.as_object().unwrap();
+        assert!(
+            collect_duplicate_claims("/", obj).is_empty(),
+            "one lift is one claim"
         );
     }
 }

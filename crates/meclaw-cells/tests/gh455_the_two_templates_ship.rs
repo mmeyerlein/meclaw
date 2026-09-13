@@ -132,7 +132,7 @@ fn lanes(cfg: &Value) -> (Vec<String>, Vec<String>) {
 }
 
 #[test]
-fn the_screen_is_sealed_and_states_four_lanes() {
+fn the_screen_is_sealed_and_states_five_lanes() {
     let Some(root) = shipped_display() else {
         return;
     };
@@ -145,11 +145,13 @@ fn the_screen_is_sealed_and_states_four_lanes() {
     );
 
     let (accepts, emits) = lanes(&cfg);
-    assert_eq!(accepts, vec!["in_view", "in_withdraw"]);
+    // `in_notice` joined with 2.2.0 (GH #679); the clock and the judge inside
+    // the hive added no lane, and the judge's own lanes never leave it.
+    assert_eq!(accepts, vec!["in_view", "in_withdraw", "in_notice"]);
     assert_eq!(emits, vec!["event", "receipt"]);
 
     // A lane name says what the caller wants, never where it lands inside.
-    for cell in ["compose", "views", "web"] {
+    for cell in ["compose", "views", "web", "clock", "judge"] {
         for lane in accepts.iter().chain(emits.iter()) {
             assert_ne!(
                 lane, cell,

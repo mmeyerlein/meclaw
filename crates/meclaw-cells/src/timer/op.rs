@@ -16,7 +16,8 @@ use serde_json::Value as JsonValue;
 #[derive(Debug)]
 pub enum TimerOp {
     /// INSERT into `cell.db.schedules`. The caller raises `schedule_id_exists`
-    /// on a PK conflict.
+    /// on a PK conflict -- unless the row is the same order or a removed one
+    /// (`db::add_schedule`, GH #690).
     Add(ScheduleRow),
     /// UPDATE an existing row. `new_cron` XOR `new_at` must NOT switch the
     /// schedule type (handler check in `handle`).

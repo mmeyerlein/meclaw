@@ -259,16 +259,30 @@ impl LongRunningCell for TimerCell {
                         .await;
                         return;
                     }
+                    // GH #690: a repeated order is one order. An `add` that
+                    // names an active row with the same moment changes
+                    // nothing and is acknowledged; one that names a removed
+                    // row revives it; only a different order under the same
+                    // id is `schedule_id_exists`.
                     let row_for_call = row.clone();
-                    let inserted = db
+                    let added = db
                         .call_with_timeout(move |c| {
-                            crate::timer::db::insert_schedule(c, &row_for_call)
+                            crate::timer::db::add_schedule(c, &row_for_call)
+                                .map_err(|e| format!("{e}"))
                         })
                         .await;
                     let schedule_id = row.schedule_id;
-                    match inserted {
-                        Ok(Ok(())) => {
-                            send_setactive_snapshot(db, reconfig_tx, op_now).await;
+                    let added = match added {
+                        Ok(Ok(crate::timer::db::AddOutcome::Exists)) => Ok(Err(format!(
+                            "schedule_id {schedule_id} already names another order"
+                        ))),
+                        other => other,
+                    };
+                    match added {
+                        Ok(Ok(outcome)) => {
+                            if outcome != crate::timer::db::AddOutcome::Same {
+                                send_setactive_snapshot(db, reconfig_tx, op_now).await;
+                            }
                             // GH #81: the answer a tool loop waits for. Only when
                             // the op arrived as a `tool_call` -- the raw-body path
                             // stays unacked, as it always was.

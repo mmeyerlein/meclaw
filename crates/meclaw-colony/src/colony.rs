@@ -12,6 +12,7 @@
 use crate::dead_letter::{DeadLetter, DeadLetterReason};
 use crate::edge_table::{Edge, EdgeDecision, EdgeTable, apply_edges};
 use crate::hive_scope::{HiveScope, HiveScopeTable};
+use crate::mutation::validate::is_parked_path;
 use meclaw_core::serde_json::{Map, Value};
 #[cfg(debug_assertions)]
 use meclaw_core::validate_ubf_body;
@@ -1241,6 +1242,20 @@ const DISCONNECT_MAILBOX_CAPACITY: usize = 1000;
 ///
 /// Ghost-path: an unknown path (entry already removed, e.g. by a racing
 /// `remove_nodes`) drains the remainder to the DLQ and returns — no insert.
+///
+/// GH #682 — **the entry that is parked is the one whose mailbox came back,
+/// not whoever stands at `path` now.** A cell reports its stop under the path
+/// it was born with. A `replace_nodes` moves a changed child's entry to
+/// `<child>~<version>` and registers a NEW cell at the child's path, then its
+/// own recompute stops the old task — whose `Stopped` arrives here, after the
+/// mutation, addressed at the path the new cell now holds. Parking that entry
+/// would leave the new task running behind a dead sender. So the entry at
+/// `path` is parked only when the returned receiver closed ITS mailbox
+/// ([`ActorHandle::is_closed`] right after `receiver.close()`); otherwise the
+/// owner is the entry born at `path` (its handle still names it) whose
+/// sender that close just closed, wherever the lift moved it. A receiver
+/// nobody's sender matches (the entry was removed, or already re-parked) has
+/// had its remainder drained and needs nothing else.
 async fn handle_stopped(
     registry: &mut HashMap<Path, RegistryEntry>,
     dead_letters: &mut VecDeque<DeadLetter>,
@@ -1264,14 +1279,49 @@ async fn handle_stopped(
         );
     }
 
-    // 2. Channel-swap so the registry sender stays alive for a reconnect-wake.
-    let Some(entry) = registry.get_mut(&path) else {
-        // Entry already removed (racing remove_nodes). Remainder is in the DLQ;
-        // nothing to swap.
+    // 2. Channel-swap so the registry sender stays alive for a reconnect-wake —
+    // on the entry that OWNS the returned mailbox (GH #682, see above).
+    let owner = if registry
+        .get(&path)
+        .is_some_and(|e| e.handle.is_closed() && matches!(e.status, CellStatus::Awake) && !e.failed)
+    {
+        Some(path.clone())
+    } else {
+        // The moved entry still carries the handle it was born with, so the
+        // owner is the one whose handle names this path AND whose mailbox the
+        // close above closed — never a cell that merely died at another path,
+        // and never the entry AT the path (judged above; a failed new cell
+        // there has a closed mailbox too, and it is not this one).
+        registry
+            .iter()
+            .find(|(p, e)| {
+                **p != path
+                    && e.handle.path == path
+                    && e.handle.is_closed()
+                    && matches!(e.status, CellStatus::Awake)
+                    && !e.failed
+            })
+            .map(|(p, _)| p.clone())
+    };
+    let Some(owner) = owner else {
+        // Entry already removed (racing remove_nodes), or the mailbox belongs
+        // to no registered task any more. Remainder is in the DLQ; nothing to
+        // swap.
+        return;
+    };
+    if owner != path {
+        tracing::debug!(
+            born = %path.as_str(),
+            entry = %owner.as_str(),
+            "Stopped reported under a birth path another cell now holds — parking the \
+             entry that owns the mailbox (a replace_nodes moved it)"
+        );
+    }
+    let Some(entry) = registry.get_mut(&owner) else {
         return;
     };
     let (new_tx, new_rx) = mpsc::channel::<Message>(DISCONNECT_MAILBOX_CAPACITY);
-    entry.handle = ActorHandle::new(path.clone(), new_tx);
+    entry.handle = ActorHandle::new(owner.clone(), new_tx);
     entry.status = CellStatus::NotYetSpawned { receiver: new_rx };
     entry.active = false;
 }
@@ -1286,6 +1336,82 @@ fn park_entry_non_running(entry: &mut RegistryEntry, path: &Path) {
     let (new_tx, new_rx) = mpsc::channel::<Message>(DISCONNECT_MAILBOX_CAPACITY);
     entry.handle = ActorHandle::new(path.clone(), new_tx);
     entry.status = CellStatus::NotYetSpawned { receiver: new_rx };
+}
+
+/// GH #688 — a death reported under a birth path that a parked entry still
+/// names is the parked entry's, and is settled here, before the byte-frozen
+/// `handle_cell_died` corridor. Returns `true` when it took the death;
+/// `false` leaves the `CellDied` to the corridor exactly as before.
+///
+/// A cell reports its death under the path it was born with. A
+/// `replace_nodes` (GH #682) moves a changed child's entry to
+/// `<child>~<version>` untouched — task, watcher and respawn closure still
+/// address the birth path — and registers the NEW child at that path; its
+/// own recompute then stops the old task. A peaceful stop comes back as
+/// `Stopped`, whose owner test `handle_stopped` has since #682. A task that
+/// dies in that window by PANIC or by the `message_timeout` BACKSTOP comes
+/// back as `CellDied` under the birth path, which the path-keyed corridor
+/// would answer against the NEW child's row: `restart_count` up, the parked
+/// closure spawned beside the running task, and the displaced task's later
+/// `Normal` death removing the new child's row. So the owner is decided by
+/// the same test `handle_stopped` uses — by whose mailbox is closed:
+///
+/// * the entry AT the path is alive (its mailbox open — it is a running
+///   task the corridor would restart), AND
+/// * another entry, keyed at a parked path ([`is_parked_path`]), still
+///   names the birth path with a handle whose mailbox IS closed (the dying
+///   task dropped its receiver — the `MailboxGuard` drains and drops it on
+///   the way out) and is `Awake` (a parked entry with a fresh channel is
+///   `NotYetSpawned` and has nothing to claim).
+///
+/// Then the parked entry is parked the way a peaceful stop would have parked
+/// it (`park_entry_non_running`, `active = false`; the recompute already
+/// flipped it), the new child is not touched, and the mailbox rescued under
+/// the birth path (`MailboxRescued`, held in `rescued`) is dead-lettered as
+/// `cell_inactive` — the new child never inherits the old one's remainder.
+/// Every other shape — no entry at the path, no parked twin, a twin whose
+/// mailbox is still open, or both mailboxes closed (the new child died too;
+/// its own `CellDied` is the corridor's, and so is this one) — is the
+/// corridor's as before.
+fn claim_parked_death(
+    registry: &mut HashMap<Path, RegistryEntry>,
+    rescued: &mut HashMap<Path, Vec<Message>>,
+    dead_letters: &mut VecDeque<DeadLetter>,
+    path: &Path,
+    death_kind: DeathKind,
+) -> bool {
+    let at_path_alive = registry.get(path).is_some_and(|e| !e.handle.is_closed());
+    if !at_path_alive {
+        return false;
+    }
+    let Some(parked) = registry
+        .iter()
+        .find(|(key, e)| {
+            *key != path
+                && is_parked_path(key.as_str())
+                && e.handle.path == *path
+                && e.handle.is_closed()
+                && matches!(e.status, CellStatus::Awake)
+        })
+        .map(|(key, _)| key.clone())
+    else {
+        return false;
+    };
+    tracing::warn!(
+        born = %path.as_str(),
+        entry = %parked.as_str(),
+        ?death_kind,
+        "CellDied under a birth path another cell now holds — parking the entry that \
+         owns the dead mailbox (a replace_nodes moved it), the new cell is not touched"
+    );
+    if let Some(entry) = registry.get_mut(&parked) {
+        park_entry_non_running(entry, &parked);
+        entry.active = false;
+    }
+    if let Some(messages) = rescued.remove(path) {
+        dead_letter_rescued(dead_letters, path, messages);
+    }
+    true
 }
 
 /// GH #18: preserve a rescued mailbox that found no successor.
@@ -1966,6 +2092,12 @@ async fn run_shutdown_teardown(
                 // GH #18: keep the path — the corridor consumes it,
                 // and the mailbox rescue is keyed on it.
                 let died = path.clone();
+                // GH #688: a parked entry's death is not the
+                // corridor's (see the main loop's arm).
+                if claim_parked_death(registry, rescued_mailboxes, dead_letters, &died, death_kind)
+                {
+                    continue;
+                }
                 let outcome = handle_cell_died(registry, inbox_self_tx, path, death_kind).await;
                 let restarted = matches!(outcome, CellDiedOutcome::Restarted);
                 if let CellDiedOutcome::Failed { path } = outcome {
@@ -2869,26 +3001,32 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                         // restart brings a fresh task, and a rescued mailbox is
                         // re-delivered with fresh tickets.
                         in_flight.forget(&died);
-                        let outcome = handle_cell_died(&mut registry, &inbox_self_tx, path, death_kind).await;
-                        let restarted = matches!(outcome, CellDiedOutcome::Restarted);
-                        if let CellDiedOutcome::Failed { path } = outcome {
-                            let now = std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .expect("system time")
-                                .as_secs() as i64;
-                            let _ = colony_db
-                                .writer_tx
-                                .send(crate::persist::writer::ColonyWriteOp::SetRegistryStatus {
-                                    path: path.clone(),
-                                    status: "failed".into(),
-                                    updated_at: now,
-                                })
-                                .await;
-                            if let Some(e) = registry.get_mut(&path) {
-                                park_entry_non_running(e, &path);
+                        // GH #688: a parked entry's death (a replace_nodes moved
+                        // it aside, its task still reports under the birth path)
+                        // is settled before the corridor, which is keyed by path
+                        // and would restart against the NEW cell's row.
+                        if !claim_parked_death(&mut registry, &mut rescued_mailboxes, &mut dead_letters, &died, death_kind) {
+                            let outcome = handle_cell_died(&mut registry, &inbox_self_tx, path, death_kind).await;
+                            let restarted = matches!(outcome, CellDiedOutcome::Restarted);
+                            if let CellDiedOutcome::Failed { path } = outcome {
+                                let now = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .expect("system time")
+                                    .as_secs() as i64;
+                                let _ = colony_db
+                                    .writer_tx
+                                    .send(crate::persist::writer::ColonyWriteOp::SetRegistryStatus {
+                                        path: path.clone(),
+                                        status: "failed".into(),
+                                        updated_at: now,
+                                    })
+                                    .await;
+                                if let Some(e) = registry.get_mut(&path) {
+                                    park_entry_non_running(e, &path);
+                                }
                             }
+                            deliver_rescued_mailbox(&registry, &mut rescued_mailboxes, &mut dead_letters, &died, restarted).await;
                         }
-                        deliver_rescued_mailbox(&registry, &mut rescued_mailboxes, &mut dead_letters, &died, restarted).await;
                     }
                     ColonyMsg::DrainDeadLetters { ack } => {
                         // W6d (A6): drain from the DB (source of truth). Fence so
@@ -4153,6 +4291,26 @@ fn rollback_registered_hive_scopes(hive_scopes: &mut HiveScopeTable, registered:
     }
 }
 
+/// GH #682 — undo every lift of a mutation that is being rejected after apply
+/// step 9d moved things: the fresh directories out, the old children back
+/// under their names, the declaration back, the registry rows and hive scopes
+/// back. Called at every reject site after 9d, next to the residue sweep and
+/// AFTER `rollback_registered_nodes` where that runs (the rows this mutation
+/// registered at the old children's paths have to be out before the old rows
+/// return). The durable half never happened: it rode in the write buffer.
+fn undo_lifts(
+    applied: &[crate::mutation::apply_replace::AppliedLift],
+    registry: &mut HashMap<Path, RegistryEntry>,
+    node_contracts: &mut HashMap<Path, NodeContract>,
+    hive_scopes: &mut HiveScopeTable,
+    id: &str,
+) {
+    for done in applied.iter().rev() {
+        crate::mutation::apply_replace::move_rows_back(done, registry, node_contracts, hive_scopes);
+        crate::mutation::apply_replace::undo_lift_files(done, id);
+    }
+}
+
 /// GH #276 — terminalize the `in_flight` `mutation_log` row of a mutation that
 /// is rejected in the APPLY stage.
 ///
@@ -4272,6 +4430,9 @@ pub(crate) async fn handle_manifest(
 
     let entries = manifest.entries();
     let mut ids: Vec<String> = Vec::with_capacity(entries.len());
+    // GH #682: every entry's `changes`, in manifest order — the paths are
+    // absolute, so the joined list still says which node each child belongs to.
+    let mut changes: Vec<crate::mutation::NodeChange> = Vec::new();
     // GH #440: a manifest is ORDERED, so a later entry must see the library an
     // earlier one changed. The snapshot is therefore carried across the loop
     // instead of being frozen once and cloned into every entry.
@@ -4317,7 +4478,11 @@ pub(crate) async fn handle_manifest(
         )
         .await;
         match outcome {
-            MutationOutcome::Committed { id } => {
+            MutationOutcome::Committed {
+                id,
+                changes: entry_changes,
+            } => {
+                changes.extend(entry_changes);
                 if !registered.is_empty() {
                     templates = crate::templates::TemplatesRegistry::from_entries(
                         templates
@@ -4346,7 +4511,7 @@ pub(crate) async fn handle_manifest(
             }
         }
     }
-    ManifestOutcome::Committed { ids }
+    ManifestOutcome::Committed { ids, changes }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -5715,6 +5880,21 @@ pub(crate) async fn handle_mutation(
             &hive_contracts,
             &mut rejection,
         );
+        // GH #682: and the lift's half of the same question — a
+        // `replace_nodes` re-reads the hive's contract from another version
+        // of its template, and a lane that version DROPS is refused while an
+        // outer edge into the hive states it (Spec § 2.6: additive is always
+        // allowed, a loss somebody hangs on never). Same stage, same list of
+        // standing contracts, the renewed one read from the template
+        // directory — pre-destructive like everything at this stage.
+        crate::mutation::hive_contract::collect_dropped_lanes(
+            &diff_subst,
+            guard_scope,
+            &hive_contracts,
+            &templates,
+            edges,
+            &mut rejection,
+        );
 
         // GH #559: a lane the dedup would swallow.
         //
@@ -6221,7 +6401,10 @@ pub(crate) async fn handle_mutation(
     // The templates snapshot was built by the caller (colony_task) and passed in as a
     // parameter (phase-11 T16: ColonyDb is !Sync, hence no &ColonyDb across an
     // .await boundary).
-    let (staged, staged_subtrees) = match crate::mutation::apply::apply_mutation(
+    // GH #682: `staged_replaces` is the staged half of every `replace_nodes`
+    // entry — built and refused pre-destructively in `apply_mutation`; its
+    // rename/registry/edge arm is apply step 9d below.
+    let (staged, staged_subtrees, staged_replaces) = match crate::mutation::apply::apply_mutation(
         root,
         &id,
         &scope,
@@ -6304,6 +6487,39 @@ pub(crate) async fn handle_mutation(
             };
         }
     };
+
+    // Apply sequence step 9d, the front (GH #682): what a lift can still
+    // refuse with nothing of it moved — BEFORE the crash hook and before the
+    // `move_nodes` relocation, which is the first destructive step of the
+    // sequence. Two things staging could not judge: the registry half of the
+    // `<child>~<from_version>` collision (staging has no registry handle),
+    // and whether the new template's inner edges compile (an apply path must
+    // never panic on what it can refuse). The hive-contract guard of Spec
+    // § 2.6 ran in the validate stage, the hive↔leaf class guard in staging.
+    // The residue of a refusal here is what `apply_mutation` renamed in for
+    // the OTHER entries of the diff plus `.staging/<id>` — the same sweep the
+    // post-state checks use, nothing registered yet.
+    let mut lift_edges: Vec<Vec<crate::edge_table::Edge>> =
+        Vec::with_capacity(staged_replaces.len());
+    for lift in &staged_replaces {
+        let front = crate::mutation::apply_replace::refuse_taken_rows(lift, registry)
+            .and_then(|()| crate::mutation::apply_replace::compile_inner_edges(lift));
+        match front {
+            Ok(compiled) => lift_edges.push(compiled),
+            Err(e) => {
+                let details = e.message();
+                tracing::warn!(reason = %details, "replace_nodes refused at the apply front");
+                sweep_reject_residue(&staged, &staged_subtrees, registry, &[], root, &id);
+                terminalize_apply_reject(log_tx, &id, details.clone()).await;
+                return MutationOutcome::Rejected {
+                    id: Some(id),
+                    error_code: e.error_code().into(),
+                    details,
+                    violations: Vec::new(),
+                };
+            }
+        }
+    }
 
     // Apply sequence step 7: optional crash-injection hook.
     crate::mutation::hook::park_after_rename().await;
@@ -6857,6 +7073,171 @@ pub(crate) async fn handle_mutation(
         }
     }
 
+    // Apply sequence step 9d (GH #682): `replace_nodes` — the lift itself.
+    //
+    // A standing node keeps its path and is re-read from another version of
+    // its template. The staged plan (step 6, `stage_replace`) says per child
+    // what that means — kept, changed, added, left — and this block does it,
+    // in the order Spec § 2.4 fixes and `mutation::apply_replace` documents:
+    // files first (old children aside, staged ones in, declaration swapped),
+    // then the registry rows of the old children to their suffixed paths,
+    // then the inner edges INSERT-BEFORE-REMOVE like the swing in 9b, then
+    // every node of the subtree into `involved` so the ONE recompute of step
+    // 10b stops the renamed-old and the left (edge-less) and spawns the new.
+    // No explicit stop before it — a hive stopped by hand would run half
+    // wired for a moment.
+    //
+    // The cells the lift gives birth to (added and changed-fresh) are
+    // registered in step 9c(1) beside the subtree merge's rename-roots, after
+    // the post-state validations, for the reason those run first (GH #276).
+    // Every refusal after this block — the post-state checks, the spawn arms,
+    // the stop-wiring guard, the death-ack term-timeout, and the late library
+    // and seed-row refusals — undoes the lift through `undo_lifts` next to the
+    // sweep it already runs; the old children go back under their names, the
+    // fresh directories out, the declaration back, the rows back. The
+    // durable half rides in `write_buffer` and is discarded with it.
+    //
+    // A `rename(2)` that fails here is the mid-rename strict-fail class (the
+    // paths were checked before the first move; only the environment can
+    // fail now) and is treated exactly like `move_nodes` treats its own.
+    let mut applied_lifts: Vec<crate::mutation::apply_replace::AppliedLift> =
+        Vec::with_capacity(staged_replaces.len());
+    let mut lift_roots: Vec<&crate::mutation::subtree::StagedRenameRoot> = Vec::new();
+    for (lift, new_edges) in staged_replaces.iter().zip(lift_edges) {
+        pulse.tick();
+        let mut done = crate::mutation::apply_replace::AppliedLift::default();
+        if let Err(detail) = crate::mutation::apply_replace::apply_lift_files(lift, &mut done) {
+            crate::mutation::apply_replace::undo_lift_files(&done, &id);
+            panic!(
+                "replace_nodes strict-fail (mutation {id}): {detail} — the lift of {} was \
+                 rolled back on disk as far as it had gone",
+                lift.absolute_path.as_str()
+            );
+        }
+        for change in &lift.changed {
+            crate::mutation::apply_replace::move_rows_aside(
+                &change.aside,
+                registry,
+                node_contracts,
+                hive_scopes,
+                &mut write_buffer,
+                now_spawn,
+                &mut done,
+            );
+        }
+        // Hive markers the lift adds (added roots), like 9c(2); kept hives
+        // re-emit their idempotent row, like 9c(2b). The lifted hive itself
+        // is neither — its scope stands and stays.
+        for root in lift
+            .added
+            .iter()
+            .chain(lift.changed.iter().map(|c| &c.fresh))
+        {
+            for hive_path in &root.hive_scopes {
+                if hive_scopes.get(hive_path).is_none() {
+                    hive_scopes_registered_by_this_mutation.push(hive_path.clone());
+                }
+                hive_scopes.register(crate::hive_scope::HiveScope {
+                    path: hive_path.clone(),
+                });
+                write_buffer.push(crate::persist::writer::ColonyWriteOp::InsertHiveScope {
+                    path: hive_path.clone(),
+                    created_at: now_spawn,
+                });
+            }
+            lift_roots.push(root);
+        }
+        for kept_hive in &lift.kept_hives {
+            hive_scopes.register(crate::hive_scope::HiveScope {
+                path: kept_hive.absolute_path.clone(),
+            });
+            write_buffer.push(crate::persist::writer::ColonyWriteOp::InsertHiveScope {
+                path: kept_hive.absolute_path.clone(),
+                created_at: now_spawn,
+            });
+        }
+        // Inner edges, INSERT-BEFORE-REMOVE. An old inner edge that one of the
+        // new ones equals on the five identity terms AND on the lane is
+        // RETAINED under its own id (the dedup would skip the insert anyway,
+        // and taking the old one out would leave a kept child unwired); every
+        // other old inner edge comes out after the new ones are in. Outer
+        // edges have one end outside the hive and are never in either list.
+        //
+        // One exception to the order: the lane is no identity term, so an old
+        // edge a new one equals on the five terms under ANOTHER lane (or
+        // none) would make the dedup skip the new one — the declaration would
+        // never land. Such a DISPLACED old edge comes out first, through the
+        // same Remove op and rollback list, and the new one goes in below
+        // like any other.
+        let old_inner = crate::mutation::apply_replace::old_inner_edges(edges, &lift.absolute_path);
+        let retained_ids: Vec<Uuid> = old_inner
+            .iter()
+            .filter(|o| crate::mutation::apply_replace::retained_by(o, &new_edges))
+            .map(|o| o.id)
+            .collect();
+        let mut old_inner_rest = Vec::with_capacity(old_inner.len());
+        for old in old_inner {
+            if !retained_ids.contains(&old.id)
+                && crate::mutation::apply_replace::displaced_by(&old, &new_edges)
+            {
+                edges.remove(&old.id);
+                write_buffer.push(crate::persist::writer::ColonyWriteOp::RemoveEdge {
+                    id: old.id.to_string(),
+                });
+                removed_edges_saved.push(old);
+            } else {
+                old_inner_rest.push(old);
+            }
+        }
+        for candidate in new_edges {
+            if edges.contains_equal(&candidate) {
+                continue;
+            }
+            let edge_id = candidate.id;
+            let cond_src = candidate.condition.as_ref().map(|c| c.source.clone());
+            let mod_src = candidate
+                .modifier
+                .as_ref()
+                .and_then(|m| meclaw_core::serde_json::to_string(&m.source).ok());
+            let is_default = candidate.is_default;
+            let lane = candidate.lane.clone();
+            let (from, to) = (candidate.from.clone(), candidate.to.clone());
+            edges.insert(candidate);
+            inserted_edge_ids.push(edge_id);
+            write_buffer.push(crate::persist::writer::ColonyWriteOp::InsertEdge {
+                id: edge_id.to_string(),
+                from: from.as_str().into(),
+                to: to.as_str().into(),
+                created_at: now_spawn,
+                condition: cond_src,
+                modifier: mod_src,
+                is_default,
+                lane,
+            });
+        }
+        for old in old_inner_rest {
+            if retained_ids.contains(&old.id) {
+                continue;
+            }
+            edges.remove(&old.id);
+            write_buffer.push(crate::persist::writer::ColonyWriteOp::RemoveEdge {
+                id: old.id.to_string(),
+            });
+            removed_edges_saved.push(old);
+        }
+        involved.extend(crate::mutation::apply_replace::involved_paths(lift, &done));
+        applied_lifts.push(done);
+    }
+    // The post-state lane-doors check below judges every contracted hive by
+    // its contract — for a lifted hive that is the one its `config.json` now
+    // carries, not the one it just gave up (the way back drops a lane and its
+    // door together, and must not be refused for it).
+    let hive_contracts = if staged_replaces.is_empty() {
+        hive_contracts
+    } else {
+        crate::mutation::apply_replace::renewed_contracts(hive_contracts, &staged_replaces)
+    };
+
     // Step 10 (task 6, SCOPE 4): `remove_nodes` = disconnect. For each removed
     // node, remove ALL of its edges (`from == p` OR `to == p`) in-RAM through the
     // SAME A5 machinery as `remove_edges`: clone the matched edges into
@@ -7115,6 +7496,7 @@ pub(crate) async fn handle_mutation(
         // GH #276: nothing is registered yet (step 9 runs below), so the only
         // residue is on disk — the staged directories renamed in by step 7 — and
         // the `in_flight` log row the caller would otherwise be left with.
+        undo_lifts(&applied_lifts, registry, node_contracts, hive_scopes, &id);
         sweep_reject_residue(
             &staged,
             &staged_subtrees,
@@ -7184,6 +7566,7 @@ pub(crate) async fn handle_mutation(
         rollback_registered_hive_scopes(hive_scopes, &hive_scopes_registered_by_this_mutation);
         // GH #276: same as the drain check above — nothing registered, staged
         // directories swept, log row terminalized.
+        undo_lifts(&applied_lifts, registry, node_contracts, hive_scopes, &id);
         sweep_reject_residue(
             &staged,
             &staged_subtrees,
@@ -7262,6 +7645,7 @@ pub(crate) async fn handle_mutation(
                     &hive_scopes_registered_by_this_mutation,
                 )
                 .await;
+                undo_lifts(&applied_lifts, registry, node_contracts, hive_scopes, &id);
                 sweep_reject_residue(
                     &staged,
                     &staged_subtrees,
@@ -7506,6 +7890,7 @@ pub(crate) async fn handle_mutation(
                     &hive_scopes_registered_by_this_mutation,
                 )
                 .await;
+                undo_lifts(&applied_lifts, registry, node_contracts, hive_scopes, &id);
                 sweep_reject_residue(
                     &staged,
                     &staged_subtrees,
@@ -7687,13 +8072,19 @@ pub(crate) async fn handle_mutation(
 
     // Apply sequence step 9c(1): registration of the merge-staged SUBTREE cells,
     // for the same reason and at the same point as the single-cell loop above.
-    let subtree_total: usize = staged_subtrees
+    //
+    // GH #682: the rename-roots a lift brings in (its added and changed-fresh
+    // children, step 9d) ride the same loop — a cell born by a lift needs
+    // exactly what a cell born by a merge needs, and registers the same way.
+    let registration_roots: Vec<&crate::mutation::subtree::StagedRenameRoot> = staged_subtrees
         .iter()
-        .map(|s| s.rename_roots.iter().map(|r| r.cells.len()).sum::<usize>())
-        .sum();
+        .flat_map(|s| s.rename_roots.iter())
+        .chain(lift_roots.iter().copied())
+        .collect();
+    let subtree_total: usize = registration_roots.iter().map(|r| r.cells.len()).sum();
     let mut subtree_i = 0usize;
-    for subtree in &staged_subtrees {
-        for cell in subtree.rename_roots.iter().flat_map(|r| r.cells.iter()) {
+    {
+        for cell in registration_roots.iter().flat_map(|r| r.cells.iter()) {
             // GH #439: same pair as the single-cell loop above — a subtree
             // instantiation is the case the issue was filed about.
             pulse
@@ -8063,6 +8454,7 @@ pub(crate) async fn handle_mutation(
                 &hive_scopes_registered_by_this_mutation,
             )
             .await;
+            undo_lifts(&applied_lifts, registry, node_contracts, hive_scopes, &id);
             sweep_reject_residue(
                 &staged,
                 &staged_subtrees,
@@ -8296,6 +8688,7 @@ pub(crate) async fn handle_mutation(
                     &hive_scopes_registered_by_this_mutation,
                 )
                 .await;
+                undo_lifts(&applied_lifts, registry, node_contracts, hive_scopes, &id);
                 sweep_reject_residue(
                     &staged,
                     &staged_subtrees,
@@ -8335,6 +8728,7 @@ pub(crate) async fn handle_mutation(
                     &hive_scopes_registered_by_this_mutation,
                 )
                 .await;
+                undo_lifts(&applied_lifts, registry, node_contracts, hive_scopes, &id);
                 sweep_reject_residue(
                     &staged,
                     &staged_subtrees,
@@ -8379,6 +8773,7 @@ pub(crate) async fn handle_mutation(
                     &hive_scopes_registered_by_this_mutation,
                 )
                 .await;
+                undo_lifts(&applied_lifts, registry, node_contracts, hive_scopes, &id);
                 sweep_reject_residue(
                     &staged,
                     &staged_subtrees,
@@ -8427,6 +8822,7 @@ pub(crate) async fn handle_mutation(
                     &hive_scopes_registered_by_this_mutation,
                 )
                 .await;
+                undo_lifts(&applied_lifts, registry, node_contracts, hive_scopes, &id);
                 sweep_reject_residue(
                     &staged,
                     &staged_subtrees,
@@ -8492,7 +8888,15 @@ pub(crate) async fn handle_mutation(
         }
     }
 
-    MutationOutcome::Committed { id }
+    // GH #682 (OR-P4): the receipt names every child of every lifted node.
+    // The entries were read pre-destructively at staging; one diff may lift
+    // several nodes, so the lists are joined and sorted once more.
+    let mut changes: Vec<crate::mutation::NodeChange> = staged_replaces
+        .iter()
+        .flat_map(|lift| lift.changes.iter().cloned())
+        .collect();
+    changes.sort_by(|a, b| a.path.cmp(&b.path));
+    MutationOutcome::Committed { id, changes }
 }
 
 /// Helper for `handle_mutation`: route an EDA error-reply to `reply_to` (if set)
@@ -8936,10 +9340,13 @@ fn build_ttl_notice(
 /// - **A live budget.** A fresh `message_default_ttl`, because the receipt is a
 ///   source emission in every sense that matters and the mutation's own
 ///   envelope is not its parent's.
-/// - **The hop carries everything.** Five keys and no more —
-///   `route`/`mutation_id`|`mutation_ids`/`outcome`/`scope`/`form`. What
-///   changed is a question `/colony/graph` already answers, and a receipt that
-///   tried to answer it too would be a second, staler truth.
+/// - **The hop carries everything.** Six keys and no more —
+///   `route`/`mutation_id`|`mutation_ids`/`outcome`/`scope`/`form`, and since
+///   GH #682 `changes`: every child of a replaced node, kept, replaced, added
+///   or left, with the version it came from and the one it went to, `[]` for
+///   every other knock. What the tree looks like now is a question
+///   `/colony/graph` already answers, and a receipt that tried to answer it
+///   too would be a second, staler truth.
 ///
 /// `context` is empty: a receipt continues nobody's round, so there is no
 /// correlation to carry. The `trace_id` is the mutation's own, and
@@ -8962,12 +9369,13 @@ pub(crate) fn build_mutation_receipt(
 ) -> Option<(Path, Message)> {
     use crate::mutation::{ManifestOutcome, MutationDoorOutcome, MutationOutcome};
     let mut hop = meclaw_core::serde_json::Map::new();
-    match outcome {
-        MutationDoorOutcome::Single(MutationOutcome::Committed { id }) => {
+    let changes = match outcome {
+        MutationDoorOutcome::Single(MutationOutcome::Committed { id, changes }) => {
             hop.insert("mutation_id".into(), id.as_str().into());
             hop.insert("form".into(), "single".into());
+            changes
         }
-        MutationDoorOutcome::Manifest(ManifestOutcome::Committed { ids }) => {
+        MutationDoorOutcome::Manifest(ManifestOutcome::Committed { ids, changes }) => {
             hop.insert(
                 "mutation_ids".into(),
                 meclaw_core::serde_json::Value::Array(
@@ -8975,9 +9383,18 @@ pub(crate) fn build_mutation_receipt(
                 ),
             );
             hop.insert("form".into(), "manifest".into());
+            changes
         }
         _ => return None,
-    }
+    };
+    // GH #682 (OR-P4): the sixth key. What the tree looks like now is still
+    // `/colony/graph`'s answer; what a lift DID to each child is only here.
+    // `[]` for every knock that replaced nothing, so the key is always there.
+    hop.insert(
+        "changes".into(),
+        meclaw_core::serde_json::to_value(changes)
+            .unwrap_or_else(|_| meclaw_core::serde_json::Value::Array(vec![])),
+    );
     Some(receipt_message(
         hop,
         scope,
@@ -9021,6 +9438,11 @@ pub(crate) fn build_boot_receipt(target: &Path, ttl: u32) -> (Path, Message) {
     let mut hop = meclaw_core::serde_json::Map::new();
     hop.insert("mutation_id".into(), Uuid::nil().to_string().into());
     hop.insert("form".into(), "boot".into());
+    // GH #682: a boot replaced nothing, and the key is on every receipt.
+    hop.insert(
+        "changes".into(),
+        meclaw_core::serde_json::Value::Array(vec![]),
+    );
     // No parent and no trace of its own: a boot continues nothing, so the
     // builder's own fresh id becomes the trace.
     receipt_message(hop, "/", target, ttl, None, None)
@@ -10463,6 +10885,91 @@ mod tests {
             .expect("swapped sender is alive for reconnect-wake");
     }
 
+    /// GH #682: a `Stopped` reported under a birth path another cell now holds
+    /// parks the entry that OWNS the returned mailbox, wherever the lift moved
+    /// it — never the new cell at that path. The old entry keeps the handle it
+    /// was born with (`/x`) at its suffixed key; the new entry at `/x` holds a
+    /// different, open mailbox and stays exactly as it is.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn handle_stopped_parks_the_owner_of_the_mailbox_not_the_path() {
+        let entry = |handle: meclaw_core::ActorHandle| RegistryEntry {
+            handle,
+            respawn: Box::new(|| unreachable!()),
+            wake: None,
+            restart_count: 0,
+            restart_limit: 5,
+            cell_id: uuid::Uuid::now_v7(),
+            cell_type: "stub".into(),
+            status: CellStatus::Awake,
+            eager_on_reconnect: true,
+            active: true,
+            failed: false,
+            dormant: false,
+            stop_tx: None,
+            death_ack_rx: None,
+        };
+        let mut registry = std::collections::HashMap::<Path, RegistryEntry>::new();
+        let born = Path::new("/x");
+        let moved_to = Path::new("/x~1.0.0");
+        let (old_sender, old_receiver) = mpsc::channel::<Message>(8);
+        let (new_sender, _new_receiver) = mpsc::channel::<Message>(8);
+        // The old cell's entry, moved aside by a lift: keyed at the suffixed
+        // path, its handle still names the birth path.
+        let mut old = entry(meclaw_core::ActorHandle::new(born.clone(), old_sender));
+        old.active = false;
+        registry.insert(moved_to.clone(), old);
+        // The new cell at the birth path, its own mailbox.
+        registry.insert(
+            born.clone(),
+            entry(meclaw_core::ActorHandle::new(born.clone(), new_sender)),
+        );
+
+        let mut dead_letters: VecDeque<DeadLetter> = VecDeque::new();
+        handle_stopped(&mut registry, &mut dead_letters, born.clone(), old_receiver).await;
+
+        let new = registry.get(&born).unwrap();
+        assert!(new.active, "the new cell at the path is not touched");
+        assert!(matches!(new.status, CellStatus::Awake));
+        new.handle
+            .send(MessageBuilder::new(born.clone()).build())
+            .await
+            .expect("the new cell's mailbox is still the live one");
+        let old = registry.get(&moved_to).unwrap();
+        assert!(
+            matches!(old.status, CellStatus::NotYetSpawned { .. }),
+            "the owner of the returned mailbox is parked"
+        );
+        assert!(!old.active);
+        assert_eq!(old.handle.path, moved_to, "parked under its own key");
+
+        // Final review: the fallback never takes the entry AT the path either,
+        // not even a failed one whose mailbox is closed — a crashed new cell
+        // at the birth path (its receiver dropped in the unwind) is not the
+        // owner of a mailbox some other task returned. Nothing is parked.
+        let mut registry = std::collections::HashMap::<Path, RegistryEntry>::new();
+        let (crashed_sender, crashed_receiver) = mpsc::channel::<Message>(8);
+        drop(crashed_receiver);
+        let mut crashed = entry(meclaw_core::ActorHandle::new(born.clone(), crashed_sender));
+        crashed.failed = true;
+        crashed.active = false;
+        registry.insert(born.clone(), crashed);
+        let (stray_sender, stray_receiver) = mpsc::channel::<Message>(8);
+        drop(stray_sender);
+        handle_stopped(
+            &mut registry,
+            &mut dead_letters,
+            born.clone(),
+            stray_receiver,
+        )
+        .await;
+        let crashed = registry.get(&born).unwrap();
+        assert!(
+            matches!(crashed.status, CellStatus::Awake),
+            "a failed entry at the path is not parked by a mailbox it does not own"
+        );
+        assert!(crashed.failed && !crashed.active);
+    }
+
     /// Phase-13.5 Lifecycle-3b Task 4 (4.7, A4): the mailbox-remainder → DLQ
     /// drain is cell-kind-agnostic — a stateful, a long-running, and a stateless
     /// cell all hand the colony the SAME `mpsc::Receiver<Message>` on stop, so
@@ -10804,6 +11311,7 @@ mod tests {
         // Control: the same builder DOES answer for a committed knock.
         let committed = MutationDoorOutcome::Single(MutationOutcome::Committed {
             id: "the-id".into(),
+            changes: Vec::new(),
         });
         assert!(build(&committed).is_some());
     }
@@ -10814,7 +11322,7 @@ mod tests {
     /// counted half (`n` mutations plus the boot leave `n + 1` receipts) lives
     /// in `tests/gh553_a_committed_mutation_leaves_a_receipt.rs`.
     #[test]
-    fn a_receipt_is_terminal_and_says_only_the_five_keys() {
+    fn a_receipt_is_terminal_and_says_only_the_six_keys() {
         use crate::mutation::{MutationDoorOutcome, MutationOutcome};
         let target = Path::new("/hive");
         let trace = Uuid::now_v7();
@@ -10822,6 +11330,7 @@ mod tests {
         let (sender, msg) = build_mutation_receipt(
             &MutationDoorOutcome::Single(MutationOutcome::Committed {
                 id: "the-id".into(),
+                changes: Vec::new(),
             }),
             "/os",
             trace,
@@ -10850,8 +11359,21 @@ mod tests {
         keys.sort();
         assert_eq!(
             keys,
-            vec!["form", "mutation_id", "outcome", "route", "scope"],
-            "five keys and no more: what CHANGED is `/colony/graph`'s answer"
+            vec![
+                "changes",
+                "form",
+                "mutation_id",
+                "outcome",
+                "route",
+                "scope"
+            ],
+            "six keys and no more: what the tree looks like is `/colony/graph`'s \
+             answer; `changes` (GH #682) says only what a lift did to each child"
+        );
+        assert_eq!(
+            msg.headers.hop["changes"],
+            meclaw_core::serde_json::json!([]),
+            "a knock that replaced nothing carries the key, empty"
         );
         assert_eq!(msg.headers.hop["route"], "mutation_committed");
         assert_eq!(msg.headers.hop["scope"], "/os");
@@ -13517,6 +14039,198 @@ mod tests {
             0,
             "respawn must NOT be invoked on exhaustion"
         );
+    }
+
+    // ---- GH #688: a parked entry's death is settled outside the corridor ----
+
+    /// A registry entry over a given handle, `Awake`, with a respawn that
+    /// counts its calls — so a restart the corridor must NOT do is visible.
+    fn awake_entry(handle: ActorHandle, counter: Arc<AtomicU32>) -> RegistryEntry {
+        let respawn: RespawnFn = Box::new(move || {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let (s, _r) = mpsc::channel::<Message>(8);
+            let (_pt, pr) = tokio::sync::oneshot::channel::<()>();
+            let (_bt, br) = tokio::sync::oneshot::channel::<()>();
+            let join = tokio::spawn(async {});
+            (s, join, pr, br)
+        });
+        RegistryEntry {
+            handle,
+            respawn,
+            wake: None,
+            restart_count: 0,
+            restart_limit: 5,
+            cell_id: uuid::Uuid::now_v7(),
+            cell_type: "stub".into(),
+            status: CellStatus::Awake,
+            eager_on_reconnect: true,
+            active: true,
+            failed: false,
+            dormant: false,
+            stop_tx: None,
+            death_ack_rx: None,
+        }
+    }
+
+    /// GH #688: the new child stands alive at `/x`, the old one is parked at
+    /// `/x~1.0.0` with the handle it was born with (`/x`) and its mailbox
+    /// closed by its own death. A `CellDied { /x, Panic }` is the parked
+    /// entry's: it is parked (`NotYetSpawned`, inactive, not failed, keyed
+    /// under its own path), the new child is not restarted, not removed and
+    /// not touched, and the mailbox rescued under `/x` goes to the dead
+    /// letters — never to the new child.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn cell_died_of_a_parked_twin_parks_it_and_leaves_the_new_child_alone() {
+        let born = Path::new("/x");
+        let parked_at = Path::new("/x~1.0.0");
+        let new_respawns = Arc::new(AtomicU32::new(0));
+        let old_respawns = Arc::new(AtomicU32::new(0));
+        let mut registry = HashMap::new();
+        let (new_sender, mut new_receiver) = mpsc::channel::<Message>(8);
+        registry.insert(
+            born.clone(),
+            awake_entry(
+                ActorHandle::new(born.clone(), new_sender),
+                new_respawns.clone(),
+            ),
+        );
+        let (old_sender, old_receiver) = mpsc::channel::<Message>(8);
+        drop(old_receiver); // the dying task dropped its mailbox
+        let mut old = awake_entry(
+            ActorHandle::new(born.clone(), old_sender),
+            old_respawns.clone(),
+        );
+        old.active = false; // the lift's recompute deactivated it
+        registry.insert(parked_at.clone(), old);
+        let mut rescued: HashMap<Path, Vec<Message>> = HashMap::new();
+        rescued.insert(
+            born.clone(),
+            vec![MessageBuilder::new(born.clone()).build()],
+        );
+        let mut dead_letters: VecDeque<DeadLetter> = VecDeque::new();
+
+        assert!(
+            claim_parked_death(
+                &mut registry,
+                &mut rescued,
+                &mut dead_letters,
+                &born,
+                DeathKind::Panic,
+            ),
+            "the death is the parked entry's"
+        );
+
+        let new = registry.get(&born).expect("the new child's row stays");
+        assert_eq!(new.restart_count, 0, "not restarted");
+        assert_eq!(new_respawns.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(matches!(new.status, CellStatus::Awake) && new.active && !new.failed);
+        new.handle
+            .send(MessageBuilder::new(born.clone()).build())
+            .await
+            .expect("the new child's mailbox is still the live one");
+        assert!(new_receiver.recv().await.is_some());
+        let old = registry.get(&parked_at).expect("the parked row stays");
+        assert!(
+            matches!(old.status, CellStatus::NotYetSpawned { .. }),
+            "the parked entry is parked"
+        );
+        assert!(!old.active && !old.failed);
+        assert_eq!(old.handle.path, parked_at, "parked under its own key");
+        assert_eq!(old_respawns.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(rescued.is_empty(), "the rescue was taken");
+        assert_eq!(dead_letters.len(), 1, "the rescue is dead-lettered");
+        assert_eq!(dead_letters[0].resolved_target, born);
+        assert!(matches!(
+            dead_letters[0].reason,
+            crate::dead_letter::DeadLetterReason::CellInactive
+        ));
+    }
+
+    /// GH #688: everything else is the corridor's death as before — no entry
+    /// at the path, no parked twin, a twin that is not parked (`~`-less
+    /// key), a parked twin whose mailbox is still open (it is not the one
+    /// that died), and the ambiguous case where the entry at the path is
+    /// closed too. Nothing is parked, nothing is dead-lettered.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn cell_died_without_a_dead_parked_twin_stays_with_the_corridor() {
+        let born = Path::new("/x");
+        let counter = Arc::new(AtomicU32::new(0));
+        let mut dead_letters: VecDeque<DeadLetter> = VecDeque::new();
+        let mut rescued: HashMap<Path, Vec<Message>> = HashMap::new();
+        let open = |p: &Path| {
+            let (s, r) = mpsc::channel::<Message>(8);
+            (ActorHandle::new(p.clone(), s), r)
+        };
+        let closed = |p: &Path| {
+            let (s, r) = mpsc::channel::<Message>(8);
+            drop(r);
+            ActorHandle::new(p.clone(), s)
+        };
+
+        // Cases: (twin key, twin handle closed, entry-at-path present and open)
+        let cases: Vec<(Option<&str>, bool, Option<bool>)> = vec![
+            (None, false, None),                   // nothing at the path at all
+            (None, false, Some(true)),             // alive at the path, no twin
+            (Some("/y"), true, Some(true)),        // twin not parked
+            (Some("/x~1.0.0"), false, Some(true)), // parked twin still running
+            (Some("/x~1.0.0"), true, Some(false)), // both closed: ambiguous
+            (Some("/x~1.0.0"), true, None),        // parked twin, no entry at path
+        ];
+        for (twin, twin_closed, at_path_open) in cases {
+            let mut registry = HashMap::new();
+            let mut keep_rx = Vec::new();
+            match at_path_open {
+                Some(true) => {
+                    let (h, r) = open(&born);
+                    keep_rx.push(r);
+                    registry.insert(born.clone(), awake_entry(h, counter.clone()));
+                }
+                Some(false) => {
+                    registry.insert(born.clone(), awake_entry(closed(&born), counter.clone()));
+                }
+                None => {}
+            }
+            if let Some(key) = twin {
+                let h = if twin_closed {
+                    closed(&born)
+                } else {
+                    let (h, r) = open(&born);
+                    keep_rx.push(r);
+                    h
+                };
+                let mut e = awake_entry(h, counter.clone());
+                e.active = false;
+                registry.insert(Path::new(key), e);
+            }
+            rescued.insert(
+                born.clone(),
+                vec![MessageBuilder::new(born.clone()).build()],
+            );
+            assert!(
+                !claim_parked_death(
+                    &mut registry,
+                    &mut rescued,
+                    &mut dead_letters,
+                    &born,
+                    DeathKind::Panic,
+                ),
+                "not the parked entry's death: twin={twin:?} closed={twin_closed} at_path={at_path_open:?}"
+            );
+            assert!(
+                registry
+                    .values()
+                    .all(|e| matches!(e.status, CellStatus::Awake)),
+                "nothing parked: twin={twin:?} closed={twin_closed} at_path={at_path_open:?}"
+            );
+            assert_eq!(
+                rescued.len(),
+                1,
+                "the rescue is left for the corridor's verdict"
+            );
+            assert!(dead_letters.is_empty());
+            rescued.clear();
+        }
+        assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
     // ---- Phase-13-E-1: spawn_watcher peace-aware tests ----

@@ -16,8 +16,10 @@
 //! drift apart are two findings, and a helper both of them lean on is one place
 //! where a mistake hides from both.
 
+use meclaw_cells::LlmCellFactory;
 use meclaw_cells::code::CodeCellFactory;
 use meclaw_cells::store::StoreCellFactory;
+use meclaw_cells::timer::TimerCellFactory;
 use meclaw_cells::voice::VoiceCellFactory;
 use meclaw_cells::web::WebCellFactory;
 use meclaw_colony::{CellFactory, CellFactoryRegistry, ColonyMsg, bootstrap_from_filesystem};
@@ -248,6 +250,8 @@ async fn boot() -> Live {
             Arc::new(CodeCellFactory) as Arc<dyn CellFactory>,
         ),
         ("store".to_string(), Arc::new(StoreCellFactory)),
+        ("timer".to_string(), Arc::new(TimerCellFactory)),
+        ("llm".to_string(), Arc::new(LlmCellFactory)),
         (
             "web".to_string(),
             Arc::new(WebCellFactory::new(Arc::clone(&surfaces))),

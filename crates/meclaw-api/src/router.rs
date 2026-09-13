@@ -119,7 +119,7 @@ pub fn build_router(
         // Phase 12-D: operator UI (server-rendered HTML, no JS, no auto-refresh,
         // no mutation path). `/` redirects to the dashboard so the operator does
         // not have to type "/ui/" from memory.
-        .route("/", get(|| async { Redirect::temporary("/ui/") }))
+        .route("/", get(root_redirect))
         .route("/ui/", get(ui::dashboard::get_dashboard))
         .route("/ui/registry", get(ui::registry::get_registry_ui))
         .route("/ui/graph", get(ui::graph::get_graph_ui))
@@ -132,4 +132,41 @@ pub fn build_router(
         .route("/ui/trace", get(ui::trace::get_trace_ui))
         .route("/ui/templates", get(ui::templates::get_templates_ui))
         .with_state(state)
+}
+
+/// The longest `X-Forwarded-Prefix` the root redirect takes, in bytes after
+/// the leading slash -- the same bound the web shell uses.
+const PREFIX_MAX: usize = 200;
+
+/// The one URL this router emits that a path proxy has to be able to reach
+/// (GH #685).
+///
+/// `X-Forwarded-Prefix` is read with the same grammar the web shell reads it
+/// with (`meclaw_cells::web::io::base_of`): a path, no trailing slash, no
+/// protocol-relative `//`, no `..`, bounded, plain characters. A header that
+/// fails it is ignored rather than repaired -- the value comes from whoever
+/// spoke HTTP to the listener, and a client that can reach the port directly
+/// can set it too.
+async fn root_redirect(headers: axum::http::HeaderMap) -> Redirect {
+    let prefix = headers
+        .get("x-forwarded-prefix")
+        .and_then(|v| v.to_str().ok())
+        .filter(|p| prefix_is_usable(p))
+        .unwrap_or("");
+    Redirect::temporary(&format!("{prefix}/ui/"))
+}
+
+/// Whether a forwarded prefix is a path this router will put in front of `/ui/`.
+fn prefix_is_usable(prefix: &str) -> bool {
+    let Some(rest) = prefix.strip_prefix('/') else {
+        return false;
+    };
+    if rest.len() > PREFIX_MAX || prefix.ends_with('/') || prefix.starts_with("//") {
+        return false;
+    }
+    if rest.split('/').any(|segment| segment == "..") {
+        return false;
+    }
+    rest.chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '~' | '/' | '-'))
 }

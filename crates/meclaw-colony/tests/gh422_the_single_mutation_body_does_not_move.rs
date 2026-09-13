@@ -364,17 +364,20 @@ fn registry_paths(root: &std::path::Path) -> Vec<String> {
 // the pins
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// A committed single mutation replies with EXACTLY two keys.
+/// A committed single mutation replies with EXACTLY three keys: the two of
+/// GH #422 and the additive `changes` of GH #682, empty unless a node was
+/// replaced.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_committed_single_mutation_replies_exactly_two_keys() {
+async fn a_committed_single_mutation_replies_exactly_three_keys() {
     let k = knock(json!({"scope": "/", "diff": {}})).await;
     assert_eq!(
         mutation_keys(&k.reply),
-        vec!["id", "outcome"],
-        "a committed reply carries exactly these two keys: {}",
+        vec!["changes", "id", "outcome"],
+        "a committed reply carries exactly these three keys: {}",
         k.reply
     );
     assert_eq!(k.reply["mutation"]["outcome"], "committed");
+    assert_eq!(k.reply["mutation"]["changes"], json!([]));
     k.handle.shutdown().await;
 }
 
@@ -427,7 +430,7 @@ async fn a_body_without_manifest_key_takes_the_single_path() {
     let k = knock(json!({"scope": "/", "diff": {}, "comment": "x"})).await;
     assert_eq!(
         mutation_keys(&k.reply),
-        vec!["id", "outcome"],
+        vec!["changes", "id", "outcome"],
         "an unknown top-level key changes nothing: {}",
         k.reply
     );

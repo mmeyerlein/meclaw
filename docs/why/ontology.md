@@ -42,4 +42,4 @@ same diff, so a wish the library has no word for is answered by writing the clas
 ## Where to read on
 
 - [templates and apps](../templates-and-apps.md) for what a class is made of
-- [`rewiring.md`](../rewiring.md) for the eight diff operations, `add_templates` among them
+- [`rewiring.md`](../rewiring.md) for the nine diff operations, `add_templates` among them

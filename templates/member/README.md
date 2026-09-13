@@ -651,14 +651,17 @@ behaves like, and it is a channel **of the person** — which is precisely why t
 of their agents may hold views on it at the same time. A screen owned by a
 generation would go dark on a swap and could not be shared at all.
 
-Since GH #459 the cell that stands there is real: [`display@2.1.0`](../display/).
-**Two** edges instantiate one — one fewer than a chat channel costs — and the
-second of them says the only thing a chat channel's edges do not:
+Since GH #459 the cell that stands there is real: [`display@2.2.3`](../display/).
+**Three** edges instantiate one — as many as a chat channel costs, though two of
+them point down where a chat channel's point up — and the second says the only
+thing a chat channel's edges do not, the third the one thing a chat channel
+never hears:
 
 | edge | condition | why |
 |---|---|---|
 | `./channels/display-<s> -> ./channels` | `event` or `receipt` | what the screen produced, stamped with `context.channel_node` and `context.channel`, which on a screen are the same word |
 | `./channels -> ./channels/display-<s>` | `view`, `context.channel_node == '<s>'` | re-stamped to the display's own `in_view` |
+| `./channels -> ./channels/display-<s>` | `error` | a channel's failure, re-stamped to the display's `in_notice` — since `builder@1.10.0`, drawn by the mutation that grows the screen |
 
 **A screen has no error wire, and drawing one would be drawing into the void.**
 A connector's third edge exists because a connector *emits a failure of its own*:
@@ -676,6 +679,21 @@ could ever match it, and a receipt — the one thing that *does* carry the word 
 would not, because it carries it a compartment away. The substrate's own
 `contract_violation` reply is addressed to the caller's `reply_to` and never
 routed by this graph, so it owes no edge either.
+
+**A screen has an error wire *in* since `builder@1.10.0`:** a channel's failure
+inside the container is re-stamped `in_notice` towards the screen, so the person
+sees it as a system notice; the exit edge stays, so the operator sees it too.
+The wire is the other direction from the one the paragraph above refuses: it
+carries the failures of the *other* channels — a microphone that caught nothing,
+a voice that could not speak — down onto the screen, never anything the screen
+produced. It has no `channel_node` guard, because an `error` carries no context
+of a screen and belongs to the member, and it cannot loop, because the screen
+emits no `error`. It is drawn by the **builder's** recipe rather than shipped by
+this level, for the reason the whole `channels` container carries no edge onto a
+child: this template does not know the screen's name, and `Edge.to` is a static
+path. `examples/organism/grow-screen.json` is the byte truth of the three edges;
+the sentence the screen makes of a code is the display's
+([`display`](../display/) § *A channel's failure is one of them*, ADR-0039).
 
 **The edge down is for a producer of view bodies, and an agent's answer is not
 one.** A view is a body carrying `view_id`, `kind` and `content`. A talking

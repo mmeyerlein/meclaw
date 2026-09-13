@@ -12,6 +12,140 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.37.0] — 2026-09-14
+
+A minor release: the diff format grows by one operation and the screen learns
+to curate. `replace_nodes` lifts a standing hive — or a leaf — to a new version
+of its template in place: same path, outer edges untouched, every child judged
+kept, replaced, added or left, the hive's own declaration renewed, and the
+committed receipt names what happened to each child. Nothing that stood before
+is deleted: a replaced child is parked beside its successor as
+`<name>~<old-version>`, which is why `~` is now reserved in new node names.
+The screen (`display@2.2.3`) scores every window on every pass, keeps its own
+time with one order on a clock, and asks a minimal judge on content changes;
+a grown screen hears its channels' failures as notices (`builder@1.10.0`).
+Additive throughout: the door's reply, the manifest reply and the mutation
+receipt carry a sixth key `changes` (`[]` for every other operation), the
+`timer` cell acknowledges a repeated order instead of refusing it, and no
+migration is needed from 0.36.x — a screen grown from an older `display` is
+lifted with `replace_nodes`, and the way back is the same act with the old
+version.
+
+
+### Added
+
+- **The screen curates what it shows** (`display@2.2.0`, GH #679, ADR-0037,
+  ADR-0038). Focus is a number on the screen (`focus`, 0–1, with a weight per
+  context), every window carries `context` and `relevance` as hints, and the
+  compose cell scores each window on every pass: what falls below the bar is
+  hidden, exactly one window in `main` holds the focus rung, the rest stand on
+  `ambient`, `relevant` or `urgent`, and presence follows the rung — the title
+  is a caption at `ambient`, the big title at `focus`, the big title in the
+  accent, breathing, at `urgent`. A window leaves over two frames, so the sheet
+  plays its leave keyframe before the row is deleted. The screen keeps its own
+  time: the compose cell predicts the next moment anything changes — a score
+  crossing a rung, a `relevant_until`, a `ttl_ms` — and orders exactly one
+  strike for it from a `timer` cell inside the hive, none when nothing is due;
+  `ttl_ms` is a promise about *when* after all. Beside it stands a minimal
+  judge: an `llm` cell that re-judges the whole screen on every content change
+  and never on a tick, answering with the bar, the weights and a per-window
+  `hidden` or `relevance`; a verdict has a lifetime, and a screen with no model
+  configured is judged by the floor alone. A new port `in_notice` takes a
+  classified message (`system_error`, `error`, `warning`, `important_note`,
+  `note`) and wraps it into a prose window of its sender; a notice the cell
+  refuses comes back as a `receipt` carrying `invalid_notice` (a new
+  `error_code`, additive); a bare `hop.error_code` is translated into a
+  sentence by a table that lives in the template. Two more words an
+  application may say — `tone` (`accent`, `muted`) and `pinned` (freezes the
+  decay) — and one the operator says on the root, `ground` (`day`, `night`). The knobs — `linger_ms`, `fade_ms`,
+  `focus_default`, `judge`, `judge_min_interval_ms`, `notice_defaults`,
+  `ground` — are the member's dials. All of it is additive: the port set grows
+  by one, the sheet's default does not move, and `main|aside` are what they
+  were.
+- **A grown screen hears its channels' failures** (`builder@1.10.0`, GH #680,
+  ADR-0039). The `grow_level` recipe draws a third edge for a screen — every
+  `error` of the `channels` container down onto the screen, re-stamped
+  `in_notice` — so a microphone that caught nothing is a system notice on the
+  person's screen and not only a line in the operator's journal; the member's
+  exit edge stays. The edge lives in the recipe and not in the `member`
+  template because the container knows its screen only through the mutation
+  that grows it. `examples/organism/grow-screen.json` carries the three edges
+  byte for byte; `meclaw-os` moves its pin and nothing else.
+- **A standing hive is lifted to a new version of its template in place**
+  (`replace_nodes`, GH #682, ADR-0040). The node keeps its path and its outer
+  edges; children the new version leaves unchanged keep their `cell.db`,
+  changed ones are replaced under their own name with the old one renamed
+  beside them, new ones are grown, and a child the new version no longer names
+  stays, disconnected. The committed receipt names every child. The hive's own
+  declaration -- its lanes and inner edges -- is the new template's from the
+  next mutation on. The old one is renamed `<name>~<old-version>`, so `~` is
+  reserved: a new node name carrying it is refused with `schema`.
+
+### Changed
+
+- Applications that write on the screen hand it their ages and spans and say
+  `context`, `relevance`, `class` and `pinned` instead — hints, not decisions.
+
+### Fixed
+
+- **A parked child's death is the parked child's** (GH #688). After a
+  `replace_nodes` the old child's entry stands parked beside its successor
+  with the task it was born with, and a task that died by panic or by the
+  `message_timeout` backstop inside the lift's stop window reported its
+  death under the birth path -- against the new child's row, which was
+  restarted, doubled, and later removed in RAM. The colony now settles such a
+  death on the entry whose mailbox is closed: the parked one is parked, the
+  new child is not touched, and the old mailbox's remainder is dead-lettered
+  instead of reaching the new child.
+- **A repeated clock order is one order, and a removed one is revived**
+  (`display@2.2.3` and the `timer` cell, GH #690). A read pass that computed
+  the moment already ordered sent `remove <id>` and `add <id>` in one pass;
+  the timer marked the row `removed`, the `add` collided with it
+  (`schedule_id_exists`), and the moment never struck, so an expired view
+  stayed up until somebody wrote. Two halves: the compose cell no longer
+  removes the order it is about to place again, and the `timer` cell takes an
+  `add` on an active row with the same moment as the same order (acknowledged,
+  nothing changes) and an `add` on a `removed` row of the same id as a revival
+  (the row is active again, in place); only a different order under the same
+  id is `schedule_id_exists`.
+- **An application says a window is touched, and the screen believes it**
+  (`display@2.2.2`, GH #689). The screen compares a window's own props to
+  find a touch, and an answer that lives in a child component (`display-text`
+  under a speech pane) never moved `since`, the focus or the judge; the four
+  windows now declare the hint `touched` (an epoch, as text), a changed
+  `touched` is a touch, and a prose view may say it in its content. Same
+  version: the hold-to-talk button is a fixed point on the screen and its
+  transcript and state lines float above it, out of its flow, so a line that
+  grows no longer moves the button.
+- **The hold-to-talk button no longer releases itself** (`display@2.2.1`,
+  GH #684). On a fresh screen the state line under the button was empty until
+  the join had answered; the first press wrote into it, the block grew upward,
+  the button slid out from under the pointer and `pointerleave` let go. The
+  press captures the pointer now and releases on `pointerup`, `pointercancel`
+  or a lost capture, the line has a height before it speaks, and a page that
+  loses focus or goes hidden releases the hold.
+- **The root redirect follows the prefix a path proxy sent** (GH #685).
+  `GET /` answers `307 Location: <prefix>/ui/`, where `<prefix>` is the
+  `X-Forwarded-Prefix` read with the same grammar the web cell uses — a path,
+  no trailing slash, no `//`, no `..`, bounded, plain characters — or empty. A
+  header that fails the grammar is ignored, not repaired.
+- **A daemon under a transient system user finds its delegated cgroup**
+  (GH #686). A unit with `Delegate=yes` hands its directory over with the
+  controllers offered but none enabled; the daemon now enables `cpu`,
+  `memory` and `pids` there itself, moving into a sub-group of its own first
+  when it is the only process in the directory. `--sandbox-probe` answers
+  `limits yes` under `DynamicUser=yes` + `Delegate=yes`, with and without
+  `DelegateSubgroup=`; `ProtectControlGroups=yes` still mounts the cgroup
+  tree read-only and stays off in a unit that wants caps.
+- **Concurrent compose passes leave one order on the clock** (`display@2.2.1`,
+  GH #681). An order's `schedule_id` is derived from the moment it is due
+  (uuid5 over the second the timer is told, rounded up like `at`) instead of
+  drawn at random, so two passes that read the same stale `due` and land on
+  the same second order the same id; the second `add` is acknowledged as the
+  order the clock already holds (since GH #690 below -- in 2.2.1 it answered
+  `schedule_id_exists`, an `in_tick_error` the cell swallows), and one order
+  results instead of two standing side by side.
+
 ## [0.36.1] — 2026-09-12
 
 A patch release: the repairs the first days on 0.36.0 turned up, and the gap the

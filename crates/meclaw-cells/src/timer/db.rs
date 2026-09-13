@@ -28,24 +28,12 @@ pub fn setup_timer_schema(conn: &Connection) -> rusqlite::Result<()> {
     )
 }
 
-/// INSERT one schedule row. The caller ensures `schedule_id` is new (add-dup is
-/// handled at the handler level). A PK violation yields a rusqlite error.
+/// INSERT one schedule row. The caller ensures `schedule_id` is new: the
+/// handler's `add` goes through `add_schedule`, which looks first (GH #690);
+/// the seed and the tests insert directly. A PK violation yields a rusqlite
+/// error.
 pub fn insert_schedule(conn: &Connection, row: &ScheduleRow) -> rusqlite::Result<()> {
-    // GH #231: `at` is stored with millisecond precision. Second-truncation
-    // silently moved a schedule up to a second EARLIER than the caller asked
-    // for, which is enough to land an accepted one-shot in the past before it
-    // was ever planned — the same disappearance from the other end.
-    let (kind, cron_expr, at_utc) = match &row.kind {
-        ScheduleKind::Cron(s) => ("cron", Some(s.as_str()), None),
-        ScheduleKind::At(t) => (
-            "at",
-            None,
-            Some(t.to_rfc3339_opts(SecondsFormat::Millis, true)),
-        ),
-    };
-    let body = serde_json::to_string(&row.emit_body).expect("emit_body serializable");
-    let hdrs = serde_json::to_string(&serde_json::Value::Object(row.emit_headers.clone()))
-        .expect("emit_headers serializable");
+    let (kind, cron_expr, at_utc, body, hdrs) = columns_of(row);
     let now = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
     conn.execute(
         "INSERT INTO schedules
@@ -67,6 +55,95 @@ pub fn insert_schedule(conn: &Connection, row: &ScheduleRow) -> rusqlite::Result
         ],
     )?;
     Ok(())
+}
+
+/// The row's schedule columns as SQLite takes them: `kind`, `cron_expr`,
+/// `at_utc`, `emit_body_json`, `emit_headers_json`. Shared by the INSERT and
+/// the revival UPDATE (GH #690).
+///
+/// GH #231: `at` is stored with millisecond precision. Second-truncation
+/// silently moved a schedule up to a second EARLIER than the caller asked
+/// for, which is enough to land an accepted one-shot in the past before it
+/// was ever planned — the same disappearance from the other end.
+fn columns_of(row: &ScheduleRow) -> (&'static str, Option<&str>, Option<String>, String, String) {
+    let (kind, cron_expr, at_utc) = match &row.kind {
+        ScheduleKind::Cron(s) => ("cron", Some(s.as_str()), None),
+        ScheduleKind::At(t) => (
+            "at",
+            None,
+            Some(t.to_rfc3339_opts(SecondsFormat::Millis, true)),
+        ),
+    };
+    let body = serde_json::to_string(&row.emit_body).expect("emit_body serializable");
+    let hdrs = serde_json::to_string(&serde_json::Value::Object(row.emit_headers.clone()))
+        .expect("emit_headers serializable");
+    (kind, cron_expr, at_utc, body, hdrs)
+}
+
+/// What an `add` did with the row it named (GH #690).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddOutcome {
+    /// No row carried the id: INSERTed.
+    Inserted,
+    /// An `active` row carried the id with the same kind and moment: nothing
+    /// changed, and the caller answers as if it had.
+    Same,
+    /// A `removed` row carried the id: it is `active` again, with the moment
+    /// and the emission of the new order.
+    Revived,
+    /// A row carried the id and is not the same order: `schedule_id_exists`.
+    Exists,
+}
+
+/// An `add` that takes a repeated order as one order (GH #690).
+///
+/// `schedule_id` is the PRIMARY KEY, and `mark_removed` is a soft delete
+/// (no-delete), so a caller whose ids are derived from the moment -- the
+/// display's compose cell orders `due:<second>` -- meets its own removed row
+/// when it revisits a second, and its own active row when it orders the
+/// same second again. Neither is a collision: an active row with the same
+/// kind and moment is `Same` (no write), a removed row is `Revived` (UPDATE,
+/// the row keeps its `rowid` and so its place in the firing order, GH #613),
+/// a fresh id is `Inserted`, and only a row that is a different order --
+/// active with another moment, or `completed` -- is `Exists`.
+pub fn add_schedule(conn: &Connection, row: &ScheduleRow) -> rusqlite::Result<AddOutcome> {
+    let Some(cur) = load_schedule(conn, row.schedule_id)? else {
+        insert_schedule(conn, row)?;
+        return Ok(AddOutcome::Inserted);
+    };
+    let same_order = match (&cur.kind, &row.kind) {
+        (ScheduleKind::Cron(a), ScheduleKind::Cron(b)) => a == b,
+        (ScheduleKind::At(a), ScheduleKind::At(b)) => a == b,
+        _ => false,
+    };
+    if cur.status == "active" && same_order {
+        return Ok(AddOutcome::Same);
+    }
+    if cur.status != "removed" {
+        return Ok(AddOutcome::Exists);
+    }
+    let (kind, cron_expr, at_utc, body, hdrs) = columns_of(row);
+    let changed = conn.execute(
+        "UPDATE schedules SET
+            schedule_name = ?2, kind = ?3, cron_expr = ?4, at_utc = ?5, emit_to = ?6,
+            emit_body_json = ?7, emit_headers_json = ?8, status = 'active', iteration_n = 0
+          WHERE schedule_id = ?1 AND status = 'removed'",
+        rusqlite::params![
+            row.schedule_id.to_string(),
+            row.schedule_name,
+            kind,
+            cron_expr,
+            at_utc.as_deref(),
+            row.emit_to.as_str(),
+            body,
+            hdrs,
+        ],
+    )?;
+    Ok(if changed == 1 {
+        AddOutcome::Revived
+    } else {
+        AddOutcome::Exists
+    })
 }
 
 /// SELECT row by primary key. Returns `Ok(None)` when no row exists.
@@ -404,6 +481,63 @@ mod tests {
         assert_eq!(load_schedule(&conn, id).unwrap().unwrap().iteration_n, 1);
         assert_eq!(bump_iteration(&conn, id).unwrap(), 1);
         assert_eq!(load_schedule(&conn, id).unwrap().unwrap().iteration_n, 2);
+    }
+
+    /// GH #690: a repeated order is one order. The same id with the same
+    /// moment on an active row changes nothing and is not an error; the same
+    /// id on a removed row is revived in place (status, moment, emission --
+    /// and the rowid it had, so its place in the firing order); the same id
+    /// with another moment on an active row is the collision it always was.
+    #[test]
+    fn add_takes_a_repeated_order_as_one_order_and_revives_a_removed_one() {
+        use chrono::TimeZone;
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        setup_timer_schema(&conn).unwrap();
+        let id = Uuid::now_v7();
+        let at = chrono::Utc.with_ymd_and_hms(2099, 1, 1, 0, 0, 30).unwrap();
+        let later = chrono::Utc.with_ymd_and_hms(2099, 1, 1, 0, 0, 31).unwrap();
+        let order = at_fixture(id, at, "due");
+        assert_eq!(add_schedule(&conn, &order).unwrap(), AddOutcome::Inserted);
+
+        // Same id, same moment, active: one order.
+        assert_eq!(add_schedule(&conn, &order).unwrap(), AddOutcome::Same);
+        let n: i64 = conn
+            .query_row("SELECT count(*) FROM schedules", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1, "no second row");
+
+        // Same id, another moment, active: the collision.
+        let moved = at_fixture(id, later, "due");
+        assert_eq!(add_schedule(&conn, &moved).unwrap(), AddOutcome::Exists);
+        let kept = load_schedule(&conn, id).unwrap().unwrap();
+        assert!(
+            matches!(kept.kind, ScheduleKind::At(t) if t == at),
+            "untouched"
+        );
+
+        // Removed, then ordered again: revived, and with the new order's
+        // moment and emission, not the old row's.
+        assert_eq!(mark_removed(&conn, id).unwrap(), 1);
+        assert_eq!(add_schedule(&conn, &moved).unwrap(), AddOutcome::Revived);
+        let back = load_schedule(&conn, id).unwrap().unwrap();
+        assert_eq!(back.status, "active");
+        assert!(matches!(back.kind, ScheduleKind::At(t) if t == later));
+        let active = load_active_filter_past(&conn, chrono::Utc::now()).unwrap();
+        assert_eq!(active.len(), 1, "planned again: {active:?}");
+        assert_eq!(active[0].schedule_id, id);
+        let n: i64 = conn
+            .query_row("SELECT count(*) FROM schedules", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1, "revived in place, no DELETE, no second row");
+
+        // A completed one-shot is not revived: it fired, and an order under
+        // its id for another moment is a different order.
+        assert_eq!(mark_completed(&conn, id).unwrap(), 1);
+        assert_eq!(add_schedule(&conn, &order).unwrap(), AddOutcome::Exists);
+        assert_eq!(
+            load_schedule(&conn, id).unwrap().unwrap().status,
+            "completed"
+        );
     }
 
     #[test]

@@ -480,15 +480,28 @@ async fn the_boot_receipt_fills_the_screen_and_a_mutation_refreshes_both() {
     let surfaces = Arc::new(meclaw_colony::SurfaceRegistry::new());
     build_root(&td, &mock.base_url);
 
-    // No `timer` cell anywhere on the live path but the keeper's night close.
-    let timers: Vec<String> = config_paths(td.path().join("main").as_path())
+    // No `timer` cell anywhere on the live path but the keeper's night close
+    // and the screen's due clock (GH #679) -- and that one is no poll: it
+    // carries no schedule of its own and strikes only when the compose cell
+    // orders a named one-shot for a moment something is due.
+    let mut timers: Vec<String> = config_paths(td.path().join("main").as_path())
         .into_iter()
         .filter(|rel| read_json(&td.path().join("main").join(rel))["cell"]["type"] == "timer")
         .collect();
+    timers.sort();
     assert_eq!(
         timers,
-        vec!["agent/session-keeper/night/config.json".to_string()],
+        vec![
+            "agent/session-keeper/night/config.json".to_string(),
+            "screen/clock/config.json".to_string(),
+        ],
         "the grown tree still carries a poll timer"
+    );
+    assert!(
+        read_json(&td.path().join("main/screen/clock/config.json"))["params"]
+            .get("schedules")
+            .is_none(),
+        "the screen's clock carries a schedule of its own"
     );
 
     let (h, park) = boot(&td, &surfaces).await;

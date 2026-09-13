@@ -181,7 +181,8 @@ async fn stays_quiet(rx: &mut mpsc::Receiver<Message>) {
     }
 }
 
-/// The five keys, sorted, of a receipt's `hop` compartment.
+/// The keys, sorted, of a receipt's `hop` compartment — five since GH #553,
+/// six with `changes` (GH #682).
 fn hop_keys(msg: &Message) -> Vec<String> {
     let mut k: Vec<String> = msg.headers.hop.keys().cloned().collect();
     k.sort();
@@ -205,8 +206,20 @@ async fn the_boot_is_the_first_receipt() {
     let boot_receipt = next_receipt(&mut cap_rx).await;
     assert_eq!(
         hop_keys(&boot_receipt),
-        vec!["form", "mutation_id", "outcome", "route", "scope"],
-        "the boot receipt carries exactly the five contract keys"
+        vec![
+            "changes",
+            "form",
+            "mutation_id",
+            "outcome",
+            "route",
+            "scope"
+        ],
+        "the boot receipt carries exactly the six contract keys"
+    );
+    assert_eq!(
+        boot_receipt.headers.hop["changes"],
+        json!([]),
+        "a boot replaced nothing"
     );
     assert_eq!(hop_str(&boot_receipt, "route"), "mutation_committed");
     assert_eq!(hop_str(&boot_receipt, "form"), "boot");
@@ -266,14 +279,26 @@ async fn a_committed_single_mutation_leaves_one_receipt() {
     assert_eq!(hop_str(&boot_receipt, "form"), "boot");
 
     let (outcome, trace_id) = knock(&h, edge_mutation("hop.route == 'go'")).await;
-    let MutationDoorOutcome::Single(MutationOutcome::Committed { id }) = &outcome else {
+    let MutationDoorOutcome::Single(MutationOutcome::Committed { id, .. }) = &outcome else {
         panic!("precondition: the edge mutation commits; got {outcome:?}");
     };
 
     let receipt = next_receipt(&mut cap_rx).await;
     assert_eq!(
         hop_keys(&receipt),
-        vec!["form", "mutation_id", "outcome", "route", "scope"],
+        vec![
+            "changes",
+            "form",
+            "mutation_id",
+            "outcome",
+            "route",
+            "scope"
+        ],
+    );
+    assert_eq!(
+        receipt.headers.hop["changes"],
+        json!([]),
+        "an edge mutation replaced nothing"
     );
     assert_eq!(hop_str(&receipt, "form"), "single");
     assert_eq!(
@@ -303,7 +328,8 @@ async fn a_committed_manifest_names_every_id() {
         ]}),
     )
     .await;
-    let MutationDoorOutcome::Manifest(meclaw_colony::ManifestOutcome::Committed { ids }) = &outcome
+    let MutationDoorOutcome::Manifest(meclaw_colony::ManifestOutcome::Committed { ids, .. }) =
+        &outcome
     else {
         panic!("precondition: the manifest commits; got {outcome:?}");
     };
@@ -312,8 +338,20 @@ async fn a_committed_manifest_names_every_id() {
     let receipt = next_receipt(&mut cap_rx).await;
     assert_eq!(
         hop_keys(&receipt),
-        vec!["form", "mutation_ids", "outcome", "route", "scope"],
+        vec![
+            "changes",
+            "form",
+            "mutation_ids",
+            "outcome",
+            "route",
+            "scope"
+        ],
         "a manifest names its ids in the plural key, and nothing else changes"
+    );
+    assert_eq!(
+        receipt.headers.hop["changes"],
+        json!([]),
+        "two edge mutations replaced nothing"
     );
     assert_eq!(hop_str(&receipt, "form"), "manifest");
     let got: Vec<String> = receipt.headers.hop["mutation_ids"]

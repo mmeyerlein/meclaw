@@ -88,3 +88,57 @@ async fn root_redirects_to_ui_dashboard() {
         .unwrap_or("");
     assert_eq!(loc, "/ui/");
 }
+
+/// Where `GET /` sends a client that came through a path proxy.
+async fn location_of(app: Router, prefix: Option<&str>) -> (StatusCode, String) {
+    let mut req = Request::builder().uri("/");
+    if let Some(p) = prefix {
+        req = req.header("x-forwarded-prefix", p);
+    }
+    let resp = app.oneshot(req.body(Body::empty()).unwrap()).await.unwrap();
+    let status = resp.status();
+    let loc = resp
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    (status, loc)
+}
+
+/// GH #685: the root redirect is the one URL the shell emits that a path
+/// proxy has to be able to reach, so it moves with `X-Forwarded-Prefix` the
+/// way the web shell's `<base href>` already does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_root_redirect_moves_with_a_forwarded_prefix() {
+    let test_h = meclaw_testing::ColonyHandle::new();
+    let (app, _blob_td) = app_from(&test_h);
+    let (status, loc) = location_of(app, Some("/c/abc123")).await;
+    assert!(status.is_redirection(), "expected 3xx, got {status}");
+    assert_eq!(loc, "/c/abc123/ui/");
+}
+
+/// The same grammar the web cell reads the header with: a path, no trailing
+/// slash, no protocol-relative `//`, no `..`, plain characters. Anything else
+/// is ignored, not repaired -- the value came from whoever spoke HTTP to the
+/// listener.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_prefix_the_grammar_refuses_is_ignored() {
+    let test_h = meclaw_testing::ColonyHandle::new();
+    for bad in [
+        "http://elsewhere",
+        "c/abc",
+        "/x/",
+        "//evil.example",
+        "/a/../b",
+        "/sp ace",
+    ] {
+        let (app, _blob_td) = app_from(&test_h);
+        let (status, loc) = location_of(app, Some(bad)).await;
+        assert!(
+            status.is_redirection(),
+            "{bad:?}: expected 3xx, got {status}"
+        );
+        assert_eq!(loc, "/ui/", "{bad:?} was not ignored");
+    }
+}

@@ -102,7 +102,7 @@ async fn phase_6_demo_roundtrip_proves_cell_is_addressable() {
     )
     .await;
     let mid = match outcome {
-        MutationOutcome::Committed { id } => id,
+        MutationOutcome::Committed { id, .. } => id,
         other => panic!("expected Committed, got {other:?}"),
     };
 

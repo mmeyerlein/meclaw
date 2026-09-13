@@ -23,11 +23,11 @@ nothing.
 ## The door a change goes through
 
 A running colony changes through one operation. A mutation diff is POSTed to
-`/colony/mutations` and carries eight keys and no others: `add_templates`, `add_nodes`,
-`remove_nodes`, `swap_nodes`, `move_nodes`, `add_edges`, `remove_edges`, `seed_rows`
-(`DIFF_OPERATIONS` in `crates/meclaw-colony/src/mutation/validate.rs`). A key no operation
-reads is refused rather than ignored. A committed diff answers 200, a rejected one 422, the
-process keeps running either way, and `meclaw --apply` hands the same body to the same door.
+`/colony/mutations` and carries nine keys and no others: `add_templates`, `add_nodes`,
+`remove_nodes`, `swap_nodes`, `replace_nodes`, `move_nodes`, `add_edges`, `remove_edges`,
+`seed_rows` (`DIFF_OPERATIONS` in `crates/meclaw-colony/src/mutation/validate.rs`). A key no
+operation reads is refused rather than ignored. A committed diff answers 200, a rejected one 422,
+the process keeps running either way, and `meclaw --apply` hands the same body to the same door.
 
 Which node may knock is itself a fact about the tree. `submit` carries the edge onto
 `/colony/mutations`, the shipped `builder` carries none, and no mutation can draw the missing

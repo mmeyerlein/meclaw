@@ -210,7 +210,7 @@ fn mutation_log_row(colony_db: &std::path::Path, id: &str) -> (String, String) {
 
 fn committed_id(out: &MutationOutcome) -> String {
     match out {
-        MutationOutcome::Committed { id } => id.clone(),
+        MutationOutcome::Committed { id, .. } => id.clone(),
         other => panic!("expected a committed mutation, got {other:?}"),
     }
 }

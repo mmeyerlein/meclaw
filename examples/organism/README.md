@@ -57,7 +57,7 @@ organism/
 ├── grow-credentials.json      6. the credential v-lanes. 0 nodes, 4 edges, 2 grants
 ├── grow-door.json             beyond the six: the front door. 2 nodes, 4 edges
 ├── grow-screen.json           beyond the six: a screen and an app. 2 declarations,
-│                              2 nodes, 5 edges — one storey each, so one manifest
+│                              2 nodes, 6 edges — one storey each, so one manifest
 └── grow.manifest.json         all six, in one body, in that order
 ```
 
@@ -472,7 +472,7 @@ declarations**.
 ```json
 {"manifest": [
   {"scope": "/os/orgs/acme/members/alex/channels",
-   "diff": {"add_nodes": [{"name": "display", "template": "display@2.1.0",
+   "diff": {"add_nodes": [{"name": "display", "template": "display@2.2.3",
                            "override_params": {"web": {"mount": "alex-display"}}}], "…": "…"}},
   {"scope": "/os/orgs/acme/members/alex/apps",
    "diff": {"add_nodes": [{"name": "colony-view", "template": "colony-view@1.1.1"}], "…": "…"}}]}
@@ -490,15 +490,21 @@ third declaration it used to carry — the route from the member's `assistants` 
 generation — moved into the assistant level, which is the only place that knows the generation's
 name.
 
-**A screen is a channel**, so it costs what a channel costs: `event` and `receipt` up into the
-container, the screen's own failure up as `error`, and one edge down. Only that last one says
-anything the Telegram edges do not — it takes `answer` **or** `view` and re-stamps both to the
-display's own `in_view`:
+**A screen is a channel**, so it costs what a channel costs — three edges — though two of
+them point down where a connector's point up: `event` and `receipt` up into the container, a
+`view` down, and since `builder@1.10.0` the container's `error` down as well. The screen has no
+failure of its own to send up (a refused write is a `receipt`, and its code travels in the
+body); what it takes down is what the Telegram edges never carry — a view re-stamped to the
+display's own `in_view`, and every failure of a channel beside it re-stamped to `in_notice`, so
+the person sees *The microphone did not catch that.* where the operator sees `stt_failed`:
 
 ```text
 . → ./display        (declared at <member>/channels)
   on hop.route == 'view' && context.channel_node == 'display'
   set_hop.route = 'in_view'
+. → ./display
+  on hop.route == 'error'
+  set_hop.route = 'in_notice'
 ```
 
 **An `answer` is not a view, though.** A view is a body carrying `view_id`, `kind` and

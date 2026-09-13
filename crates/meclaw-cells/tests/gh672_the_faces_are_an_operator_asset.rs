@@ -13,7 +13,7 @@
 //! says `html`. Skips when `python3` is absent or the templates do not ship,
 //! like every other interpreter guard in this tree (R2b).
 
-use meclaw_cells::web::render::{Piece, escape, parse_template};
+use meclaw_cells::web::render::render_pieces_plain;
 use meclaw_core::serde_json::{Value, json};
 
 fn repo(rel: &str) -> std::path::PathBuf {
@@ -51,7 +51,7 @@ fn probe() -> Option<Value> {
              m = importlib.util.module_from_spec(spec)\n\
              spec.loader.exec_module(m)\n\
              m.FONT_BASE = 'fonts/'\n\
-             root = m.build([])[m.ROOT_ID]['props']\n\
+             root = m.build([])[0][m.ROOT_ID]['props']\n\
              print(json.dumps({'components': m.components(),\n\
                                'unset': m.faces(''),\n\
                                'set': m.faces('fonts/'),\n\
@@ -70,50 +70,11 @@ fn probe() -> Option<Value> {
 }
 
 /// Render one component template with its props, the way the `web` cell does
-/// for one object with no children. A public renderer without a database does
-/// not exist in the crate, so this is the faithful minimum: the cell's parser,
-/// the cell's escaping, `html` as the only raw type, `{{children}}` empty.
+/// for one object with no children (`render_pieces_plain`: the cell's parser,
+/// the cell's walk, the cell's truthiness).
 fn render(template: &str, props: &Value, schema: &Value) -> String {
-    let pieces = parse_template(template)
-        .unwrap_or_else(|e| panic!("the web cell would refuse this template: {e}"));
-    let mut out = String::new();
-    render_pieces(&pieces, props, schema, &mut out);
-    out
-}
-
-fn render_pieces(pieces: &[Piece], props: &Value, schema: &Value, out: &mut String) {
-    let text = |name: &str| -> String {
-        match props.get(name) {
-            None | Some(Value::Null) => String::new(),
-            Some(Value::String(s)) => s.clone(),
-            Some(other) => other.to_string(),
-        }
-    };
-    for piece in pieces {
-        match piece {
-            Piece::Text(t) => out.push_str(t),
-            Piece::Prop(name) => out.push_str(&escape(&text(name))),
-            Piece::Raw(name) => {
-                if schema.get(name).and_then(Value::as_str) == Some("html") {
-                    out.push_str(&text(name));
-                } else {
-                    out.push_str(&escape(&text(name)));
-                }
-            }
-            Piece::Children => {}
-            Piece::If { prop, body } => {
-                let on = match props.get(prop) {
-                    None | Some(Value::Null) => false,
-                    Some(Value::Bool(b)) => *b,
-                    Some(Value::String(s)) => !s.is_empty(),
-                    Some(other) => !other.is_null(),
-                };
-                if on {
-                    render_pieces(body, props, schema, out);
-                }
-            }
-        }
-    }
+    render_pieces_plain(template, props, schema)
+        .unwrap_or_else(|e| panic!("the web cell would refuse this template: {e}"))
 }
 
 /// The `display-shell`, rendered with the given faces.

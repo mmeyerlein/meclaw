@@ -171,7 +171,7 @@ async fn deep_edge(h: &ColonyHandle) -> Option<meclaw_colony::api_dto::GraphEdge
 fn refusal_code(outcome: &MutationOutcome) -> &str {
     match outcome {
         MutationOutcome::Rejected { error_code, .. } => error_code,
-        MutationOutcome::Committed { id } => {
+        MutationOutcome::Committed { id, .. } => {
             panic!("expected a refusal, the mutation committed as {id}")
         }
     }

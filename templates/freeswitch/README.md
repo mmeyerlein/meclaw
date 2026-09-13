@@ -737,13 +737,10 @@ call this template ever made. Two more things about that one line:
   starts streaming audio (in L16 format) to the websocket server", and `8k` and
   `16k` are the only two rates it takes.
 
-  **Not yet verified at a switch:** the `&` that now separates `?session=` from
-  `&sample_rate=` sits inside the single-quoted `api_on_answer` value. It
-  travels percent-encoded through the XML-RPC GET and should reach the switch as
-  a literal `&` inside the quotes, but this template's own history says that
-  originate strings are read by more parsers than one would like (GH #603), and
-  no call was placed for this change — it is marked for verification at the
-  switch next to the `uuid_break` note below.
+  **Verified at the switch (2026-09-13):** `uuid_dump` reads the whole
+  `api_on_answer` back through the XML-RPC GET, `&` included — the value
+  arrives percent-encoded and the switch stores it as one string,
+  `…%3Fsession%3D<id>%26sample_rate%3D8000…`.
 - **the whole variable is left out when `answer_app` starts `&transfer(`.** A
   leg handed to a dialplan extension is that extension's leg, and the extension
   starts its own stream; a second start on the same channel is a second socket
@@ -805,14 +802,13 @@ flush or interrupt. `uuid_break` is FreeSWITCH's own, out of `mod_commands`:
 current item goes too. It says nothing about the stream, so the call keeps
 listening while it stops talking.
 
-> **To be verified at the switch (fs02).** This one is reasoned, not read: the
-> module's playback half is **closed source** (v1.0.3 is a binary, free up to
-> ten concurrent channels), so whether its playback sits in the media path
-> `uuid_break` reaches cannot be established from the code. `uuid_break … all`
-> is the best-documented command for the job and it is harmless if it misses.
-> If it turns out to miss, the fallback with a source behind it is
-> `uuid_audio_stream <uuid> stop` plus a restart — which does cut the stream,
-> and is why it is not the first choice.
+> **Measured at the switch (2026-09-13):** with a stream started and a
+> prompt broadcast on the same leg, `uuid_break <uuid> all` ended the prompt
+> (`FILE PLAYED` after two seconds) and the stream's media bug still answered
+> `uuid_audio_stream <uuid> pause` / `resume` afterwards, while a leg without
+> a stream answers `-ERR Operation Failed`. The fallback with a source behind
+> it stays `uuid_audio_stream <uuid> stop` plus a restart, which does cut the
+> stream — that is why it is not the first choice.
 
 **`hangup` does not guess which line.** With one call running it takes that one,
 and the tool needs no argument. With more than one it refuses — `error_code:

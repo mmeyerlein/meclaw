@@ -173,7 +173,7 @@ fn refusal(outcome: &MutationOutcome) -> (&str, &str) {
             details,
             ..
         } => (error_code, details),
-        MutationOutcome::Committed { id } => {
+        MutationOutcome::Committed { id, .. } => {
             panic!("expected a refusal, the mutation committed as {id}")
         }
     }

@@ -66,16 +66,22 @@ use std::path::PathBuf;
 /// relocation has to change both and they are resolved by different rules
 /// (`resolve_scoped_path` for the logical one, `path_truth::resolve_cell_dir`
 /// for the filesystem one, which anchors under the single root cell directory).
+///
+/// `pub` (re-exported as `mutation::PlannedMove`) since GH #682: a lift
+/// ([`crate::mutation::stage_replace`]) renames each changed child beside
+/// itself as `<child>~<from_version>` — the same shape of move, identity kept,
+/// directory and registry row alike — and its staged plan carries one of these
+/// per changed child.
 #[derive(Debug, Clone)]
-pub(crate) struct PlannedMove {
+pub struct PlannedMove {
     /// The logical address the cell is leaving.
-    pub(crate) from: McPath,
+    pub from: McPath,
     /// The logical address it is taking.
-    pub(crate) to: McPath,
+    pub to: McPath,
     /// The cell's directory today.
-    pub(crate) from_dir: PathBuf,
+    pub from_dir: PathBuf,
     /// Where that directory is going.
-    pub(crate) to_dir: PathBuf,
+    pub to_dir: PathBuf,
 }
 
 /// Resolve every `move_nodes` entry of a diff.

@@ -20,8 +20,10 @@
 //! Guarded like every template-reading test (GH #49): a tree without the library
 //! is skipped, never judged.
 
+use meclaw_cells::LlmCellFactory;
 use meclaw_cells::code::CodeCellFactory;
 use meclaw_cells::store::StoreCellFactory;
+use meclaw_cells::timer::TimerCellFactory;
 use meclaw_cells::web::WebCellFactory;
 use meclaw_colony::{CellFactory, CellFactoryRegistry, ColonyMsg, bootstrap_from_filesystem};
 use meclaw_core::serde_json::{Value, json};
@@ -100,6 +102,8 @@ fn factories(
             Arc::new(CodeCellFactory) as Arc<dyn CellFactory>,
         ),
         ("store".to_string(), Arc::new(StoreCellFactory)),
+        ("timer".to_string(), Arc::new(TimerCellFactory)),
+        ("llm".to_string(), Arc::new(LlmCellFactory)),
         (
             "web".to_string(),
             Arc::new(WebCellFactory::new(Arc::clone(surfaces))),
@@ -302,13 +306,19 @@ fn the_template_says_it_carries_a_microphone() {
     }
     let template = read_json(&repo("templates/display/template.json"));
     assert_eq!(
-        template["version"], "2.1.0",
+        template["version"], "2.2.3",
         "the screen shipped the microphone at 1.2.0 — a new component is a \
          minor version — moved to 2.0.0 when its own port went with \
          `web@2.0.0`, to 2.0.1 for what the button says while it waits \
-         (GH #658), which is a repair, and to 2.1.0 for the design language, \
+         (GH #658), which is a repair, to 2.1.0 for the design language, \
          the catalogue and `params.font_base` (GH #669, #670, #672), which a \
-         caller can name — a minor version again"
+         caller can name — a minor version again — to 2.2.0 for the \
+         hints a caller may say about a window (GH #679), to 2.2.1 for \
+         a hold that no longer releases itself (GH #684), a repair, and to \
+         2.2.2 for a `touched` hint the screen believes and a button that \
+         is a fixed point (GH #689), a repair again, and to 2.2.3 for a \
+         clock order that is no longer removed and re-added under one id \
+         (GH #690), a repair"
     );
     let purpose = template["description"]["purpose"]
         .as_str()
@@ -320,12 +330,124 @@ fn the_template_says_it_carries_a_microphone() {
     );
     let readme = std::fs::read_to_string(repo("templates/display/README.md")).expect("README");
     assert!(
-        readme.starts_with("# `display@2.1.0`"),
+        readme.starts_with("# `display@2.2.3`"),
         "the README heads with the version it describes"
     );
     assert!(
         readme.contains("Talking to the screen"),
         "and says how a person speaks to it"
+    );
+}
+
+/// A hold must survive the button moving under the pointer (seen on a fresh screen, 2026-09-11).
+///
+/// On a fresh screen the state line under the button is empty; the first press
+/// writes into it, the block grows upward, the button slides out from under
+/// the pointer and `pointerleave` used to let go (GH #684). The press captures
+/// the pointer now, the line has a height before it speaks, and a hidden page
+/// releases.
+#[test]
+fn the_hold_is_not_released_by_the_pointer_leaving() {
+    if !library_ships() {
+        return;
+    }
+    // The client script lives in a Python string, so every JS quote is `\"`
+    // on disk; read it the way the browser gets it.
+    let src = std::fs::read_to_string(repo("templates/display/compose/compose.py"))
+        .expect("compose.py")
+        .replace("\\\"", "\"");
+    assert!(
+        !src.contains("\"pointerleave\""),
+        "the button still lets go on pointerleave"
+    );
+    assert!(
+        src.contains("setPointerCapture"),
+        "the press does not capture the pointer"
+    );
+    assert!(
+        src.contains("\"lostpointercapture\""),
+        "a lost capture does not release"
+    );
+    assert!(
+        src.contains("\"visibilitychange\""),
+        "a hidden page does not release"
+    );
+    let sheet =
+        std::fs::read_to_string(repo("templates/display/compose/display-dna.css")).expect("sheet");
+    let state = sheet
+        .split(".display-mic-state {")
+        .nth(1)
+        .expect("state rule")
+        .split('}')
+        .next()
+        .unwrap();
+    assert!(
+        state.contains("min-height"),
+        "the state line has no height before it speaks"
+    );
+}
+
+/// The button is a fixed point on the screen and its two lines float above it
+/// (GH #689). `.display-mic` is placed, not laid out: no flex column that
+/// grows upward when a line grows. The sheet gives `.display-mic-lines` its
+/// own rule -- absolute, above the button -- and the template wraps the two
+/// lines in it.
+#[test]
+fn the_button_is_anchored_and_its_lines_float_above_it() {
+    if !library_ships() {
+        return;
+    }
+    let src =
+        std::fs::read_to_string(repo("templates/display/compose/compose.py")).expect("compose.py");
+    let layout = src
+        .split("LAYOUT_RULES = (")
+        .nth(1)
+        .expect("LAYOUT_RULES")
+        .split("\n)\n")
+        .next()
+        .unwrap();
+    assert!(
+        layout.contains(".display-mic { position: fixed; right: 16px; bottom: 16px;"),
+        "the button is not a fixed point: {layout}"
+    );
+    let mic = layout
+        .split(".display-mic {")
+        .nth(1)
+        .unwrap()
+        .split('}')
+        .next()
+        .unwrap();
+    assert!(
+        !mic.contains("flex-direction: column"),
+        "the button still stacks its lines in a column: {mic}"
+    );
+    let sheet =
+        std::fs::read_to_string(repo("templates/display/compose/display-dna.css")).expect("sheet");
+    let lines = sheet
+        .split(".display-mic-lines {")
+        .nth(1)
+        .expect("the sheet has a rule for the lines")
+        .split('}')
+        .next()
+        .unwrap();
+    assert!(
+        lines.contains("position: absolute"),
+        "the lines are in the flow: {lines}"
+    );
+    assert!(
+        lines.contains("bottom: calc(100% + 8px)"),
+        "the lines do not float above the button: {lines}"
+    );
+    let template = src
+        .split("MIC_TEMPLATE = (")
+        .nth(1)
+        .expect("MIC_TEMPLATE")
+        .split("\n)\n")
+        .next()
+        .unwrap();
+    assert!(
+        template.contains("class=\"display-mic-lines\""),
+        "the template does not wrap the lines: {template}"
     );
 }
 

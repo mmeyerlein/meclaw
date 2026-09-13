@@ -128,7 +128,7 @@ fn the_order_of_a_region_reads_no_clock() {
         "first appearance is the seat the display already holds the view at"
     );
     assert!(
-        src.contains("def build(views, have=None):"),
+        src.contains("def build(views, have=None, now=None, knobs=None, verdict=None):"),
         "the layout READS what the display holds; without it there is nothing \
          for first appearance to be remembered in"
     );
@@ -174,7 +174,7 @@ fn the_readme_promises_the_order_the_cell_implements() {
     }
     let doc = std::fs::read_to_string(repo(README)).expect("README");
     assert!(
-        doc.starts_with("# `display@2.1.0`"),
+        doc.starts_with("# `display@2.2.3`"),
         "the README names the version it describes"
     );
     assert!(

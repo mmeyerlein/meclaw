@@ -9,7 +9,7 @@
 //! So the same construction as `meclaw_os_example.rs`: the shipped seed and the
 //! shipped `grow.json` verbatim — no inlined copy, no paraphrase — booted,
 //! grown, and the registry read back. What is checked in is two cells, and the
-//! three templates the declaration names bring six more.
+//! three templates the declaration names bring eight more.
 //!
 //! There is no model in this colony, so the run needs no provider and spends
 //! nothing, and since `web@2.0.0` nothing of the declaration has to be bent
@@ -32,11 +32,12 @@ use std::sync::Arc;
 /// writes a paragraph. The root hive is a scope marker and is not a cell.
 const CELLS_CHECKED_IN: usize = 2;
 
-/// Plus six from the three templates `grow.json` names: three from
-/// `display@2.0.1` (the `web` cell, the composer and the view store), two from
-/// `colony-view@1.1.0` (the probe and the layout `code` cell — its `refresh`
-/// timer left with 1.1.0, GH #553), one from `terminal@1`. MEASURED.
-const CELLS_AFTER_GROW: usize = 8;
+/// Plus eight from the three templates `grow.json` names: five from
+/// `display@2.2.3` (the `web` cell, the composer, the view store, and since
+/// 2.2.0 the due clock and the judge, GH #679), two from `colony-view@1.1.0`
+/// (the probe and the layout `code` cell — its `refresh` timer left with
+/// 1.1.0, GH #553), one from `terminal@1`. MEASURED.
+const CELLS_AFTER_GROW: usize = 10;
 
 fn repo(rel: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -105,7 +106,7 @@ async fn registry_paths(h: &ColonyHandle) -> Vec<String> {
 
 /// The number in `examples/README.md`, measured rather than counted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_example_grows_from_two_cells_to_eight() {
+async fn the_example_grows_from_two_cells_to_ten() {
     if !example("grow.json").is_file() || !repo("templates/colony-view").is_dir() {
         return;
     }
@@ -184,7 +185,9 @@ async fn the_example_grows_from_two_cells_to_eight() {
     for expected in [
         "/colony-view/layout",
         "/colony-view/probe",
+        "/display/clock",
         "/display/compose",
+        "/display/judge",
         "/display/views",
         "/display/web",
         "/scribe",
@@ -199,6 +202,6 @@ async fn the_example_grows_from_two_cells_to_eight() {
     assert_eq!(
         after.len(),
         CELLS_AFTER_GROW,
-        "two checked-in cells plus six instantiated ones: {after:?}"
+        "two checked-in cells plus eight instantiated ones: {after:?}"
     );
 }

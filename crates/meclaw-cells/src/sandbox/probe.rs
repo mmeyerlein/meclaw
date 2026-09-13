@@ -81,9 +81,11 @@ pub struct Probe {
 /// operator, and a bare `false` conflates them:
 ///
 /// * [`CgroupDelegation::NoDelegatedRoot`] is the host saying the MECHANISM is
-///   not there -- no cgroup v2 unified hierarchy, or no controller-enabled
-///   directory this uid may write into. Nothing about the daemon's launch
-///   changes that.
+///   not there -- no cgroup v2 unified hierarchy, or no writable directory
+///   this uid may enable a controller in. Nothing about the daemon's launch
+///   changes that. A directory that was delegated but in which nobody enabled
+///   anything yet is NOT this case since GH #686: enabling is the delegatee's
+///   step, and the daemon takes it before it gives up.
 /// * [`CgroupDelegation::MoveRefused`] with `permission_denied` is the host
 ///   saying the mechanism IS there and the LAUNCH is wrong. Measured on
 ///   Ubuntu: creating a sub-cgroup under `user@<uid>.service` succeeds from
@@ -100,7 +102,8 @@ pub enum CgroupDelegation {
         /// The delegated root the sub-cgroup was created under.
         root: String,
     },
-    /// No writable, controller-enabled cgroup v2 directory exists for this uid.
+    /// No writable cgroup v2 directory that hands controllers down, or offers
+    /// any to enable, exists for this uid.
     NoDelegatedRoot,
     /// A root was found, but the sub-cgroup could not be created or capped.
     SetupFailed {
@@ -286,8 +289,8 @@ fn limits_line(delegation: &CgroupDelegation) -> Probe {
         CgroupDelegation::NoDelegatedRoot => (
             Verdict::No,
             "this host delegates no writable cgroup v2 directory to this uid (no cgroup v2 \
-             unified hierarchy, or no directory with controllers handed down); the mechanism \
-             is absent, not the permission"
+             unified hierarchy, or no directory with controllers handed down or offered); \
+             the mechanism is absent, not the permission"
                 .to_string(),
         ),
         CgroupDelegation::SetupFailed { reason } => (

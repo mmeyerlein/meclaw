@@ -48,9 +48,9 @@ single-segment name inside that scope, and edges are scope-relative (`./name`).
 }
 ```
 
-The `diff` knows eight operations and only those eight: `add_nodes`,
-`remove_nodes`, `swap_nodes`, `move_nodes`, `add_edges`, `remove_edges`,
-`add_templates`, `seed_rows`. A key that none of them reads is a `schema`
+The `diff` knows nine operations and only those nine: `add_nodes`,
+`remove_nodes`, `swap_nodes`, `replace_nodes`, `move_nodes`, `add_edges`,
+`remove_edges`, `add_templates`, `seed_rows`. A key that none of them reads is a `schema`
 refusal, never a silent no-op, and the refusal names the key and the legal
 vocabulary before anything is written.
 
@@ -636,8 +636,15 @@ addresses it, and the previous generation belongs to it because an edge once
 did. Reading a chat's history means reading edges and their conditions. No
 directory holds the answer any more.
 
-The generation swap itself stays what it was. `swap_nodes` swings every external
-edge of one implementation at once (`meclaw-overview.md` § Mutation operations),
-and at the `channels` level this talky's edges are external. A swap there swings
-every lane at the same time, the old generation stays disconnected and complete,
-and the way back is the same swap in the other direction.
+A hive's generation swap is one act since GH #682: `replace_nodes` lifts it in
+place to a new version of its template (`meclaw-overview.md` § Mutation
+operations). The talky keeps its path and its outer edges, a child the new
+version leaves unchanged keeps its `cell.db`, a changed one is replaced under
+its own name with the old one parked beside it as `<name>~<old-version>`, a new
+one is grown, and the receipt says what happened to every child. The way back
+is the same operation with the old version. For a leaf with a new name the
+recipe stays two acts: instantiate the successor beside the old one, then
+`swap_nodes` swings every external edge of one implementation at once, and at
+the `channels` level this talky's edges are external. A swap there swings
+every lane at the same time, the old generation stays disconnected and
+complete, and the way back is the same swap in the other direction.

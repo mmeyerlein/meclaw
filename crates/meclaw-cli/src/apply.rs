@@ -65,7 +65,7 @@ pub fn read_manifest_source(
 /// out loud.
 pub fn render_receipt(outcome: &ManifestOutcome) -> String {
     match outcome {
-        ManifestOutcome::Committed { ids } => {
+        ManifestOutcome::Committed { ids, .. } => {
             let n = ids.len();
             format!("applied {n} of {n} mutations.\n")
         }
@@ -167,6 +167,7 @@ mod tests {
     fn render_receipt_counts_a_full_run() {
         let out = render_receipt(&ManifestOutcome::Committed {
             ids: vec!["a".into(), "b".into(), "c".into()],
+            changes: Vec::new(),
         });
         assert_eq!(out, "applied 3 of 3 mutations.\n");
     }

@@ -44,7 +44,7 @@ next emission. Its sibling `context` persists, so a value survives only if an ed
 ## mutation
 
 A mutation is a body POSTed to `/colony/mutations`, carrying a `scope` and a `diff` written in
-eight operation keys. The colony validates the hypothetical post-state in one stage, builds the new
+nine operation keys. The colony validates the hypothetical post-state in one stage, builds the new
 cell directories under `.staging/` and renames them into place. New cells spawn while the process
 keeps running, and every entry leaves a `mutation_log` row in `colony.db`.
 

@@ -47,6 +47,17 @@ impl ActorHandle {
     pub fn free_capacity(&self) -> usize {
         self.sender.capacity()
     }
+
+    /// True once the mailbox behind this handle has been closed — its receiver
+    /// dropped, or [`tokio::sync::mpsc::Receiver::close`] called on it.
+    ///
+    /// GH #682: the colony uses this to tell WHOSE mailbox a returned receiver
+    /// is. A cell reports its stop under the path it was born with, and after
+    /// a `replace_nodes` that path belongs to a different cell: a handle whose
+    /// mailbox the returned receiver did not close is not the one that stopped.
+    pub fn is_closed(&self) -> bool {
+        self.sender.is_closed()
+    }
 }
 
 #[cfg(test)]

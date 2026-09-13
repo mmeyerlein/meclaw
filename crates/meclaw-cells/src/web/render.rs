@@ -421,6 +421,46 @@ fn render_pieces(
     depth: usize,
     out: &mut String,
 ) -> Result<(), RenderError> {
+    render_pieces_with(pieces, props, schema, out, &mut |out| {
+        for child in child_ids(conn, id)? {
+            out.push_str(&render_at(conn, &child, depth + 1)?);
+        }
+        Ok(())
+    })
+}
+
+/// The test-facing form of `render_pieces`: the same truthiness, so a test
+/// never disagrees with the cell about what `{{#if}}` sees.
+///
+/// One component template with its props, the way the cell renders one object
+/// with no children: the cell's own parser cuts the pieces (a template it would
+/// refuse is refused here, as the error), and the walk is the cell's --
+/// escaped `{{prop}}`, raw `{{&prop}}` only where `schema` says `html`,
+/// `{{#if}}` on the cell's truthiness. Only `{{children}}` renders as nothing,
+/// since there is no tree and no database here.
+pub fn render_pieces_plain(
+    template: &str,
+    props: &Value,
+    schema: &Value,
+) -> Result<String, TemplateError> {
+    let pieces = parse_template(template)?;
+    let mut out = String::new();
+    // The only error the walk can raise comes from the children source, and
+    // this one raises none.
+    let _ = render_pieces_with(&pieces, props, schema, &mut out, &mut |_| Ok(()));
+    Ok(out)
+}
+
+/// The one walk over a template's pieces. `children` fills in `{{children}}`;
+/// it is the only step that needs a tree, so it is the only step a caller
+/// supplies.
+fn render_pieces_with(
+    pieces: &[Piece],
+    props: &Value,
+    schema: &Value,
+    out: &mut String,
+    children: &mut dyn FnMut(&mut String) -> Result<(), RenderError>,
+) -> Result<(), RenderError> {
     for piece in pieces {
         match piece {
             Piece::Text(t) => out.push_str(t),
@@ -435,14 +475,10 @@ fn render_pieces(
                     out.push_str(&escape(&text));
                 }
             }
-            Piece::Children => {
-                for child in child_ids(conn, id)? {
-                    out.push_str(&render_at(conn, &child, depth + 1)?);
-                }
-            }
+            Piece::Children => children(out)?,
             Piece::If { prop, body } => {
                 if prop_truthy(props, prop) {
-                    render_pieces(conn, body, props, schema, id, depth, out)?;
+                    render_pieces_with(body, props, schema, out, children)?;
                 }
             }
         }
@@ -584,5 +620,22 @@ mod tests {
     fn nested_conditionals_parse() {
         let p = parse_template("{{#if a}}x{{#if b}}y{{/if}}{{/if}}").unwrap();
         assert!(matches!(p.as_slice(), [Piece::If { .. }]));
+    }
+
+    /// The plain form sees `{{#if}}` exactly as the cell does: `0`, `[]` and
+    /// `{}` are "no", which is where the three test copies it replaces
+    /// disagreed with the cell.
+    #[test]
+    fn the_plain_form_shares_the_cells_truthiness() {
+        use meclaw_core::serde_json::json;
+        let t = "{{#if a}}A{{/if}}{{#if b}}B{{/if}}{{#if c}}C{{/if}}{{#if d}}D{{/if}}{{&raw}}{{p}}{{children}}";
+        let out = render_pieces_plain(
+            t,
+            &json!({"a": 0, "b": [], "c": {}, "d": "x", "raw": "<i>", "p": "<b>"}),
+            &json!({"raw": "html"}),
+        )
+        .unwrap();
+        assert_eq!(out, "D<i>&lt;b&gt;");
+        assert!(render_pieces_plain("{{user.name}}", &json!({}), &json!({})).is_err());
     }
 }

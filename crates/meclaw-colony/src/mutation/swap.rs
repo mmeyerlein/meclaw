@@ -28,6 +28,11 @@
 //! The function is **pure**: no I/O, no Uuid generation, no mutation of the
 //! table. It returns a [`SwingPlan`] that the apply step (T4) feeds into the
 //! existing edge-insert/edge-remove buffers inside `handle_mutation`.
+//!
+//! `replace_nodes` (GH #682) needs no swing at all: the lifted node keeps its
+//! path, so its external edges already name the right node — only its inner
+//! graph is re-laid ([`crate::mutation::apply_replace`]). The swing stays what
+//! it is, for a node that is replaced by ANOTHER path.
 
 use crate::{
     cel_eval::{CompiledCondition, CompiledModifier},

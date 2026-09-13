@@ -29,6 +29,16 @@ Release detail is in [CHANGELOG.md](CHANGELOG.md) and the
 
 ## Now
 
+v0.37.0 lifts a standing hive in place (`replace_nodes`, GH #682, ADR-0040). A
+hive that is running is brought to a new version of its template under its own
+path: the outer edges stay, a child the new version leaves unchanged keeps its
+`cell.db`, a changed one is replaced under its name with the old one parked
+beside it, a new one is grown, and the committed receipt names what happened
+to every child. The two-act workaround with a restart is no longer the way.
+With it the screen curates what it shows (`display@2.2.3`): a focus number, a
+judge, one order on a clock, and notices from its channels. What the release
+contains is the [`[0.37.0]`](CHANGELOG.md) section of the changelog.
+
 v0.36.0 gives the screen its own design language. `display@2.1.0` ships the
 token sheet and a vocabulary of twenty-six components that an application names
 without defining, a swapped-in compose cell brings an older page's vocabulary
@@ -230,6 +240,10 @@ there.
 One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- v0.37.0: a standing hive is lifted in place. `replace_nodes` brings a running
+  hive to a new version of its template under its own path, judges every child
+  kept, replaced, added or left, and says so in the receipt; the screen
+  curates what it shows, keeps its own time and hears its channels' failures.
 - v0.36.1: the repairs the first days on 0.36.0 turned up. A reactivated cell
   can be swapped away again, the dialplan is keyed by the pair, the proxy
   example strips its prefix, and the export audit sees every never-exported

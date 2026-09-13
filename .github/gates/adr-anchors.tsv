@@ -114,3 +114,15 @@ adr	status	anchor_home	target
 0035-a-scope-recognises-its-own-outdated-vocabulary.md	accepted	self	code:compose.VOCAB
 0036-the-ground-of-the-page-belongs-to-the-screen.md	accepted	self	test:an_app_paints_only_its_own_view
 0036-the-ground-of-the-page-belongs-to-the-screen.md	accepted	self	test:the_readme_names_the_rule_the_cell_does_not_enforce
+0037-the-screen-curates-what-it-shows.md	accepted	self	test:exactly_one_window_has_focus
+0037-the-screen-curates-what-it-shows.md	accepted	self	test:a_window_that_leaves_stands_one_more_frame
+0037-the-screen-curates-what-it-shows.md	accepted	self	file:templates/display/compose/compose.py#def curate(want, have, now, knobs, verdict=None):
+0038-time-on-the-screen-is-a-named-due-event.md	accepted	self	test:a_screen_with_nothing_due_orders_no_tick
+0038-time-on-the-screen-is-a-named-due-event.md	accepted	self	test:a_due_window_orders_exactly_one_tick_at_the_earliest_moment
+0038-time-on-the-screen-is-a-named-due-event.md	accepted	self	file:templates/display/clock/config.json
+0039-a-channels-failure-reaches-the-screen-as-a-notice.md	accepted	self	test:a_channels_failure_reaches_the_screen
+0039-a-channels-failure-reaches-the-screen-as-a-notice.md	accepted	self	file:examples/organism/grow-screen.json#hop.route == 'error'
+0039-a-channels-failure-reaches-the-screen-as-a-notice.md	accepted	self	file:templates/display/compose/compose.py#NOTICE_TEXT
+0040-a-standing-hive-is-lifted-to-a-new-version-of-its-template-in-place.md	accepted	self	test:a_standing_hive_is_lifted_in_place
+0040-a-standing-hive-is-lifted-to-a-new-version-of-its-template-in-place.md	accepted	self	test:the_new_contract_holds_from_the_next_mutation
+0040-a-standing-hive-is-lifted-to-a-new-version-of-its-template-in-place.md	accepted	self	file:crates/meclaw-colony/src/mutation/validate.rs#fn validate_replace_entry

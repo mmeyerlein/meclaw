@@ -1,4 +1,4 @@
-# `display@2.1.0`
+# `display@2.2.3`
 
 One screen, reached at `/<mount>/` on the colony's one listener, that many
 agents and applications write onto at the same time. A **view** is a named, owned, optionally expiring piece of
@@ -7,10 +7,10 @@ takes it down again. Nobody who writes to it needs to know that anybody else
 does.
 
 ```
-in_view / in_withdraw  ->  compose (code)  <->  views (store)
-                                 |                what is up
-                                 v
-                              web (display)   the page, under its mount
+in_view / in_withdraw / in_notice  ->  compose (code)  <->  views (store)
+                                             |                what is up
+                                             v
+                                          web (display)   the page, under its mount
 ```
 
 ## What the screen is for: display hygiene
@@ -55,23 +55,154 @@ persistent profile that shapes later decisions.
 everything that truly matters at that moment.* Relevance is not static; it
 arises from context, time, priority, activity and the member's preferences.
 
-Today (`display@2.1.0`) the sheet gives every window the same weight and the
-compose cell judges nothing. The judgement -- states, lifecycle, the reduction
-to the minimum -- is what the next version of this template brings, and this
-section is the measure it is built against.
+Until 2.1.0 the sheet gave every window the same weight and the compose cell
+judged nothing. Since 2.2.0 the screen judges, and the next section says how;
+this one is the measure it is built against.
+
+## The screen curates what it shows
+
+**Words.** A **window** is an object of one of four components --
+`display-pane`, `display-panel`, `display-overlay`, or the `display-view-prose`
+wrapper a prose view renders as. Everything else on the screen is content
+inside a window. An application says **hints** about a window, as props on its
+tree node or as slots of the `in_view` body: `context` (a word, such as
+`conversation` or `ambient`), `relevance` (0-1), `class` (one of
+`system_error`, `error`, `warning`, `important_note`, `note`), `pinned`
+(boolean), `relevant_until` (epoch milliseconds), `touched` (an epoch, as
+text), and `state`, of which it may say exactly two words -- `urgent` and
+`hidden`. Any other state word is dropped at the door. The **screen state** lives on the root: `focus`, the bar (0-1),
+and `weights`, a JSON map from context to 0-1. The **rung** is what the
+compose cell writes on every window as `state`: `hidden`, `ambient`,
+`relevant`, `focus` or `urgent` -- the ladder the sheet has had since 2.1.0.
+Beside it the cell writes `age` (`fresh`, `settled`, `leaving`), `since` (the
+epoch millisecond of the window's last touch) and `score`.
+
+**A touch.** A window is touched when it is new or when its content props --
+everything the sender said, minus what the cell writes -- differ from what the
+display holds. A touch sets `since` to now; nothing else moves it. Rewriting a
+view with the same content is not a touch, so a clock that rewrites itself
+every twenty seconds touches nothing.
+
+**`touched`** -- an epoch the application changes when the window's content is
+new; the pane's own props are what the screen compares, and an answer that
+lives in a child component is invisible to that comparison unless the
+application says so (GH #689, since 2.2.2). A speech window whose answer
+stands in a `display-text` under it is never touched by the answer alone, so
+the application writes the moment of the answer into `touched`, and a changed
+`touched` is a touch like any other changed prop. The child's props are not
+read on purpose: a clock that rewrites a child every twenty seconds would
+otherwise touch its window on every tick. The judge sees the value as
+`touched_at` beside the pass's own `touched` flag.
+
+**The score.** For every window, on every pass:
+
+```
+w      = weights[context], 0.5 for a context the map does not name
+r      = relevance, or the class default, or 0.5
+r      = min(r, 0.2)                              once now >= relevant_until
+decay  = 1                                        while pinned, or for linger_ms after the touch
+       = 1 - (now - since - linger_ms) / fade_ms  after that, down to 0
+score  = 0 when the app said hidden; 1 when it said urgent; else w x r x decay
+```
+
+**The bar and the weights.** A window is visible only when `score >= focus`.
+With no judge on the screen the floor sets the bar to `focus_default` -- unless
+no window in `main` reaches it, and then the bar is 0, so what simply stands
+may show on an empty screen. The floor's weights are one rule and no memory:
+the context of the last touched window weighs 1, every other context weighs
+0.5. So a weather window loses half its score the moment the conversation is
+touched, and a window that stood below the bar to begin with goes at once.
+Once a judge has written the map, the map stands; a touch adds only a context
+the map does not know, at 1. A window **below the bar** is `hidden`: gone from
+the page, still in the table, back on its next touch.
+
+**The rungs.** Among the visible windows, **exactly one window in `main`** has
+the focus rung: the highest score, ties broken by the youngest `since`, then
+the id. A window that arrived on this very pass is `fresh` and at most
+`relevant` -- it takes the focus one frame later, so the enter keyframe and the
+focus lift never fight. `aside` never carries the focus rung: a window there
+is `relevant` at or above the midpoint between the bar and 1, `ambient` below
+it, and so is every window in `main` that is not the focus. An `urgent` an
+application said stands alone: no window is the focus beside it, and of two
+urgent windows the younger keeps the word while the older is `relevant`.
+
+**Two frames.** A window leaves over two frames. One the table no longer has
+is not deleted on the pass that notices: it is laid back byte for byte with `age: leaving`, so the sheet
+plays the leave keyframe, and the next pass deletes it, leaf first. A window
+pushed below the bar while standing on the page is `hidden` and `leaving` in
+the same update for the same reason. A window on its way out that comes back
+is `settled`, never `fresh` -- nothing flies in twice.
+
+**Presence follows the rung.** How loud a window is, a person reads off its
+title: at `ambient` it is a caption in the tertiary ink, at `relevant` a small
+label, at `focus` the big title, at `urgent` the big title in the accent,
+breathing. One title slot on every window, and no fixed kicker form. Two more
+words an application may say: `tone` (`accent` colours the window's figure,
+`muted` lowers its whole fill to the secondary ink) and `pinned`, which freezes
+the decay and, on a pane, is rendered as `data-pinned`.
+
+**The judge: a minimal display model that re-judges the whole screen.** The
+floor is one rule; the judge is a model. Beside the compose cell stands
+`judge`, an `llm` cell with one prompt, one schema and nothing else -- no
+tools, no memory beyond what the root carries, no learning. It is the master
+over focus; applications and the floor give hints. When the knob `judge` is
+`on`, the compose cell asks it after every pass that touched at least one
+window, and **never on a tick**, never on a write whose props were the same
+as before, and not twice inside `judge_min_interval_ms` -- inside that
+interval the floor judges alone -- and the interval counts from the question
+as much as from the answer (`asked_at` on the root), so a judge that never
+answers is still asked at most once per interval. What it sees is the whole
+situation as one JSON user turn: every window with its id, owner, view id,
+region, context, relevance, class, `pinned`, its rung, its `since` and age in
+seconds, whether this pass touched it, and a glimpse of its text; the root's
+bar and weights; the knobs as sentences. Its instructions are the guideline
+above, word for word, and the nine factors it weighs: the current context,
+the person's current activity, time relevance, urgency, importance, running
+interactions, the cost of an interruption, the person's preferences, and the
+current focus level. It answers with one JSON object -- `focus` (the bar),
+`weights` (per context), `windows[]` with an optional `hidden` or `relevance`
+per id -- and the answer comes back on the lane `in_verdict` as a pass without
+a write: the root takes the bar, the weights and `judged_at`, a named window
+takes `judged_hidden` or `judged_relevance`, and the pass then curates as
+always (rungs, frames, the next due moment). Numbers are clamped to 0-1, an
+unknown id is ignored, a fenced answer is unwrapped, and a verdict that is
+late (the cell waits eight seconds, `external_timeout_ms`; measured, a small
+model over a public gateway answers in two to four), an error
+(`finish_reason` other than `stop`) or not JSON changes nothing: the floor has
+already drawn, and a touch clears the judged props of the window it touched. **A verdict has a lifetime:** it rules for `linger_ms +
+fade_ms` from `judged_at` -- as long as anything it judged could still be
+fading -- and then the floor judges again until the next verdict, so a judge
+that fell silent never leaves its bar standing over a screen it no longer
+sees -- and a verdict's `hidden` and `relevance` on a window fade with the
+verdict, so a clock the judge hid comes back by itself. The model, key and endpoint are params of the `judge` cell itself
+(`DISPLAY_JUDGE_MODEL`, `DISPLAY_JUDGE_API_KEY`, `DISPLAY_JUDGE_BASE_URL`);
+the model is empty as shipped, so a screen without one is judged by the floor
+alone. What a judgement costs is tokens per content change -- the situation
+is a few hundred tokens, the verdict is capped at 600 -- times content changes
+per hour; `judge_min_interval_ms` is the brake.
+
+**The knobs** stand in `params` and in `contract.settings` with the same
+default: `linger_ms` (20000), `fade_ms` (120000), `focus_default` (0.3),
+`ground` (`day`; `night` switches the sheet's night variant, and nothing
+switches it by itself), `judge` (`off`), `judge_min_interval_ms` (3000) and
+`notice_defaults` (per class, `[relevance, ttl_ms]`). They are the member's
+dials: what a member wants shown differently is another value on that
+member's own screen.
 
 ## What it is not
 
 - **Not a window manager.** Nothing overlaps, nothing has a z-order, nothing is
   resized, and there is no camera. A screen is two columns of views, and inside
   a column an order that is not time.
-- **Not a model.** The compose cell is deterministic and offline: it opens no
-  socket, asks nothing and decides nothing about content. Given the same table
-  and the same display it produces the same bundle.
-- **Not a layout judgement.** Two columns, a band inside a column, and a tie
-  broken on `(owner, view_id)`. That is the whole of its taste. An application
-  that wants a different arrangement builds it inside its own view, where it
-  belongs.
+- **The compose cell is not the model.** It is deterministic and offline: it
+  opens no socket and, given the same table and the same display, produces
+  the same bundle. The judge beside it is the one cell in this hive that asks
+  a provider, and the screen stands complete without it.
+- **A judgement of relevance, not of layout.** Two columns stay two columns;
+  what the screen decides is which window is visible, how loud, and for how
+  long. Where a window stands is a band inside a column and a tie broken on
+  `(owner, view_id)`, and an application that wants a different arrangement
+  builds it inside its own view, where it belongs.
 - **Not the owner of content.** What is inside a view is whatever the sender
   sent, rendered by whatever component the sender defined. This scope wraps it,
   places it, and takes it away again.
@@ -140,7 +271,9 @@ A screen has two columns, and a view names the one it wants:
 
 Anything else is `invalid_view` and nothing is written. A closed list rather
 than a free string, because an unknown region is a view nobody would ever see,
-which is worse than a refusal the sender can read.
+which is worse than a refusal the sender can read. The columns differ in one
+more way since 2.2.0: `aside` never carries the focus rung -- a window there is
+relevant or ambient, and may be urgent if its application says so.
 
 **Inside a region the order is three keys, and the interesting one is the key
 that is missing.**
@@ -239,11 +372,55 @@ leaving the table untouched:
 | `not_owner` | the body claims an owner that is not the sender |
 | `invalid_view` | a missing or wrongly typed field, an unknown `kind`, a region this screen does not have, an `ord` that is not an integer, or a component tree whose form does not hold -- two children of one node naming the same `key`, or a child `key` that is a plain number |
 | `component_prefix` | a component name that does not start with `<view_id>-` |
+| `invalid_notice` | a notice whose `class` is not one of the five, that has no `text` and no `error_code` to translate, or whose `view_id` does not match `[a-z0-9-]{1,64}` |
 | `store_failed` | a leg of the store bundle came back with an `error_code` |
 
 Every receipt carries `error_code`, `owner`, `view_id` and a `detail` string.
 Every one of those keys is always present, empty where unknown: a key that is
 sometimes missing is a router branch nobody tests.
+
+## Notices: a classified message becomes a window of its sender
+
+Not everything that belongs on the screen is worth composing a view for. A
+sender that only has a sentence and a weight puts it on `in_notice`:
+
+```json
+{"messages": [], "class": "note", "text": "the kettle is on"}
+```
+
+`class` is one of five words -- `system_error`, `error`, `warning`,
+`important_note`, `note` -- and says how loud the notice is; `text` is the
+message. The compose cell wraps it into a **prose view owned by the sender**
+(`envelope.reply_to`, never the body): the title is the class word, the body
+is the text, and `context`, `relevance` and `ttl_ms` come from the class
+defaults in `params.notice_defaults` unless the body says otherwise. The view
+stands in `main` under the name `notice-<class>-<sha256(text)[:8]>` (the class
+word spelt with hyphens), so the same sentence twice is one window and a
+different sentence is another; a body may name its own `view_id` instead. The
+store bundle is the one a view write builds, and a refusal is one `receipt`
+carrying `invalid_notice`.
+
+**A channel's failure is one of them.** The member's graph re-stamps a
+channel's `error` towards the screen as `in_notice` (the third screen edge
+the `builder` recipe draws since its 1.10.0). Such a message carries no `class` and no `text`, only
+`hop.error_code` -- and the cell translates the code through a table that
+lives in this template: `stt_failed` becomes *The microphone did not catch
+that.*, `speak_failed` *The voice could not speak just now.*, `busy`,
+`no_answer` and `call_refused` *The call did not go through.*, `failed` and
+`line_write_failed` *The telephone line failed.*; a code the table does not
+know is shown as *A part of the colony failed: `<code>`*, with the code in it
+on purpose. The class is `system_error`, the context is `system`, and
+`meta.detail` -- the socket code, the provider's sentence -- **never reaches
+the screen**. The screen's own clock has no `reply_to` and so never becomes a
+notice.
+
+**A prose view carries the same hints.** `content` of an `in_view` with
+`kind: prose` may say `context`, `relevance`, `class`, `pinned` and
+`relevant_until` beside `title` and `body`; they reach the wrapper the view is
+rendered as and the curator scores with them. A prose view that names no
+context stands in its owner's -- the sender's path with `/` spelt `~` -- so
+the answer somebody just wrote weighs 1.0 and is visible, whatever else holds
+the bar.
 
 ## An application brings its own vocabulary
 
@@ -340,12 +517,12 @@ content, the vocabulary the sheet is written against.
 
 | component | layer | what it is |
 |---|---|---|
-| `display-shell` | `content` | the page root. `stylesheet` emits the link to the base sheet, `faces` carries the `@font-face` rules built from `params.font_base`, and `vocab` a fingerprint of this list |
+| `display-shell` | `content` | the page root. `stylesheet` emits the link to the base sheet, `faces` carries the `@font-face` rules built from `params.font_base`, `vocab` a fingerprint of this list, `ground` the sheet's `day` or `night`; `focus`, `weights`, `judged_at`, `asked_at` and `due` are the screen state the compose cell keeps there |
 | `display-region` | `content` | one per region, a direct child of the root, and the parent of every view standing in it |
-| `display-view-prose` | `navigation` | a `display-pane` with an optional title and a paragraph |
+| `display-view-prose` | `navigation` | a `display-pane` with an optional title and a paragraph -- a window, so it carries the five hints and the curator's `state`, `age`, `since`, `score`, `judged_relevance`, `judged_hidden` |
 | `display-view-custom` | `content` | the wrapper an application's own tree hangs in |
 | `display-mic` | `content` | the hold-to-talk button, its transcript line and its state line, plus the browser half that runs them |
-| `display-pane`, `display-panel`, `display-overlay`, `display-ornament` | `navigation` | the four windows, and the only glass in the catalogue: a pane in the flow, a taller panel, an overlay above the page, an ornament that is a thing rather than a place |
+| `display-pane`, `display-panel`, `display-overlay`, `display-ornament` | `navigation` | the four windows, and the only glass in the catalogue: a pane in the flow, a taller panel, an overlay above the page, an ornament that is a thing rather than a place. The first three carry the hints (`context`, `relevance`, `class`, `pinned`, `relevant_until`) and the curator's props; pane and panel also `tone` |
 | `display-value`, `display-text`, `display-voice`, `display-kicker`, `display-list`, `display-item`, `display-table`, `display-weather`, `display-clock`, `display-timer`, `display-chat`, `display-chat-line`, `display-notification`, `display-media`, `display-document`, `display-status`, `display-action`, `display-choice`, `display-option`, `display-chart`, `display-stack`, `display-progress` | `content` | the twenty-two pieces of content a window holds, each with the props its `prop_schema` declares |
 
 **The root carries a fingerprint of this list**, `vocab`, twelve hex characters
@@ -436,20 +613,67 @@ at all three moments a press can end somewhere other than a turn.
   because that answer is about this screen rather than about one call, and
   pressing again cannot change it.
 
+A hold survives the button moving under the pointer: the pointer is captured on
+press and released on `pointerup`, `pointercancel` or a lost capture, never on
+`pointerleave`. On a fresh screen the line is empty until the join has answered,
+and a line that appeared on press used to grow the block upward and slide the
+button out from under the pointer (GH #684, since 2.2.1); the line has a height
+before it speaks now, and a page that loses focus or goes hidden releases the
+hold, so a key held while switching windows does not keep the microphone open.
+And the button is a fixed point (GH #689, since 2.2.2): the transcript line and
+the state line stand in a wrapper of their own that floats above the button,
+out of its flow, so a line that grows -- a long transcript, say -- moves
+nothing but itself.
+
 What is not here: no transcript history, no list of turns, no way to scroll back.
 The line beside the button holds the last thing that was heard and nothing more.
 A conversation on the screen is a view like any other, put up by whoever owns it
 on the `partial` lane of the agent it belongs to.
 
-## `ttl_ms` expires a view, it does not remove it
+## `ttl_ms` expires a view, and the screen's own clock strikes when a view is due
 
 A view is expired when `now_ms - updated_at >= ttl_ms`. An expired view is not
-drawn -- and that is all. **Nothing sweeps.** The row stays in the table, and
-the screen stops showing it at the **next** compose, which is the next time
-anybody writes or withdraws a view on this screen. A screen nobody writes to
-keeps showing an expired view until somebody does. Say it plainly rather than
-imply a timer that is not there: a `ttl_ms` is a promise about what will be
-drawn, not about when.
+drawn; the row stays in the table and the screen stops showing it at the next
+pass. Until 2.1.0 that next pass was the next time anybody wrote, and a screen
+nobody wrote to kept showing an expired view. Since 2.2.0 **the screen's own
+clock strikes when a view is due**, and the next pass takes it down -- over two
+frames, like any window that leaves. So a `ttl_ms` is a promise about when
+after all, exact to the second.
+
+## A due clock: the compose cell predicts, the clock strikes once
+
+Everything on the screen that changes by itself changes at a moment the compose
+cell can compute: a fading score crosses the bar or the midpoint at
+`since + linger_ms + fade_ms x (1 - target / (w x r))`, a `fresh` or `leaving`
+window is over its frame one second later, a `relevant_until` runs out, a
+`ttl_ms` runs out. After every pass `next_due()` takes the earliest of them and
+**orders exactly one one-shot strike** for it from `clock`, a `timer` cell
+beside the compose cell with no schedule of its own: `remove` the previous
+order (its id stands on the root as `due`), `add` the next, named `due`, never
+earlier than the next full second. A pass that computes the moment already
+standing on the root orders the same second again without removing it first,
+and the clock treats a repeated order as one order: an `add` it already holds
+is acknowledged and changes nothing, an `add` on a removed row of the same id
+revives it ([#690](https://github.com/mmeyerlein/meclaw/issues/690), since
+2.2.3: before, such a pass removed and re-added one id, the timer marked the
+row `removed`, the `add` collided with it, and the moment never struck). A
+screen on which nothing can change orders nothing. The strike comes back on
+the lane `in_tick` as a **pass without a write**: one `select` of the table,
+then pass 2 and 3 as always; the order that struck is not asked to be
+removed, it is gone already. That is not a poll
+([#553](https://github.com/mmeyerlein/meclaw/issues/553)): every strike has a
+name and a time, two strikes in a row carry two different reasons, and
+the ambient clock that rewrites itself every twenty seconds is a write whose
+identical props are no touch -- it goes through none of this. A `remove` on an
+order that already struck is answered `schedule_not_found` by the timer; the
+hive's edge stamps that `in_tick_error`, and the compose cell swallows it.
+The order's id is derived from the moment it is due, so two passes that agree
+on the moment agree on the order: when two passes run close together and both
+read the root's `due` before the other wrote its own, the second `add` is the
+same order, the clock acknowledges it as the one it already holds, and one
+order results instead of two standing side by side
+([#681](https://github.com/mmeyerlein/meclaw/issues/681); until #690 the
+second answered `schedule_id_exists`).
 
 ## Wiring
 
@@ -460,9 +684,16 @@ agent. So it stands beside the agents rather than inside one:
 <member>/channels/display-<screen>
 ```
 
-- **Agents write to it.** An assistant sends `in_view` and `in_withdraw` at the
-  hive path. Its `reply_to` **is** the owner, so two agents never collide under
-  the same `view_id` and neither can withdraw the other's view.
+- **Agents write to it.** An assistant sends `in_view`, `in_withdraw` and
+  `in_notice` at the hive path. Its `reply_to` **is** the owner, so two agents
+  never collide under the same `view_id` and neither can withdraw the other's
+  view.
+- **A channel's failure reaches it as a notice.** The member's `channels`
+  container draws a third edge for its screen -- `. -> ./<screen>` for
+  `hop.route == 'error'`, re-stamped `in_notice` -- so a channel that failed is
+  a system notice on the person's screen; the exit edge to the member stays,
+  so the operator sees it too. Inside this hive the lane is one more edge from
+  `.` to `./compose`, beside `in_view` and `in_withdraw`.
 - **Applications write to it the same way.** An application stands at
   `<member>/apps/<name>` and sends the identical two lanes. Nothing about the
   wire distinguishes an app from an assistant, which is the point: the screen
@@ -520,10 +751,24 @@ agent. So it stands beside the agents rather than inside one:
 The hive is the address: `params.ports` is empty, so no edge reaches a cell
 inside it. A caller names the hive and a lane on `hop.route`.
 
+Inside it stand five cells since 2.2.0 -- `compose`, `views`, `web`, `clock`
+and `judge` -- and the edges between them are the hive's own business. Beside
+the four passes' edges, five more carry time and judgement: `compose -> clock`
+on `hop.route == 'due'` (the order), `clock -> compose` on `schedule_name ==
+'due'` re-stamped `in_tick` (the strike) and on `msg_type ==
+'timer_op_error'` re-stamped `in_tick_error` (an order that already struck),
+`compose -> judge` on `hop.route == 'judge'` (the question) and `judge ->
+compose` on `has(hop.finish_reason)` re-stamped `in_verdict` (the answer, good
+or failed -- the compose cell reads `finish_reason` itself). The two return
+edges are unconditional on purpose: a timer's or a model's failure that
+matched no edge would dead-letter as `no_route`, and a screen should never owe
+a dead letter to its own clock.
+
 | lane | direction | meaning |
 |---|---|---|
 | `in_view` | in | put this view up under this name, replacing whatever stood there |
 | `in_withdraw` | in | take it down |
+| `in_notice` | in | put a classified message up as a prose view of the sender, or translate a channel's `error_code` into one |
 | `event` | out | something a person did on the screen that the display could not absorb locally |
 | `receipt` | out | a write was refused, with the code, the identity and a detail string |
 

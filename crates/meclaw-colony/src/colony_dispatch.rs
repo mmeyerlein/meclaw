@@ -1582,9 +1582,12 @@ fn build_mutation_reply(
 ) -> meclaw_core::serde_json::Value {
     use crate::mutation::MutationOutcome;
     let body = match outcome {
-        MutationOutcome::Committed { id } => meclaw_core::serde_json::json!({
+        // GH #682 — `changes` is additive: `[]` unless the diff replaced a
+        // node, and a reader that only knows `id` is unaffected.
+        MutationOutcome::Committed { id, changes } => meclaw_core::serde_json::json!({
             "outcome": "committed",
             "id": id,
+            "changes": changes,
         }),
         // GH #293 — `violations` is deliberately NOT on this wire yet. The EDA
         // reply body is a public contract surface (README § Stability), and the
@@ -1621,10 +1624,11 @@ fn build_manifest_reply(
 ) -> meclaw_core::serde_json::Value {
     use crate::mutation::ManifestOutcome;
     let body = match outcome {
-        ManifestOutcome::Committed { ids } => meclaw_core::serde_json::json!({
+        ManifestOutcome::Committed { ids, changes } => meclaw_core::serde_json::json!({
             "outcome": "committed",
             "applied": ids.len(),
             "ids": ids,
+            "changes": changes,
         }),
         ManifestOutcome::Rejected {
             ids,

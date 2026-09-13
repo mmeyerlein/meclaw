@@ -146,7 +146,7 @@ async fn valid_mutation_writes_committed_row() {
         .await
         .unwrap();
     let id = match ack_rx.await.unwrap() {
-        MutationOutcome::Committed { id } => id,
+        MutationOutcome::Committed { id, .. } => id,
         _ => panic!("expected Committed"),
     };
     let db_path = h.tempdir_path().join("colony.db");

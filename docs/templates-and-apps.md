@@ -46,7 +46,8 @@ tree, and the view leaves the hive towards a display.
 A screen brings its own design language: the sheet and the vocabulary of components it is
 written against travel in the `display` template. An application names those components in
 its view without defining them, so a view that wants to look like the screen carries no sheet
-of its own.
+of its own. The screen decides what is visible and how loud; an application says only what a
+window is about, how relevant it is, and whether it is urgent, hidden or pinned.
 
 ## Installing one
 

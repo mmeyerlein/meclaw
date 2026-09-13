@@ -224,7 +224,9 @@ fn the_prose_view_wears_the_catalogue() {
         .find(|c| name(c) == "display-view-prose")
         .expect("the prose view is defined");
     let t = template(prose);
-    for class in ["display-pane", "display-kicker", "display-text"] {
+    // The title is a `display-pane-title` since GH #679: one title slot the
+    // sheet scales by the rung, no fixed kicker form.
+    for class in ["display-pane", "display-pane-title", "display-text"] {
         assert!(t.contains(class), "the prose view writes no `{class}`: {t}");
     }
     assert!(

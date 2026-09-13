@@ -852,7 +852,12 @@ pub(crate) fn patch_and_substitute_config(
 const SANDBOX_ENFORCING_CELL_TYPES: [&str; 3] = ["bash", "code", "harness"];
 
 /// Whether `cell_type` is one of the cell types that enforce a sandbox.
-fn sandbox_enforcing(cell_type: &str) -> bool {
+///
+/// `pub(crate)` since GH #682: the replace-mode partition
+/// ([`crate::mutation::subtree::classify_subtree_nodes_in`]) renders a template
+/// child the way this file writes it before comparing, and the default block
+/// is one of the things written.
+pub(crate) fn sandbox_enforcing(cell_type: &str) -> bool {
     SANDBOX_ENFORCING_CELL_TYPES.contains(&cell_type)
 }
 
@@ -866,7 +871,7 @@ fn sandbox_enforcing(cell_type: &str) -> bool {
 /// usual device nodes), which is what an interpreter needs to start at all;
 /// everything else the template has to declare, and `trust: "trusted"` remains
 /// the explicit escape hatch.
-fn default_sandbox_block() -> JsonValue {
+pub(crate) fn default_sandbox_block() -> JsonValue {
     meclaw_core::serde_json::json!({
         "trust": "restricted",
         "network": "deny",

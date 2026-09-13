@@ -245,7 +245,7 @@ async fn the_same_manifest_body_commits_at_the_manifest_door() {
     let outcome = send_door(&h, as_manifest()).await;
 
     match outcome {
-        MutationDoorOutcome::Manifest(ManifestOutcome::Committed { ids }) => {
+        MutationDoorOutcome::Manifest(ManifestOutcome::Committed { ids, .. }) => {
             assert_eq!(ids.len(), 1, "one entry, one id; got {ids:?}");
         }
         other => panic!("the manifest door must commit this body; got {other:?}"),

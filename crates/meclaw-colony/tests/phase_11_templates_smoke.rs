@@ -140,7 +140,7 @@ async fn instanziieren_aus_template_via_mutation() {
 
     // 6. The outcome must be Committed.
     let committed_id = match outcome {
-        MutationOutcome::Committed { id } => id,
+        MutationOutcome::Committed { id, .. } => id,
         other => panic!("mutation must be Committed, got {other:?}"),
     };
 

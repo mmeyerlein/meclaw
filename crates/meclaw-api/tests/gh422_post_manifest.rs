@@ -152,7 +152,8 @@ async fn a_manifest_post_that_cannot_be_read_is_422_schema() {
 /// The HTTP twin of `gh422_the_single_mutation_body_does_not_move`.
 ///
 /// The single form's POST answers with the same two codes and the same keys as
-/// before this lane — the renderer changed, the document did not.
+/// before this lane — the renderer changed, the document did not (plus the
+/// additive `changes` of GH #682, empty for an `add_nodes`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_single_mutation_post_is_unchanged() {
     let h = meclaw_testing::ColonyHandle::new_with_echo();
@@ -166,7 +167,12 @@ async fn a_single_mutation_post_is_unchanged() {
         .keys()
         .map(String::as_str)
         .collect();
-    assert_eq!(keys, vec!["id", "outcome"], "committed keys: {json}");
+    assert_eq!(
+        keys,
+        vec!["changes", "id", "outcome"],
+        "committed keys — `changes` is additive since GH #682 and empty here: {json}"
+    );
+    assert_eq!(json["mutation"]["changes"], serde_json::json!([]));
 
     let (status, json) = post(
         &h,
