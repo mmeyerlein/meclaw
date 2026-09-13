@@ -12,7 +12,7 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
-## [0.38.1] — 2026-09-13
+## [0.38.1] — 2026-09-14
 
 A patch release: a held recording now arrives whole, on both sides of the
 socket. In the cell, a provider debt is only recorded while the recognition
