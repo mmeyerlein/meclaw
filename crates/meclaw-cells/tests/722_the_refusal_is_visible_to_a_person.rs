@@ -255,6 +255,14 @@ fn the_browser_proof_measures_the_caption() {
     if !library_ships() {
         return;
     }
+    // The driver lives under `workshop/`, and nothing from there travels into the
+    // exported tree (R2c). The public clone has the template and not the proof, so
+    // the absence is a SKIP and never a red test -- measured 2026-09-19, when this
+    // read panicked in the public CI of 0.39.0 while every private gate was green.
+    if !repo(DRIVER).is_file() {
+        eprintln!("SKIP: {DRIVER} is not in this tree");
+        return;
+    }
     let driver = read(DRIVER);
     let at = driver
         .find("async function B34(ctx) {")

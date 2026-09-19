@@ -226,7 +226,14 @@ fn the_browser_proof_measures_across_a_pass() {
     if !library_ships() {
         return;
     }
-    let driver = read("workshop/tools/display-layout-browser.mjs");
+    // Same guard as GH #722: the driver is under `workshop/` and never travels
+    // (R2c), so a tree without it skips instead of panicking in `read()`.
+    const DRIVER: &str = "workshop/tools/display-layout-browser.mjs";
+    if !repo(DRIVER).is_file() {
+        eprintln!("SKIP: {DRIVER} is not in this tree");
+        return;
+    }
+    let driver = read(DRIVER);
     let start = driver
         .find("async function B05(ctx) {")
         .expect("B-05 is gone");
