@@ -181,11 +181,25 @@ impl WebCell {
     /// The order matters. The pages are published **first**, so a GET arriving
     /// between the write and the push already sees the new content — a viewer
     /// that reloads must never see less than a viewer that stayed connected.
-    /// Then one diff goes out per route, carrying only the slot that moved.
+    /// Then ONE diff goes out per route, carrying every slot that moved.
+    ///
+    /// Per route, not per slot (GH #723). LiveView re-renders the whole
+    /// container out of its cached tree on every diff it receives, and it
+    /// patches the cache with the keys the diff names. A frame that names only
+    /// slot 2 therefore re-renders slots 0 and 1 from the values the cache
+    /// still holds — the ones from BEFORE this pass — and writes them over the
+    /// DOM. Anything the client had drawn optimistically (§ 5.7) is gone until
+    /// the next frame restores it. Measured on the fresh instance (18.09.2026,
+    /// Chromium, a real click closing the chat window): two frames 5 ms apart,
+    /// `{"2"}` at +167 ms and `{"0"}` at +172 ms, and `data-level` went
+    /// `2 -> 0@30 (optimistic) -> 2@172 -> 0@176`. The window blinked, which
+    /// § 5.8 forbids. One frame with `{"0": …, "1": …, "2": …}` has no such
+    /// gap; the same run proves the client reads that shape, because the
+    /// structural arm already sends `["0","1","2","3","s"]` in one frame.
     ///
     /// A structural change (create, move, delete) re-sends the whole packed
-    /// tree for that page instead of one slot: the slot list itself changed, so
-    /// a positional patch would address the wrong slot. That is the honest
+    /// tree for that page instead of the slots: the slot list itself changed,
+    /// so a positional patch would address the wrong slot. That is the honest
     /// version of "one diff per write" — it is one frame either way, and which
     /// kind it is depends on what actually changed.
     async fn publish_and_push(&self, db: &mut DbConn, touched: &ops::Touched) {
@@ -218,18 +232,44 @@ impl WebCell {
             return;
         }
 
+        // Group the touched slots by route — the grouping, not the order, is
+        // what makes one frame per route. A bundle arrives here already sorted
+        // and deduplicated (see the merge above); a single call carries at most
+        // one slot per route by construction (`touched_by`), except for a move,
+        // which names the slot it left and the slot it reached.
+        let mut by_route: Vec<(&String, Vec<&String>)> = Vec::new();
         for (route, slot_id) in &touched.slots {
+            match by_route.iter_mut().find(|(r, _)| *r == route) {
+                Some((_, slots)) => slots.push(slot_id),
+                None => by_route.push((route, vec![slot_id])),
+            }
+        }
+
+        for (route, slot_ids) in by_route {
             let Some(page) = map.get(route) else { continue };
-            let diff = if touched.structural {
+            // An object that is no longer a slot on this page cannot be
+            // addressed positionally — send the whole tree rather than a patch
+            // that misses, or the viewer keeps a picture that is quietly wrong.
+            // It is decided for the WHOLE group: a tree for one slot and a
+            // patch for its neighbours would be two frames again. With the ops
+            // the substrate has today every way to make a slot disappear also
+            // sets `structural`, so this arm is a belt on a brace rather than
+            // a path of its own — `723_a_route_hears_one_frame_per_pass.rs`
+            // locks the reachable shape, a move that leaves one root child for
+            // another.
+            let unaddressable = slot_ids
+                .iter()
+                .any(|slot_id| page.slot_of(slot_id).is_none());
+            let diff = if touched.structural || unaddressable {
                 page.packed_tree()
             } else {
-                match page.slot_of(slot_id) {
-                    Some(i) => json!({ i.to_string(): page.slots[i].1 }),
-                    // The object is no longer a slot on this page — send the
-                    // whole tree rather than nothing, or the viewer keeps a
-                    // picture that is quietly wrong.
-                    None => page.packed_tree(),
+                let mut diff = Map::new();
+                for slot_id in slot_ids {
+                    if let Some(i) = page.slot_of(slot_id) {
+                        diff.insert(i.to_string(), Value::String(page.slots[i].1.clone()));
+                    }
                 }
+                Value::Object(diff)
             };
             let _ = self
                 .push_tx
@@ -579,14 +619,32 @@ impl LongRunningCell for WebCell {
             let bundle = calls.len() > 1;
             let mut legs: Vec<BundleLeg> = Vec::with_capacity(calls.len());
             let mut single: Option<(OpOutcome, String)> = None;
+            // What the whole bundle touched, accumulated. See the push below.
+            let mut merged = ops::Touched::default();
+            // Whether any leg was the ROOT-object case — structural with no
+            // slot to name. It is tracked apart from `merged` because it is the
+            // one case `publish_and_push` answers by BROADCASTING, and merging
+            // it into a `Touched` that also names slots would hide it.
+            let mut merged_root = false;
 
             for (args, id) in calls {
                 let op_started = std::time::Instant::now();
                 let (outcome, touched) = db.call(move |conn| ops::apply(conn, &args)).await;
 
-                // One diff per write, immediately — not one at the end of the
-                // bundle. A caller that sent three writes sees three frames, and
-                // a viewer sees each step rather than the last one only.
+                // One diff per write for a SINGLE call, immediately. A bundle
+                // pushes once, after the loop.
+                //
+                // A bundle is one caller's one intention — a curator pass is
+                // exactly that — and the steps inside it are not pictures
+                // anybody should see. Measured on the fresh instance
+                // (18.09.2026, GH #718): one tap arrived as eight
+                // `object.update` legs, five of them root updates, and each of
+                // those re-sent the whole packed tree AS IT STOOD mid-bundle,
+                // with the window still closed. The browser drew `data-level`
+                // `1@34 ms → 0@175 → 1@255` (Chromium) for one tap, and a
+                // second browser watching the same state saw only a blink. Per
+                // leg that is 7 frames and ~774 KB where the end state is one
+                // frame and ~154 KB.
                 //
                 // `structural` with an empty slot list is the ROOT-object case:
                 // `touched_by` cannot name a slot because the whole page is the
@@ -595,7 +653,13 @@ impl LongRunningCell for WebCell {
                 // page and every viewer kept the old render indefinitely (the
                 // steady-state tick emits nothing, so nothing ever caught up).
                 if !outcome.is_error() && (!touched.slots.is_empty() || touched.structural) {
-                    self.publish_and_push(db, &touched).await;
+                    if bundle {
+                        merged_root |= touched.structural && touched.slots.is_empty();
+                        merged.structural |= touched.structural;
+                        merged.slots.extend(touched.slots);
+                    } else {
+                        self.publish_and_push(db, &touched).await;
+                    }
                 }
 
                 let dur = op_started.elapsed().as_millis() as i64;
@@ -608,6 +672,44 @@ impl LongRunningCell for WebCell {
                 } else {
                     single = Some((outcome, id.unwrap_or_default()));
                 }
+            }
+
+            // The bundle's one push per route, with the database already at
+            // the end state: `publish_and_push` re-materialises, so what goes
+            // out is what the last leg left behind and never a step before it.
+            if bundle && (!merged.slots.is_empty() || merged.structural) {
+                if merged_root {
+                    // A leg moved a ROOT object, and that is a broadcast: the
+                    // whole page changed and no slot can name it. Carrying the
+                    // other legs' slots alongside would send the merged
+                    // `Touched` down the ADDRESSED path instead and leave the
+                    // output whose root moved out of its own pass — a display
+                    // lays down one page per output (`display@2.5.0`), and one
+                    // curator pass writes the root props of one and a window of
+                    // another in the same breath. The broadcast is not a second
+                    // frame on top of the addressed one: it sends every route
+                    // its whole packed tree, which already contains every slot
+                    // the bundle touched.
+                    merged.slots.clear();
+                } else if merged.structural {
+                    // Structural without a root leg: the diff is the whole tree
+                    // per route, so ONE entry per route is all of it and a
+                    // second would send the same tree twice. Keeping the first
+                    // slot of each route keeps the addressing — only the routes
+                    // the bundle touched hear it — and drops the duplicates.
+                    let mut routes: Vec<String> = Vec::new();
+                    merged.slots.retain(|(route, _)| {
+                        let first = !routes.iter().any(|r| r == route);
+                        if first {
+                            routes.push(route.clone());
+                        }
+                        first
+                    });
+                } else {
+                    merged.slots.sort();
+                    merged.slots.dedup();
+                }
+                self.publish_and_push(db, &merged).await;
             }
 
             let content = if bundle {

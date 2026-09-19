@@ -163,7 +163,7 @@ async fn the_page_carries_the_hook_the_mount_and_the_topic() {
         }),
     );
     copy_tree(&repo("templates/display"), &root.join("main/screen"));
-    // The display refs `web@2.0.1`, so the template it grows from has to be on
+    // The display refs `web@2.0.4`, so the template it grows from has to be on
     // disk before the boot resolves the ref (GH #424).
     copy_tree(&repo("templates/web"), &root.join("templates/web"));
     patch(&root.join("main/screen/web/config.json"), |v| {
@@ -281,10 +281,30 @@ async fn the_page_carries_the_hook_the_mount_and_the_topic() {
          buffered until then and a raw binary push is not, so audio sent in \
          that window is dropped or arrives ahead of its own hold:\n{page}"
     );
+    // GH #643 asked for this with `btn.disabled = true`. Welle F took that
+    // away on purpose (R-23-4): the mark carries TWO gestures, and the dock
+    // toggle is display, not speech -- a disabled button emits no pointer
+    // events at all, so a refused CHANNEL silently killed the one way a phone
+    // has to reach its tiles. The promise itself is unchanged and is now kept
+    // where it belongs, in the speech half alone.
     assert!(
-        page.contains("|| \"refused\"); phase(\"error\"); btn.disabled = true;"),
+        page.contains("refuseFrom((e && e.reason) || \"refused\")"),
+        "a refused join is answered by the speech half, which records the \
+         refusal and says it:\n{page}"
+    );
+    assert!(
+        page.contains("if (audio && !refused) join();"),
         "a REFUSED join stays final: that answer is about this screen and this \
-         mount, and pressing again cannot change it:\n{page}"
+         mount, and pressing again cannot open a new call. And an output whose \
+         profile carries no `audio` never joins at all (display-hive.md § 6.4: \
+         the client sends nothing to the channel `voice`):\n{page}"
+    );
+    assert!(
+        !page.contains("btn.disabled = true"),
+        "and it stays final WITHOUT disabling the mark -- a disabled button \
+         emits no pointer events, which would take the dock toggle down with \
+         the channel (R-23-4: the dock is display and hangs on no voice \
+         cell):\n{page}"
     );
     assert!(
         page.contains("say(\"listening"),
@@ -308,7 +328,7 @@ fn the_template_says_it_carries_a_microphone() {
     }
     let template = read_json(&repo("templates/display/template.json"));
     assert_eq!(
-        template["version"], "2.3.3",
+        template["version"], "2.5.0",
         "the screen shipped the microphone at 1.2.0 — a new component is a \
          minor version — moved to 2.0.0 when its own port went with \
          `web@2.0.0`, to 2.0.1 for what the button says while it waits \
@@ -327,7 +347,12 @@ fn the_template_says_it_carries_a_microphone() {
          abilities, a minor version -- and to 2.3.1 and 2.3.2 for an OS \
          mark that reads as »OS«, the ring open to the right and the S on \
          its rim, repairs, and to 2.3.3 for a release that drains before \
-         it lets go (GH #698), a repair"
+         it lets go (GH #698), a repair, and to 2.4.0 for four levels and \
+         two ladders, a tap that is a touch and a window that may say how \
+         long it lingers (GH #702), and to 2.5.0 for the curator that is \
+         the reference model of the description: one state row, the two events \
+         `tap` and `hold`, and a rendering per named output (GH #707) -- \
+         new abilities both times, a minor version"
     );
     let purpose = template["description"]["purpose"]
         .as_str()
@@ -337,22 +362,22 @@ fn the_template_says_it_carries_a_microphone() {
         "the purpose says what a caller has to configure for the button to \
          reach anything: {purpose}"
     );
+    // Since 2.5.0 the README is the public rendering of the display-hive description,
+    // so it is read for the sections that description leads — not for headings of its
+    // own.
     let readme = std::fs::read_to_string(repo("templates/display/README.md")).expect("README");
     assert!(
-        readme.starts_with("# `display@2.3.3`"),
+        readme.starts_with("# `display@2.5.0`"),
         "the README heads with the version it describes"
     );
     assert!(
-        readme.contains("Talking to the screen"),
-        "and says how a person speaks to it"
+        readme.contains("## Gestures"),
+        "and says what a person can do with their hands -- which is where the mark and \
+         its hold live"
     );
     assert!(
-        readme.contains("One canvas, one dock"),
-        "and says where things stand"
-    );
-    assert!(
-        readme.contains("Screens and profiles") && readme.contains("Topics"),
-        "and what a screen is and how two applications avoid saying the same thing twice"
+        readme.contains("## Outputs and profiles"),
+        "and what an output is, since what the mark binds hangs on the profile"
     );
 }
 

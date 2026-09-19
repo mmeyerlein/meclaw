@@ -1,0 +1,94 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "#!/usr/bin/env python3\n\"\"\"The channel `chat`: a typed sentence is a turn of its own channel.\n\ndisplay-hive.md § 8.2: the chat app passes the event of its input line as a turn to\n`channels/chat`; from there it goes the way of every turn -- firewall, the member's\nsession, its talky. The turn carries the text, a `turn_id` assigned HERE on acceptance,\nand the member's identity (§ 8.7: the person typing on a member's screen is the member;\nthe id is this channel's, never an installer literal on an edge). The channel has no\nloudspeaker (§ 8.3): the answer arrives on `in_answer` and is not spoken -- it reaches the\nchat app on the member's own `./assistants -> ./apps` edge -- so this cell answers it with\nsilence. No disguised voice turn (R-24-4).\n\nstdin: {envelope, body, params}; stdout: one content JSON (`header` = hop), or an empty\nlist where the channel absorbs the message.\n\"\"\"\nimport json\nimport sys\nimport time\nimport uuid\n\nCHANNEL = \"chat\"\n\n\ndef turn_id():\n    \"\"\"One id per accepted turn.\n\n    `uuid4` rather than `<session>#<seq>`, which is how the channel `voice` mints one:\n    that channel IS the connection and can count on it, while this cell keeps no state\n    at all -- a counter here would be a second session store beside the member's keeper,\n    and it would restart at every respawn. What the id has to be is unique per turn and\n    carried through by the answer; it does not have to be ordered.\n    \"\"\"\n    return \"chat#\" + uuid.uuid4().hex[:16]\n\n\ndef text_of(body):\n    \"\"\"The sentence the member typed: the first turn of theirs that carries one.\n\n    `origin` defaults to `user` because the input line's event is the member's by\n    construction (§ 8.7) -- a message without the key is theirs, not nobody's.\n    \"\"\"\n    for m in body.get(\"messages\") or []:\n        if isinstance(m, dict) and str(m.get(\"origin\") or \"user\") == \"user\":\n            t = str(m.get(\"text\") or \"\").strip()\n            if t:\n                return t\n    return \"\"\n\n\ndef main():\n    doc = json.load(sys.stdin)\n    envelope = doc.get(\"envelope\") or {}\n    header = envelope.get(\"header\") or {}\n    hop = header.get(\"hop\") or {}\n    params = doc.get(\"params\") or {}\n    body = doc.get(\"body\") or {}\n    route = str(hop.get(\"route\") or \"\")\n\n    if route != \"in_typed\":\n        # `in_answer` is the talky's answer and ends here: this channel has no\n        # loudspeaker (§ 8.3), and the app hears the same answer on its own lane.\n        # Any other lane is nothing this channel opened, and silence is what a\n        # channel owes a message it did not ask for.\n        return []\n    text = text_of(body)\n    if not text:\n        # An empty line is not a turn. It is refused HERE rather than screened\n        # away later, because a turn with no text costs a session, a model call\n        # and an answer about nothing.\n        return [{\"header\": {\"route\": \"error\", \"error_code\": \"empty_turn\",\n                            \"msg_type\": \"chat_channel_error\"},\n                 \"messages\": []}]\n    # § 8.7: the event may name the member (the input line knows who is sitting in\n    # front of it); the param is what the channel was installed with. The event wins,\n    # so a screen shared by two people never signs a turn with the wrong name.\n    user_id = str(hop.get(\"user_id\") or params.get(\"user_id\") or \"\")\n    return [{\"header\": {\"route\": \"turn\", \"turn_id\": turn_id(), \"user_id\": user_id,\n                        \"channel\": CHANNEL, \"happened_at\": int(time.time() * 1000),\n                        \"msg_type\": \"chat_turn\"},\n             \"messages\": [{\"origin\": \"user\", \"type\": \"text\", \"text\": text}]}]\n\n\nif __name__ == \"__main__\":\n    out = main()\n    sys.stdout.write(json.dumps(out[0] if len(out) == 1 else out))\n",
+    "external_timeout_ms": 5000,
+    "user_id": ""
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {
+      "user_id": {
+        "type": "string",
+        "secret": false,
+        "default": "",
+        "description": "The member this channel belongs to (display-hive.md § 8.7: whoever types on a member's screen IS the member). It is the channel's fact rather than an installer literal on an edge, so a screen rebuilt by a different mutation still signs its turns with the same person. A typed event that names `hop.user_id` itself wins over it -- the input line knows who is sitting in front of it, and this default is what answers when nothing does."
+      }
+    },
+    "multi_send_capable": false,
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "turn",
+            "error"
+          ],
+          "required": true
+        },
+        "turn_id": {
+          "type": "string",
+          "required": false,
+          "description": "Minted HERE, on acceptance, and carried on by the answer and by every window built from it (§ 8.2, § 8.3). Only on `turn`."
+        },
+        "user_id": {
+          "type": "string",
+          "required": false
+        },
+        "channel": {
+          "type": "string",
+          "values": [
+            "chat"
+          ],
+          "required": false
+        },
+        "happened_at": {
+          "type": "number",
+          "required": false,
+          "description": "When the sentence was accepted, epoch milliseconds. It orders the turns; what a line SHOWS is the line's own `at` (§ 8.4, § 8.5), which the chat app writes and the client formats."
+        },
+        "error_code": {
+          "type": "string",
+          "values": [
+            "empty_turn"
+          ],
+          "required": false
+        },
+        "msg_type": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "The channel `chat` as one cell: it takes the event of a chat app's input line, mints the `turn_id` the whole turn will be known by, stamps the member who typed it, and puts it on the lane every turn of every channel travels. The answer comes back to it and stops there, because a typed conversation has no loudspeaker.",
+    "use_when": "One per member, instantiated as `<member>/channels/chat`, wired by the two edges below. Use it whenever a person is to reach their assistant by typing on their own screen and the answer is to be a turn of the conversation rather than a reply inside an app.",
+    "not_in_scope": "No transcript and no history: the chat APP holds the lines and the member's talky is the source of truth for this channel (§ 8.8). No authentication -- who may reach the screen is the proxy's question in front of the colony, never the hive's (§ 8.7). No speech: an answer that has to be heard belongs to the channel `voice`, and a typed turn is never disguised as one (R-24-4). No session and no counter, which is why the id it mints is random rather than ordered.",
+    "examples": [
+      "PORTS - in_typed in (the input line's event, put on this lane by the chat app's own edge), in_answer in (the talky's answer, absorbed and not spoken). turn out (to ./channels, where the member's edge stamps channel_node 'chat', channel 'chat', the assistant, the audience set, and carries user_id and turn_id off the hop into the context), error out (the same way, for a line with no text).",
+      "the member's two edges, the pattern of every channel: { \"from\": \"./channels/chat\", \"to\": \"./channels\", \"condition\": \"has(hop.route) && (hop.route == 'turn' || hop.route == 'error')\", \"modifier\": {\"set_context\": {\"channel_node\": \"'chat'\", \"channel\": \"'chat'\", \"assistant\": \"'<agent>'\", \"audience_set\": \"'[\\\"agent:<agent>\\\",\\\"member:<member>\\\"]'\", \"user_id\": \"has(hop.user_id) ? hop.user_id : ''\", \"turn_id\": \"has(hop.turn_id) ? hop.turn_id : ''\"}} } and { \"from\": \"./channels\", \"to\": \"./channels/chat\", \"condition\": \"has(hop.route) && hop.route == 'answer' && has(context.channel_node) && context.channel_node == 'chat'\", \"modifier\": {\"set_hop\": {\"route\": \"'in_answer'\"}} }",
+      "the app's own edge replaces the one that used to reach the firewall directly: { \"from\": \"./apps/chat\", \"to\": \"./channels/chat\", \"condition\": \"has(hop.route) && hop.route == 'typed'\", \"modifier\": {\"set_hop\": {\"route\": \"'in_typed'\"}} } -- the app stops stamping an owner, an assistant and a channel of its own, because all four are this channel's and its edge's."
+    ]
+  }
+}

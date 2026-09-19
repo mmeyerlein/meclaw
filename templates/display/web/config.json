@@ -1,7 +1,7 @@
 {
   "cell": {
     "type": "ref",
-    "template": "web@2.0.1"
+    "template": "web@2.0.4"
   },
   "override_params": {
     "": {

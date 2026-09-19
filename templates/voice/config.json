@@ -13,7 +13,7 @@
     "provider_idle_timeout_ms": 30000,
     "audio_out_frame_ms": 20,
     "speak_plain": true,
-    "release_grace_ms": 1500,
+    "release_grace_ms": 2500,
     "stt": {
       "provider": "deepgram",
       "api_key": "${DEEPGRAM_API_KEY}",
@@ -93,8 +93,8 @@
       "release_grace_ms": {
         "type": "number",
         "secret": false,
-        "default": 1500,
-        "description": "How long a released 'hold' boundary waits for the recognition provider's own end of turn before it cuts the turn with what it has. 'release' says that no NEW audio belongs to the turn; the provider still owes the end of the audio already sent, and it takes its time -- Deepgram Flux reports an end of turn 400-700 ms after the words that caused it. Cutting on the frame lost exactly those words, and the late end of turn then arrived inside whichever boundary was open next, so the previous take turned up at the front of the following one. Whichever comes first ends the turn: the provider's end, or this cap. Set 0 to cut on the release frame, the behaviour before this knob existed. Range 0..=10000."
+        "default": 2500,
+        "description": "How long a released 'hold' boundary waits for the recognition provider's own end of turn before it cuts the turn with what it has. 'release' says that no NEW audio belongs to the turn; the provider still owes the end of the audio already sent, and it takes its time. The number is measured from the last spoken WORD, not from the release and not from the endpointing threshold: an endpointing provider waits for silence in the audio stream and only then spends its model latency, so Deepgram Flux's 400-700 ms is the second half alone. End to end it is 1795 ms, measured 18.09.2026 over three machine-timed holds, which is why 2500 and no longer 1500 -- at 1500 every human hold was cut on the cap with the last interim, and the end of the sentence was missing. Cutting on the release frame lost those words outright, and the late end of turn then arrived inside whichever boundary was open next, so the previous take turned up at the front of the following one. Whichever comes first ends the turn: the provider's end, or this cap. Set 0 to cut on the release frame, the behaviour before this knob existed. Range 0..=10000."
       },
       "stt": {
         "type": "object",

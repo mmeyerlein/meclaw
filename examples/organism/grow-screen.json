@@ -6,7 +6,7 @@
         "add_nodes": [
           {
             "name": "display",
-            "template": "display@2.3.3",
+            "template": "display@2.5.0",
             "override_params": {
               "web": {
                 "mount": "alex-display"
@@ -30,10 +30,10 @@
           {
             "from": ".",
             "to": "./display",
-            "condition": "has(hop.route) && hop.route == 'view' && has(context.channel_node) && context.channel_node == 'display'",
+            "condition": "has(hop.route) && (hop.route == 'view' || hop.route == 'withdraw') && has(context.channel_node) && context.channel_node == 'display'",
             "modifier": {
               "set_hop": {
-                "route": "'in_view'"
+                "route": "hop.route == 'withdraw' ? 'in_withdraw' : 'in_view'"
               }
             }
           },
@@ -56,7 +56,7 @@
         "add_nodes": [
           {
             "name": "colony-view",
-            "template": "colony-view@1.1.1"
+            "template": "colony-view@1.1.2"
           }
         ],
         "add_edges": [

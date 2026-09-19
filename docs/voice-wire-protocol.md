@@ -122,7 +122,7 @@ closed, is not one of the four.
 
 What a browser needs: a **secure context** for the microphone, which means an
 `https://` origin or `localhost` / `127.0.0.1`. On a plain `http://` LAN address
-there is no microphone to open, and `display@2.3.3` says so on the page.
+there is no microphone to open, and `display@2.5.0` says so on the page.
 
 ## Audio frames
 
@@ -199,7 +199,7 @@ The list is closed. Treat a code outside it as a bug, never as an extension.
 | `type` | Fields | Meaning |
 |---|---|---|
 | `hold` | (none) | Open the turn boundary. `hold` mode only; in `auto` it answers `wrong_mode`, twice in a row `already_holding`. A running synthesis is cancelled, because pressing the button is barge-in. |
-| `release` | (none) | Close the turn boundary: no more audio belongs to this turn. Exactly one `turn` frame follows, as soon as the recognition provider reports the end of the audio already sent, and at the latest after `release_grace_ms` (default 1500 ms; `0` answers on the frame itself). On an empty hold it carries `text: ""`. |
+| `release` | (none) | Close the turn boundary: no more audio belongs to this turn. Exactly one `turn` frame follows, as soon as the recognition provider reports the end of the audio already sent, and at the latest after `release_grace_ms` (default 2500 ms; `0` answers on the frame itself). On an empty hold it carries `text: ""`. |
 | `cancel` | (none) | Drop the running synthesis and this session's queue. Answered with `speak_end … "cancelled"`. |
 | `mode` | `mode` | Switch this connection between `auto` and `hold`. Refused with `already_holding` while a `hold` is open; while one is draining it is accepted and closes that boundary first, so exactly one `turn` still comes out of it. |
 
@@ -283,7 +283,7 @@ S->C  {"type":"hello","protocol":"meclaw-voice/1","session_id":"demo",
        "mode":"hold","audio_in":{"encoding":"pcm_s16le","sample_rate":16000,"channels":1},
        "audio_out":{"encoding":"pcm_s16le","sample_rate":24000,"channels":1},
        "stt":"deepgram","tts":"cartesia","audio_out_frame_ms":20,
-       "speak_plain":true,"release_grace_ms":1500}
+       "speak_plain":true,"release_grace_ms":2500}
 C->S  {"type":"hold"}
 C->S  <binary>  320 bytes of PCM16 @ 16 kHz, 10 ms      (repeated while the key is down)
 S->C  {"type":"partial","text":"what is the","eager":false}
@@ -317,7 +317,7 @@ wiring with `curl`.
   "tts": "cartesia",
   "audio_out_frame_ms": 20,
   "speak_plain": true,
-  "release_grace_ms": 1500
+  "release_grace_ms": 2500
 }
 ```
 

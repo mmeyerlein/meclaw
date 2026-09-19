@@ -286,6 +286,20 @@ async fn a_web_cell_serves_its_shell_under_its_mount() {
         "and a `<base>` so a materialised page can link its own files relatively"
     );
 
+    // The viewport, both halves. `width=device-width` has been there since
+    // the cell existed; `viewport-fit=cover` is the half that is easy to miss
+    // and impossible to see: without it a browser on a phone with a notch or
+    // a home indicator lays the page out INSIDE the safe area and every
+    // `env(safe-area-inset-*)` reads 0. A sheet that asks for the inset then
+    // gets a correct answer to the wrong question, and the mark it was meant
+    // to lift sits under the home indicator anyway (display 2.4.0).
+    assert!(
+        body.contains(
+            "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\">"
+        ),
+        "the shell declares the whole viewport; body was:\n{body}"
+    );
+
     // The name is the door: nothing answers beside it, and the listener says so
     // rather than hanging.
     let elsewhere = reqwest::get(format!("{base}/")).await.expect("an answer");

@@ -616,7 +616,13 @@ fn what_is_left_at_the_level_is_the_at_corridor() {
         return;
     };
     let tpl = read_json(&assistant.join("config.json"));
-    let rims = json!(["./talky", "./cogny"]);
+    // THREE rims since GH #709: the level holds one talky per channel that asks for its
+    // own, and one generation is one person's agent whose brains must not disagree
+    // about who that is -- so the pack ends at every brain rim, the typed keeper's
+    // included. A rim missing from this list is a keeper a sender may not push an
+    // identity to: its v-lane is refused `v_lane_no_connect_point`, and the chat would
+    // answer as the vendor's default assistant.
+    let rims = json!(["./talky", "./talky-chat", "./cogny"]);
 
     for (side, route) in [("accepts", "in_pack"), ("emits", "pack_ack")] {
         let lane = tpl["params"]["contract"][side]
@@ -633,7 +639,7 @@ fn what_is_left_at_the_level_is_the_at_corridor() {
             });
         assert_eq!(
             lane["at"], rims,
-            "`{route}` must name both rims as its connect points and nothing \
+            "`{route}` must name EVERY brain rim as its connect points and nothing \
              else — the enumeration is the boundary, not an example: {lane}"
         );
     }

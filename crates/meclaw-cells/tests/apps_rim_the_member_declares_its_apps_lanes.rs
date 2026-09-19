@@ -350,7 +350,14 @@ fn the_assistant_opens_its_brain_rims_for_tool_and_schemas() {
         .contract
         .expect("templates/assistant declares a contract");
 
-    let brains = vec!["./talky".to_string(), "./cogny".to_string()];
+    // Three rims since `assistant@2.7.0`: one talky per channel that asks for its own,
+    // and a tool offered where the call is made has to be offerable at every rim a
+    // call can be made from (GH #709).
+    let brains = vec![
+        "./talky".to_string(),
+        "./talky-chat".to_string(),
+        "./cogny".to_string(),
+    ];
     for route in ["tool", "schemas"] {
         let l = lane(&c.emits, route, "templates/assistant (emits)");
         assert_eq!(
@@ -377,20 +384,23 @@ fn the_assistant_opens_its_brain_rims_for_tool_and_schemas() {
 fn the_versions_moved_with_the_declarations() {
     if let Some(v) = declared_version("member") {
         assert_eq!(
-            v, "1.7.0",
+            v, "1.8.0",
             "the apps-rim declarations and the two restamp edges shipped as 1.6.2; GH \
-             #598 took the receipt restamp edge back out again as 1.6.3; since GH #607 \
-             the level is 1.7.0, which adds the `sidecar` lane and the two edges that \
-             sort it — the second digit, because the level does something it never \
-             promised before"
+             #598 took the receipt restamp edge back out again as 1.6.3; GH #607 made the \
+             level 1.7.0 with the `sidecar` lane and the two edges that sort it; and since \
+             GH #709 it is 1.8.0, because the app rim carries `withdraw` beside `view` and \
+             an app can take a view down that it could only let fade before — the second \
+             digit each time, because the level does something it never promised before"
         );
     }
     if let Some(v) = declared_version("assistant") {
         assert_eq!(
-            v, "2.6.0",
+            v, "2.7.0",
             "the connect points on `tool`/`schemas` and the new `tool_result` lane shipped \
-             as assistant@2.5.1; since GH #607 the level also emits `sidecar`, which makes \
-             it 2.6.0 — one lane added, none taken away"
+             as assistant@2.5.1; GH #607 added `sidecar` and made it 2.6.0; and since GH \
+             #709 it is 2.7.0, because the level holds one talky per channel that asks for \
+             its own and `<assistant>/talky-chat` is an address a caller can wire — a lane \
+             or an address added, none taken away"
         );
     }
 }

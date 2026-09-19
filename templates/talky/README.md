@@ -60,7 +60,7 @@ The three sub-units are **references**, not copies. Each of the three directorie
 one `config.json` and nothing else:
 
 ```json
-{"cell": {"type": "ref", "template": "collector@4.1.0"}}
+{"cell": {"type": "ref", "template": "collector@4.1.1"}}
 ```
 
 At instantiation the referenced template's tree takes that position, so the instance is

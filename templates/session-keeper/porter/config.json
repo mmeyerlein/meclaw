@@ -107,7 +107,7 @@
   },
   "description": {
     "purpose": "The one cell that can hand this hive's sessions out as a versioned document, and take one back. A session decides whether a conversation continues or starts at zero, so a keeper reborn empty greets a person it has been talking to for a year as a stranger. The walk is a single part -- schema declaration first, one row per session after it -- and it carries the completeness marker. The same cell reads a part back on `in_import`, and applying the same part twice leaves the same state.",
-    "use_when": "Never on its own -- it travels with session-keeper@2.2.0 and is reached by the hive's own `in_export` / `in_import` lanes. A birth does not use this lane at all: write the part out as `sessions/seed/sessions.jsonl` and instantiate. What a seed cannot do is reach a hive that is ALREADY RUNNING, and that is the half this lane exists for.",
+    "use_when": "Never on its own -- it travels with session-keeper@2.2.1 and is reached by the hive's own `in_export` / `in_import` lanes. A birth does not use this lane at all: write the part out as `sessions/seed/sessions.jsonl` and instantiate. What a seed cannot do is reach a hive that is ALREADY RUNNING, and that is the half this lane exists for.",
     "not_in_scope": "It transfers; it does not decide. It opens and closes nothing -- that is `./stamp` and `./close` -- and it does not check that the channels the rows name still exist: a session is keyed on a channel, and a channel belongs to the member rather than to this hive, so a transfer between two colonies whose channels differ carries history whose referent is gone. That is a limit worth knowing (README, 'Known limits'), not something this cell repairs by guessing."
   }
 }

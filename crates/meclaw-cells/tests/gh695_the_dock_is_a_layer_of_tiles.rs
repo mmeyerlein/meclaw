@@ -1,9 +1,15 @@
-//! Welle D -- the dock is a layer of tiles of one size (Spec § 2.4, D-1..D-10).
+//! The dock is a layer of tiles of ONE size (display-hive.md § 6.10, § 6.11).
 //!
-//! One canvas, one dock. The dock is fixed at the right edge, above the
-//! canvas, a column of tiles of ONE size ordered by rank, and it ends above
-//! the OS mark. The canvas keeps a gutter so nothing lies under it. The two
-//! regions are both canvas now: `aside` is accepted and drawn as `main`.
+//! One canvas, one dock. The dock is fixed at the right edge, above the canvas, a
+//! column of tiles of one size ordered by rank, and it ends above the OS mark. The
+//! canvas keeps a gutter so nothing lies under it. The two regions are both canvas now:
+//! `aside` is accepted and drawn as `main`.
+//!
+//! What a tile carries is § 6.10: glyph, line, value, unit, `unread`, the rung, whether
+//! its window is open, whether it is pinned, `end_at`, and the OBJECT ID of its window
+//! for the tap. The attribute names are the contract of `ATTRS` in `compose.py`
+//! (`data-rung`, `data-open`, `data-seat`, `data-unread`, ...), and the tap is
+//! `phx-click="tap"` with `phx-value-for=<window id>` (§ 5).
 //!
 //! Skips when `python3` is absent or the templates do not ship (R2b).
 
@@ -50,7 +56,7 @@ fn find<'a>(all: &'a [Value], name: &str) -> &'a Value {
 }
 
 #[test]
-fn a_tile_says_ten_things_and_is_one_size() {
+fn a_tile_carries_what_the_contract_names_and_is_one_size() {
     if !library_ships() {
         return;
     }
@@ -59,41 +65,75 @@ fn a_tile_says_ten_things_and_is_one_size() {
     };
     let tile = find(&all, "display-tile");
     let schema = &tile["prop_schema"];
+    // § 6.10, and nothing that was struck with the old vocabulary: no `state`, no
+    // `on_canvas`. `oid` is the window a tap carries, `for` the name the client matches
+    // the two halves of one object on.
     for (key, kind) in [
         ("glyph", "text"),
         ("line", "text"),
         ("value", "text"),
+        ("unit", "text"),
+        ("unread", "text"),
         ("topic", "text"),
         ("for", "text"),
-        ("state", "text"),
-        ("on_canvas", "boolean"),
-        ("pinned", "boolean"),
+        ("oid", "text"),
+        ("rung", "text"),
+        ("open", "text"),
+        ("pinned", "text"),
+        ("seat", "text"),
         ("rank", "text"),
+        ("tap", "boolean"),
         ("end_at", "int"),
     ] {
         assert_eq!(schema[key], kind, "display-tile declares `{key}`: {schema}");
     }
+    for gone in ["state", "on_canvas"] {
+        assert!(
+            schema[gone].is_null(),
+            "`{gone}` left with the old vocabulary: {schema}"
+        );
+    }
     let html = render_pieces_plain(
         tile["template"].as_str().expect("a template"),
-        &json!({"glyph": "\u{23f1}", "line": "pasta", "value": "04:12",
-                "topic": "timer:x", "for": "t-timer", "state": "relevant",
-                "on_canvas": false, "pinned": true, "rank": "0.44", "end_at": 1}),
+        &json!({"glyph": "\u{23f1}", "line": "pasta", "value": "04:12", "unit": "min",
+                "unread": "1", "topic": "timer:x", "for": "view.alex.timer",
+                "oid": "view.alex.timer", "rung": "relevant", "open": "1",
+                "pinned": "1", "seat": "", "rank": "0.44", "tap": true, "end_at": 1}),
         schema,
     )
     .expect("the web cell renders a tile");
     for needle in [
         "class=\"display-tile\"",
-        "data-for=\"t-timer\"",
-        "data-state=\"relevant\"",
+        "data-for=\"view.alex.timer\"",
+        "data-rung=\"relevant\"",
         "data-rank=\"0.44\"",
-        "data-pinned=\"true\"",
-        "data-on-canvas=\"false\"",
+        "data-pinned=\"1\"",
+        "data-open=\"1\"",
+        "data-unread=\"1\"",
+        "data-end-at=\"1\"",
+        // § 5: the tap names the WINDOW, and the value is the object id.
+        "phx-click=\"tap\"",
+        "phx-value-for=\"view.alex.timer\"",
         "display-tile-glyph",
         "display-tile-value",
+        "display-tile-unit",
         "display-tile-line",
     ] {
         assert!(html.contains(needle), "a tile carries {needle}: {html}");
     }
+    // § 6.4: an output with no finger binds no tap, and then the tile has no click.
+    let dead = render_pieces_plain(
+        tile["template"].as_str().expect("a template"),
+        &json!({"glyph": "\u{23f1}", "line": "pasta", "oid": "view.alex.timer",
+                "tap": false}),
+        schema,
+    )
+    .expect("the web cell renders a tile");
+    assert!(
+        !dead.contains("phx-click"),
+        "without a finger the tile is not clickable: {dead}"
+    );
+
     let sheet = std::fs::read_to_string(repo(SHEET)).expect("the sheet");
     let rule = sheet
         .split(".display-tile {")
@@ -104,7 +144,7 @@ fn a_tile_says_ten_things_and_is_one_size() {
         .unwrap();
     assert!(
         rule.contains("inline-size: var(--tile)") && rule.contains("aspect-ratio: 1"),
-        "every tile is ONE size (D-1): {rule}"
+        "every tile is ONE size (§ 6.10): {rule}"
     );
 }
 
@@ -118,7 +158,10 @@ fn the_dock_is_a_layer_above_the_canvas_that_ends_above_the_mark() {
     };
     let dock = find(&all, "display-dock");
     assert_eq!(dock["prop_schema"]["count"], "int");
-    assert_eq!(dock["prop_schema"]["profile"], "text");
+    // And nothing else: `profile` was a copy of the root's own word in an
+    // attribute no selector has read since 2.5.0 -- the root says which output
+    // this is (`data-exit`, § 6.1) and the sheet asks there.
+    assert_eq!(dock["prop_schema"]["profile"], Value::Null);
     let sheet = std::fs::read_to_string(repo(SHEET)).expect("the sheet");
     let rule = sheet
         .split(".display-dock {")
@@ -132,15 +175,18 @@ fn the_dock_is_a_layer_above_the_canvas_that_ends_above_the_mark() {
         "inset-inline-end: 0",
         "flex-direction: column",
         "justify-content: flex-end",
-        "z-index: 20",
+        "z-index: var(--plane-os)",
         "pointer-events: none",
         "padding-block-end: calc(var(--os)",
     ] {
         assert!(rule.contains(needle), "the dock rule says {needle}: {rule}");
     }
     assert!(
-        sheet.contains("padding-inline-end: calc(var(--tile) + 3 * var(--dock-pad))"),
-        "the canvas keeps a gutter so nothing lies under the dock"
+        sheet.contains(
+            "padding-inline-end: calc(var(--tile) + 3 * var(--dock-pad) - var(--gutter))"
+        ),
+        "the canvas keeps a lane so nothing lies under the dock -- minus the \
+         gutter it carries inside its own scroller since GH #739"
     );
 }
 
@@ -161,9 +207,19 @@ fn both_regions_are_canvas_now() {
         layout.contains(".display-columns {"),
         "the layout rule the three-places lock reads is still there: {layout}"
     );
+    // Where a region draws is the sheet's § 6.3 since 2.5.0, and it is there
+    // alone: this constant said `display: contents` for every region while the
+    // sheet said `display: grid` for the canvas, and only the order inside one
+    // `<style>` decided which won (development-rules § 2d).
     assert!(
-        layout.contains("[data-region] { display: contents; }"),
-        "`aside` is accepted and drawn as canvas (OR-D3): {layout}"
+        !layout.contains("[data-region]"),
+        "the layout rules lay a region out again: {layout}"
+    );
+    let sheet_src = std::fs::read_to_string(repo(SHEET)).expect("the sheet");
+    assert!(
+        sheet_src.contains(".display-columns > [data-region=\"aside\"] { display: contents; }"),
+        "`aside` is accepted and drawn as canvas (OR-D3): its box generates \
+         nothing, so its windows stand in the column beside the canvas"
     );
     assert!(
         !layout.contains("clamp(15rem, 22%, 24rem)"),

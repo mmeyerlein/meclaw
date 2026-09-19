@@ -1,4 +1,4 @@
-# Migrating a `canvy` instance from 1.x to `canvy@2.3.0`
+# Migrating a `canvy` instance from 1.x to `canvy@2.3.1`
 
 **A 1.x instance is not upgraded in place.** Every address the template offered
 was removed — the server-rendered markup, the `store` cell that held the
@@ -56,7 +56,7 @@ after.
 
 ---
 
-## 1. Instantiate `canvy@2.3.0` beside the old hive
+## 1. Instantiate `canvy@2.3.1` beside the old hive
 
 A mutation, into a running colony. Give the node a name that does not collide
 with the old one and the display a free mount:
@@ -68,7 +68,7 @@ with the old one and the display a free mount:
     "add_nodes": [
       {
         "name": "canvy2",
-        "template": "canvy@2.3.0",
+        "template": "canvy@2.3.1",
         "override_params": {"web": {"mount": "canvy2"}}
       }
     ]

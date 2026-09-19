@@ -1,4 +1,4 @@
-# `canvy@2.3.0`
+# `canvy@2.3.1`
 
 > **Deprecated since GH #455.** This template fuses two things the library now keeps apart: a SURFACE (a screen, which belongs to a person and is shared by everybody who writes to it) and a VIEW of the colony (which is one application among many). Those are `display` and `colony-view` in the table next door. `canvy` is not removed and not going to break -- an instance grown from it keeps running, because instantiation copies -- but it takes no further work, and a new screen should be a `display` with `colony-view` writing onto it.
 
@@ -219,7 +219,7 @@ canvas in the same colony needs a different name, because two displays sharing
 one is a mount collision rather than a configuration.
 
 ```json
-{"add_nodes": [{"path": "/ops", "name": "canvy", "template": "canvy@2.3.0",
+{"add_nodes": [{"path": "/ops", "name": "canvy", "template": "canvy@2.3.1",
                 "override_params": {"web": {"mount": "ops-canvy"}}}]}
 ```
 

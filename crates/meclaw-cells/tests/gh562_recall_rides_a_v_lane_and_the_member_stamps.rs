@@ -254,7 +254,7 @@ fn lane_spec<'a>(lanes: &'a [LaneSpec], route: &str) -> &'a LaneSpec {
 // ───────────────────────────────── 1. the generation vouches, it does not carry
 
 #[test]
-fn the_generation_vouches_for_its_two_askers_and_forwards_nothing() {
+fn the_generation_vouches_for_every_asker_it_holds_and_forwards_nothing() {
     let hp = hive_params("templates/assistant/config.json");
     let c = hp
         .contract
@@ -263,10 +263,17 @@ fn the_generation_vouches_for_its_two_askers_and_forwards_nothing() {
 
     for (lanes, route) in [(&c.emits, "recall"), (&c.accepts, "in_bundle")] {
         let lane = lane_spec(lanes, route);
+        // Three askers since `assistant@2.7.0`: a channel that asks for a voice of its
+        // own gets a keeper of its own, and a keeper with no memory leg asks and is never
+        // answered (GH #709).
         assert_eq!(
             lane.at,
-            vec!["./talky".to_string(), "./cogny".to_string()],
-            "the '{route}' entry must name the two askers as its connect points: a v-lane docks \
+            vec![
+                "./talky".to_string(),
+                "./talky-chat".to_string(),
+                "./cogny".to_string()
+            ],
+            "the '{route}' entry must name every asker as a connect point: a v-lane docks \
              where the target says it docks, and a declaration WITHOUT `at` is a mandatory hop — \
              which is precisely the pass-through this change removed"
         );

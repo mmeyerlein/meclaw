@@ -1,0 +1,7205 @@
+{
+  "_about": "Scenarios for pass.py (display-hive.md § 3/§ 4). Times are epoch ms; S = 100000 is the scenario base. Fixture writes happen at 1000, a stroke at 2000 settles them. At S the fixture windows have decayed: clock/weather/timer decay 0.3417 (score 0.0854), chat decay 0.925 (score 0.2775 < bar 0.3, closed). Run: python3 run.py",
+  "fixtures": {
+    "empty": {
+      "settings": {
+        "default_screen": "monitor"
+      },
+      "screens": {
+        "tv": {
+          "display_type": "tv"
+        },
+        "monitor": {
+          "display_type": "monitor",
+          "inputs": [
+            "pointer",
+            "keyboard"
+          ]
+        },
+        "phone": {
+          "display_type": "phone",
+          "inputs": [
+            "touch",
+            "keyboard",
+            "audio"
+          ]
+        }
+      }
+    },
+    "seats2": {
+      "fixture": "empty",
+      "setup": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.clock",
+            "view": {
+              "seat": "bottom",
+              "seat_ord": "0",
+              "pinned": true,
+              "topic": "clock",
+              "context": "ambient",
+              "title": "Clock",
+              "children": {
+                "time": "12:00"
+              }
+            }
+          },
+          "now": 1000
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.weather",
+            "view": {
+              "seat": "bottom",
+              "seat_ord": "10",
+              "pinned": true,
+              "topic": "weather:berlin",
+              "context": "ambient",
+              "title": "Weather",
+              "children": {
+                "value": "21",
+                "unit": "°C"
+              }
+            }
+          },
+          "now": 1000
+        },
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 2000
+        }
+      ]
+    },
+    "ambient3+chat": {
+      "fixture": "empty",
+      "setup": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.clock",
+            "view": {
+              "seat": "bottom",
+              "seat_ord": "0",
+              "pinned": true,
+              "topic": "clock",
+              "context": "ambient",
+              "title": "Clock",
+              "children": {
+                "time": "12:00"
+              }
+            }
+          },
+          "now": 1000
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.weather",
+            "view": {
+              "seat": "bottom",
+              "seat_ord": "10",
+              "pinned": true,
+              "topic": "weather:berlin",
+              "context": "ambient",
+              "title": "Weather",
+              "children": {
+                "value": "21",
+                "unit": "°C"
+              }
+            }
+          },
+          "now": 1000
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.timer",
+            "view": {
+              "topic": "timer:t1",
+              "context": "ambient",
+              "title": "Timer",
+              "children": {
+                "tile": {
+                  "end_at": 999999
+                }
+              }
+            }
+          },
+          "now": 1000
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.chat.chat",
+            "view": {
+              "layer": "modal",
+              "pinned": true,
+              "context": "conversation",
+              "topic": "chat",
+              "relevance": "0.6",
+              "linger": "90000",
+              "title": "Chat",
+              "children": {
+                "lines": [
+                  {
+                    "kind": "turn",
+                    "text": "hello",
+                    "channel": "voice"
+                  },
+                  {
+                    "kind": "answer",
+                    "text": "hi",
+                    "channel": "voice"
+                  }
+                ]
+              }
+            }
+          },
+          "now": 1000
+        },
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 2000
+        }
+      ]
+    },
+    "ambient3+chat+judge": {
+      "fixture": "ambient3+chat",
+      "settings": {
+        "judge": "on"
+      }
+    },
+    "nine-apps": {
+      "fixture": "ambient3+chat",
+      "setup": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.timer",
+            "view": {
+              "state": "urgent",
+              "touched": "100000"
+            }
+          },
+          "now": 100000
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.notes.n1",
+            "view": {
+              "relevance": "0.1",
+              "context": "system",
+              "topic": "note:1",
+              "title": "N1"
+            }
+          },
+          "now": 100000
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.notes.n2",
+            "view": {
+              "relevance": "0.2",
+              "context": "system",
+              "topic": "note:2",
+              "title": "N2"
+            }
+          },
+          "now": 100000
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.notes.n3",
+            "view": {
+              "relevance": "0.3",
+              "context": "system",
+              "topic": "note:3",
+              "title": "N3"
+            }
+          },
+          "now": 100000
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.notes.n4",
+            "view": {
+              "relevance": "0.4",
+              "context": "system",
+              "topic": "note:4",
+              "title": "N4"
+            }
+          },
+          "now": 100000
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.notes.n5",
+            "view": {
+              "relevance": "0.5",
+              "context": "system",
+              "topic": "note:5",
+              "title": "N5"
+            }
+          },
+          "now": 100000
+        }
+      ]
+    },
+    "two-cards": {
+      "fixture": "ambient3+chat",
+      "setup": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.v2v.card1",
+            "view": {
+              "relevance": "0.9",
+              "context": "conversation",
+              "topic": "v2v:1",
+              "title": "Card 1"
+            }
+          },
+          "now": 100000
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.v2v.card2",
+            "view": {
+              "relevance": "0.6",
+              "context": "conversation",
+              "topic": "v2v:2",
+              "title": "Card 2"
+            }
+          },
+          "now": 100000
+        },
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 101000
+        }
+      ]
+    }
+  },
+  "scenarios": [
+    {
+      "id": "Q-01",
+      "title": "Tap on a relevant (open, not leading) canvas window: put away, systemwide",
+      "source": "Q1; § 5.2, § 4.14, § 4.22, § 4.24, § 4.27",
+      "given": "two-cards",
+      "steps": [
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.v2v.card2"
+          },
+          "now": 102000
+        }
+      ],
+      "expect": {
+        "rung(view.v2v.card2)": "hidden",
+        "level(view.v2v.card2)": 0,
+        "dismissed_at(view.v2v.card2)": 102000,
+        "led_until(view.v2v.card2)": 0,
+        "since(view.v2v.card2)": 100000,
+        "score(view.v2v.card2)": 0,
+        "rank(view.v2v.card2)": 0.3,
+        "verdict(view.v2v.card2)": {
+          "judged_relevance": null,
+          "judged_hidden": null
+        },
+        "open_windows()": [
+          "view.v2v.card1"
+        ],
+        "touched()": {},
+        "put_away_list()": [
+          "view.v2v.card2"
+        ]
+      }
+    },
+    {
+      "id": "Q-02",
+      "title": "Typed turn: the chat app writes turn_id + touched; the pass sees an app touch and the last turn_id (channel stations are outside the pass)",
+      "source": "Q2; § 8.2, § 8.8, § 4.8 b, § 4.13",
+      "given": "ambient3+chat",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.chat.chat",
+            "view": {
+              "turn_id": "t-7",
+              "touched": "100000",
+              "relevance": "0.8",
+              "children": {
+                "lines": [
+                  {
+                    "kind": "turn",
+                    "text": "wetter?",
+                    "channel": "typed"
+                  }
+                ]
+              }
+            }
+          },
+          "now": 100000
+        }
+      ],
+      "expect": {
+        "touched()": {
+          "view.chat.chat": "b"
+        },
+        "last_turn_id()": "t-7",
+        "since(view.chat.chat)": 100000,
+        "rung(view.chat.chat)": "focus",
+        "level(view.chat.chat)": 2,
+        "open_windows()": [
+          "view.chat.chat"
+        ],
+        "judge_called()": false,
+        "last_turn()": "wetter?"
+      }
+    },
+    {
+      "id": "Q-03",
+      "title": "dock_max 5, nine apps (two seats, one pin, one urgent, five others): five tiles, the four lowest others fall",
+      "source": "Q3; Delta E.20; § 4.27, § 4.28, § 4.30",
+      "given": "nine-apps",
+      "steps": [],
+      "expect": {
+        "dock(phone)": [
+          "view.ambient.clock",
+          "view.ambient.weather",
+          "view.notes.n5",
+          "view.chat.chat",
+          "view.ambient.timer"
+        ],
+        "dock(monitor)": [
+          "view.ambient.clock",
+          "view.ambient.weather",
+          "view.notes.n2",
+          "view.notes.n3",
+          "view.notes.n4",
+          "view.notes.n5",
+          "view.chat.chat",
+          "view.ambient.timer"
+        ],
+        "dock(tv)": [
+          "view.ambient.clock",
+          "view.ambient.weather",
+          "view.notes.n3",
+          "view.notes.n4",
+          "view.notes.n5",
+          "view.chat.chat",
+          "view.ambient.timer"
+        ],
+        "front_urgent()": "view.ambient.timer",
+        "level(view.ambient.timer)": 3,
+        "rank(view.ambient.timer)": 1,
+        "rank(view.notes.n5)": 0.25,
+        "rank(view.chat.chat)": 0.2775
+      }
+    },
+    {
+      "id": "Q-04",
+      "title": "Note tap while the chat leads: note focus at once below the bar, chat co-closed, until led_until",
+      "source": "Q4; § 5.1, § 5.3, § 4.19, § 4.15, § 4.22",
+      "given": "ambient3+chat",
+      "steps": [
+        {
+          "event": {
+            "kind": "hold"
+          },
+          "now": 100000,
+          "expect": {
+            "rung(view.chat.chat)": "focus",
+            "level(view.chat.chat)": 2,
+            "led_until(view.chat.chat)": 190000
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.notes.n1",
+            "view": {
+              "relevance": "0.15",
+              "context": "system",
+              "topic": "note:1",
+              "title": "Note"
+            }
+          },
+          "now": 100000,
+          "expect": {
+            "rung(view.notes.n1)": "ambient",
+            "age(view.notes.n1)": "fresh",
+            "score(view.notes.n1)": 0.075
+          }
+        },
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.notes.n1"
+          },
+          "now": 102000,
+          "expect": {
+            "rung(view.notes.n1)": "focus",
+            "level(view.notes.n1)": 1,
+            "led_until(view.notes.n1)": 122000,
+            "since(view.notes.n1)": 102000,
+            "dismissed_at(view.notes.n1)": 0,
+            "rung(view.chat.chat)": "hidden",
+            "level(view.chat.chat)": 0,
+            "dismissed_at(view.chat.chat)": 102000,
+            "led_until(view.chat.chat)": 0,
+            "score(view.chat.chat)": 0,
+            "co_closed()": [
+              "view.chat.chat"
+            ]
+          }
+        },
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 122000
+        }
+      ],
+      "expect": {
+        "rung(view.notes.n1)": "ambient",
+        "level(view.notes.n1)": 0,
+        "rung(view.chat.chat)": "hidden",
+        "open_windows()": []
+      }
+    },
+    {
+      "id": "Q-05",
+      "title": "Two timers, same score, same since: the smaller id is front; put away the front one, the other takes over, neither counts for unseen",
+      "source": "Q5; § 4.18, § 2 Id, § 4.27, § 4.33, § 5.2",
+      "given": "ambient3+chat",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.timer-a",
+            "view": {
+              "state": "urgent",
+              "touched": "100000",
+              "topic": "timer:a",
+              "context": "ambient",
+              "title": "Timer A"
+            }
+          },
+          "now": 100000
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.timer-b",
+            "view": {
+              "state": "urgent",
+              "touched": "100000",
+              "topic": "timer:b",
+              "context": "ambient",
+              "title": "Timer B"
+            }
+          },
+          "now": 100000,
+          "expect": {
+            "front_urgent()": "view.ambient.timer-a",
+            "level(view.ambient.timer-a)": 3,
+            "level(view.ambient.timer-b)": 0,
+            "rung(view.ambient.timer-b)": "urgent",
+            "rank(view.ambient.timer-a)": 1,
+            "rank(view.ambient.timer-b)": 1,
+            "unseen()": 1,
+            "dock(monitor)": [
+              "view.ambient.clock",
+              "view.ambient.weather",
+              "view.ambient.timer",
+              "view.chat.chat",
+              "view.ambient.timer-b",
+              "view.ambient.timer-a"
+            ]
+          }
+        },
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.ambient.timer-a"
+          },
+          "now": 101000
+        }
+      ],
+      "expect": {
+        "rung(view.ambient.timer-a)": "urgent",
+        "level(view.ambient.timer-a)": 0,
+        "dismissed_at(view.ambient.timer-a)": 101000,
+        "rank(view.ambient.timer-a)": 1,
+        "front_urgent()": "view.ambient.timer-b",
+        "level(view.ambient.timer-b)": 3,
+        "unseen()": 0
+      }
+    },
+    {
+      "id": "Q-06",
+      "title": "Answer to a turn: the chat app's answer touch (touched) and the judge's last turn/answer from the lines (spoken or not is the channel's, outside the pass)",
+      "source": "Q6; § 8.3, § 8.8, § 4.4",
+      "given": "ambient3+chat",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.chat.chat",
+            "view": {
+              "touched": "100000",
+              "relevance": "0.6",
+              "children": {
+                "lines": [
+                  {
+                    "kind": "turn",
+                    "text": "how is the weather",
+                    "channel": "typed"
+                  },
+                  {
+                    "kind": "answer",
+                    "text": "sonnig",
+                    "channel": "typed"
+                  }
+                ]
+              }
+            }
+          },
+          "now": 100000
+        }
+      ],
+      "expect": {
+        "touched()": {
+          "view.chat.chat": "c"
+        },
+        "last_turn()": "how is the weather",
+        "last_answer()": "sonnig",
+        "rung(view.chat.chat)": "focus"
+      }
+    },
+    {
+      "id": "Q-07",
+      "title": "Press on the OS mark: no event, no pass, nothing changes",
+      "source": "Q7; § 5.5, § 4.1",
+      "given": "ambient3+chat",
+      "steps": [
+        {
+          "event": {
+            "kind": "press"
+          },
+          "now": 100000
+        }
+      ],
+      "expect": {
+        "pass_ran()": false,
+        "touched()": {},
+        "level(view.chat.chat)": 2
+      }
+    },
+    {
+      "id": "Q-08",
+      "title": "The dot: unseen > 0 is systemwide; whether the dock is closed is the profile's dock_default or a press (client)",
+      "source": "Q8; § 4.33, § 6.8, § 3 screens",
+      "given": "ambient3+chat",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.notes.n1",
+            "view": {
+              "relevance": "0.1",
+              "context": "system",
+              "topic": "note:1",
+              "title": "N1"
+            }
+          },
+          "now": 100000
+        }
+      ],
+      "expect": {
+        "unseen()": 1,
+        "dock_default(monitor)": "shown",
+        "dock_default(phone)": "hidden",
+        "dock_default(tv)": "shown",
+        "rung(view.notes.n1)": "ambient"
+      }
+    },
+    {
+      "id": "Q-09",
+      "title": "judged_hidden + tap: the tap clears the verdict and holds the window; a later verdict does not close it while led_until > now",
+      "source": "Q9; § 5.1, § 4.9, § 4.5, § 4.19, § 4.22",
+      "given": "ambient3+chat+judge",
+      "steps": [
+        {
+          "event": {
+            "kind": "verdict",
+            "bar": 0.3,
+            "weights": {},
+            "windows": {
+              "view.ambient.weather": {
+                "judged_hidden": true
+              }
+            }
+          },
+          "now": 100000,
+          "expect": {
+            "rung(view.ambient.weather)": "hidden",
+            "score(view.ambient.weather)": 0,
+            "verdict(view.ambient.weather)": {
+              "judged_relevance": null,
+              "judged_hidden": true
+            }
+          }
+        },
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.ambient.weather"
+          },
+          "now": 101000,
+          "expect": {
+            "verdict(view.ambient.weather)": {
+              "judged_relevance": null,
+              "judged_hidden": null
+            },
+            "since(view.ambient.weather)": 101000,
+            "dismissed_at(view.ambient.weather)": 0,
+            "led_until(view.ambient.weather)": 121000,
+            "rung(view.ambient.weather)": "focus",
+            "level(view.ambient.weather)": 1
+          }
+        },
+        {
+          "event": {
+            "kind": "verdict",
+            "bar": 0.3,
+            "weights": {},
+            "windows": {
+              "view.ambient.weather": {
+                "judged_hidden": true
+              }
+            }
+          },
+          "now": 102000
+        }
+      ],
+      "expect": {
+        "rung(view.ambient.weather)": "focus",
+        "level(view.ambient.weather)": 1,
+        "score(view.ambient.weather)": 0,
+        "verdict(view.ambient.weather)": {
+          "judged_relevance": null,
+          "judged_hidden": true
+        }
+      }
+    },
+    {
+      "id": "Q-10",
+      "title": "Two modals above the bar: one focus on level 2, the other ambient tile only",
+      "source": "Q10; § 4.20, § 4.21, § 4.22, § 4.24",
+      "given": "ambient3+chat",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.dialog.d1",
+            "view": {
+              "layer": "modal",
+              "relevance": "0.9",
+              "context": "conversation",
+              "topic": "dialog:1",
+              "title": "Dialog"
+            }
+          },
+          "now": 100000
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.chat.chat",
+            "view": {
+              "touched": "100000"
+            }
+          },
+          "now": 100000
+        },
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 101000
+        }
+      ],
+      "expect": {
+        "rung(view.dialog.d1)": "focus",
+        "level(view.dialog.d1)": 2,
+        "rung(view.chat.chat)": "ambient",
+        "level(view.chat.chat)": 0,
+        "score(view.chat.chat)": 0.3,
+        "open_windows()": [
+          "view.dialog.d1"
+        ]
+      }
+    },
+    {
+      "id": "Q-11",
+      "title": "inputs at the door: tv forced to [], a profile without inputs is [], phone too; what is bound follows",
+      "source": "Q11; § 4.7, § 6.4, § 6.1",
+      "given": {
+        "settings": {
+          "default_screen": "tv"
+        },
+        "screens": {
+          "tv": {
+            "display_type": "tv",
+            "inputs": [
+              "pointer"
+            ]
+          },
+          "phone": {
+            "display_type": "phone"
+          },
+          "monitor": {
+            "display_type": "monitor",
+            "inputs": [
+              "pointer",
+              "keyboard"
+            ]
+          }
+        }
+      },
+      "steps": [
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 100000
+        }
+      ],
+      "expect": {
+        "inputs(tv)": [],
+        "tap_bound(tv)": false,
+        "hold_bound(tv)": false,
+        "input_line(tv)": false,
+        "inputs(phone)": [],
+        "tap_bound(phone)": false,
+        "input_line(phone)": false,
+        "tap_bound(monitor)": true,
+        "input_line(monitor)": true,
+        "hold_bound(monitor)": false,
+        "errors()": []
+      }
+    },
+    {
+      "id": "Q-12",
+      "title": "decay 0 but relevant_until in the future: present, tile, score 0, rung ambient",
+      "source": "Q12; § 4.11, § 4.14, § 4.15, § 4.22",
+      "given": {
+        "fixture": "empty",
+        "setup": [
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.cal.appt",
+              "view": {
+                "relevant_until": "200000",
+                "topic": "appt:1",
+                "context": "calendar",
+                "title": "Dentist"
+              }
+            },
+            "now": 1000
+          },
+          {
+            "event": {
+              "kind": "stroke"
+            },
+            "now": 2000
+          }
+        ]
+      },
+      "steps": [
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 150000
+        }
+      ],
+      "expect": {
+        "present()": [
+          "view.cal.appt"
+        ],
+        "decay(view.cal.appt)": 0,
+        "score(view.cal.appt)": 0,
+        "rung(view.cal.appt)": "ambient",
+        "level(view.cal.appt)": 0,
+        "rank(view.cal.appt)": 0,
+        "age(view.cal.appt)": "settled",
+        "dock(monitor)": [
+          "view.cal.appt"
+        ]
+      }
+    },
+    {
+      "id": "Q-13",
+      "title": "The answer wakes the standing weather window (turn_id on an own-prop touch): the chat closes in that pass and again on its own answer touch",
+      "source": "Q13; § 4.13, § 8.8, § 8.3, § 4.8 b",
+      "given": "ambient3+chat",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.chat.chat",
+            "view": {
+              "turn_id": "t1",
+              "touched": "100000",
+              "relevance": "0.8"
+            }
+          },
+          "now": 100000,
+          "expect": {
+            "rung(view.chat.chat)": "focus",
+            "level(view.chat.chat)": 2,
+            "last_turn_id()": "t1"
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.weather",
+            "view": {
+              "turn_id": "t1",
+              "touched": "103000",
+              "relevance": "0.8"
+            }
+          },
+          "now": 103000,
+          "expect": {
+            "touched()": {
+              "view.ambient.weather": "b"
+            },
+            "rung(view.chat.chat)": "hidden",
+            "dismissed_at(view.chat.chat)": 103000,
+            "led_until(view.chat.chat)": 0,
+            "score(view.chat.chat)": 0,
+            "rung(view.ambient.weather)": "focus",
+            "level(view.ambient.weather)": 1,
+            "since(view.ambient.weather)": 103000
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.chat.chat",
+            "view": {
+              "touched": "104000",
+              "relevance": "0.6"
+            }
+          },
+          "now": 104000
+        }
+      ],
+      "expect": {
+        "touched()": {
+          "view.chat.chat": "b"
+        },
+        "rung(view.chat.chat)": "hidden",
+        "dismissed_at(view.chat.chat)": 104000,
+        "level(view.chat.chat)": 0
+      }
+    },
+    {
+      "id": "Q-14",
+      "title": "TV dock_max 7 vs monitor 8: same open windows, fewer tiles, same order (put-away without a tile is a client binding, not a state)",
+      "source": "Q14; § 6.2, § 4.30",
+      "given": "nine-apps",
+      "steps": [],
+      "expect": {
+        "open_windows()": [
+          "view.ambient.timer"
+        ],
+        "dock(tv)": [
+          "view.ambient.clock",
+          "view.ambient.weather",
+          "view.notes.n3",
+          "view.notes.n4",
+          "view.notes.n5",
+          "view.chat.chat",
+          "view.ambient.timer"
+        ],
+        "dock(monitor)": [
+          "view.ambient.clock",
+          "view.ambient.weather",
+          "view.notes.n2",
+          "view.notes.n3",
+          "view.notes.n4",
+          "view.notes.n5",
+          "view.chat.chat",
+          "view.ambient.timer"
+        ],
+        "present()": [
+          "view.ambient.clock",
+          "view.ambient.timer",
+          "view.ambient.weather",
+          "view.chat.chat",
+          "view.notes.n1",
+          "view.notes.n2",
+          "view.notes.n3",
+          "view.notes.n4",
+          "view.notes.n5"
+        ]
+      }
+    },
+    {
+      "id": "Q-15",
+      "title": "What the judge sees: no rank, tile, level, dock_max, dismissed_at; no non-present view; without a verdict bar = focus_default, weights 0.5",
+      "source": "Q15; § 4.4, § 4.5, § 4.16",
+      "given": {
+        "fixture": "ambient3+chat+judge",
+        "setup": [
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.notes.n1",
+              "view": {
+                "relevance": "0.5",
+                "context": "system",
+                "topic": "note:1",
+                "title": "N1"
+              }
+            },
+            "now": 1000
+          }
+        ]
+      },
+      "steps": [
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 150000,
+          "expect": {
+            "age(view.notes.n1)": "leaving",
+            "age(view.ambient.timer)": "leaving"
+          }
+        },
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 151000
+        }
+      ],
+      "expect": {
+        "judge_window_keys()": [
+          "age",
+          "age_ms",
+          "class",
+          "context",
+          "id",
+          "leads",
+          "owner",
+          "pinned",
+          "relevance",
+          "rung",
+          "text",
+          "topic",
+          "verdict"
+        ],
+        "judge_window_ids()": [
+          "view.ambient.clock",
+          "view.ambient.weather",
+          "view.chat.chat"
+        ],
+        "in_store()": [
+          "view.ambient.clock",
+          "view.ambient.timer",
+          "view.ambient.weather",
+          "view.chat.chat",
+          "view.notes.n1"
+        ],
+        "rung(view.notes.n1)": null,
+        "bar()": 0.3,
+        "weights()": {}
+      }
+    },
+    {
+      "id": "Q-16",
+      "title": "Dock order: seats by seat_ord from the bottom, then rank ascending, the highest on top",
+      "source": "Q16; § 4.27, § 4.28",
+      "given": {
+        "fixture": "seats2",
+        "setup": [
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.notes.n-a",
+              "view": {
+                "relevance": "0.8",
+                "context": "system",
+                "topic": "note:a",
+                "title": "A"
+              }
+            },
+            "now": 100000
+          },
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.notes.n-b",
+              "view": {
+                "relevance": "0.3",
+                "context": "system",
+                "topic": "note:b",
+                "title": "B"
+              }
+            },
+            "now": 100000
+          },
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.notes.n-c",
+              "view": {
+                "relevance": "0.5",
+                "context": "system",
+                "topic": "note:c",
+                "title": "C"
+              }
+            },
+            "now": 100000
+          },
+          {
+            "event": {
+              "kind": "stroke"
+            },
+            "now": 101000
+          }
+        ]
+      },
+      "steps": [],
+      "expect": {
+        "dock(monitor)": [
+          "view.ambient.clock",
+          "view.ambient.weather",
+          "view.notes.n-b",
+          "view.notes.n-c",
+          "view.notes.n-a"
+        ],
+        "rank(view.notes.n-a)": 0.4,
+        "rank(view.notes.n-b)": 0.15
+      }
+    },
+    {
+      "id": "Q-17",
+      "title": "The switch is client-only (§ 6.5, no state); the door accepts a screens map without phone when default_screen names an entry",
+      "source": "Q17; § 6.5, § 4.7",
+      "given": {
+        "settings": {
+          "default_screen": "monitor"
+        },
+        "screens": {
+          "tv": {
+            "display_type": "tv"
+          },
+          "monitor": {
+            "display_type": "monitor",
+            "inputs": [
+              "pointer"
+            ]
+          }
+        }
+      },
+      "steps": [
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 100000
+        }
+      ],
+      "expect": {
+        "errors()": [],
+        "inputs(tv)": []
+      }
+    },
+    {
+      "id": "Q-18",
+      "title": "Touch list and pass triggers: minute, measurement, state alone, verdict, put-away tap, stroke are no touch; own prop, touched, tap, hold are; the judge only after app touches",
+      "source": "Q18; § 4.8, § 4.1, § 4.3, § 9.3",
+      "given": "ambient3+chat+judge",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.clock",
+            "view": {
+              "children": {
+                "time": "12:01"
+              }
+            }
+          },
+          "now": 100000,
+          "expect": {
+            "pass_ran()": true,
+            "touched()": {},
+            "judge_called()": false,
+            "since(view.ambient.clock)": 1000
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.weather",
+            "view": {
+              "children": {
+                "value": "22"
+              }
+            }
+          },
+          "now": 100100,
+          "expect": {
+            "touched()": {},
+            "judge_called()": false
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.timer",
+            "view": {
+              "state": "urgent"
+            }
+          },
+          "now": 100200,
+          "expect": {
+            "touched()": {},
+            "rung(view.ambient.timer)": "urgent",
+            "since(view.ambient.timer)": 1000,
+            "level(view.ambient.timer)": 3,
+            "judge_called()": false
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.weather",
+            "view": {
+              "topic": "weather:hamburg"
+            }
+          },
+          "now": 100300,
+          "expect": {
+            "touched()": {
+              "view.ambient.weather": "b"
+            },
+            "since(view.ambient.weather)": 100300,
+            "judge_called()": true
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.weather",
+            "view": {
+              "touched": "100400"
+            }
+          },
+          "now": 100400,
+          "expect": {
+            "touched()": {
+              "view.ambient.weather": "c"
+            },
+            "since(view.ambient.weather)": 100400,
+            "judge_called()": false
+          }
+        },
+        {
+          "event": {
+            "kind": "verdict",
+            "bar": 0.3,
+            "weights": {},
+            "windows": {}
+          },
+          "now": 100500,
+          "expect": {
+            "touched()": {},
+            "judge_called()": false
+          }
+        },
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.ambient.weather"
+          },
+          "now": 100600,
+          "expect": {
+            "touched()": {
+              "view.ambient.weather": "d"
+            },
+            "judge_called()": false,
+            "level(view.ambient.weather)": 1
+          }
+        },
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.ambient.weather"
+          },
+          "now": 100700,
+          "expect": {
+            "touched()": {},
+            "put_away_list()": [
+              "view.ambient.weather"
+            ],
+            "judge_called()": false
+          }
+        },
+        {
+          "event": {
+            "kind": "hold"
+          },
+          "now": 100800,
+          "expect": {
+            "touched()": {
+              "view.chat.chat": "e"
+            },
+            "judge_called()": false
+          }
+        },
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 100900
+        }
+      ],
+      "expect": {
+        "touched()": {},
+        "judge_called()": false
+      }
+    },
+    {
+      "id": "Q-19",
+      "title": "Clock not present: the weather stands at its own height with air below; the empty seat does not count; withdrawal takes the seat",
+      "source": "Q19; § 4.29, § 4.30, § 4.28",
+      "given": {
+        "fixture": "empty",
+        "screens": {
+          "tiny": {
+            "display_type": "phone",
+            "dock_max": 1
+          }
+        },
+        "setup": [
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.ambient.clock",
+              "view": {
+                "seat": "bottom",
+                "seat_ord": "0",
+                "topic": "clock",
+                "context": "ambient",
+                "title": "Clock"
+              }
+            },
+            "now": 1000
+          },
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.ambient.weather",
+              "view": {
+                "seat": "bottom",
+                "seat_ord": "10",
+                "pinned": true,
+                "topic": "weather:berlin",
+                "context": "ambient",
+                "title": "Weather"
+              }
+            },
+            "now": 1000
+          },
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.notes.n1",
+              "view": {
+                "pinned": true,
+                "relevance": "0.5",
+                "context": "system",
+                "topic": "note:1",
+                "title": "N1"
+              }
+            },
+            "now": 1000
+          },
+          {
+            "event": {
+              "kind": "stroke"
+            },
+            "now": 2000
+          }
+        ]
+      },
+      "steps": [
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 150000,
+          "expect": {
+            "age(view.ambient.clock)": "leaving",
+            "dock(monitor)": [
+              "view.ambient.clock",
+              "view.ambient.weather",
+              "view.notes.n1"
+            ]
+          }
+        },
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 151000,
+          "expect": {
+            "present()": [
+              "view.ambient.weather",
+              "view.notes.n1"
+            ],
+            "dock(monitor)": [
+              null,
+              "view.ambient.weather",
+              "view.notes.n1"
+            ],
+            "dock(tiny)": [
+              null,
+              "view.ambient.weather"
+            ],
+            "rung(view.ambient.clock)": null
+          }
+        },
+        {
+          "event": {
+            "kind": "app_withdraw",
+            "oid": "view.ambient.clock"
+          },
+          "now": 152000
+        }
+      ],
+      "expect": {
+        "dock(monitor)": [
+          "view.ambient.weather",
+          "view.notes.n1"
+        ],
+        "in_store()": [
+          "view.ambient.weather",
+          "view.notes.n1"
+        ]
+      }
+    },
+    {
+      "id": "Q-20",
+      "title": "Weather tap while the chat is open: the weather is put away and the chat co-closed (dismissed_at, led_until = 0 on both)",
+      "source": "Q20; § 5.2, § 5.3, § 5.7",
+      "given": "ambient3+chat",
+      "steps": [
+        {
+          "event": {
+            "kind": "hold"
+          },
+          "now": 100000,
+          "expect": {
+            "level(view.chat.chat)": 2
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.weather",
+            "view": {
+              "relevance": "0.8",
+              "touched": "101000"
+            }
+          },
+          "now": 101000,
+          "expect": {
+            "rung(view.ambient.weather)": "focus",
+            "level(view.ambient.weather)": 1,
+            "level(view.chat.chat)": 2
+          }
+        },
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.ambient.weather"
+          },
+          "now": 102000
+        }
+      ],
+      "expect": {
+        "rung(view.ambient.weather)": "hidden",
+        "dismissed_at(view.ambient.weather)": 102000,
+        "led_until(view.ambient.weather)": 0,
+        "rung(view.chat.chat)": "hidden",
+        "dismissed_at(view.chat.chat)": 102000,
+        "led_until(view.chat.chat)": 0,
+        "open_windows()": [],
+        "co_closed()": [
+          "view.chat.chat"
+        ],
+        "put_away_list()": [
+          "view.ambient.weather"
+        ]
+      }
+    },
+    {
+      "id": "S-001",
+      "title": "A-en3-F1, reading B: after a hold, a new turn changes the chat's turn_id; the old weather window no longer closes the chat; the new answer does",
+      "source": "A-en3-F1; § 4.13, § 8.6, § 8.8",
+      "given": "ambient3+chat",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.chat.chat",
+            "view": {
+              "turn_id": "t1",
+              "touched": "100000",
+              "relevance": "0.8"
+            }
+          },
+          "now": 100000
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.weather",
+            "view": {
+              "turn_id": "t1",
+              "touched": "103000",
+              "relevance": "0.8"
+            }
+          },
+          "now": 103000,
+          "expect": {
+            "rung(view.chat.chat)": "hidden"
+          }
+        },
+        {
+          "event": {
+            "kind": "hold"
+          },
+          "now": 105000,
+          "expect": {
+            "rung(view.chat.chat)": "focus",
+            "level(view.chat.chat)": 2,
+            "led_until(view.chat.chat)": 195000
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.chat.chat",
+            "view": {
+              "turn_id": "t2",
+              "touched": "106000",
+              "relevance": "0.8"
+            }
+          },
+          "now": 106000,
+          "expect": {
+            "rung(view.chat.chat)": "focus",
+            "level(view.chat.chat)": 2,
+            "dismissed_at(view.chat.chat)": 0,
+            "last_turn_id()": "t2"
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.weather",
+            "view": {
+              "turn_id": "t2",
+              "touched": "109000"
+            }
+          },
+          "now": 109000
+        }
+      ],
+      "expect": {
+        "rung(view.chat.chat)": "hidden",
+        "dismissed_at(view.chat.chat)": 109000,
+        "led_until(view.chat.chat)": 0
+      }
+    },
+    {
+      "id": "S-002",
+      "title": "A-en3-F2: fresh ends with the next pass, whatever triggered it (a tap 300 ms later); the stroke only guarantees a pass within a second",
+      "source": "A-en3-F2; § 4.34, § 4.35, § 4.20",
+      "given": "ambient3+chat",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.v2v.card1",
+            "view": {
+              "relevance": "0.9",
+              "context": "conversation",
+              "topic": "v2v:1",
+              "title": "Card"
+            }
+          },
+          "now": 100000,
+          "expect": {
+            "age(view.v2v.card1)": "fresh",
+            "rung(view.v2v.card1)": "relevant",
+            "level(view.v2v.card1)": 1,
+            "strokes_ordered()": [
+              101000,
+              120000,
+              141000,
+              211000,
+              240000
+            ]
+          }
+        },
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.chat.chat"
+          },
+          "now": 100300
+        }
+      ],
+      "expect": {
+        "age(view.v2v.card1)": "settled",
+        "rung(view.v2v.card1)": "focus",
+        "level(view.v2v.card1)": 1,
+        "rung(view.chat.chat)": "focus",
+        "level(view.chat.chat)": 2
+      }
+    },
+    {
+      "id": "S-003",
+      "title": "A-en3-F3: a younger app touch ends the finger's lead; § 4.20 chooses by score among all — the held window with the highest score stays focus",
+      "source": "A-en3-F3; abnahme8-2; § 4.19, § 4.20",
+      "given": {
+        "fixture": "ambient3+chat",
+        "setup": [
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.v2v.card1",
+              "view": {
+                "relevance": "1.0",
+                "context": "conversation",
+                "topic": "v2v:1",
+                "title": "Card 1"
+              }
+            },
+            "now": 90000
+          },
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.v2v.card2",
+              "view": {
+                "relevance": "0.8",
+                "context": "conversation",
+                "topic": "v2v:2",
+                "title": "Card 2"
+              }
+            },
+            "now": 90000
+          },
+          {
+            "event": {
+              "kind": "stroke"
+            },
+            "now": 91000
+          }
+        ]
+      },
+      "steps": [
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.v2v.card1"
+          },
+          "now": 100000,
+          "expect": {
+            "rung(view.v2v.card1)": "hidden",
+            "rung(view.v2v.card2)": "focus"
+          }
+        },
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.v2v.card1"
+          },
+          "now": 101000,
+          "expect": {
+            "rung(view.v2v.card1)": "focus",
+            "rung(view.v2v.card2)": "relevant",
+            "led_until(view.v2v.card1)": 121000,
+            "score(view.v2v.card1)": 0.5
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.v2v.card2",
+            "view": {
+              "touched": "102000"
+            }
+          },
+          "now": 102000
+        }
+      ],
+      "expect": {
+        "rung(view.v2v.card1)": "focus",
+        "rung(view.v2v.card2)": "relevant",
+        "level(view.v2v.card1)": 1,
+        "level(view.v2v.card2)": 1,
+        "since(view.v2v.card2)": 102000,
+        "led_until(view.v2v.card1)": 121000
+      }
+    },
+    {
+      "id": "S-004",
+      "title": "Rival on the ladder (Delta E.20): tap on a window below the bar, then an app touch of a louder rival within the linger: the rival leads, the held one stays open as relevant until led_until",
+      "source": "Delta E.20; A-en3-F3; abnahme5-F5; § 4.19, § 4.20, § 4.21",
+      "given": {
+        "fixture": "ambient3+chat",
+        "setup": [
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.notes.n1",
+              "view": {
+                "relevance": "0.2",
+                "context": "system",
+                "topic": "note:1",
+                "title": "Quiet"
+              }
+            },
+            "now": 90000
+          },
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.v2v.card1",
+              "view": {
+                "relevance": "0.8",
+                "context": "conversation",
+                "topic": "v2v:1",
+                "title": "Loud"
+              }
+            },
+            "now": 90000
+          },
+          {
+            "event": {
+              "kind": "stroke"
+            },
+            "now": 91000
+          }
+        ]
+      },
+      "steps": [
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.notes.n1"
+          },
+          "now": 100000,
+          "expect": {
+            "rung(view.notes.n1)": "focus",
+            "score(view.notes.n1)": 0.1,
+            "rung(view.v2v.card1)": "relevant"
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.v2v.card1",
+            "view": {
+              "touched": "105000"
+            }
+          },
+          "now": 105000,
+          "expect": {
+            "rung(view.v2v.card1)": "focus",
+            "rung(view.notes.n1)": "relevant",
+            "level(view.notes.n1)": 1
+          }
+        },
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 120000
+        }
+      ],
+      "expect": {
+        "rung(view.notes.n1)": "ambient",
+        "level(view.notes.n1)": 0,
+        "rung(view.v2v.card1)": "focus"
+      }
+    },
+    {
+      "id": "S-005",
+      "title": "A-en3-F4: end_at lives in the child tile; the pass does not read it and its change is no touch",
+      "source": "A-en3-F4; § 3.3, § 4.8, § 7.2",
+      "given": "ambient3+chat",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.timer",
+            "view": {
+              "children": {
+                "tile": {
+                  "end_at": 123456
+                }
+              }
+            }
+          },
+          "now": 100000
+        }
+      ],
+      "expect": {
+        "touched()": {},
+        "since(view.ambient.timer)": 1000,
+        "pass_ran()": true
+      }
+    },
+    {
+      "id": "S-006",
+      "title": "R-25-1: the tapped low-relevance window stays open through the clock's minute; it falls back at led_until, not at the next pass",
+      "source": "§ 11.1; R-24-1; § 4.19, § 9.3",
+      "given": {
+        "fixture": "ambient3+chat",
+        "setup": [
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.notes.n1",
+              "view": {
+                "relevance": "0.15",
+                "context": "system",
+                "topic": "note:1",
+                "title": "Note"
+              }
+            },
+            "now": 90000
+          },
+          {
+            "event": {
+              "kind": "stroke"
+            },
+            "now": 91000
+          }
+        ]
+      },
+      "steps": [
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.notes.n1"
+          },
+          "now": 100000,
+          "expect": {
+            "rung(view.notes.n1)": "focus",
+            "led_until(view.notes.n1)": 120000
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.clock",
+            "view": {
+              "children": {
+                "time": "12:01"
+              }
+            }
+          },
+          "now": 105000,
+          "expect": {
+            "rung(view.notes.n1)": "focus",
+            "level(view.notes.n1)": 1
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.weather",
+            "view": {
+              "children": {
+                "value": "23"
+              }
+            }
+          },
+          "now": 110000,
+          "expect": {
+            "rung(view.notes.n1)": "focus"
+          }
+        },
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 120000
+        }
+      ],
+      "expect": {
+        "rung(view.notes.n1)": "ambient",
+        "level(view.notes.n1)": 0
+      }
+    },
+    {
+      "id": "S-007",
+      "title": "R-25-2: a verdict with tiny relevance closes the window but takes no tile; presence ends by decay only",
+      "source": "§ 11.2; § 4.5, § 4.11, § 4.15",
+      "given": {
+        "fixture": "ambient3+chat+judge",
+        "setup": [
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.notes.n1",
+              "view": {
+                "relevance": "0.9",
+                "context": "system",
+                "topic": "note:1",
+                "title": "Note"
+              }
+            },
+            "now": 100000
+          },
+          {
+            "event": {
+              "kind": "stroke"
+            },
+            "now": 101000
+          }
+        ]
+      },
+      "steps": [
+        {
+          "event": {
+            "kind": "verdict",
+            "bar": 0.3,
+            "weights": {},
+            "windows": {
+              "view.notes.n1": {
+                "judged_relevance": 0.01
+              }
+            }
+          },
+          "now": 102000,
+          "expect": {
+            "rung(view.notes.n1)": "ambient",
+            "level(view.notes.n1)": 0,
+            "present()": [
+              "view.ambient.clock",
+              "view.ambient.timer",
+              "view.ambient.weather",
+              "view.chat.chat",
+              "view.notes.n1"
+            ],
+            "rank(view.notes.n1)": 0.005
+          }
+        },
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 240000,
+          "expect": {
+            "age(view.notes.n1)": "leaving"
+          }
+        },
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 241000
+        }
+      ],
+      "expect": {
+        "present()": [
+          "view.ambient.clock",
+          "view.ambient.weather",
+          "view.chat.chat"
+        ],
+        "rung(view.notes.n1)": null
+      }
+    },
+    {
+      "id": "S-008",
+      "title": "Put away, then re-urgent: the end of ringing (state removed alone) lifts nothing; the next ring with touched opens the window again",
+      "source": "§ 4.18, § 4.8, § 9.1, abnahme-en2 note",
+      "given": "ambient3+chat",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.timer",
+            "view": {
+              "state": "urgent",
+              "touched": "100000"
+            }
+          },
+          "now": 100000,
+          "expect": {
+            "front_urgent()": "view.ambient.timer",
+            "level(view.ambient.timer)": 3
+          }
+        },
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.ambient.timer"
+          },
+          "now": 101000,
+          "expect": {
+            "rung(view.ambient.timer)": "urgent",
+            "level(view.ambient.timer)": 0,
+            "front_urgent()": null,
+            "dismissed_at(view.ambient.timer)": 101000,
+            "unseen()": 0
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.timer",
+            "view": {
+              "state": ""
+            }
+          },
+          "now": 105000,
+          "expect": {
+            "touched()": {},
+            "rung(view.ambient.timer)": "hidden",
+            "level(view.ambient.timer)": 0,
+            "since(view.ambient.timer)": 100000
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.timer",
+            "view": {
+              "state": "urgent",
+              "touched": "110000"
+            }
+          },
+          "now": 110000
+        }
+      ],
+      "expect": {
+        "touched()": {
+          "view.ambient.timer": "c"
+        },
+        "rung(view.ambient.timer)": "urgent",
+        "level(view.ambient.timer)": 3,
+        "front_urgent()": "view.ambient.timer",
+        "since(view.ambient.timer)": 110000
+      }
+    },
+    {
+      "id": "S-009",
+      "title": "Chat closes via turn_id, order A: turn, fresh canvas window with the turn_id, then the chat's answer touch",
+      "source": "§ 4.13; abnahme8-1",
+      "given": "ambient3+chat",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.chat.chat",
+            "view": {
+              "turn_id": "t1",
+              "touched": "100000",
+              "relevance": "0.8"
+            }
+          },
+          "now": 100000,
+          "expect": {
+            "level(view.chat.chat)": 2
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.v2v.card1",
+            "view": {
+              "turn_id": "t1",
+              "relevance": "0.9",
+              "context": "conversation",
+              "topic": "v2v:1",
+              "title": "Card"
+            }
+          },
+          "now": 102000,
+          "expect": {
+            "rung(view.chat.chat)": "hidden",
+            "dismissed_at(view.chat.chat)": 102000,
+            "rung(view.v2v.card1)": "relevant",
+            "age(view.v2v.card1)": "fresh"
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.chat.chat",
+            "view": {
+              "touched": "103000",
+              "relevance": "0.6"
+            }
+          },
+          "now": 103000
+        }
+      ],
+      "expect": {
+        "rung(view.chat.chat)": "hidden",
+        "dismissed_at(view.chat.chat)": 103000,
+        "since(view.chat.chat)": 103000,
+        "rung(view.v2v.card1)": "focus"
+      }
+    },
+    {
+      "id": "S-010",
+      "title": "Chat closes via turn_id, order B: turn, the chat's answer touch first, then the canvas window arrives",
+      "source": "§ 4.13; abnahme8-1",
+      "given": "ambient3+chat",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.chat.chat",
+            "view": {
+              "turn_id": "t1",
+              "touched": "100000",
+              "relevance": "0.8"
+            }
+          },
+          "now": 100000
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.chat.chat",
+            "view": {
+              "touched": "102000",
+              "relevance": "0.6"
+            }
+          },
+          "now": 102000,
+          "expect": {
+            "level(view.chat.chat)": 2,
+            "rung(view.chat.chat)": "focus"
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.v2v.card1",
+            "view": {
+              "turn_id": "t1",
+              "relevance": "0.9",
+              "context": "conversation",
+              "topic": "v2v:1",
+              "title": "Card"
+            }
+          },
+          "now": 103000
+        }
+      ],
+      "expect": {
+        "rung(view.chat.chat)": "hidden",
+        "dismissed_at(view.chat.chat)": 103000,
+        "led_until(view.chat.chat)": 0,
+        "open_windows()": [
+          "view.v2v.card1"
+        ]
+      }
+    },
+    {
+      "id": "S-011",
+      "title": "Chat closes via turn_id, order C: the canvas window arrives before the chat app has written the turn_id; the chat's late turn_id write closes it",
+      "source": "§ 4.13; abnahme8-1",
+      "given": "ambient3+chat",
+      "steps": [
+        {
+          "event": {
+            "kind": "hold"
+          },
+          "now": 100000,
+          "expect": {
+            "level(view.chat.chat)": 2
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.v2v.card1",
+            "view": {
+              "turn_id": "t1",
+              "relevance": "0.9",
+              "context": "conversation",
+              "topic": "v2v:1",
+              "title": "Card"
+            }
+          },
+          "now": 102000,
+          "expect": {
+            "level(view.chat.chat)": 2,
+            "rung(view.chat.chat)": "focus"
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.chat.chat",
+            "view": {
+              "turn_id": "t1",
+              "touched": "103000"
+            }
+          },
+          "now": 103000
+        }
+      ],
+      "expect": {
+        "rung(view.chat.chat)": "hidden",
+        "dismissed_at(view.chat.chat)": 103000,
+        "led_until(view.chat.chat)": 0
+      }
+    },
+    {
+      "id": "S-012",
+      "title": "topic_dupe: a fresh card of another app on the weather's topic is not present and carries no rung; the weather takes the touch; the dupe falls when the weather goes",
+      "source": "§ 4.12, § 4.11; abnahme2-1",
+      "given": "ambient3+chat",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.v2v.card1",
+            "view": {
+              "topic": "weather:berlin",
+              "relevance": "0.9",
+              "context": "conversation",
+              "title": "Weather card"
+            }
+          },
+          "now": 100000,
+          "expect": {
+            "topic_dupe(view.v2v.card1)": true,
+            "rung(view.v2v.card1)": null,
+            "present()": [
+              "view.ambient.clock",
+              "view.ambient.timer",
+              "view.ambient.weather",
+              "view.chat.chat"
+            ],
+            "touched()": {
+              "view.ambient.weather": "f",
+              "view.v2v.card1": "a"
+            },
+            "since(view.ambient.weather)": 100000,
+            "dock(monitor)": [
+              "view.ambient.clock",
+              "view.ambient.weather",
+              "view.ambient.timer",
+              "view.chat.chat"
+            ]
+          }
+        },
+        {
+          "event": {
+            "kind": "app_withdraw",
+            "oid": "view.ambient.weather"
+          },
+          "now": 101000,
+          "expect": {
+            "age(view.ambient.weather)": "leaving"
+          }
+        },
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 102000
+        }
+      ],
+      "expect": {
+        "topic_dupe(view.v2v.card1)": false,
+        "present()": [
+          "view.ambient.clock",
+          "view.ambient.timer",
+          "view.chat.chat",
+          "view.v2v.card1"
+        ],
+        "age(view.v2v.card1)": "settled",
+        "rung(view.v2v.card1)": "focus"
+      }
+    },
+    {
+      "id": "S-013",
+      "title": "topic_dupe carries the turn_id to the standing window for § 4.13: the chat closes when the dupe arrives",
+      "source": "§ 4.12, § 4.13; abnahme6-2",
+      "given": "ambient3+chat",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.chat.chat",
+            "view": {
+              "turn_id": "t1",
+              "touched": "100000",
+              "relevance": "0.8"
+            }
+          },
+          "now": 100000,
+          "expect": {
+            "level(view.chat.chat)": 2
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.v2v.card1",
+            "view": {
+              "topic": "weather:berlin",
+              "turn_id": "t1",
+              "relevance": "0.9",
+              "context": "conversation",
+              "title": "Weather card"
+            }
+          },
+          "now": 102000
+        }
+      ],
+      "expect": {
+        "topic_dupe(view.v2v.card1)": true,
+        "rung(view.chat.chat)": "hidden",
+        "dismissed_at(view.chat.chat)": 102000,
+        "since(view.ambient.weather)": 102000
+      }
+    },
+    {
+      "id": "S-014",
+      "title": "Standing but not present view: no rung, no tile, not shown to the judge; a touch makes it present again as settled",
+      "source": "§ 4.11, § 4.10, § 4.4; abnahme9-2",
+      "given": {
+        "fixture": "ambient3+chat+judge",
+        "setup": [
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.notes.n1",
+              "view": {
+                "relevance": "0.9",
+                "context": "system",
+                "topic": "note:1",
+                "title": "Note"
+              }
+            },
+            "now": 1000
+          },
+          {
+            "event": {
+              "kind": "stroke"
+            },
+            "now": 2000
+          },
+          {
+            "event": {
+              "kind": "stroke"
+            },
+            "now": 150000
+          },
+          {
+            "event": {
+              "kind": "stroke"
+            },
+            "now": 151000
+          }
+        ]
+      },
+      "steps": [
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 152000,
+          "expect": {
+            "in_store()": [
+              "view.ambient.clock",
+              "view.ambient.timer",
+              "view.ambient.weather",
+              "view.chat.chat",
+              "view.notes.n1"
+            ],
+            "present()": [
+              "view.ambient.clock",
+              "view.ambient.weather",
+              "view.chat.chat"
+            ],
+            "rung(view.notes.n1)": null,
+            "age(view.notes.n1)": null,
+            "dock(monitor)": [
+              "view.ambient.clock",
+              "view.ambient.weather",
+              "view.chat.chat"
+            ],
+            "judge_window_ids()": [
+              "view.ambient.clock",
+              "view.ambient.weather",
+              "view.chat.chat"
+            ]
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.notes.n1",
+            "view": {
+              "touched": "153000"
+            }
+          },
+          "now": 153000
+        }
+      ],
+      "expect": {
+        "age(view.notes.n1)": "settled",
+        "rung(view.notes.n1)": "focus",
+        "present()": [
+          "view.ambient.clock",
+          "view.ambient.weather",
+          "view.chat.chat",
+          "view.notes.n1"
+        ],
+        "judge_called()": true
+      }
+    },
+    {
+      "id": "S-015",
+      "title": "bar = 0: a score of 0 by decay is never open; a score > 0 is focus",
+      "source": "§ 4.22, § 4.20; abnahme7-9",
+      "given": {
+        "fixture": "ambient3+chat+judge",
+        "setup": [
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.cal.appt",
+              "view": {
+                "relevant_until": "300000",
+                "topic": "appt:1",
+                "context": "calendar",
+                "title": "Dentist"
+              }
+            },
+            "now": 1000
+          },
+          {
+            "event": {
+              "kind": "stroke"
+            },
+            "now": 2000
+          },
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.notes.n1",
+              "view": {
+                "relevance": "0.1",
+                "context": "system",
+                "topic": "note:1",
+                "title": "Quiet"
+              }
+            },
+            "now": 150000
+          },
+          {
+            "event": {
+              "kind": "stroke"
+            },
+            "now": 151000,
+            "expect": {
+              "rung(view.notes.n1)": "ambient"
+            }
+          }
+        ]
+      },
+      "steps": [
+        {
+          "event": {
+            "kind": "verdict",
+            "bar": 0,
+            "weights": {},
+            "windows": {}
+          },
+          "now": 152000
+        }
+      ],
+      "expect": {
+        "bar()": 0,
+        "score(view.cal.appt)": 0,
+        "rung(view.cal.appt)": "ambient",
+        "level(view.cal.appt)": 0,
+        "score(view.ambient.weather)": 0,
+        "rung(view.ambient.weather)": "ambient",
+        "rung(view.ambient.clock)": "ambient",
+        "score(view.notes.n1)": 0.05,
+        "rung(view.notes.n1)": "focus",
+        "level(view.notes.n1)": 1,
+        "rung(view.chat.chat)": "focus",
+        "level(view.chat.chat)": 2
+      }
+    },
+    {
+      "id": "S-016",
+      "title": "Fresh takes no focus: the newly written loudest card is relevant in its pass and focus after the one-second stroke",
+      "source": "§ 4.35, § 4.34, § 4.20",
+      "given": "ambient3+chat",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.v2v.card1",
+            "view": {
+              "relevance": "0.9",
+              "context": "conversation",
+              "topic": "v2v:1",
+              "title": "Card"
+            }
+          },
+          "now": 100000,
+          "expect": {
+            "age(view.v2v.card1)": "fresh",
+            "rung(view.v2v.card1)": "relevant",
+            "level(view.v2v.card1)": 1,
+            "open_windows()": [
+              "view.v2v.card1"
+            ]
+          }
+        },
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 101000
+        }
+      ],
+      "expect": {
+        "age(view.v2v.card1)": "settled",
+        "rung(view.v2v.card1)": "focus"
+      }
+    },
+    {
+      "id": "S-017",
+      "title": "Hold without a chat window: absorbed, nothing opens, no error",
+      "source": "§ 5.4; A-en2-F3",
+      "given": "seats2",
+      "steps": [
+        {
+          "event": {
+            "kind": "hold"
+          },
+          "now": 100000
+        }
+      ],
+      "expect": {
+        "pass_ran()": true,
+        "touched()": {},
+        "open_windows()": [],
+        "errors()": [],
+        "refused()": [
+          [
+            "hold",
+            "absorbed",
+            "no chat view"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "S-018",
+      "title": "Linear decay: halfway through fade_ms the decay is 0.5; presence ends at the end of the fade",
+      "source": "A-en1-1; § 4.15, § 4.11",
+      "given": {
+        "fixture": "empty",
+        "setup": [
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.notes.n1",
+              "view": {
+                "relevance": "1.0",
+                "context": "system",
+                "topic": "note:1",
+                "title": "Note"
+              }
+            },
+            "now": 100000
+          },
+          {
+            "event": {
+              "kind": "stroke"
+            },
+            "now": 101000
+          }
+        ]
+      },
+      "steps": [
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 120000,
+          "expect": {
+            "decay(view.notes.n1)": 1,
+            "score(view.notes.n1)": 0.5
+          }
+        },
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 180000,
+          "expect": {
+            "decay(view.notes.n1)": 0.5,
+            "score(view.notes.n1)": 0.25,
+            "rung(view.notes.n1)": "ambient"
+          }
+        },
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 240000,
+          "expect": {
+            "decay(view.notes.n1)": 0,
+            "age(view.notes.n1)": "leaving"
+          }
+        },
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 241000
+        }
+      ],
+      "expect": {
+        "present()": [],
+        "in_store()": [
+          "view.notes.n1"
+        ],
+        "rung(view.notes.n1)": null
+      }
+    },
+    {
+      "id": "S-019",
+      "title": "judge missing or off: no judge cell, a verdict is refused, bar = focus_default, every weight 0.5",
+      "source": "A-en1-2; § 3 judge, § 4.16",
+      "given": "ambient3+chat",
+      "steps": [
+        {
+          "event": {
+            "kind": "verdict",
+            "bar": 0.9,
+            "weights": {
+              "ambient": 0.1
+            },
+            "windows": {}
+          },
+          "now": 100000
+        }
+      ],
+      "expect": {
+        "refused()": [
+          [
+            "verdict",
+            "no judge cell"
+          ]
+        ],
+        "bar()": 0.3,
+        "weights()": {},
+        "judge_called()": false
+      }
+    },
+    {
+      "id": "S-020",
+      "title": "An urgent with layer modal is on no ladder: front on level 3 while another modal is the one open modal on level 2",
+      "source": "A-en1-5; § 4.18, § 4.21",
+      "given": "ambient3+chat",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.dialog.alarm",
+            "view": {
+              "layer": "modal",
+              "state": "urgent",
+              "touched": "100000",
+              "relevance": "0.9",
+              "context": "system",
+              "topic": "alarm:1",
+              "title": "Alarm"
+            }
+          },
+          "now": 100000
+        },
+        {
+          "event": {
+            "kind": "hold"
+          },
+          "now": 100500
+        }
+      ],
+      "expect": {
+        "rung(view.dialog.alarm)": "urgent",
+        "level(view.dialog.alarm)": 3,
+        "front_urgent()": "view.dialog.alarm",
+        "rung(view.chat.chat)": "focus",
+        "level(view.chat.chat)": 2,
+        "open_windows()": [
+          "view.chat.chat",
+          "view.dialog.alarm"
+        ]
+      }
+    },
+    {
+      "id": "S-021",
+      "title": "Hold on a chat with judged_hidden: the hold clears the verdict like a tap and opens the chat",
+      "source": "abnahme6-3; § 5.4, § 4.9",
+      "given": "ambient3+chat+judge",
+      "steps": [
+        {
+          "event": {
+            "kind": "verdict",
+            "bar": 0.3,
+            "weights": {},
+            "windows": {
+              "view.chat.chat": {
+                "judged_hidden": true
+              }
+            }
+          },
+          "now": 100000,
+          "expect": {
+            "rung(view.chat.chat)": "hidden"
+          }
+        },
+        {
+          "event": {
+            "kind": "hold"
+          },
+          "now": 101000
+        }
+      ],
+      "expect": {
+        "verdict(view.chat.chat)": {
+          "judged_relevance": null,
+          "judged_hidden": null
+        },
+        "rung(view.chat.chat)": "focus",
+        "level(view.chat.chat)": 2,
+        "led_until(view.chat.chat)": 191000,
+        "dismissed_at(view.chat.chat)": 0
+      }
+    },
+    {
+      "id": "S-022",
+      "title": "A hold while the chat is already open never puts away; it renews led_until",
+      "source": "§ 5.4",
+      "given": "ambient3+chat",
+      "steps": [
+        {
+          "event": {
+            "kind": "hold"
+          },
+          "now": 100000,
+          "expect": {
+            "level(view.chat.chat)": 2,
+            "led_until(view.chat.chat)": 190000
+          }
+        },
+        {
+          "event": {
+            "kind": "hold"
+          },
+          "now": 105000
+        }
+      ],
+      "expect": {
+        "level(view.chat.chat)": 2,
+        "led_until(view.chat.chat)": 195000,
+        "since(view.chat.chat)": 105000,
+        "dismissed_at(view.chat.chat)": 0,
+        "put_away_list()": []
+      }
+    },
+    {
+      "id": "S-023",
+      "title": "Put-away urgent keeps rung urgent and rank 1, rings in its tile, is not front and not unseen",
+      "source": "abnahme4-3, abnahme4-10; § 4.18, § 4.27, § 4.33",
+      "given": "ambient3+chat",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.timer",
+            "view": {
+              "state": "urgent",
+              "touched": "100000"
+            }
+          },
+          "now": 100000
+        },
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.ambient.timer"
+          },
+          "now": 101000
+        }
+      ],
+      "expect": {
+        "rung(view.ambient.timer)": "urgent",
+        "rank(view.ambient.timer)": 1,
+        "front_urgent()": null,
+        "level(view.ambient.timer)": 0,
+        "unseen()": 0,
+        "dock(monitor)": [
+          "view.ambient.clock",
+          "view.ambient.weather",
+          "view.chat.chat",
+          "view.ambient.timer"
+        ]
+      }
+    },
+    {
+      "id": "S-024",
+      "title": "Ten taps in the same millisecond on one tile: each applies to the state after the previous one; an even count ends put away",
+      "source": "§ 5.8; abnahme7-3",
+      "given": "two-cards",
+      "steps": [
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.v2v.card2"
+          },
+          "now": 102000,
+          "expect": {
+            "rung(view.v2v.card2)": "hidden"
+          }
+        },
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.v2v.card2"
+          },
+          "now": 102000,
+          "expect": {
+            "rung(view.v2v.card2)": "focus"
+          }
+        },
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.v2v.card2"
+          },
+          "now": 102000,
+          "expect": {
+            "rung(view.v2v.card2)": "hidden"
+          }
+        },
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.v2v.card2"
+          },
+          "now": 102000
+        },
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.v2v.card2"
+          },
+          "now": 102000
+        },
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.v2v.card2"
+          },
+          "now": 102000
+        },
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.v2v.card2"
+          },
+          "now": 102000
+        },
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.v2v.card2"
+          },
+          "now": 102000
+        },
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.v2v.card2"
+          },
+          "now": 102000,
+          "expect": {
+            "rung(view.v2v.card2)": "hidden"
+          }
+        },
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.v2v.card2"
+          },
+          "now": 102000
+        }
+      ],
+      "expect": {
+        "rung(view.v2v.card2)": "focus",
+        "level(view.v2v.card2)": 1,
+        "dismissed_at(view.v2v.card2)": 0,
+        "led_until(view.v2v.card2)": 122000
+      }
+    },
+    {
+      "id": "S-025",
+      "title": "The weight floor 0.05 belongs to the rank alone: a weight of 0.01 gives score 0.005 (closed) and rank 0.025",
+      "source": "abnahme7-4; § 4.14, § 4.27",
+      "given": {
+        "fixture": "ambient3+chat+judge",
+        "setup": [
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.notes.n1",
+              "view": {
+                "relevance": "0.5",
+                "context": "system",
+                "topic": "note:1",
+                "title": "Note"
+              }
+            },
+            "now": 100000
+          },
+          {
+            "event": {
+              "kind": "stroke"
+            },
+            "now": 101000
+          }
+        ]
+      },
+      "steps": [
+        {
+          "event": {
+            "kind": "verdict",
+            "bar": 0.3,
+            "weights": {
+              "system": 0.01
+            },
+            "windows": {}
+          },
+          "now": 102000
+        }
+      ],
+      "expect": {
+        "score(view.notes.n1)": 0.005,
+        "rank(view.notes.n1)": 0.025,
+        "rung(view.notes.n1)": "ambient",
+        "weights()": {
+          "system": 0.01
+        }
+      }
+    },
+    {
+      "id": "S-026",
+      "title": "Tapped urgent vs a younger urgent: the tap makes timer-b front; a new ringing timer-c with a younger since takes the precedence and is front by the choice",
+      "source": "abnahme7-2; § 4.18",
+      "given": "ambient3+chat",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.timer-a",
+            "view": {
+              "state": "urgent",
+              "touched": "100000",
+              "topic": "timer:a",
+              "context": "ambient",
+              "title": "A"
+            }
+          },
+          "now": 100000
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.timer-b",
+            "view": {
+              "state": "urgent",
+              "touched": "100000",
+              "topic": "timer:b",
+              "context": "ambient",
+              "title": "B"
+            }
+          },
+          "now": 100000,
+          "expect": {
+            "front_urgent()": "view.ambient.timer-a"
+          }
+        },
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.ambient.timer-b"
+          },
+          "now": 101000,
+          "expect": {
+            "front_urgent()": "view.ambient.timer-b",
+            "level(view.ambient.timer-b)": 3,
+            "level(view.ambient.timer-a)": 0,
+            "led_until(view.ambient.timer-b)": 121000
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.timer-c",
+            "view": {
+              "state": "urgent",
+              "touched": "102000",
+              "topic": "timer:c",
+              "context": "ambient",
+              "title": "C"
+            }
+          },
+          "now": 102000
+        }
+      ],
+      "expect": {
+        "front_urgent()": "view.ambient.timer-c",
+        "level(view.ambient.timer-c)": 3,
+        "level(view.ambient.timer-b)": 0,
+        "rung(view.ambient.timer-b)": "urgent",
+        "unseen()": 2
+      }
+    },
+    {
+      "id": "S-027",
+      "title": "Chat closes (§ 4.13) zeroes led_until: a hold-opened chat is closed by the answer's canvas window although its led_until lay in the future",
+      "source": "abnahme12-1; Q20 second case; § 4.13, § 4.19",
+      "given": "ambient3+chat",
+      "steps": [
+        {
+          "event": {
+            "kind": "hold"
+          },
+          "now": 100000,
+          "expect": {
+            "led_until(view.chat.chat)": 190000
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.chat.chat",
+            "view": {
+              "turn_id": "t9",
+              "touched": "101000",
+              "relevance": "0.8"
+            }
+          },
+          "now": 101000,
+          "expect": {
+            "level(view.chat.chat)": 2
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.v2v.card1",
+            "view": {
+              "turn_id": "t9",
+              "relevance": "0.9",
+              "context": "conversation",
+              "topic": "v2v:1",
+              "title": "Card"
+            }
+          },
+          "now": 104000
+        }
+      ],
+      "expect": {
+        "led_until(view.chat.chat)": 0,
+        "dismissed_at(view.chat.chat)": 104000,
+        "rung(view.chat.chat)": "hidden",
+        "level(view.chat.chat)": 0
+      }
+    },
+    {
+      "id": "S-028",
+      "title": "Class default without a judge: an error note without relevance scores 0.8 × 0.5 = 0.4 and opens; an unknown class counts as unset (0.5)",
+      "source": "abnahme12-3; § 4.14, § 4.16, § 3 class",
+      "given": "seats2",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.sys.err",
+            "view": {
+              "class": "error",
+              "context": "system",
+              "topic": "err:1",
+              "title": "Disk full"
+            }
+          },
+          "now": 100000
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.sys.odd",
+            "view": {
+              "class": "whatever",
+              "context": "system",
+              "topic": "odd:1",
+              "title": "Odd"
+            }
+          },
+          "now": 100000
+        },
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 101000
+        }
+      ],
+      "expect": {
+        "score(view.sys.err)": 0.4,
+        "rung(view.sys.err)": "focus",
+        "score(view.sys.odd)": 0.25,
+        "rung(view.sys.odd)": "ambient"
+      }
+    },
+    {
+      "id": "S-029",
+      "title": "The judge does not lift topic_dupe: a verdict naming the dupe with judged_hidden false changes nothing",
+      "source": "abnahme2-2; § 4.12 (Ruling 13.09.)",
+      "given": "ambient3+chat+judge",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.v2v.card1",
+            "view": {
+              "topic": "weather:berlin",
+              "relevance": "0.9",
+              "context": "conversation",
+              "title": "Weather card"
+            }
+          },
+          "now": 100000,
+          "expect": {
+            "topic_dupe(view.v2v.card1)": true
+          }
+        },
+        {
+          "event": {
+            "kind": "verdict",
+            "bar": 0.3,
+            "weights": {},
+            "windows": {
+              "view.v2v.card1": {
+                "judged_hidden": false,
+                "judged_relevance": 1.0
+              }
+            }
+          },
+          "now": 104000
+        }
+      ],
+      "expect": {
+        "topic_dupe(view.v2v.card1)": true,
+        "rung(view.v2v.card1)": null,
+        "present()": [
+          "view.ambient.clock",
+          "view.ambient.timer",
+          "view.ambient.weather",
+          "view.chat.chat"
+        ]
+      }
+    },
+    {
+      "id": "S-030",
+      "title": "A put-away tile keeps its rank by the formula and decays from there; the zero rules do not touch the rank",
+      "source": "abnahme5-9; § 5.2, § 4.27",
+      "given": "two-cards",
+      "steps": [
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.v2v.card2"
+          },
+          "now": 102000,
+          "expect": {
+            "rank(view.v2v.card2)": 0.3,
+            "score(view.v2v.card2)": 0
+          }
+        },
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 180000
+        }
+      ],
+      "expect": {
+        "rank(view.v2v.card2)": 0.15,
+        "decay(view.v2v.card2)": 0.5,
+        "score(view.v2v.card2)": 0,
+        "rung(view.v2v.card2)": "hidden"
+      }
+    },
+    {
+      "id": "S-031",
+      "title": "Dock cut reaches the seats last: dock_max 1 with clock, weather and a note leaves the clock and an empty weather seat that does not count",
+      "source": "abnahme5-3; § 4.30, § 4.29",
+      "given": {
+        "fixture": "seats2",
+        "screens": {
+          "one": {
+            "display_type": "phone",
+            "dock_max": 1
+          }
+        },
+        "setup": [
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.notes.n1",
+              "view": {
+                "relevance": "0.9",
+                "context": "system",
+                "topic": "note:1",
+                "title": "N1"
+              }
+            },
+            "now": 100000
+          }
+        ]
+      },
+      "steps": [],
+      "expect": {
+        "dock(one)": [
+          "view.ambient.clock",
+          null
+        ],
+        "dock(monitor)": [
+          "view.ambient.clock",
+          "view.ambient.weather",
+          "view.notes.n1"
+        ],
+        "present()": [
+          "view.ambient.clock",
+          "view.ambient.weather",
+          "view.notes.n1"
+        ]
+      }
+    },
+    {
+      "id": "S-032",
+      "title": "Judge interval: a second app touch within judge_min_interval_ms is discarded, not made up; the next one after the interval calls",
+      "source": "§ 4.3; abnahme9-1",
+      "given": "ambient3+chat+judge",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.weather",
+            "view": {
+              "touched": "100000"
+            }
+          },
+          "now": 100000,
+          "expect": {
+            "judge_called()": true
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.weather",
+            "view": {
+              "touched": "101000"
+            }
+          },
+          "now": 101000,
+          "expect": {
+            "judge_called()": false
+          }
+        },
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 102500,
+          "expect": {
+            "judge_called()": false
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.weather",
+            "view": {
+              "touched": "103000"
+            }
+          },
+          "now": 103000
+        }
+      ],
+      "expect": {
+        "judge_called()": true
+      }
+    },
+    {
+      "id": "S-033",
+      "title": "A new verdict replaces the whole verdict: a window the new verdict does not name loses its old values; bar and weights are the new ones",
+      "source": "§ 4.5 (Decision 16.09. 2)",
+      "given": "ambient3+chat+judge",
+      "steps": [
+        {
+          "event": {
+            "kind": "verdict",
+            "bar": 0.5,
+            "weights": {
+              "ambient": 0.9
+            },
+            "windows": {
+              "view.ambient.weather": {
+                "judged_relevance": 0.9
+              },
+              "view.ambient.clock": {
+                "judged_hidden": true
+              }
+            }
+          },
+          "now": 100000,
+          "expect": {
+            "bar()": 0.5,
+            "verdict(view.ambient.clock)": {
+              "judged_relevance": null,
+              "judged_hidden": true
+            },
+            "rung(view.ambient.clock)": "hidden"
+          }
+        },
+        {
+          "event": {
+            "kind": "verdict",
+            "bar": 0.2,
+            "weights": {},
+            "windows": {
+              "view.ambient.weather": {
+                "judged_relevance": 0.1
+              }
+            }
+          },
+          "now": 104000
+        }
+      ],
+      "expect": {
+        "bar()": 0.2,
+        "weights()": {},
+        "verdict(view.ambient.clock)": {
+          "judged_relevance": null,
+          "judged_hidden": null
+        },
+        "verdict(view.ambient.weather)": {
+          "judged_relevance": 0.1,
+          "judged_hidden": null
+        },
+        "rung(view.ambient.clock)": "ambient"
+      }
+    },
+    {
+      "id": "S-034",
+      "title": "After relevant_until the relevance is capped at 0.2 (score and rank)",
+      "source": "§ 4.14, § 4.27, § 3 relevant_until",
+      "given": {
+        "fixture": "seats2",
+        "setup": [
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.cal.appt",
+              "view": {
+                "relevance": "0.9",
+                "relevant_until": "105000",
+                "topic": "appt:1",
+                "context": "calendar",
+                "title": "Dentist"
+              }
+            },
+            "now": 100000
+          },
+          {
+            "event": {
+              "kind": "stroke"
+            },
+            "now": 101000,
+            "expect": {
+              "score(view.cal.appt)": 0.45
+            }
+          }
+        ]
+      },
+      "steps": [
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 101000,
+          "expect": {
+            "score(view.cal.appt)": 0.45,
+            "rung(view.cal.appt)": "focus",
+            "strokes_ordered()": [
+              105000,
+              120000,
+              141000,
+              240000
+            ]
+          }
+        },
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 105000
+        }
+      ],
+      "expect": {
+        "score(view.cal.appt)": 0.1,
+        "rank(view.cal.appt)": 0.1,
+        "rung(view.cal.appt)": "ambient"
+      }
+    },
+    {
+      "id": "S-035",
+      "title": "linger is capped at linger_ms + fade_ms: a tap on a window asking 999999 holds it for 140000",
+      "source": "§ 4.15, § 7.5, § 4.9",
+      "given": {
+        "fixture": "seats2",
+        "setup": [
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.notes.n1",
+              "view": {
+                "linger": "999999",
+                "relevance": "0.1",
+                "context": "system",
+                "topic": "note:1",
+                "title": "N1"
+              }
+            },
+            "now": 90000
+          },
+          {
+            "event": {
+              "kind": "stroke"
+            },
+            "now": 91000
+          }
+        ]
+      },
+      "steps": [
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.notes.n1"
+          },
+          "now": 100000
+        }
+      ],
+      "expect": {
+        "led_until(view.notes.n1)": 240000,
+        "rung(view.notes.n1)": "focus"
+      }
+    },
+    {
+      "id": "S-036",
+      "title": "Pinned: the tile stays, but score and rank decay like any window; the window closes when the score falls below the bar",
+      "source": "§ 4.15, § 7.6 (R-24-3)",
+      "given": {
+        "fixture": "seats2",
+        "setup": [
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.notes.n1",
+              "view": {
+                "pinned": true,
+                "relevance": "0.8",
+                "context": "system",
+                "topic": "note:1",
+                "title": "N1"
+              }
+            },
+            "now": 100000
+          },
+          {
+            "event": {
+              "kind": "stroke"
+            },
+            "now": 101000,
+            "expect": {
+              "rung(view.notes.n1)": "focus"
+            }
+          }
+        ]
+      },
+      "steps": [
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 101000,
+          "expect": {
+            "rung(view.notes.n1)": "focus",
+            "score(view.notes.n1)": 0.4
+          }
+        },
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 240000
+        }
+      ],
+      "expect": {
+        "decay(view.notes.n1)": 0,
+        "score(view.notes.n1)": 0,
+        "rank(view.notes.n1)": 0,
+        "rung(view.notes.n1)": "ambient",
+        "present()": [
+          "view.ambient.clock",
+          "view.ambient.weather",
+          "view.notes.n1"
+        ],
+        "age(view.notes.n1)": "settled"
+      }
+    },
+    {
+      "id": "S-037",
+      "title": "ttl_ms withdraws the view: a stroke is ordered for the moment; that pass is the leaving pass; the next one removes the view from the store",
+      "source": "§ 4.34, § 4.35, § 3 ttl_ms",
+      "given": "seats2",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.notes.n1",
+            "view": {
+              "ttl_ms": 5000,
+              "relevance": "0.9",
+              "context": "system",
+              "topic": "note:1",
+              "title": "N1"
+            }
+          },
+          "now": 100000,
+          "expect": {
+            "strokes_ordered()": [
+              101000,
+              105000,
+              120000,
+              141000,
+              240000
+            ],
+            "age(view.notes.n1)": "fresh"
+          }
+        },
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 105000,
+          "expect": {
+            "age(view.notes.n1)": "leaving",
+            "rung(view.notes.n1)": "relevant",
+            "strokes_ordered()": [
+              106000,
+              120000,
+              141000,
+              240000
+            ]
+          }
+        },
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 106000
+        }
+      ],
+      "expect": {
+        "in_store()": [
+          "view.ambient.clock",
+          "view.ambient.weather"
+        ],
+        "present()": [
+          "view.ambient.clock",
+          "view.ambient.weather"
+        ]
+      }
+    },
+    {
+      "id": "S-038",
+      "title": "Withdrawal of an open window: one leaving pass (still open, no focus), then gone from the store; a re-write afterwards is a new window",
+      "source": "§ 4.35, § 4.34, § 4.8 a (Decision 16.09. 4)",
+      "given": "two-cards",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_withdraw",
+            "oid": "view.v2v.card1"
+          },
+          "now": 102000,
+          "expect": {
+            "age(view.v2v.card1)": "leaving",
+            "rung(view.v2v.card1)": "relevant",
+            "rung(view.v2v.card2)": "focus",
+            "unseen()": 0
+          }
+        },
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 103000,
+          "expect": {
+            "in_store()": [
+              "view.ambient.clock",
+              "view.ambient.timer",
+              "view.ambient.weather",
+              "view.chat.chat",
+              "view.v2v.card2"
+            ]
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.v2v.card1",
+            "view": {
+              "relevance": "0.9",
+              "context": "conversation",
+              "topic": "v2v:1",
+              "title": "Card 1"
+            }
+          },
+          "now": 104000
+        }
+      ],
+      "expect": {
+        "age(view.v2v.card1)": "fresh",
+        "touched()": {
+          "view.v2v.card1": "a"
+        }
+      }
+    },
+    {
+      "id": "S-039",
+      "title": "The door rejects: seat top, state loud, ttl_ms -1; a missing display_type and a missing default_screen are errors",
+      "source": "§ 4.6, § 4.7",
+      "given": {
+        "settings": {},
+        "screens": {
+          "tv": {
+            "display_type": "tv"
+          },
+          "odd": {
+            "viewing_distance_m": 1.0
+          }
+        }
+      },
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.x.a",
+            "view": {
+              "seat": "top",
+              "title": "A"
+            }
+          },
+          "now": 100000,
+          "expect": {
+            "refused()": [
+              [
+                "view.x.a",
+                "seat",
+                "top"
+              ]
+            ],
+            "in_store()": []
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.x.b",
+            "view": {
+              "state": "loud",
+              "title": "B"
+            }
+          },
+          "now": 100000,
+          "expect": {
+            "refused()": [
+              [
+                "view.x.b",
+                "state",
+                "loud"
+              ]
+            ]
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.x.c",
+            "view": {
+              "ttl_ms": -1,
+              "title": "C"
+            }
+          },
+          "now": 100000,
+          "expect": {
+            "refused()": [
+              [
+                "view.x.c",
+                "ttl_ms",
+                -1
+              ]
+            ]
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.x.d",
+            "view": {
+              "seat": "bottom",
+              "state": "hidden",
+              "ttl_ms": 0,
+              "title": "D"
+            }
+          },
+          "now": 100000
+        }
+      ],
+      "expect": {
+        "refused()": [],
+        "in_store()": [
+          "view.x.d"
+        ],
+        "rung(view.x.d)": "hidden",
+        "errors()": [
+          [
+            "screen",
+            "odd",
+            "display_type missing"
+          ],
+          [
+            "settings",
+            "default_screen",
+            "missing or unknown"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "S-040",
+      "title": "Modal-closing rule on opening (Q4) and the reverse: a tap on a modal's tile co-closes nothing",
+      "source": "§ 5.3",
+      "given": "two-cards",
+      "steps": [
+        {
+          "event": {
+            "kind": "hold"
+          },
+          "now": 102000,
+          "expect": {
+            "level(view.chat.chat)": 2,
+            "level(view.v2v.card1)": 1
+          }
+        },
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.chat.chat"
+          },
+          "now": 103000,
+          "expect": {
+            "level(view.chat.chat)": 0,
+            "co_closed()": [],
+            "put_away_list()": [
+              "view.chat.chat"
+            ],
+            "level(view.v2v.card1)": 1,
+            "rung(view.v2v.card1)": "focus"
+          }
+        },
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.chat.chat"
+          },
+          "now": 104000,
+          "expect": {
+            "level(view.chat.chat)": 2
+          }
+        },
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.v2v.card2"
+          },
+          "now": 105000
+        }
+      ],
+      "expect": {
+        "co_closed()": [
+          "view.chat.chat"
+        ],
+        "put_away_list()": [
+          "view.v2v.card2"
+        ],
+        "level(view.chat.chat)": 0,
+        "level(view.v2v.card2)": 0,
+        "level(view.v2v.card1)": 1
+      }
+    },
+    {
+      "id": "S-041",
+      "title": "Two held canvas windows: the younger tap leads, the older held one stays open as relevant",
+      "source": "§ 4.19",
+      "given": {
+        "fixture": "ambient3+chat",
+        "setup": [
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.notes.n1",
+              "view": {
+                "relevance": "0.1",
+                "context": "system",
+                "topic": "note:1",
+                "title": "N1"
+              }
+            },
+            "now": 90000
+          },
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.notes.n2",
+              "view": {
+                "relevance": "0.1",
+                "context": "system",
+                "topic": "note:2",
+                "title": "N2"
+              }
+            },
+            "now": 90000
+          },
+          {
+            "event": {
+              "kind": "stroke"
+            },
+            "now": 91000
+          }
+        ]
+      },
+      "steps": [
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.notes.n1"
+          },
+          "now": 100000,
+          "expect": {
+            "rung(view.notes.n1)": "focus"
+          }
+        },
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.notes.n2"
+          },
+          "now": 101000
+        }
+      ],
+      "expect": {
+        "rung(view.notes.n2)": "focus",
+        "rung(view.notes.n1)": "relevant",
+        "level(view.notes.n1)": 1,
+        "canvas_order()": [
+          "view.notes.n2",
+          "view.notes.n1"
+        ]
+      }
+    },
+    {
+      "id": "S-042",
+      "title": "A held modal that does not lead is ambient, tile only: hold the chat, then tap a dialog's tile",
+      "source": "§ 4.19, § 4.21",
+      "given": {
+        "fixture": "ambient3+chat",
+        "setup": [
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.dialog.d1",
+              "view": {
+                "layer": "modal",
+                "relevance": "0.1",
+                "context": "system",
+                "topic": "dialog:1",
+                "title": "Dialog"
+              }
+            },
+            "now": 90000
+          },
+          {
+            "event": {
+              "kind": "stroke"
+            },
+            "now": 91000
+          }
+        ]
+      },
+      "steps": [
+        {
+          "event": {
+            "kind": "hold"
+          },
+          "now": 100000,
+          "expect": {
+            "rung(view.chat.chat)": "focus",
+            "level(view.chat.chat)": 2
+          }
+        },
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.dialog.d1"
+          },
+          "now": 101000
+        }
+      ],
+      "expect": {
+        "rung(view.dialog.d1)": "focus",
+        "level(view.dialog.d1)": 2,
+        "rung(view.chat.chat)": "ambient",
+        "level(view.chat.chat)": 0,
+        "led_until(view.chat.chat)": 190000,
+        "open_windows()": [
+          "view.dialog.d1"
+        ]
+      }
+    },
+    {
+      "id": "S-043",
+      "title": "A put-away clears no verdict; a tap that opens clears it",
+      "source": "§ 4.5, § 4.9, § 5.2",
+      "given": {
+        "fixture": "ambient3+chat+judge",
+        "setup": [
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.v2v.card1",
+              "view": {
+                "relevance": "0.9",
+                "context": "conversation",
+                "topic": "v2v:1",
+                "title": "Card"
+              }
+            },
+            "now": 100000
+          },
+          {
+            "event": {
+              "kind": "stroke"
+            },
+            "now": 101000
+          },
+          {
+            "event": {
+              "kind": "verdict",
+              "bar": 0.3,
+              "weights": {},
+              "windows": {
+                "view.v2v.card1": {
+                  "judged_relevance": 0.95
+                }
+              }
+            },
+            "now": 102000
+          }
+        ]
+      },
+      "steps": [
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.v2v.card1"
+          },
+          "now": 103000,
+          "expect": {
+            "verdict(view.v2v.card1)": {
+              "judged_relevance": 0.95,
+              "judged_hidden": null
+            },
+            "rung(view.v2v.card1)": "hidden"
+          }
+        },
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.v2v.card1"
+          },
+          "now": 104000
+        }
+      ],
+      "expect": {
+        "verdict(view.v2v.card1)": {
+          "judged_relevance": null,
+          "judged_hidden": null
+        },
+        "rung(view.v2v.card1)": "focus"
+      }
+    },
+    {
+      "id": "S-044",
+      "title": "unseen is systemwide and independent of the dock cut: seven quiet fresh notes count 7 on every output although the phone draws five tiles",
+      "source": "§ 4.33; Delta A.1",
+      "given": {
+        "fixture": "ambient3+chat",
+        "setup": [
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.notes.n1",
+              "view": {
+                "relevance": "0.1",
+                "context": "system",
+                "topic": "note:1",
+                "title": "N1"
+              }
+            },
+            "now": 100000
+          },
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.notes.n2",
+              "view": {
+                "relevance": "0.1",
+                "context": "system",
+                "topic": "note:2",
+                "title": "N2"
+              }
+            },
+            "now": 100000
+          },
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.notes.n3",
+              "view": {
+                "relevance": "0.1",
+                "context": "system",
+                "topic": "note:3",
+                "title": "N3"
+              }
+            },
+            "now": 100000
+          },
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.notes.n4",
+              "view": {
+                "relevance": "0.1",
+                "context": "system",
+                "topic": "note:4",
+                "title": "N4"
+              }
+            },
+            "now": 100000
+          },
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.notes.n5",
+              "view": {
+                "relevance": "0.1",
+                "context": "system",
+                "topic": "note:5",
+                "title": "N5"
+              }
+            },
+            "now": 100000
+          },
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.notes.n6",
+              "view": {
+                "relevance": "0.1",
+                "context": "system",
+                "topic": "note:6",
+                "title": "N6"
+              }
+            },
+            "now": 100000
+          },
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.notes.n7",
+              "view": {
+                "relevance": "0.1",
+                "context": "system",
+                "topic": "note:7",
+                "title": "N7"
+              }
+            },
+            "now": 100000
+          }
+        ]
+      },
+      "steps": [
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 101000,
+          "expect": {
+            "unseen()": 7,
+            "dock(phone)": [
+              "view.ambient.clock",
+              "view.ambient.weather",
+              "view.notes.n1",
+              "view.ambient.timer",
+              "view.chat.chat"
+            ]
+          }
+        },
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 120000
+        }
+      ],
+      "expect": {
+        "unseen()": 0
+      }
+    },
+    {
+      "id": "S-045",
+      "title": "Strokes: after a write the curator orders the fresh second, the end of the linger, the end of the fade; the fixture windows add theirs",
+      "source": "§ 4.34",
+      "given": "seats2",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.notes.n1",
+            "view": {
+              "relevance": "0.5",
+              "context": "system",
+              "topic": "note:1",
+              "title": "N1"
+            }
+          },
+          "now": 100000
+        }
+      ],
+      "expect": {
+        "strokes_ordered()": [
+          101000,
+          120000,
+          141000,
+          240000
+        ]
+      }
+    },
+    {
+      "id": "S-046",
+      "title": "An app touch sets since = now, not the touched value (§ 4.8 literal; compose.py takes the moment)",
+      "source": "§ 4.8, § 4.9 (Decision 16.09. 7)",
+      "given": "ambient3+chat",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.weather",
+            "view": {
+              "touched": "95000"
+            }
+          },
+          "now": 100000
+        }
+      ],
+      "expect": {
+        "touched()": {
+          "view.ambient.weather": "c"
+        },
+        "since(view.ambient.weather)": 100000,
+        "led_until(view.ambient.weather)": 0,
+        "dismissed_at(view.ambient.weather)": 0
+      }
+    },
+    {
+      "id": "S-047",
+      "title": "touched not greater than the last seen is no touch; a repeated identical own prop is no touch",
+      "source": "§ 4.8 b, c",
+      "given": {
+        "fixture": "ambient3+chat",
+        "setup": [
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.ambient.weather",
+              "view": {
+                "touched": "100000"
+              }
+            },
+            "now": 100000
+          }
+        ]
+      },
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.weather",
+            "view": {
+              "touched": "100000"
+            }
+          },
+          "now": 101000,
+          "expect": {
+            "touched()": {}
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.weather",
+            "view": {
+              "touched": "99000"
+            }
+          },
+          "now": 102000,
+          "expect": {
+            "touched()": {}
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.weather",
+            "view": {
+              "topic": "weather:berlin"
+            }
+          },
+          "now": 103000
+        }
+      ],
+      "expect": {
+        "touched()": {},
+        "since(view.ambient.weather)": 100000
+      }
+    },
+    {
+      "id": "S-048",
+      "title": "An app touch lifts a put-away (since > dismissed_at) for every window but the chat under § 4.13",
+      "source": "§ 5.2, § 4.14",
+      "given": "two-cards",
+      "steps": [
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.v2v.card1"
+          },
+          "now": 102000,
+          "expect": {
+            "rung(view.v2v.card1)": "hidden"
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.v2v.card1",
+            "view": {
+              "touched": "105000"
+            }
+          },
+          "now": 105000
+        }
+      ],
+      "expect": {
+        "rung(view.v2v.card1)": "focus",
+        "since(view.v2v.card1)": 105000,
+        "dismissed_at(view.v2v.card1)": 102000,
+        "led_until(view.v2v.card1)": 0
+      }
+    },
+    {
+      "id": "S-049",
+      "title": "Canvas order on every output: the leading one first, then score, then younger since, then id",
+      "source": "§ 6.3",
+      "given": {
+        "fixture": "ambient3+chat",
+        "setup": [
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.v2v.a",
+              "view": {
+                "relevance": "0.7",
+                "context": "conversation",
+                "topic": "v2v:a",
+                "title": "A"
+              }
+            },
+            "now": 100000
+          },
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.v2v.b",
+              "view": {
+                "relevance": "0.9",
+                "context": "conversation",
+                "topic": "v2v:b",
+                "title": "B"
+              }
+            },
+            "now": 100000
+          },
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.v2v.c",
+              "view": {
+                "relevance": "0.7",
+                "context": "conversation",
+                "topic": "v2v:c",
+                "title": "C"
+              }
+            },
+            "now": 100500
+          },
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.v2v.d",
+              "view": {
+                "relevance": "0.4",
+                "context": "conversation",
+                "topic": "v2v:d",
+                "title": "D"
+              }
+            },
+            "now": 100500
+          },
+          {
+            "event": {
+              "kind": "stroke"
+            },
+            "now": 101500
+          }
+        ]
+      },
+      "steps": [
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.v2v.d"
+          },
+          "now": 102000
+        }
+      ],
+      "expect": {
+        "canvas_order()": [
+          "view.v2v.d",
+          "view.v2v.b",
+          "view.v2v.c",
+          "view.v2v.a"
+        ],
+        "rung(view.v2v.d)": "focus",
+        "rung(view.v2v.b)": "relevant"
+      }
+    },
+    {
+      "id": "S-050",
+      "title": "Second urgent rings in its tile (Delta E.20): rung urgent, tile marked, level 0, counts for unseen",
+      "source": "Delta E.20; § 4.18, § 4.33",
+      "given": "ambient3+chat",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.timer-a",
+            "view": {
+              "state": "urgent",
+              "touched": "100000",
+              "relevance": "0.9",
+              "topic": "timer:a",
+              "context": "ambient",
+              "title": "A"
+            }
+          },
+          "now": 100000
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.timer-b",
+            "view": {
+              "state": "urgent",
+              "touched": "100500",
+              "relevance": "0.5",
+              "topic": "timer:b",
+              "context": "ambient",
+              "title": "B"
+            }
+          },
+          "now": 100500
+        }
+      ],
+      "expect": {
+        "front_urgent()": "view.ambient.timer-a",
+        "rung(view.ambient.timer-b)": "urgent",
+        "level(view.ambient.timer-b)": 0,
+        "rank(view.ambient.timer-b)": 1,
+        "unseen()": 1,
+        "open_windows()": [
+          "view.ambient.timer-a"
+        ]
+      }
+    },
+    {
+      "id": "S-051",
+      "title": "Typed turn end to end, the hive's part (Delta E.20): turn write, then the answer write; the chat opens on the turn and stays open on the answer while its score reaches the bar",
+      "source": "Delta E.20; § 8.2, § 8.3, § 8.6, § 8.8",
+      "given": "ambient3+chat",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.chat.chat",
+            "view": {
+              "turn_id": "t1",
+              "touched": "100000",
+              "relevance": "0.8",
+              "children": {
+                "lines": [
+                  {
+                    "kind": "turn",
+                    "text": "hallo",
+                    "channel": "typed"
+                  }
+                ]
+              }
+            }
+          },
+          "now": 100000,
+          "expect": {
+            "level(view.chat.chat)": 2,
+            "score(view.chat.chat)": 0.4
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.chat.chat",
+            "view": {
+              "touched": "104000",
+              "relevance": "0.6",
+              "children": {
+                "lines": [
+                  {
+                    "kind": "turn",
+                    "text": "hallo",
+                    "channel": "typed"
+                  },
+                  {
+                    "kind": "answer",
+                    "text": "hallo marcus",
+                    "channel": "typed"
+                  }
+                ]
+              }
+            }
+          },
+          "now": 104000,
+          "expect": {
+            "level(view.chat.chat)": 2,
+            "score(view.chat.chat)": 0.3,
+            "last_answer()": "hallo marcus"
+          }
+        },
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 194000,
+          "expect": {
+            "level(view.chat.chat)": 2
+          }
+        },
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 194001
+        }
+      ],
+      "expect": {
+        "level(view.chat.chat)": 0,
+        "rung(view.chat.chat)": "ambient"
+      }
+    },
+    {
+      "id": "S-052",
+      "title": "state: urgent set alone on a standing window is no touch but the window is urgent and front (its since stays)",
+      "source": "§ 4.8, § 4.18",
+      "given": "ambient3+chat",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.timer",
+            "view": {
+              "state": "urgent"
+            }
+          },
+          "now": 100000
+        }
+      ],
+      "expect": {
+        "touched()": {},
+        "since(view.ambient.timer)": 1000,
+        "rung(view.ambient.timer)": "urgent",
+        "front_urgent()": "view.ambient.timer",
+        "level(view.ambient.timer)": 3,
+        "score(view.ambient.timer)": 0.0854
+      }
+    },
+    {
+      "id": "S-053",
+      "title": "A tap on a window with a tile cut nowhere in the state: the tap on a non-present view is absorbed",
+      "source": "§ 4.30, § 5.6 (Decision 16.09. 8)",
+      "given": "seats2",
+      "steps": [
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.notes.none"
+          },
+          "now": 100000
+        }
+      ],
+      "expect": {
+        "refused()": [
+          [
+            "view.notes.none",
+            "tap",
+            "no tile"
+          ]
+        ],
+        "touched()": {},
+        "open_windows()": []
+      }
+    },
+    {
+      "id": "S-054",
+      "title": "The seat is known while the view stands in the store, also when cut: a cut clock leaves an empty bottom place on the narrow output",
+      "source": "§ 4.29, § 4.30",
+      "given": {
+        "fixture": "seats2",
+        "screens": {
+          "one": {
+            "display_type": "phone",
+            "dock_max": 1
+          }
+        },
+        "setup": [
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.notes.n1",
+              "view": {
+                "pinned": true,
+                "relevance": "0.9",
+                "context": "system",
+                "topic": "note:1",
+                "title": "N1"
+              }
+            },
+            "now": 100000
+          },
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.notes.n2",
+              "view": {
+                "pinned": true,
+                "relevance": "0.9",
+                "context": "system",
+                "topic": "note:2",
+                "title": "N2"
+              }
+            },
+            "now": 100000
+          }
+        ]
+      },
+      "steps": [],
+      "expect": {
+        "dock(one)": [
+          "view.ambient.clock",
+          null
+        ],
+        "dock(phone)": [
+          "view.ambient.clock",
+          "view.ambient.weather",
+          "view.notes.n2",
+          "view.notes.n1"
+        ]
+      }
+    },
+    {
+      "id": "S-055",
+      "title": "Cut stages: others fall before urgents, urgents before pinned, pinned before seats; a pinned urgent falls in the pinned stage",
+      "source": "§ 4.30",
+      "given": {
+        "fixture": "seats2",
+        "screens": {
+          "three": {
+            "display_type": "phone",
+            "dock_max": 3
+          }
+        },
+        "setup": [
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.x.other",
+              "view": {
+                "relevance": "0.9",
+                "context": "system",
+                "topic": "x:o",
+                "title": "Other"
+              }
+            },
+            "now": 100000
+          },
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.x.urgent",
+              "view": {
+                "state": "urgent",
+                "touched": "100000",
+                "relevance": "0.1",
+                "context": "system",
+                "topic": "x:u",
+                "title": "Urgent"
+              }
+            },
+            "now": 100000
+          },
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.x.pinned",
+              "view": {
+                "pinned": true,
+                "relevance": "0.1",
+                "context": "system",
+                "topic": "x:p",
+                "title": "Pinned"
+              }
+            },
+            "now": 100000
+          },
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.x.pinurg",
+              "view": {
+                "pinned": true,
+                "state": "urgent",
+                "touched": "100000",
+                "relevance": "0.1",
+                "context": "system",
+                "topic": "x:pu",
+                "title": "PinUrg"
+              }
+            },
+            "now": 100000
+          }
+        ]
+      },
+      "steps": [],
+      "expect": {
+        "dock(monitor)": [
+          "view.ambient.clock",
+          "view.ambient.weather",
+          "view.x.pinned",
+          "view.x.other",
+          "view.x.urgent",
+          "view.x.pinurg"
+        ],
+        "dock(three)": [
+          "view.ambient.clock",
+          "view.ambient.weather",
+          "view.x.pinurg"
+        ]
+      }
+    },
+    {
+      "id": "S-056",
+      "title": "Weather measurement and a change of place: the measurement (children) is no touch, the topic (own prop) is",
+      "source": "§ 9.4, § 4.8 b",
+      "given": "ambient3+chat",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.weather",
+            "view": {
+              "children": {
+                "value": "25",
+                "condition": "sun"
+              }
+            }
+          },
+          "now": 100000,
+          "expect": {
+            "touched()": {}
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.weather",
+            "view": {
+              "topic": "weather:hamburg",
+              "children": {
+                "value": "18"
+              }
+            }
+          },
+          "now": 101000
+        }
+      ],
+      "expect": {
+        "touched()": {
+          "view.ambient.weather": "b"
+        },
+        "since(view.ambient.weather)": 101000
+      }
+    },
+    {
+      "id": "S-057",
+      "title": "The clock's minute triggers a pass, sets no since, calls no judge; the decay runs on",
+      "source": "§ 9.3, § 4.1, § 4.3",
+      "given": "ambient3+chat+judge",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.clock",
+            "view": {
+              "children": {
+                "time": "12:01"
+              }
+            }
+          },
+          "now": 100000
+        }
+      ],
+      "expect": {
+        "pass_ran()": true,
+        "touched()": {},
+        "since(view.ambient.clock)": 1000,
+        "judge_called()": false,
+        "decay(view.ambient.clock)": 0.3417
+      }
+    },
+    {
+      "id": "S-058",
+      "title": "Leaving takes no focus and is not unseen: a withdrawn quiet note is leaving one pass and out of unseen at once",
+      "source": "§ 4.35, § 4.33 (Decision 16.09. 9)",
+      "given": {
+        "fixture": "ambient3+chat",
+        "setup": [
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.notes.n1",
+              "view": {
+                "relevance": "0.1",
+                "context": "system",
+                "topic": "note:1",
+                "title": "N1"
+              }
+            },
+            "now": 100000,
+            "expect": {
+              "unseen()": 1
+            }
+          }
+        ]
+      },
+      "steps": [
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 101000,
+          "expect": {
+            "unseen()": 1
+          }
+        },
+        {
+          "event": {
+            "kind": "app_withdraw",
+            "oid": "view.notes.n1"
+          },
+          "now": 102000,
+          "expect": {
+            "age(view.notes.n1)": "leaving",
+            "unseen()": 0,
+            "dock(monitor)": [
+              "view.ambient.clock",
+              "view.ambient.weather",
+              "view.notes.n1",
+              "view.ambient.timer",
+              "view.chat.chat"
+            ]
+          }
+        },
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 103000
+        }
+      ],
+      "expect": {
+        "in_store()": [
+          "view.ambient.clock",
+          "view.ambient.timer",
+          "view.ambient.weather",
+          "view.chat.chat"
+        ]
+      }
+    },
+    {
+      "id": "S-059",
+      "title": "Every value is systemwide: rung, level and open are one per window, whatever output asks; only the dock cut differs",
+      "source": "§ 3.1, § 6.2 (R-24-2)",
+      "given": "nine-apps",
+      "steps": [],
+      "expect": {
+        "level(view.ambient.timer)": 3,
+        "open_windows()": [
+          "view.ambient.timer"
+        ],
+        "unseen()": 5,
+        "dock_max(phone)": 5,
+        "dock_max(tv)": 7,
+        "dock_max(monitor)": 8
+      }
+    },
+    {
+      "id": "S-060",
+      "title": "Chat relevance by the app: 0.8 on a turn opens the chat (0.4 ≥ 0.3), 0.6 on an answer keeps it exactly to the end of its linger",
+      "source": "A-en1-4; § 8.5, § 8.6",
+      "given": "ambient3+chat",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.chat.chat",
+            "view": {
+              "touched": "100000",
+              "relevance": "0.8",
+              "turn_id": "t1"
+            }
+          },
+          "now": 100000,
+          "expect": {
+            "score(view.chat.chat)": 0.4,
+            "level(view.chat.chat)": 2
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.chat.chat",
+            "view": {
+              "touched": "101000",
+              "relevance": "0.6"
+            }
+          },
+          "now": 101000,
+          "expect": {
+            "score(view.chat.chat)": 0.3,
+            "level(view.chat.chat)": 2
+          }
+        },
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 191000,
+          "expect": {
+            "level(view.chat.chat)": 2,
+            "decay(view.chat.chat)": 1
+          }
+        },
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 191100
+        }
+      ],
+      "expect": {
+        "level(view.chat.chat)": 0,
+        "rung(view.chat.chat)": "ambient"
+      }
+    },
+    {
+      "id": "S-061",
+      "title": "Urgents take part in no focus choice: a ringing non-front timer with the highest score does not block the canvas focus",
+      "source": "abnahme11-3; § 4.20, § 4.18",
+      "given": {
+        "fixture": "two-cards",
+        "setup": [
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.ambient.timer-a",
+              "view": {
+                "state": "urgent",
+                "touched": "102000",
+                "relevance": "1.0",
+                "topic": "timer:a",
+                "context": "ambient",
+                "title": "A"
+              }
+            },
+            "now": 102000
+          },
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.ambient.timer-b",
+              "view": {
+                "state": "urgent",
+                "touched": "102000",
+                "relevance": "1.0",
+                "topic": "timer:b",
+                "context": "ambient",
+                "title": "B"
+              }
+            },
+            "now": 102000
+          }
+        ]
+      },
+      "steps": [],
+      "expect": {
+        "front_urgent()": "view.ambient.timer-a",
+        "rung(view.ambient.timer-b)": "urgent",
+        "rung(view.v2v.card1)": "focus",
+        "rung(view.v2v.card2)": "relevant",
+        "open_windows()": [
+          "view.ambient.timer-a",
+          "view.v2v.card1",
+          "view.v2v.card2"
+        ]
+      }
+    },
+    {
+      "id": "S-062",
+      "title": "Hold on an output without audio, press on a tv, the switch: client-only gates, no event reaches the pass (documented, not modelled)",
+      "source": "§ 6.4, § 6.5, § 5.5; A-en2-F2",
+      "given": "empty",
+      "steps": [
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 100000
+        }
+      ],
+      "expect": {
+        "hold_bound(monitor)": false,
+        "hold_bound(phone)": true,
+        "tap_bound(tv)": false,
+        "hold_bound(tv)": false
+      }
+    },
+    {
+      "id": "S-063",
+      "title": "topic_dupe: same owner is never compared — a second timer of ambient on a used topic is a plain second window",
+      "source": "§ 4.12 (R-D4a)",
+      "given": "ambient3+chat",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.timer2",
+            "view": {
+              "topic": "timer:t1",
+              "context": "ambient",
+              "title": "Timer 2"
+            }
+          },
+          "now": 100000
+        }
+      ],
+      "expect": {
+        "topic_dupe(view.ambient.timer2)": false,
+        "present()": [
+          "view.ambient.clock",
+          "view.ambient.timer",
+          "view.ambient.timer2",
+          "view.ambient.weather",
+          "view.chat.chat"
+        ],
+        "touched()": {
+          "view.ambient.timer2": "a"
+        }
+      }
+    },
+    {
+      "id": "S-064",
+      "title": "Two modals, one held: a hold on the chat beats a louder dialog written in the same pass sequence (finger above the score)",
+      "source": "§ 4.19, § 4.21 (R-24-1)",
+      "given": {
+        "fixture": "ambient3+chat",
+        "setup": [
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.dialog.d1",
+              "view": {
+                "layer": "modal",
+                "relevance": "1.0",
+                "context": "conversation",
+                "topic": "dialog:1",
+                "title": "Dialog"
+              }
+            },
+            "now": 90000
+          },
+          {
+            "event": {
+              "kind": "stroke"
+            },
+            "now": 91000,
+            "expect": {
+              "rung(view.dialog.d1)": "focus"
+            }
+          }
+        ]
+      },
+      "steps": [
+        {
+          "event": {
+            "kind": "hold"
+          },
+          "now": 100000
+        }
+      ],
+      "expect": {
+        "rung(view.chat.chat)": "focus",
+        "level(view.chat.chat)": 2,
+        "rung(view.dialog.d1)": "ambient",
+        "level(view.dialog.d1)": 0
+      }
+    },
+    {
+      "id": "S-065",
+      "title": "Rank tie: equal rank, the younger since stands higher, then the smaller id",
+      "source": "§ 4.27",
+      "given": {
+        "fixture": "seats2",
+        "setup": [
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.notes.old",
+              "view": {
+                "relevance": "0.5",
+                "context": "system",
+                "topic": "note:old",
+                "title": "Old"
+              }
+            },
+            "now": 100000
+          },
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.notes.z",
+              "view": {
+                "relevance": "0.5",
+                "context": "system",
+                "topic": "note:z",
+                "title": "Z"
+              }
+            },
+            "now": 101000
+          },
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.notes.a",
+              "view": {
+                "relevance": "0.5",
+                "context": "system",
+                "topic": "note:a",
+                "title": "A"
+              }
+            },
+            "now": 101000
+          }
+        ]
+      },
+      "steps": [],
+      "expect": {
+        "dock(monitor)": [
+          "view.ambient.clock",
+          "view.ambient.weather",
+          "view.notes.old",
+          "view.notes.z",
+          "view.notes.a"
+        ]
+      }
+    },
+    {
+      "id": "S-066",
+      "title": "The chat put away by § 4.13 stays closed against its own answer touch, and opens again for an app touch once the canvas window lost presence",
+      "source": "§ 4.13 last sentence, § 5.2",
+      "given": "ambient3+chat",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.chat.chat",
+            "view": {
+              "turn_id": "t1",
+              "touched": "100000",
+              "relevance": "0.8"
+            }
+          },
+          "now": 100000
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.v2v.card1",
+            "view": {
+              "turn_id": "t1",
+              "ttl_ms": 10000,
+              "relevance": "0.9",
+              "context": "conversation",
+              "topic": "v2v:1",
+              "title": "Card"
+            }
+          },
+          "now": 102000,
+          "expect": {
+            "rung(view.chat.chat)": "hidden"
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.chat.chat",
+            "view": {
+              "touched": "105000",
+              "relevance": "0.6"
+            }
+          },
+          "now": 105000,
+          "expect": {
+            "rung(view.chat.chat)": "hidden",
+            "dismissed_at(view.chat.chat)": 105000
+          }
+        },
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 112000,
+          "expect": {
+            "age(view.v2v.card1)": "leaving"
+          }
+        },
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 113000,
+          "expect": {
+            "present()": [
+              "view.ambient.clock",
+              "view.ambient.timer",
+              "view.ambient.weather",
+              "view.chat.chat"
+            ],
+            "rung(view.chat.chat)": "hidden"
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.chat.chat",
+            "view": {
+              "touched": "114000"
+            }
+          },
+          "now": 114000
+        }
+      ],
+      "expect": {
+        "rung(view.chat.chat)": "focus",
+        "level(view.chat.chat)": 2,
+        "since(view.chat.chat)": 114000
+      }
+    },
+    {
+      "id": "S-067",
+      "title": "§ 4.13 with a touched-only write on the carrier (source c): the chat reopened by a tap closes again — the main clause and § 8.6 rule over the parenthetical list",
+      "source": "§ 4.13, § 8.6 (Decision 16.09. 11)",
+      "given": "ambient3+chat",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.chat.chat",
+            "view": {
+              "turn_id": "t1",
+              "touched": "100000",
+              "relevance": "0.8"
+            }
+          },
+          "now": 100000
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.weather",
+            "view": {
+              "turn_id": "t1",
+              "touched": "103000",
+              "relevance": "0.8"
+            }
+          },
+          "now": 103000,
+          "expect": {
+            "rung(view.chat.chat)": "hidden"
+          }
+        },
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.chat.chat"
+          },
+          "now": 105000,
+          "expect": {
+            "level(view.chat.chat)": 2
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.weather",
+            "view": {
+              "touched": "108000"
+            }
+          },
+          "now": 108000
+        }
+      ],
+      "expect": {
+        "touched()": {
+          "view.ambient.weather": "c"
+        },
+        "rung(view.chat.chat)": "hidden",
+        "dismissed_at(view.chat.chat)": 108000,
+        "led_until(view.chat.chat)": 0
+      }
+    },
+    {
+      "id": "S-068",
+      "title": "§ 4.13 'the chat app writes that turn_id': a write of the same turn_id again (no touch) is a trigger while the carrier is present",
+      "source": "§ 4.13 (Decision 16.09. 13)",
+      "given": "ambient3+chat",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.chat.chat",
+            "view": {
+              "turn_id": "t1",
+              "touched": "100000",
+              "relevance": "0.8"
+            }
+          },
+          "now": 100000
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.weather",
+            "view": {
+              "turn_id": "t1",
+              "touched": "103000",
+              "relevance": "0.8"
+            }
+          },
+          "now": 103000,
+          "expect": {
+            "rung(view.chat.chat)": "hidden"
+          }
+        },
+        {
+          "event": {
+            "kind": "hold"
+          },
+          "now": 105000,
+          "expect": {
+            "level(view.chat.chat)": 2
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.chat.chat",
+            "view": {
+              "turn_id": "t1"
+            }
+          },
+          "now": 106000
+        }
+      ],
+      "expect": {
+        "touched()": {},
+        "rung(view.chat.chat)": "hidden",
+        "dismissed_at(view.chat.chat)": 106000
+      }
+    },
+    {
+      "id": "S-069",
+      "title": "topic_dupe compares against present windows only: a fresh card on the topic of a decayed (standing, not present) weather is no dupe",
+      "source": "§ 4.12, § 4.11 (Decision 16.09. 12)",
+      "given": {
+        "fixture": "empty",
+        "setup": [
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.ambient.weather",
+              "view": {
+                "seat": "bottom",
+                "seat_ord": "10",
+                "topic": "weather:berlin",
+                "context": "ambient",
+                "title": "Weather"
+              }
+            },
+            "now": 1000
+          },
+          {
+            "event": {
+              "kind": "stroke"
+            },
+            "now": 2000
+          },
+          {
+            "event": {
+              "kind": "stroke"
+            },
+            "now": 150000
+          },
+          {
+            "event": {
+              "kind": "stroke"
+            },
+            "now": 151000
+          }
+        ]
+      },
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.v2v.card1",
+            "view": {
+              "topic": "weather:berlin",
+              "relevance": "0.9",
+              "context": "conversation",
+              "title": "Weather card"
+            }
+          },
+          "now": 152000
+        }
+      ],
+      "expect": {
+        "topic_dupe(view.v2v.card1)": false,
+        "present()": [
+          "view.v2v.card1"
+        ],
+        "rung(view.v2v.card1)": "relevant",
+        "since(view.ambient.weather)": 1000,
+        "dock(monitor)": [
+          null,
+          "view.v2v.card1"
+        ]
+      }
+    },
+    {
+      "id": "S-070",
+      "title": "An unknown layer word is read as canvas (the door lists no rejection for layer)",
+      "source": "§ 3 layer (Decision 16.09. 3)",
+      "given": "seats2",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.x.w",
+            "view": {
+              "layer": "weird",
+              "relevance": "0.9",
+              "context": "system",
+              "topic": "x:w",
+              "title": "W"
+            }
+          },
+          "now": 100000
+        },
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 101000
+        }
+      ],
+      "expect": {
+        "rung(view.x.w)": "focus",
+        "level(view.x.w)": 1
+      }
+    },
+    {
+      "id": "S-071",
+      "title": "A write merges per key: a later write without relevance keeps the relevance; an explicit empty value removes the key",
+      "source": "§ 4.1, § 4.8 b (Decision 16.09. 5)",
+      "given": "seats2",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.x.a",
+            "view": {
+              "relevance": "0.9",
+              "context": "system",
+              "topic": "x:a",
+              "title": "A"
+            }
+          },
+          "now": 100000
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.x.a",
+            "view": {
+              "title": "A2"
+            }
+          },
+          "now": 101000,
+          "expect": {
+            "score(view.x.a)": 0.45,
+            "touched()": {
+              "view.x.a": "b"
+            }
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.x.a",
+            "view": {
+              "relevance": ""
+            }
+          },
+          "now": 102000
+        }
+      ],
+      "expect": {
+        "score(view.x.a)": 0.25,
+        "touched()": {
+          "view.x.a": "b"
+        }
+      }
+    },
+    {
+      "id": "S-072",
+      "title": "ttl_ms counts from the last write of the view: a rewrite moves the expiry",
+      "source": "§ 4.34, § 3 ttl_ms (Decision 16.09. 6)",
+      "given": "seats2",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.x.a",
+            "view": {
+              "ttl_ms": 5000,
+              "relevance": "0.5",
+              "context": "system",
+              "topic": "x:a",
+              "title": "A"
+            }
+          },
+          "now": 100000,
+          "expect": {
+            "strokes_ordered()": [
+              101000,
+              105000,
+              120000,
+              141000,
+              240000
+            ]
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.x.a",
+            "view": {
+              "ttl_ms": 5000,
+              "children": {
+                "n": 1
+              }
+            }
+          },
+          "now": 103000,
+          "expect": {
+            "strokes_ordered()": [
+              108000,
+              120000,
+              141000,
+              240000
+            ]
+          }
+        },
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 105000
+        }
+      ],
+      "expect": {
+        "present()": [
+          "view.ambient.clock",
+          "view.ambient.weather",
+          "view.x.a"
+        ],
+        "age(view.x.a)": "settled"
+      }
+    },
+    {
+      "id": "S-073",
+      "title": "Equal since among finger-led windows (two taps in the same millisecond): the smaller id leads; the same for two tapped urgents",
+      "source": "§ 4.18, § 4.19 (Decision 16.09. 10)",
+      "given": {
+        "fixture": "ambient3+chat",
+        "setup": [
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.notes.n1",
+              "view": {
+                "relevance": "0.1",
+                "context": "system",
+                "topic": "note:1",
+                "title": "N1"
+              }
+            },
+            "now": 90000
+          },
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.notes.n2",
+              "view": {
+                "relevance": "0.1",
+                "context": "system",
+                "topic": "note:2",
+                "title": "N2"
+              }
+            },
+            "now": 90000
+          },
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.ambient.timer-a",
+              "view": {
+                "state": "urgent",
+                "touched": "90000",
+                "topic": "timer:a",
+                "context": "ambient",
+                "title": "A"
+              }
+            },
+            "now": 90000
+          },
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.ambient.timer-b",
+              "view": {
+                "state": "urgent",
+                "touched": "90000",
+                "topic": "timer:b",
+                "context": "ambient",
+                "title": "B"
+              }
+            },
+            "now": 90000
+          },
+          {
+            "event": {
+              "kind": "stroke"
+            },
+            "now": 91000
+          }
+        ]
+      },
+      "steps": [
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.notes.n2"
+          },
+          "now": 100000,
+          "expect": {
+            "rung(view.notes.n2)": "focus"
+          }
+        },
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.notes.n1"
+          },
+          "now": 100000,
+          "expect": {
+            "rung(view.notes.n1)": "focus",
+            "rung(view.notes.n2)": "relevant"
+          }
+        },
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.ambient.timer-b"
+          },
+          "now": 100000,
+          "expect": {
+            "front_urgent()": "view.ambient.timer-b"
+          }
+        },
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.ambient.timer-a"
+          },
+          "now": 100000,
+          "expect": {
+            "front_urgent()": "view.ambient.timer-a"
+          }
+        },
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.ambient.timer-a"
+          },
+          "now": 100001
+        }
+      ],
+      "expect": {
+        "front_urgent()": "view.ambient.timer-b",
+        "level(view.ambient.timer-a)": 0,
+        "rung(view.ambient.timer-a)": "urgent"
+      }
+    },
+    {
+      "id": "S-074",
+      "title": "A verdict without bar: the bar is focus_default while the weights and window values apply",
+      "source": "§ 4.16, § 4.5 (Decision 16.09. 18)",
+      "given": "ambient3+chat+judge",
+      "steps": [
+        {
+          "event": {
+            "kind": "verdict",
+            "weights": {
+              "ambient": 1.0
+            },
+            "windows": {
+              "view.ambient.weather": {
+                "judged_relevance": 1.0
+              }
+            }
+          },
+          "now": 100000
+        }
+      ],
+      "expect": {
+        "bar()": 0.3,
+        "weights()": {
+          "ambient": 1.0
+        },
+        "score(view.ambient.weather)": 0.3417,
+        "rung(view.ambient.weather)": "focus"
+      }
+    },
+    {
+      "id": "S-075",
+      "title": "ttl_ms runs out on a standing view that is not present: the view leaves the store at once, no leaving pass, and its seat goes with it",
+      "source": "§ 4.11, § 4.29, § 4.34, § 3 ttl_ms",
+      "given": {
+        "fixture": "empty",
+        "screens": {
+          "monitor": {
+            "display_type": "monitor"
+          }
+        },
+        "setup": [
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.ambient.clock",
+              "view": {
+                "seat": "bottom",
+                "seat_ord": "0",
+                "topic": "clock",
+                "context": "ambient",
+                "title": "Clock",
+                "linger": "1000",
+                "ttl_ms": 200000
+              }
+            },
+            "now": 1000
+          },
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.ambient.weather",
+              "view": {
+                "seat": "bottom",
+                "seat_ord": "10",
+                "pinned": true,
+                "topic": "weather:berlin",
+                "context": "ambient",
+                "title": "Weather"
+              }
+            },
+            "now": 1000
+          },
+          {
+            "event": {
+              "kind": "stroke"
+            },
+            "now": 2000
+          }
+        ]
+      },
+      "steps": [
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 122000,
+          "expect": {
+            "age(view.ambient.clock)": "leaving",
+            "present()": [
+              "view.ambient.weather"
+            ]
+          }
+        },
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 123000,
+          "expect": {
+            "age(view.ambient.clock)": null,
+            "in_store()": [
+              "view.ambient.clock",
+              "view.ambient.weather"
+            ],
+            "dock(monitor)": [
+              null,
+              "view.ambient.weather"
+            ],
+            "strokes_ordered()": [
+              141000,
+              201000
+            ]
+          }
+        },
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 201000
+        }
+      ],
+      "expect": {
+        "in_store()": [
+          "view.ambient.weather"
+        ],
+        "present()": [
+          "view.ambient.weather"
+        ],
+        "dock(monitor)": [
+          "view.ambient.weather"
+        ],
+        "age(view.ambient.clock)": null,
+        "strokes_ordered()": []
+      }
+    },
+    {
+      "id": "S-076",
+      "title": "Hold with a second view on topic chat (a dupe of another owner): the hold reaches the present chat window, never the dupe",
+      "source": "§ 5.4, § 8.5, § 4.12",
+      "given": "ambient3+chat",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.a.chat",
+            "view": {
+              "layer": "modal",
+              "topic": "chat",
+              "context": "conversation",
+              "title": "Chat2"
+            }
+          },
+          "now": 100000,
+          "expect": {
+            "topic_dupe(view.a.chat)": true,
+            "present()": [
+              "view.ambient.clock",
+              "view.ambient.timer",
+              "view.ambient.weather",
+              "view.chat.chat"
+            ],
+            "touched()": {
+              "view.a.chat": "a",
+              "view.chat.chat": "f"
+            }
+          }
+        },
+        {
+          "event": {
+            "kind": "hold"
+          },
+          "now": 100500
+        }
+      ],
+      "expect": {
+        "touched()": {
+          "view.chat.chat": "e"
+        },
+        "led_until(view.chat.chat)": 190500,
+        "rung(view.chat.chat)": "focus",
+        "level(view.chat.chat)": 2,
+        "rung(view.a.chat)": null,
+        "open_windows()": [
+          "view.chat.chat"
+        ],
+        "refused()": []
+      }
+    },
+    {
+      "id": "S-077",
+      "title": "Tap on the tile of an urgent with layer canvas while the chat modal is open co-closes the modal: the tapped window's layer decides, not its rung — on put-away of the front urgent and on the tap that brings a second urgent to the front",
+      "source": "S3 R-01/R-21; § 5.3, § 4.18, § 5.1, § 5.2 (Decision 16.09. 19)",
+      "given": "ambient3+chat",
+      "steps": [
+        {
+          "event": {
+            "kind": "hold"
+          },
+          "now": 100000,
+          "expect": {
+            "level(view.chat.chat)": 2
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.timer",
+            "view": {
+              "state": "urgent",
+              "touched": "100500"
+            }
+          },
+          "now": 100500,
+          "expect": {
+            "front_urgent()": "view.ambient.timer",
+            "level(view.ambient.timer)": 3,
+            "level(view.chat.chat)": 2
+          }
+        },
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.ambient.timer"
+          },
+          "now": 101000,
+          "expect": {
+            "put_away_list()": [
+              "view.ambient.timer"
+            ],
+            "co_closed()": [
+              "view.chat.chat"
+            ],
+            "front_urgent()": null,
+            "rung(view.ambient.timer)": "urgent",
+            "level(view.ambient.timer)": 0,
+            "level(view.chat.chat)": 0,
+            "rung(view.chat.chat)": "hidden",
+            "dismissed_at(view.chat.chat)": 101000
+          }
+        },
+        {
+          "event": {
+            "kind": "hold"
+          },
+          "now": 102000,
+          "expect": {
+            "level(view.chat.chat)": 2
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.timer-b",
+            "view": {
+              "state": "urgent",
+              "touched": "102500",
+              "topic": "timer:b",
+              "context": "ambient",
+              "title": "B"
+            }
+          },
+          "now": 102500
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.timer-c",
+            "view": {
+              "state": "urgent",
+              "touched": "102500",
+              "topic": "timer:c",
+              "context": "ambient",
+              "title": "C"
+            }
+          },
+          "now": 102500,
+          "expect": {
+            "front_urgent()": "view.ambient.timer-b",
+            "level(view.ambient.timer-c)": 0,
+            "level(view.chat.chat)": 2
+          }
+        },
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.ambient.timer-c"
+          },
+          "now": 103000
+        }
+      ],
+      "expect": {
+        "touched()": {
+          "view.ambient.timer-c": "d"
+        },
+        "front_urgent()": "view.ambient.timer-c",
+        "level(view.ambient.timer-c)": 3,
+        "co_closed()": [
+          "view.chat.chat"
+        ],
+        "level(view.chat.chat)": 0,
+        "rung(view.chat.chat)": "hidden",
+        "dismissed_at(view.chat.chat)": 103000
+      }
+    },
+    {
+      "id": "S-078",
+      "title": "fade_ms 0 and focus_default 1.5 at the door: refused once, the defaults 120000 and 0.3 stand, the pass runs and the decay falls over the default fade",
+      "source": "S3 R-04; § 3 fade_ms, § 3 focus_default, § 4.7, § 4.15 (Decision 16.09. 20)",
+      "given": {
+        "fixture": "empty",
+        "settings": {
+          "fade_ms": 0,
+          "focus_default": 1.5
+        }
+      },
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.notes.n1",
+            "view": {
+              "relevance": "1.0",
+              "context": "system",
+              "topic": "note:1",
+              "title": "Note"
+            }
+          },
+          "now": 100000,
+          "expect": {
+            "pass_ran()": true,
+            "refused()": [
+              [
+                "settings",
+                "fade_ms",
+                0
+              ],
+              [
+                "settings",
+                "focus_default",
+                1.5
+              ]
+            ],
+            "errors()": [],
+            "bar()": 0.3,
+            "decay(view.notes.n1)": 1
+          }
+        },
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 130000
+        }
+      ],
+      "expect": {
+        "refused()": [],
+        "bar()": 0.3,
+        "decay(view.notes.n1)": 0.9167,
+        "score(view.notes.n1)": 0.4583,
+        "rung(view.notes.n1)": "focus",
+        "strokes_ordered()": [
+          240000
+        ]
+      }
+    },
+    {
+      "id": "S-079",
+      "title": "dock_max \"2\" as text and dock_default \"open\" in the phone profile: 2 is read as the number, \"open\" is refused once and the type default hidden stands, the cut draws two tiles",
+      "source": "S3 R-05; § 4.7, § 3 screens, § 3.3, § 4.30 (Decision 16.09. 21)",
+      "given": {
+        "fixture": "empty",
+        "screens": {
+          "phone": {
+            "display_type": "phone",
+            "inputs": [
+              "touch",
+              "keyboard",
+              "audio"
+            ],
+            "dock_max": "2",
+            "dock_default": "open"
+          }
+        }
+      },
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.clock",
+            "view": {
+              "seat": "bottom",
+              "seat_ord": "0",
+              "pinned": true,
+              "topic": "clock",
+              "context": "ambient",
+              "title": "Clock"
+            }
+          },
+          "now": 100000,
+          "expect": {
+            "refused()": [
+              [
+                "screen",
+                "phone",
+                "dock_default",
+                "open"
+              ]
+            ],
+            "errors()": [],
+            "dock_max(phone)": 2,
+            "dock_default(phone)": "hidden"
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.weather",
+            "view": {
+              "seat": "bottom",
+              "seat_ord": "10",
+              "pinned": true,
+              "topic": "weather:berlin",
+              "context": "ambient",
+              "title": "Weather"
+            }
+          },
+          "now": 100000
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.notes.n1",
+            "view": {
+              "relevance": "0.9",
+              "context": "system",
+              "topic": "note:1",
+              "title": "N1"
+            }
+          },
+          "now": 100000
+        },
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 101000
+        }
+      ],
+      "expect": {
+        "refused()": [],
+        "errors()": [],
+        "dock_max(phone)": 2,
+        "dock_default(phone)": "hidden",
+        "dock(phone)": [
+          "view.ambient.clock",
+          "view.ambient.weather"
+        ],
+        "dock(monitor)": [
+          "view.ambient.clock",
+          "view.ambient.weather",
+          "view.notes.n1"
+        ]
+      }
+    },
+    {
+      "id": "S-080",
+      "title": "seat: bottom without seat_ord stands at 0 and ties by id: between the clock (0, smaller id) and the weather (10)",
+      "source": "S3 R-06; § 4.28, § 3 seat_ord, § 3.3 (Decision 16.09. 22)",
+      "given": "seats2",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.notes.s",
+            "view": {
+              "seat": "bottom",
+              "relevance": "0.5",
+              "context": "system",
+              "topic": "note:s",
+              "title": "S"
+            }
+          },
+          "now": 100000
+        }
+      ],
+      "expect": {
+        "refused()": [],
+        "dock(monitor)": [
+          "view.ambient.clock",
+          "view.notes.s",
+          "view.ambient.weather"
+        ]
+      }
+    },
+    {
+      "id": "S-081",
+      "title": "relevance \"1.5\" is clamped to 1 at the door (score 0.5, not 0.75); relevance \"-0.5\" clamps to 0 and reads as empty (0.5, score 0.25, below the bar)",
+      "source": "S3 R-07; § 4.6, § 3 relevance, § 1.3, § 4.14 (Decision 16.09. 23)",
+      "given": "seats2",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.notes.n1",
+            "view": {
+              "relevance": "1.5",
+              "context": "system",
+              "topic": "note:1",
+              "title": "N1"
+            }
+          },
+          "now": 100000
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.notes.n2",
+            "view": {
+              "relevance": "-0.5",
+              "context": "system",
+              "topic": "note:2",
+              "title": "N2"
+            }
+          },
+          "now": 100000
+        },
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 101000
+        }
+      ],
+      "expect": {
+        "refused()": [],
+        "score(view.notes.n1)": 0.5,
+        "rung(view.notes.n1)": "focus",
+        "score(view.notes.n2)": 0.25,
+        "rung(view.notes.n2)": "ambient"
+      }
+    },
+    {
+      "id": "S-082",
+      "title": "Two seats with the same seat_ord (10): the smaller id stands lower — the weather below the note",
+      "source": "S3 R-22; § 4.28 (Decision 16.09. 22)",
+      "given": "seats2",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.notes.s",
+            "view": {
+              "seat": "bottom",
+              "seat_ord": "10",
+              "relevance": "0.5",
+              "context": "system",
+              "topic": "note:s",
+              "title": "S"
+            }
+          },
+          "now": 100000
+        }
+      ],
+      "expect": {
+        "dock(monitor)": [
+          "view.ambient.clock",
+          "view.ambient.weather",
+          "view.notes.s"
+        ]
+      }
+    },
+    {
+      "id": "S-083",
+      "title": "Pinned as is: a fresh note the judge hides (judged_hidden) still counts for unseen while its linger runs — the dot lights for a window that is deliberately not shown",
+      "source": "S3 R-12; § 4.33, § 4.14, § 4.22 (pinned as is, candidate for a Marcus question)",
+      "given": "ambient3+chat+judge",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.notes.n1",
+            "view": {
+              "relevance": "0.5",
+              "context": "system",
+              "topic": "note:1",
+              "title": "N1"
+            }
+          },
+          "now": 100000,
+          "expect": {
+            "unseen()": 1,
+            "rung(view.notes.n1)": "ambient"
+          }
+        },
+        {
+          "event": {
+            "kind": "verdict",
+            "bar": 0.3,
+            "weights": {},
+            "windows": {
+              "view.notes.n1": {
+                "judged_hidden": true
+              }
+            }
+          },
+          "now": 101000
+        }
+      ],
+      "expect": {
+        "rung(view.notes.n1)": "hidden",
+        "unseen()": 1
+      }
+    },
+    {
+      "id": "S-084",
+      "title": "Pinned as is: a topic_dupe that carries a seat leaves an empty seat place in the dock for a window that was never present",
+      "source": "S3 R-13; § 4.29, § 4.12, § 4.28 (pinned as is, candidate for a Marcus question)",
+      "given": "ambient3+chat",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.other.wx",
+            "view": {
+              "seat": "bottom",
+              "seat_ord": "5",
+              "topic": "weather:berlin",
+              "context": "ambient",
+              "title": "WX"
+            }
+          },
+          "now": 100000
+        }
+      ],
+      "expect": {
+        "topic_dupe(view.other.wx)": true,
+        "dock(monitor)": [
+          "view.ambient.clock",
+          null,
+          "view.ambient.weather",
+          "view.ambient.timer",
+          "view.chat.chat"
+        ]
+      }
+    },
+    {
+      "id": "S-085",
+      "title": "Pinned as is: a put-away weather is lifted by the topic touch (f) of another app's dupe — the member's put-away is undone by a foreign app on the same topic",
+      "source": "S3 R-16; § 5.2, § 4.8 f, § 4.12 (pinned as is, candidate for a Marcus question)",
+      "given": "ambient3+chat",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.weather",
+            "view": {
+              "relevance": "0.8",
+              "touched": "100000"
+            }
+          },
+          "now": 100000,
+          "expect": {
+            "rung(view.ambient.weather)": "focus"
+          }
+        },
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.ambient.weather"
+          },
+          "now": 101000,
+          "expect": {
+            "rung(view.ambient.weather)": "hidden"
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.v2v.card1",
+            "view": {
+              "topic": "weather:berlin",
+              "relevance": "0.9",
+              "context": "conversation",
+              "title": "Weather card"
+            }
+          },
+          "now": 102000
+        }
+      ],
+      "expect": {
+        "topic_dupe(view.v2v.card1)": true,
+        "touched()": {
+          "view.ambient.weather": "f",
+          "view.v2v.card1": "a"
+        },
+        "since(view.ambient.weather)": 102000,
+        "rung(view.ambient.weather)": "focus",
+        "level(view.ambient.weather)": 1
+      }
+    },
+    {
+      "id": "S-086",
+      "title": "Pinned as is: a fresh modal above the bar is ambient (tile only) in its first pass and opens with the next pass, at most a second later — a fresh canvas window is relevant at once",
+      "source": "S3 R-17; § 4.35, § 4.21, § 4.34 (pinned as is, candidate for a Marcus question)",
+      "given": "ambient3+chat",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.dialog.d1",
+            "view": {
+              "layer": "modal",
+              "relevance": "0.9",
+              "context": "conversation",
+              "topic": "dialog:1",
+              "title": "Dialog"
+            }
+          },
+          "now": 100000,
+          "expect": {
+            "age(view.dialog.d1)": "fresh",
+            "rung(view.dialog.d1)": "ambient",
+            "level(view.dialog.d1)": 0,
+            "open_windows()": []
+          }
+        },
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 101000
+        }
+      ],
+      "expect": {
+        "rung(view.dialog.d1)": "focus",
+        "level(view.dialog.d1)": 2
+      }
+    },
+    {
+      "id": "S-087",
+      "title": "Pinned as is: relevance \"0\" reads as empty (§ 3.3), the window gets the default 0.5 — score 0.25, ambient; 0 is not a way to say \"nothing\"",
+      "source": "S3 R-08; § 3.3, § 4.14, § 4.6",
+      "given": "seats2",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.notes.n1",
+            "view": {
+              "relevance": "0",
+              "context": "system",
+              "topic": "note:1",
+              "title": "N1"
+            }
+          },
+          "now": 100000
+        },
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 101000
+        }
+      ],
+      "expect": {
+        "score(view.notes.n1)": 0.25,
+        "rung(view.notes.n1)": "ambient"
+      }
+    },
+    {
+      "id": "S-088",
+      "title": "hold carries no field: a topic a client sends with the hold is ignored, the hold reaches the window with topic chat",
+      "source": "Finding 01 (H); § 5.6, § 5.4, § 3.2 (Decision 16.09. 24)",
+      "given": "ambient3+chat",
+      "steps": [
+        {
+          "event": {
+            "kind": "hold",
+            "topic": "weather:berlin"
+          },
+          "now": 100000
+        }
+      ],
+      "expect": {
+        "touched()": {
+          "view.chat.chat": "e"
+        },
+        "since(view.chat.chat)": 100000,
+        "since(view.ambient.weather)": 1000,
+        "led_until(view.chat.chat)": 190000
+      }
+    },
+    {
+      "id": "S-089",
+      "title": "the end of ringing is state alone: a write that removes state and changes relevance in the same write is source (b) and lifts a put-away; the ambient app therefore writes state alone (§ 9.1)",
+      "source": "Finding 03 (H); § 9.1, § 4.8 (Decision 16.09. 25)",
+      "given": "ambient3+chat",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.timer",
+            "view": {
+              "state": "urgent",
+              "touched": "100000",
+              "topic": "timer:1",
+              "relevance": "0.9",
+              "title": "Tea"
+            }
+          },
+          "now": 100000
+        },
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.ambient.timer"
+          },
+          "now": 101000,
+          "expect": {
+            "dismissed_at(view.ambient.timer)": 101000,
+            "rung(view.ambient.timer)": "urgent",
+            "level(view.ambient.timer)": 0
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.timer",
+            "view": {
+              "state": "",
+              "relevance": "0.7"
+            }
+          },
+          "now": 102000
+        }
+      ],
+      "expect": {
+        "touched()": {
+          "view.ambient.timer": "b"
+        },
+        "since(view.ambient.timer)": 102000,
+        "rung(view.ambient.timer)": "focus"
+      }
+    },
+    {
+      "id": "S-090",
+      "title": "A page is a window with a level: the screen joins its topic while the window stands on level 1 and leaves it at 0; a dock cut takes its tile on that output, never the window",
+      "source": "Wave G; § 7.9, § 4.19, § 4.24, § 4.30, § 6.12",
+      "given": {
+        "fixture": "seats2",
+        "screens": {
+          "phone": {
+            "display_type": "phone",
+            "inputs": [
+              "touch",
+              "keyboard",
+              "audio"
+            ],
+            "dock_max": 2
+          }
+        }
+      },
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.v2v.page1",
+            "view": {
+              "layer": "canvas",
+              "context": "conversation",
+              "topic": "card:abc",
+              "relevance": "0.7",
+              "title": "Orders"
+            }
+          },
+          "now": 100000
+        },
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 101000,
+          "expect": {
+            "level(view.v2v.page1)": 1,
+            "open_windows()": [
+              "view.v2v.page1"
+            ],
+            "present()": [
+              "view.ambient.clock",
+              "view.ambient.weather",
+              "view.v2v.page1"
+            ],
+            "dock(monitor)": [
+              "view.ambient.clock",
+              "view.ambient.weather",
+              "view.v2v.page1"
+            ],
+            "dock(phone)": [
+              "view.ambient.clock",
+              "view.ambient.weather"
+            ]
+          }
+        },
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.v2v.page1"
+          },
+          "now": 102000,
+          "expect": {
+            "level(view.v2v.page1)": 0,
+            "open_windows()": [],
+            "present()": [
+              "view.ambient.clock",
+              "view.ambient.weather",
+              "view.v2v.page1"
+            ],
+            "dock(monitor)": [
+              "view.ambient.clock",
+              "view.ambient.weather",
+              "view.v2v.page1"
+            ],
+            "dismissed_at(view.v2v.page1)": 102000
+          }
+        },
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.v2v.page1"
+          },
+          "now": 103000,
+          "expect": {
+            "level(view.v2v.page1)": 1,
+            "rung(view.v2v.page1)": "focus",
+            "led_until(view.v2v.page1)": 123000,
+            "open_windows()": [
+              "view.v2v.page1"
+            ],
+            "dock(phone)": [
+              "view.ambient.clock",
+              "view.ambient.weather"
+            ]
+          }
+        }
+      ],
+      "expect": {
+        "topic_dupe(view.v2v.page1)": false,
+        "in_store()": [
+          "view.ambient.clock",
+          "view.ambient.weather",
+          "view.v2v.page1"
+        ]
+      }
+    },
+    {
+      "id": "S-091",
+      "title": "A page in use does not decay: the cell's throttled report makes the application touch its own window (source c); the finger's input itself is no event and triggers no pass",
+      "source": "Wave G; § 5.11, § 4.8, § 4.1",
+      "given": {
+        "fixture": "empty",
+        "settings": {
+          "judge": "on"
+        },
+        "setup": [
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.v2v.page1",
+              "view": {
+                "layer": "canvas",
+                "context": "conversation",
+                "topic": "card:abc",
+                "relevance": "0.7",
+                "title": "Orders"
+              }
+            },
+            "now": 100000
+          },
+          {
+            "event": {
+              "kind": "stroke"
+            },
+            "now": 101000
+          }
+        ]
+      },
+      "steps": [
+        {
+          "event": {
+            "kind": "page_input",
+            "for": "view.v2v.page1"
+          },
+          "now": 130000,
+          "expect": {
+            "pass_ran()": false,
+            "touched()": {},
+            "since(view.v2v.page1)": 100000
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.v2v.page1",
+            "view": {
+              "touched": "140000"
+            }
+          },
+          "now": 140000,
+          "expect": {
+            "touched()": {
+              "view.v2v.page1": "c"
+            },
+            "since(view.v2v.page1)": 140000,
+            "led_until(view.v2v.page1)": 0,
+            "dismissed_at(view.v2v.page1)": 0,
+            "decay(view.v2v.page1)": 1.0,
+            "judge_called()": true
+          }
+        }
+      ],
+      "expect": {
+        "present()": [
+          "view.v2v.page1"
+        ],
+        "level(view.v2v.page1)": 1
+      }
+    },
+    {
+      "id": "S-092",
+      "title": "The same topic twice from two applications: the fresh window is `topic_dupe` — no window, no tile, no page opened — and the standing one takes the touch and the fresh one's `turn_id`",
+      "source": "Wave G; § 7.9, § 4.12, § 4.13",
+      "given": {
+        "fixture": "ambient3+chat",
+        "setup": [
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.v2v.page1",
+              "view": {
+                "layer": "canvas",
+                "context": "conversation",
+                "topic": "card:abc",
+                "relevance": "0.7",
+                "title": "Orders"
+              }
+            },
+            "now": 100000
+          },
+          {
+            "event": {
+              "kind": "stroke"
+            },
+            "now": 101000
+          }
+        ]
+      },
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.chat.chat",
+            "view": {
+              "turn_id": "t2",
+              "touched": "102000",
+              "relevance": "0.8"
+            }
+          },
+          "now": 102000,
+          "expect": {
+            "level(view.chat.chat)": 2,
+            "last_turn_id()": "t2"
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.other.page1",
+            "view": {
+              "layer": "canvas",
+              "context": "conversation",
+              "topic": "card:abc",
+              "turn_id": "t2",
+              "relevance": "0.9",
+              "title": "Orders elsewhere"
+            }
+          },
+          "now": 103000
+        }
+      ],
+      "expect": {
+        "topic_dupe(view.other.page1)": true,
+        "rung(view.other.page1)": null,
+        "level(view.other.page1)": 0,
+        "present()": [
+          "view.ambient.clock",
+          "view.ambient.timer",
+          "view.ambient.weather",
+          "view.chat.chat",
+          "view.v2v.page1"
+        ],
+        "touched()": {
+          "view.other.page1": "a",
+          "view.v2v.page1": "f"
+        },
+        "since(view.v2v.page1)": 103000,
+        "dismissed_at(view.chat.chat)": 103000,
+        "rung(view.chat.chat)": "hidden",
+        "dock(monitor)": [
+          "view.ambient.clock",
+          "view.ambient.weather",
+          "view.ambient.timer",
+          "view.v2v.page1",
+          "view.chat.chat"
+        ]
+      }
+    },
+    {
+      "id": "S-093",
+      "title": "A page card carries a minted topic of its own (`card:<card_id>`) even where its section named `weather:berlin`, so the standing ambient window on that subject is no rival: both are present, neither is `topic_dupe` — the model sees the topic, never the section and never the URL (Decision 18.09.)",
+      "source": "Wave G, OR-G3m; § 4.12, § 2 *Topic*",
+      "given": "ambient3+chat",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.v2v.page1",
+            "view": {
+              "layer": "canvas",
+              "context": "conversation",
+              "topic": "card:abc",
+              "relevance": "0.7",
+              "title": "Weather in Berlin"
+            }
+          },
+          "now": 100000
+        }
+      ],
+      "expect": {
+        "topic_dupe(view.v2v.page1)": false,
+        "topic_dupe(view.ambient.weather)": false,
+        "present()": [
+          "view.ambient.clock",
+          "view.ambient.timer",
+          "view.ambient.weather",
+          "view.chat.chat",
+          "view.v2v.page1"
+        ],
+        "touched()": {
+          "view.v2v.page1": "a"
+        },
+        "since(view.ambient.weather)": 1000,
+        "rung(view.v2v.page1)": "relevant"
+      }
+    },
+    {
+      "id": "S-094",
+      "title": "#742: an app touch clears the standing verdict — source (b) wakes the hidden weather window in the same pass, source (c) clears it again even when the judge call falls into judge_min_interval_ms and is discarded",
+      "source": "Wave H3, #742; § 4.9, § 4.5, § 4.8 b, § 4.8 c, § 4.3, § 4.13, § 4.14 (Decision 18.09. 26)",
+      "given": "ambient3+chat+judge",
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.chat.chat",
+            "view": {
+              "turn_id": "t1",
+              "touched": "100000",
+              "relevance": "0.8"
+            }
+          },
+          "now": 100000,
+          "expect": {
+            "rung(view.chat.chat)": "focus",
+            "last_turn_id()": "t1"
+          }
+        },
+        {
+          "event": {
+            "kind": "verdict",
+            "bar": 0.3,
+            "weights": {
+              "ambient": 0.6
+            },
+            "windows": {
+              "view.ambient.weather": {
+                "judged_hidden": true,
+                "judged_relevance": 0.1
+              }
+            }
+          },
+          "now": 101000,
+          "expect": {
+            "rung(view.ambient.weather)": "hidden",
+            "score(view.ambient.weather)": 0,
+            "verdict(view.ambient.weather)": {
+              "judged_relevance": 0.1,
+              "judged_hidden": true
+            }
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.weather",
+            "view": {
+              "turn_id": "t1",
+              "touched": "103000",
+              "relevance": "0.8"
+            }
+          },
+          "now": 103000,
+          "expect": {
+            "touched()": {
+              "view.ambient.weather": "b"
+            },
+            "verdict(view.ambient.weather)": {
+              "judged_relevance": null,
+              "judged_hidden": null
+            },
+            "since(view.ambient.weather)": 103000,
+            "led_until(view.ambient.weather)": 0,
+            "dismissed_at(view.ambient.weather)": 0,
+            "rung(view.ambient.weather)": "focus",
+            "level(view.ambient.weather)": 1,
+            "rung(view.chat.chat)": "hidden"
+          }
+        },
+        {
+          "event": {
+            "kind": "verdict",
+            "bar": 0.3,
+            "weights": {
+              "ambient": 0.6
+            },
+            "windows": {
+              "view.ambient.weather": {
+                "judged_hidden": true,
+                "judged_relevance": 0.1
+              }
+            }
+          },
+          "now": 104000,
+          "expect": {
+            "rung(view.ambient.weather)": "hidden",
+            "verdict(view.ambient.weather)": {
+              "judged_relevance": 0.1,
+              "judged_hidden": true
+            }
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.weather",
+            "view": {
+              "touched": "105500"
+            }
+          },
+          "now": 105500,
+          "expect": {
+            "touched()": {
+              "view.ambient.weather": "c"
+            },
+            "verdict(view.ambient.weather)": {
+              "judged_relevance": null,
+              "judged_hidden": null
+            },
+            "since(view.ambient.weather)": 105500,
+            "judge_called()": false,
+            "rung(view.ambient.weather)": "focus",
+            "level(view.ambient.weather)": 1
+          }
+        }
+      ],
+      "expect": {
+        "open_windows()": [
+          "view.ambient.weather"
+        ],
+        "bar()": 0.3,
+        "weights()": {
+          "ambient": 0.6
+        }
+      }
+    },
+    {
+      "id": "S-095",
+      "title": "#742: the topic touch (f) leaves the standing verdict alone (the judge may have hidden the window on purpose), and an app touch of a window without a verdict changes no verdict",
+      "source": "Wave H3, #742; § 4.8 f, § 4.9, § 4.12, § 4.5 (Decision 18.09. 26)",
+      "given": "ambient3+chat+judge",
+      "steps": [
+        {
+          "event": {
+            "kind": "verdict",
+            "bar": 0.3,
+            "weights": {
+              "ambient": 0.6
+            },
+            "windows": {
+              "view.ambient.weather": {
+                "judged_hidden": true,
+                "judged_relevance": 0.1
+              }
+            }
+          },
+          "now": 100000,
+          "expect": {
+            "rung(view.ambient.weather)": "hidden"
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.v2v.card1",
+            "view": {
+              "layer": "canvas",
+              "context": "conversation",
+              "topic": "weather:berlin",
+              "relevance": "0.9",
+              "title": "Weather Berlin"
+            }
+          },
+          "now": 102000,
+          "expect": {
+            "touched()": {
+              "view.v2v.card1": "a",
+              "view.ambient.weather": "f"
+            },
+            "topic_dupe(view.v2v.card1)": true,
+            "verdict(view.ambient.weather)": {
+              "judged_relevance": 0.1,
+              "judged_hidden": true
+            },
+            "since(view.ambient.weather)": 102000,
+            "rung(view.ambient.weather)": "hidden"
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.clock",
+            "view": {
+              "relevance": "0.6"
+            }
+          },
+          "now": 103000,
+          "expect": {
+            "touched()": {
+              "view.ambient.clock": "b"
+            },
+            "verdict(view.ambient.clock)": {
+              "judged_relevance": null,
+              "judged_hidden": null
+            },
+            "since(view.ambient.clock)": 103000,
+            "rung(view.ambient.clock)": "focus"
+          }
+        }
+      ],
+      "expect": {
+        "verdict(view.ambient.weather)": {
+          "judged_relevance": 0.1,
+          "judged_hidden": true
+        },
+        "rung(view.ambient.weather)": "hidden",
+        "bar()": 0.3,
+        "weights()": {
+          "ambient": 0.6
+        }
+      }
+    },
+    {
+      "id": "S-096",
+      "title": "#742 Fix 2: clearing a verdict clears the whole standing judgement about that window — the woken weather window counts with the default weight 0.5, not with the `ambient` weight the judge wrote for the situation that just ended; the mark outlives the passes between, and the next judge run takes both back; a tap clears it the same way",
+      "source": "Wave H3, #742, measurement N § 5.2/5.3; § 4.9, § 4.14, § 4.16, § 4.5, § 4.27, § 5.1 (Decision 18.09. 27)",
+      "given": "ambient3+chat+judge",
+      "steps": [
+        {
+          "event": {
+            "kind": "verdict",
+            "bar": 0.3,
+            "weights": {
+              "ambient": 0.3,
+              "conversation": 0.8,
+              "timer": 0.8
+            },
+            "windows": {
+              "view.ambient.weather": {
+                "judged_hidden": true,
+                "judged_relevance": 0.1
+              }
+            }
+          },
+          "now": 100000,
+          "expect": {
+            "rung(view.ambient.weather)": "hidden",
+            "weight(view.ambient.weather)": 0.3,
+            "bar()": 0.3
+          }
+        },
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.weather",
+            "view": {
+              "turn_id": "t1",
+              "touched": "103000",
+              "relevance": "0.8"
+            }
+          },
+          "now": 103000,
+          "expect": {
+            "touched()": {
+              "view.ambient.weather": "b"
+            },
+            "verdict(view.ambient.weather)": {
+              "judged_relevance": null,
+              "judged_hidden": null
+            },
+            "weight(view.ambient.weather)": 0.5,
+            "score(view.ambient.weather)": 0.4,
+            "rank(view.ambient.weather)": 0.4,
+            "rung(view.ambient.weather)": "focus",
+            "level(view.ambient.weather)": 1,
+            "bar()": 0.3,
+            "weights()": {
+              "ambient": 0.3,
+              "conversation": 0.8,
+              "timer": 0.8
+            },
+            "rank(view.ambient.timer)": 0.0475
+          }
+        },
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 104000,
+          "expect": {
+            "weight(view.ambient.weather)": 0.5,
+            "score(view.ambient.weather)": 0.4,
+            "rung(view.ambient.weather)": "focus",
+            "level(view.ambient.weather)": 1,
+            "rank(view.ambient.weather)": 0.4,
+            "rank(view.ambient.timer)": 0.0462
+          }
+        },
+        {
+          "event": {
+            "kind": "verdict",
+            "bar": 0.3,
+            "weights": {
+              "ambient": 0.3,
+              "conversation": 0.8,
+              "timer": 0.8
+            },
+            "windows": {
+              "view.ambient.weather": {
+                "judged_relevance": 0.8
+              }
+            }
+          },
+          "now": 106000,
+          "expect": {
+            "weight(view.ambient.weather)": 0.3,
+            "score(view.ambient.weather)": 0.24,
+            "rank(view.ambient.weather)": 0.24,
+            "rung(view.ambient.weather)": "ambient",
+            "level(view.ambient.weather)": 0
+          }
+        },
+        {
+          "event": {
+            "kind": "tap",
+            "for": "view.ambient.weather"
+          },
+          "now": 107000,
+          "expect": {
+            "weight(view.ambient.weather)": 0.5,
+            "score(view.ambient.weather)": 0.4,
+            "verdict(view.ambient.weather)": {
+              "judged_relevance": null,
+              "judged_hidden": null
+            },
+            "led_until(view.ambient.weather)": 127000,
+            "rung(view.ambient.weather)": "focus",
+            "level(view.ambient.weather)": 1
+          }
+        }
+      ],
+      "expect": {
+        "bar()": 0.3,
+        "weights()": {
+          "ambient": 0.3,
+          "conversation": 0.8,
+          "timer": 0.8
+        }
+      }
+    }
+  ]
+}

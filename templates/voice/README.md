@@ -1,4 +1,4 @@
-# `voice@2.0.2`
+# `voice@2.0.4`
 
 A spoken conversation as one cell. One WebSocket surface, one pair of provider
 credentials, one wire up and one wire down. No persona, no memory, no answer of
@@ -59,7 +59,7 @@ with `edge_schema`.
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "channels/voice", "template": "voice@2.0.2",
+  "add_nodes": [{"name": "channels/voice", "template": "voice@2.0.4",
                  "override_params": {"mount": "voice"}}],
   "add_edges": [
     {"from": "./channels/voice", "to": "./channels",
@@ -200,7 +200,7 @@ install`). Until then the manifest that wants partials does both halves itself
 one key on the node:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.0.2",
+{"name": "channels/voice", "template": "voice@2.0.4",
  "override_params": {"emit_partials": true}}
 ```
 
@@ -234,7 +234,7 @@ at the switch pending — see [`freeswitch`](../freeswitch/) § *Hanging up*).
 **Both halves or neither**, exactly as for `partial`:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.0.2",
+{"name": "channels/voice", "template": "voice@2.0.4",
  "override_params": {"emit_speak_end": true}}
 ```
 
@@ -303,15 +303,40 @@ because the reading is the handler's work and the declaration is the I/O half's.
 
 ### `release` waits for the provider, it does not cut
 
-`params.release_grace_ms` is `1500` here, and it is the difference between a
+`params.release_grace_ms` is `2500` here, and it is the difference between a
 push-to-talk that keeps the end of your sentence and one that eats it. Letting
 the key go says that no NEW audio belongs to this turn. It does **not** say the
 turn is over: the recognition provider still owes the end of the audio it was
-already sent, and it takes its time -- Deepgram Flux reports an end of turn
-400-700 ms after the words that caused it. The boundary therefore stays open and
+already sent, and it takes its time. The boundary therefore stays open and
 drains, `partial` frames keep arriving and still belong to the turn that is
 closing, and exactly one `turn` leaves at whichever comes first: the provider's
 own end of turn, or this cap, which cuts with the last interim.
+
+**The grace counts from the release, but it has to pay for the time since the
+last WORD.** That is the number this default is set by, and it is not the one a
+model quotes. An endpointing provider waits for a stretch of silence in the
+audio stream and spends its model latency only after that threshold has fired,
+so Deepgram Flux's 400-700 ms is the second half alone. Measured end to end on
+a live colony (18.09.2026, three machine-timed holds against one fixture): the
+`EndOfTurn` arrives **1795 ms after the last spoken word**. Since 2.0.4 the cap
+is 2500 ms for exactly that reason -- at 1500 every hold released by hand was
+cut on the cap with the last interim, and the end of the sentence was missing.
+The only take that survived was held on to for 1.24 s after the last word,
+which is a person doing by hand what this number is for.
+
+**Draining is not waiting in silence.** Since 2.0.3 the cell pushes 20 ms frames
+of digital silence into the recognition session from the `release` on, at the
+rate this connection negotiated, until the provider ends the turn or the grace
+runs out. Waiting alone was not enough: an endpointing provider measures the end
+of a turn in the AUDIO STREAM -- Flux after `eot_threshold`, 0.7 s -- and the
+client stops sending about 120 ms after the key comes up, so nothing ever
+reached the threshold and every held take was cut at the cap with an interim
+that lags the audio. Measured on a fresh instance with a fixture released 20 ms
+after the last word: cut at +1501 ms, transcript empty; the same take with
+silence still streaming closed 137 ms after the release with the whole sentence.
+The client's own frames outrank the tail -- while it is still draining its
+capture graph the next silence frame waits -- so no zeroes land between the last
+two words. `release_grace_ms: 0` arms no tail: it cuts on the frame.
 
 That is a fix for two symptoms at once, both found on the built-in test page:
 the last real line of a take went missing, and the take before it turned up at
@@ -361,7 +386,7 @@ a new name takes effect on the next life of the cell — the registration happen
 once, when the I/O half starts.
 
 ```json
-{"name": "channels/voice", "template": "voice@2.0.2",
+{"name": "channels/voice", "template": "voice@2.0.4",
  "override_params": {"mount": "voice-b"}}
 ```
 
@@ -424,7 +449,7 @@ spelling that says "not set" -- `VoiceParams::parse` reads a null `tts` exactly
 as an absent one, which is legal precisely when the recogniser is `echo`:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.0.2",
+{"name": "channels/voice", "template": "voice@2.0.4",
  "override_params": {"stt": {"provider": "echo"}, "tts": null}}
 ```
 
@@ -437,7 +462,7 @@ routes -- a self-hosted realtime transcription endpoint, a self-hosted
 `/v1/audio/speech` -- stands in for the hosted one without touching the cell:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.0.2",
+{"name": "channels/voice", "template": "voice@2.0.4",
  "override_params": {
    "tts": {"provider": "openai",
            "base_url": "http://<local-host>:<port>",
@@ -531,7 +556,7 @@ instantiating manifest's `override_params`, where it is substituted at
 instantiation exactly like the two api keys.
 
 ```json
-{"name": "channels/voice", "template": "voice@2.0.2",
+{"name": "channels/voice", "template": "voice@2.0.4",
  "override_params": {"tts": {"provider": "cartesia",
                              "api_key": "${CARTESIA_API_KEY}",
                              "voice": "${CARTESIA_VOICE}"}}}
@@ -546,7 +571,7 @@ exactly the same place, and the whole switch is one override -- the template doe
 not change, because `provider` was always a value rather than a shape:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.0.2",
+{"name": "channels/voice", "template": "voice@2.0.4",
  "override_params": {"tts": {"provider": "elevenlabs",
                              "api_key": "${ELEVENLABS_API_KEY}",
                              "voice": "${ELEVENLABS_VOICE}"}}}

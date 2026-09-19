@@ -3,7 +3,7 @@
 //!
 //! A sheet and a catalogue that were taken from one kit can still drift apart
 //! in the taking: a prefix swapped in one and not the other, a rule cut with
-//! the section it stood in. So the thirty-one templates are read for the
+//! the section it stood in. So the thirty-four templates are read for the
 //! classes they write, the way the `web` cell's own scanner reads them, and
 //! every class that is not borrowed from `/vision.css` has to have a rule in
 //! what the shell ships: its one `<style>` block, which is the screen's own
@@ -42,7 +42,18 @@ const BORROWED: [&str; 5] = ["glass", "glass--thin", "glass--thick", "inner", "s
 /// How many classes the catalogue wrote when this lock was written. A lower
 /// bound and not an equality: a catalogue that grows is not a red test, a
 /// scanner that stopped reading is.
-const CLASSES_AT_LEAST: usize = 115;
+const CLASSES_AT_LEAST: usize = 126;
+
+/// The classes the catalogue writes that the sheet has no rule for yet.
+///
+/// Empty since the sheet strand of this wave (H2-T12): `display-seat` is the empty seat
+/// in the dock (display-hive.md § 4.29: empty space, no placeholder) and
+/// `display-chat-line-source` the per-line source a chat line wears since § 8.4 put the
+/// SOURCE on a line where a clock used to stand -- both have their rule now. The list
+/// stays as the shape for the next wave that splits a class from its sheet across two
+/// strands; it is held to its own claim by the two asserts below, so a name in it has to
+/// be written by the catalogue AND still be without a rule.
+const SHEET_PENDING: [&str; 0] = [];
 
 /// The five blocks that carry the design language onto a screen that cannot
 /// render it as drawn (E15).
@@ -232,7 +243,7 @@ fn gzipped_len(data: &[u8]) -> Option<usize> {
 }
 
 /// Check 3 of the kit's own suite, in this tree: every class any of the
-/// thirty-one templates writes has a rule in what the shell ships, unless
+/// thirty-four templates writes has a rule in what the shell ships, unless
 /// `/vision.css` owns it. Target: none without a rule.
 #[test]
 fn every_class_the_catalogue_writes_has_a_rule() {
@@ -252,9 +263,23 @@ fn every_class_the_catalogue_writes_has_a_rule() {
         "the scanner read {} classes, fewer than the {CLASSES_AT_LEAST} the catalogue wrote when this lock was written: {classes:?}",
         classes.len()
     );
+    for pending in SHEET_PENDING {
+        assert!(
+            classes.contains(pending),
+            "`{pending}` is no class the catalogue writes -- drop it from SHEET_PENDING"
+        );
+        assert!(
+            !has_rule(&rules, pending),
+            "the sheet has a rule for `{pending}` now -- drop it from SHEET_PENDING"
+        );
+    }
     let missing: Vec<&String> = classes
         .iter()
-        .filter(|c| !BORROWED.contains(&c.as_str()) && !has_rule(&rules, c))
+        .filter(|c| {
+            !BORROWED.contains(&c.as_str())
+                && !SHEET_PENDING.contains(&c.as_str())
+                && !has_rule(&rules, c)
+        })
         .collect();
     assert!(
         missing.is_empty(),
@@ -277,8 +302,70 @@ fn the_shell_stays_inside_its_weight_budget() {
     };
     let page = shell_with(&all, "");
     let raw = page.len();
-    assert!(raw < 80_000, "the shell weighs {raw} bytes raw");
-    let Some(zipped) = gzipped_len(page.as_bytes()) else {
+    let zipped = gzipped_len(page.as_bytes());
+    eprintln!(
+        "shell weighs {raw} B raw, {} B gzipped",
+        zipped.map_or("?".to_string(), |z| z.to_string())
+    );
+    // Two ceilings, and they guard different things. The GZIPPED one is the
+    // budget: it is what travels, and it is what a person waits for. The RAW
+    // one is a guard against the single failure that would really hurt --
+    // somebody pasting a foreign library into the sheet -- and it has been
+    // raised three times, each time once and with a reason: 80 000 -> 92 000
+    // in display 2.4.0, 92 000 -> 96 000 and 96 000 -> 98 000 both in 2.5.0 (one
+    // unreleased block, two findings).
+    //
+    // 2.4.0's reason: four planes, a phone profile, the light on the mark, a
+    // line to type into, a chat tile and a weather window. 2.5.0's: the sheet
+    // was cut to the description (`display-hive.md`) -- an arrangement per
+    // output type with the height chain that lets a canvas scroll (§ 6.3), a
+    // cap and an inner scroller for every open level (§ 5.9), the dot's four
+    // dock states written as one condition (§ 6.8), the empty seat (§ 4.29),
+    // the source on a chat line (§ 8.4), and `:hover` behind the profile's
+    // inputs (§ 6.4). Those are rules that do something, and each carries the
+    // thought it came from. A ceiling that has stopped buying bytes from dead
+    // weight starts buying them from the comments -- the worst trade this
+    // sheet can make, because it is the one place where the WHY has to survive
+    // the next reader.
+    //
+    // The second raise's reason: the three findings of strand H5 -- the height cap of
+    // § 5.9 counted the content box and not the window, and ignored the 2%
+    // the two loud rungs lift by (B-09); a phone's leading window was only
+    // given a floor, so a sibling with forty chat lines grew past it (B-11);
+    // and a refused mark changed colour where § 5.4 says it dims (B-05). Three
+    // rules, four tokens, and the measurements that produced them -- a defect
+    // nobody can reproduce is a defect that comes back. The comments of the
+    // first two were trimmed once before this line moved (OR-H5.8).
+    //
+    // The gzipped ceiling was left where it is, and IT is the one to watch:
+    // 27 493 of 30 000 after the first raise, 28 245 after the second, so the next wave that
+    // adds to this sheet trims before it raises.
+    assert!(raw < 98_000, "the shell weighs {raw} bytes raw");
+    // The air under the raw ceiling is a floor of its own from wave G on, and
+    // not whatever happens to be left. Wave H2 left 43 bytes, which is another
+    // way of saying the next strand to write a rule breaks the ceiling. Wave G
+    // needs about 2 500 for the page block (`display-browser`, six classes,
+    // and the night and fallback lines that follow them), so 3 000 stay free.
+    //
+    // Two things bought them, in this order, and the order is the lesson. The
+    // sheet was first read rule by rule against the catalogue -- a class nobody
+    // writes, an attribute a component cannot put on itself, a declaration said
+    // twice, a token nothing reads -- and that found 704 bytes, which took the
+    // air from 43 to 747. Everything else in this sheet that is not a comment
+    // carries its weight.
+    //
+    // The rest came from asking what the raw ceiling is FOR. It guards what
+    // travels, and what travelled was 47 kB of reasoning that only the file's
+    // reader ever needed. Since OR-G0.1 the source keeps every comment and the
+    // copies carry the rules plus the nameplate, so this number is the sheet
+    // and not the arguing about it. The ceiling itself has not moved and will
+    // not (OR-H2.7); the comments were not cut, they simply stopped commuting.
+    assert!(
+        98_000 - raw >= 3_000,
+        "the shell leaves {} bytes of air under the raw ceiling; wave G needs 3 000 for the page",
+        98_000 - raw
+    );
+    let Some(zipped) = zipped else {
         return;
     };
     assert!(zipped < 30_000, "the shell weighs {zipped} bytes gzipped");

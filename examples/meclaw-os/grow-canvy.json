@@ -4,7 +4,7 @@
     "add_nodes": [
       {
         "name": "canvy",
-        "template": "canvy@2.3.0",
+        "template": "canvy@2.3.1",
         "override_params": {
           "web": {
             "mount": "canvy"

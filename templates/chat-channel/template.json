@@ -1,0 +1,22 @@
+{
+  "name": "chat-channel",
+  "version": "1.0.0",
+  "description": {
+    "purpose": "A typed sentence is a turn of its own channel. This is the cell that makes it one: it takes the event of a chat app's input line, mints the `turn_id` the turn and everything built from its answer will carry (display-hive.md § 8.2), stamps the member who typed it (§ 8.7), and puts it on the same lane a spoken turn travels -- firewall, session, talky. The answer comes back to it and STOPS: the channel `chat` has no loudspeaker (§ 8.3), and the app that shows the conversation hears the same answer on its own lane. Every other channel of a person already has a cell of its own -- `voice` carries the media, `freeswitch` the telephone, `telegram-connector` a foreign protocol -- and typing had none, so a typed turn was pushed onto the firewall as a disguised voice turn with an installer's literal for an identity. R-24-4 rules that out: a channel is a transport form, never a chat of its own, and the identity is the channel's.",
+    "use_when": "One per member, as `<member>/channels/chat`, instantiated in the same mutation that draws its two edges -- the node is an island until an edge crosses into it. Put it there whenever a person is to reach their assistant by typing on their own screen. Give it `user_id` if the member's id is known at install time; a typed event that names one wins over it either way.",
+    "not_in_scope": "No transcript: the chat app holds the lines and the channel's talky is the source of truth for the channel (§ 8.8). No session and no counter -- a counter here would be a second session store beside the member's keeper and would restart on every respawn, so the id it mints is random and unique rather than ordered. No authentication and no rate limit: who may reach the screen is decided in front of the colony, and screening is the member's firewall one hop on. No speech and no synthesis. No answer of its own: this cell emits nothing on `in_answer`, on purpose.",
+    "examples": [
+      "PORTS - Entry: `in_typed` (the input line's event, routed here by the chat app's own edge) and `in_answer` (the talky's answer, absorbed). Exit: `turn` with hop.turn_id, hop.user_id, hop.channel 'chat' and hop.happened_at, and `error` with hop.error_code 'empty_turn'. Both leave at this cell's own path, where the member's edge stamps the context every turn is screened and routed by.",
+      "the two edges a channel costs, the pattern of `voice`: UP, `./channels/chat -> ./channels` on `turn || error`, stamping context.channel_node 'chat', context.channel 'chat', the assistant, the audience set, and carrying hop.user_id and hop.turn_id into the context. DOWN, `./channels -> ./channels/chat` on `answer && context.channel_node == 'chat'`, re-stamped to `in_answer`. The down-edge exists so the answer has somewhere to END -- without it every answer of this channel dead-letters with no_route.",
+      "what does NOT come back through here: the answer the person reads. It reaches the chat app on the member's own `./assistants -> ./apps` edge, where every app that shows a conversation hears it (§ 8.1: the chat is the WHOLE conversation, across all channels)."
+    ]
+  },
+  "tags": [
+    "channel",
+    "chat",
+    "typed",
+    "code"
+  ],
+  "author": "@mmeyerlein",
+  "license": "MIT"
+}

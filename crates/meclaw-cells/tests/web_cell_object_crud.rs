@@ -1,16 +1,19 @@
-//! W8 Task 7 (GH #380): object CRUD over messages, and one diff per write.
+//! W8 Task 7 (GH #380): object CRUD over messages, and the diff a bundle sends.
 //!
 //! Two acceptance bullets of the issue meet here:
 //!
 //! * *A bundle of N `object.*` calls is answered by one reply with N results in
 //!   call order* — and the counting is of `tool_call` turns, not of messages.
-//! * *Joined viewers receive exactly one diff per write* — three writes, three
-//!   frames, in order, and the final page shows the result of all three.
+//! * *A joined viewer gets ONE diff for the whole bundle*, and it carries the
+//!   result of all N writes.
 //!
-//! The second is the one worth being careful about: a test that only checked
-//! the final HTML would pass just as happily if the cell had sent one diff at
-//! the end, which is the behaviour R-W8-4 exists to prevent. So the frames are
-//! counted.
+//! The second bullet read "one diff per write" until GH #718. It was measured
+//! wrong on the fresh instance (18.09.2026): a bundle is one caller's one
+//! intention — a curator pass is exactly that — and the steps inside it are
+//! pictures nobody should see. Per leg, one tap drew the window open, closed
+//! and open again in 250 ms. The frames are still counted, for the opposite
+//! reason: a test that only checked the final HTML would pass just as happily
+//! if the cell had gone back to a frame per leg.
 
 use futures_util::{SinkExt, StreamExt};
 use meclaw_cells::web::WebCellFactory;
@@ -254,7 +257,7 @@ async fn a_bundle_of_three_answers_once_with_three_results_in_order() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_joined_viewer_gets_exactly_one_diff_per_write() {
+async fn a_joined_viewer_gets_one_diff_for_the_whole_bundle() {
     let td = TempDir::new().expect("td");
     let cell_dir = td.path().join("web");
     std::fs::create_dir_all(&cell_dir).expect("dir");
@@ -278,17 +281,18 @@ async fn a_joined_viewer_gets_exactly_one_diff_per_write() {
     )
     .await;
 
-    // Three writes, three frames. Counting them is the point: a cell that sent
-    // one diff at the end of the bundle would still leave the right final
-    // picture, and that is exactly the behaviour being ruled out.
+    // Three writes, ONE frame (GH #718). Counting them is the point: a cell
+    // that pushed per leg would leave the same final picture and would have
+    // drawn two intermediate ones on the way there, which is what a viewer
+    // sees as a flicker.
     let mut frames = Vec::new();
     while let Some(f) = next_frame(&mut ws, Duration::from_secs(2)).await {
         frames.push(f);
     }
     assert_eq!(
         frames.len(),
-        3,
-        "expected one diff per write, got {}: {frames:#?}",
+        1,
+        "expected one diff for the bundle, got {}: {frames:#?}",
         frames.len()
     );
     for f in &frames {

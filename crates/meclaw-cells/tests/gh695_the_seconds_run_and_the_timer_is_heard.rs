@@ -7,8 +7,10 @@
 //! window arrives carrying `urgent`, it plays a two-tone chime made of
 //! oscillators -- no asset, no speech, no `<audio>`.
 //!
-//! What RUNS is `gh695_the_scene_ticks_and_chimes_browser.rs`; this file is the
-//! cheap half. Skips when `python3` is absent or the templates do not ship.
+//! What RUNS is `gh695_the_scene_ticks_and_chimes_browser.rs`, and beside it
+//! `710_the_colony_holds_in_both_engines_browser.rs` (B-21 counts the seconds down in
+//! Chromium AND WebKit); this file is the cheap half. Skips when `python3` is absent
+//! or the templates do not ship.
 
 use std::process::Command;
 

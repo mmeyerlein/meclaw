@@ -39,6 +39,19 @@ Where the rule stops (the boundary ruled in #551):
     A `ref` marker inside a template is named after the template it
     references. An instance grown by a manifest is named by whoever grows it.
 
+And where it BENDS, once. The bend is a BUILD decision of wave H, recorded as OR-H4.6
+(2026-09-16, GH #709) and laid before the maintainer as an FYI at the wave's close --
+the original R1 came out of a sanctioned sweep. The case that makes the plain rule
+unwritable (`assistant@2.7.0`): a level may hold SEVERAL refs onto one template,
+and they cannot all be one directory name. `display-hive.md` § 8.2 asks for one
+talky per channel, so `assistant` holds `./talky` and `./talky-chat`, both refs
+onto `talky@5.1.0`. The qualified spelling `<template>-<qualifier>` is allowed
+only beside a sibling that carries the BARE name: the address space stays
+readable because one of them is still spelled the way the rule says, and the
+others say what they are a second of. A lone `talky-chat` with no `talky` beside
+it is still a finding -- that is a ref named after its role, which is the defect
+the rule exists for.
+
 So `examples/` is INFORMATIONAL here and never a failure: an example that grows
 an `org` called `acme` with a `member` called `alex` is teaching exactly that,
 and `member/member/assistant` would teach nothing. The same boundary covers the
@@ -629,6 +642,26 @@ def behaviour_knobs(cfg: dict) -> list[str]:
     return names
 
 
+def _qualified_twin(configs: dict, d: Path, referenced: str) -> bool:
+    """Is `d` the SECOND ref onto `referenced` beside a sibling of the bare name?
+
+    The one bend in R1 (GH #709). A level that holds one talky per channel holds
+    several refs onto one template, and the directory name is an address, so they
+    have to differ. `<template>-<qualifier>` says what it is a second of; the
+    sibling spelled `<template>` is what keeps the address space readable, and
+    without it the qualified name is just a role name again.
+    """
+    if not d.name.startswith(referenced + "-"):
+        return False
+    sibling = d.parent / referenced
+    cfg = configs.get(sibling)
+    if not cfg:
+        return False
+    cell = cfg.get("cell") or {}
+    return (cell.get("type") == "ref"
+            and str(cell.get("template") or "").split("@")[0] == referenced)
+
+
 def check_template(root: Path, repo_root: Path) -> tuple[list[Finding], list[str]]:
     """R1, R3, R4, R5 and R6 against one template root."""
     findings: list[Finding] = []
@@ -673,13 +706,17 @@ def check_template(root: Path, repo_root: Path) -> tuple[list[Finding], list[str
         # `templates/README.md` is the gate for that.
         if d != root and cell.get("type") == "ref":
             referenced = str(cell.get("template") or "").split("@")[0]
-            if referenced and referenced != d.name:
+            if referenced and referenced != d.name and not _qualified_twin(
+                    configs, d, referenced):
                 findings.append(Finding(
                     "R1", rel,
                     f"a ref onto `{referenced}` is named `{d.name}`. A ref "
                     f"inside a template is named after the template it "
                     f"references -- the directory name is the address an "
-                    f"override_params path and a mutation use.",
+                    f"override_params path and a mutation use. A SECOND ref "
+                    f"onto the same template may be called "
+                    f"`{referenced}-<qualifier>`, but only beside a sibling "
+                    f"spelled `{referenced}` (GH #709).",
                 ))
 
         # --- R3 -------------------------------------------------------------
@@ -896,6 +933,29 @@ SELFTEST_TREE = {
     # R1: a ref named for its role instead of its template.
     "templates/fixture/rolename/config.json": {
         "cell": {"type": "ref", "template": "terminal@1.0.0"}
+    },
+    # R1, the one bend (GH #709): a SECOND ref onto the same template, beside a
+    # sibling that carries the bare name. Neither of the two is a finding.
+    "templates/twins/terminal/config.json": {
+        "cell": {"type": "ref", "template": "terminal@1.0.0"}
+    },
+    "templates/twins/terminal-chat/config.json": {
+        "cell": {"type": "ref", "template": "terminal@1.0.0"}
+    },
+    "templates/twins/config.json": {
+        "cell": {"type": "hive"},
+        "params": {"graph": {"edges": [
+            {"from": ".", "to": "./terminal", "condition": "true"},
+            {"from": ".", "to": "./terminal-chat", "condition": "true"}]}}
+    },
+    # ... and without that sibling the qualified name is a role name again.
+    "templates/lonely/terminal-chat/config.json": {
+        "cell": {"type": "ref", "template": "terminal@1.0.0"}
+    },
+    "templates/lonely/config.json": {
+        "cell": {"type": "hive"},
+        "params": {"graph": {"edges": [
+            {"from": ".", "to": "./terminal-chat", "condition": "true"}]}}
     },
     # R3: an occupant no edge names.
     "templates/fixture/island/config.json": {"cell": {"type": "echo"}},
@@ -1132,6 +1192,7 @@ def selftest() -> int:
         got = sorted((f.rule, f.path) for f in findings)
         want = sorted([
             ("R1", "templates/fixture/rolename"),
+            ("R1", "templates/lonely/terminal-chat"),   # qualified, no bare sibling
             ("R3", "templates/fixture/island"),
             ("R4", "templates/fixture/declare"),
             # R5, one per failing row of the rule table.
@@ -1159,7 +1220,7 @@ def selftest() -> int:
 
         # The declared island, the clean template and the two declared v-lanes
         # produce nothing -- a gate that fires on everything measures nothing.
-        silent = ("templates/clean", "templates/vlane/anchor",
+        silent = ("templates/twins", "templates/clean", "templates/vlane/anchor",
                   "templates/vlane/member", "templates/member",
                   "templates/lane", "templates/knob/laned")
         for rule, path in got:
@@ -1167,7 +1228,9 @@ def selftest() -> int:
                 print(f"selftest FAILED: {rule} fired on {path}", file=sys.stderr)
                 return 1
 
-    print("tree rules selftest OK: R1, R3, R4 fire exactly once, R5 once per "
+    print("tree rules selftest OK: R1 fires on a role name and on a qualified ref "
+          "with no bare sibling and stays silent on the pair, R3 and R4 fire once "
+          "each, R5 once per "
           "failing row of its table -- including an `at` of `\".\"` or a bare "
           "name, and an ancestor that vouched but is not the endpoint's parent "
           "-- and R6 once per template that still grows a knob; a declared "

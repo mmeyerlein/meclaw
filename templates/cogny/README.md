@@ -90,7 +90,7 @@ The two sub-units are **references**, not copies. Each of the two directories ho
 `config.json` and nothing else:
 
 ```json
-{"cell": {"type": "ref", "template": "collector@4.1.0"},
+{"cell": {"type": "ref", "template": "collector@4.1.1"},
  "override_params": {"assemble": {"context_window": 128000,
                                   "curate_soft": 0.5,
                                   "curate_hard": 0.75,

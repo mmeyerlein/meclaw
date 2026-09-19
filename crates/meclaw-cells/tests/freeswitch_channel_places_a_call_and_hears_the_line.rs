@@ -1,4 +1,4 @@
-//! `freeswitch@2.0.4` — a telephone as a CHANNEL of a person: it turns the facts
+//! `freeswitch@2.0.6` — a telephone as a CHANNEL of a person: it turns the facts
 //! about the line a person could ANSWER into TURNS, books the rest, and offers
 //! the assistant five tools of its own.
 //!
@@ -480,7 +480,10 @@ fn build_tree(
             "Test double for the conversation surface of one generation.",
         ),
     );
-    for inner in ["tools", "cogny"] {
+    // `talky-chat` is a ref too since `assistant@2.7.0`, and an unresolved ref keeps its
+    // `${ctx.model_surface}` token, which no `.env` of a test tree answers. It is INERT:
+    // no channel `chat` stands here, so no round reaches it (GH #709).
+    for inner in ["tools", "cogny", "talky-chat"] {
         write(
             root,
             &format!("main/person/assistants/{AGENT}/{inner}/config.json"),

@@ -1,4 +1,4 @@
-# `member@1.7.0`
+# `member@1.8.0`
 
 One person, as a level. **Four holders, three open containers and no cell of
 its own** — seven nodes and sixty-four edges.
@@ -651,7 +651,7 @@ behaves like, and it is a channel **of the person** — which is precisely why t
 of their agents may hold views on it at the same time. A screen owned by a
 generation would go dark on a swap and could not be shared at all.
 
-Since GH #459 the cell that stands there is real: [`display@2.3.3`](../display/).
+Since GH #459 the cell that stands there is real: [`display@2.5.0`](../display/).
 **Three** edges instantiate one — as many as a chat channel costs, though two of
 them point down where a chat channel's point up — and the second says the only
 thing a chat channel's edges do not, the third the one thing a chat channel
@@ -660,8 +660,28 @@ never hears:
 | edge | condition | why |
 |---|---|---|
 | `./channels/display-<s> -> ./channels` | `event` or `receipt` | what the screen produced, stamped with `context.channel_node` and `context.channel`, which on a screen are the same word |
-| `./channels -> ./channels/display-<s>` | `view`, `context.channel_node == '<s>'` | re-stamped to the display's own `in_view` |
+| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@1.8.0` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
 | `./channels -> ./channels/display-<s>` | `error` | a channel's failure, re-stamped to the display's `in_notice` — since `builder@1.10.0`, drawn by the mutation that grows the screen |
+
+**A view comes down the way it went up.** Since `member@1.8.0` the edge that carries
+what an app drew out of `./apps` carries `withdraw` beside `view`, in the same edge
+rather than in a twin: the two are one lane pair of one producer. `display` has accepted
+`in_withdraw` since it shipped — *a view outlives the turn that produced it, so ending
+one has to be a message, and a `ttl_ms` is the timer version of the same wish rather than
+a replacement for it* — and until 1.8.0 nothing carried the asking. It became
+load-bearing with several views per app: a timer that has rung and a card that has been
+replaced have to say they are over instead of standing there fading.
+
+**This level carries only the first half, and that is not an omission.** `./apps ->
+./channels` is the member's own edge and it is what moved. The down-edge onto a screen is
+the INSTANTIATING MUTATION's, exactly as its `view` twin always was: `Edge.to` is a
+static path in this substrate, and a template cannot name a screen it has not met.
+Since `builder@1.11.0` its `grow_level` recipe renders that edge with the withdrawal in
+it, and `examples/organism/grow-screen.json` is its byte truth.
+**A screen grown before `builder@1.11.0` needs that one edge redrawn**, or a withdrawal
+reaches `./channels` and stops: `hive_no_route` in the DLQ, once per withdrawal (measured
+in `crates/meclaw-cells/tests/709_an_app_takes_its_view_down.rs`). What the edge looks like is in the
+table above — one edge, one ternary, never two.
 
 **A screen has no error wire, and drawing one would be drawing into the void.**
 A connector's third edge exists because a connector *emits a failure of its own*:
@@ -874,7 +894,7 @@ The whole arrangement, as three mutations. The member first:
 
 ```json
 {"scope": "<org>/members", "diff": {
-  "add_nodes": [{"name": "alex", "template": "member@1.7.0"}]
+  "add_nodes": [{"name": "alex", "template": "member@1.8.0"}]
 }}
 ```
 
@@ -883,7 +903,7 @@ lanes (`../assistant/README.md` § *Instantiating* writes them out):
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@2.6.0"}],
+  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@2.7.0"}],
   "add_edges": [
     {"from": "./assistants", "to": "./assistants/scribe",
      "condition": "has(hop.route) && hop.route == 'in_turn' && has(context.assistant) && context.assistant == 'scribe'"},

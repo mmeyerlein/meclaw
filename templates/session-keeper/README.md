@@ -1,4 +1,4 @@
-# `session-keeper@2.2.0`
+# `session-keeper@2.2.1`
 
 A session lifecycle as a hive of existing cell types -- no new cell type, no Rust. Five cells:
 `stamp` (a `code` cell in the ingress path), `close` (a `code` cell for the night),
@@ -83,7 +83,7 @@ that names it is refused (see above).
 
 | route | written by | to | notes |
 |---|---|---|---|
-| `turn` | `stamp` | the context assembly | the inbound turn, unchanged. **Promote `hop.session_id` to context on this edge** -- that promotion IS the stamp. |
+| `turn` | `stamp` | the context assembly | the inbound turn, unchanged. **Promote `hop.session_id` to context on this edge** -- that promotion IS the stamp. `hop.turn_id` travels ON beside it, untouched: the id is the CHANNEL's (display-hive § 8.2), the session id is this keeper's, and the turn carries both from `session-keeper@2.2.1`. Before it the stamp built this header from scratch and copied only the body into it, so the id died here. |
 | `close` | `close` | the consumer of a finished session | one request per generation; promote `hop.session_id`, `hop.channel` and `hop.audience_set` -- all three, and the third is the one a caller wiring from `template.json` used to miss (see below). |
 | `export_done` | `porter` | whoever asked for the export | this keeper's own store wrote the whole ledger into `<fence>/<dir>/seed/` and says where: `hop.seed_dir` (relative to `params.transfer.base_path`), `hop.export_hive`, `hop.export_of`, `hop.rows_written` ([#555](https://github.com/mmeyerlein/meclaw/issues/555)). |
 | `dump` | `porter` | whoever fed the import | the receipt of one applied import part (`hop.rows_written`, `hop.export_part` of `hop.export_of`, `hop.export_final == "1"` on the last). Since #555 that is all this lane carries. **Drain it with a PLAIN `hop.route == 'dump'` test** -- an edge that also tests a second hop key reads as no drain under the `required_drains` probe and the mutation is refused. |

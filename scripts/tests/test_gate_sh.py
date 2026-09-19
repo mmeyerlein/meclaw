@@ -272,6 +272,30 @@ class TestBuildWidth(GateShTestCase):
         self.assertNotIn("cargo hygiene", log)
 
 
+class TestBaseLine(GateShTestCase):
+    """The runner names the commit its diff was taken against -- GH #713.
+
+    A plan is only as good as its base, and a base that is one commit too new
+    silently narrows the run: the stations still go green over the files the
+    diff no longer mentions. The line makes that visible before anything runs.
+    """
+
+    def test_an_explicit_base_is_named_with_its_file_count(self):
+        first = _git(self.repo, "rev-parse", "HEAD~1").stdout.strip()
+        short = _git(self.repo, "rev-parse", "--short", first).stdout.strip()
+        res = run_gate(self.repo, "strand", "--plan-only", "--base", first,
+                       plan=self.plan_file(PLAN_OK_BAD))
+        self.assertEqual(0, res.returncode, res.stderr)
+        # README.md is the one file that moved between the two commits.
+        self.assertIn("gate: base = %s (1 file)" % short, res.stdout)
+
+    def test_the_base_line_precedes_the_plan(self):
+        res = run_gate(self.repo, "strand", "--plan-only",
+                       plan=self.plan_file(PLAN_OK_BAD))
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertRegex(res.stdout, r"gate: base = [0-9a-f]{4,40} \(\d+ files?\)")
+
+
 class TestReceiptPlaceholder(GateShTestCase):
     """`{receipt}` in a station argv is the runner's job to fill in."""
 

@@ -29,6 +29,21 @@ Release detail is in [CHANGELOG.md](CHANGELOG.md) and the
 
 ## Now
 
+v0.39.0 builds the screen to its description (`display@2.5.0`, GH #707, #739,
+#740, #741, #742, #744). One document describes this template, the curator's
+pass is byte-identical with that document's reference model, and its scenarios
+travel with the template -- a rule changes in the document first and reaches the
+code by copy. The whole screen state is one row in the store, one screen serves
+many exits from a switch at the root, and the two events it sends are `tap` and
+`hold`. Beside it a typed sentence becomes a turn of its own channel
+(`chat-channel@1.0.0`, `assistant@2.7.0`, `member@1.8.0`, `builder@1.11.0`,
+GH #709): the channel mints the `turn_id` that the answer and every window built
+from it carry, the level holds a talky per channel, and an application takes a
+view back down instead of waiting out its `ttl_ms`. That id now survives the
+whole road (GH #724), and a curator pass reaches the browser as one frame per
+output (GH #723). What the release contains is the [`[0.39.0]`](CHANGELOG.md)
+section of the changelog.
+
 v0.38.1 makes a held recording arrive whole (GH #697, #698, #699): the cell
 records a provider debt only while the provider is inside a take and keeps an
 interim an empty end of turn used to drop, the browser drains before it lets
@@ -248,7 +263,7 @@ Cross-cutting work: surfaces, docs and the way a colony is operated.
 
 The template surface is open alongside all of this, and it needs no entry to
 stay that way: a template is a directory, a README and a `template.json`.
-Forty are listed in [`templates/README.md`](templates/README.md) as worked
+Forty-one are listed in [`templates/README.md`](templates/README.md) as worked
 examples, and what a hive template has to satisfy is § *The hive boundary*
 there.
 
@@ -257,6 +272,11 @@ there.
 One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- v0.39.0: the screen is built to its description, and a typed sentence is a
+  turn of its own channel. One document, one reference model and one state row
+  for the screen; one switch at the root for many exits; a channel that mints
+  the turn id the answer carries, a talky per channel, and a view an application
+  can take back down.
 - v0.38.1: a held recording arrives whole. A provider debt only while the
   provider is inside a take, an empty end of turn keeps the interim, the browser
   drains before it lets go, and the wedged-client control waits for its

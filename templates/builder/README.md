@@ -1,4 +1,4 @@
-# `builder@1.10.0`
+# `builder@1.11.0`
 
 The intake that turns a structural wish into a **manifest** — an ordered list of
 mutation declarations, ready to be submitted by whoever asked for it.
@@ -366,10 +366,10 @@ devices:
   {"scope": "/os/orgs/acme/members",
    "diff": {"add_nodes": [{"name": "alex", "template": "…"}], "…": "…"}},
   {"scope": "/os/orgs/acme/members/alex/channels",
-   "diff": {"add_nodes": [{"name": "display", "template": "display@2.3.3",
+   "diff": {"add_nodes": [{"name": "display", "template": "display@2.5.0",
                            "override_params": {"web": {"mount": "alex-display"}}}], "…": "…"}},
   {"scope": "/os/orgs/acme/members/alex/apps",
-   "diff": {"add_nodes": [{"name": "colony-view", "template": "colony-view@1.1.1"}], "…": "…"}}]}
+   "diff": {"add_nodes": [{"name": "colony-view", "template": "colony-view@1.1.2"}], "…": "…"}}]}
 ```
 
 **There is no way to ask for a member without them.** A person in this substrate
@@ -438,7 +438,23 @@ in** ([#680](https://github.com/mmeyerlein/meclaw/issues/680),
 ADR-0039, `plans/adr/0039-a-channels-failure-reaches-the-screen-as-a-notice.md`).
 Up: `event` and `receipt`, stamped with the two channel keys and the viewer's
 `user_id`. Down: a `view` addressed by `context.channel_node`, re-stamped
-`in_view`. And down again: every `error` in the `channels` container, re-stamped
+`in_view` — and, **since `1.11.0`, a `withdraw` on the same edge**, re-stamped
+`in_withdraw` by one ternary
+([#709](https://github.com/mmeyerlein/meclaw/issues/709)):
+
+```json
+{"from": ".", "to": "./display",
+ "condition": "has(hop.route) && (hop.route == 'view' || hop.route == 'withdraw') && has(context.channel_node) && context.channel_node == 'display'",
+ "modifier": {"set_hop": {"route": "hop.route == 'withdraw' ? 'in_withdraw' : 'in_view'"}}}
+```
+
+A view outlives the turn that produced it, so ending one is a message rather
+than an absence, and [`member`](../member/README.md) carries `withdraw` out of
+`./apps` beside `view`. Without this half the lane ends in the container: the first withdrawal
+of an app with several views is `hive_no_route` in the DLQ. One edge and not two,
+because the two are one lane pair of one producer.
+
+And down again: every `error` in the `channels` container, re-stamped
 onto the screen's `in_notice`, so a channel that failed is a system notice on
 the person's screen and not only a line in the operator's journal:
 

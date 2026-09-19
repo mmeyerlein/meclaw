@@ -7,7 +7,15 @@
    a `<style>` tag.
 
    It belongs to the TEMPLATE, not to the binary: a view that should look
-   different costs a template edit, not a release. */
+   different costs a template edit, not a release.
+
+   A `:hover` rule in here asks the screen's root first. `display-hive.md`
+   § 6.4: "without `pointer` and without `touch` no `:hover` rules" -- a
+   television is an output device, its profile carries `inputs: []`, and a
+   hover state on it is a promise nothing can keep
+   ([#715](https://github.com/mmeyerlein/meclaw/issues/715)). The gate is the
+   screen's own word, `data-inputs` on `.display-columns`, so this sheet needs
+   no second sheet and no media query. */
 
 .colony-view{
   --bg:#fbfbfa; --ink:#1a1a18; --muted:#6b6b66; --line:#dcdcd8;
@@ -129,7 +137,9 @@
 .colony-view .detail dd{ margin:0; font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
   font-size:11.5px; word-break:break-word; white-space:pre-wrap; color:var(--ink); }
 .colony-view .detail .rel{ cursor:pointer; padding:1px 0; }
-.colony-view .detail .rel:hover{ color:var(--accent); text-decoration:underline; }
+.display-columns:is([data-inputs~="pointer"], [data-inputs~="touch"])
+  .colony-view .detail .rel:hover{ color:var(--accent);
+  text-decoration:underline; }
 .colony-view .detail .chip{ display:inline-block; padding:1px 7px; border-radius:99px;
   font-size:10px; border:1px solid var(--line); color:var(--muted); }
 /* Handing a box back to the layout. Styled as a chip rather than as a form
@@ -138,7 +148,8 @@
 .colony-view .detail .release{ display:inline-block; padding:1px 7px; border-radius:99px;
   font:inherit; font-size:10px; cursor:pointer; background:none;
   border:1px solid var(--accent); color:var(--accent); }
-.colony-view .detail .release:hover{ background:var(--accent); color:var(--bg); }
+.display-columns:is([data-inputs~="pointer"], [data-inputs~="touch"])
+  .colony-view .detail .release:hover{ background:var(--accent); color:var(--bg); }
 .colony-view .detail .warn{ margin-top:4px; color:var(--edge-hot); font-size:10.5px;
   font-family:ui-sans-serif,system-ui,sans-serif; white-space:normal; }
 @media (max-width:860px){ .colony-view .detail{ display:none; } }
@@ -152,7 +163,9 @@
 .colony-view .legend .unwired-toggle{ font:inherit; cursor:pointer; padding:0 6px;
   margin-right:6px; border-radius:99px; background:none;
   border:1px solid var(--line); color:var(--muted); }
-.colony-view .legend .unwired-toggle:hover{ border-color:var(--accent); color:var(--accent); }
+.display-columns:is([data-inputs~="pointer"], [data-inputs~="touch"])
+  .colony-view .legend .unwired-toggle:hover{ border-color:var(--accent);
+  color:var(--accent); }
 .colony-view:not(.hide-unwired) .legend .unwired-toggle{
   border-color:var(--accent); color:var(--accent); }
 

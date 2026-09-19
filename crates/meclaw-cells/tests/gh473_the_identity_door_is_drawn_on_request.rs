@@ -319,12 +319,20 @@ fn the_two_routes_are_the_pairing_the_assistant_template_declares() {
             .find(|l| l["route"] == json!(route))
             .unwrap_or_else(|| panic!("the assistant declares `{route}`"))["at"]
             .clone();
-        assert_eq!(
-            at,
-            json!(["./talky", "./cogny"]),
-            "the connect points of `{route}` are what the door ends at; a \
-             renderer drawing anywhere else is refused `v_lane_no_connect_point`"
-        );
+        // Since `assistant@2.7.0` there are THREE rims: a channel that asks for a
+        // voice of its own gets a keeper of its own (GH #709), and it is named here
+        // because a v-lane docks only where the target says it may. The renderer
+        // draws the two rims this recipe knows; drawing at a rim NOT on this list is
+        // what `v_lane_no_connect_point` refuses, and the list is a permission rather
+        // than an instruction.
+        let at = at.as_array().expect("a connect point list").clone();
+        for rim in ["./talky", "./cogny"] {
+            assert!(
+                at.iter().any(|a| a == rim),
+                "the connect points of `{route}` must name {rim}, which is where the \
+                 door ends: {at:?}"
+            );
+        }
     }
     let drawn: Vec<String> = extra
         .iter()
@@ -342,7 +350,11 @@ fn the_two_routes_are_the_pairing_the_assistant_template_declares() {
     assert_eq!(
         drawn,
         vec!["talky".to_string(), "cogny".to_string()],
-        "and the two edges end at exactly those two rims, in that order: {extra:?}"
+        "and the two edges end at exactly those two rims, in that order. A generation \
+         grown with a chat keeper beside them (`assistant@2.7.0`) needs a third pair, \
+         and the recipe does not draw one: nothing routes a turn to that keeper until a \
+         channel `chat` exists, and whoever grows one draws its rim's v-lanes with it \
+         (templates/assistant/README.md, `One talky per channel`): {extra:?}"
     );
 }
 

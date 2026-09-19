@@ -52,21 +52,30 @@ pub const DEFAULT_SPEAK_PLAIN: bool = true;
 /// How long a released `hold` boundary waits for the provider's own end of
 /// turn before it cuts with what it has, unless a config says otherwise.
 ///
-/// A recognition provider reports the end of a turn some time after the audio
-/// carrying its last words was sent — Deepgram Flux takes 400-700 ms, and the
-/// number is a property of the model and the endpointing threshold, not of this
-/// cell. `release` used to cut on the frame, which dropped exactly those words
-/// from every take. 1500 ms is that measurement with room over it: long enough
-/// that the cap is the exception rather than the rule, short enough that a
-/// provider which has gone quiet costs a person one and a half seconds, once.
-/// `0` restores the old behaviour for a client that would rather have the last
-/// words missing than the turn late.
-pub const DEFAULT_RELEASE_GRACE_MS: u64 = 1500;
+/// The number is the time from the last spoken WORD, and that is the whole
+/// point of it. An endpointing provider does not answer the audio, it waits
+/// for a stretch of silence inside it and only then spends its own model
+/// latency — Deepgram Flux's 400-700 ms is that second half alone, and reading
+/// it as the whole was how this default came to be 1500 ms. Measured end to
+/// end on the owner's colony, 18.09.2026, three machine-timed holds against
+/// one fixture: `EndOfTurn` lands **1795 ms after the last word**, and every
+/// human hold of that day was cut at 1501/1502 ms — on the cap, never on the
+/// provider. The take that survived was held on to for 1.24 s after the last
+/// word, which is a person doing by hand what this number is for (GH #743).
+///
+/// So 2500 ms: the measurement with room over it, the way 1500 was meant to
+/// be. Long enough that the cap is the exception rather than the rule, short
+/// enough that a provider which has gone quiet costs a person two and a half
+/// seconds, once — and it costs that only in the bad case, because a boundary
+/// closes on the provider's end the moment it arrives. `0` restores the old
+/// behaviour for a client that would rather have the last words missing than
+/// the turn late.
+pub const DEFAULT_RELEASE_GRACE_MS: u64 = 2500;
 
 /// The longest grace this cell will wait. Beyond this a turn boundary is not
 /// waiting for a provider any more, it is stuck — and the bound is here so that
-/// `15000` typed for `1500` is refused by name rather than felt as a call that
-/// went silent for fifteen seconds.
+/// `25000` typed for `2500` is refused by name rather than felt as a call that
+/// went silent for twenty-five seconds.
 const MAX_RELEASE_GRACE_MS: u64 = 10_000;
 
 /// The longest frame this cell will cut. A "frame" of more than a second is a
@@ -157,7 +166,7 @@ pub struct VoiceParams {
     /// `release` says that no NEW audio belongs to the turn; the provider still
     /// owes the end of the audio already sent, and this is how long the cell
     /// waits for it. `0` cuts on the frame — the behaviour before this param
-    /// existed. See [`DEFAULT_RELEASE_GRACE_MS`] for where 1500 comes from.
+    /// existed. See [`DEFAULT_RELEASE_GRACE_MS`] for where 2500 comes from.
     pub release_grace_ms: u64,
     /// The speech-to-text provider and its settings.
     pub stt: SttParams,

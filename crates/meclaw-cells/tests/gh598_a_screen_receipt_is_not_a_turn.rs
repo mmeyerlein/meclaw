@@ -388,7 +388,9 @@ fn build_tree(td: &tempfile::TempDir, member: &std::path::Path, assistant: &std:
             "Test double for the conversation surface, and the brain counter.",
         ),
     );
-    for sibling in ["cogny", "tools"] {
+    // `talky-chat` is a ref too since `assistant@2.7.0`, and a ref this tree cannot
+    // resolve leaves the level unbootable -- it is doubled INERT rather than left out.
+    for sibling in ["talky-chat", "cogny", "tools"] {
         write(
             root,
             &format!("main/person/assistants/{AGENT}/{sibling}/config.json"),

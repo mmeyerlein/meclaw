@@ -106,3 +106,10 @@ __pycache__/
 /w13-*.sh
 orphan-journal.jsonl
 workshop/evals/.exp-*/
+
+# The one npm install in this tree: the WebKit proof driver needs playwright
+# as a library, because WebKit speaks no CDP (OR-F12). `npm ci` in
+# workshop/tools puts the module here; nothing else in the tree imports it.
+# The lock beside package.json is CHECKED IN -- `npm ci` reads it and refuses
+# to run without one, and it is what pins the tree under the one dependency.
+/workshop/tools/node_modules/

@@ -96,7 +96,8 @@
               "ses_phase": "hop.phase",
               "channel": "hop.channel",
               "keeper_session": "hop.session_id",
-              "keeper_body": "hop.keeper_body"
+              "keeper_body": "hop.keeper_body",
+              "turn_id": "hop.turn_id"
             }
           }
         },

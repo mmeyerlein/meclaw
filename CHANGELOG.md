@@ -12,6 +12,575 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.39.0] — 2026-09-19
+
+A minor release: the screen is built to its description, and a typed sentence is
+a turn of its own channel. `display@2.5.0` is the first template whose behaviour
+is a copy of one document rather than a reading of it -- the curator's twelve
+steps are byte-identical with that document's reference model, its scenarios
+travel with the template and run against the cell in seconds, and the whole
+screen state is one row in the store instead of props carried from pass to pass
+through whatever a browser was holding. One screen now serves many exits from a
+switch at the root, each rendering what it can carry. `chat-channel@1.0.0` is a
+new template: one `code` cell a chat application puts its input line on, minting
+the `turn_id` the turn, its answer and every window built from that answer carry,
+and putting it on the lane every turn of every channel travels. `assistant@2.7.0`
+gives that channel a talky of its own, `member@1.8.0` lets an application take a
+view back down, and `builder@1.11.0` renders the edge that carries it. That id
+now survives the whole road (`firewall@2.3.1`, `session-keeper@2.2.1`,
+`collector@4.1.1`, GH #724), and a curator pass reaches the browser as one frame
+per output (`web@2.0.4`, GH #723).
+
+The screen's vocabulary narrows with it, and that is the one breaking change:
+the two events a screen sends are `tap` and `hold`, and `canvas_slots`,
+`params.dock_max`, `plane`, `modal` and a curator-written `state` are gone.
+**Migration: rename the two events in any client that binds them, and drop
+`canvas_slots` from the profiles.** An application that only sends views has
+nothing to change.
+
+### Breaking
+
+- **The screen's vocabulary is the one its description uses** (`display@2.5.0`,
+  GH #707), and that narrows the template DSL. The two events a screen
+  sends are `tap` and `hold`; the names `tile` and `touch` are gone, and a hold
+  carries no field at all. The window props `plane` and `modal` are gone with
+  them, and so is `state` as a word the curator writes -- a window stands on a
+  `level` and carries a `rung`, which is what that spelling stood for.
+  `canvas_slots` and the root `params.dock_max` are no longer read: how many
+  windows an exit draws follows from its kind, and every
+  entry of `screens` names its own `dock_max`. **Migration: rename the two events
+  in any client that binds them, and drop `canvas_slots` from the profiles.**
+  An application that only sends views has nothing to change -- `state: "urgent"`
+  and `state: "hidden"` are still what an application says about its own window,
+  and `layer` says what `modal: true` used to say. One thing a view no longer
+  decides: the `ord` of a view row is not read for the order of the windows any
+  more. `canvas_order` (§ 6.3) orders the open canvas windows -- the leading one
+  first, then by score -- and `dock_order` (§ 4.28) orders the tiles. A window
+  that is only a tile has no place on the canvas to be ordered in.
+
+### Added
+
+- **The dock comes and goes in one short movement** (`display@2.5.0`, GH #741).
+  It switched hard on a monitor in both directions and flew in over 360 ms on a
+  phone with nothing at all on the way out. Both directions are now the same
+  140 ms of opacity and a few pixels from the edge it lives on, on every output.
+  A closed dock stays what it was -- a box that was never made, `display: none`
+  -- because the movement is declared with `transition-behavior: allow-discrete`
+  and a starting style; an engine without those keeps the hard cut it had, which
+  is no step back. Under `prefers-reduced-motion` nothing moves.
+
+- **The weather window sets its unit under the number** (`display@2.5.0`,
+  GH #741). The value is the figure and the unit its label, the way the dock
+  tile has always drawn it; the unit used to stand beside the number and raised
+  behind it. Value and unit travel apart all the way from the application, so
+  nothing outside the sheet changes.
+
+- **A chat line says where it came from and when it arrived** (`display@2.5.0`).
+  Beside the channel word every line now carries its clock time. The line
+  carries it raw -- `at`, the epoch milliseconds of the line -- and the browser
+  writes HH:MM into it in the time zone of whoever is looking, because one
+  screen state is shared by every exit and has no time zone of its own while
+  each device has one. A line of another day carries its date short in front of
+  the time; a line without `at` renders exactly as before, with no empty box.
+  Tiles are unchanged: a tile is a face, not a transcript, and only what is
+  about a time -- a timer, an appointment -- carries one there.
+- **The screen is built to its description** (`display@2.5.0`, GH #707). The
+  curator's pass -- the twelve steps that turn hints, a verdict, a gesture and
+  the time into rungs, levels, tiles and the next moment -- is byte-identical
+  with the reference model of the one document that describes this template,
+  and a lock fails when the two differ. The scenarios of that document travel
+  with the template and run against the cell in seconds, three numbers per
+  run: the model against itself, the copy inside the cell, and the cell
+  through its own door and store. A rule now changes in the document first and
+  reaches the code by copy, never the other way round.
+- **One screen, many exits, and a switch at the root** (`display@2.5.0`,
+  GH #707). Every named exit is its own copy of the tree under `<name>.`, and
+  `/<mount>/` is the switch that leads a visitor to one of them: the page it
+  serves is the `default_screen`, and a narrow touch device is sent to the
+  `phone` exit where the screen has one. A profile says what its exit is (`display_type`, now
+  required) and how many tiles it carries; a television is given no inputs
+  whatever it asks for, because nobody touches one.
+- **Two events, and neither of them describes itself** (`display@2.5.0`,
+  GH #707). A finger on a tile is a `tap`, naming the window it belongs to; the
+  OS mark held down is a `hold`, and it carries nothing -- what a hold means is
+  the screen's to decide, not the browser's to assert. An empty seat is a
+  component of its own now (`display-seat`), so the place a tile will come back
+  to stays where it is.
+- **A typed sentence is a turn of its own channel** (`chat-channel@1.0.0`, GH #709). The
+  new template is one `code` cell a person's chat app puts its input line on. It mints the
+  `turn_id` the turn, its answer and every window built from that answer carry, it stamps
+  the member who typed it, and it puts the turn on the lane every turn of every channel
+  travels -- firewall, session, talky. The answer comes back to it and stops: this channel
+  has no loudspeaker, and the app that shows the conversation hears the answer on the
+  member's own lane. Two edges wire it, the same two every channel costs.
+- **One talky per channel** (`assistant@2.7.0`, GH #709). The level holds a second
+  conversation surface, `./talky-chat`, for the channel `chat`: the same ref onto the same
+  template with the same overrides, because the model, the tool list and the memory tier are
+  the level's decisions and a chat answering in another voice would be another assistant to
+  the same person. `in_turn` and the advice a consult produced are split on
+  `context.channel_node`, the tool round on `context.tool_caller`, and every sweep, prune
+  and mutation receipt fans out to both, because each keeper has its own sessions to tidy.
+  Every connect point names both rims, so whoever wires a chat channel draws that rim's
+  v-lanes a second time. The four TRANSFER lanes are the exception and stay on the spoken
+  keeper: both keepers are a `session-keeper`, and an export names a directory and an import
+  an `import_hive` by the name of the HIVE rather than of the node, so two of them would
+  claim one export directory and answer one import address (GH #712). Two keepers are two
+  session windows: what was spoken reaches the typed keeper through the member's memory,
+  never out of its own window.
+- **An app takes its view back down** (`member@1.8.0`, GH #709). The edge that carries
+  what an app drew out of `./apps` carries `withdraw` beside `view`, in the same edge
+  rather than in a twin, so a view that is over reaches the screen as `in_withdraw`
+  instead of waiting out a `ttl_ms`. `display` has accepted the lane since it shipped and
+  nothing carried the asking; it became load-bearing with several views per app, where a
+  timer that has rung and a card that has been replaced have to say they are over rather
+  than stand there fading. The down-edge onto the screen stays the instantiating
+  mutation's and re-stamps the pair with one ternary, and `builder@1.11.0` renders it that
+  way (`meclaw-os@1.8.10` moves the pin). A screen grown before that needs the one edge
+  redrawn, or a withdrawal reaches the channels container and stops there as
+  `hive_no_route`.
+- **Four levels and two ladders on the screen** (`display@2.4.0`, GH #702). An application
+  declares which ladder a window competes on -- `layer: "canvas"` (the default) or
+  `layer: "modal"` -- and each ladder has its own focus, so a chat over a document does not
+  take the document's rung. What is drawn where is the new window prop `plane`: the loudest
+  urgent window in front, one active modal over the canvas, the canvas focus and as many
+  `relevant` windows beside it as the exit carries. Three more hints: `seat` and `seat_ord`
+  put a tile in the seated band at the bottom of the dock (the clock lowest, the weather above
+  it, an empty seat stays empty, and a seated tile is never cut), and `linger` says how long
+  this window keeps its full weight after a touch, clamped to `linger_ms + fade_ms`.
+- **A tap on a tile is a touch on its window** (`display@2.4.0`). The screen answers it
+  itself, without asking the judge: the window's `since` becomes now, the verdict on it is
+  dropped, and it takes the focus of its ladder -- on every exit at once. A second tap on the
+  window that is LEADING its ladder puts it back into its tile (`dismissed_at`), where it fades
+  as usual; a tap on any other window, an urgent one that merely rings in its tile included,
+  is a touch and brings it forward. A tap on the canvas closes the standing modal, and holding
+  the OS mark touches whatever the screen shows about the subject `chat`. Neither gesture is
+  remembered anywhere: `since` and `dismissed_at` are the whole statement, and a later touch
+  lifts the mark by itself. An alarm an application raises after the finger put a window away
+  is not answered by that gesture: such a window leads its ladder again, because the finger
+  puts away what it sees.
+- **One line a person types into** (`display@2.4.0`): the content component `display-input`,
+  bound on Enter, carrying the object id of the window it stands in -- the screen fills that
+  id, as it does on a tile, so an application never names the index chain. What was typed
+  leaves the hive as an `event` of the application that put the window up -- addressed by
+  the id the screen wrote and never by the sentence, which a person could otherwise make
+  look like the id of somebody else's view. The catalogue is twenty-nine components now.
+  The window it stands in is never taller than the screen: the leading window is capped
+  against the visible height minus the safe area, what does not fit scrolls inside it, and
+  the input line keeps the foot -- eight chat lines used to push the field 528px under the
+  bottom edge of a phone. And the conversation in it shows its newest line: a window that
+  opens stands at the foot, a line that arrives is followed, and a window somebody has
+  scrolled up in stays where they left it until they scroll back.
+- **Each exit renders what it can carry** (`display@2.4.0`). An entry of `screens` gets three
+  dials of its own: `canvas_slots` (how many windows stand large here; tv 2, monitor 3, phone
+  1), `dock_max` (its own tile cut) and `dock_default` (`shown` or `hidden`). The state is one
+  -- the same windows, the same rungs, the same focus -- and a tile that does not fit is
+  absent from that exit rather than dimmed. The mark carries `unseen`: how many present
+  windows are asking for attention from a tile on THIS exit, counting neither a window the
+  finger put away nor one this dock's cut dropped, and the screen's clock orders the moment
+  that number falls.
+- **The screen has four planes, and they are four numbers** (`display@2.4.0`,
+  GH #703). A window carries the plane it stands on, the sheet turns it into a
+  z-index, and the blur follows the plane: a modal takes the canvas back a
+  little, an urgent window takes both back further. A modal also stands centred
+  over the canvas instead of in its column, so a sentence somebody says does
+  not relayout the screen. Until 2.3.3 the sheet carried nine single numbers
+  and the blur was triggered by a boolean an application set about itself -- so
+  the OS mark standing above an urgent window was document order rather than a
+  statement.
+- **A phone starts with its dock closed, and a tap opens it**
+  (`display@2.4.0`, GH #703). The ground state comes from the profile and is in
+  the first paint; the opening is the client's and lives on `<html>`, where no
+  render reaches it. It is not remembered: a reload puts the screen back into
+  its profile default. A closed dock is `display: none`, never `opacity`.
+  While it is closed, the OS mark carries a dot when something urgent or
+  freshly touched is present and not shown.
+- **A press under 250 ms is a tap, over it a hold** (`display@2.4.0`,
+  GH #703). A hold reaches both halves of the system: the voice cell hears the
+  frame, the screen hears a touch on the chat. Nothing is lost to the threshold
+  -- from the first touch the microphone's frames are kept in a two-second ring
+  and sent behind the hold that frames them. A click ends the gesture it
+  belongs to, so a press whose `pointerup` never arrived cannot speak
+  afterwards.
+- **A window may carry a line to type into** (`display@2.4.0`, GH #703). One
+  field, no form; the screen empties it after Enter, in a macrotask of its own
+  so that what was typed is read before it goes. Its type has a 16 px floor,
+  which is what keeps a phone from zooming into the field and staying there.
+- **The proof runs in WebKit too**
+  (`workshop/tools/display-webkit-browser.mjs`, GH #703). An iPhone viewport in
+  the engine an iPhone actually is.
+
+### Changed
+
+- **The state is one row in the store** (`display@2.5.0`, GH #707). All of it --
+  every window with its verdict and its curator values, the bar, the weights,
+  the chat, `unseen`, the strokes and the order of the dock -- stands under
+  `(owner "display", view_id "screen-state")`, and the object tree is a rendering
+  of it. Before this the curator's values lived as props on the display's own
+  objects and travelled from pass to pass through whatever the browser was
+  holding, and the tree was copied per exit and recomputed in each copy, so a
+  screen with three exits had three answers to the same question. `unseen` is one
+  number for the whole screen for the same reason.
+- **The finger stands above the score, the chat closes itself, and the dock cut
+  takes no window** (`display@2.5.0`, GH #707). A touched window keeps the front
+  of its ladder for a while (`led_until`) instead of for exactly one pass, so an
+  arriving score cannot take the screen out from under the hand that just
+  reached for it. A chat window carries the `turn_id` of the turn it belongs to
+  and closes when the answer to that turn has been read, rather than waiting for
+  its relevance to decay. And a dock that is too short for what is present drops
+  tiles in stages -- the unseated first, the seats last -- and never touches the
+  window a dropped tile belongs to: the cut is rendering, and the state is one.
+- **The judge sees no geometry** (`display@2.4.0`). `screen` and `dock_overflow` are gone from
+  the situation, and the sentence about the dock being full is gone from the instructions: the
+  judge decides one state for every exit at once, and how much of it a screen shows is that
+  screen's profile, cut after the verdict. `params.dock_max` is now the FALLBACK for an entry
+  of `screens` that names no `dock_max` of its own; when nothing says anything the kind of the
+  exit decides, tv 7, monitor 8, phone 5. The package ships that dial as `0` -- a number here
+  is ONE number for every exit, so the shipped `7` gave a phone the television's dock.
+- **The dock reads the rung, not the compatibility word** (`display@2.4.0`). A window that is
+  not drawn wears `state: "hidden"`, so a dock ordered by `state` dropped the second urgent
+  window out of the tiles at a narrow `dock_max`. Rank and cut read `rung` now, and a tile that
+  rings keeps its place.
+- **The canvas is ordered by what it means** (`display@2.4.0`): plane, then the youngest touch,
+  then identity. A drawn window is lifted above every declared `ord`, so the order of the
+  windows the canvas draws no longer mixes with the seats of the ones it does not. The seat of a
+  standing view is untouched -- the moment a view was last written is still not a sort key
+  (GH #609).
+- **`modal` is deprecated** (`display@2.4.0`). It said what `layer: "modal"` says; a window
+  that names `modal: true` and no `layer` is read as modal for one release, `data-modal` is
+  still written, and the README lists the hint as deprecated. Nothing to migrate today.
+- **A tile that answers a finger says so before the colony does**
+  (`display@2.4.0`, GH #703). The press is a ring in the same frame the finger
+  lands; what the tap MEANS is still the server's word, one pass later.
+- **A chat tile reads as a chat, and a value keeps its unit**
+  (`display@2.4.0`, GH #703). The bubble leads, the last line gets two lines
+  instead of one cut, an unread answer shows a dot, and a unit is set beside
+  the number rather than swallowed by its ellipsis. The weather window leads
+  with the value, the glyph carries the state and the place is a label. Frames
+  and windows are unchanged.
+
+### Fixed
+
+- **The leading window keeps its left and its top edge** (`display@2.5.0`,
+  GH #739). The canvas region carries `overflow-y: auto`, which makes it a
+  scroll container on both axes, and a scroll container clips at its padding box
+  on all four sides -- also on the sides where it does not scroll. Its padding
+  was zero, the air stood on the column around it, and so the cut ran along the
+  outer edge of the first grid cell. A window on the `focus` rung is drawn
+  outside its box, two per cent wider and four pixels higher, with a one-pixel
+  ring beyond that; `canvas_order` puts the leading window in that first cell
+  and the leading window is the one that wears `focus`. Measured on a monitor it
+  lost 6.8 px on the left and 15.2 px on the top, on a television 25.7 px on the
+  top, and on a phone three edges plus four pixels of sideways scroll that
+  nothing could scroll to. The gutter now sits inside the scroller instead of
+  around it: the window stands where it stood, and the cut falls outside it.
+
+- **A television paints at sixty frames a second again** (`display@2.5.0`,
+  GH #740). The ground drifted for ever -- a keyframe moving the
+  `background-position` of three gradients, which is not a compositable
+  property -- and a grain layer was blended into every one of those repaints.
+  At 3840x2160 that is a full repaint of 8.3 megapixels per frame, and a
+  television measured 5 frames a second while nothing at all was happening;
+  building a window up or taking it down simply made it visible. Both stop on
+  that one output now. Its glass, its plane blur, its transitions and its window
+  keyframes stay exactly as they are: measured, they cost nothing there.
+
+- **The refusal names what is missing and which page said so** (`display@2.5.0`,
+  GH #741). The caption read `microphone needs https or localhost`, and
+  `localhost` is an address the reader is not on and cannot go to; the address
+  that would work lives in a proxy the colony knows nothing about and may not be
+  invented. It now says `the microphone needs https` followed by the page's own
+  origin -- the two things the browser knows for certain.
+
+- **The shipped sheet travels without its comments; the source keeps them**
+  (`display@2.5.0`, GH #735). `display-dna.css` argues for every rule it has,
+  and every screen was loading those arguments: about 47 kB of reasoning that
+  only a reader of the file ever needed. The copies a screen gets now carry the
+  rules and the sheet's head comment, which says what it is and where the
+  source is; the file itself is unchanged and keeps every word. Nothing about
+  the design language moved -- the CSS a browser parses is the same -- and the
+  page went from 97 kB to about 50.
+- **A window its application has just written is judged anew**
+  (`display@2.5.0`, GH #742). A verdict of the judge used to stand until the
+  judge itself spoke again or a finger touched the window -- an application
+  writing to the window changed nothing about it. A window the judge had
+  closed while it slept therefore stayed closed after its application woke it,
+  for as long as the judge needed to run once or twice: the answer to a
+  question about the weather arrived, the conversation stepped back, and the
+  screen stood empty for several seconds until the weather window was allowed
+  to open. An application touch -- a changed prop of the window, or a raised
+  `touched` -- now clears that window's `judged_relevance` and
+  `judged_hidden`, so the application's own `relevance` counts until the judge
+  speaks again, exactly as it does after a tap. That next run is not
+  guaranteed: a call that falls inside the judge's minimum interval is
+  discarded rather than made up, and the window then stands on what its
+  application says about it until the next touch after the interval -- which
+  is the guideline's own order, a window judged anew at every real event. The
+  bar stays as it is -- it is the screen's, not one window's -- and so does
+  the map of context weights; but the cleared window is no longer weighted by
+  it. Until the judge speaks again that window counts with the unnamed weight
+  0.5, in its score and in its rank in the dock, because the weights are the
+  same standing judgement as the two values and were written for the situation
+  the touch has just ended. Keeping that half was the second half of the bug:
+  a weather window woken with a relevance of 0.8 stayed shut at the context
+  weight of 0.3 the judge had written for the timer round before it -- 0.24
+  against a bar of 0.3, seven seconds with nothing open. A window that first
+  appears carries no verdict to clear, and the topic touch -- another
+  application's window on the same subject -- leaves the standing window's
+  verdict alone, because the judge may have closed that window on purpose.
+- **Two taps inside one round trip no longer lose one of them** (`display@2.5.0`,
+  GH #744). Every event on the screen starts a read pass of its own, and between
+  the pass's read and the write that follows it lies a full message round trip.
+  The curator kept its whole memory in one row and replaced that row blind, so
+  any event that started its own pass inside that window computed on the row the
+  first pass had read and then overwrote what the first pass concluded. Measured
+  with real mouse clicks: two taps 36 ms apart both opened the same window, so
+  ten taps on one tile ended with it open where an even count ends put away; and
+  three application writes 18-46 ms after a tap carried the state from before the
+  tap. The row now names the version it was read at, and a write whose row has
+  moved on is turned away -- the same pass then runs again on what the store
+  holds, at most three times, and says so out loud if it still cannot land. The
+  row that carries the state is created the way a view row always was, one
+  message that removes the name and writes it again, because the table has no
+  primary key to lean on.
+- **A patch from an older pass no longer takes the tap back** (`display@2.5.0`,
+  GH #744). The browser draws the effect of a tap at once and the next pass
+  confirms it. A pass that was already running when the finger landed renders
+  the state from before the tap, and it arrived first: the window flashed open
+  and shut again, which from the hand is indistinguishable from a tile that does
+  nothing -- five taps on the chat tile in four seconds, every one of them
+  processed by the screen. Each window now carries the moment it was last touched
+  or put away, and the browser keeps its own drawing until a patch carries a
+  bigger one; a window a tap closed alongside is held by its own moment, so a
+  conversation opened by a hold, or by a finger on another exit, is never shut
+  again by a drawing made seconds ago. The hold ends by itself after a few
+  seconds, because a tap the screen absorbs never moves a moment at all.
+
+- **The refusal the mark says is one a person can read** (`display@2.5.0`,
+  GH #722). § 5.4 asks a refused voice channel to be said "in its live region",
+  and the live region is `clip-path: inset(50%)` -- so the whole of saying it
+  reached a screen reader and nobody else. On a laptop holding the mark on a LAN
+  page over plain HTTP, the measurement reads `microphone needs https or
+  localhost` in the DOM, `data-phase="error"` on the mark and the mark at half
+  opacity, and the person sees a mark go faint with no reason given. While the
+  mark stands in that phase, the same line it already writes is now drawn as one
+  small caption above the mark, flush with its trailing edge, inside the safe
+  area and with nothing behind it, in the mark's own dimming. Every other phase
+  keeps the live region it had. Nothing was added to the screen's state and no
+  clock is involved: the caption lasts exactly as long as the phase, and a
+  gesture or a microphone that opens after all is what ends it.
+
+- **A curator pass is one frame per output** (`web@2.0.4`, GH #723). GH #718
+  made a patch bundle one push per route for the root and the structural arm
+  and left the plain slot arm at one push per slot, so a pass that moves a
+  window -- main, aside and dock of the same output, always all three -- still
+  reached the browser as several frames a few milliseconds apart. A browser
+  re-renders the whole page container out of its cached tree whenever a diff
+  arrives and patches only the keys that diff names, so a frame naming one slot
+  re-draws the others from the values the cache held BEFORE the pass and writes
+  them back over the DOM: whatever the client had drawn optimistically is gone
+  until the next frame restores it. Measured on the fresh instance (18.09.2026,
+  Chromium, a real click closing the chat window): two diffs, `{"2"}` at
+  +167 ms and `{"0"}` at +172 ms, and `data-level` `2 -> 0` at +30 ms
+  (optimistic) `-> 2` at +172 `-> 0` at +176. The window blinked, which is what
+  the human acceptance reported as "opened and closed twice, on every tile".
+  The push now carries every slot the pass touched in one diff,
+  `{"0": ..., "1": ..., "2": ...}` -- the shape the client already reads, since
+  the structural arm has always sent all four slots and the statics in one
+  frame. A pass over two outputs stays two frames, one each; a single call
+  stays one slot.
+- **The answer carries the turn's own id** (`firewall@2.3.1`,
+  `session-keeper@2.2.1`, `collector@4.1.1`, GH #724). A channel assigns a
+  `turn_id` when it accepts a turn, and the answer -- and every window that
+  arises from it -- is supposed to carry it on. Measured on two live colonies
+  and on both shipped channels: it never got past the screening. All three
+  exits of `firewall/screen` rebuilt the header from a fixed key set the id was
+  not in, `session-keeper/stamp` built the stamped turn's header from scratch
+  and copied only the body into it, and `collector/assemble` then minted a
+  fresh `uuid4` for every round. So the answer that reached the chat, the
+  ambient view and the stage named a turn nobody had spoken, the chat window
+  carried no id at all, and the rule that closes a chat once a canvas window
+  answers its last turn had two ids to compare and never fired. The id now
+  travels the whole road: it is on `pass`, `reject` and `hold` alike, it rides
+  the two store round-trips in the context the way the parked body already did,
+  and the collector adopts it instead of minting -- `uuid4` stays the fallback
+  for an ingress with no channel in front of it, and an advisor's return keeps
+  minting, because the id on ITS hop belongs to another session. A turn a
+  person releases from a hold re-enters under the id it was spoken under too:
+  `./warden` stores it with the parked row, because the release lane carries a
+  hold id and a decision and nothing else. An adopted id is a foreign string,
+  so it is capped in length, loses any `|` -- the separator the collector
+  builds its own composite round ids on -- and is refused outright in the
+  reserved `close-<session>` shape, which is a bookkeeping row's key.
+- **The judge is told what its own numbers do** (`display@2.5.0`, GH #726). A
+  window stands large when `weight x relevance x decay` reaches the bar, and the
+  prompt the judge was handed said nothing about that product -- only that a high
+  bar means a concentrated screen. Measured against `openai/gpt-5.6-luna` on a
+  live screen and its twin: every one of forty verdicts came back with `bar` at
+  0.9 and nearly every window hidden at `judged_relevance` 0.05. At that bar only
+  a context weighing 1.0 with a relevance of 0.9 opens anything, so the window
+  that answered the person's question stayed a tile while the conversation kept
+  the screen, and verdicts reversed within seconds with no event between them.
+  The prompt now carries the arithmetic with a worked example, the span a usable
+  bar lives in (0.2 to 0.5, and 0.3 unless the person wants quiet), that a weight
+  is not an off switch and the conversation gets no bonus either, that the window
+  showing the answer is what matters now while the chat steps back, and that a
+  verdict does not move without a new event. `workshop/tools/judge_eval.py`
+  measures a prompt against a real model on recorded screens, at both edges --
+  every expectation that asks for a window to stand is paired with one that asks
+  the screen to stay quiet, so a prompt that simply opened everything would fail
+  it. Of twenty expectations the old prompt missed nine and the new one three.
+
+- **The mark keeps saying what it refused** (`display@2.5.0`, GH #720). The
+  refusal of § 5.4 lasted about a tenth of a second: `data-phase` is an
+  attribute of the rendered mark, the client wrote it, and the next patch --
+  the pass that the very same hold had started -- put the server's empty value
+  back. Measured on the fresh instance over plain HTTP on a LAN address: dimmed
+  at t=460 ms, bright again at t=562 ms, and the live region wiped with it.
+  The mark's phase and its spoken line now live in the client's own hook, which
+  writes them back after every patch, so the dim and the words stand until a
+  new press or a microphone that opens after all takes them off. Nothing was
+  added to the screen's state: what the mark is doing is true about one page's
+  voice channel and about no other output of the same member, and the colony
+  has no opinion about a device it cannot see.
+
+- **A long press with a refused microphone is still a hold** (`display@2.5.0`,
+  GH #719). On an output whose profile carries `audio`, a press that could not
+  open the microphone -- a page served over plain HTTP, a device that is not
+  there, a person who said no -- ended in silence: `openMic()` returned `false`
+  and `down()` returned with it, so nothing reached the screen, the dock did
+  not answer either (§ 6.4 reads the PROFILE, not the device), and the mark
+  neither dimmed nor counted. Measured in both engines: a 900 ms press, every
+  counter 0, `data-phase` empty. The hold is the event and the audio is best
+  effort, so the press now sends its `hold` whatever the microphone said -- on
+  an output with a keyboard the chat's own input line carries the conversation
+  -- and the mark says the refusal and dims (§ 5.4). The refusal is not
+  latched: a microphone granted a minute later needs no reload.
+
+- **A held turn keeps its last words** (`voice@2.0.3`, GH #717). An endpointing
+  provider ends a turn after a stretch of silence IN the audio stream
+  (Deepgram Flux: `eot_threshold`, 0.7 s), and a client stops sending about
+  120 ms after `release`. So nothing reached the provider after the key came
+  up, no end of turn ever came, and the boundary was cut at `release_grace_ms`
+  with the interim transcript -- which lags the audio, so the end of the
+  sentence was gone. Measured on the fresh instance (18.09.2026) with a fixture
+  released 20 ms after the last word: cut at +1501 ms, transcript empty; the
+  same take with silence still streaming closed 137 ms after the release with
+  the whole sentence. The cell now feeds the provider 20 ms frames of digital
+  silence from the `release` until the turn ends or the grace runs out, at the
+  rate the connection negotiated. The answer arrives complete and sooner. The
+  client is untouched, the cap stays as the backstop, and `release_grace_ms: 0`
+  still cuts on the frame.
+
+- **Two hives follow their children's pins** (`freeswitch@2.0.5`,
+  `canvy@2.3.1`). The telephone's media half refs `voice@2.0.3` and the
+  canvas's display refs `web@2.0.4`. Only the pins move -- no cell, no lane and
+  no declaration of either hive.
+
+- **A patch bundle reaches the browser as one picture** (`web@2.0.3`, GH #718).
+  A curator pass arrives at a display as ONE message with several
+  `object.update` legs, and the cell used to publish and push after every one
+  of them. Five of a tap's eight legs are root updates, and a root update
+  re-sends the whole packed tree as it stands at that moment -- so a browser was
+  handed four intermediate pictures, each with the window it had just opened
+  closed again, before the last leg opened it for good. Measured on the fresh
+  instance (18.09.2026): `data-level` `1 -> 0 -> 1` within 255 ms on one tap,
+  and a second browser watching the same state saw only a blink. A bundle now
+  accumulates what it touched and pushes once per route, after the last leg, so
+  what goes out is the end state; a single call pushes where it always did. A
+  leg that moves a root object keeps its broadcast -- a display lays down one
+  page per output, and a pass that writes one output's root and another's window
+  has to reach both. Seven frames and ~774 KB per tap become one frame and
+  ~154 KB.
+
+- **An application's hover state no longer reaches an exit with no finger**
+  (`colony-view@1.1.2`, GH #715). `display-hive.md` § 6.4: "without `pointer`
+  and without `touch` no `:hover` rules". The screen's own sheet has asked its
+  root that question since `display@2.5.0`; the sheet an application ships goes
+  into the same page and had never been asked it, so on a television -- an
+  output device, whose profile carries no inputs -- a stray kiosk cursor lit
+  three controls of the colony view in the accent colour. All three rules now
+  stand behind the screen's `data-inputs` gate, and a lock holds the sheet to
+  it in both the file and the copy the runtime is handed.
+
+- **A changed template now runs every lock that reads it** (GH #713). A test that
+  reaches into `templates/<name>/` through a helper -- resolving the catalogue root
+  once and joining the rest of the path onto it -- is selected for that template's
+  diff like one that spells the path out, and a test that walks the whole catalogue
+  is selected for every template, however it spells the root. `scripts/gate.sh`
+  prints the base its diff was taken against before it plans.
+
+- **No window outgrows its exit, whatever its rung** (`display@2.5.0`, GH #710).
+  The height cap of a window read the content box, so the padding and the border
+  around it fell outside the number and a window at the cap stood taller than the
+  room it was given. It is the border box now. The two loudest rungs also lift the
+  window they mark; the lift is a scale, it multiplies the height, and the cap did
+  not know about it. Both the lift and the cap now spend the same token, so a
+  window that carries a rung is capped at what it will actually measure.
+
+- **On a phone the leading window stays the largest** (`display@2.5.0`, GH #710).
+  A phone stacks its windows and the leading one is meant to be the tall one; its
+  siblings had a floor but no ceiling, so a sibling with more content than the
+  leader grew past it and the stack stopped saying which window leads. Siblings
+  now carry a ceiling of their own, and what does not fit scrolls inside the
+  window the way § 5.9 asks.
+
+- **A refused mark dims, it does not only change colour** (`display@2.5.0`,
+  GH #710). A voice channel that refuses puts the OS mark into its error phase,
+  and the phase changed the mark's colour alone. On a television across a room
+  and for anybody who reads colour differently that is not a difference. The mark
+  loses opacity in that phase now, by a token, the way every other unavailable
+  control on this screen does.
+
+- **The dock toggle no longer hangs on the voice channel** (`display@2.4.0`,
+  GH #704). The OS mark carries two gestures: a short press toggles the dock, a
+  long one speaks. A refused channel used to set the `disabled` property on the
+  button, and a disabled control dispatches no pointer events at all -- so the
+  dock went with the voice cell, although the toggle is presentation and pushes
+  nothing. It showed nowhere while a voice cell was up and appeared after one
+  was restarted: the mark stayed dead until the page was reloaded, and on a
+  phone the dock is the only way to the tiles. The refusal is the hook's own
+  state now; only the hold reads it, and it refuses in the open -- the mark
+  shows its error phase and the state line says what the channel said, and it
+  is not announced as `aria-disabled`, because it still answers a finger. A
+  page with no socket at all is answered the same way rather than by leaving
+  the mount, which used to take every listener below it along.
+- **A page can reach the edge of a phone again** (`web@2.0.2`, GH #703). The
+  shell declared `width=device-width` and nothing else, so a browser on a
+  device with a notch or a home indicator laid the page out inside the safe
+  area and every `env(safe-area-inset-*)` a stylesheet asked for read 0. The
+  viewport now says `viewport-fit=cover` as well, which is what makes those
+  numbers real. Nothing else about the head moved.
+
+- **A held take keeps its ending without being held on to** (`voice@2.0.4`,
+  GH #743). `release_grace_ms` is 2500 ms rather than 1500. The silence tail of
+  `voice@2.0.3` reaches the recognition provider, but the grace it was paid for
+  was set by a figure that means something else: a model quotes the latency it
+  spends AFTER its endpointing threshold has fired (Deepgram Flux, 400-700 ms),
+  while the number this cap has to cover is the time from the last spoken word.
+  Measured end to end over three machine-timed holds, that is about 1795 ms --
+  so every hold released by hand was cut on the cap with the last interim, and
+  the end of the sentence was missing unless the person held the key down until
+  the transcript had caught up. The cap is a backstop again rather than the
+  usual exit, and it costs the extra second only where a provider has gone
+  quiet. `0` still cuts on the release frame.
+
+- **The telephone's media half follows the grace** (`freeswitch@2.0.6`,
+  GH #743). A ref pin and nothing else: the hive's media half refs
+  `voice@2.0.4` instead of `voice@2.0.3`, so a colony grown from this template
+  gets the longer grace with it. Nothing inside the hive changes, and the media
+  half runs `auto`, where no hold and no grace exist -- the pin is there so the
+  tree does not ship a hive that names a version it no longer carries.
+
+### Migration from `display@2.3.x`
+
+An application that only sends views has nothing to change: one that says nothing new competes
+on the canvas ladder, lingers for the screen's `linger_ms`, sits nowhere in particular, and
+renders as it did, and `state: "urgent"` and `state: "hidden"` are still what it says about its
+own window. What does change is named under **Breaking** above -- the two event names, the
+window props `plane` and `modal`, `state` as a word the curator writes, and the two dials
+`canvas_slots` and the root `dock_max`. A client that binds an event of its own called `tile`
+or `touch` renames it; a profile that carries `canvas_slots` drops it.
+
 ## [0.38.1] — 2026-09-14
 
 A patch release: a held recording now arrives whole, on both sides of the

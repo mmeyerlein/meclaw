@@ -215,6 +215,117 @@ class Classify(unittest.TestCase):
             st["tests"].scope,
             "binary_id(=meclaw-cells::gh2_all) - (%s)" % gp.SCENARIO)
 
+    def test_display_scenarios_are_a_station_that_travels(self):
+        """The pins of the one normative display document (development-rules § 10).
+
+        The driver and its scenario file live under `templates/`, which is a public
+        export root, so unlike the three `workshop/` suites this station also runs in
+        the published tree -- it is NOT in CI_EXCLUDED. Its own class exists so that a
+        diff which touches only the driver still plans it.
+        """
+        scen = "templates/display/compose/scenarios/scenarios.json"
+        self.assertIn("display_scenarios", gp.classify([scen]))
+        # It carries `template` too: the path lies under templates/.
+        self.assertIn("template", gp.classify([scen]))
+
+        st = by_name(gp.plan([scen], "strand", repo=None))
+        self.assertIn("scenarios:display", st)
+        self.assertFalse(st["scenarios:display"].cargo)
+        self.assertEqual(
+            st["scenarios:display"].cmds,
+            [["python3", "templates/display/compose/scenarios/"
+              "run_display_scenarios.py"]])
+        # The number stands in every GATE line and in every receipt.
+        self.assertEqual(st["scenarios:display"].scope, "116 scenarios")
+
+        # A diff on the driver alone plans it as well.
+        driver = "templates/display/compose/scenarios/run_display_scenarios.py"
+        self.assertIn("scenarios:display",
+                      {s.name for s in gp.plan([driver], "strand", repo=None)})
+
+        # I, R and C plan it for EVERY diff -- the driver and its scenarios travel
+        # under templates/, so ci is the one place where the document is checked
+        # against the tree that ships. Two seconds; nothing about that is worth
+        # making conditional.
+        for mode in ("integration", "release", "ci"):
+            self.assertIn("scenarios:display",
+                          {s.name for s in gp.plan(["docs/x.md"], mode, repo=None)},
+                          mode)
+        self.assertIn("scenarios:display",
+                      {s.name for s in gp.plan([scen], "ci", repo=None)})
+        self.assertNotIn("scenarios:display", gp.CI_EXCLUDED)
+
+        order = gp.STATION_ORDER
+        self.assertLess(order.index("scenarios:builder"),
+                        order.index("scenarios:display"))
+        self.assertLess(order.index("scenarios:display"),
+                        order.index("recall-harness"))
+
+    def test_display_browser_is_a_station_that_stays_home(self):
+        """The B-proofs of display-hive.md § 5-9, measured in Chromium and WebKit.
+
+        Two shapes, one station name, like `export-audit`: the SHEET half needs no
+        colony and takes about thirty seconds, so integration runs it; the COLONY half
+        is six boots, six pages and six sets of gestures -- four to six minutes -- and
+        only `release` pays for that. The scope column says which halves ran.
+
+        Unlike `scenarios:display` this station is in CI_EXCLUDED: its driver lives in
+        `workshop/tools/`, and `workshop/` is a FORBIDDEN_PREFIX of the export. In the
+        published tree the driver is simply not there, the Rust locks would skip, and a
+        station that can only ever skip is noise in the ci plan.
+        """
+        driver = "workshop/tools/display-layout-browser.mjs"
+        lock = ("crates/meclaw-cells/tests/"
+                "710_the_sheet_holds_in_both_engines_browser.rs")
+        self.assertIn("display_browser", gp.classify([driver]))
+        self.assertIn("display_browser", gp.classify([lock]))
+        # The driver lies under workshop/, which carries no template class.
+        self.assertNotIn("template", gp.classify([driver]))
+
+        # A diff on the driver alone plans it in a strand, and it builds.
+        st = by_name(gp.plan([driver], "strand", repo=None))
+        self.assertIn("browser:display", st)
+        self.assertTrue(st["browser:display"].cargo)
+        self.assertEqual(st["browser:display"].scope, "sheet")
+        self.assertEqual(
+            st["browser:display"].cmds,
+            [["scripts/test-tier.sh", "filter", "binary(/710_the_sheet_holds/)"]])
+
+        # So does a diff on the display template itself -- the sheet is what it measures.
+        self.assertIn("browser:display",
+                      {s.name for s in gp.plan(
+                          ["templates/display/compose/display-dna.css"],
+                          "strand", repo=None)})
+        # And a diff that touches neither does not.
+        self.assertNotIn("browser:display",
+                         {s.name for s in gp.plan(["docs/x.md"], "strand", repo=None)})
+
+        # Integration AND release: the colony half beside the sheet half, with
+        # --run-ignored on the ignored lock. A proof only the release night reaches
+        # is a proof nobody reads (GH #746), so the pass that declares a wave done
+        # runs it too.
+        both = [["scripts/test-tier.sh", "filter", "binary(/710_the_sheet_holds/)"],
+                ["scripts/test-tier.sh", "filter", "binary(/710_the_colony_holds/)",
+                 "--run-ignored", "all"]]
+        for mode in ("integration", "release"):
+            st_ir = by_name(gp.plan(["docs/x.md"], mode, repo=None))
+            self.assertEqual(st_ir["browser:display"].scope, "sheet+colony", mode)
+            self.assertEqual(st_ir["browser:display"].cmds, both, mode)
+
+        # A strand keeps the sheet half alone: six boots are a fifth of a whole pass.
+        self.assertNotIn("--run-ignored", str(st["browser:display"].cmds))
+
+        # ci never plans it: workshop/ does not travel.
+        self.assertIn("browser:display", gp.CI_EXCLUDED)
+        self.assertNotIn("browser:display",
+                         {s.name for s in gp.plan([driver], "ci", repo=None)})
+
+        order = gp.STATION_ORDER
+        self.assertLess(order.index("scenarios:display"),
+                        order.index("browser:display"))
+        self.assertLess(order.index("browser:display"),
+                        order.index("recall-harness"))
+
     def test_example_diff_selects_referencing_tests(self):
         repo = mini_repo(self)
         st = by_name(gp.plan(["examples/organism/grow-1.json"], "strand", repo=repo))
@@ -392,6 +503,188 @@ class Classify(unittest.TestCase):
                          "+ binary_id(=meclaw-cells::path_into_it) "
                          "+ binary_id(=meclaw-cells::versioned)")
         self.assertNotIn("instance_only", sel)
+
+    def test_a_template_reached_through_a_helper_is_a_reference(self):
+        """`shipped("assistant/config.json")` reads templates/assistant -- GH #713.
+
+        A test that reads a shipped template usually spells the path:
+        `root.join("templates/assistant")`. Two locks do not. They resolve the
+        catalogue root ONCE -- `fn templates_root() -> PathBuf` over
+        `CARGO_MANIFEST_DIR/../../templates` -- and join a runtime value onto
+        it, so the name arrives as a plain argument
+        (`shipped("assistant/config.json")`, `shipped("assistant", FILES)`) and
+        the literal `templates/assistant` appears nowhere in the file. Neither
+        rule 4 nor rule 8 saw them, and a strand that changed
+        `templates/assistant/config.json` left both unrun.
+
+        The role literal is the reason the bare name alone cannot count:
+        `{"origin": "assistant"}` is in a third of the suite. The name is read
+        as a template only where it is HANDED to something -- after `(`, `,`
+        or `[` -- or carries a path separator.
+        """
+        root = pathlib.Path(reader_repo(self, {
+            # The gh529 shape: a relative path into the template.
+            "helper_rel": (
+                'fn templates_root() -> std::path::PathBuf {\n'
+                '    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))\n'
+                '        .join("../../templates")\n'
+                '}\n'
+                'fn shipped(rel: &str) -> std::path::PathBuf {\n'
+                '    templates_root().join(rel)\n'
+                '}\n'
+                'fn main() { let _ = shipped("assistant/config.json"); }\n'),
+            # The gh561 shape: the bare name as an argument.
+            "helper_name": (
+                'fn templates_root() -> std::path::PathBuf {\n'
+                '    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))\n'
+                '        .join("../../templates")\n'
+                '}\n'
+                'fn shipped(name: &str, files: &[&str]) -> std::path::PathBuf {\n'
+                '    templates_root().join(name)\n'
+                '}\n'
+                'fn main() { let _ = shipped("assistant", &["config.json"]); }\n'),
+            # The same helper, but the only `assistant` is an LLM role.
+            "role_only": (
+                'fn templates_root() -> std::path::PathBuf {\n'
+                '    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))\n'
+                '        .join("../../templates")\n'
+                '}\n'
+                'fn shipped(rel: &str) -> std::path::PathBuf {\n'
+                '    templates_root().join(rel)\n'
+                '}\n'
+                'fn main() {\n'
+                '    let _ = shipped("talky/config.json");\n'
+                '    let m = r#"{"origin": "assistant", "type": "text"}"#;\n'
+                '}\n'),
+            # A SYNTHETIC library under a temp dir is not the catalogue: the
+            # test builds the templates it reads, so a shipped template that
+            # changes says nothing about it.
+            "fixture_library": (
+                'fn register(root: &std::path::Path, name: &str) {\n'
+                '    let dir = root.join("templates").join(name);\n'
+                '    std::fs::create_dir_all(&dir).unwrap();\n'
+                '}\n'
+                'fn main() { register(td.path(), "assistant"); }\n'),
+        }))
+        sel = gp.test_filter(["templates/assistant/config.json"], "ci",
+                             repo=str(root))
+        self.assertEqual(sel,
+                         "binary_id(=meclaw-cells::helper_name) "
+                         "+ binary_id(=meclaw-cells::helper_rel)")
+        # ... and the helper that reads `talky` travels for `talky`.
+        talky = gp.test_filter(["templates/talky/template.json"], "ci",
+                               repo=str(root))
+        self.assertEqual(talky, "binary_id(=meclaw-cells::role_only)")
+
+    def test_a_literal_path_into_a_template_needs_no_runtime_join(self):
+        """`templates_root().join("memory-hive/embed/config.json")` -- GH #713.
+
+        The same helper, the same shipped root, only the name arrives as a
+        literal WITH a suffix instead of as a variable. `join("<name>")` alone
+        is a reference (rule 4), `join("<name>/...")` was not, and no rule read
+        the diff path either: `gh204_the_shipped_embedding_generation_agrees`
+        opens `templates/memory-hive/embed/config.json` and fell out of that
+        file's diff. What counts is that the file names the shipped root at
+        all -- how it spells the path below it is not the resolver's business.
+        """
+        root = pathlib.Path(reader_repo(self, {
+            "literal_suffix": (
+                'fn templates_root() -> std::path::PathBuf {\n'
+                '    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))\n'
+                '        .join("../../templates")\n'
+                '}\n'
+                'fn main() {\n'
+                '    let _ = std::fs::read_to_string(\n'
+                '        templates_root().join("memory-hive/embed/config.json"));\n'
+                '}\n'),
+        }))
+        sel = gp.test_filter(["templates/memory-hive/embed/config.json"], "ci",
+                             repo=str(root))
+        self.assertEqual(sel, "binary_id(=meclaw-cells::literal_suffix)")
+        # ... and it says nothing about a template it does not name.
+        self.assertIsNone(
+            gp.test_filter(["templates/talky/config.json"], "ci", repo=str(root)))
+
+    def test_a_sweep_of_the_shipped_root_is_catalogue_wide(self):
+        """A walk of the catalogue counts for every template -- GH #713.
+
+        `_is_catalogue_wide` knew one spelling of the root, `templates_root()`
+        or a bare `"templates"` segment. Two real sweeps spell it neither way:
+        `store_wake_failure_modes` assigns
+        `PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../templates")` and
+        hands it to its own `walk()`, and `gh494_no_interior_marker_leaves_a
+        _hive` calls its root helper `templates_dir()`. Both read EVERY shipped
+        `config.json` and were selected for no template diff at all.
+        """
+        root = pathlib.Path(reader_repo(self, {
+            # The root as a literal, walked by a local recursive helper.
+            "sweep_literal": (
+                'fn walk(dir: &std::path::Path, out: &mut Vec<String>) {\n'
+                '    for e in std::fs::read_dir(dir).unwrap() {}\n'
+                '}\n'
+                'fn main() {\n'
+                '    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))\n'
+                '        .join("../../templates");\n'
+                '    let mut out = Vec::new();\n'
+                '    walk(&root, &mut out);\n'
+                '}\n'),
+            # The root behind a helper under another name.
+            "sweep_helper": (
+                'fn templates_dir() -> std::path::PathBuf {\n'
+                '    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../templates")\n'
+                '}\n'
+                'fn main() {\n'
+                '    let root = templates_dir();\n'
+                '    let entries = std::fs::read_dir(&root).unwrap();\n'
+                '}\n'),
+            # A recursive helper over a directory PARAMETER, in a file that
+            # builds its own tree: not the catalogue.
+            "own_tree": (
+                'fn copy_cells(src: &std::path::Path, dst: &std::path::Path) {\n'
+                '    for e in std::fs::read_dir(src).unwrap() {}\n'
+                '}\n'
+                'fn main() { copy_cells(td.path(), &root.join("templates")); }\n'),
+        }))
+        for text in ("sweep_literal", "sweep_helper"):
+            src = {stem: t for _c, stem, t in gp._test_sources(str(root))}[text]
+            self.assertTrue(gp._is_catalogue_wide(src), text)
+        # Any template diff travels with both sweeps, and with nothing else.
+        for name in ("talky", "memory-hive", "clock"):
+            sel = gp.test_filter(["templates/%s/config.json" % name], "ci",
+                                 repo=str(root))
+            self.assertEqual(sel,
+                             "binary_id(=meclaw-cells::sweep_helper) "
+                             "+ binary_id(=meclaw-cells::sweep_literal)", name)
+
+    def test_the_shipped_assistant_config_selects_the_locks_that_read_it(self):
+        """The regression of GH #713, pinned against the real tree.
+
+        `gh529_the_menu_merges_every_answerers_declarations` and
+        `gh561_the_pack_rides_a_v_lane` both open
+        `templates/assistant/config.json` through a helper. The wave-H strand
+        gate that changed that file planned 246 binaries and neither of them;
+        both went red on the integration branch afterwards.
+        """
+        # template -> the locks its config.json must run.
+        wanted = {
+            "assistant": ("gh529_the_menu_merges_every_answerers_declarations",
+                          "gh561_the_pack_rides_a_v_lane"),
+            # A literal path below the shipped root, and the two catalogue
+            # sweeps -- every template's config.json is one of their inputs.
+            "memory-hive": ("gh204_the_shipped_embedding_generation_agrees",
+                            "store_wake_failure_modes",
+                            "gh494_no_interior_marker_leaves_a_hive"),
+            "clock": ("store_wake_failure_modes",
+                      "gh494_no_interior_marker_leaves_a_hive"),
+        }
+        present = {stem for _c, stem, _t in gp._test_sources(None)}
+        for template, locks in wanted.items():
+            sel = gp.test_filter(["templates/%s/config.json" % template], "strand")
+            for lock in locks:
+                if lock not in present:
+                    continue          # renamed or gone: nothing left to pin
+                self.assertIn("binary_id(=meclaw-cells::%s)" % lock, sel,
+                              "%s: %s" % (template, lock))
 
     def test_a_format_string_template_path_counts_for_every_template(self):
         """`format!("templates/{dir}")` names a template only at runtime.

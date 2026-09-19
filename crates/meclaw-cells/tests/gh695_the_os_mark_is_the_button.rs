@@ -130,10 +130,10 @@ fn the_mark_is_transparent_and_takes_the_gesture() {
         .unwrap();
     for needle in [
         "position: fixed",
-        "inset-inline-end: var(--dock-pad)",
-        "inset-block-end: var(--dock-pad)",
+        "inset-inline-end: calc(var(--dock-pad) + env(safe-area-inset-right, 0px))",
+        "inset-block-end: calc(var(--dock-pad) + env(safe-area-inset-bottom, 0px))",
         "inline-size: var(--os)",
-        "z-index: 30",
+        "z-index: calc(var(--plane-os) + 1)",
         "background: transparent",
         "touch-action: none",
     ] {

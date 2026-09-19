@@ -1,11 +1,12 @@
-# `assistant@2.6.0`
+# `assistant@2.7.0`
 
-One generation of one person's agent. **Three refs, no container at all,** and
-thirty-eight edges.
+One generation of one person's agent.
+**Four refs at three templates, no container at all,** and sixty-one edges.
 
 | what | it is | why it is at THIS level |
 |---|---|---|
-| `talky` | a `ref` to [`talky`](../talky/README.md) — the conversation surface that keeps this generation's sessions, calls its brain, splits the answer and raises the sidecar | one generation has **one** session store; two would have to be told apart before a sweep could decide which one a closed session belongs to |
+| `talky` | a `ref` to [`talky`](../talky/README.md) — the conversation surface that keeps this generation's sessions, calls its brain, splits the answer and raises the sidecar | it serves every channel that does not ask for a voice of its own |
+| `talky-chat` | the same `ref` at the same version with the same overrides, for the channel `chat` | one talky per channel, one identity, one tone — see *One talky per channel* below |
 | `cogny` | a `ref` to [`cogny`](../cogny/README.md) — the reasoning core | every channel that reaches this generation consults the same second opinion; two cores would be two opinions |
 | `tools` | a `ref` to [`tools`](../tools/README.md) — the tool surface, one node with one contract | every caller inside the generation calls the same tools; replacing all of them is one `swap_nodes` and no edge of this level moves |
 
@@ -58,9 +59,10 @@ named `surface` after the ROLE it plays. The tree said one thing and the address
 said another, and every reader had to learn the translation before they could
 follow an edge.
 
-The node is `./talky`. **Twenty-seven of this level's thirty-eight edges carry
-the name**, and two stamped tokens are renamed with it, because a discriminator that
-outlives the node it is named after is a word that has to be read historically:
+The node is `./talky`. **Twenty-seven of this level's sixty-one edges carry the
+name**, and since 2.7.0 twenty-three more carry `./talky-chat`, and two stamped tokens
+are renamed with it, because a discriminator that outlives the node it is named after
+is a word that has to be read historically:
 
 - `context.recall_caller` now reads `'talky'` where it read `'surface'`
   ([#532](https://github.com/mmeyerlein/meclaw/issues/532)). Nothing outside this
@@ -84,6 +86,60 @@ not the third. A generation already grown from `2.2.0` keeps the node name it wa
 born with: the template library is not on the runtime path of a booted colony,
 and a grown level is renamed, if at all, by a mutation.
 
+## One talky per channel
+
+[#709](https://github.com/mmeyerlein/meclaw/issues/709). `display-hive.md` § 8.2 and the
+advisor pattern of `03-os-structure` ask for the same thing: **one talky per channel, one
+identity, one tonality per channel.** You speak differently on the phone than you type.
+Until 2.7.0 this level had one keeper for every channel a person is reached on.
+
+`./talky-chat` serves the channel `chat`. It is the **same ref** onto the same template
+with the same `override_params`, word for word: the model, the declared tool list and the
+memory tier are this level's decisions (see *What #516 settled*), and a chat that answered
+in a different voice would be a different assistant to the same person. Give the typed
+channel a prompt of its own with `override_params` on `<assistant>/talky-chat/brain`; give
+it nothing and it answers exactly as the spoken keeper does.
+
+**What splits, and on what.** Two discriminators, both of which the tree already carried:
+
+| what | key | who stamps it |
+|---|---|---|
+| `in_turn`, and the `in_advice` a consult produced | `context.channel_node` | the member's own channel edge, `./channels/chat -> ./channels` |
+| the tool round, both halves | `context.tool_caller` | this level, on the outbound edge, exactly as it already did for the core |
+
+The chat door is the **positive** one (`== 'chat'`) and the spoken door excludes it, so a
+turn with no channel stamp at all is served by `./talky` and never orphaned. Every sweep,
+prune, export, import and mutation receipt fans out to **both**, because each keeper has
+its own sessions to tidy, and everything either of them says leaves the level on its own
+copy of the same exit.
+
+**What it costs the person.** Two keepers are two **session windows**. What was spoken
+reaches the typed keeper through the member's memory, not out of its own window. That is
+what one identity per channel means rather than a defect of it, and the chat *application*
+shows every channel either way (`display-hive.md` § 8.1, R-24-4).
+
+**What does NOT fan out, and why it is said here.** The four TRANSFER lanes — `in_export`
+and `in_import` in, `export_done` and `dump` out — stay on `./talky` alone. Both keepers
+are a `session-keeper`, and the transfer lanes address a keeper by the name of its HIVE
+rather than of its node: the porter writes into `<destination>/session-keeper`
+(`../session-keeper/porter/config.json`, which says in as many words that *two keepers
+would otherwise both claim `session-keeper` and the directory would hold whichever walk
+finished last*), and the member addresses an import with `hop.import_hive ==
+'session-keeper'`, which both would answer. So the typed keeper's sessions do not travel
+yet, and a per-node directory plus a per-node import address is a `session-keeper` change
+before it is this level's. It is written here, in the CHANGELOG and in a Rust lock rather
+than discovered as an export of one schema header and no row, and it is filed as
+[#712](https://github.com/mmeyerlein/meclaw/issues/712).
+
+**What the SENDER draws.** A connect point is a permission, not an edge: `in_pack`,
+`pack_ack`, `recall`, `in_bundle`, `tool` and `schemas` now name `./talky-chat` beside
+`./talky` and `./cogny`, and whoever wires a chat channel draws that rim's v-lanes a
+second time — the identity pack in and its receipt out, the memory leg out and the bundle
+back. A keeper with no memory leg asks and is never answered. Nothing routes to
+`./talky-chat` until a channel `chat` exists ([`chat-channel`](../chat-channel/README.md)),
+so a generation grown without one carries a keeper nobody addresses and needs no v-lane of
+its own.
+
 ## a level owns what its siblings must share
 
 That is the rule all four composition levels — `meclaw-os`, `org`, `member`,
@@ -106,8 +162,9 @@ And since 2.0.0, a **channel, no**:
 
 ```
 assistant/
-  config.json            the level: twenty lanes, five drain pairings, thirty-eight edges
+  config.json            the level: twenty lanes, five drain pairings, sixty-one edges
   talky/config.json      a ref to talky, at the version its because names
+  talky-chat/config.json the same ref, for the channel chat
   cogny/config.json      a ref to cogny, at the version its because names
   tools/config.json      a ref to tools, at the version its because names
 ```
@@ -525,12 +582,19 @@ The `./talky -> ./cogny` pair is **not** two errands. It was, up to 2.1.0 —
 `consult_cogny` and `ask_memory` — and #530 retired the second name while #529 put a
 `schemas` ask in its place, so the count stood still while both of its halves changed.
 
-Eleven more edges do not touch the surface at all — `./cogny -> ./tools` twice and
+Since 2.7.0 twenty-three of those twenty-seven are drawn a second time around
+`./talky-chat`: the table above reads identically with the other name in it, minus the
+four TRANSFER edges — `in_export` and `in_import` in, `export_done` and `dump` out. Those
+four stay on `./talky` alone, and why is in *One talky per channel* below.
+`every_edge_around_the_one_talky_has_a_twin_around_the_other` derives both halves from the
+file rather than from this sentence.
+
+Eleven more edges do not touch either keeper at all — `./cogny -> ./tools` twice and
 `./tools -> ./cogny` twice (the same two lane pairs, drawn for the core), `./cogny -> .`
 three times (`error`, and since #552 the memory road's `tool` and `schemas`),
 `. -> ./cogny` twice (the two answers coming back, on one edge guarded by
 `context.tool_caller`, and the mutation receipt since #553), `./tools -> .` on
-`build`, and `. -> ./tools` on `in_build_result` — which makes **thirty-eight**
+`build`, and `. -> ./tools` on `in_build_result` — which makes **sixty-one**
 for the level. The one that moved last is `./talky -> .`: it carried `extraction`
 until 2.6.0 and carries `sidecar` now, which is why the exits row above still
 counts ten.
@@ -591,7 +655,7 @@ comes afterwards.**
  "ctx": {"model": "<the reasoning core's model>",
          "model_surface": "<the conversation surface's model>"},
  "diff": {
-  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@2.6.0",
+  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@2.7.0",
                  "override_params": {"cogny/brain": {"temperature": 0.2}}}],
   "add_edges": [
     {"from": "./assistants", "to": "./assistants/scribe",

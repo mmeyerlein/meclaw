@@ -216,11 +216,25 @@ async fn boot_gated_on(bytes: usize, grace_ms: u64) -> Live {
     );
 
     copy_tree(&repo("templates/display"), &root.join("main/screen"));
-    // The display refs `web@2.0.1`, and a ref resolves against the templates
+    // The display refs `web@2.0.4`, and a ref resolves against the templates
     // table, which is empty until somebody fills it (GH #424).
     copy_tree(&repo("templates/web"), &root.join("templates/web"));
     patch(&root.join("main/screen/web/config.json"), |v| {
         v["override_params"][""]["mount"] = json!(SCREEN_MOUNT)
+    });
+    // A screen with a finger and an ear. The template ships ONE output, a
+    // television, and a television has `inputs: []` at the door
+    // (display-hive.md § 6.4, § 4.7: it is an output device -- hold and press
+    // come from the phone or the laptop). Since display 2.5.0 the client binds
+    // only what the profile names, so a driver that presses the mark has to
+    // press it on an output that can be pressed.
+    patch(&root.join("main/screen/compose/config.json"), |v| {
+        v["params"]["screens"] = json!({"monitor": {
+            "display_type": "monitor", "viewing_distance_m": 0.7,
+            "inputs": ["audio", "pointer", "keyboard"],
+            "dock_default": "shown", "dock_max": 8,
+        }});
+        v["params"]["default_screen"] = json!("monitor");
     });
 
     // A voice cell on its mount. Nothing of this cell listens anywhere; every
@@ -566,6 +580,16 @@ async fn a_browser_rejoins_after_the_cell_closed_the_topic() {
 /// for the turn to carry the scripted text, which the recogniser only says once
 /// the 95 % have arrived, and without them the driver times out and this test
 /// fails there. The share itself is printed either way.
+///
+/// The bracket only means anything while the bytes it counts belong to the
+/// take. The ring in front of the press is exactly such a foreign source: a
+/// driver that touches the mark and waits before pressing hands the colony
+/// two thirds of a second of audio the button was never down for, and the
+/// share went from 98.6 % to 114.3 % -- past the loss this test looks for,
+/// which is 300 to 600 ms of 4200, or 7 to 14 %. So the driver does not touch
+/// the mark when it is playing a file, and the ceiling below says so: what a
+/// press with nothing in front of it arms is the threshold window alone, about
+/// twelve 20 ms frames, where a touch 400 ms early makes it about thirty-three.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_release_drains_before_it_lets_go() {
     /// 16 kHz mono PCM16: 32 bytes per millisecond.
@@ -626,5 +650,111 @@ async fn the_release_drains_before_it_lets_go() {
     assert!(
         counter(&line, "flushed=") >= 1,
         "the drain window sent nothing after the key came up: {line}"
+    );
+    assert!(
+        counter(&line, "prebuffered=") <= 20,
+        "nothing but the threshold window sits in front of this take, or the \
+         bytes above are not a measurement of the hold any more: {line}"
+    );
+}
+
+/// Welle F: the threshold, in a real engine. A press under 250 ms sends no
+/// `hold` and switches the dock once; a press over it sends the hold and the
+/// touch on the chat, and leaves the dock alone -- including through the
+/// `click` a browser appends to the gesture.
+///
+/// That last clause is a second way into the dock, and the handles alone never
+/// reach it: they are what a `pointerup` calls, and a click is a separate
+/// event with its own listener. So the driver dispatches a real one on the mark
+/// after the long press, inside the grace the check is armed for, and
+/// `after_click` is what the dock counter says afterwards.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_short_press_opens_the_dock_and_a_long_one_speaks() {
+    if !library_ships() || !have_python() {
+        return;
+    }
+    let mut live = boot().await;
+    let Some(line) = drive_with(&mut live, Some("tap"), &[]).await else {
+        return;
+    };
+    // `drive_with` already printed the line; one copy is the record.
+    assert_eq!(
+        counter(&line, "taps="),
+        1,
+        "the long press did not switch the dock a second time: {line}"
+    );
+    assert!(
+        counter(&line, "touches=") >= 1,
+        "and it touched the chat (R-23-5): {line}"
+    );
+    assert!(
+        counter(&line, "hold_ms=") >= 250,
+        "the take started at the threshold, not before it: {line}"
+    );
+    assert_eq!(
+        counter(&line, "after_click="),
+        1,
+        "and the click the browser appends to a press that spoke switched \
+         nothing on top of it: {line}"
+    );
+}
+
+/// Welle F: what was said before the hold reaches the colony (E-3, OR-F25).
+///
+/// The driver touches the mark, waits, and only then presses: that is what a
+/// finger does, and it is the one way to make the ring hold anything. What
+/// comes back has to show both halves — a ring that had frames in it, and a
+/// take that still became a turn with those frames in front of it.
+///
+/// Both halves are measured rather than asserted away. `prebuffered` is read
+/// on the page BEFORE the ring is emptied, so any positive number would also
+/// be reached by a press that armed nothing but its own threshold window: 250
+/// ms of 20 ms frames is about twelve. The touch is 400 ms ahead of the press,
+/// which makes 650 ms, about thirty-two, and thirty-three measured — so the
+/// threshold below is 15, above what the press alone can reach and well under
+/// what the touch produces. And a count on the page is not an arrival, so the
+/// second half asks the recogniser how much audio it really saw.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_ring_sends_what_it_kept_before_the_hold() {
+    /// 16 kHz mono PCM16: 32 bytes per millisecond.
+    const BYTES_PER_MS: usize = 32;
+    /// How long the button is held, and therefore what the take alone is worth.
+    const HOLD_MS: usize = 900;
+
+    if !library_ships() || !have_python() {
+        return;
+    }
+    let mut live = boot().await;
+    let Some(line) = drive_with(
+        &mut live,
+        None,
+        &[("MECLAW_MIC_HOLD_MS", &HOLD_MS.to_string())],
+    )
+    .await
+    else {
+        return;
+    };
+    assert!(
+        counter(&line, "prebuffered=") >= 15,
+        "the ring held more than a press could have put in it: {line}"
+    );
+    assert!(
+        counter(&line, "turns=") >= 1,
+        "and the take still became a turn: {line}"
+    );
+    // The arrival, and it is on record whichever way the verdict goes. Live
+    // audio cannot start before the threshold, so a take with nothing kept in
+    // front of it is worth LESS than the press: 650 ms of the 900, plus a
+    // drain window. More than the whole press reached the colony only because
+    // what the ring heard before the press went with it.
+    let seen = live.stt.received_audio_bytes();
+    println!(
+        "RING held={HOLD_MS}ms press_worth={}B seen={seen}B",
+        HOLD_MS * BYTES_PER_MS
+    );
+    assert!(
+        seen > HOLD_MS * BYTES_PER_MS,
+        "more audio reached the colony than the press itself is worth: \
+         {seen} B for {HOLD_MS} ms"
     );
 }

@@ -1,12 +1,22 @@
 /* The display's design language -- meclaw display DNA v1 (kit 6).
  *
- * THIS FILE IS THE SOURCE. `compose/compose.py` carries a byte-identical copy
- * in its `KIT_CSS` constant and `compose/config.json` carries that file again
- * in `params.script_inline`; a drift lock compares all three
- * (`the_design_language_is_the_same_bytes_in_three_places`). The compose cell
- * writes the constant into the `display-shell` template, last in the shell's
- * one style block, so a screen needs nothing installed beside it and no hand
- * ever sends a sheet to a running tree.
+ * Source: `templates/display/compose/display-dna.css`, and there every rule is
+ * argued for. THIS COPY MAY BE ONE OF THE TWO THAT TRAVEL, which carry the
+ * rules and this comment and nothing else: `compose/compose.py` holds the sheet
+ * in its `KIT_CSS` constant and `compose/config.json` holds that file again in
+ * `params.script_inline`. `scripts/display_sync.py` writes both, and
+ * `scripts/display_sheet_strip.py` is the rule by which they lose the
+ * reasoning (OR-G0.1: about 47 kB off every page). A drift lock holds all
+ * three together through that same rule
+ * (`the_design_language_is_the_same_sheet_in_three_places`).
+ *
+ * So: a change is argued at the source, and the argument costs a screen
+ * nothing. If you are reading this anywhere else, the sentences that say WHY
+ * are in the file named above.
+ *
+ * The compose cell writes the constant into the `display-shell` template, last
+ * in the shell's one style block, so a screen needs nothing installed beside it
+ * and no hand ever sends a sheet to a running tree.
  *
  * It belongs to the TEMPLATE, not to the binary: a screen that should look
  * different costs a template edit, not a release.
@@ -18,10 +28,6 @@
  * `/vision.css` and re-tokenises it to light: the same custom property names,
  * the DNA's values. The nine base components of the `web` template keep
  * working.
- *
- * Order: tokens, ground, material, type, windows (A), content (B), states,
- * the screen, the screen's own furniture, the scene, the dock, night, the
- * profile, fallbacks, motion, screen sizes.
  *
  * Rules the sheet obeys: glass only on the navigation layer, never glass on
  * glass, text never on the material (always on `.inner`). Templates write
@@ -102,11 +108,10 @@
   --gap-l: 24px;
 
   /* ONE edge. The specular top is the light falling on the near lip of the
-   * glass and it is the only line a window gets. The other two rim tokens
-   * keep their names and are emptied, so no rule below can grow a second
-   * border by accident. */
+   * glass and it is the only line a window gets. The other rim token keeps
+   * its name and is emptied, so no rule below can grow a second border by
+   * accident. */
   --rim-top: inset 0 1.5px 0 rgba(255, 255, 255, 1);
-  --rim-edge: 0 0 transparent;
   --rim-bottom: 0 0 transparent;
   /* The sheen stands in for refraction, which no browser can do: a fixed
    * 135deg highlight, always top-left. Convention, not physics. */
@@ -140,7 +145,6 @@
   --font-voice: Fraunces, "Iowan Old Style", Georgia, serif;
   --w-body: 500;
   --w-title: 600;
-  --w-strong: 700;
   --t-caption: 12px;
   --t-small: 14px;
   --t-body: 16px;
@@ -156,16 +160,26 @@
    * damping 1.0) as a curve: it settles without overshoot. */
   --ease: cubic-bezier(0.32, 0.72, 0, 1);
   --t-hover: 150ms;
+  /* The dock's own movement: short enough to still read as a switch. */
+  --t-dock: 140ms;
   --t-leave: 240ms;
   --t-enter: 360ms;
   --t-focus: 420ms;
+
+  /* The hold threshold (§ 5.5: "a token, 250 ms"). Under it a press on the
+   * mark is a press -- dock open or closed; over it, a hold. 250 ms is what
+   * the device measured as the shortest deliberate press, and it is only
+   * affordable because the client keeps a ring of what was said before it
+   * (§ 5.4): without the ring every take would lose its first quarter second,
+   * which is where the word that matters is said. The mark's hook reads it
+   * from here, so the screen has ONE threshold. */
+  --hold-ms: 250ms;
 
   /* The ground, plus the one number visionOS publishes: an ornament overlaps
    * the window's bottom edge by 20pt. */
   --ground: #f7efe6;
   --ground-2: #efe2d4;
   --bg-void: #f7efe6;
-  --ornament-overlap: 20px;
 
   /* The screen's scale (D-21..D-24). `--scale` is written INLINE on the root
    * out of the display profile -- a television three metres away is far, not
@@ -182,6 +196,69 @@
   --os: calc(3.25rem * var(--scale));
   --dock-pad: calc(0.75rem * var(--scale));
   --dock-gap: calc(0.5rem * var(--scale));
+
+  /* The four planes (R-23-2). One number per plane, and every window's
+   * z-index is one of them. Until 2.3.3 the sheet carried nine single
+   * numbers, and the two that mattered most collided: the OS mark and an
+   * urgent window were both 30, so that the mark stood on top was document
+   * order -- the root hangs the regions, then the dock, then the mark, and a
+   * later node wins at equal z-index. R-23-2 wants that said.
+   *
+   * `compose` writes the window's drawing LEVEL as `data-level` (§ 4.24),
+   * out of the application's `layer` hint and the rung -- never out of a
+   * width, never out of a click, and the same number on every output (§ 6.2).
+   * The token names below stay the sheet's own z-order vocabulary; what § 2
+   * struck is `plane` as a value per output, and that value is gone.
+   * All four compete inside ONE stacking context:
+   * `.display-columns` is `position: relative; z-index: 1` and is the root
+   * that every window, the dock and the mark hang under. */
+  /* The one opacity a tile may ever spend (§ 6.11, acceptance 16.09.): no
+   * part of a tile goes below it. § 6.10 asks for the open tile to be
+   * "slightly dimmed", and the two sentences together leave the span 0.88 to
+   * 1.0 -- so the floor IS the dimming, and the number stands here once. */
+  --tile-open-opacity: 0.88;
+
+  /* The one opacity the OS mark may spend: it stood as a number in the rule
+   * that dims a mark without `audio` (§ 6.4), and § 5.4 asks for the same
+   * dimming on a refused voice channel. One quantity, one name, both rules
+   * (§ 2). The mark is not a tile, so § 6.11's floor is not its ceiling. */
+  --mark-dim: 0.5;
+
+  /* The phone's arrangement (§ 6.3): the leading window stands on top and is
+   * LARGER than its siblings, and a modal keeps a size relative to them
+   * instead of taking the whole screen (acceptance 16.09., #705/4). Both are
+   * fractions of the visible height, so they hold on every phone; the sheet
+   * names quantities, rules never do (§ 2 `Token`). */
+  --lead-min-phone: 48vh;
+  --lead-min-phone: 48dvh;
+  --sibling-max-phone: 40vh;
+  --sibling-max-phone: 40dvh;
+  --modal-max-phone: 72vh;
+  --modal-max-phone: 72dvh;
+
+  /* The lift of the two loud rungs (§ 7), as a FACTOR: a scaled box renders
+   * taller than it is laid out, and `transform-origin` moves that growth
+   * without removing it -- so the cap of § 5.9 has to know by how much. The
+   * quantity stands here once, the rung rules spend it, the cap divides by it.
+   * `--rung-scale` is what a window is ACTUALLY drawn at: 1 everywhere, the
+   * lift on the two rungs that lift, read off the element the cap sizes. */
+  --rung-lift-scale: 1.02;
+  --rung-scale: 1;
+
+  /* The two plane filters of § 6.9. The whole VALUE is the token, not the
+   * radius: a setting that takes blur away then says `none` and the element
+   * keeps no render layer and no containing block, exactly as before the
+   * tokens. Named so a rule reads what it does, not how far it blurs. */
+  --f-back-2: blur(4px);
+  --f-back-3: blur(10px);
+
+  /* The air around a window, spent one box further in than it is named. */
+  --gutter: 28px;
+
+  --plane-canvas: 5;
+  --plane-modal: 20;
+  --plane-urgent: 30;
+  --plane-os: 40;
 }
 
 /* ── 2. Ground: creme with one light ─────────────────────────────────────
@@ -190,10 +267,28 @@
  * an attention magnet. */
 html {
   background-color: var(--ground);
+  /* The screen is furniture, not a document (GH #705). A one-finger drag
+   * rubber-banded the whole page, because the only `touch-action: none` sat
+   * on the mark. The gesture is absorbed HERE and never on the canvas: a
+   * window that scrolls its own content -- the conversation is one -- has to
+   * keep doing so, and `touch-action` on the canvas would take that away. */
+  overscroll-behavior: none;
 }
 
 body {
+  /* Two declarations, no `@supports`: an engine that does not know `dvh`
+   * drops the second line and keeps the first. `100vh` on iOS is the height
+   * WITHOUT the address bar, so a screen laid out against it is a screen
+   * whose bottom edge is under a toolbar (R-23-10). */
   min-height: 100vh;
+  min-height: 100dvh;
+  /* And the page itself does not travel: it is exactly as tall as the exit
+   * and keeps its gesture (GH #705). `dvh` shrinks with a keyboard, so the
+   * second line is what a phone with an open keyboard lays out against. */
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  overscroll-behavior: none;
   margin: 0;
   background-color: var(--ground);
   background-image:
@@ -233,7 +328,7 @@ body::after {
 /* ── 3. Material: the glass classes, re-tokenised ────────────────────────
  * /vision.css sets --glass-blur ON .glass--thin and .glass--thick, where a
  * :root override cannot reach it, so both are restated. The box-shadow is
- * restated to slot --rim-edge between the specular and the bottom edge. */
+ * restated so the specular top and the cast shadow are the whole of it. */
 .glass,
 .glass--thin,
 .glass--thick {
@@ -274,7 +369,14 @@ body::after {
   box-shadow: var(--rim-top), var(--shadow-contact);
 }
 
-.button:hover { background-color: rgba(255, 255, 255, 0.78); }
+/* A hover state only where a finger or a pointer exists (§ 6.4). The gate is
+ * the root's own word: one ancestor condition, no second sheet, no media
+ * query -- a width never overrides a profile (§ 6.6). A television has
+ * `inputs: []` at the door, and a lit control nobody can press is worse on it
+ * than no state at all. */
+.display-columns:is([data-inputs~="pointer"], [data-inputs~="touch"]) .button:hover {
+  background-color: rgba(255, 255, 255, 0.78);
+}
 
 .input {
   color: var(--fg-primary);
@@ -303,7 +405,7 @@ body::after {
 .title-2 { font-size: var(--t-title-2); line-height: 1.2; }
 .title-3 { font-size: var(--t-title-3); line-height: 1.25; }
 
-.text { color: var(--fg-secondary); }
+.text,
 .text--secondary { color: var(--fg-secondary); }
 .text--tertiary { color: var(--fg-tertiary); }
 
@@ -334,10 +436,7 @@ body::after {
 
 /* The sheen sits behind the content, inside the window's own stacking
  * context, so it never touches text. */
-.display-pane::before,
-.display-panel::before,
-.display-overlay::before,
-.display-ornament::before {
+:is(.display-pane, .display-panel, .display-overlay, .display-ornament)::before {
   content: "";
   position: absolute;
   inset: 0;
@@ -359,9 +458,12 @@ body::after {
   --glass-blur: 14px;
 }
 
-/* A window's body is the column its children stand in. */
+/* A window's body is the column its children stand in -- and so is a
+ * `display-stack`, the catalogue's only layout element (a stack in a stack is
+ * a group). One column, said once. */
 .display-pane-body,
-.display-panel-body {
+.display-panel-body,
+.display-stack {
   display: flex;
   flex-direction: column;
   gap: var(--gap);
@@ -450,9 +552,10 @@ body::after {
 /* display-overlay — the interruption. Root-level, never inside a pane, the one
  * window allowed above everything. --ttl is its countdown, spent as the
  * duration of the hairline at its foot. Placement uses `translate`, not
- * `transform`, so the state rules can scale it without restating it. */
+ * `transform`, so the state rules can scale it without restating it. Its
+ * height in the stack is the PLANE's since 2.4.0 (§ 7d): an interruption that
+ * carried its own number could stand above a modal it is not. */
 .display-overlay {
-  z-index: 20;
   max-inline-size: 34rem;
 }
 
@@ -491,6 +594,8 @@ body::after {
   flex-wrap: wrap;
   gap: var(--gap-s);
   align-items: center;
+  /* The foot of an overlay, for the same reason as `.display-input`. */
+  flex: 0 0 auto;
 }
 
 /* display-ornament — the system line, and visionOS' only published z-number: it
@@ -499,7 +604,7 @@ body::after {
 .display-ornament {
   z-index: 10;
   align-self: center;
-  margin-top: calc(-1 * var(--ornament-overlap));
+  margin-top: -20px;
   padding: 5px;
   border-radius: var(--r-capsule);
   background-color: var(--glass-tint-thin);
@@ -540,14 +645,6 @@ body::after {
 
 /* ── 6. Catalogue B — content (sits on .inner, never on the material) ──── */
 
-/* display-stack — the only layout element. A stack in a stack is a group. */
-.display-stack {
-  display: flex;
-  flex-direction: column;
-  gap: var(--gap);
-  min-inline-size: 0;
-}
-
 .display-stack--row {
   flex-direction: row;
   flex-wrap: wrap;
@@ -574,8 +671,7 @@ body::after {
   min-inline-size: 0;
 }
 
-.display-value-unit,
-.display-weather-unit {
+.display-value-unit {
   margin-inline-start: 3px;
   font-size: 0.5em;
   letter-spacing: 0;
@@ -687,16 +783,49 @@ body::after {
 .display-table-grid td:first-child { color: var(--fg-primary); }
 .display-table-grid tbody tr:last-child td { border-bottom: 0; }
 
-/* display-weather */
+/* display-weather — the value carries the window, the glyph carries the
+ * state, and the place is a label (E-8, F-21). The frame stays what it was:
+ * this is the content, not a second design. */
 .display-weather-now {
   display: flex;
   align-items: center;
-  gap: 12px;
+  justify-content: flex-start;
+  gap: 16px;
   margin: 0;
 }
 
-.display-weather-glyph { flex: none; font-size: 34px; line-height: 1; }
-.display-weather-condition { margin: 0; font-size: var(--t-small); color: var(--fg-secondary); }
+/* Size and ink are the figure voice's (§ 4); the number is restated here
+ * because this is where the window's own type stands. A COLUMN, so the unit
+ * stands under the value the way the dock tile already writes it (18.09.):
+ * the number is the figure, the unit its label. `--t-value` scales with the
+ * profile, so a television gets a big number without a second rule. */
+.display-weather-temp {
+  font-family: var(--font-ui);
+  font-size: var(--t-value);
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: start;
+}
+
+.display-weather-unit {
+  font-size: var(--t-small);
+  font-weight: var(--w-body);
+  color: var(--fg-tertiary);
+}
+
+/* The symbol IS the state and stands right of the value: the eye reads the
+ * number on the left and sees the weather on the right. */
+.display-weather-glyph {
+  order: 2;
+  flex: none;
+  font-size: calc(44px * var(--type-scale));
+  line-height: 1;
+}
+
+.display-weather-condition,
+.display-clock-date { margin: 0; font-size: var(--t-small); color: var(--fg-secondary); }
 
 .display-weather-range {
   display: flex;
@@ -709,10 +838,17 @@ body::after {
 
 .display-weather-hi { color: var(--fg-primary); font-weight: var(--w-title); }
 .display-weather-lo { color: var(--fg-tertiary); }
-.display-weather-range .display-weather-place { margin-inline-start: auto; }
 
-/* display-clock */
-.display-clock-date { margin: 0; font-size: var(--t-small); color: var(--fg-secondary); }
+/* The place is a label under the state, not a number in the min/max row. */
+.display-weather-place {
+  font-size: var(--t-caption);
+  color: var(--fg-tertiary);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* A range the fetcher did not deliver draws no empty row. */
+.display-weather-range:not(:has(.display-weather-hi, .display-weather-lo)) { display: none; }
 
 /* display-timer — the escalation lives in § 7, the geometry here. */
 .display-timer-bar,
@@ -768,12 +904,45 @@ body::after {
 
 .display-chat-line-text { margin: 0; }
 
+/* Under the sentence, in the third ink: where the line came from and when it
+ * arrived (§ 8.4, R-26-1). The CHANNEL, because the chat is the whole
+ * conversation across every channel (§ 8.1) and the text does not say which one.
+ * The TIME, because a conversation spanning a day cannot be placed in it -- it
+ * stood here once, went away with the channel word, and came back beside it on
+ * the ruling of 18.09. A TILE carries none (§ 7.2): a face, not a transcript.
+ *
+ * The row is what makes "beside" true. Without it the two would stand under each
+ * other, because `.display-detail` blockifies what wears it (`display: block`,
+ * further down). It never breaks: a channel word and HH:MM are short, and a
+ * break reads as two facts. `:empty` = the line with neither: nothing drawn.
+ *
+ * `order: -1` is INERT and kept as intent. `.display-line { display: block }`
+ * stands later than `.display-chat-line { display: flex }` at equal specificity
+ * and the line wears both, so it is a block box and no child `order` does
+ * anything -- the state since 2.3.0, measured, not this ruling's to change. */
+.display-chat-line-meta {
+  order: -1;
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: baseline;
+  gap: 0.6ch;
+}
+
+.display-chat-line-meta:empty { display: none; }
+
+.display-chat-line-source,
 .display-chat-line-time {
   font-size: 11px;
   font-weight: var(--w-title);
-  font-variant-numeric: tabular-nums;
+  font-variant-caps: all-small-caps;
+  letter-spacing: 0.06em;
   color: var(--fg-tertiary);
+  white-space: nowrap;
 }
+
+/* The digits sit still: a proportional font would make the row twitch every
+ * minute as the client rewrites the time in place. */
+.display-chat-line-time { font-variant-numeric: tabular-nums; }
 
 .display-chat-line--partial .display-chat-line-text {
   color: var(--fg-secondary);
@@ -782,19 +951,52 @@ body::after {
 
 .display-chat-line--partial .display-chat-line-text::after { content: "\2009…"; }
 
-/* display-notification */
-.display-notification {
+/* ── 6b. The line a person types into ───────────────────────────────────
+ * `display-input` (2.4.0, E-10/R-23-5). One field, no form: a form would
+ * post its values where nothing listens, so the field pushes `keyup` with
+ * `phx-key="Enter"` and the screen's own hook empties it afterwards. It is a
+ * control on `.inner`, so it carries the inner fill rather than a second
+ * window -- a chat is one surface with lines on it, not two. */
+.display-input {
   display: flex;
-  flex-direction: column;
-  gap: 5px;
-  padding: 14px 16px;
-  border-radius: var(--r-inner);
-  background-color: var(--inner-fill-strong);
-  /* Quiet keeps its hairline, darker than kit 1 (ruling, 08.09.): the edge
-   * against the window's inner fill has to read as an edge. */
-  box-shadow: inset 0 0 0 1px rgba(74, 46, 39, 0.22),
-    inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  margin: 0;
+  /* The foot of the window: it takes the height it needs and gives none of it
+   * back, or a growing conversation would squeeze it off the screen one line
+   * at a time (F4-N6). */
+  flex: 0 0 auto;
 }
+
+.display-input-field {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  margin: 0;
+  padding: 10px 14px;
+  border: 0;
+  border-radius: var(--r-control);
+  background-color: var(--inner-fill-strong);
+  box-shadow: var(--rim-top), var(--shadow-contact);
+  font-family: var(--font-ui);
+  /* `--t-body` is `calc(16px * var(--scale))` and the smallest scale is 0.8,
+   * which gives 12.8px -- and a mobile engine zooms the whole page when a
+   * field under 16px takes focus, and never zooms back. Elsewhere the scale
+   * is >= 1 and the floor costs nothing. */
+  font-size: max(16px, var(--t-body));
+  font-weight: var(--w-body);
+  line-height: 1.4;
+  color: var(--fg-primary);
+}
+
+.display-input-field::placeholder { color: var(--fg-tertiary); }
+
+/* A field a keyboard can reach shows where the keyboard is. The ring is the
+ * accent's, like every other focus ring in the sheet. */
+.display-input-field:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* display-notification */
+.display-notification { display: flex; flex-direction: column; gap: 5px; }
 
 .display-notification-title { font-size: var(--t-body); line-height: 1.3; }
 .display-notification-body { margin: 0; font-size: var(--t-small); color: var(--fg-secondary); }
@@ -807,7 +1009,7 @@ body::after {
 
 /* Notification is kit 1 unchanged (ruling, 08.09.): a light fill with its
  * hairline, and urgent as the 3px accent bar at the leading edge. */
-.display-notification[data-level="urgent"] {
+.display-notification[data-notice="urgent"] {
   /* Ruling, 08.09.: the relevant frame around it (depth-2 shadow with its
    * coral glow) and the dark bar at the leading edge twice as wide. */
   box-shadow: inset 6px 0 0 var(--accent-soft),
@@ -833,7 +1035,7 @@ body::after {
   }
 }
 
-.display-notification[data-level="urgent"] .display-notification-source { color: var(--accent); }
+.display-notification[data-notice="urgent"] .display-notification-source { color: var(--accent); }
 
 /* display-media / display-chart — the figure is inline SVG from the sender; the sheet
  * owns the frame, so no component carries its own palette. */
@@ -950,8 +1152,12 @@ body::after {
   color: var(--fg-secondary);
 }
 
-.display-action:hover,
-.display-option-chip:hover { filter: brightness(1.06); transform: translateY(-2px); }
+/* Same gate, same sentence (§ 6.4). */
+.display-columns:is([data-inputs~="pointer"], [data-inputs~="touch"]) .display-action:hover,
+.display-columns:is([data-inputs~="pointer"], [data-inputs~="touch"]) .display-option-chip:hover {
+  filter: brightness(1.06);
+  transform: translateY(-2px);
+}
 .display-action:active,
 .display-option-chip:active { transform: translateY(0) scale(0.985); }
 
@@ -1002,10 +1208,13 @@ body::after {
 .display-weather,
 .display-clock,
 .display-timer,
+.display-notification,
 .display-status {
   padding: 14px 16px;
   border-radius: var(--r-inner);
   background-color: var(--inner-fill-strong);
+  /* Quiet keeps its hairline, darker than kit 1 (ruling, 08.09.): the edge
+   * against the window's inner fill has to read as an edge. */
   box-shadow: inset 0 0 0 1px rgba(74, 46, 39, 0.22),
     inset 0 1px 0 rgba(255, 255, 255, 0.8);
 }
@@ -1017,55 +1226,60 @@ body::after {
 
 /* ── 7. States (contract § 3) ────────────────────────────────────────────
  * Focus is handed out by the STATE, never by a click and never by a gaze: on
- * a screen without eyes, the companion looks for you. The server writes
- * data-state on exactly one window. */
+ * a screen without eyes, the companion looks for you. The curator writes
+ * the rung on every window and `focus` on at most one per ladder (§ 4.20). */
 
 /* Hidden is gone -- unless it is on its way out, in which case the leave
  * keyframe below plays first and the next pass deletes it (0-2-0). */
-:where(.display-pane, .display-panel, .display-overlay, .display-ornament)[data-state="hidden"]:not([data-age="leaving"]) {
+:where(.display-pane, .display-panel, .display-overlay)[data-rung="hidden"]:not([data-age="leaving"]) {
   display: none;
 }
 
-/* A window nobody assigned a state to stands at the top rung: the compose
-   cell writes a state on every window it minds, so an empty one is a window
+/* A window nobody assigned a rung to stands at the top rung: the compose
+   cell writes a rung on every window it minds, so an empty one is a window
    some other hand put up. Both windows that scroll and those that do not.
    `:is()` on the class and
    `:where()` on the state keep the rule at 0-1-0 like every rung of the
    ladder, so it wins over the `.glass` base rule above by order alone and loses to the
    forced-colours fallback below. */
-:is(.display-pane, .display-panel):where(:not([data-state]), [data-state=""]) {
+:is(.display-pane, .display-panel):where(:not([data-rung]), [data-rung=""]) {
   box-shadow: inset 0 0 0 2px var(--accent-soft), var(--rim-top), var(--shadow-2);
 }
 
-/* Rungs 1 and 2 -- ambient and relevant -- have no rule on a window since
- * 2.3.0: nothing ambient or relevant stands on the canvas. The canvas
- * carries what is large, focus and urgent, and everything else on the
- * ladder is a TILE (§ 11), where the rung is a colour and a ring. The
- * curator writes only `focus`, `urgent` and `hidden` on a window; the rung
- * itself travels on the tile. */
+/* Rung 1 -- ambient -- has no rule on a window: nothing ambient stands on
+ * the canvas. Rung 2 -- relevant -- had none either until 2.4.0, when the
+ * canvas grew a second open step: a relevant window stands large, on level
+ * 1, on EVERY output (§ 6.2 -- never fewer windows). What decides whether it
+ * is drawn on the canvas at all is the LEVEL (§ 7d) and not the rung -- which
+ * is why a relevant window needs no rule of its own here: it simply stands,
+ * and the lift belongs to focus.
+ *
+ * `data-rung` carries the step, `data-level` where it is drawn (§ 4.24), and
+ * the two are systemwide. Off the canvas the rung is a colour and a ring on
+ * the tile (§ 11). */
 
 /* Rung 3 — focus takes what urgent used to have: a 2px coral ring, drawn as
  * an inset shadow so it costs no space. Depth 2 is still depth 2: the lift,
  * the scale and the flat text are kit 1's. */
-:where(.display-pane, .display-panel, .display-overlay)[data-state="focus"] {
-  transform: translateY(-4px) scale(1.02);
+:where(.display-pane, .display-panel, .display-overlay)[data-rung="focus"] {
+  --rung-scale: var(--rung-lift-scale);
+  transform: translateY(-4px) scale(var(--rung-scale));
   opacity: 1;
   background-color: var(--glass-focus);
   box-shadow: inset 0 0 0 2px var(--accent-soft), var(--rim-top),
     var(--shadow-2);
-  z-index: 5;
 }
 
 /* Rung 4 — urgent is new: a 4px ring in vermilion, the darker half of the
  * accent, on the densest glass in the sheet. Twice the ring focus wears and a
  * different colour, so the last step of the ladder cannot be mistaken for the
  * one before it. Still an inset shadow, so the window does not change size. */
-:where(.display-pane, .display-panel, .display-overlay)[data-state="urgent"] {
-  transform: translateY(-4px) scale(1.02);
+:where(.display-pane, .display-panel, .display-overlay)[data-rung="urgent"] {
+  --rung-scale: var(--rung-lift-scale);
+  transform: translateY(-4px) scale(var(--rung-scale));
   opacity: 1;
   background-color: var(--glass-tint-thick);
   box-shadow: inset 0 0 0 4px var(--accent-soft), var(--rim-top), var(--shadow-2);
-  z-index: 30;
   /* Urgent breathes in the WIDTH of its coral ring (ruling, 08.09.): 3px to
    * 6px and back once a second. No fill, no halo -- the ring is the signal. */
   animation: display-urgent-breathe 1000ms ease-in-out infinite;
@@ -1090,12 +1304,12 @@ body::after {
  * relevant, and a tile has no title. One title slot on every window -- the
  * pane's, the panel's, the prose view's -- and no fixed kicker form. Each
  * rule is 0-2-0, so it wins over the title voice above (0-1-0). */
-[data-state="focus"] :is(.display-pane-title, .display-panel-title) {
+[data-rung="focus"] :is(.display-pane-title, .display-panel-title) {
   font-size: var(--t-title-2);
   color: var(--fg-primary);
 }
 
-[data-state="urgent"] :is(.display-pane-title, .display-panel-title) {
+[data-rung="urgent"] :is(.display-pane-title, .display-panel-title) {
   font-size: var(--t-title-2);
   color: var(--accent);
   animation: display-title-breathe 1000ms ease-in-out infinite;
@@ -1126,25 +1340,112 @@ body::after {
  * application still says which line is the lead -- and all three are drawn. */
 .display-lead, .display-line, .display-detail { display: block; }
 
-/* Blur is for modal moments only (D-12, since 2.3.0). Until 2.2.3 a window in
- * focus made every other window on the screen recede -- one `:has()` on the
- * group, no JavaScript, and exactly the wrong meaning: asking about the
- * weather is not a moment that has to be finished before anything else can
- * happen. What is left is the modal case, which an application says about
- * itself and which nothing in this wave says. */
-.display-columns:has([data-modal="true"])
-  :where(.display-pane, .display-panel, .display-overlay)[data-state]:not([data-modal="true"]):not([data-state="hidden"]) {
-  filter: blur(6px);
-  opacity: 0.6;
+/* ── 7d. The four levels (§ 4.24) ──────────────────────────────────
+ * OS level > 3 urgent > 2 modal > 1 canvas. The number stands on the window's
+ * root as `data-level`; the curator derives it from the application's `layer`
+ * hint and the rung, ONCE for the whole screen -- every output draws the same
+ * windows on the same levels (§ 6.2). A window on level 0 is not on the
+ * canvas at all -- its tile carries it, and the rung rules above hide it. */
+:where(.display-pane, .display-panel, .display-overlay)[data-level="1"] {
+  z-index: var(--plane-canvas);
+}
+
+:where(.display-pane, .display-panel, .display-overlay)[data-level="2"] {
+  z-index: var(--plane-modal);
+}
+
+:where(.display-pane, .display-panel, .display-overlay)[data-level="3"] {
+  z-index: var(--plane-urgent);
+}
+
+/* The two over-levels stand centred OVER the canvas and not in its column:
+ * a modal is the one window that interrupts, and the front urgent stands over
+ * everything (§ 6.3, § 4.24) -- a window that pushed the canvas aside would
+ * relayout the screen every time somebody says a sentence. The width stays the
+ * canvas window's, so a chat does not become a strip (D-11). Neither takes a
+ * cell of the grid: `position: fixed` is out of flow.
+ *
+ * By DESCENT and never by `>`: an application's window hangs in a wrapper that
+ * generates no box (§ 11), so a child selector walks past it and would leave
+ * exactly the urgent of an app lying in the grid -- while a prose view, which
+ * is its own wrapper, would stand over everything. Two kinds of window, two
+ * behaviours, one attribute: that is the bug this line is written against. */
+.display-columns > [data-region] :is([data-level="2"], [data-level="3"]) {
+  position: fixed;
+  inset-block-start: 50%;
+  inset-inline-start: 50%;
+  translate: -50% -50%;
+  inline-size: min(100% - 2 * var(--pad-window), clamp(22rem, 44vw, 40rem));
+  margin-inline: 0;
+}
+
+/* And no OPEN window is ever taller than the output (§ 5.9). Every one of the
+ * three open levels, not only the modal: the page as a whole never scrolls
+ * (`body` is `overflow: hidden`), so a window that outgrows the output is not
+ * a page a finger can drag -- it is a window with its foot cut off, and the
+ * line a person types into sits at that foot. Eight chat lines put it 528px
+ * under a phone before the modal got this cap (measured, F4-N6); a canvas
+ * window had no cap at all until now. Two declarations, no `@supports`, like
+ * `body` -- an engine without `dvh` keeps the first. `100vh` on a phone is the
+ * height WITHOUT the address bar, and the notch and the home bar are part of
+ * the screen but not of the room (§ 6.7, R-23-10).
+ *
+ * Two things stand between the cap and the sentence, and a window
+ * on a television outgrew its output by both at once (B-09, F-3). `box-sizing`
+ * was the default `content-box`, so the cap capped the CONTENT and the
+ * window's own padding stood on top of it (16px on a television); the window
+ * is a box the output has to hold, so the cap counts what the output sees.
+ * And `--rung-scale`: focus and urgent draw their window 2% larger, so 2132px
+ * became 2175px on a 2160px screen. The cap divides by the factor the same
+ * element carries; an unlifted window divides by 1 and keeps its room. */
+.display-columns > [data-region] :is([data-level="1"], [data-level="2"], [data-level="3"]) {
+  box-sizing: border-box;
+  max-block-size: calc((100vh - 2 * var(--pad-window)) / var(--rung-scale));
+  max-block-size: calc((100dvh - 2 * var(--pad-window)
+    - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px))
+    / var(--rung-scale));
+}
+
+/* A flex item's floor is its content unless it is told otherwise, so the cap
+ * alone would be a cap on nothing: the box would say one height and the
+ * column inside keep another. Every open level, like the cap above. */
+.display-columns > [data-region] :is([data-level="1"], [data-level="2"], [data-level="3"]) :is(.inner, .display-pane-body, .display-panel-body) {
+  min-block-size: 0;
+}
+
+/* What does not fit scrolls INSIDE the window (§ 5.9), on every open level.
+ * Everything in the body except the input line is that part;
+ * `overscroll-behavior` keeps the gesture in the window, so a finger at the
+ * last line does not start dragging the page. */
+.display-columns > [data-region] :is([data-level="1"], [data-level="2"], [data-level="3"]) :is(.display-pane-body, .display-panel-body) > :not(.display-input),
+.display-columns > [data-region] :is([data-level="1"], [data-level="2"], [data-level="3"]) > .inner > .display-overlay-body {
+  min-block-size: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* Blur follows the plane and not a boolean. Two grades, and each says which
+ * plane is asking for the room: a modal takes the canvas back a little, an
+ * urgent window takes both back further. Until 2.3.3 there was one grade,
+ * triggered by the application's `modal` hint -- a window could make the
+ * whole screen unsharp by declaring a word about itself. */
+.display-columns:has([data-level="2"]) [data-level="1"] {
+  filter: var(--f-back-2);
+  opacity: 0.72;
+}
+
+.display-columns:has([data-level="3"]) :is([data-level="1"], [data-level="2"]) {
+  filter: var(--f-back-3);
+  opacity: 0.5;
 }
 
 /* Life cycle: fresh → settled → leaving. A whole tree after a lost frame
  * carries `settled`, so nothing flies in twice. */
-:where(.display-pane, .display-panel, .display-overlay, .display-ornament)[data-age="fresh"] {
+:where(.display-pane, .display-panel, .display-overlay)[data-age="fresh"] {
   animation: display-enter var(--t-enter) var(--ease) both;
 }
 
-:where(.display-pane, .display-panel, .display-overlay, .display-ornament)[data-age="leaving"] {
+:where(.display-pane, .display-panel, .display-overlay)[data-age="leaving"] {
   animation: display-leave var(--t-leave) var(--ease) both;
   pointer-events: none;
 }
@@ -1234,10 +1535,11 @@ body::after {
   position: relative;
   z-index: 1;
   --gap: 20px;
-  padding: 28px;
+  padding: 0;
   /* The dock is an overlay, so the canvas keeps its own gutter: a window that
-   * ran under the tiles would be unreadable exactly where it matters. */
-  padding-inline-end: calc(var(--tile) + 3 * var(--dock-pad));
+   * ran under the tiles would be unreadable exactly where it matters. The lane
+   * is what is left of it once the canvas has taken its own air inside. */
+  padding-inline-end: calc(var(--tile) + 3 * var(--dock-pad) - var(--gutter));
   gap: 24px;
   font-family: var(--font-ui);
   font-size: 15px;
@@ -1247,18 +1549,108 @@ body::after {
   color: var(--fg-primary);
 }
 
-.display-columns > [data-region] { gap: 24px; }
+/* ── 8b. § 6.3 arrangement per type (rendering; the state is one, § 6.2) ──
+ * Open canvas windows (level 1) stand in the canvas region in `canvas_order`
+ * (the leading one first, then score). Per exit type: a monitor puts up to
+ * three in a row, a television two, a phone stacks them with the leading one
+ * on top and larger. What does not fit scrolls INSIDE the canvas region --
+ * never the page (§ 5.9) -- and no window is ever missing (§ 6.2). A modal
+ * (level 2) lies over the canvas, the front urgent (level 3) over everything:
+ * both are `position: fixed` and take no cell of the grid.
+ *
+ * ONE canvas, and it is `main`. `aside` is a word older senders may say and
+ * is drawn as canvas since 2.3.0 (OR-D3): its box generates nothing, so its
+ * windows stand in the column beside the canvas rather than in a second grid
+ * with a second scroller. The height comes from the column (`LAYOUT_RULES`,
+ * as tall as the output and no taller); `flex: 1 1 auto` takes what is left
+ * of it and `min-block-size: 0` is what lets a flex item be SHORTER than its
+ * content -- without it the canvas grows past the screen and `body`'s
+ * `overflow: hidden` cuts the rest off, which is a window missing (§ 6.2)
+ * rather than a canvas that scrolls (§ 6.3). */
+.display-columns > [data-region="aside"] { display: contents; }
 
-@media (max-width: 60rem) {
-  .display-columns {
-    padding: 16px;
-    gap: 16px;
-    /* The shorthand above would take the dock's gutter with it. */
-    padding-inline-end: calc(var(--tile) + 3 * var(--dock-pad));
-  }
-  /* A television is far, not small: it keeps its air. */
-  .display-columns[data-profile="tv"] { padding: 28px; padding-inline-end: calc(var(--tile) + 3 * var(--dock-pad)); gap: 24px; }
+/* And an `aside` window may not press the canvas away. Because its region
+ * generates no box, the window itself is a flex item of the column, and a flex
+ * item's floor is its own content -- one long aside window would take the room
+ * the canvas needs and leave `flex: 1 1 auto` nothing to take. It shrinks like
+ * everything else here; what does not fit scrolls inside it, which it already
+ * knows how to do (§ 5.9, the cap and the inner scroller two sections up). */
+.display-columns > [data-region="aside"] :where(.display-pane, .display-panel, .display-overlay) {
+  min-block-size: 0;
+  /* Its region generates no box, so the gutter reaches it as a margin -- on the
+   * inline side only: block margins do not collapse in a flex column, so a
+   * gutter on every side lands in the gap between two of them as well
+   * (measured 18.09.: 24px -> 80px). The last one keeps the floor. */
+  margin-inline-start: var(--gutter);
 }
+
+.display-columns > [data-region="aside"]
+  :where(.display-pane, .display-panel, .display-overlay):last-child {
+  margin-block-end: var(--gutter);
+}
+
+/* And the gutter is the canvas's own padding, not the column's: a scroll
+ * container clips at its PADDING box on all four sides, also where it does not
+ * scroll, and a `focus` window is drawn outside its box -- 2% wider, 4px higher
+ * (§ 7a), ring a pixel beyond. On the column that cut took the leading window's
+ * left and top (6.8px / 15.2px on a monitor; B-35, 18.09.). */
+.display-columns > [data-region="main"] {
+  display: grid;
+  padding: var(--gutter);
+  grid-auto-rows: max-content;
+  align-content: start;
+  gap: var(--gap);
+  flex: 1 1 auto;
+  min-block-size: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* The tracks say their own width instead of asking for a share of the free
+ * space. `1fr` is the same arrangement and the correct spelling -- but WebKit
+ * resolves a fraction against the content box WITHOUT taking the gaps out of it
+ * first, so three tracks plus two gaps came to 40px more than the box that
+ * holds them and the canvas could be dragged sideways over an empty screen
+ * (measured 18.09. against the twin: monitor 1868 against 1828, television 3696
+ * against 3676, Chromium correct on both). The subtraction stands here, so both
+ * engines lay out the same pixels: Chromium's tracks do not move by a hundredth.
+ * A phone has one track and no gap and keeps `1fr`. */
+.display-columns[data-exit="monitor"] > [data-region="main"] { grid-template-columns: repeat(3, minmax(0, calc((100% - 2 * var(--gap)) / 3))); }
+.display-columns[data-exit="tv"] > [data-region="main"] { grid-template-columns: repeat(2, minmax(0, calc((100% - var(--gap)) / 2))); }
+.display-columns[data-exit="phone"] > [data-region="main"] { grid-template-columns: minmax(0, 1fr); }
+
+/* The leading window on a phone: first and larger. `order` because the DOM
+ * order is `canvas_order` and the leading one is already first; the token
+ * makes it larger than its siblings without naming a pixel here. A window
+ * hangs in a wrapper that generates no box (§ 11), so it is a grid item
+ * without being a child in the selector -- which is why these two reach by
+ * descent and the region above by `>`. */
+.display-columns[data-exit="phone"] > [data-region="main"] [data-level="1"][data-rung="focus"] {
+  order: -1;
+  min-block-size: var(--lead-min-phone);
+}
+
+/* And the other side of the same sentence: a minimum under the leading window
+ * says nothing about the others, so a conversation with forty lines grew to
+ * the cap of § 5.9 and stood taller than the window it was meant to stand
+ * behind (B-11 on a phone: 832px beside 433px). The siblings get a cap UNDER
+ * that floor; what does not fit scrolls inside them, which § 5.9 asks for
+ * anyway. */
+.display-columns[data-exit="phone"] > [data-region="main"] [data-level="1"]:not([data-rung="focus"]) {
+  max-block-size: var(--sibling-max-phone);
+}
+
+/* And a modal on a phone is not the whole screen (#705/4): § 5.9 would allow
+ * it, § 6.3 asks for a size relative to the others. */
+.display-columns[data-exit="phone"] > [data-region="main"] [data-level="2"] {
+  max-block-size: var(--modal-max-phone);
+}
+
+/* A window that is not open (level 0) has no place on the canvas at all: it is
+ * a tile. By descent, for the same reason as the phone rules above: a window
+ * inside a wrapper is still on the canvas, and `> [data-level="0"]` would walk
+ * past it. */
+.display-columns > [data-region] [data-level="0"] { display: none; }
 
 /* ── 9. The screen's own furniture: the OS mark ──────────────────────────
  * The mark is the one thing on the screen that belongs to the screen and not
@@ -1270,11 +1662,15 @@ body::after {
  * application. The line below is for a screen reader and is not drawn. */
 .display-os {
   position: fixed;
-  inset-inline-end: var(--dock-pad);
-  inset-block-end: var(--dock-pad);
+  /* The safe area, on the one piece of furniture the home indicator reaches.
+   * `env()` is 0 on everything without a notch, so this is a declaration and
+   * not a query -- and it is 0 without `viewport-fit=cover` too, which is why
+   * T3 puts that into the `web` cell's head. */
+  inset-inline-end: calc(var(--dock-pad) + env(safe-area-inset-right, 0px));
+  inset-block-end: calc(var(--dock-pad) + env(safe-area-inset-bottom, 0px));
   inline-size: var(--os);
   block-size: var(--os);
-  z-index: 30;
+  z-index: calc(var(--plane-os) + 1);
   background: transparent;
   touch-action: none;
 }
@@ -1324,7 +1720,11 @@ body::after {
   border-radius: var(--r-capsule);
 }
 
-.display-os[data-phase="listening"] .display-os-mark {
+/* § 6.8: the listening state -- the glow while a hold runs and the client
+ * records -- exists only where a hold exists, and that is `audio` in the
+ * profile (§ 6.4). An output that can never hold had a rule for a state it can
+ * never be in. */
+.display-columns[data-inputs~="audio"] .display-os[data-phase="listening"] .display-os-mark {
   color: var(--accent);
   filter: drop-shadow(0 0 calc(0.5rem * var(--scale)) var(--accent-ring));
 }
@@ -1336,7 +1736,60 @@ body::after {
   animation: display-os-pulse 1400ms ease-in-out infinite;
 }
 
+/* § 5.4: a refused voice channel "says the refusal in its live region and
+ * dims". DIMS is opacity, not colour -- the third ink is another colour, and
+ * from across the room it reads as another mark. The button stays a button:
+ * the press is the dock, and the dock has nothing to do with a microphone
+ * (§ 5.5). Gated by `audio` like the listening state above (§ 6.4). */
 .display-os[data-phase="error"] .display-os-mark { color: var(--fg-tertiary); }
+
+.display-columns[data-inputs~="audio"] .display-os[data-phase="error"] .display-os-mark {
+  opacity: var(--mark-dim);
+}
+
+/* The light on the mark (§ 6.8): something is present that the screen is not
+ * showing, and it matters. `unseen` is a count the curator writes -- systemwide
+ * (§ 4.33) -- and the sheet decides only WHERE it is visible: "as long as
+ * `unseen > 0` AND the dock on this output is actually closed, whether by
+ * profile or by press". Closed has two shapes, so this rule has two selectors:
+ * the profile ships it hidden and no finger opened it, or the profile ships it
+ * open and a finger closed it (the pair of rules that hide the dock itself
+ * knows the same two, § 12b).
+ *
+ * Lit in ONE place and never taken back: switching it off again by
+ * `[data-dock="shown"]` reads like the same thing and is not -- a monitor whose
+ * dock the finger had just closed still carries it, so that fourth case stayed
+ * dark while the dock was shut. The EMPTY value is dark as well: `unseen` is text (OR-F27), and an exit
+ * nobody counted for would otherwise glow for ever. `.display-os` is already
+ * `position: fixed`, so the pseudo-element hangs on the right box.
+ *
+ * Both selectors ask <html> POSITIVELY, and the `:not()` that is left holds one
+ * compound: a complex `:not(html[…] *)` needs Selectors 4, and an engine that
+ * does not parse it drops the WHOLE rule -- which here would be the dot itself,
+ * on every output at once. No attribute yet means nothing was pressed (the
+ * profile decides); `"0"` means a finger closed it, whatever the profile ships.
+ *
+ * The fill is a TOKEN and not a colour: the forced-colours block has to be able
+ * to replace it, and it cannot win on specificity any more (this rule weighs a
+ * class and five attributes, the block's own rule four). A custom property
+ * declared on the same pseudo-element wins over an inherited one whatever the
+ * weights are, so the colour is decided where it belongs and the dot keeps its
+ * system colour where the OS owns every colour (§ 13). */
+html:not([data-dock-open]) .display-columns[data-dock="hidden"] .display-os[data-unseen]:not([data-unseen="0"]):not([data-unseen=""])::after,
+html[data-dock-open="0"] .display-columns .display-os[data-unseen]:not([data-unseen="0"]):not([data-unseen=""])::after {
+  content: "";
+  position: absolute;
+  /* The press handlers hang on the button under this dot, so a pseudo-element
+   * that took the pointer would swallow the hold while the dot is lit. */
+  pointer-events: none;
+  inset-block-start: calc(var(--os) * 0.06);
+  inset-inline-end: calc(var(--os) * 0.06);
+  inline-size: calc(0.55rem * var(--scale));
+  block-size: calc(0.55rem * var(--scale));
+  border-radius: var(--r-capsule);
+  background-color: var(--dot-fill, var(--accent));
+  box-shadow: 0 0 calc(0.4rem * var(--scale)) var(--accent-ring);
+}
 
 @keyframes display-os-pulse {
   0%, 100% { opacity: 1; }
@@ -1354,6 +1807,26 @@ body::after {
   overflow: hidden;
   clip-path: inset(50%);
   white-space: nowrap;
+}
+
+/* Except while the channel is refused (OR-H2.1): § 5.4's refusal, drawn BESIDE
+ * the mark -- over it the dock ends and a caption lies on a tile (§ 6.11).
+ * `audio` like the dimming (§ 6.4). Measurement and why: GH #722. */
+.display-columns[data-inputs~="audio"] .display-os[data-phase="error"] .display-os-state {
+  inset-block-end: calc((var(--os) - 1.3em) / 2);
+  inset-inline-end: calc(100% + var(--dock-gap));
+  margin: 0;
+  inline-size: max-content;
+  max-inline-size: calc(100vw - var(--os) - 2 * var(--dock-pad) - var(--dock-gap)
+    - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px));
+  block-size: auto;
+  overflow: hidden;
+  clip-path: none;
+  font-size: var(--t-caption);
+  line-height: 1.3;
+  color: var(--fg-secondary);
+  pointer-events: none;
+  opacity: var(--mark-dim);
 }
 
 /* ── 10. The scene — a stack that is a picture of a screen ──────────────
@@ -1402,17 +1875,25 @@ body::after {
   position: fixed;
   inset-block: 0;
   inset-inline-end: 0;
-  z-index: 20;
+  z-index: var(--plane-os);
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
   gap: var(--dock-gap);
   inline-size: calc(var(--tile) + 2 * var(--dock-pad));
   padding: var(--dock-pad);
-  padding-block-end: calc(var(--os) + 2 * var(--dock-pad));
+  /* It ends above the mark by exactly the mark's own height -- and the mark
+   * has moved up by the safe area, so this does too. */
+  padding-block-end: calc(var(--os) + 2 * var(--dock-pad) + env(safe-area-inset-bottom, 0px));
   /* The layer itself takes no clicks; the tiles do. A click that fell
    * through the dock onto the canvas would be a click nobody aimed. */
   pointer-events: none;
+  /* It comes from where it lives -- the right edge -- and goes back the same
+   * way, one short movement both ways on every output (§ 5.5, 18.09.).
+   * `allow-discrete` lets `display: none` stay the closed end state (§ 6.7)
+   * and still move; an engine without it keeps the hard cut it had. */
+  transition: opacity var(--t-dock) var(--ease), translate var(--t-dock) var(--ease),
+    display var(--t-dock) allow-discrete;
 }
 
 /* ONE size, and no second background inside it: a tile is one surface with
@@ -1428,7 +1909,10 @@ body::after {
   aspect-ratio: 1;
   padding: calc(var(--dock-pad) * 0.8);
   border-radius: var(--r-control);
-  background-color: var(--glass-tint-thin);
+  /* The thick tint, not the thin one (GH #705). The dock is furniture in
+   * FRONT of the canvas, not a pane among the panes: over a lit window the
+   * thin tint left the tiles barely visible, measured on a device. */
+  background-color: var(--glass-tint-thick);
   -webkit-backdrop-filter: blur(14px) saturate(var(--glass-saturate));
   backdrop-filter: blur(14px) saturate(var(--glass-saturate));
   box-shadow: var(--rim-top), var(--shadow-contact);
@@ -1475,17 +1959,17 @@ body::after {
  * bar the tile reads as ambient: present, quiet -- a window under the bar is
  * hidden on the canvas, but its tile is not, and it must not stand fully
  * opaque beside a relevant one. */
-.display-tile[data-state="ambient"],
-.display-tile[data-state="hidden"] { opacity: 0.72; }
+.display-tile[data-rung="ambient"],
+.display-tile[data-rung="hidden"] { opacity: var(--tile-open-opacity); }
 
-.display-tile[data-state="relevant"] { opacity: 1; }
+.display-tile[data-rung="relevant"] { opacity: 1; }
 
-.display-tile[data-state="focus"] {
+.display-tile[data-rung="focus"] {
   opacity: 1;
   box-shadow: inset 0 0 0 2px var(--accent-soft), var(--rim-top), var(--shadow-contact);
 }
 
-.display-tile[data-state="urgent"] {
+.display-tile[data-rung="urgent"] {
   opacity: 1;
   background-color: var(--glass-tint-thick);
   box-shadow: inset 0 0 0 3px var(--accent), var(--rim-top), var(--shadow-contact);
@@ -1493,12 +1977,28 @@ body::after {
 }
 
 /* The same object, just large right now: the tile steps back a little rather
- * than disappearing, because dual representation is the rule (D-7). */
-.display-tile[data-on-canvas="true"] { opacity: 0.7; }
+ * than disappearing, because dual representation is the rule (D-7). How far
+ * back is § 6.11's floor and not a taste: over a lit window 0.7 left the tiles
+ * barely readable, measured on a device (acceptance 16.09., #705/3). */
+.display-tile[data-open="1"] { opacity: var(--tile-open-opacity); }
+
+/* An empty seat (§ 4.29): a seat guarantees nothing, and when its tile is
+ * missing its place stays VISIBLY empty -- empty space, no placeholder object.
+ * So it takes exactly a tile's room and draws nothing: no surface, no border,
+ * no glass, and no finger can land on it. Without the box the dock would close
+ * the gap, and the clock's place would be the weather's the moment the clock
+ * is not present (R-23-3). */
+.display-seat {
+  inline-size: var(--tile);
+  aspect-ratio: 1;
+  background: none;
+  box-shadow: none;
+  pointer-events: none;
+}
 
 /* Pinned is the one word about the dock a person says (D-15): relevance
  * sinks, the tile stays. Until 2.3.0 it froze a number and showed nothing. */
-.display-tile[data-pinned="true"]::after {
+.display-tile[data-pinned="1"]::after {
   content: "";
   position: absolute;
   inset-block-start: 6px;
@@ -1512,6 +2012,61 @@ body::after {
 /* The frame a zoom lands on, set by the hook for the length of one movement. */
 .display-tile[data-zoomed="true"] {
   box-shadow: inset 0 0 0 2px var(--accent-soft), var(--rim-top), var(--shadow-2);
+}
+
+/* A tile that answers a finger says so, and answers it before the server
+ * does (F-14): the cursor and the press are the sheet's half, `data-zoomed`
+ * from the scene hook is the other. `phx-click` stands on the tile only
+ * where the exit has a hand (OR-F18), so the cursor follows the same word. */
+.display-tile[phx-click] { cursor: pointer; }
+.display-tile[phx-click]:active { transform: scale(0.96); }
+
+/* A tile that shows a dialogue leads with the bubble and not with the text:
+ * the bubble is the word "chat" without a word (F-15). Until 2.3.3 a chat
+ * tile was a glyph in the secondary ink with an empty value slot beside it,
+ * and it looked like every other tile with one line of text on it. */
+.display-tile[data-topic="chat"] .display-tile-glyph {
+  font-size: var(--t-title-1);
+  color: var(--accent);
+}
+
+/* The last line IS the content here, so it takes the place of the value:
+ * two lines instead of one cut, because half a sentence is readable and a
+ * cut one is a tooltip nobody can open. */
+.display-tile[data-topic="chat"] .display-tile-line {
+  align-self: end;
+  font-size: var(--t-small);
+  color: var(--fg-secondary);
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+}
+
+/* Unread: the same dot as on the mark, top LEFT -- the pin owns the right
+ * corner (`::after` above) and two dots in one corner are one dot nobody can
+ * read. The application says it: only the chat knows whether its last line
+ * is an answer that arrived after the last thing a person said. */
+.display-tile[data-unread="1"]::before {
+  content: "";
+  position: absolute;
+  inset-block-start: 6px;
+  inset-inline-start: 6px;
+  inline-size: 7px;
+  block-size: 7px;
+  border-radius: var(--r-capsule);
+  background-color: var(--accent);
+}
+
+/* A unit is set BESIDE the number, not inside it (E-8): `18.3 °C` as one
+ * string ran into the value's ellipsis and read `15.2…` on a phone. */
+.display-tile-unit {
+  font-size: var(--t-caption);
+  font-weight: var(--w-body);
+  color: var(--fg-tertiary);
+  margin-inline-start: 0.1em;
 }
 
 /* The canvas is one centred column since 2.3.0, and a window in focus is
@@ -1567,7 +2122,6 @@ body::after {
   --accent-wash: rgba(240, 135, 110, 0.18);
   --accent-ring: rgba(240, 135, 110, 0.28);
   --rim-top: inset 0 1px 0 rgba(255, 255, 255, 0.26);
-  --rim-edge: 0 0 transparent;
   --rim-bottom: 0 0 transparent;
   --sheen: linear-gradient(135deg, rgba(255, 255, 255, 0.14) 0%,
     rgba(255, 255, 255, 0.04) 26%, rgba(255, 255, 255, 0) 56%);
@@ -1613,8 +2167,9 @@ body::after {
 }
 
 /* ── 12. The profile: one number, and the type and the dock follow ───────
- * The root says which screen this is (`data-profile`), what that screen can
- * take (`data-inputs`) and one scale. Everything below is derived; there is
+ * The root says which OUTPUT this is (`data-exit`: the type, § 6.1), what
+ * that output can take (`data-inputs`) and one scale. Everything below is
+ * derived; there is
  * no second sheet for a television and no media query that pretends a far
  * screen is a small one. */
 .display-columns {
@@ -1637,12 +2192,12 @@ body::after {
 /* Three metres away the second and third ink are not readable at the alphas
  * a desk gets (D-24). Only the two that carry label and body text move; the
  * accent and the material stay what they are. */
-.display-columns[data-profile="tv"] {
+.display-columns[data-exit="tv"] {
   --fg-secondary: rgba(43, 29, 25, 0.92);
   --fg-tertiary: rgba(43, 29, 25, 0.78);
 }
 
-.display-columns[data-profile="tv"][data-ground="night"] {
+.display-columns[data-exit="tv"][data-ground="night"] {
   --fg-secondary: rgba(247, 239, 230, 0.9);
   --fg-tertiary: rgba(247, 239, 230, 0.74);
 }
@@ -1650,11 +2205,104 @@ body::after {
 /* `data-inputs` steers what is VISIBLE and nothing else: a screen with no
  * audio keeps its mark and loses the light that says it is listening. Which
  * device an answer came from is the member's knowledge, never the screen's. */
-.display-columns:not([data-inputs~="audio"]) .display-os-mark { opacity: 0.5; }
+.display-columns:not([data-inputs~="audio"]) .display-os-mark { opacity: var(--mark-dim); }
 
 .display-columns:not([data-inputs~="pointer"]):not([data-inputs~="touch"]) .display-os-mark {
   cursor: default;
 }
+
+/* ── 12b. The phone: the mark, and the dock when a hand asks ─────────────
+ * R-23-4/F-2. Two attributes, two owners, and that is the whole mechanism:
+ * the GROUND state is the server's (`data-dock` on the root, out of the
+ * profile's `dock_default`, written in the dead render), the OPENING is the
+ * client's (`data-dock-open` on <html>). They live on different nodes on
+ * purpose -- <html> is outside the LiveView container, so no patch
+ * overwrites the opening, and a reload puts the screen back into its profile
+ * default, which is exactly R-23-4's "the toggle is not remembered".
+ *
+ * The other two shapes were both tried on a device and both failed: a
+ * preset that lives only in the sheet is not a state (every patch re-rendered
+ * the born value and the tiles blinked away), and a server round trip per tap
+ * paid a full curation pass for a gesture that means nothing (R-23-4, OR-F5). */
+.display-columns[data-exit="phone"] {
+  /* The window air a phone gets. It used to arrive from `@media (max-width:
+   * 48rem)`, which is a width deciding what a profile knows (§ 6.6); the value
+   * is the same 18px, it just comes from the right place now. */
+  --pad-window: 18px;
+  --pad-inner: 14px;
+  --r-window: 18px;
+  --gutter: 14px;
+  gap: 14px;
+}
+
+/* A window in focus on 393 px is not a 22rem box with a margin around it.
+ * Same reach as the compact rule in § 11: every window on the canvas that is
+ * not inside another window. */
+.display-columns[data-exit="phone"] > [data-region]
+  :where(.display-pane, .display-panel, .display-overlay):not(:where(.display-pane, .display-panel, .display-overlay) *) {
+  max-inline-size: 100%;
+}
+
+/* Closed ENDS at `display: none` and never at `opacity` alone: a tile carries
+ * its own `backdrop-filter`, and WebKit painted such layers straight through an
+ * ancestor's opacity, measured on a device. The opacity beside it is what the
+ * short movement runs on; `allow-discrete` keeps the end state discrete. */
+.display-columns[data-dock="hidden"] .display-dock,
+html[data-dock-open="0"] .display-columns[data-dock="shown"] .display-dock {
+  display: none;
+  opacity: 0;
+  translate: 12px 0;
+}
+
+/* And then the gutter belongs to the canvas. The canvas holds a dock-wide
+ * lane free at all times (§ 8); on a phone that is 120 px of 393, for a dock
+ * that is not there. */
+.display-columns[data-dock="hidden"] {
+  padding-inline-end: calc(var(--pad-window) - var(--gutter));
+}
+
+html[data-dock-open="1"] .display-columns[data-dock="hidden"] .display-dock {
+  display: flex;
+  /* Taken back by name, or it opens invisible (measured, both engines). */
+  opacity: 1;
+  translate: none;
+}
+
+/* Where it comes FROM: a dock that was `display: none` has no earlier style to
+ * move away from, and BOTH openings are that -- the phone's, shipped closed,
+ * and the monitor's, closed by a finger (`[data-dock]` with no value is both).
+ * The selector carries the opener's weight and stands AFTER it: a start style
+ * competes at its own weight and loses a tie to the rule it is meant to start
+ * from (measured: the phone opened hard). `[data-dock-open="1"]` keeps a load
+ * from fading anything in. */
+@starting-style {
+  html[data-dock-open="1"] .display-columns[data-dock] .display-dock {
+    opacity: 0;
+    translate: 12px 0;
+  }
+}
+
+html[data-dock-open="1"] .display-columns[data-dock="hidden"] {
+  padding-inline-end: calc(var(--tile) + 3 * var(--dock-pad) - var(--gutter));
+}
+
+/* The other half of the pair (GH #705): the rules above open a dock the profile
+ * ships closed, this one gives the lane back when one it ships open is closed
+ * (the closed dock itself stands two rules up). Without it the mark was a
+ * one-way switch on a monitor. */
+html[data-dock-open="0"] .display-columns[data-dock="shown"] {
+  padding-inline-end: calc(var(--pad-window) - var(--gutter));
+}
+
+/* A television paints 8.3 megapixels on a small computer, and
+ * `background-position` is not compositable: the drift repaints the screen
+ * every frame and the grain is blended into every one. Measured 18.09. at
+ * 3840x2160 under a sixfold CPU brake: 150 ms a frame with them, 16.7 ms
+ * without -- glass and blur beside them cost nothing. `:has()`, because the
+ * exit stands on the columns and this is their ancestor. */
+body:has([data-exit="tv"]) { animation: none; }
+
+body:has([data-exit="tv"])::after { display: none; }
 
 /* ── 13. Fallbacks ───────────────────────────────────────────────────────
  * The material has three ways of not existing; each gets an opaque surface
@@ -1667,7 +2315,8 @@ body::after {
 }
 
 @media (prefers-reduced-transparency: reduce) {
-  :is(.glass, .glass--thin, .glass--thick) {
+  /* A tile is the same material as a window, so it stands in the same rule. */
+  :is(.glass, .glass--thin, .glass--thick), .display-tile {
     background-color: var(--glass-opaque);
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
@@ -1677,11 +2326,13 @@ body::after {
   body { background-image: none; animation: none; }
   body::after { display: none; }
 
-  .display-tile {
+  .display-input-field {
     background-color: var(--glass-opaque);
-    -webkit-backdrop-filter: none;
-    backdrop-filter: none;
+    box-shadow: none;
   }
+
+  /* `forced-colors` needs no such line: filters are ignored there. */
+  :root { --f-back-2: none; --f-back-3: none; }
 }
 
 @media (prefers-contrast: more) {
@@ -1690,16 +2341,16 @@ body::after {
     --fg-tertiary: rgba(43, 29, 25, 0.76);
     --hairline: rgba(74, 46, 39, 0.3);
     --hairline-strong: rgba(74, 46, 39, 0.5);
-    --rim-edge: 0 0 transparent;
     --inner-fill: rgba(255, 255, 255, 0.72);
     --inner-fill-strong: rgba(255, 255, 255, 0.86);
     --accent: #962a17;
+    --f-back-2: none;
+    --f-back-3: none;
   }
 
   [data-ground="night"] {
     --fg-secondary: rgba(247, 239, 230, 0.9);
     --fg-tertiary: rgba(247, 239, 230, 0.74);
-    --rim-edge: 0 0 transparent;
   }
 
   :is(.glass, .glass--thin, .glass--thick) {
@@ -1740,6 +2391,18 @@ body::after {
   .display-timer-fill,
   .display-progress-fill { background: Highlight; }
 
+  /* The dot, by its TOKEN and not by a colour. Its own rule now names the
+   * dock as well (§ 6.8) and weighs a class and five attributes, so no
+   * selector written here could beat it -- and `forced-color-adjust: none`
+   * would then keep the author's accent on a screen whose owner replaced
+   * every colour. A custom property declared on the same pseudo-element wins
+   * over the inherited one whatever the weights are, which is why the fill
+   * travels as `--dot-fill`. */
+  .display-os[data-unseen]:not([data-unseen="0"]):not([data-unseen=""])::after {
+    --dot-fill: Highlight;
+    forced-color-adjust: none;
+  }
+
   :is(.display-pane, .display-panel, .display-overlay, .display-ornament)::before { display: none; }
   .display-scene, body { background-image: none; }
   .display-os-ring,
@@ -1760,16 +2423,7 @@ body::after {
   .display-ornament,
   .display-action,
   .display-option-chip,
-  .display-progress-fill {
-    transition: opacity 150ms linear !important;
-    animation: none !important;
-  }
-
-  :where(.display-pane, .display-panel, .display-overlay)[data-state="focus"],
-  :where(.display-pane, .display-panel, .display-overlay)[data-state="urgent"],
-  .display-action:hover,
-  .display-option-chip:hover { transform: none; }
-
+  .display-progress-fill,
   /* The dock does not move under reduced motion either: a tile changes its
    * rank by being somewhere else next frame, not by sliding there. */
   .display-tile {
@@ -1777,22 +2431,28 @@ body::after {
     animation: none !important;
   }
 
-  .display-tile[data-state="urgent"] {
-    animation: display-urgent-breathe 2000ms ease-in-out infinite !important;
-  }
+  :where(.display-pane, .display-panel, .display-overlay)[data-rung="focus"],
+  :where(.display-pane, .display-panel, .display-overlay)[data-rung="urgent"],
+  .display-tile[phx-click]:active,
+  .display-columns:is([data-inputs~="pointer"], [data-inputs~="touch"]) .display-action:hover,
+  .display-columns:is([data-inputs~="pointer"], [data-inputs~="touch"]) .display-option-chip:hover { transform: none; }
 
-  .display-os[data-phase="speaking"] .display-os-mark { animation: none !important; }
+  /* The dock does not move either: it is there or it is not. A transition now
+   * and no keyframe (GH #741), so this is the line that has to shout back. */
+  .display-dock { transition: none !important; }
 
+  .display-os[data-phase="speaking"] .display-os-mark,
   .display-status .display-status-dot { animation: none !important; }
   /* Urgent keeps breathing under reduced motion, only slower: it is the one
-   * animation that carries meaning (ruling, 08.09.). */
-  :where(.display-pane, .display-panel, .display-overlay)[data-state="urgent"] {
+   * animation that carries meaning (ruling, 08.09.). A tile says it too. */
+  :where(.display-pane, .display-panel, .display-overlay)[data-rung="urgent"],
+  .display-tile[data-rung="urgent"] {
     animation: display-urgent-breathe 2000ms ease-in-out infinite !important;
   }
-  [data-state="urgent"] :is(.display-pane-title, .display-panel-title) {
+  [data-rung="urgent"] :is(.display-pane-title, .display-panel-title) {
     animation: display-title-breathe 2000ms ease-in-out infinite !important;
   }
-  .display-notification[data-level="urgent"] {
+  .display-notification[data-notice="urgent"] {
     animation: display-notification-breathe 2000ms ease-in-out infinite !important;
   }
 
@@ -1805,38 +2465,30 @@ body::after {
   .display-overlay::after { animation-duration: calc(var(--ttl, 0) * 1ms) !important; }
 }
 
-/* ── 15. Screen sizes ────────────────────────────────────────────────────
+/* ── 15. Screen sizes — the GALLERY only ─────────────────────────────────
  * 1920 is the reference; 1280 and 390 stay readable. Nothing here changes the
- * language, only how much air it gets. */
+ * language, only how much air it gets.
+ *
+ * And nothing here reaches a screen: § 6.6 says the sheet scales only through
+ * tokens and that no width query overrides a profile -- a television is far,
+ * not small. What is left is the gallery page, which has no shell and
+ * therefore no profile, and `:not(.display-columns *)` says exactly that. */
 @media (max-width: 80rem) {
-  .display-scene { padding: 22px; }
-  /* A television is far, not small: its air comes from the profile. */
-  .display-columns[data-profile="tv"] .display-scene { padding: 30px; }
+  .display-scene:not(.display-columns *) { padding: 22px; }
 }
 
 @media (max-width: 48rem) {
-  :root {
+  .display-scene:not(.display-columns *) {
     --pad-window: 18px;
     --pad-inner: 14px;
     --r-window: 18px;
     --t-voice: 24px;
     --t-value: 30px;
-  }
-
-  /* Same rule, the other way round: the profile wins over the width. The
-   * `:root` block above still serves the gallery page, which has no shell. */
-  .display-columns[data-profile="tv"] {
-    --pad-window: 22px;
-    --pad-inner: 16px;
-    --r-window: 22px;
-  }
-
-  .display-scene {
     aspect-ratio: auto;
     flex-direction: column;
     align-items: stretch;
     padding: 16px;
   }
-  .display-scene > .display-pane[data-region="aside"] { flex: 1 1 auto; }
-  .display-ornament > .inner { white-space: normal; }
+  .display-scene:not(.display-columns *) > .display-pane[data-region="aside"] { flex: 1 1 auto; }
+  .display-scene:not(.display-columns *) .display-ornament > .inner { white-space: normal; }
 }

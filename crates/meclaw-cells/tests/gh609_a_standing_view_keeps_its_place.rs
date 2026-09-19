@@ -1,5 +1,4 @@
-//! GH #609 -- a second region beside the conversation, and an order that a
-//! rewrite cannot move.
+//! GH #609 -- the order of the screen reads no clock.
 //!
 //! Found while building an ambient application -- a clock, a weather tile and a
 //! countdown, standing on a screen beside a conversation. `display@1.0.2` knew
@@ -8,82 +7,68 @@
 //! it was important, but because it was recent. That is the right answer for a
 //! card and the wrong one for anything standing.
 //!
-//! Two changes, and a trap between them. The order inside a region is now the
-//! `ord` a view DECLARED, then its first appearance, and never the moment it
-//! was last written. The second region is `aside`. The trap was that both
-//! regions used to hang under the root at `ord: 0`, and the root was documented
-//! as taking exactly one child -- a constraint GH #394 had already lifted in
-//! the `web` cell (n+1 statics for n slots), which nobody had come back to.
+//! The theme outlived its first mechanism. Display 2.5.0 rebuilt the curator on
+//! the reference model of display-hive.md, and the seat-by-first-appearance the
+//! original fix introduced (`seated`, `seat_of`) is gone with it. What holds,
+//! and what this file pins, is the sentence underneath: **the moment a view was
+//! last written orders nothing.** Today three orders exist and none of them
+//! reads a wall clock --
 //!
-//! The measurement lives in `tests/fixtures/gh609_region_order_check.py`,
-//! because it has to drive the SHIPPED cell through all four of its passes with
-//! a store and a display on the other end. What this file adds is that
-//! `cargo test` runs it -- plus the drift locks (`docs/development-rules.md`
-//! § 2d) on the sentences the templates now make.
+//! * the rows the store hands the pass, by region, then the `ord` a view
+//!   DECLARED, then owner and view id (`pass_views`);
+//! * the open canvas windows, by lead, score, the younger `since` and the id
+//!   (`canvas_order`, § 6.3), written onto the wrapper as a negative `ord`;
+//! * the dock, by seat and rank (`step9_dock` -> `state["dock_order"]`, § 4.28).
+//!
+//! `since` is a TOUCH, not a write: a rewrite that changes no own prop moves it
+//! not at all (§ 4.8 b), which is the case GH #609 was opened for. The last test
+//! drives the shipped cell over five such rewrites and watches the wrapper's
+//! `ord`.
 //!
 //! Skips when `python3` is absent or the templates do not ship, like every
 //! other interpreter guard in this tree (R2b).
 
-use meclaw_core::serde_json::Value;
+mod support;
 
-fn repo(rel: &str) -> std::path::PathBuf {
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join(rel)
-}
+use meclaw_core::serde_json::{Value, json};
+use support::{COMPOSE, Screen, component_view, library_ships, pane, repo, window_id};
 
-const COMPOSE: &str = "templates/display/compose/compose.py";
 const CONFIG: &str = "templates/display/compose/config.json";
 const VIEWS: &str = "templates/display/views/config.json";
 const README: &str = "templates/display/README.md";
-const CHECK: &str = "crates/meclaw-cells/tests/fixtures/gh609_region_order_check.py";
 
 fn read_json(rel: &str) -> Value {
     meclaw_core::serde_json::from_str(&std::fs::read_to_string(repo(rel)).expect(rel))
         .unwrap_or_else(|e| panic!("{rel} does not parse: {e}"))
 }
 
-/// The whole loop, over the shipped bytes: two regions, and five rewrites that
-/// move nothing.
-#[test]
-fn a_view_rewritten_five_times_keeps_the_seat_it_arrived_in() {
-    for rel in [COMPOSE, CHECK] {
-        if !repo(rel).exists() {
-            return;
-        }
-    }
-    let out = match std::process::Command::new("python3")
-        .arg(repo(CHECK))
-        .arg(repo(COMPOSE))
-        .output()
-    {
-        Ok(o) => o,
-        Err(_) => return, // no python3 on this host
-    };
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success() && stdout.contains("all green"),
-        "the screen's two regions and its order must hold:\n{stdout}\n{stderr}"
-    );
-    // The suite must actually have run something -- an empty file "passes" too.
-    assert!(
-        stdout.matches("  ok  ").count() >= 25,
-        "too few checks ran; did the suite lose its cases?\n{stdout}"
-    );
+fn source() -> String {
+    std::fs::read_to_string(repo(COMPOSE)).expect("compose.py")
+}
+
+/// One `def` of the script, from its header to the next one at column zero --
+/// so a claim about an ordering is asked of the function that orders, and not
+/// of the whole file, where any other function could be answering for it.
+fn body_of<'a>(src: &'a str, header: &str) -> &'a str {
+    let start = src
+        .find(header)
+        .unwrap_or_else(|| panic!("`{header}` is not in compose.py"));
+    let rest = &src[start + header.len()..];
+    let end = rest.find("\ndef ").map(|i| i + 1).unwrap_or(rest.len());
+    &rest[..end]
 }
 
 /// The source and the runtime copy of it are the same bytes.
 ///
 /// A `code` cell runs `params.script_inline`; the `.py` beside it is what a
-/// person reads. The checker above drives the `.py`, so this is what makes its
+/// person reads. Every test here drives the `.py`, so this is what makes their
 /// verdict a verdict about the cell.
 #[test]
 fn the_shipped_script_is_the_file_beside_it() {
     if !repo(COMPOSE).exists() {
         return;
     }
-    let src = std::fs::read_to_string(repo(COMPOSE)).expect("compose.py");
+    let src = source();
     let cfg = read_json(CONFIG);
     let inline = cfg["params"]["script_inline"]
         .as_str()
@@ -97,7 +82,7 @@ fn the_regions_are_a_closed_list_with_main_first() {
     if !repo(COMPOSE).exists() {
         return;
     }
-    let src = std::fs::read_to_string(repo(COMPOSE)).expect("compose.py");
+    let src = source();
     assert!(
         src.contains(r#"REGIONS = ("main", "aside")"#),
         "`main` first, because it is the DEFAULT: a view that names no region \
@@ -107,35 +92,6 @@ fn the_regions_are_a_closed_list_with_main_first() {
         src.contains("\"ord\": i * ORD_STEP,"),
         "the regions' own `ord` comes from the declaration order -- two \
          regions at 0 were the second half of GH #609"
-    );
-}
-
-/// The clock is gone from the ordering, and the seats are what replaced it.
-#[test]
-fn the_order_of_a_region_reads_no_clock() {
-    if !repo(COMPOSE).exists() {
-        return;
-    }
-    let src = std::fs::read_to_string(repo(COMPOSE)).expect("compose.py");
-    assert!(
-        !src.contains("-int(r.get(\"updated_at\") or 0),"),
-        "sorting a region on the last write IS GH #609; `updated_at` is a \
-         `ttl_ms` question and nothing else now"
-    );
-    assert!(
-        src.contains("def seat_of(wrapper, region, have):")
-            && src.contains("def seated(views, have):"),
-        "first appearance is the seat the display already holds the view at"
-    );
-    assert!(
-        src.contains("def build(views, have=None, now=None, knobs=None, verdict=None):"),
-        "the layout READS what the display holds; without it there is nothing \
-         for first appearance to be remembered in"
-    );
-    // `updated_at` still exists -- as the expiry clock, which is what it is for.
-    assert!(
-        src.contains("return ttl > 0 and now - written >= ttl"),
-        "`updated_at` still answers the one question it was ever right for"
     );
 }
 
@@ -155,7 +111,7 @@ fn the_table_carries_the_declared_ord() {
         cfg["params"]["schema"]["views"]["region"], "text",
         "and the region it stands in beside it"
     );
-    let src = std::fs::read_to_string(repo(COMPOSE)).expect("compose.py");
+    let src = source();
     assert!(
         src.contains("\"ord\","),
         "the column list the select projects has to name it too, or the plan \
@@ -163,41 +119,199 @@ fn the_table_carries_the_declared_ord() {
     );
 }
 
-/// The README describes the mechanism it has, not the one it used to have.
+/// No order of the screen reads a clock -- and the README says so.
 ///
-/// A drift lock, both halves (`docs/development-rules.md` § 2d): the sentence
-/// AND the code that carries it.
+/// A drift lock, both halves (`docs/development-rules.md` § 2d). The prose half
+/// is the retraction the README carries under "What no longer holds": *the
+/// canvas is ordered by what the windows mean*. The mechanism half is that the
+/// three orderings name only meaning, and that `updated_at` -- the column that
+/// once sorted the screen -- is written by the cell and read by nothing in it.
 #[test]
-fn the_readme_promises_the_order_the_cell_implements() {
-    if !repo(README).exists() {
+fn no_order_of_the_screen_reads_a_clock() {
+    if !repo(COMPOSE).exists() || !repo(README).exists() {
         return;
     }
     let doc = std::fs::read_to_string(repo(README)).expect("README");
     assert!(
-        doc.starts_with("# `display@2.3.3`"),
-        "the README names the version it describes"
+        doc.contains("the canvas is ordered by what the windows mean"),
+        "the promise the cell makes has to be the promise the README makes"
+    );
+    let src = source();
+
+    // The canvas, § 6.3: lead, score, the younger `since`, the id. `since` is
+    // the moment of the last TOUCH; a rewrite that touches nothing leaves it.
+    let canvas = body_of(&src, "def canvas_order(state):");
+    for key in ["\"rung\"", "\"score\"", "\"since\""] {
+        assert!(
+            canvas.contains(key),
+            "the canvas order reads {key}:{canvas}"
+        );
+    }
+    assert!(
+        !canvas.contains("updated_at") && !canvas.contains("written_at"),
+        "sorting the canvas on the last write IS GH #609:{canvas}"
+    );
+
+    // The dock, § 4.28: seats by `seat_ord`, the rest by rank.
+    let dock = body_of(&src, "def step9_dock(state, now):");
+    for key in ["seat_ord", "\"rank\""] {
+        assert!(dock.contains(key), "the dock order reads {key}");
+    }
+    assert!(
+        !dock.contains("updated_at") && !dock.contains("written_at"),
+        "the dock does not sort on the last write either"
+    );
+
+    // The rows the store hands over: a deterministic order for the plan, and nothing
+    // more. What a person SEES is the pass's word, so the `ord` a SENDER asked for is not
+    // read here either -- § 2 says a seat is "not the first-appearance order of views
+    // (`ord`)", and § 10 retires "canvas order by first appearance" in favour of § 6.3.
+    let rows = body_of(&src, "def pass_views(body, ctx, hop):");
+    assert!(
+        rows.contains("REGION_INDEX.get(str(r.get(\"region\") or REGIONS[0]), 0),")
+            && rows.contains("str(r.get(\"owner\") or \"\"),"),
+        "the row order names the region and identity:{rows}"
     );
     assert!(
-        doc.contains("| `aside` |"),
-        "the second region is documented in the table a sender looks in"
+        !rows.contains("declared_ord") && !src.contains("def declared_ord("),
+        "the band a view declared orders nothing any more (§ 2 Seat, § 10)"
+    );
+
+    // And the windows that are NOT open share one place, because they have no place on
+    // the canvas to be ordered in (§ 6.3): only what is open is ordered, and it is
+    // ordered by meaning. A second numbering beside it would move every window of a
+    // region whenever one arrives whose id sorts ahead, for a difference nobody sees.
+    let tree = body_of(
+        &src,
+        "def objects_from_state(state, rows, now, name, have=None):",
     );
     assert!(
-        doc.contains("**The moment a view was last written is not one of them**"),
-        "the promise the cell now makes has to be the promise the README makes"
+        tree.contains("canvas_order(state)") && tree.contains("\"ord\": 0,"),
+        "the tree orders the open canvas windows and nothing else:{tree}"
     );
-    // The old sentence, in the present tense, in any of the three spellings it
-    // had. "newest-first" survives ONCE, in the paragraph that retracts it.
+
+    // And the strongest reading of the sentence: nothing ORDERS on `updated_at`. The
+    // column is still read in exactly three places, and none of them is an order:
+    //
+    //   * the reconciliation of OR-H0.9 asks a row WHEN the store wrote it, so a write it
+    //     has to replay lands at its own moment and `ttl_ms` and the decay count from
+    //     there -- the column used as a clock, which is what it is;
+    //   * and the state row's write asks its own row which VERSION it read, so a second
+    //     pass that computed on the same row cannot overwrite the first one's conclusion
+    //     (GH #744). A version is not a rank either: nothing on the screen moves because
+    //     of it.
+    //
+    // A rank is what GH #609 was, and that is still nowhere.
+    let readers = [
+        "def reconcile(state, rows, event, now):",
+        "def _written_at(value, fallback):",
+        "def state_write_ops(state, now, settings, screens, said, held=None, mark=None):",
+    ];
+    let inside: usize = readers
+        .iter()
+        .map(|header| body_of(&src, header).matches("get(\"updated_at\")").count())
+        .sum();
+    let total =
+        src.matches("get(\"updated_at\")").count() + src.matches("[\"updated_at\"]").count();
+    assert_eq!(
+        total, inside,
+        "`updated_at` is read outside the reconciliation -- that is the bug this file is \
+         named after"
+    );
+    assert!(inside > 0, "and the two readers are still the two readers");
+    for header in [
+        "def canvas_order(state):",
+        "def step9_dock(state, now):",
+        "def pass_views(body, ctx, hop):",
+        "def objects_from_state(state, rows, now, name, have=None):",
+    ] {
+        let body = body_of(&src, header);
+        assert!(
+            !body.contains("updated_at") && !body.contains("written_at"),
+            "{header} orders on a clock:{body}"
+        );
+    }
+}
+
+fn params() -> Value {
+    json!({"screens": {"monitor": {"display_type": "monitor", "inputs": ["pointer"]}},
+           "default_screen": "monitor"})
+}
+
+/// A standing view, as an ambient application writes it: same props every time.
+fn standing(view_id: &str) -> Value {
+    component_view(
+        view_id,
+        "main",
+        pane(
+            view_id,
+            json!({"title": view_id, "context": "ambient", "relevance": "0.9",
+                   "topic": format!("standing:{view_id}")}),
+        ),
+    )
+}
+
+fn ord_of(screen: &Screen, id: &str) -> i64 {
+    screen
+        .held
+        .as_array()
+        .expect("the display holds a list")
+        .iter()
+        .find(|o| o["id"] == id)
+        .unwrap_or_else(|| panic!("{id} is held"))["ord"]
+        .as_i64()
+        .expect("an `ord` is a number")
+}
+
+/// The case of GH #609, over the shipped cell: a view rewritten five times
+/// keeps its place.
+///
+/// Two standing windows, written in the same moment, so nothing but the id
+/// separates them in `canvas_order`. Then the second one is written again five
+/// times with the props it already has -- which is no touch (§ 4.8 b), so
+/// `since` stands, so the order stands. Under `display@1.0.2` each of those
+/// five writes would have taken the top place.
+#[test]
+fn a_view_rewritten_five_times_keeps_the_place_it_stands_in() {
+    if !library_ships() {
+        eprintln!("SKIP: the template library is not in this tree");
+        return;
+    }
+    let mut screen = Screen::new(params());
+    screen.write(standing("a"), 100_000);
+    screen.write(standing("b"), 100_000);
+    // § 4.35: a fresh window takes no focus in the pass it appears in.
+    screen.pass(json!({"kind": "stroke"}), 101_000);
+
+    let (a, b) = (window_id("alex", "a"), window_id("alex", "b"));
+    let before = (ord_of(&screen, &a), ord_of(&screen, &b));
     assert!(
-        !doc.contains("newest first")
-            && !doc.contains("newest view first")
-            && doc.matches("newest-first").count() == 1,
-        "the sentence outlived its mechanism once already -- that is exactly \
-         what this lock is for"
+        before.0 < before.1,
+        "the two stand in id order, the leading one first: {before:?}"
     );
-    let src = std::fs::read_to_string(repo(COMPOSE)).expect("compose.py");
-    assert!(
-        src.contains("REGIONS = (\"main\", \"aside\")") && src.contains("def seated(views, have):"),
-        "and the mechanism half of the lock: the regions and the seats the \
-         prose names"
-    );
+
+    for (i, now) in [102_000u64, 103_000, 104_000, 105_000, 106_000]
+        .into_iter()
+        .enumerate()
+    {
+        let calls = screen.write(standing("b"), now);
+        assert!(
+            !calls.iter().any(|c| c["op"] == "object.move"),
+            "rewrite {i} moved something: {calls:?}"
+        );
+        assert_eq!(
+            (ord_of(&screen, &a), ord_of(&screen, &b)),
+            before,
+            "rewrite {i} moved the screen"
+        );
+        assert_eq!(
+            screen.curator(&b, "since"),
+            json!(100_000),
+            "rewrite {i} is no touch, so `since` stands (§ 4.8 b)"
+        );
+    }
+
+    // ...and the rewrite did land: the window is still there, still open.
+    assert!(screen.holds(&format!("{b}/c.b")), "the window stands");
+    assert_eq!(screen.curator(&b, "open"), json!(true));
 }

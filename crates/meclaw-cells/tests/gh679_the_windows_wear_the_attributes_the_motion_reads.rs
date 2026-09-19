@@ -1,42 +1,50 @@
 //! GH #679 -- the windows wear the attributes the motion reads.
 //!
-//! The curator (`compose.curate`) writes a state, an age, a since and a score
-//! on every window; the sheet's ladder, its enter and leave keyframes and its
-//! presence rules read them off the markup. So the templates have to render
-//! them: the prose view becomes a window like the three tree windows, the
-//! windows carry `data-since`/`data-score`/`data-tone`/`data-pinned`, the
-//! overlay its age, and the root the ground the operator chose. No script
-//! enters with any of it beyond the components `SCRIPTED` names (GH #696),
-//! and the vocabulary fingerprint moves exactly once.
+//! The curator writes a rung, a level, an age, a since and a score on every window
+//! (`display-hive.md` § 3.1); the sheet's ladder, its enter and leave keyframes and its
+//! presence rules read them off the markup. So the templates have to render them: the
+//! prose view is a window like the three tree windows, the windows carry
+//! `data-since`/`data-score`/`data-tone`/`data-pinned`, the overlay its age, and the
+//! root the ground the operator chose. No script enters with any of it beyond the
+//! components `SCRIPTED` names (GH #696), and the vocabulary fingerprint moves exactly
+//! once.
+//!
+//! The word on a window used to be `data-state` and used to be the curator's; since the
+//! contract of § 4.17 it is `data-rung`, and `state` is only what an application may say
+//! about itself (`urgent`/`hidden`). The names live in `ATTRS` (§ 6), and this lock
+//! reads them from there rather than spelling them a second time.
 //!
 //! Skips when `python3` is absent or the templates do not ship, like every
 //! other interpreter guard in this tree (R2b).
 
-use std::io::Write;
-use std::process::{Command, Stdio};
+mod support;
+
+use std::process::Command;
 
 use meclaw_core::serde_json::{Value, json};
+use support::{COMPOSE, Screen, library_ships, repo, window_id};
 
-fn repo(rel: &str) -> std::path::PathBuf {
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join(rel)
-}
-
-const COMPOSE: &str = "templates/display/compose/compose.py";
 const SHEET: &str = "templates/display/compose/display-dna.css";
 
 /// The fingerprint `display@2.1.0` shipped with. The wave moves it once.
 const VOCAB_BEFORE: &str = "e35405598319";
 
-fn library_ships() -> bool {
-    repo("templates/display/template.json").is_file()
+/// One output, named and complete: `display_type` is mandatory and `default_screen` has
+/// to name an entry of `screens` (§ 4.7), so there is no such thing as a pass without a
+/// profile any more.
+fn params(ground: Option<&str>) -> Value {
+    let mut p = json!({"screens": {"tv": {"display_type": "tv", "viewing_distance_m": 3.0}},
+                       "default_screen": "tv"});
+    if let Some(word) = ground {
+        p["ground"] = json!(word);
+    }
+    p
 }
 
 /// The shipped script's constants, asked of the script itself: the
 /// fingerprint, the five templates, whether the sheet carries a script, the
-/// components and the names that may carry a script (GH #696). `None` when
-/// there is no `python3` on this host.
+/// components, the names that may carry a script (GH #696) and the attribute
+/// names of § 6. `None` when there is no `python3` on this host.
 fn probe() -> Option<Value> {
     let out = Command::new("python3")
         .arg("-c")
@@ -49,7 +57,7 @@ fn probe() -> Option<Value> {
                                'prose': m.PROSE_TEMPLATE, 'pane': m.PANE_TEMPLATE,\n\
                                'panel': m.PANEL_TEMPLATE, 'overlay': m.OVERLAY_TEMPLATE,\n\
                                'kit_css': m.KIT_CSS, 'components': m.components(),\n\
-                               'scripted': list(m.SCRIPTED)}))",
+                               'attrs': m.ATTRS, 'scripted': list(m.SCRIPTED)}))",
         )
         .arg(repo(COMPOSE))
         .output()
@@ -62,79 +70,12 @@ fn probe() -> Option<Value> {
     Some(meclaw_core::serde_json::from_slice(&out.stdout).expect("the probe is JSON"))
 }
 
-/// One read pass over a table of `views` with the display holding nothing
-/// (a bootstrap), under `params`. The calls of the bundle it answers.
-fn read_pass(views: &[Value], params: Value) -> Option<Vec<Value>> {
-    let doc = json!({
-        "params": params,
-        "body": {"messages": []},
-        "envelope": {"header": {
-            "hop": {"operation": "query"},
-            "context": {
-                "display_origin": "read",
-                "display_views": json!({"views": views, "define": [], "now": 1000}).to_string(),
-            },
-        }},
-    });
-    let mut child = Command::new("python3")
-        .arg(repo(COMPOSE))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .ok()?;
-    child
-        .stdin
-        .take()
-        .expect("stdin")
-        .write_all(doc.to_string().as_bytes())
-        .expect("the document reaches the script");
-    let out = child.wait_with_output().expect("the script ends");
-    assert!(
-        out.status.success(),
-        "compose.py failed:\n{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let answer: Value =
-        meclaw_core::serde_json::from_slice(&out.stdout).expect("the answer is JSON");
-    // Since the due clock (GH #679) a read pass may answer with the patch AND
-    // up to two timer orders beside it; the patch is what the display gets.
-    let emissions = match answer {
-        Value::Array(list) => list,
-        one @ Value::Object(_) => vec![one],
-        other => panic!("emissions are objects: {other}"),
-    };
-    let patch = emissions
-        .iter()
-        .find(|e| e["header"]["route"] == "patch")
-        .expect("a bundle for the display");
-    Some(
-        patch["messages"]
-            .as_array()
-            .expect("a bundle has messages")
-            .iter()
-            .map(|turn| {
-                meclaw_core::serde_json::from_str(turn["text"].as_str().expect("a call"))
-                    .expect("a call is JSON")
-            })
-            .collect(),
-    )
-}
-
 fn prose_view(view_id: &str, title: &str, body: &str) -> Value {
     json!({
         "owner": "alex", "view_id": view_id, "region": "main", "ord": 0,
         "kind": "prose", "content": json!({"title": title, "body": body}).to_string(),
         "components": "[]", "ttl_ms": 0, "updated_at": 1,
     })
-}
-
-fn created(calls: &[Value], id: &str) -> Value {
-    calls
-        .iter()
-        .find(|c| c["op"] == "object.create" && c["id"] == id)
-        .unwrap_or_else(|| panic!("{id} is created"))
-        .clone()
 }
 
 fn schema_of(probe: &Value, name: &str) -> Value {
@@ -147,9 +88,9 @@ fn schema_of(probe: &Value, name: &str) -> Value {
         .clone()
 }
 
-/// A prose view is a window: the pass writes state, age, since and score on
-/// it, and its template renders them where the sheet reads them -- with one
-/// title slot the presence rules scale.
+/// A prose view is a window: the pass writes the curator's values on the wrapper
+/// ITSELF -- a prose row has no tree to hang them on -- and the template renders them
+/// under the names `ATTRS` declares.
 #[test]
 fn a_prose_view_is_a_window_now() {
     if !library_ships() {
@@ -158,56 +99,60 @@ fn a_prose_view_is_a_window_now() {
     let Some(probe) = probe() else {
         return;
     };
-    let calls = read_pass(&[prose_view("p", "Weather", "Sunny")], json!({}))
-        .expect("python3 answered once already");
-    let wrapper = created(&calls, "view.alex.p");
-    assert_eq!(wrapper["component"], "display-view-prose");
-    for key in ["state", "age", "since", "score"] {
+    let mut screen = Screen::new(params(None));
+    screen.write(prose_view("p", "Weather", "Sunny"), 100_000);
+    let oid = window_id("alex", "p");
+    let props = screen
+        .props(&oid)
+        .unwrap_or_else(|| panic!("the prose wrapper stands: {:?}", screen.held));
+    assert_eq!(props["title"], "Weather");
+    assert_eq!(props["body"], "Sunny");
+    for key in ["rung", "level", "age", "since", "score"] {
         assert!(
-            wrapper["props"].get(key).is_some(),
-            "the prose wrapper carries `{key}`: {}",
-            wrapper["props"]
+            props[key].as_str().is_some(),
+            "the prose wrapper carries `{key}`: {props}"
         );
     }
+    assert!(
+        ["hidden", "ambient", "relevant", "focus", "urgent"]
+            .contains(&props["rung"].as_str().unwrap_or("")),
+        "and the rung is one of the five (§ 4.17): {props}"
+    );
+    assert_eq!(props["age"], "fresh", "in the pass it arrived in (§ 4.35)");
+    assert_eq!(
+        props["since"], "100000",
+        "and `since` is the touch that put it there"
+    );
+    assert!(
+        props["state"].is_null(),
+        "the curator's word is `rung` now; `state` stays the app's: {props}"
+    );
     let template = probe["prose"].as_str().expect("PROSE_TEMPLATE");
-    for attr in [
-        "data-state=\"{{state}}\"",
-        "data-age=\"{{age}}\"",
-        "data-since=\"{{since}}\"",
-        "data-score=\"{{score}}\"",
-    ] {
+    for key in ["rung", "level", "age"] {
+        let attr = probe["attrs"][key].as_str().expect("an attribute name");
+        assert!(
+            template.contains(&format!("{attr}=\"{{{{{key}}}}}\"")),
+            "PROSE_TEMPLATE renders {attr}: {template}"
+        );
+    }
+    for attr in ["data-since=\"{{since}}\"", "data-score=\"{{score}}\""] {
         assert!(
             template.contains(attr),
             "PROSE_TEMPLATE renders {attr}: {template}"
         );
     }
     assert!(
+        !template.contains("data-state=") && !template.contains("data-plane="),
+        "and neither struck name: {template}"
+    );
+    assert!(
         template.contains("display-pane-title"),
         "the title is the one slot presence scales, no fixed kicker: {template}"
     );
-    let schema = schema_of(&probe, "display-view-prose");
-    for (key, ty) in [
-        ("state", "text"),
-        ("age", "text"),
-        ("since", "text"),
-        ("score", "text"),
-        ("context", "text"),
-        ("relevance", "text"),
-        ("class", "text"),
-        ("pinned", "boolean"),
-        ("relevant_until", "int"),
-        ("judged_relevance", "text"),
-        ("judged_hidden", "boolean"),
-    ] {
-        assert_eq!(
-            schema[key], ty,
-            "display-view-prose declares `{key}`: {schema}"
-        );
-    }
 }
 
 /// The two windows with a title render since, score, tone and pinned; the
-/// overlay renders its age beside its state.
+/// overlay renders its age beside its rung.
 #[test]
 fn a_window_renders_since_score_tone_and_pinned_and_an_overlay_its_age() {
     if !library_ships() {
@@ -228,12 +173,14 @@ fn a_window_renders_since_score_tone_and_pinned_and_an_overlay_its_age() {
         }
     }
     let overlay = probe["overlay"].as_str().expect("OVERLAY_TEMPLATE");
-    for attr in [
-        "data-state=\"{{state}}\"",
-        "data-age=\"{{age}}\"",
-        "data-since=\"{{since}}\"",
-        "data-score=\"{{score}}\"",
-    ] {
+    for key in ["rung", "age"] {
+        let attr = probe["attrs"][key].as_str().expect("an attribute name");
+        assert!(
+            overlay.contains(&format!("{attr}=\"{{{{{key}}}}}\"")),
+            "the overlay renders {attr}: {overlay}"
+        );
+    }
+    for attr in ["data-since=\"{{since}}\"", "data-score=\"{{score}}\""] {
         assert!(
             overlay.contains(attr),
             "the overlay renders {attr}: {overlay}"
@@ -258,18 +205,41 @@ fn the_ground_is_a_knob_of_the_screen() {
         "the root element wears the ground: {shell}"
     );
     let schema = schema_of(&probe, "display-shell");
-    for key in ["ground", "focus", "weights", "judged_at", "due"] {
+    // What the root actually carries since § 6.1. The bar and the weights left it with
+    // the screen state (§ 3.1): one state per member, in the store, not on an output.
+    for key in [
+        "ground",
+        "due",
+        "exit",
+        "screen_name",
+        "default_screen",
+        "inputs",
+        "scale",
+    ] {
         assert_eq!(
             schema[key], "text",
             "display-shell declares `{key}`: {schema}"
         );
     }
-    let night = read_pass(&[], json!({"ground": "night"})).expect("python3");
-    assert_eq!(created(&night, "display.root")["props"]["ground"], "night");
-    let dusk = read_pass(&[], json!({"ground": "dusk"})).expect("python3");
-    assert_eq!(created(&dusk, "display.root")["props"]["ground"], "day");
-    let unset = read_pass(&[], json!({})).expect("python3");
-    assert_eq!(created(&unset, "display.root")["props"]["ground"], "day");
+    for struck in ["focus", "weights", "judged_at", "screen", "profile"] {
+        assert!(
+            schema[struck].is_null(),
+            "`{struck}` left the root: {schema}"
+        );
+    }
+    let ground_of = |word: Option<&str>| {
+        let mut screen = Screen::new(params(word));
+        screen.pass(json!({"kind": "stroke"}), 1000);
+        screen
+            .props("display.root")
+            .expect("the root stands")
+            .get("ground")
+            .cloned()
+            .expect("the root wears a ground")
+    };
+    assert_eq!(ground_of(Some("night")), "night");
+    assert_eq!(ground_of(Some("dusk")), "day", "an unknown word is day");
+    assert_eq!(ground_of(None), "day");
 }
 
 /// The motion is the sheet's, and what is not the sheet's is NAMED. Until
@@ -354,19 +324,19 @@ fn hidden_lets_a_leaving_window_play_out() {
     }
     let sheet = std::fs::read_to_string(repo(SHEET)).expect("the sheet ships");
     assert!(
-        sheet.contains("[data-state=\"hidden\"]:not([data-age=\"leaving\"])"),
+        sheet.contains("[data-rung=\"hidden\"]:not([data-age=\"leaving\"])"),
         "the hidden rule spares a leaving window"
     );
     // The two rungs the canvas draws (spec 2.2, since 2.3.0): ambient and
     // relevant are tiles, and a tile has no title.
     for state in ["focus", "urgent"] {
         let rule =
-            format!("[data-state=\"{state}\"] :is(.display-pane-title, .display-panel-title)");
+            format!("[data-rung=\"{state}\"] :is(.display-pane-title, .display-panel-title)");
         assert!(sheet.contains(&rule), "presence follows the rung: {rule}");
     }
     for state in ["ambient", "relevant"] {
         let rule =
-            format!("[data-state=\"{state}\"] :is(.display-pane-title, .display-panel-title)");
+            format!("[data-rung=\"{state}\"] :is(.display-pane-title, .display-panel-title)");
         assert!(
             !sheet.contains(&rule),
             "nothing {state} is drawn on the canvas: {rule}"

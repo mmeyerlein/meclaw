@@ -656,6 +656,17 @@ fn build_tree(td: &tempfile::TempDir, member: &std::path::Path, assistant: &std:
     );
     write(
         root,
+        // `talky-chat` is a ref too since `assistant@2.7.0`, and an unresolved ref keeps
+        // its `${ctx.model_surface}` token, which no `.env` of a test tree answers. It is
+        // INERT: no channel `chat` stands here, so no round reaches it (GH #709).
+        &format!("main/person/assistants/{AGENT}/talky-chat/config.json"),
+        &double(
+            INERT,
+            "Inert double for the chat keeper, which no round here reaches.",
+        ),
+    );
+    write(
+        root,
         &format!("main/person/assistants/{AGENT}/tools/config.json"),
         &double(TOOLS, "Test double for the tool surface of one generation."),
     );

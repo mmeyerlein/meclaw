@@ -6,6 +6,15 @@
 //! and is written in a form the component language can carry without either
 //! side mistaking the other's brackets.
 //!
+//! Since OR-G0.1 the copies that TRAVEL carry the sheet without its reasoning:
+//! the source keeps every comment, and `KIT_CSS` gets the rules plus the head
+//! comment, which is the nameplate and the way back here. So the drift check
+//! below is no longer `==` on the raw file. It asks
+//! `scripts/display_sheet_strip.py` -- the one place that rule lives, the same
+//! one `display_sync.py` copies with -- rather than restating it in Rust,
+//! because two spellings of one rule are two places a copy can be wrong, and
+//! catching exactly that is what this file is for.
+//!
 //! Guarded like every template-reading test (GH #49): a tree without the
 //! library is skipped, never judged. The sheet itself is NOT part of the guard
 //! -- a sheet that disappears is a red test, not a skipped one.
@@ -22,6 +31,7 @@ fn repo(rel: &str) -> std::path::PathBuf {
 const SHEET: &str = "templates/display/compose/display-dna.css";
 const COMPOSE: &str = "templates/display/compose/compose.py";
 const CONFIG: &str = "templates/display/compose/config.json";
+const STRIP: &str = "scripts/display_sheet_strip.py";
 
 /// The sentence the sheet says about itself, once. The gallery that drew the
 /// sheet's ancestors carries a different one, and a sheet that reaches a
@@ -38,6 +48,23 @@ fn read(rel: &str) -> String {
 
 fn sheet() -> String {
     read(SHEET)
+}
+
+/// The sheet as it TRAVELS: the source put through `scripts/display_sheet_strip.py`,
+/// the rule `display_sync.py` copies with. `None` when there is no `python3` on this
+/// host, like every other interpreter guard in this tree (R2b).
+fn sheet_as_it_travels() -> Option<String> {
+    let out = std::process::Command::new("python3")
+        .arg(repo(STRIP))
+        .arg(repo(SHEET))
+        .output()
+        .ok()?;
+    assert!(
+        out.status.success(),
+        "{STRIP} refused the sheet:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    Some(String::from_utf8(out.stdout).expect("the stripped sheet is text"))
 }
 
 /// Pull one `NAME = r\"\"\"…\"\"\"` literal out of a Python source.
@@ -157,18 +184,19 @@ fn the_sheet_is_the_source_of_the_design_language() {
         declaration(&sheet, "--fg-tertiary")
     );
 
-    // P-B2: a window nobody assigned a state to stands at the top rung -- at
+    // P-B2: a window nobody assigned a rung to stands at the top rung -- at
     // 0-1-0, like every rung, so the forced-colours fallback can take it back.
     // Since GH #679 the rule covers both windows that scroll and those that
-    // do not: `:is()` on the class keeps the one class of specificity.
+    // do not: `:is()` on the class keeps the one class of specificity. The
+    // word is `rung` since 2.5.0 (display-hive.md § 2: `state` is struck).
     assert!(
         sheet.contains(
-            ":is(.display-pane, .display-panel):where(:not([data-state]), [data-state=\"\"]) {"
+            ":is(.display-pane, .display-panel):where(:not([data-rung]), [data-rung=\"\"]) {"
         ),
         "the focus default is stated on the two forms of `no state`, inside `:where()`"
     );
     assert!(
-        !sheet.contains(".display-pane:not([data-state])"),
+        !sheet.contains(".display-pane:not([data-rung])"),
         "no 0-2-0 form of the default is left in the sheet"
     );
 
@@ -246,29 +274,78 @@ fn the_sheet_is_written_so_the_template_language_can_carry_it() {
     }
 }
 
-/// The sheet is a file a person reads, greps and diffs -- and it is the same
-/// bytes in three places: the file, the `KIT_CSS` constant in `compose.py`, and
-/// the copy of `compose.py` inside `config.json`. The same arrangement
-/// `colony-view` keeps for its browser half, with the same lock. A running
-/// `code` cell has no working directory to read the file from, so the constant
-/// is what reaches the screen, and this is what makes an edit to the file an
-/// edit to the screen.
+/// The sheet is a file a person reads, greps and diffs, and it is the same sheet
+/// in three places: the file, the `KIT_CSS` constant in `compose.py`, and the copy
+/// of `compose.py` inside `config.json`. The same arrangement `colony-view` keeps
+/// for its browser half, with the same lock. A running `code` cell has no working
+/// directory to read the file from, so the constant is what reaches the screen, and
+/// this is what makes an edit to the file an edit to the screen.
+///
+/// The two that travel carry the sheet WITHOUT its reasoning (OR-G0.1), so the first
+/// comparison runs through the strip rule and the second is still byte for byte --
+/// `config.json` copies `compose.py` whole and has nothing of its own to decide.
 #[test]
-fn the_design_language_is_the_same_bytes_in_three_places() {
+fn the_design_language_is_the_same_sheet_in_three_places() {
     if !library_ships() {
         return;
     }
-    let on_disk = sheet();
+    let Some(travels) = sheet_as_it_travels() else {
+        return;
+    };
     let in_compose = extract_constant(&read(COMPOSE), "KIT_CSS")
         .expect("compose.py carries no extractable KIT_CSS");
     assert_eq!(
-        in_compose, on_disk,
-        "compose.py's KIT_CSS has drifted from display-dna.css"
+        in_compose, travels,
+        "compose.py's KIT_CSS has drifted from display-dna.css (run scripts/display_sync.py)"
     );
     assert_eq!(
         shipped_sheet(),
-        on_disk,
-        "config.json's script_inline has drifted from display-dna.css"
+        in_compose,
+        "config.json's script_inline has drifted from compose.py (run scripts/display_sync.py)"
+    );
+    // And the third copy is the whole script, not just the sheet inside it. Until
+    // now only the extracted `KIT_CSS` was compared here, so `compose.py` could
+    // have changed anywhere ELSE -- the curator's own pass, for one -- and
+    // `config.json` would have gone on shipping yesterday's. `display_sync.py`
+    // writes the file verbatim into the key, so this holds by construction; a
+    // lock is what makes it hold after the next hand edit.
+    let cfg: Value = meclaw_core::serde_json::from_str(&read(CONFIG))
+        .unwrap_or_else(|e| panic!("{CONFIG}: {e}"));
+    assert_eq!(
+        cfg["params"]["script_inline"].as_str().expect("a string"),
+        read(COMPOSE),
+        "config.json's script_inline is not compose.py (run scripts/display_sync.py)"
+    );
+}
+
+/// What the source keeps and the copies do not: the reasons. The sheet is where a
+/// change is argued, and the argument has to be IN it -- a sheet whose comments
+/// thinned out to nothing would pass the drift check above and still have lost the
+/// thing OR-G0.1 was meant to protect.
+#[test]
+fn the_source_keeps_the_reasons_the_copies_drop() {
+    if !library_ships() {
+        return;
+    }
+    let Some(travels) = sheet_as_it_travels() else {
+        return;
+    };
+    let on_disk = sheet();
+    assert!(
+        on_disk.matches("/*").count() > 100,
+        "the source argues for itself in {} comments; that is too few",
+        on_disk.matches("/*").count()
+    );
+    assert_eq!(
+        travels.matches("/*").count(),
+        1,
+        "what travels carries the head comment and no other"
+    );
+    assert!(
+        on_disk.len() > travels.len() + 40_000,
+        "the copies should be far lighter than the source: {} against {}",
+        travels.len(),
+        on_disk.len()
     );
 }
 

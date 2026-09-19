@@ -1,0 +1,25 @@
+{
+  "cell": {
+    "type": "ref",
+    "template": "talky@5.1.0"
+  },
+  "override_params": {
+    "brain": {
+      "model": "${ctx.model_surface}"
+    },
+    "collector/assemble": {
+      "tools": [
+        "web_search",
+        "web_fetch",
+        "consult_cogny",
+        "memory_recall"
+      ],
+      "memory_tier": "1"
+    }
+  },
+  "description": {
+    "purpose": "The conversation surface of the channel `chat`: the second sealed talky of this generation, for the one channel that is typed. Same ref, same version, same overrides as `./talky` -- one identity, one tone (display-hive.md § 8.2, `meclaw-next/archive/03-os-structure.md`, 'One talky per channel'). It is a SECOND NODE onto the template the level already holds, not a second agent: the model, the tool list and the memory tier are the level's decisions and they are repeated here word for word, because a chat that answered in a different voice would be a different assistant to the same person.",
+    "use_when": "Never on its own -- it travels with the assistant level, and it is reached only by the split the level draws: `in_turn` with `context.channel_node == 'chat'` comes here, everything else goes to `./talky`. Point `override_params` at `<assistant>/talky-chat/brain` or `<assistant>/talky-chat/collector` to give the typed channel a prompt of its own; leave them alone and it answers exactly as the spoken one does. What it does NOT share with `./talky` is the one thing a talky owns: its SESSIONS. Two talkys are two session windows, so what was spoken reaches this one through the member's memory rather than out of its own window -- which is the price of the rule and not a defect of it (R-24-4; the chat APP shows all channels either way, § 8.1).",
+    "not_in_scope": "No channel and no connector: the channel `chat` is the MEMBER's (`templates/chat-channel`), it stands in `<member>/channels/chat`, and it reaches this surface by addressing the assistant path with the stamp its own edge wrote. No third surface for a third channel unless that channel asks for one -- a talky per channel is a rule about channels that want their own voice, not a rule that every transport gets a node. No divergence from `./talky` that is not written down here: an override this node carries and its sibling does not is a difference in the person's assistant, and it belongs in a `because` where a reader will find it."
+  }
+}

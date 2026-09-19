@@ -1,38 +1,29 @@
-//! GH #679 -- a minimal judge re-judges the whole screen on a content change
-//! and never on a tick.
+//! GH #679 -- the judge speaks only on a content change.
 //!
-//! Beside the compose cell stands `judge`, an `llm` cell with one prompt and
-//! one JSON schema: the bar (`focus`), a weight per context, and per window an
-//! optional `hidden` or `relevance`. The compose cell asks it after a pass
-//! that touched at least one window -- never after a tick, never after a
-//! write that changed nothing, and not twice inside `judge_min_interval_ms`
-//! -- and only when the knob `judge` is `on`. The verdict comes back on the
-//! lane `in_verdict` as a pass without a write that sets the root's `focus`,
-//! `weights` and `judged_at` and per window `judged_hidden` /
-//! `judged_relevance`; a verdict that is late, an error, or not JSON changes
-//! nothing, because the floor has already drawn.
+//! Beside the compose cell stands `judge`, an `llm` cell with one prompt. The
+//! curator asks it at the end of a pass in which at least one window took an APP
+//! touch -- never on a stroke, never after a write that changed nothing, and at
+//! the earliest `judge_min_interval_ms` after the last call (display-hive.md
+//! § 4.3). The answer comes back on the lane `in_verdict`, and what the judge
+//! may write is four things: `judged_relevance` and `judged_hidden` per window,
+//! `bar` and `weights` on the state (§ 4.5).
 //!
-//! The script runs as a subprocess the way a `code` cell runs it; no provider
-//! is spoken to. Skips when `python3` is absent or the templates do not ship
-//! (R2b).
+//! What the pass DOES with a verdict is pinned next door, against the reference
+//! model, in `707_the_judge_sees_the_situation_and_answers_a_verdict.rs` (Q-15,
+//! S-019, S-032, S-033). This file keeps the three things that live outside the
+//! model: the hive's wiring, the edge that turns a model's answer into the one
+//! event of § 4.1, and the three drift locks on the prose -- the README's sentences
+//! about the judge, the guideline the judge is actually handed, and what it is told
+//! its own numbers do.
+//!
+//! Skips when `python3` is absent or the templates do not ship (R2b).
 
-use std::io::Write;
-use std::process::{Command, Stdio};
+mod support;
 
 use meclaw_core::serde_json::{Value, json};
+use support::{Screen, component_view, library_ships, pane, raw, repo};
 
-fn repo(rel: &str) -> std::path::PathBuf {
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join(rel)
-}
-
-const COMPOSE: &str = "templates/display/compose/compose.py";
-const ROOT: &str = "display.root";
-
-fn library_ships() -> bool {
-    repo("templates/display/template.json").is_file()
-}
+const README: &str = "templates/display/README.md";
 
 fn read_json(path: &std::path::Path) -> Value {
     meclaw_core::serde_json::from_str(
@@ -41,301 +32,102 @@ fn read_json(path: &std::path::Path) -> Value {
     .unwrap_or_else(|e| panic!("{}: {e}", path.display()))
 }
 
-fn pane_id(view_id: &str, pane: &str) -> String {
-    format!("view.alex.{view_id}/c.{pane}")
+/// The README as one line: its prose is hard-wrapped, and a sentence that spans
+/// two lines is still one sentence.
+fn readme_prose() -> String {
+    std::fs::read_to_string(repo(README))
+        .expect("README")
+        .replace("**", "")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
-fn pane(pane: &str, props: Value) -> Value {
-    let mut props = props;
-    props["pane_id"] = json!(pane);
-    json!({"component": "display-pane", "props": props, "key": format!("c.{pane}")})
+fn params(judge: &str) -> Value {
+    json!({"judge": judge, "judge_min_interval_ms": 3000,
+           "screens": {"monitor": {"display_type": "monitor", "inputs": ["pointer"]}},
+           "default_screen": "monitor"})
 }
 
-fn component_view(view_id: &str, region: &str, tree: Value) -> Value {
-    json!({
-        "owner": "alex", "view_id": view_id, "region": region, "ord": 0,
-        "kind": "component", "content": tree.to_string(), "components": "[]",
-        "ttl_ms": 0, "updated_at": 1,
-    })
-}
-
-/// Run the shipped script over one document and return every emission.
-fn run(doc: &Value) -> Option<Vec<Value>> {
-    let mut child = Command::new("python3")
-        .arg(repo(COMPOSE))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .ok()?;
-    child
-        .stdin
-        .take()
-        .expect("stdin")
-        .write_all(doc.to_string().as_bytes())
-        .expect("the document reaches the script");
-    let out = child.wait_with_output().expect("the script ends");
-    assert!(
-        out.status.success(),
-        "compose.py failed:\n{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let answer: Value =
-        meclaw_core::serde_json::from_slice(&out.stdout).expect("the answer is JSON");
-    Some(match answer {
-        Value::Array(list) => list,
-        one @ Value::Object(_) => vec![one],
-        other => panic!("emissions are objects: {other}"),
-    })
-}
-
-fn calls_of(emission: &Value) -> Vec<Value> {
-    emission["messages"]
-        .as_array()
-        .expect("a bundle has messages")
-        .iter()
-        .map(|turn| {
-            assert_eq!(turn["type"], "tool_call");
-            meclaw_core::serde_json::from_str(turn["text"].as_str().expect("a call"))
-                .expect("a call is JSON")
-        })
-        .collect()
-}
-
-fn on_route<'a>(emissions: &'a [Value], route: &str) -> Vec<&'a Value> {
-    emissions
-        .iter()
-        .filter(|e| e["header"]["route"] == route)
-        .collect()
-}
-
-fn patch_calls(emissions: &[Value]) -> Vec<Value> {
-    on_route(emissions, "patch")
-        .first()
-        .map(|e| calls_of(e))
-        .unwrap_or_default()
-}
-
-/// A read pass with the judge `on`, over a plan that may carry a verdict.
-fn read_pass(
-    views: &[Value],
-    objects: Option<&Value>,
-    now: u64,
-    judge: &str,
-    verdict: Option<Value>,
-) -> Option<Vec<Value>> {
-    let messages = match objects {
-        None => json!([]),
-        Some(objs) => json!([{
-            "origin": "tool", "type": "tool_result", "id": "d-query",
-            "text": json!({"objects": objs}).to_string(),
-        }]),
-    };
-    let mut plan = json!({"views": views, "define": [], "now": now});
-    if let Some(v) = verdict {
-        plan["verdict"] = v;
-    }
-    run(&json!({
-        "params": {"judge": judge},
-        "body": {"messages": messages},
-        "envelope": {"header": {
-            "hop": {"operation": "query"},
-            "context": {"display_origin": "read", "display_views": plan.to_string()},
-        }},
-    }))
-}
-
-fn apply(held: &mut Value, calls: &[Value]) {
-    let list = held.as_array_mut().expect("the display holds a list");
-    for c in calls {
-        match c["op"].as_str().unwrap_or("") {
-            "object.create" => list.push(json!({
-                "id": c["id"], "parent": c["parent"], "ord": c["ord"],
-                "component": c["component"], "props": c["props"],
-            })),
-            "object.update" => {
-                let obj = list
-                    .iter_mut()
-                    .find(|o| o["id"] == c["id"])
-                    .unwrap_or_else(|| panic!("an update names a held object: {}", c["id"]));
-                for (k, v) in c["props"].as_object().expect("props") {
-                    obj["props"][k] = v.clone();
-                }
-            }
-            "object.delete" => list.retain(|o| o["id"] != c["id"]),
-            _ => {}
-        }
-    }
-}
-
-fn prop_of<'a>(held: &'a Value, id: &str, key: &str) -> &'a Value {
-    &held
-        .as_array()
-        .expect("list")
-        .iter()
-        .find(|o| o["id"] == id)
-        .unwrap_or_else(|| panic!("{id} is held"))["props"][key]
-}
-
-fn a_view() -> Vec<Value> {
-    vec![component_view(
+fn weather(title: &str) -> Value {
+    component_view(
         "a",
         "main",
         pane(
             "a",
-            json!({"context": "weather", "relevance": 0.7, "title": "Sunny"}),
+            json!({"title": title, "context": "weather", "relevance": "0.7",
+                   "topic": "weather:berlin"}),
         ),
-    )]
+    )
 }
 
-/// A screen holding `a` (weather, 0.7), settled and in focus, touched at 1000.
-fn settled_screen() -> Option<(Vec<Value>, Value)> {
-    let views = a_view();
-    let mut held = json!([]);
-    let boot = read_pass(&[], None, 1000, "on", None)?;
-    apply(&mut held, &patch_calls(&boot));
-    let arrive = read_pass(&views, Some(&held), 1000, "on", None)?;
-    apply(&mut held, &patch_calls(&arrive));
-    let settle = read_pass(&views, Some(&held), 1100, "on", None)?;
-    apply(&mut held, &patch_calls(&settle));
-    assert_eq!(prop_of(&held, &pane_id("a", "a"), "state"), "focus");
-    Some((views, held))
+/// The one judge question of the last pass, or none.
+fn question(screen: &Screen) -> Option<&Value> {
+    let asked = screen.lane("judge");
+    assert!(asked.len() <= 1, "at most one question a pass");
+    asked.first().copied()
 }
 
-/// A pass that touches a window asks the judge exactly once, with the
-/// guideline as instructions and the situation as one JSON user turn that
-/// names the touched window; the same pass with the knob `off` asks nothing.
+/// A write that changes nothing is no content change, so the judge is not asked.
+///
+/// The name of this file, as a measurement: the brake of § 4.3 is not the only
+/// thing that keeps the judge quiet. An ambient application that re-sends the
+/// same view every twenty seconds would otherwise buy a verdict per tick.
 #[test]
-fn a_content_change_asks_the_judge_once() {
+fn an_unchanged_write_asks_nothing_and_a_changed_one_asks() {
     if !library_ships() {
+        eprintln!("SKIP: the template library is not in this tree");
         return;
     }
-    let Some(boot) = read_pass(&[], None, 1000, "on", None) else {
-        return;
-    };
+    let mut screen = Screen::new(params("on"));
+    screen.write(weather("Sunny"), 100_000);
     assert!(
-        on_route(&boot, "judge").is_empty(),
-        "a bare screen touches nothing: {boot:?}"
+        question(&screen).is_some(),
+        "a new window is a touch (§ 4.8 a)"
     );
-    let mut held = json!([]);
-    apply(&mut held, &patch_calls(&boot));
-    let arrive = read_pass(&a_view(), Some(&held), 2000, "on", None).expect("python3");
-    let asked = on_route(&arrive, "judge");
-    assert_eq!(asked.len(), 1, "exactly one question: {arrive:?}");
-    let q = asked[0];
-    let instructions = q["system"]["instructions"]["text"]
-        .as_str()
-        .expect("the guideline rides as instructions");
-    assert!(
-        instructions.contains("as little as possible"),
-        "{instructions}"
-    );
-    assert!(
-        instructions.contains("\"focus\""),
-        "the schema is in the prompt"
-    );
-    let turns = q["messages"].as_array().expect("messages");
-    assert_eq!(turns.len(), 1, "one user turn");
-    assert_eq!(turns[0]["origin"], "user");
-    let situation: Value =
-        meclaw_core::serde_json::from_str(turns[0]["text"].as_str().expect("text"))
-            .expect("the situation is JSON");
-    let windows = situation["windows"].as_array().expect("windows[]");
-    let a = windows
-        .iter()
-        .find(|w| w["id"] == pane_id("a", "a"))
-        .expect("the touched window is in the situation");
-    assert_eq!(a["touched"], true);
-    assert_eq!(a["context"], "weather");
-    assert_eq!(a["region"], "main");
-    assert!(a["text"].as_str().is_some_and(|t| t.contains("Sunny")));
-    assert_eq!(situation["now"], 2000);
-    assert!(situation["preferences"].is_array());
 
-    let quiet = read_pass(&a_view(), Some(&held), 2000, "off", None).expect("python3");
+    // Well past `judge_min_interval_ms`, so the brake is not what answers here.
+    screen.write(weather("Sunny"), 110_000);
     assert!(
-        on_route(&quiet, "judge").is_empty(),
-        "the knob is off: {quiet:?}"
+        question(&screen).is_none(),
+        "identical props are no touch (§ 4.8 b)"
+    );
+
+    screen.write(weather("Rain"), 111_000);
+    assert!(
+        question(&screen).is_some(),
+        "a changed own prop is a content change"
     );
 }
 
-/// Nothing touched, nothing asked: a write with identical props, a tick, and
-/// a touch inside `judge_min_interval_ms` of the last verdict.
+/// The lane `in_verdict`: what the judge answered becomes the ONE event of § 4.1
+/// at the edge, and never reaches the pass as a model's answer.
+///
+/// Fenced JSON is tolerated (the memory hive's lesson). An error, and an answer
+/// that is not JSON, change nothing at all: the floor has already drawn.
 #[test]
-fn a_tick_and_an_unchanged_write_ask_nothing() {
+fn the_verdict_lane_turns_an_answer_into_the_one_event() {
     if !library_ships() {
+        eprintln!("SKIP: the template library is not in this tree");
         return;
     }
-    let Some((views, mut held)) = settled_screen() else {
-        return;
-    };
-    let same = read_pass(&views, Some(&held), 5000, "on", None).expect("python3");
-    assert!(
-        on_route(&same, "judge").is_empty(),
-        "identical props are no touch: {same:?}"
-    );
-    // A tick is a pass over the same table with nothing touched.
-    let tick = read_pass(&views, Some(&held), 9000, "on", None).expect("python3");
-    assert!(on_route(&tick, "judge").is_empty(), "a tick: {tick:?}");
-
-    // The judge spoke at 10000; a touch at 11000 is inside the interval.
-    let verdict = json!({"focus": 0.3, "weights": {"weather": 1.0}, "windows": []});
-    let judged = read_pass(&views, Some(&held), 10000, "on", Some(verdict)).expect("python3");
-    assert!(
-        on_route(&judged, "judge").is_empty(),
-        "a verdict pass never asks again: {judged:?}"
-    );
-    apply(&mut held, &patch_calls(&judged));
-    assert_eq!(prop_of(&held, ROOT, "judged_at"), &json!(10000));
-    let mut touched = views.clone();
-    touched[0] = component_view(
-        "a",
-        "main",
-        pane(
-            "a",
-            json!({"context": "weather", "relevance": 0.7, "title": "Rain"}),
-        ),
-    );
-    let soon = read_pass(&touched, Some(&held), 11000, "on", None).expect("python3");
-    assert!(
-        on_route(&soon, "judge").is_empty(),
-        "inside judge_min_interval_ms the floor judges alone: {soon:?}"
-    );
-    let later = read_pass(&touched, Some(&held), 14000, "on", None).expect("python3");
-    assert_eq!(on_route(&later, "judge").len(), 1, "{later:?}");
-}
-
-/// The judge's answer on `in_verdict` is a pass without a write carrying the
-/// verdict -- fenced JSON tolerated -- and the read pass that follows writes
-/// the bar, the weights, `judged_at`, and hides the window the verdict named.
-/// An error and a non-JSON answer change nothing.
-#[test]
-fn a_verdict_sets_the_bar_and_the_weights_and_the_floor_reads_them() {
-    if !library_ships() {
-        return;
-    }
-    let Some((views, mut held)) = settled_screen() else {
-        return;
-    };
     let text = format!(
         "```json\n{}\n```",
-        json!({"focus": 0.8, "weights": {"weather": 0},
-               "windows": [{"id": pane_id("a", "a"), "hidden": true}]})
+        json!({"bar": 0.8, "weights": {"weather": 0},
+               "windows": [{"id": "view.alex.a", "judged_hidden": true},
+                           {"id": "view.alex.b", "judged_relevance": 0.95}]})
     );
-    let answer = run(&json!({
-        "params": {"judge": "on"},
+    let answer = raw(&json!({
+        "params": params("on"),
         "body": {"messages": [{"origin": "assistant", "type": "text", "text": text}]},
         "envelope": {"header": {
             "hop": {"route": "in_verdict", "finish_reason": "stop", "model": "x"},
             // The context of the read pass that asked travels with the reply.
             "context": {"display_origin": "read", "display_views": "{}"},
         }},
-    }))
-    .expect("python3");
-    assert_eq!(answer.len(), 1, "{answer:?}");
+    }));
+    assert_eq!(answer.len(), 1, "one emission: {answer:?}");
     assert_eq!(answer[0]["header"]["route"], "views");
-    let legs = calls_of(&answer[0]);
-    assert_eq!(legs.len(), 1, "a select and nothing else: {legs:?}");
     let request: Value = meclaw_core::serde_json::from_str(
         answer[0]["header"]["display_request"]
             .as_str()
@@ -343,50 +135,37 @@ fn a_verdict_sets_the_bar_and_the_weights_and_the_floor_reads_them() {
     )
     .expect("json");
     assert_eq!(request["tick"], true);
-    assert_eq!(request["verdict"]["focus"], 0.8);
+    // `windows` becomes a map by id, and the two per-window words keep the names
+    // § 3 gives them -- so § 4.5 reads a verdict and not a wire format.
+    assert_eq!(
+        request["verdict"],
+        json!({"bar": 0.8, "weights": {"weather": 0},
+               "windows": {"view.alex.a": {"judged_hidden": true},
+                           "view.alex.b": {"judged_relevance": 0.95}}})
+    );
 
-    // Pass 2 on a tick that carries a verdict hands it on in the plan.
-    let after = run(&json!({
-        "params": {"judge": "on"},
+    // The store's reply hands it on as the event of § 4.1.
+    let after = raw(&json!({
+        "params": params("on"),
         "body": {"messages": [{
             "origin": "tool", "type": "tool_result", "id": "d-select",
-            "text": Value::Array(views.clone()).to_string(),
+            "text": "[]",
         }]},
         "envelope": {"header": {
             "hop": {},
             "context": {"display_origin": "views", "display_request": request.to_string()},
         }},
-    }))
-    .expect("python3");
+    }));
     let plan: Value = meclaw_core::serde_json::from_str(
         after[0]["header"]["display_views"].as_str().expect("plan"),
     )
     .expect("json");
-    assert_eq!(plan["verdict"], request["verdict"]);
+    assert_eq!(plan["event"]["kind"], "verdict");
+    for key in ["bar", "weights", "windows"] {
+        assert_eq!(plan["event"][key], request["verdict"][key], "{key}");
+    }
 
-    // Pass 3 applies it.
-    let read = read_pass(
-        &views,
-        Some(&held),
-        7000,
-        "on",
-        Some(plan["verdict"].clone()),
-    )
-    .expect("python3");
-    apply(&mut held, &patch_calls(&read));
-    assert_eq!(prop_of(&held, ROOT, "focus"), &json!(0.8));
-    let weights: Value = meclaw_core::serde_json::from_str(
-        prop_of(&held, ROOT, "weights")
-            .as_str()
-            .expect("weights is text"),
-    )
-    .expect("json");
-    assert_eq!(weights["weather"], 0.0);
-    assert_eq!(prop_of(&held, ROOT, "judged_at"), &json!(7000));
-    assert_eq!(prop_of(&held, &pane_id("a", "a"), "judged_hidden"), true);
-    assert_eq!(prop_of(&held, &pane_id("a", "a"), "state"), "hidden");
-    assert_eq!(prop_of(&held, &pane_id("a", "a"), "score"), 0.0);
-
+    // An error and a non-JSON answer leave the state where it stands.
     for (hop, body) in [
         (
             json!({"route": "in_verdict", "finish_reason": "error", "error_code": "timeout"}),
@@ -397,12 +176,11 @@ fn a_verdict_sets_the_bar_and_the_weights_and_the_floor_reads_them() {
             json!({"messages": [{"origin": "assistant", "type": "text", "text": "I think so"}]}),
         ),
     ] {
-        let nothing = run(&json!({
-            "params": {"judge": "on"},
+        let nothing = raw(&json!({
+            "params": params("on"),
             "body": body,
             "envelope": {"header": {"hop": hop}},
-        }))
-        .expect("python3");
+        }));
         assert!(nothing.is_empty(), "the floor stands: {nothing:?}");
     }
 }
@@ -453,225 +231,189 @@ fn the_hive_wires_the_judge() {
     assert_eq!(hive["params"]["ports"], json!([]));
 }
 
-/// The README says what the judge is and when it speaks, and the code keeps it.
+/// What the README says about the judge, against what carries it
+/// (`docs/development-rules.md` § 2d drift lock).
+///
+/// Since display@2.5.0 the README is the rendering of the display-hive
+/// description, and it makes three claims about the judge and no others: the
+/// knob that lets the curator ask at all, the interval between two calls, and
+/// the four values a verdict may carry. The mechanism half of each is the
+/// contract of the cell and the answer schema the judge is given -- the claims
+/// the README once made about the lane `in_verdict` and about ticks are gone
+/// from it, so they are gone from here.
 #[test]
 fn the_readme_names_the_judge() {
     if !library_ships() {
         return;
     }
-    let readme = std::fs::read_to_string(repo("templates/display/README.md")).expect("README");
-    assert!(readme.contains("re-judges the whole screen"), "the section");
-    assert!(readme.contains("never on a tick"), "the rule");
-    assert!(readme.contains("`judge_min_interval_ms`"), "the knob");
-    assert!(readme.contains("`in_verdict`"), "the lane");
-}
+    let readme = readme_prose();
+    let settings =
+        read_json(&repo("templates/display/compose/config.json"))["contract"]["settings"].clone();
 
-/// A verdict rules for `linger_ms + fade_ms` from `judged_at` and no longer:
-/// once the situation it judged has faded, the floor judges again -- so a
-/// judge that fell silent after a verdict never leaves the screen empty
-/// (OR-C-Bau-7). The bar of 0.8 hides a new conversation window at 0.7 while
-/// the verdict stands; after it expires the floor's 0.3 shows it.
-#[test]
-fn a_verdict_expires_and_the_floor_judges_again() {
-    if !library_ships() {
-        return;
-    }
-    let Some((views, mut held)) = settled_screen() else {
-        return;
-    };
-    let verdict = json!({"focus": 0.8, "weights": {"weather": 0.0}, "windows": []});
-    let judged = read_pass(&views, Some(&held), 3000, "on", Some(verdict)).expect("python3");
-    apply(&mut held, &patch_calls(&judged));
-    assert_eq!(prop_of(&held, ROOT, "focus"), &json!(0.8));
-
-    let mut two = views.clone();
-    two.push(component_view(
-        "c",
-        "main",
-        pane(
-            "c",
-            json!({"context": "conversation", "relevance": 0.7, "title": "Hi"}),
-        ),
-    ));
-    // While the verdict stands: 1.0 x 0.7 = 0.7 < 0.8, hidden.
-    let soon = read_pass(&two, Some(&held), 12000, "on", None).expect("python3");
-    let c = patch_calls(&soon)
-        .into_iter()
-        .find(|call| call["id"] == pane_id("c", "c"))
-        .expect("c is created");
-    assert_eq!(c["props"]["state"], "hidden", "{c}");
-    // 150 s later the verdict has expired: the floor sets 0.3 and shows it.
-    let late = read_pass(&two, Some(&held), 150000, "on", None).expect("python3");
-    let calls = patch_calls(&late);
-    let root = calls
-        .iter()
-        .find(|call| call["id"] == ROOT)
-        .expect("the root is updated");
-    assert_eq!(root["props"]["focus"], 0.3, "{root}");
-    let c = calls
-        .iter()
-        .find(|call| call["id"] == pane_id("c", "c"))
-        .expect("c is created");
-    // On the ladder again: the canvas's word stays `hidden` for a window
-    // that is not the focus (spec 2.2), the rung says where it stands.
-    assert_ne!(c["props"]["rung"], "hidden", "{c}");
-    assert_eq!(c["props"]["score"], 0.7);
-}
-
-/// The brake counts from the QUESTION, not from the answer: two touches 500 ms
-/// apart with no verdict in between ask once, and the root remembers when it
-/// asked (`asked_at`).
-#[test]
-fn two_touches_inside_the_interval_ask_once() {
-    if !library_ships() {
-        return;
-    }
-    let Some((views, mut held)) = settled_screen() else {
-        return;
-    };
-    let mut touched = views.clone();
-    touched[0] = component_view(
-        "a",
-        "main",
-        pane(
-            "a",
-            json!({"context": "weather", "relevance": 0.7, "title": "Rain"}),
-        ),
-    );
-    let first = read_pass(&touched, Some(&held), 20000, "on", None).expect("python3");
-    assert_eq!(on_route(&first, "judge").len(), 1, "{first:?}");
-    let root = patch_calls(&first)
-        .into_iter()
-        .find(|call| call["id"] == ROOT)
-        .expect("the root is updated");
-    assert_eq!(root["props"]["asked_at"], 20000);
-    apply(&mut held, &patch_calls(&first));
-
-    touched[0] = component_view(
-        "a",
-        "main",
-        pane(
-            "a",
-            json!({"context": "weather", "relevance": 0.7, "title": "Hail"}),
-        ),
-    );
-    let second = read_pass(&touched, Some(&held), 20500, "on", None).expect("python3");
     assert!(
-        on_route(&second, "judge").is_empty(),
-        "inside the interval since the question: {second:?}"
+        readme.contains("`on` lets the curator ask the judge cell"),
+        "the knob"
     );
-    let third = read_pass(&touched, Some(&held), 23500, "on", None).expect("python3");
-    assert_eq!(on_route(&third, "judge").len(), 1, "{third:?}");
-}
+    assert_eq!(
+        settings["judge"]["default"], "off",
+        "and it is off as shipped"
+    );
 
-/// What the judge reads is the guideline the README states, word for word,
-/// and every window comes with its owner and view id in the clear.
-#[test]
-fn the_judge_reads_the_guideline_and_the_owners() {
-    if !library_ships() {
-        return;
-    }
-    let Some(boot) = read_pass(&[], None, 1000, "on", None) else {
-        return;
-    };
-    let mut held = json!([]);
-    apply(&mut held, &patch_calls(&boot));
-    let arrive = read_pass(&a_view(), Some(&held), 2000, "on", None).expect("python3");
-    let q = on_route(&arrive, "judge")[0];
-    let instructions = q["system"]["instructions"]["text"].as_str().expect("text");
-    let readme = std::fs::read_to_string(repo("templates/display/README.md")).expect("README");
-    for sentence in [
-        "Focus is the state of the whole screen, not the highlighting of one active element.",
-        "The screen has no agenda of its own.",
-        "Priority is dynamic.",
-        "show as little as possible at every moment -- and everything that truly matters at that moment.",
+    assert!(
+        readme.contains(
+            "`judge_min_interval_ms` | 3000 | the shortest distance between two judge calls"
+        ),
+        "the interval"
+    );
+    assert_eq!(settings["judge_min_interval_ms"]["default"], 3000);
+
+    assert!(
+        readme.contains(
+            "The judge writes four things and nothing else: `judged_relevance` and \
+             `judged_hidden` per window, `bar` and `weights` on the state."
+        ),
+        "the four values"
+    );
+    let instructions = judge_instructions().expect("the guideline");
+    for word in [
+        "judged_relevance",
+        "judged_hidden",
+        "\"bar\"",
+        "\"weights\"",
     ] {
         assert!(
-            instructions.contains(sentence),
-            "the guideline, word for word: {sentence}"
-        );
-        assert!(
-            readme
-                .replace("**", "")
-                .replace('*', "")
-                .replace('\n', " ")
-                .contains(sentence),
-            "the README states it: {sentence}"
+            instructions.contains(word),
+            "the answer schema asks for {word}"
         );
     }
-    let situation: Value =
-        meclaw_core::serde_json::from_str(q["messages"][0]["text"].as_str().expect("text"))
-            .expect("json");
-    let a = &situation["windows"][0];
-    assert_eq!(a["owner"], "alex");
-    assert_eq!(a["view_id"], "a");
-    assert_eq!(a["since"], 2000);
+    for word in ["rung", "score", "rank", "level"] {
+        assert!(
+            !instructions.contains(&format!("\"{word}\"")),
+            "the judge is asked for {word}, which is the curator's (§ 4.5)"
+        );
+    }
 }
 
-/// A verdict's `hidden` and `relevance` on a window fade with the verdict
-/// (OR-C-Bau-11): a pinned clock the judge hid stays hidden while the verdict
-/// stands and comes back by itself once `linger_ms + fade_ms` have passed
-/// since `judged_at` -- without a touch, without a next verdict.
+/// The judge is told what its own numbers do (GH #726).
+///
+/// The guideline of § 1.3 tells a model what a screen is for; it says nothing about
+/// the arithmetic the screen then runs. Measured on the live instance and its twin on
+/// 18.09.2026: with the guideline alone, `openai/gpt-5.6-luna` put `bar` at 0.9 in
+/// every one of forty verdicts and hid nearly every window at `judged_relevance` 0.05.
+/// At that bar only `weight x relevance x decay >= 0.9` opens a window -- in practice
+/// a context weighing 1.0 and a relevance of 0.9 -- so the window that ANSWERED the
+/// person's question stayed a tile while the conversation kept the screen (§ 4.13),
+/// and verdicts reversed within seconds with no event in between.
+///
+/// So four things are now in the prompt and are locked here: the arithmetic with its
+/// threshold, the span a usable bar lives in, the answer's own window, and that a
+/// verdict does not move without an event. `workshop/tools/judge_eval.py` measures
+/// whether a model obeys them; this test only holds them in the file.
 #[test]
-fn a_verdicts_hidden_fades_with_the_verdict() {
+fn the_judge_is_told_what_its_numbers_do() {
     if !library_ships() {
         return;
     }
-    let views = vec![component_view(
-        "clock",
-        "aside",
-        pane(
-            "c",
-            json!({"context": "ambient", "relevance": 0.4, "pinned": true, "title": "12:00"}),
-        ),
-    )];
-    let mut held = json!([]);
-    let Some(boot) = read_pass(&[], None, 1000, "on", None) else {
+    let Some(instructions) = judge_instructions() else {
         return;
     };
-    apply(&mut held, &patch_calls(&boot));
-    let arrive = read_pass(&views, Some(&held), 1000, "on", None).expect("python3");
-    apply(&mut held, &patch_calls(&arrive));
-    let settle = read_pass(&views, Some(&held), 1100, "on", None).expect("python3");
-    apply(&mut held, &patch_calls(&settle));
-    let id = pane_id("clock", "c");
-    // On the ladder before the verdict: a pinned clock alone steers no
-    // weight (OR-D-Bau-5), scores 0.2 under a lowered bar and is ambient --
-    // present, and not on the canvas.
-    assert_ne!(
-        prop_of(&held, &id, "rung"),
-        "hidden",
-        "visible before the verdict"
+    for claim in [
+        // The arithmetic and the comparison it feeds.
+        "score = weight x relevance x decay",
+        "LARGE when score >= bar",
+        "threshold on a PRODUCT",
+        // The span, because "high means a concentrated screen" is what produced 0.9.
+        "A usable bar lies between 0.2 and 0.5",
+        "0.3 is the normal choice",
+        // A weight is not an off switch, and the conversation gets no bonus (§ 1.3).
+        "A weight is not an off switch",
+        "weighs at least 0.7",
+        "`conversation` is not automatically 1.0",
+        // The answer's window, and the conversation stepping back (§ 4.13).
+        "`judged_relevance` of 0.8 or more",
+        "do not hide it",
+        "The conversation (topic `chat`)",
+        "you do not have to hide it",
+        // Stability: the last verdict is information, not an anchor, and the list of
+        // events includes the one the judge is asked on most (§ 5.10).
+        "not as an anchor",
+        "a window whose content changed",
+        "the same picture gets the same verdict",
+        // `judged_hidden` is for what disturbs; a quiet clock is a low relevance.
+        "what would disturb the person",
+        "never with a high bar",
+    ] {
+        assert!(
+            instructions.contains(claim),
+            "the judge is told: {claim}\n{instructions}"
+        );
+    }
+    // The sentence that invited the 0.9 is gone from the answer schema.
+    assert!(
+        !instructions.contains("high means an empty, concentrated screen"),
+        "the schema no longer sells a high bar as concentration"
     );
-
-    let verdict = json!({"focus": 0.3, "weights": {"ambient": 1.0},
-                         "windows": [{"id": id, "hidden": true}]});
-    let judged = read_pass(&views, Some(&held), 3000, "on", Some(verdict)).expect("python3");
-    apply(&mut held, &patch_calls(&judged));
-    assert_eq!(prop_of(&held, &id, "judged_hidden"), true);
-    assert_eq!(prop_of(&held, &id, "state"), "hidden");
-
-    // While the verdict stands (140 s from 3000): still hidden, untouched.
-    let soon = read_pass(&views, Some(&held), 100_000, "on", None).expect("python3");
-    apply(&mut held, &patch_calls(&soon));
-    assert_eq!(prop_of(&held, &id, "state"), "hidden");
-    assert_eq!(prop_of(&held, &id, "judged_hidden"), true);
-
-    // The verdict has faded: the judged props go with it and the clock stands.
-    let late = read_pass(&views, Some(&held), 150_000, "on", None).expect("python3");
-    let calls = patch_calls(&late);
-    let props = calls
-        .iter()
-        .find(|c| c["op"] == "object.update" && c["id"] == id)
-        .expect("the clock is updated")["props"]
-        .clone();
-    assert_eq!(props["judged_hidden"], false, "{props}");
-    assert_eq!(props["judged_relevance"], "", "{props}");
-    assert_ne!(props["rung"], "hidden", "{props}");
-    assert_eq!(
-        props["score"], 0.2,
-        "pinned: no decay, its own relevance, the floor's default weight"
+    // The prompt travels with EVERY judge call, so its length is a running cost.
+    // 3 863 characters as written; the cap is room to say more, not a target.
+    assert!(
+        instructions.len() <= 5_000,
+        "the guideline is read on every call: {} characters",
+        instructions.len()
     );
-    apply(&mut held, &calls);
-    assert_ne!(prop_of(&held, &id, "rung"), "hidden");
+}
+
+/// The instructions of the one judge question a fresh screen produces.
+fn judge_instructions() -> Option<String> {
+    let mut screen = Screen::new(params("on"));
+    screen.write(weather("Sunny"), 100_000);
+    Some(
+        question(&screen)?["system"]["instructions"]["text"]
+            .as_str()
+            .expect("the guideline rides as instructions")
+            .to_string(),
+    )
+}
+
+/// The guideline the judge is handed is the guideline the README states
+/// (`docs/development-rules.md` § 2d drift lock).
+///
+/// Both halves carry display-hive.md § 1, but not in the same voice: the judge
+/// gets § 1 word for word, in the second person, while the README renders it as
+/// numbered principles in its own prose. So what is locked is the load-bearing
+/// clause of each principle, which both sides do spell identically -- a changed
+/// claim breaks the lock, a re-wrapped paragraph does not. The guiding sentence
+/// is matched without its first word, which the README lowercases mid-sentence.
+#[test]
+fn the_judge_reads_the_guideline_the_readme_states() {
+    if !library_ships() {
+        return;
+    }
+    let Some(instructions) = judge_instructions() else {
+        return;
+    };
+    let readme = readme_prose();
+    for claim in [
+        "Focus is the state of the whole screen",
+        "one highlighted element",
+        "is only what is of use now",
+        "At every real event the situation is judged",
+        "can it go entirely",
+        "as little as possible",
+    ] {
+        assert!(
+            instructions.contains(claim),
+            "the judge is told: {claim}\n{instructions}"
+        );
+        assert!(readme.contains(claim), "the README states it: {claim}");
+    }
+    // The one principle the judge needs and the README carries as its own
+    // sentence: no sender has a bonus.
+    assert!(
+        instructions.contains("The display has no agenda of its own."),
+        "the judge is told it has no agenda of its own"
+    );
+    assert!(
+        readme.contains("the judge writes relevance and the bar, the curator writes the rung"),
+        "and the README says where that line runs"
+    );
 }

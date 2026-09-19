@@ -660,7 +660,7 @@
         {
           "from": "./apps",
           "to": "./channels",
-          "condition": "has(hop.route) && hop.route == 'view' && has(context.channel_node) && context.channel_node != ''"
+          "condition": "has(hop.route) && (hop.route == 'view' || hop.route == 'withdraw') && has(context.channel_node) && context.channel_node != ''"
         },
         {
           "from": "./channels",

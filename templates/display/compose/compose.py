@@ -22,8 +22,9 @@ It is the whole of the screen's bookkeeping, and it draws nothing itself. An
 agent or an app says "here is a view of mine, put it up"; this cell decides
 what the display's object tree must therefore look like, and says so as
 `object.*` calls. It holds no model, opens no socket and makes no layout
-judgement beyond two regions and an order: a declared `ord`, then first
-appearance, and never the moment a view was last written.
+judgement of its own: the order of the screen is the pass's (`canvas_order` for
+the open canvas windows, `dock_order` for the tiles), and never the moment a
+view was last written or the `ord` a sender asked for.
 
 It is NOT the owner of a view's content. The content is whatever the sender
 sent, rendered by whatever component the sender defined. This cell only ever
@@ -66,11 +67,11 @@ out ANYWAY without them: a dead letter somebody can read beats a silent drop.
 Pass 2 (`context.display_origin == 'views'`): the store answered. The
 after-state is computed IN MEMORY from the before-state -- minus the row that
 was deleted, plus the row that was inserted -- because a second select would be
-a second round trip for a set this cell already knows. Expired views are
-dropped from the picture here and the rest is put in a deterministic order:
-region, then the `ord` the view declared, then identity. The order a person
-SEES is settled one pass later, in `build`, because it needs the seats the
-display is already holding -- see `seated`.
+a second round trip for a set this cell already knows. Nothing is dropped
+here: when a view leaves the state is the PASS's decision (step 4, step 12),
+and a leaving window still needs its content to be drawn one last time. This
+pass also carries the state row of the pass before and the ONE event of § 4.1;
+the order a person sees is settled one pass later, out of the state.
 
 Pass 3 (`context.display_origin == 'read'`): the display answered the query.
 The question that answer settles is "is this page MINE", and there are two ways
@@ -94,6 +95,7 @@ whole reason the cell needs a discriminator. Without it every acknowledgement
 falls through to "ask again" -- one request becomes two, two become four, and
 the routing loop wedges on a full mailbox inside twenty seconds (GH #161).
 """
+import copy
 import hashlib
 import json
 import sys
@@ -139,34 +141,42 @@ REGION_INDEX = dict((name, i) for i, name in enumerate(REGIONS))
 # says so -- a child's props are not read on purpose, or a clock that rewrites
 # a child every twenty seconds would touch its window on every tick.
 WINDOWS = ("display-pane", "display-panel", "display-overlay", "display-view-prose")
-CURATOR_KEYS = ("state", "age", "since", "score", "judged_relevance", "judged_hidden",
-                "topic_dupe", "rung", "topic_relevance")
+# The hints of § 3 an application may send about its own window. There is no
+# `CURATOR_KEYS` beside them any more: since 2.5.0 no curator value stands on a display
+# object as memory -- the state lies in the store (§ 3.1), and what the objects wear is
+# the RENDERING of it (`window_attrs`).
 HINT_KEYS = ("context", "relevance", "class", "pinned", "relevant_until", "touched",
-             "topic", "modal")
-APP_WORDS = ("urgent", "hidden")
+             "topic", "layer", "seat", "seat_ord", "linger", "state", "turn_id")
+
+# The two ladders (R-23-2). A window competes for the focus only inside its
+# own layer, so a chat over a document does not take the document's rung away:
+# one focus per ladder, and at most one modal is ever on the screen.
+# The seats in the dock (R-23-3). One place for now, because one place is what
+# the design asked for: the bottom edge, where the clock and the weather stand.
+# The two events the screen answers ITSELF (R-23-1, R-23-5, OR-F6). Everything
+# else a browser says leaves the hive on the `event` lane, as it always has:
+# which window stands large is display hygiene and nobody else's business,
+# and a button inside an application's own tree is the application's.
+TAP_EVENT = "tap"
+HOLD_EVENT = "hold"
 # The namespace an order's id is derived from. Deterministic per due time, so
 # two passes that compute the same moment order the same id and the second
 # `add` collides instead of standing beside the first (GH #681).
 DUE_NAMESPACE = uuid.UUID("6f2d7c1a-3a1e-4d7b-9d5a-1c2b3e4f5a60")
 # The knobs as shipped; `main()` reads the member's dials over them.
-DEFAULT_LINGER_MS = 20000
-DEFAULT_FADE_MS = 120000
-DEFAULT_FOCUS = 0.3
-DEFAULT_WEIGHT = 0.5
 # Per notice class, `[relevance, ttl_ms]` as shipped (`params.notice_defaults`
 # says otherwise). `CLASS_RELEVANCE` is the first half, the one the score reads.
 NOTICE_DEFAULTS = {"system_error": (0.9, 60000), "error": (0.8, 60000),
                    "warning": (0.7, 120000), "important_note": (0.7, 300000),
                    "note": (0.4, 300000)}
-CLASS_RELEVANCE = {k: v[0] for k, v in NOTICE_DEFAULTS.items()}
-KNOBS = {
-    "linger_ms": DEFAULT_LINGER_MS,
-    "fade_ms": DEFAULT_FADE_MS,
-    "focus_default": DEFAULT_FOCUS,
-    "judge": "off",
-    "judge_min_interval_ms": 3000,
-    "dock_max": 7,
-}
+# The screen settings of § 3 that the pass reads, and the two module globals that carry
+# them. RAW, as `params` said them: the door of § 4.7 normalises them in the state, once,
+# and says out loud what it replaced. There is no resolved copy beside them -- a second,
+# already-normalised word is a value nobody refuses and nobody reads.
+SETTING_KEYS = ("linger_ms", "fade_ms", "focus_default", "judge_min_interval_ms",
+                "judge", "default_screen")
+KNOB_SETTINGS = {}
+KNOB_SCREENS = {}
 # The sheet's ground: `day`, or `night` when the operator says so
 # (`params.ground`). A word, not a clock -- nothing switches it by itself.
 GROUND = "day"
@@ -205,16 +215,13 @@ TILE_GLYPHS = {
     "note": "\u00b7",
 }
 TILE_FALLBACK_GLYPH = "\u2022"
-# The dock's order stays readable even under a judge that weighs a context to
-# nothing: a weight below this is read as this for the RANK only, never for
-# the score (OR-D10).
-RANK_FLOOR = 0.05
 # The exits of one screen state (R-D3) and their profiles. A member has ONE
 # display hive; a physical screen is an exit of it, and the profile is what
 # the renderer knows about that exit.
+# A screen whose `params` name no outputs still has to be a screen. `inputs: []`,
+# because § 4.7 forces a television to it whatever the profile says.
 DEFAULT_SCREENS = {"tv": {"display_type": "tv", "viewing_distance_m": 3.0,
-                          "physical_size_in": 55, "inputs": ["audio"]}}
-DEFAULT_SCREEN = "tv"
+                          "physical_size_in": 55, "inputs": []}}
 # No formula out of DPI, a table (OR-D9): three types are what there is, and
 # everything past this would be tuning. The distance modulates linearly
 # against the reference distance of the type, clamped.
@@ -222,10 +229,6 @@ SCREEN_BASE = {"tv": 1.6, "monitor": 1.0, "phone": 1.0}
 SCREEN_REFERENCE = {"tv": 3.0, "monitor": 0.7, "phone": 0.35}
 SCALE_MIN = 0.8
 SCALE_MAX = 2.2
-DOCK_MAX_BY_TYPE = {"tv": 7, "phone": 5, "monitor": 8}
-# What this cell was configured with, per message (`read_knobs`).
-SCREENS = dict(DEFAULT_SCREENS)
-SCREEN = DEFAULT_SCREEN
 PAGE_ROUTE = "/"
 PAGE_TITLE = "display"
 
@@ -247,12 +250,6 @@ KEY_MAX = 512
 # renumbering anything the display already holds.
 ORD_STEP = 10
 
-# Where a view sits in its region before anything has ever placed it: behind
-# everything the screen already holds. A view's SEAT is the `ord` the display
-# is holding it at right now, which is how "first appearance" is remembered
-# without a column for it -- the screen remembers the order of the screen.
-NEW_SEAT = 1 << 40
-
 # How deep a component tree may be. The `web` cell stops rendering at 64 levels
 # and reports the object it stopped at; refusing earlier, at the door, turns
 # that into an answer to whoever wrote the tree.
@@ -266,7 +263,1252 @@ ERRORS = (
     "invalid_view",
     "component_prefix",
     "store_failed",
+    # The door of the pass (§ 4.6, § 4.7). A refused view, a refused setting or profile
+    # value, and the two errors nothing replaces: a profile without `display_type` and a
+    # `default_screen` that names no output.
+    "view_refused",
+    "setting_refused",
+    "profile_refused",
+    "setting_error",
+    "profile_error",
 )
+
+# --- The pass: display-hive.md § 4, model/pass.py verbatim (begin) ---
+RUNGS = ("hidden", "ambient", "relevant", "focus", "urgent")
+LADDERS = ("canvas", "modal")
+STATE_WORDS = ("urgent", "hidden")
+SEAT_WORDS = ("bottom",)
+NUMERIC_HINTS = ("relevance", "linger", "seat_ord", "touched", "relevant_until")
+CLASS_RELEVANCE = {"system_error": 0.9, "error": 0.8, "warning": 0.7,
+                   "important_note": 0.7, "note": 0.4}
+DEFAULT_WEIGHT = 0.5
+DEFAULT_RELEVANCE = 0.5
+RANK_FLOOR = 0.05
+AFTER_UNTIL_CAP = 0.2
+DEFAULT_SETTINGS = {"linger_ms": 20000, "fade_ms": 120000, "focus_default": 0.3,
+                    "judge_min_interval_ms": 3000, "judge": "off"}
+PROFILE_DEFAULTS = {"tv": ("shown", 7), "monitor": ("shown", 8), "phone": ("hidden", 5)}
+INPUT_WORDS = ("audio", "touch", "pointer", "keyboard")
+TRIGGERS = ("app_write", "app_withdraw", "verdict", "tap", "hold", "stroke")
+APP_SOURCES = ("a", "b", "c", "f")
+FINGER_SOURCES = ("d", "e")
+# Keys of a view that are not own props of the window (§ 4.8 b): the bookkeeping of the
+# view beside the window, the children, and the two hints with their own rules.
+NOT_OWN_PROPS = ("owner", "children", "ttl_ms", "written_at", "withdrawn", "verdict",
+                 "curator", "state", "touched")
+
+
+def step1_triggers(state, event, now):
+    """§ 4.1: a pass runs on, closed list: an app writes or withdraws a view (the clock's
+    minute included), a verdict arrives, a tap, a hold, a stroke. Nothing else.
+    § 4.5: the judge writes `judged_relevance`/`judged_hidden` per window, `bar` and
+    `weights` on the state — a `judged_relevance` outside 0–1 is clamped to 0–1 on
+    arrival (Decision 16.09. 23); a verdict holds until the next judge run or until a tap, a
+    hold or an app touch of source (b)/(c) clears it for that window (Decision 18.09.) —
+    which also drops that window's `verdict_cleared` mark, because a judge run replaces the
+    whole verdict; a put-away clears no verdict. The judge decides what is open, never what exists: presence
+    never ends by a verdict (step 4; Leitlinie; Ruling 14.09. "size, never existence"). The
+    verdict is applied here, on arrival, before the touches and the score (compose.py applies
+    it before the score as well)."""
+    kind = event.get("kind")
+    if kind not in TRIGGERS:
+        state["pass"]["runs"] = False          # § 4.1: nothing else triggers a pass
+        return state
+    state["pass"]["runs"] = True
+    if kind == "verdict":
+        if state["settings"].get("judge") != "on":
+            # § 3 `judge`: off, missing or any other word = the hive has no judge cell,
+            # so no verdict can arrive.  # Decision 16.09. 1
+            state["pass"]["refused"].append(("verdict", "no judge cell"))
+            return state
+        # § 4.5: the next judge run replaces the whole verdict: bar, weights, and the
+        # per-window values of every window — a window the verdict does not name loses
+        # its old verdict.  # Decision 16.09. 2
+        bar = event.get("bar")                 # missing → focus_default (§ 4.16)  # Decision 16.09. 18
+        weights = {str(k): float(v) for k, v in (event.get("weights") or {}).items()}
+        state["judge"]["verdict"] = {"bar": bar, "at": now}
+        state["weights"] = weights
+        named = event.get("windows") or {}
+        for oid, v in state["views"].items():
+            entry = named.get(oid) or {}
+            jr = entry.get("judged_relevance")
+            if jr is not None:
+                # § 3: 0–1; outside it, clamped on arrival like `relevance` at the door
+                # (§ 1.3: no sender has a bonus).  # Decision 16.09. 23
+                jr = min(1.0, max(0.0, float(jr)))
+            v["verdict"] = {"judged_relevance": jr,
+                            "judged_hidden": entry.get("judged_hidden")}
+            # "replaces the whole verdict": the mark a touch left goes with it, so the
+            # window counts with the judge's weights again.  # Decision 18.09. 27
+            v["curator"]["verdict_cleared"] = False
+    return state
+
+
+def step1_judge_call(state, now):
+    """§ 4.3: the curator calls the judge at the end of a pass in which at least one window
+    received a touch from an app source (§ 4.8 a–c, f), at the earliest
+    `judge_min_interval_ms` after the last call; never after a pass that only a tap, a hold,
+    a stroke or the clock's minute triggered. A call that falls into the interval is
+    discarded, not made up: the judge sees the situation in the next pass with an app touch
+    after the interval (Decision 16.09.). § 4.16: with `judge: off` there is no judge cell."""
+    state["judge"]["called"] = False
+    if state["settings"].get("judge") != "on":
+        return state
+    app_touch = any(src in APP_SOURCES for src in state["pass"]["touched"].values())
+    if not app_touch:
+        return state
+    last = state["judge"]["last_call"]
+    if last is not None and now - last < state["settings"]["judge_min_interval_ms"]:
+        return state                                   # discarded, not made up
+    state["judge"]["called"] = True
+    state["judge"]["last_call"] = now
+    return state
+
+
+def step2_door(state, event, now):
+    """§ 4.6: the screen normalises what an app sends and rejects what it does not know: a
+    `state` other than `urgent`/`hidden`, a `seat` other than `bottom`, a `ttl_ms` that is
+    not a non-negative integer (Decision 16.09.). Numeric hints travel as text (§ 3.3);
+    `0` and a missing value are the same, so a `seat` without `seat_ord` stands at 0
+    (Decision 16.09. 22). `relevance` is clamped to 0–1 (§ 1.3: no sender has a bonus);
+    what clamps to 0 reads as empty like `0` (Decision 16.09. 23). The write that passes
+    enters the store; a withdrawal marks the view withdrawn (it leaves the state by § 4.35).
+    § 4.7: profiles pass the same door: `display_type` is mandatory — missing is an error,
+    not a silent tv; `default_screen` is mandatory and names an entry of `screens`; a
+    missing `inputs` is `[]`, for `phone` too; type `tv` → `inputs: []`, whatever the
+    profile says (Marcus 14.09.; as a type rule Decision 16.09.). An error is reported in
+    every pass; the profile stays raw. `dock_default` is one of `shown`/`hidden` and
+    `dock_max` a whole number ≥ 1, as number or as text (§ 3.3); any other value is the
+    type default and is refused once, in the pass that replaces it (Decision 16.09. 21).
+    The settings pass the door too: `linger_ms`, `fade_ms`, `judge_min_interval_ms` are
+    integers ≥ 1, `focus_default` a number in 0–1; any other value is the setting's default
+    of § 3 and is refused once, in the pass that replaces it (Decision 16.09. 20)."""
+    # Settings, every pass (idempotent): an invalid value is the default of § 3, refused
+    # once — in the pass that replaces it.  # Decision 16.09. 20
+    settings = state["settings"]
+    for key in ("linger_ms", "fade_ms", "judge_min_interval_ms"):
+        val = settings.get(key)
+        if isinstance(val, bool) or not isinstance(val, int) or val < 1:
+            state["pass"]["refused"].append(("settings", key, val))
+            settings[key] = DEFAULT_SETTINGS[key]
+    fd = settings.get("focus_default")
+    if isinstance(fd, bool) or not isinstance(fd, (int, float)) or not 0 <= fd <= 1:
+        state["pass"]["refused"].append(("settings", "focus_default", fd))
+        settings["focus_default"] = DEFAULT_SETTINGS["focus_default"]
+
+    # Profiles, every pass (idempotent).
+    screens = {}
+    for name, prof in (state["screens"] or {}).items():
+        prof = dict(prof or {})
+        dtype = prof.get("display_type")
+        if dtype not in PROFILE_DEFAULTS:
+            # An error, not a silent tv: the profile stays raw and is reported every pass.
+            state["pass"]["errors"].append(("screen", name, "display_type missing"))
+            prof["error"] = "display_type missing"
+            screens[name] = prof
+            continue
+        shown, dmax = PROFILE_DEFAULTS[dtype]
+        inputs = [w for w in (prof.get("inputs") or []) if w in INPUT_WORDS]
+        if dtype == "tv":
+            inputs = []                                # § 4.7: a type rule
+        prof["inputs"] = inputs
+        # `dock_default` and `dock_max` are normalised: any other value is the type
+        # default, refused once — in the pass that replaces it.  # Decision 16.09. 21
+        dd = prof.get("dock_default")
+        if dd in (None, ""):
+            dd = shown
+        elif dd not in ("shown", "hidden"):
+            state["pass"]["refused"].append(("screen", name, "dock_default", dd))
+            dd = shown
+        prof["dock_default"] = dd
+        dm = prof.get("dock_max")
+        if dm in (None, ""):
+            dm = dmax
+        else:
+            n = _whole(dm)
+            if n is None or n < 1:
+                state["pass"]["refused"].append(("screen", name, "dock_max", dm))
+                n = dmax
+            dm = n
+        prof["dock_max"] = dm
+        screens[name] = prof
+    state["screens"] = screens
+    default = state["settings"].get("default_screen")
+    if not default or default not in screens:
+        state["pass"]["errors"].append(("settings", "default_screen", "missing or unknown"))
+
+    kind = event.get("kind")
+    views = state["views"]
+    if kind == "app_withdraw":
+        oid = event.get("oid")
+        if oid in views:
+            views[oid]["withdrawn"] = True
+        return state
+    if kind != "app_write":
+        return state
+
+    oid = event.get("oid")
+    sent = dict(event.get("view") or {})
+    # Reject what the door does not know.
+    word = sent.get("state")
+    if word not in (None, "") and word not in STATE_WORDS:
+        state["pass"]["refused"].append((oid, "state", word))
+        return state
+    seat = sent.get("seat")
+    if seat not in (None, "") and seat not in SEAT_WORDS:
+        state["pass"]["refused"].append((oid, "seat", seat))
+        return state
+    ttl = sent.get("ttl_ms", 0)
+    if ttl is None:
+        ttl = 0
+    if isinstance(ttl, bool) or not isinstance(ttl, int) or ttl < 0:
+        state["pass"]["refused"].append((oid, "ttl_ms", ttl))
+        return state
+    # Normalise numeric hints (text → number, empty → unset).
+    for k in NUMERIC_HINTS:
+        if k in sent:
+            sent[k] = _number(sent[k])
+    # § 3 `relevance` 0–1, § 1.3 "no sender has a bonus": clamped at the door; what clamps
+    # to 0 reads as empty like `0` (§ 3.3) and removes the key.  # Decision 16.09. 23
+    if sent.get("relevance") is not None:
+        r = min(1.0, max(0.0, float(sent["relevance"])))
+        sent["relevance"] = None if r == 0 else (int(r) if r == int(r) else r)
+    if "layer" in sent and sent["layer"] not in LADDERS:
+        sent["layer"] = "canvas"                       # § 3: default canvas  # Decision 16.09. 3
+    if sent.get("class") not in CLASS_RELEVANCE:
+        sent.pop("class", None)                        # § 3: an unknown class counts as unset
+
+    prior = views.get(oid)
+    if prior is None or prior.get("withdrawn"):
+        # A new window enters the store (§ 4.8 a). A view written again after its
+        # withdrawal is new.  # Decision 16.09. 4
+        view = {"owner": sent.get("owner", oid.split(".")[1] if "." in oid else oid),
+                "children": {}, "ttl_ms": ttl, "written_at": now, "withdrawn": False,
+                "verdict": {"judged_relevance": None, "judged_hidden": None},
+                "curator": {"since": None, "dismissed_at": 0, "led_until": 0,
+                            "verdict_cleared": False,
+                            "topic_dupe": False, "present": False, "rung": None,
+                            "score": 0.0, "decay": 0.0, "age": None, "level": 0,
+                            "rank": 0.0, "front": False, "open": False}}
+        state["pass"]["new"].append(oid)
+        state["pass"]["prior_props"] = state["pass"].get("prior_props", {})
+        state["pass"]["prior_props"][oid] = None
+    else:
+        view = prior
+        state["pass"]["prior_props"] = state["pass"].get("prior_props", {})
+        state["pass"]["prior_props"][oid] = {k: v for k, v in prior.items()
+                                             if k not in ("children", "verdict", "curator")}
+    # The write merges per key (compose.py: `object.update` merges per key); a key left
+    # out stands; an explicit empty value removes the key.  # Decision 16.09. 5
+    # `end_at` and the rest of the tile are children: not normalised, not read by the
+    # pass (§ 3.3 names no wire format for it).  # Decision 16.09. 17
+    for k, v in sent.items():
+        if k in ("children",):
+            view["children"] = dict(view.get("children") or {})
+            view["children"].update(v or {})
+            continue
+        if k in ("owner",):
+            view["owner"] = v
+            continue
+        if v is None or v == "":
+            view.pop(k, None)
+        else:
+            view[k] = v
+    view["ttl_ms"] = ttl
+    view["written_at"] = now                           # § 4.34: ttl counts from the last write  # Decision 16.09. 6
+    view["withdrawn"] = False
+    views[oid] = view
+    state["pass"]["written"] = (oid, sent)
+    return state
+
+
+def _number(value):
+    """§ 3.3: numeric hints travel as text; `0` and `''` read as empty."""
+    if value is None or value == "" or value is False:
+        return None
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    if f == 0:
+        return None
+    return int(f) if f == int(f) else f
+
+
+def _whole(value):
+    """§ 4.7: a profile number (`dock_max`) as number or text; a whole number, else None."""
+    if isinstance(value, bool):
+        return None
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    return int(f) if f == int(f) else None
+
+
+def step3_touches(state, event, now):
+    """§ 4.8: sources, closed list: (a) a window appears new; (b) the app changes own props
+    of the window (`state` excepted), not those of its children; (c) the app writes
+    `touched` greater than the last seen; (d) a tap on the tile of a window that is not
+    open (§ 5.1); (e) a hold (§ 5.4); (f) is the topic touch of § 4.12 (step 4) — that is
+    how an answer reaches a standing window. Not a touch: a child change without `touched`
+    (the clock's minute, a weather measurement, § 9.3–9.4), a judge run, a press, a put-away
+    tap (§ 5.2), a dock cut, a change of `state` alone — `state: urgent` set or removed with
+    no other own prop and no `touched` in the same write (the end of ringing, § 9.1)
+    (Decision 16.09.).
+    § 4.9: what a finger touch writes beyond `since`; an app touch writes `since` and, for
+    the sources (b) and (c), clears the verdict of that window — (a) has no verdict yet and
+    (f), the topic touch, leaves the standing window's verdict alone (Decision 18.09.).
+    Clearing a verdict means the whole standing judgement about that window: the two judge
+    values and, through the mark `verdict_cleared`, the weight of its context (§ 4.14,
+    Decision 18.09.). `bar` is the screen's and stays (§ 4.16).
+    § 5.2: a tap on the tile of an open window is a put-away: `dismissed_at = now`,
+    `led_until = 0`, `since` stays, the verdict stays (§ 4.5); the tile keeps its rank (§ 4.27)
+    and the decay runs on (R-24-1). A later app touch lifts the put-away, because then
+    `since > dismissed_at` — except the chat under step 5. § 5.3: the modal-closing rule —
+    a tap on the tile of a canvas app while a modal is open puts the modal away, whether the
+    tap opens the canvas app or puts it away (R-23-2; "also on put-away": Decision 16.09.).
+    "A canvas app" is the app whose window carries `layer: canvas` (`layer_of`, the hint as
+    written, the default included), whatever its rung: an urgent window stands on no ladder
+    for the focus choice (§ 4.18), but its app's `layer` still decides this rule — a tap on
+    the tile of an urgent with `layer: canvas` puts the open modal away, whether it puts
+    the urgent away or brings it to the front; only the modal side of § 4.18 is exempt
+    (a front urgent with `layer: modal` is no modal here) (Decision 16.09. 19).
+    § 5.4: a hold acts on the window with `topic: chat` like a tap by § 5.1, even when it is
+    open — a hold never puts away (Brief § 16; R-23-5); without such a view the hold is
+    absorbed: nothing opens, no error (Decision 16.09.). § 5.8: ten taps on one tile produce
+    no error; each applies to the state after the previous one (Decision 16.09.)."""
+    kind = event.get("kind")
+    views = state["views"]
+    settings = state["settings"]
+    touched = state["pass"]["touched"]
+
+    if kind == "app_write" and "written" in state["pass"]:
+        oid, sent = state["pass"]["written"]
+        view = views[oid]
+        prior = state["pass"]["prior_props"].get(oid)
+        if prior is None:
+            touched[oid] = "a"                         # (a) the window appears new
+            _app_touch(view, now)
+        else:
+            own_changed = any(k not in NOT_OWN_PROPS and prior.get(k) != view.get(k)
+                              for k in sent.keys())
+            said = sent.get("touched")
+            last_seen = prior.get("touched")
+            touched_up = said is not None and (last_seen is None or said > last_seen)
+            if own_changed:
+                touched[oid] = "b"                     # (b) own props changed
+                # since = now, not the `touched` value  # Decision 16.09. 7
+                _app_touch(view, now, clears_verdict=True)   # Decision 18.09. 26
+            elif touched_up:
+                touched[oid] = "c"                     # (c) `touched` greater than last seen
+                _app_touch(view, now, clears_verdict=True)   # Decision 18.09. 26
+            # else: a child change, `state` alone, or a repeated write: no touch.
+        if view.get("topic") == "chat" and "turn_id" in sent:
+            state["pass"]["chat_wrote_turn_id"] = True  # § 4.13 trigger "the chat app writes that turn_id"
+
+    elif kind == "tap":
+        oid = event.get("for")
+        view = views.get(oid)
+        if view is None or not view["curator"].get("present"):
+            state["pass"]["refused"].append((oid, "tap", "no tile"))  # Decision 16.09. 8
+            return state
+        c = view["curator"]
+        was_open = c.get("open", False)                # open = level 1–3 of the last pass (§ 4.24)
+        if was_open:
+            c["dismissed_at"] = now                    # § 5.2: put away; `since` stays
+            c["led_until"] = 0
+            state["pass"]["put_away"].append(oid)
+        else:
+            touched[oid] = "d"                         # § 5.1
+            _finger_touch(view, now, settings)
+        # § 5.3 modal-closing rule: a tap on the tile of a canvas app while a modal is open
+        # (a `layer: modal` window on level 2, never an urgent) puts the modal away,
+        # whether the tap opens the canvas app or puts it away. "Canvas app" = the tapped
+        # window's `layer`, its rung unread: an urgent with `layer: canvas` co-closes
+        # too.  # Decision 16.09. 19
+        if layer_of(view) == "canvas":
+            for o, w in views.items():
+                if o != oid and layer_of(w) == "modal" and w["curator"].get("level") == 2:
+                    w["curator"]["dismissed_at"] = now
+                    w["curator"]["led_until"] = 0
+                    state["pass"]["co_closed"].append(o)
+
+    elif kind == "hold":
+        chat = sorted(o for o, w in views.items() if w.get("topic") == "chat" and not w.get("withdrawn"))
+        if not chat:
+            state["pass"]["refused"].append(("hold", "absorbed", "no chat view"))  # § 5.4
+            return state
+        # § 8.5: exactly one window carries `topic: chat`; should there be two, the present
+        # one (a dupe is not present, § 4.12), then the smaller id.
+        oid = ([o for o in chat if views[o]["curator"].get("present")] or chat)[0]
+        touched[oid] = "e"
+        _finger_touch(views[oid], now, settings)       # § 5.4: a hold never puts away
+    return state
+
+
+def _finger_touch(view, now, settings):
+    """§ 4.9: a tap (d) and a hold (e) set `since = now`, `dismissed_at = 0`, clear the
+    verdict for that window, and set `led_until = since + linger` (the linger of § 4.15).
+    `led_until` is what tells a finger touch from an app touch in every later pass; nothing
+    else is remembered: `since`, `dismissed_at` and `led_until` are the whole statement
+    (Decision 16.09.)."""
+    c = view["curator"]
+    c["since"] = now
+    c["dismissed_at"] = 0
+    view["verdict"] = {"judged_relevance": None, "judged_hidden": None}
+    c["verdict_cleared"] = True                        # the whole verdict, weight included  # Decision 18.09. 27
+    c["led_until"] = now + linger_of(view, settings)
+
+
+def _app_touch(view, now, clears_verdict=False):
+    """§ 4.8: a touch sets `since = now` and restarts the decay; § 4.9: an app touch (a, b,
+    c, f) writes nothing else — never `led_until`, never `dismissed_at`. The verdict: the
+    sources (b) and (c) clear it for that window, the sources (a) and (f) do not
+    (Decision 18.09.). The app has just changed the window, and the situation is judged anew
+    at every real event (§ 1.3); until the judge speaks again the app's own `relevance`
+    counts, as it does after a tap (§ 4.9). A window of source (a) carries no verdict yet;
+    the topic touch (f) reaches a window the app did not write, and the judge may have hidden
+    it on purpose."""
+    view["curator"]["since"] = now
+    if clears_verdict:
+        # The woken window would otherwise stay closed under its old verdict, because
+        # § 4.14 puts `judged_relevance` over `relevance` and the judge needs one to two
+        # runs to speak again.  # Decision 18.09. 26
+        view["verdict"] = {"judged_relevance": None, "judged_hidden": None}
+        # And the context weight is that same standing judgement: cleared by halves, the
+        # window stayed shut at `relevance 0.8 × weights.ambient 0.3 = 0.24 < bar 0.3`
+        # (measured, run M10-h3b-berlin).  # Decision 18.09. 27
+        view["curator"]["verdict_cleared"] = True
+
+
+def step4_presence(state, now):
+    """§ 4.11: present = the view stands in the store, is not `topic_dupe`, and meets one of:
+    pinned, `decay > 0`, `relevant_until` in the future. Present means: its tile stands in
+    the screen state (whether an output draws it, `dock` says); not present means no window,
+    no tile, anywhere (Brief § 6, § 7). Presence ends only by decay (`decay = 0`, not pinned,
+    `relevant_until` passed or unset), by `ttl_ms`, by `topic_dupe`, or by the app
+    withdrawing the view; never by a verdict (Leitlinie; Ruling 14.09.). Decay takes the
+    app's presence, not its view: the view stands in the store until the app withdraws it
+    or `ttl_ms` runs out. A standing view that is not present carries no rung, has no tile,
+    is not shown to the judge; "leaving the state" (§ 4.12, § 4.35) means losing presence
+    (Decision 16.09.).
+    § 4.12: a fresh window of another app on the topic of a present window: the standing
+    window receives the touch (f) and, for § 4.13, the fresh window's `turn_id` counts for
+    it; the fresh window receives `topic_dupe` — neither open nor present, no window, no
+    tile, no rung, not computed — until the standing window loses its presence; windows of
+    the same owner are never compared; the judge does not lift it (Ruling 13.09.)."""
+    views = state["views"]
+    settings = state["settings"]
+    touched = state["pass"]["touched"]
+    new = set(state["pass"]["new"])
+
+    # Views that finished their leaving pass (§ 4.34/4.35) are gone: withdrawn or expired
+    # ones leave the store, decayed ones stand in it without presence.
+    for oid in list(views):
+        v = views[oid]
+        if v["curator"].get("age") == "leaving" and (v.get("withdrawn") or _ttl_expired(v, now)):
+            del views[oid]
+    # A withdrawal or an expired `ttl_ms` of a view that was not present: gone at once, no
+    # leaving pass — the store holds it only until the app withdraws it or `ttl_ms` runs
+    # out (§ 4.11), and its seat goes with it (§ 4.29).
+    for oid in list(views):
+        v = views[oid]
+        if (v.get("withdrawn") or _ttl_expired(v, now)) and not v["curator"].get("present"):
+            del views[oid]
+
+    def standing(oid):
+        v = views[oid]
+        return (not v.get("withdrawn") and not _ttl_expired(v, now)
+                and not v["curator"].get("topic_dupe") and _meets_presence(v, now, settings))
+
+    # § 4.12 — the topic check for the fresh windows of this pass. "A standing window"
+    # here is a present one: a decayed view has no window to duplicate.  # Decision 16.09. 12
+    for oid in [o for o in new if o in views]:
+        v = views[oid]
+        topic = v.get("topic")
+        if not topic:
+            continue
+        rivals = [o for o, w in views.items()
+                  if o != oid and o not in new and w.get("owner") != v.get("owner")
+                  and w.get("topic") == topic and standing(o)]
+        if not rivals:
+            continue
+        v["curator"]["topic_dupe"] = True
+        for o in rivals:
+            touched[o] = "f"
+            _app_touch(views[o], now)
+            if v.get("turn_id"):
+                state["pass"]["topic_turn_ids"][o] = v["turn_id"]
+    # `topic_dupe` falls when the standing window loses its presence.
+    for oid, v in views.items():
+        if v["curator"].get("topic_dupe"):
+            still = [o for o, w in views.items()
+                     if o != oid and w.get("owner") != v.get("owner")
+                     and w.get("topic") == v.get("topic") and standing(o)]
+            if not still:
+                v["curator"]["topic_dupe"] = False
+
+    # Presence.
+    for oid, v in views.items():
+        c = v["curator"]
+        c["was_present"] = c.get("present", False)
+        c["present"] = standing(oid)
+        if not c["present"]:
+            c["rung"] = None
+            c["level"] = 0
+            c["open"] = False
+            c["front"] = False
+    return state
+
+
+def linger_of(view, settings):
+    """§ 4.15: linger = the app's `linger`, capped at `linger_ms + fade_ms`; without
+    `linger` (missing or 0, § 3.3), the screen's `linger_ms` (defaults § 3; Decision 16.09.).
+    § 7.5: a request with a cap; the app does not learn whether it was capped."""
+    said = view.get("linger")
+    if isinstance(said, (int, float)) and said > 0:
+        return int(min(said, settings["linger_ms"] + settings["fade_ms"]))
+    return settings["linger_ms"]
+
+
+def decay_of(view, now, settings):
+    """§ 4.15: `decay` is 1 during the linger since `since`, then falls linearly to 0 within
+    `fade_ms`: `1 − (now − since − linger) / fade_ms`, clamped to [0, 1] (Decision 16.09.).
+    Pinned: the presence stays — the tile stands; for score and rank the decay runs as for
+    any window (R-24-3)."""
+    since = view["curator"].get("since")
+    if since is None:
+        return 0.0
+    past = now - since - linger_of(view, settings)
+    if past <= 0:
+        return 1.0
+    return max(0.0, min(1.0, 1.0 - past / float(settings["fade_ms"])))
+
+
+def _meets_presence(view, now, settings):
+    """§ 4.11: pinned, or `decay > 0`, or `relevant_until` in the future."""
+    until = view.get("relevant_until")
+    return (view.get("pinned") is True or decay_of(view, now, settings) > 0.0
+            or (isinstance(until, (int, float)) and until > now))
+
+
+def _ttl_expired(view, now):
+    ttl = view.get("ttl_ms") or 0
+    return ttl > 0 and view.get("written_at") is not None and view["written_at"] + ttl <= now
+
+
+def step5_chat_closes(state, now):
+    """§ 4.13: if a canvas window carries the `turn_id` of the last turn the chat app has
+    seen (§ 8.8), the curator sets at the chat window `dismissed_at = now`, `led_until = 0`
+    — in every pass in which that canvas window receives a touch (fresh, own prop change,
+    topic touch), the chat app writes that `turn_id`, or the chat receives a touch from an
+    app source (a–c, f). A tap on the chat tile or a hold (d, e) is no trigger: it opens the
+    chat by § 5.1 and § 5.4 also while such a canvas window is present, until the next
+    trigger closes it again. Runs after the touches and before the score: the chat scores 0
+    in that same pass, so the chat app's answer touch (§ 8.8) does not lift the put-away,
+    whichever pass it arrives in. Only while such a canvas window is present (§ 4.11); once
+    it is no longer present, § 5.2 applies again (R-23-2; the mechanics through `turn_id`,
+    "present", `led_until` and the order: Decision 16.09.)."""
+    views = state["views"]
+    chat = _chat_oid(views)
+    state["chat"]["last_turn_id"] = views[chat].get("turn_id") if chat else None
+    if chat is None:
+        return state
+    tid = state["chat"]["last_turn_id"]
+    if not tid:
+        return state
+    touched = state["pass"]["touched"]
+    topic_tids = state["pass"]["topic_turn_ids"]
+    carriers = [o for o, w in views.items()
+                if o != chat and layer_of(w) == "canvas" and w["curator"].get("present")
+                and (w.get("turn_id") == tid or topic_tids.get(o) == tid)]
+    if not carriers:
+        return state
+    # Every app source counts for the carrier, `touched` (c) included: the main clause
+    # says "receives a touch" and § 8.6 says "the next app touch"; the parenthetical of
+    # § 4.13 lists only a, b, f.  # Decision 16.09. 11
+    # "the chat app writes that turn_id": any write of the key in this pass, the same
+    # value included.  # Decision 16.09. 13
+    trigger = (any(touched.get(o) in APP_SOURCES for o in carriers)
+               or state["pass"]["chat_wrote_turn_id"]
+               or touched.get(chat) in APP_SOURCES)
+    if trigger:
+        views[chat]["curator"]["dismissed_at"] = now
+        views[chat]["curator"]["led_until"] = 0
+        state["pass"]["put_away"].append(chat)
+    return state
+
+
+def _chat_oid(views):
+    for oid, v in views.items():
+        if v.get("topic") == "chat" and not v.get("withdrawn"):
+            return oid
+    return None
+
+
+def step6_score(state, now):
+    """§ 4.14: score = `w × relevance × decay` with the zero rules; a `topic_dupe` window is
+    not computed. § 4.15: decay and linger (see `decay_of`, `linger_of`). § 4.16: the bar is
+    `bar` as the judge wrote it; while no verdict stands, `focus_default`, with and without
+    judge; without a judge (`judge: off`: the hive has no judge cell) every weight is 0.5
+    and the relevance chain of `relevance_of` runs without the verdict (Decision 16.09.)."""
+    settings = state["settings"]
+    verdict = state["judge"].get("verdict")
+    if verdict is not None and verdict.get("bar") is not None:
+        state["bar"] = float(verdict["bar"])
+    else:
+        state["bar"] = float(settings["focus_default"])
+    if settings.get("judge") != "on":
+        state["weights"] = {}
+    for oid, v in state["views"].items():
+        c = v["curator"]
+        if not in_state(v):
+            c["score"] = 0.0
+            c["decay"] = decay_of(v, now, settings)
+            continue
+        c["decay"] = decay_of(v, now, settings)
+        if zero_rule(v):
+            c["score"] = 0.0
+        else:
+            c["score"] = round(weight_of(v, state["weights"]) * relevance_of(v, now) * c["decay"], 6)
+    return state
+
+
+def weight_of(view, weights):
+    """§ 4.14: `w = weights[context]`, 0.5 for an unnamed context, unraised. § 4.16 per
+    window: a window whose verdict a touch cleared (`verdict_cleared`) is weighted 0.5 as
+    well, until the next judge run. `weights` is the same standing judgement as
+    `judged_relevance` (§ 4.5) and was written for the situation the touch ended; clearing
+    one half and keeping the other would judge the new situation with the old weight
+    (Decision 18.09. 27). The bar is the screen's and is not touched (§ 4.16)."""
+    if view["curator"].get("verdict_cleared"):
+        return DEFAULT_WEIGHT                          # Decision 18.09. 27
+    ctx = view.get("context")
+    if ctx is None or ctx not in weights:
+        return DEFAULT_WEIGHT
+    return float(weights[ctx])
+
+
+def relevance_of(view, now):
+    """§ 4.14: `judged_relevance` while a verdict stands, else the hint `relevance`, else the
+    default of `class`, else 0.5; after `relevant_until` at most 0.2."""
+    judged = view["verdict"].get("judged_relevance")
+    if judged is not None:
+        r = float(judged)
+    elif view.get("relevance") is not None:
+        r = float(view["relevance"])
+    elif view.get("class") in CLASS_RELEVANCE:
+        r = CLASS_RELEVANCE[view["class"]]
+    else:
+        r = DEFAULT_RELEVANCE
+    until = view.get("relevant_until")
+    if isinstance(until, (int, float)) and now >= until:
+        r = min(r, AFTER_UNTIL_CAP)
+    return r
+
+
+def put_away(view):
+    """§ 4.14 zero rule: put away = `since ≤ dismissed_at` (with a put-away on record)."""
+    c = view["curator"]
+    at = c.get("dismissed_at") or 0
+    return at > 0 and (c.get("since") or 0) <= at
+
+
+def zero_rule(view):
+    """§ 4.14: put away → 0; `state: hidden` or `judged_hidden` → 0."""
+    return (put_away(view) or view.get("state") == "hidden"
+            or view["verdict"].get("judged_hidden") is True)
+
+
+def step7_rungs(state, now):
+    """§ 4.17: each window declares its ladder (`layer_of`); § 4.18 takes the urgents out of
+    both ladders first, then per ladder § 4.19–4.22.
+    § 4.18: `state: urgent` → rung `urgent` whatever the score and whatever zero rule
+    applies (Decision 16.09.). The front urgent is, among the urgents not put away, the
+    highest score, tie younger `since`, then smaller id (R-23-2); a tapped urgent (§ 5.1)
+    is front as long as `led_until > now` and no other urgent not put away carries a
+    younger `since` — a younger touch on another urgent takes its precedence, after that
+    the choice by score holds again (Decision 16.09.). Only the front urgent is open; every
+    other urgent rings in its tile: rung `urgent`, level 0. A put-away urgent keeps rung
+    `urgent`, is not front and keeps ringing in its tile; a window that becomes urgent after
+    its put-away opens through the touch the app writes together with `state: urgent`
+    (§ 4.8 c; the timer does, § 9.1): the finger puts away what it sees, not what comes
+    after; `state` alone is no touch and lifts no put-away — a put-away urgent whose
+    ringing ends stays put away (Decision 16.09.). An urgent competes on no ladder: while a
+    window carries rung `urgent` its `layer` is not read for the ladders — a front urgent
+    with `layer: modal` stands on level 3 and is no modal for § 4.21 and § 5.3; the one
+    open modal may stand on level 2 beside it (Decision 16.09.). The tapped side of § 5.3
+    does read the `layer`: an urgent with `layer: canvas` is a canvas app there (step 3,
+    Decision 16.09. 19).
+    § 4.19: while `led_until > now` the finger holds the window above the score: it leads
+    (`focus`) as long as no other window of the same ladder carries a younger `since`; a
+    younger touch of any source ends that lead — then § 4.20 chooses by score among all
+    windows of the ladder, the held one included (with the highest score ≥ bar it stays
+    `focus`) — and when the younger touch is a tap or a hold, that window leads; a held
+    window that does not lead stays above the score until `led_until`: canvas `relevant`,
+    modal `ambient` (at most one modal is open, § 4.21); after `led_until`, § 4.20
+    (R-24-1; Decision 16.09.).
+    § 4.20: focus = among the non-urgent windows with score ≥ bar and > 0, not `fresh` (and
+    not `leaving`, step 12), the highest score, tie younger `since`, then smaller id
+    (Decision 16.09.); only while nobody leads by § 4.19.
+    § 4.21: every further canvas window with score ≥ bar and > 0 is `relevant`; on the modal
+    ladder there is no `relevant`: at most one window is open (level 2), every further modal
+    `ambient`; an urgent is on no ladder.
+    § 4.22: `ambient` and `hidden` both mean "not open, tile only". `hidden` = a zero rule of
+    § 4.14 applies; `ambient` = no zero rule, score below the bar or 0 — also 0 by decay —
+    or a second modal. A score of 0 is never open and never `focus`, even at bar 0, unless
+    the finger holds the window by § 4.19 (Decision 16.09.).
+    § 4.23: a modal changes the rung of no canvas window; there is no stack — when the modal
+    goes, there is nothing to restore (R-23-2)."""
+    views = state["views"]
+    bar = state["bar"]
+    live = [o for o, v in views.items() if in_state(v)]
+    for o in live:
+        views[o]["curator"]["front"] = False
+
+    # § 4.18 — urgents.
+    urgents = [o for o in live if views[o].get("state") == "urgent"]
+    for o in urgents:
+        views[o]["curator"]["rung"] = "urgent"
+    front = None
+    cands = [o for o in urgents if not put_away(views[o])]
+    if cands:
+        youngest = max(views[o]["curator"]["since"] or 0 for o in cands)
+        led = [o for o in cands if (views[o]["curator"]["led_until"] or 0) > now
+               and (views[o]["curator"]["since"] or 0) == youngest]
+        if led:
+            front = sorted(led)[0]                     # two led at the same ms: smaller id  # Decision 16.09. 10
+        else:
+            front = _by_score(views, cands)[0]
+    if front is not None:
+        views[front]["curator"]["front"] = True
+
+    # § 4.19–4.22 — per ladder.
+    for ladder in LADDERS:
+        members = [o for o in live if o not in urgents and layer_of(views[o]) == ladder]
+        held = [o for o in members if (views[o]["curator"]["led_until"] or 0) > now]
+        # A younger app touch ends the finger's lead only; then § 4.20 chooses by score
+        # among all windows of the ladder, the held one included (the parenthetical of
+        # § 4.19, not "takes the lead" read as "becomes focus").  # Decision 16.09. 16
+        leader = None
+        if held:
+            youngest = max(views[o]["curator"]["since"] or 0 for o in members)
+            leading = [o for o in held if (views[o]["curator"]["since"] or 0) == youngest]
+            if leading:
+                leader = sorted(leading)[0]            # § 4.19; equal `since`: smaller id  # Decision 16.09. 10
+        if leader is None:
+            pool = [o for o in members
+                    if views[o]["curator"]["score"] >= bar and views[o]["curator"]["score"] > 0
+                    and views[o]["curator"]["age"] not in ("fresh", "leaving")]
+            if pool:
+                leader = _by_score(views, pool)[0]     # § 4.20
+        for o in members:
+            v = views[o]
+            c = v["curator"]
+            if o == leader:
+                c["rung"] = "focus"
+            elif o in held:
+                c["rung"] = "relevant" if ladder == "canvas" else "ambient"   # § 4.19
+            elif zero_rule(v):
+                c["rung"] = "hidden"                   # § 4.22
+            elif ladder == "canvas" and c["score"] >= bar and c["score"] > 0:
+                c["rung"] = "relevant"                 # § 4.21
+            else:
+                c["rung"] = "ambient"                  # § 4.21 second modal / § 4.22
+    return state
+
+
+def layer_of(view):
+    """§ 4.17: `layer: canvas` (default) or `layer: modal`."""
+    return "modal" if view.get("layer") == "modal" else "canvas"
+
+
+def _by_score(views, oids):
+    """§ 4.18/4.20 tiebreak: highest score, then the younger `since`, then the smaller id."""
+    return sorted(oids, key=lambda o: (-views[o]["curator"]["score"],
+                                       -(views[o]["curator"]["since"] or 0), o))
+
+
+def step8_level(state):
+    """§ 4.24: level = f(ladder, rung): the front urgent → 3; `modal` ∧ `focus` → 2;
+    `canvas` ∧ (`focus` ∨ `relevant`) → 1; else 0. Systemwide, one value per window. Open =
+    a window on level 1, 2 or 3 — rung `relevant` or `focus`, or the front urgent — and is
+    drawn large on every output, in addition to its tile (Brief § 7; R-24-2). § 4.25 (blur,
+    the OS level) is rendering and has no value in the state (§ 6)."""
+    for oid, v in state["views"].items():
+        c = v["curator"]
+        if not in_state(v):
+            c["level"], c["open"] = 0, False
+            continue
+        rung = c["rung"]
+        if c.get("front"):
+            level = 3
+        elif layer_of(v) == "modal" and rung == "focus":
+            level = 2
+        elif layer_of(v) == "canvas" and rung in ("focus", "relevant"):
+            level = 1
+        else:
+            level = 0
+        c["level"] = level
+        c["open"] = level > 0
+    return state
+
+
+def step9_dock(state, now):
+    """§ 4.26: the dock is a column filled from the bottom. § 4.27: the rank per tile
+    (`rank_of`); tie: the younger `since` stands higher, then the smaller id. § 4.28: from
+    the bottom: seat tiles by `seat_ord` ascending (the clock's 0 at the very bottom, the
+    weather's 10 above it), a seat without `seat_ord` at 0 (Decision 16.09. 22), equal
+    `seat_ord`: the smaller id lower; above them the other tiles by rank, the highest rank
+    on top (Brief § 5). § 4.29: a seat guarantees nothing; when its tile is missing, its place
+    stays visibly empty — empty space, no placeholder object; no seat tile moves into the
+    gap, no ranked tile slides into a seat (R-23-3); a seat is known as long as the view
+    stands in the store, also when the app is not present or its tile was cut; when the app
+    withdraws the view or its `ttl_ms` runs out, the seat is gone too (step 4;
+    Decision 16.09.). § 4.30 (the cut per output) is `dock(state, screen)`; this step writes the
+    systemwide order before any cut. § 4.26 (right edge, mark at the bottom, one tile
+    size), § 4.31 (tile content) and § 4.32 (opacity) are rendering (§ 6)."""
+    views = state["views"]
+    settings = state["settings"]
+    entries = []
+    # Seats: known while the view stands in the store (also not present, also cut).
+    seats = [(o, v) for o, v in views.items() if v.get("seat") == "bottom" and not v.get("withdrawn")]
+    seats.sort(key=lambda ov: (ov[1].get("seat_ord") or 0, ov[0]))   # missing = 0; equal: smaller id lower  # Decision 16.09. 22
+    for o, v in seats:
+        if in_state(v):
+            v["curator"]["rank"] = rank_of(v, state["weights"], now, settings)
+            entries.append({"oid": o, "seat": True, "seat_ord": v.get("seat_ord") or 0,
+                            "rank": v["curator"]["rank"], "pinned": v.get("pinned") is True,
+                            "urgent": v["curator"]["rung"] == "urgent", "empty": False})
+        else:
+            v["curator"]["rank"] = 0.0
+            entries.append({"oid": o, "seat": True, "seat_ord": v.get("seat_ord") or 0,
+                            "rank": 0.0, "pinned": False, "urgent": False, "empty": True})
+    ranked = [(o, v) for o, v in views.items() if in_state(v) and v.get("seat") != "bottom"]
+    for o, v in ranked:
+        v["curator"]["rank"] = rank_of(v, state["weights"], now, settings)
+    top_down = sorted(ranked, key=lambda ov: (-ov[1]["curator"]["rank"],
+                                              -(ov[1]["curator"]["since"] or 0), ov[0]))
+    for o, v in reversed(top_down):
+        entries.append({"oid": o, "seat": False, "seat_ord": None, "rank": v["curator"]["rank"],
+                        "pinned": v.get("pinned") is True,
+                        "urgent": v["curator"]["rung"] == "urgent", "empty": False})
+    for o, v in views.items():
+        if not in_state(v) and v.get("seat") != "bottom":
+            v["curator"]["rank"] = 0.0
+    state["dock_order"] = entries
+    return state
+
+
+def rank_of(view, weights, now, settings):
+    """§ 4.27: rank = `max(w, 0.05) × relevance × decay` with `w`, `relevance` (including
+    the verdict and the cap after `relevant_until`) and `decay` as in § 4.14–4.15, but
+    without the zero rules of the score; rung `urgent` → 1. Weights below 0.05 are raised
+    only here, so that the dock stays readable."""
+    if view["curator"].get("rung") == "urgent":
+        return 1.0
+    w = max(weight_of(view, weights), RANK_FLOOR)
+    # The formula, literally: a window present only by `relevant_until` with decay 0 has
+    # rank 0 (compose.py reads RANK_FLOOR there; the description does not).  # Decision 16.09. 14
+    return round(w * relevance_of(view, now) * decay_of(view, now, settings), 6)
+
+
+def dock(state, screen):
+    """§ 4.30: `dock_max` per output is the maximum number of drawn tiles, without exception
+    (Decision 16.09.). Cut order: the other tiles by rank (lowest first), then urgent tiles (lowest rank
+    first), then pinned tiles (lowest rank first), then seat tiles (highest `seat_ord`
+    first); a tile falls in the latest stage that applies to it; at equal rank, what stands
+    lower by § 4.28 falls (Decision 16.09.). What does not fit is missing on this output
+    (R-23-6): the app stays present, its window stays open if it is open (R-24-2); on every
+    other output with a tile it can be put away (§ 6). A cut seat tile leaves an empty seat
+    (§ 4.29); an empty seat does not count against `dock_max`: drawn tiles are counted. The
+    cut does not change the order: what remains stands by § 4.28. Returns the tiles
+    bottom → top; an empty seat is `None`."""
+    prof = state["screens"][screen]
+    limit = prof["dock_max"]
+    order = state["dock_order"]
+    drawn = [e for e in order if not e["empty"]]
+    n = len(drawn)
+    falling = set()
+
+    def stage(e):
+        return 4 if e["seat"] else 3 if e["pinned"] else 2 if e["urgent"] else 1
+
+    for st in (1, 2, 3, 4):
+        if n <= limit:
+            break
+        pool = [e for e in drawn if stage(e) == st]
+        if st == 4:
+            pool.sort(key=lambda e: (-e["seat_ord"], -order.index(e)))
+        else:
+            pool.sort(key=lambda e: (e["rank"], order.index(e)))
+        for e in pool:
+            if n <= limit:
+                break
+            falling.add(e["oid"])
+            n -= 1
+    out = []
+    for e in order:
+        if e["empty"] or (e["oid"] in falling and e["seat"]):
+            out.append(None)
+        elif e["oid"] in falling:
+            continue
+        else:
+            out.append(e["oid"])
+    return out
+
+
+def step10_unseen(state, now):
+    """§ 4.33: `unseen`, systemwide and independent of the dock cut, counts the present apps
+    whose window is not open and which either carry rung `urgent` or whose linger since the
+    last touch still runs. Put-away windows do not count, a put-away urgent neither. No
+    "seen" memory; the count falls by decay, opening or put-away (R-23-4). A leaving window
+    is not present and does not count. Whether an output draws the dot: § 6.8."""
+    n = 0
+    for oid, v in state["views"].items():
+        c = v["curator"]
+        if not c.get("present") or c.get("open") or put_away(v):
+            continue
+        since = c.get("since") or 0
+        if c["rung"] == "urgent" or now - since < linger_of(v, state["settings"]):
+            n += 1
+    state["unseen"] = n
+    return state
+
+
+def step11_strokes(state, now):
+    """§ 4.34: the curator orders a stroke for the `ttl_ms` moment of every standing view and
+    for every decay transition of every window in the state (end of the linger, end of
+    `fade_ms`, `relevant_until`); no polling. After a pass in which a window carries `fresh`
+    or `leaving`, also one second later: that stroke's pass makes the fresh window
+    `settled`, and from then on it competes by § 4.20; the leaving window is gone after it
+    (step 12; Decision 16.09.)."""
+    settings = state["settings"]
+    due = set()
+    for oid, v in state["views"].items():
+        c = v["curator"]
+        ttl = v.get("ttl_ms") or 0
+        if ttl > 0 and not v.get("withdrawn"):
+            due.add(v["written_at"] + ttl)
+        if c.get("age") in ("fresh", "leaving"):
+            due.add(now + 1000)
+        if not in_state(v):
+            continue
+        since = c.get("since")
+        if since is not None:
+            lg = linger_of(v, settings)
+            due.add(since + lg)
+            due.add(since + lg + settings["fade_ms"])
+        until = v.get("relevant_until")
+        if isinstance(until, (int, float)):
+            due.add(int(until))
+    state["strokes"] = sorted(t for t in due if t > now)
+    return state
+
+
+def step12_age(state, now):
+    """§ 4.35: `age` is `fresh` in the pass in which a window appears — enters the store —
+    and it takes no focus in that pass; `settled` afterwards; `leaving` in the last pass
+    before the window leaves the state (decay, `ttl_ms`, withdrawal), so that the sheet can
+    fade it out. Systemwide like every value. § 4.10: a standing view that was not present
+    and receives a touch becomes present again without appearing anew: it carries
+    `settled`, not `fresh` (Decision 16.09.). A leaving window stands in the state one last
+    pass: it is computed, takes no focus, and does not count for `unseen`.  # Decision 16.09. 9"""
+    # `settled` from the next pass on, whatever triggered it (§ 4.35 literal); the stroke
+    # of § 4.34 only guarantees that such a pass comes within a second.  # Decision 16.09. 15
+    new = set(state["pass"]["new"])
+    for oid, v in state["views"].items():
+        c = v["curator"]
+        if c["present"]:
+            c["age"] = "fresh" if oid in new else "settled"
+        elif c.get("was_present"):
+            c["age"] = "leaving"
+        else:
+            c["age"] = None
+    return state
+
+
+def in_state(view):
+    """A window the pass computes: present, or in its leaving pass (§ 4.35)."""
+    return view["curator"].get("present") or view["curator"].get("age") == "leaving"
+
+
+def empty_state(settings=None, screens=None):
+    """A screen state with no views: the settings of § 3 with their defaults, the profiles raw.
+
+    The profiles pass the door (§ 4.7) in every pass, so a raw profile may be given here.
+    """
+    s = dict(DEFAULT_SETTINGS)
+    s.update(settings or {})
+    return {"settings": s, "screens": copy.deepcopy(screens or {}), "views": {},
+            "bar": s["focus_default"], "weights": {}, "chat": {"last_turn_id": None},
+            "unseen": 0, "strokes": [], "dock_order": [],
+            "judge": {"last_call": None, "called": False, "verdict": None},
+            "pass": {}}
+
+
+def run_pass(state, event, now):
+    """One pass (§ 4 head): steps 2–11 in their order; step 1 says when a pass runs and, at
+    the end, whether the judge is called; step 12 names the values of `age` the steps read,
+    so it is computed right after presence (step 4) and before anything reads it.
+    Returns the new state; the input is not mutated."""
+    s = copy.deepcopy(state)
+    s["pass"] = {"now": now, "event": event.get("kind"), "runs": False, "touched": {},
+                 "new": [], "refused": [], "errors": [], "chat_wrote_turn_id": False,
+                 "topic_turn_ids": {}, "put_away": [], "co_closed": []}
+    s = step1_triggers(s, event, now)
+    if not s["pass"]["runs"]:
+        return s
+    s = step2_door(s, event, now)
+    s = step3_touches(s, event, now)
+    s = step4_presence(s, now)
+    s = step12_age(s, now)
+    s = step5_chat_closes(s, now)
+    s = step6_score(s, now)
+    s = step7_rungs(s, now)
+    s = step8_level(s)
+    s = step9_dock(s, now)
+    s = step10_unseen(s, now)
+    s = step11_strokes(s, now)
+    s = step1_judge_call(s, now)
+    return s
+
+
+def judge_sees(state, now=None):
+    """§ 4.4: per present window the owner, `context`, `class`, `topic`, `relevance` (the
+    hint), its own last verdict, the rung, `age`, the age since `since`, `pinned`, whether it
+    leads its ladder; on the state `bar` and `weights`; a glimpse of the text props (≤ 200
+    characters); the last turn and the last answer, which the curator reads from the lines
+    of the chat window (children, § 8.5): the newest turn and the newest answer among them,
+    none while no chat window stands — the only children the curator reads for the judge
+    (Decision 16.09.). Not a standing view that is not present (§ 4.11). No geometry: not
+    the rank, not `tile`, not the level, not `dock_max`, not `dismissed_at`, nothing per
+    output (R-23-6). What the Leitlinie asks beyond that (activity, interruption cost, the
+    member's preferences, § 1.3) is judge input as soon as it exists; it is never geometry."""
+    now = state["pass"].get("now") if now is None else now
+    windows = []
+    last_turn, last_answer = None, None
+    for oid in sorted(state["views"]):
+        v = state["views"][oid]
+        c = v["curator"]
+        if not c.get("present"):
+            continue
+        glimpse = " ".join(str(v.get(k) or "") for k in ("title", "kicker", "text")).strip()[:200]
+        windows.append({"id": oid, "owner": v.get("owner"), "context": v.get("context"),
+                        "class": v.get("class"), "topic": v.get("topic"),
+                        "relevance": v.get("relevance"),
+                        "verdict": dict(v["verdict"]), "rung": c["rung"], "age": c["age"],
+                        "age_ms": (now - (c["since"] or now)) if now is not None else None,
+                        "pinned": v.get("pinned") is True, "leads": c["rung"] == "focus",
+                        "text": glimpse})
+        if v.get("topic") == "chat":
+            lines = (v.get("children") or {}).get("lines") or []
+            for line in lines:
+                if line.get("kind") == "turn":
+                    last_turn = line.get("text")
+                elif line.get("kind") == "answer":
+                    last_answer = line.get("text")
+    return {"bar": state["bar"], "weights": dict(state["weights"]), "windows": windows,
+            "last_turn": last_turn, "last_answer": last_answer}
+
+
+def _view(state, oid):
+    return state["views"].get(oid)
+
+
+def rung(state, oid):
+    v = _view(state, oid)
+    return v["curator"]["rung"] if v else None
+
+
+def level(state, oid):
+    v = _view(state, oid)
+    return v["curator"]["level"] if v else None
+
+
+def open_windows(state):
+    return sorted(o for o, v in state["views"].items() if v["curator"].get("open"))
+
+
+def present(state):
+    return sorted(o for o, v in state["views"].items() if v["curator"].get("present"))
+
+
+def in_store(state):
+    return sorted(state["views"])
+
+
+def unseen(state):
+    return state["unseen"]
+
+
+def led_until(state, oid):
+    v = _view(state, oid)
+    return v["curator"]["led_until"] if v else None
+
+
+def dismissed_at(state, oid):
+    v = _view(state, oid)
+    return v["curator"]["dismissed_at"] if v else None
+
+
+def since(state, oid):
+    v = _view(state, oid)
+    return v["curator"]["since"] if v else None
+
+
+def score(state, oid):
+    v = _view(state, oid)
+    return round(v["curator"]["score"], 4) if v else None
+
+
+def weight(state, oid):
+    """The `w` of § 4.14 for one window: the judge's weight for its context, or the
+    default 0.5 when the context is unnamed or a touch cleared the verdict
+    (Decision 18.09. 27)."""
+    v = _view(state, oid)
+    return round(weight_of(v, state["weights"]), 4) if v else None
+
+
+def decay(state, oid):
+    v = _view(state, oid)
+    return round(v["curator"]["decay"], 4) if v else None
+
+
+def rank(state, oid):
+    v = _view(state, oid)
+    return round(v["curator"]["rank"], 4) if v else None
+
+
+def age(state, oid):
+    v = _view(state, oid)
+    return v["curator"]["age"] if v else None
+
+
+def topic_dupe(state, oid):
+    v = _view(state, oid)
+    return v["curator"]["topic_dupe"] if v else None
+
+
+def verdict(state, oid):
+    v = _view(state, oid)
+    return dict(v["verdict"]) if v else None
+
+
+def front_urgent(state):
+    for o, v in state["views"].items():
+        if v["curator"].get("front"):
+            return o
+    return None
+
+
+def bar(state):
+    return round(state["bar"], 4)
+
+
+def weights(state):
+    return dict(state["weights"])
+
+
+def strokes_ordered(state):
+    return list(state["strokes"])
+
+
+def judge_called(state):
+    return state["judge"]["called"]
+
+
+def refused(state):
+    return [list(r) for r in state["pass"].get("refused", [])]
+
+
+def errors(state):
+    return [list(e) for e in state["pass"].get("errors", [])]
+
+
+def touched(state):
+    return dict(state["pass"].get("touched", {}))
+
+
+def last_turn_id(state):
+    return state["chat"]["last_turn_id"]
+
+
+def canvas_order(state):
+    """§ 6.3: the open canvas windows on every output: the leading one first, then by score
+    descending, then the younger `since`, then the id."""
+    views = state["views"]
+    opens = [o for o, v in views.items() if v["curator"].get("open") and layer_of(v) == "canvas"
+             and v["curator"]["rung"] != "urgent"]
+    return sorted(opens, key=lambda o: (views[o]["curator"]["rung"] != "focus",
+                                        -views[o]["curator"]["score"],
+                                        -(views[o]["curator"]["since"] or 0), o))
+
+
+def inputs(state, screen):
+    """§ 4.7 / § 6.4: the profile's `inputs` after the door."""
+    return list(state["screens"][screen]["inputs"])
+
+
+def tap_bound(state, screen):
+    """§ 6.4: without `pointer` and without `touch` no tap binding, no binding of the mark."""
+    ins = inputs(state, screen)
+    return "pointer" in ins or "touch" in ins
+
+
+def hold_bound(state, screen):
+    """§ 6.4: a hold exists only with `audio` on a bound mark."""
+    return tap_bound(state, screen) and "audio" in inputs(state, screen)
+
+
+def input_line(state, screen):
+    """§ 6.4 / § 7.3: the input line appears only with `keyboard` or `touch`."""
+    ins = inputs(state, screen)
+    return "keyboard" in ins or "touch" in ins
+
+
+def judge_window_keys(state):
+    """The keys of one window entry of § 4.4, to prove what the judge does not see."""
+    seen = judge_sees(state)
+    return sorted(seen["windows"][0].keys()) if seen["windows"] else []
+
+
+def judge_window_ids(state):
+    return [w["id"] for w in judge_sees(state)["windows"]]
+
+
+def last_turn(state):
+    return judge_sees(state)["last_turn"]
+
+
+def last_answer(state):
+    return judge_sees(state)["last_answer"]
+
+
+def pass_ran(state):
+    """§ 4.1: whether the event was a trigger of the closed list."""
+    return bool(state["pass"].get("runs"))
+
+
+def put_away_list(state):
+    """The windows put away in this pass (§ 5.2, § 5.3, § 4.13)."""
+    return list(state["pass"].get("put_away", []))
+
+
+def co_closed(state):
+    """The modals the modal-closing rule (§ 5.3) put away in this pass."""
+    return list(state["pass"].get("co_closed", []))
+
+
+def dock_default(state, screen):
+    """§ 3 / § 6.1: whether the output ships the dock open (`shown`) or closed (`hidden`)."""
+    return state["screens"][screen]["dock_default"]
+
+
+def dock_max(state, screen):
+    return state["screens"][screen]["dock_max"]
+# --- The pass: display-hive.md § 4, model/pass.py verbatim (end) ---
 
 # ---------------------------------------------------------------------------
 # The display's own vocabulary
@@ -285,14 +1527,31 @@ ERRORS = (
 #
 # Since 2.3.0 there is no narrow column. `aside` is still accepted -- ambient
 # and older senders say it, and refusing a word for nothing is a broken
-# contract -- but it is drawn as canvas: the region box generates nothing
-# (`display: contents`) and its windows stand in the one column with
-# everything else (OR-D3). Where the dock and the OS mark sit is the sheet's
-# business now, because both are derived from the profile's scale.
+# contract -- but it is drawn as canvas (OR-D3). WHERE the regions draw is the
+# sheet's § 6.3 since 2.5.0, and it is there alone: this constant used to say
+# `display: contents` for every region while the sheet said `display: grid`
+# for the same one, and only the order inside the single `<style>` decided --
+# a second stylesheet or a reordered concatenation would have flipped the
+# layout without a word.
+#
+# What stays here is the BOX itself, because the box is a statement about this
+# screen rather than about a design language: a column as tall as the output
+# and no taller. The height is the load-bearing half of § 6.3: `overflow-y` on
+# the canvas is a promise a box can only keep when its own height is bounded,
+# and `body` (§ 5.9) is bounded, so this is the box that hands the bound on.
+# Two declarations, no `@supports`, like `body`: an engine without `dvh` keeps
+# the `vh` line. `border-box`, because the base sheet has no global reset and
+# the dock's gutter is padding on this very box -- with `content-box` the
+# column would be exactly that padding taller than the screen, which is how a
+# page that "never scrolls" starts scrolling. `align-items: stretch` and not
+# `center`, or the canvas would be a shrink-to-fit box and
+# `repeat(3, minmax(0, 1fr))` would divide a width nobody set (the windows
+# centre themselves, § 11).
 LAYOUT_RULES = (
-    ".display-columns { display: flex; flex-direction: column;"
-    " align-items: center; gap: var(--gap, 16px); }"
-    " .display-columns > [data-region] { display: contents; }"
+    ".display-columns { box-sizing: border-box; display: flex;"
+    " flex-direction: column; align-items: stretch;"
+    " block-size: 100vh; block-size: 100dvh;"
+    " gap: var(--gap, 16px); }"
 )
 
 # The design language of the screen, byte-identical to `display-dna.css`
@@ -305,13 +1564,23 @@ LAYOUT_RULES = (
 # marker, and the lock refuses both.
 KIT_CSS = r"""/* The display's design language -- meclaw display DNA v1 (kit 6).
  *
- * THIS FILE IS THE SOURCE. `compose/compose.py` carries a byte-identical copy
- * in its `KIT_CSS` constant and `compose/config.json` carries that file again
- * in `params.script_inline`; a drift lock compares all three
- * (`the_design_language_is_the_same_bytes_in_three_places`). The compose cell
- * writes the constant into the `display-shell` template, last in the shell's
- * one style block, so a screen needs nothing installed beside it and no hand
- * ever sends a sheet to a running tree.
+ * Source: `templates/display/compose/display-dna.css`, and there every rule is
+ * argued for. THIS COPY MAY BE ONE OF THE TWO THAT TRAVEL, which carry the
+ * rules and this comment and nothing else: `compose/compose.py` holds the sheet
+ * in its `KIT_CSS` constant and `compose/config.json` holds that file again in
+ * `params.script_inline`. `scripts/display_sync.py` writes both, and
+ * `scripts/display_sheet_strip.py` is the rule by which they lose the
+ * reasoning (OR-G0.1: about 47 kB off every page). A drift lock holds all
+ * three together through that same rule
+ * (`the_design_language_is_the_same_sheet_in_three_places`).
+ *
+ * So: a change is argued at the source, and the argument costs a screen
+ * nothing. If you are reading this anywhere else, the sentences that say WHY
+ * are in the file named above.
+ *
+ * The compose cell writes the constant into the `display-shell` template, last
+ * in the shell's one style block, so a screen needs nothing installed beside it
+ * and no hand ever sends a sheet to a running tree.
  *
  * It belongs to the TEMPLATE, not to the binary: a screen that should look
  * different costs a template edit, not a release.
@@ -324,10 +1593,6 @@ KIT_CSS = r"""/* The display's design language -- meclaw display DNA v1 (kit 6).
  * the DNA's values. The nine base components of the `web` template keep
  * working.
  *
- * Order: tokens, ground, material, type, windows (A), content (B), states,
- * the screen, the screen's own furniture, the scene, the dock, night, the
- * profile, fallbacks, motion, screen sizes.
- *
  * Rules the sheet obeys: glass only on the navigation layer, never glass on
  * glass, text never on the material (always on `.inner`). Templates write
  * classes and data attributes, never colours. No external request and no
@@ -337,17 +1602,9 @@ KIT_CSS = r"""/* The display's design language -- meclaw display DNA v1 (kit 6).
  * are the component language's own marker.
  */
 
-/* ── 1. Tokens ───────────────────────────────────────────────────────────
- * The names are /vision.css's, the values the DNA's. Overriding :root is the
- * whole light mode — no new vocabulary, so a component defined at runtime
- * still only knows the words the template shipped with. */
 :root {
   color-scheme: light;
 
-  /* Warm glass: the tint is creme, not neutral white, which over a creme
-   * ground would read as fog. Blur stays in the web corridor (8–20px);
-   * backdrop-filter is expensive and three glass surfaces per screen is the
-   * budget. */
   --glass-tint: rgba(255, 251, 246, 0.62);
   --glass-tint-thin: rgba(255, 251, 246, 0.42);
   --glass-tint-thick: rgba(255, 251, 246, 0.78);
@@ -357,43 +1614,22 @@ KIT_CSS = r"""/* The display's design language -- meclaw display DNA v1 (kit 6).
   --glass-focus: rgba(255, 251, 246, 0.8);
   --glass-opaque: #fffbf6;
 
-  /* `.inner` is the substrate's rule that text never sits on the material —
-   * a rule about classes, not a demand for a second surface. Without a fill
-   * and without an outline it stops being the inner frame it was in kit 1.
-   * --inner-fill-strong stays for the two things that really are a surface
-   * of their own: a notification and a media frame. */
   --inner-fill: transparent;
   --inner-fill-strong: rgba(255, 255, 255, 0.55);
 
-  /* Vibrancy: three alphas of ONE ink, not three greys, so the foreground
-   * still picks up what the glass lets through. Secondary is .82, not the
-   * dark sheet's .66. Measured off a render, on the brightest point of the
-   * ground: .66 gives 5.0:1, .78 gives 6.5:1, .82 gives 7.2:1 — and the
-   * contract wants >= 7:1 for body copy. On a plain .inner it measures 7.9:1.
-   * Tertiary is the label tier (kicker, footnote) and never body copy; it
-   * measures ~3.6:1, which is the DNA's own trade. */
   --fg-primary: rgba(43, 29, 25, 0.96);
   --fg-secondary: rgba(43, 29, 25, 0.82);
   --fg-tertiary: rgba(43, 29, 25, 0.55);
-  /* No hairlines. Rows are separated by the space they already have, a table
-   * head by a band. Both names stay, and every `border: 1px solid` below
-   * stays with them — a transparent border still occupies its pixel, so
-   * removing the line moves nothing. */
+
   --hairline: transparent;
   --hairline-strong: transparent;
 
-  /* One accent, two jobs: vermilion is a text/marker colour (only bold, only
-   * large), coral is a surface colour. Never two accents in one view. */
   --accent: #b93a25;
   --accent-soft: #e8664f;
   --accent-wash: rgba(232, 102, 79, 0.14);
-  /* Rung 2 of the ladder: the 1px coral glow that rides in --shadow-2. It is
-   * the faintest step, so it carries a little more than kit 1 gave it. */
+
   --accent-ring: rgba(232, 102, 79, 0.5);
 
-  /* Concentric geometry. The inner radius is derived, never re-typed:
-   * 22 − 8 = 14. visionOS windows measure ~32px; 22 is the DNA's correction
-   * ("a touch too round") and still reads as a window, not a pebble. */
   --r-window: 22px;
   --r-pad: 8px;
   --r-inner: calc(var(--r-window) - var(--r-pad));
@@ -406,21 +1642,12 @@ KIT_CSS = r"""/* The display's design language -- meclaw display DNA v1 (kit 6).
   --gap-s: 8px;
   --gap-l: 24px;
 
-  /* ONE edge. The specular top is the light falling on the near lip of the
-   * glass and it is the only line a window gets. The other two rim tokens
-   * keep their names and are emptied, so no rule below can grow a second
-   * border by accident. */
   --rim-top: inset 0 1.5px 0 rgba(255, 255, 255, 1);
-  --rim-edge: 0 0 transparent;
   --rim-bottom: 0 0 transparent;
-  /* The sheen stands in for refraction, which no browser can do: a fixed
-   * 135deg highlight, always top-left. Convention, not physics. */
+
   --sheen: linear-gradient(135deg, rgba(255, 255, 255, 0.55) 0%,
     rgba(255, 255, 255, 0.16) 26%, rgba(255, 255, 255, 0) 56%);
 
-  /* Shadow channels, Open-Props style: hue + strength instead of four
-   * hand-mixed rgba chains. A shadow on creme must not be grey, and the night
-   * switch is then two lines. */
   --shadow-hue: 18 31% 23%;
   --shadow-strength: 10%;
   --shadow-contact: 0 1px 2px hsl(var(--shadow-hue) / calc(var(--shadow-strength) * 1.4)),
@@ -433,19 +1660,14 @@ KIT_CSS = r"""/* The display's design language -- meclaw display DNA v1 (kit 6).
     0 44px 84px -26px hsl(var(--shadow-hue) / calc(var(--shadow-strength) * 5.5)),
     0 0 0 1px var(--accent-ring);
 
-  /* Grain: anti-banding for a large blurred gradient, not a texture. */
   --grain-opacity: 0.045;
   --grain: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2'/></filter><rect width='120' height='120' filter='url(%23n)'/></svg>");
 
-  /* The visionOS weight bump: body medium, titles semibold to bold — type
-   * over a translucent backdrop needs the stroke. Line height is a function
-   * of size (1.5 down to 1.1), never one global value. */
   --font-ui: Inter, "SF Pro Text", "SF Pro", system-ui, -apple-system,
     "Segoe UI", Roboto, sans-serif;
   --font-voice: Fraunces, "Iowan Old Style", Georgia, serif;
   --w-body: 500;
   --w-title: 600;
-  --w-strong: 700;
   --t-caption: 12px;
   --t-small: 14px;
   --t-body: 16px;
@@ -457,48 +1679,67 @@ KIT_CSS = r"""/* The display's design language -- meclaw display DNA v1 (kit 6).
   --leading-body: 1.5;
   --leading-title: 1.18;
 
-  /* cubic-bezier(.32,.72,0,1) is Apple's .default spring (response 0.55,
-   * damping 1.0) as a curve: it settles without overshoot. */
   --ease: cubic-bezier(0.32, 0.72, 0, 1);
   --t-hover: 150ms;
+
+  --t-dock: 140ms;
   --t-leave: 240ms;
   --t-enter: 360ms;
   --t-focus: 420ms;
 
-  /* The ground, plus the one number visionOS publishes: an ornament overlaps
-   * the window's bottom edge by 20pt. */
+  --hold-ms: 250ms;
+
   --ground: #f7efe6;
   --ground-2: #efe2d4;
   --bg-void: #f7efe6;
-  --ornament-overlap: 20px;
 
-  /* The screen's scale (D-21..D-24). `--scale` is written INLINE on the root
-   * out of the display profile -- a television three metres away is far, not
-   * small, and no pixel width says that. 1 when nothing says otherwise, so a
-   * page with no shell around it (the gallery) is unchanged. The four sizes
-   * the dock and the OS mark are made of derive from it, and so does the
-   * type, through `--type-scale`. Restated on `.display-columns` in § 12,
-   * where the inline value can reach them: a custom property that uses
-   * var() is substituted where it is DECLARED, so a declaration on :root
-   * would never see an override further down. */
   --scale: 1;
   --type-scale: 1;
   --tile: calc(5.25rem * var(--scale));
   --os: calc(3.25rem * var(--scale));
   --dock-pad: calc(0.75rem * var(--scale));
   --dock-gap: calc(0.5rem * var(--scale));
+
+  --tile-open-opacity: 0.88;
+
+  --mark-dim: 0.5;
+
+  --lead-min-phone: 48vh;
+  --lead-min-phone: 48dvh;
+  --sibling-max-phone: 40vh;
+  --sibling-max-phone: 40dvh;
+  --modal-max-phone: 72vh;
+  --modal-max-phone: 72dvh;
+
+  --rung-lift-scale: 1.02;
+  --rung-scale: 1;
+
+  --f-back-2: blur(4px);
+  --f-back-3: blur(10px);
+
+  --gutter: 28px;
+
+  --plane-canvas: 5;
+  --plane-modal: 20;
+  --plane-urgent: 30;
+  --plane-os: 40;
 }
 
-/* ── 2. Ground: creme with one light ─────────────────────────────────────
- * One light, drifting 2vw over 30s. It is why the glass has anything to
- * refract. 30s, not the 5s loop visionOS forbids: motion in the periphery is
- * an attention magnet. */
 html {
   background-color: var(--ground);
+
+  overscroll-behavior: none;
 }
 
 body {
+
   min-height: 100vh;
+  min-height: 100dvh;
+
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  overscroll-behavior: none;
   margin: 0;
   background-color: var(--ground);
   background-image:
@@ -523,7 +1764,6 @@ body {
   to { background-position: 2vw -1vw, -2vw 1vw, 0 0; }
 }
 
-/* Grain over the ground, under everything else. */
 body::after {
   content: "";
   position: fixed;
@@ -535,10 +1775,6 @@ body::after {
   mix-blend-mode: overlay;
 }
 
-/* ── 3. Material: the glass classes, re-tokenised ────────────────────────
- * /vision.css sets --glass-blur ON .glass--thin and .glass--thick, where a
- * :root override cannot reach it, so both are restated. The box-shadow is
- * restated to slot --rim-edge between the specular and the bottom edge. */
 .glass,
 .glass--thin,
 .glass--thick {
@@ -549,8 +1785,6 @@ body::after {
 .glass--thin { --glass-blur: 14px; }
 .glass--thick { --glass-blur: 22px; }
 
-/* The inner surface: the only place text may sit. No fill and no contour of
- * its own — a window is one surface. */
 .inner {
   border-radius: var(--r-inner);
   padding: var(--pad-inner);
@@ -567,7 +1801,6 @@ body::after {
   padding: 0;
 }
 
-/* Anything the base sheet paints with white alpha, repainted in ink. */
 .table th,
 .table td { border-bottom-color: var(--hairline); }
 .table th { color: var(--fg-tertiary); }
@@ -579,7 +1812,9 @@ body::after {
   box-shadow: var(--rim-top), var(--shadow-contact);
 }
 
-.button:hover { background-color: rgba(255, 255, 255, 0.78); }
+.display-columns:is([data-inputs~="pointer"], [data-inputs~="touch"]) .button:hover {
+  background-color: rgba(255, 255, 255, 0.78);
+}
 
 .input {
   color: var(--fg-primary);
@@ -596,9 +1831,6 @@ body::after {
 .button:focus-visible,
 .input:focus-visible { outline-color: var(--accent); }
 
-/* ── 4. Type ─────────────────────────────────────────────────────────────
- * Sans informs, serif speaks. The serif is the companion: once per screen,
- * one sentence, never a paragraph. */
 .title-1, .title-2, .title-3 {
   font-weight: var(--w-title);
   letter-spacing: -0.015em;
@@ -608,16 +1840,9 @@ body::after {
 .title-2 { font-size: var(--t-title-2); line-height: 1.2; }
 .title-3 { font-size: var(--t-title-3); line-height: 1.25; }
 
-.text { color: var(--fg-secondary); }
+.text,
 .text--secondary { color: var(--fg-secondary); }
 .text--tertiary { color: var(--fg-tertiary); }
-
-
-/* ── 5. Catalogue A — windows (navigation layer, the only glass) ─────────
- * A window is `glass` plus one child, `.inner`: text may not sit on the
- * material, so the fill IS the interior. That makes the concentric rule
- * exact — the window insets by --r-pad (8px), the fill curves by 22 − 8 —
- * and is why these windows drop the base sheet's 22px window padding. */
 
 .display-pane,
 .display-panel,
@@ -637,12 +1862,7 @@ body::after {
     background-color var(--t-focus) var(--ease);
 }
 
-/* The sheen sits behind the content, inside the window's own stacking
- * context, so it never touches text. */
-.display-pane::before,
-.display-panel::before,
-.display-overlay::before,
-.display-ornament::before {
+:is(.display-pane, .display-panel, .display-overlay, .display-ornament)::before {
   content: "";
   position: absolute;
   inset: 0;
@@ -664,9 +1884,9 @@ body::after {
   --glass-blur: 14px;
 }
 
-/* A window's body is the column its children stand in. */
 .display-pane-body,
-.display-panel-body {
+.display-panel-body,
+.display-stack {
   display: flex;
   flex-direction: column;
   gap: var(--gap);
@@ -676,8 +1896,6 @@ body::after {
 .display-ornament-text,
 .display-status-text { color: var(--fg-secondary); }
 
-/* The label voice: every kicker, caption and column head. Small means bold —
- * below 15px the weight goes up, never down. */
 .display-kicker,
 .display-pane-kicker,
 .display-value-label,
@@ -701,7 +1919,6 @@ body::after {
   color: var(--fg-tertiary);
 }
 
-/* The figure voice: one number, tight and tabular. */
 .display-value-number,
 .display-weather-temp,
 .display-clock-time,
@@ -715,7 +1932,6 @@ body::after {
   color: var(--fg-primary);
 }
 
-/* The title voice. */
 .display-pane-title,
 .display-panel-title,
 .display-overlay-title,
@@ -729,7 +1945,6 @@ body::after {
   color: var(--fg-primary);
 }
 
-/* Lists are lists: ul, ol and li, stripped of their bullets. */
 .display-list-items,
 .display-weather-series,
 .display-chat-lines,
@@ -741,8 +1956,6 @@ body::after {
   flex-direction: column;
 }
 
-/* display-panel — the detail view. `scroll` fades content into the pane's edge
- * instead of letting it stop there. */
 .display-panel--scroll > .inner {
   max-block-size: 44vh;
   overflow-y: auto;
@@ -752,12 +1965,7 @@ body::after {
     #000 calc(100% - 20px), transparent 100%);
 }
 
-/* display-overlay — the interruption. Root-level, never inside a pane, the one
- * window allowed above everything. --ttl is its countdown, spent as the
- * duration of the hairline at its foot. Placement uses `translate`, not
- * `transform`, so the state rules can scale it without restating it. */
 .display-overlay {
-  z-index: 20;
   max-inline-size: 34rem;
 }
 
@@ -796,15 +2004,14 @@ body::after {
   flex-wrap: wrap;
   gap: var(--gap-s);
   align-items: center;
+
+  flex: 0 0 auto;
 }
 
-/* display-ornament — the system line, and visionOS' only published z-number: it
- * sits outside the window and overlaps its bottom edge by 20pt. Flat, that
- * reads as "in front of". Capsule, one accent dot. */
 .display-ornament {
   z-index: 10;
   align-self: center;
-  margin-top: calc(-1 * var(--ornament-overlap));
+  margin-top: -20px;
   padding: 5px;
   border-radius: var(--r-capsule);
   background-color: var(--glass-tint-thin);
@@ -843,16 +2050,6 @@ body::after {
   color: var(--fg-tertiary);
 }
 
-/* ── 6. Catalogue B — content (sits on .inner, never on the material) ──── */
-
-/* display-stack — the only layout element. A stack in a stack is a group. */
-.display-stack {
-  display: flex;
-  flex-direction: column;
-  gap: var(--gap);
-  min-inline-size: 0;
-}
-
 .display-stack--row {
   flex-direction: row;
   flex-wrap: wrap;
@@ -863,7 +2060,6 @@ body::after {
 .display-stack[data-gap="m"] { gap: var(--gap); }
 .display-stack[data-gap="l"] { gap: var(--gap-l); }
 
-/* display-value — one number with its unit riding small. */
 .display-value,
 .display-clock,
 .display-timer,
@@ -879,8 +2075,7 @@ body::after {
   min-inline-size: 0;
 }
 
-.display-value-unit,
-.display-weather-unit {
+.display-value-unit {
   margin-inline-start: 3px;
   font-size: 0.5em;
   letter-spacing: 0;
@@ -890,7 +2085,6 @@ body::after {
 .display-value[data-size="s"], .display-clock[data-size="s"] { --t-value: 24px; }
 .display-value[data-size="l"], .display-clock[data-size="l"] { --t-value: 52px; }
 
-/* display-text — body copy. The secondary ink measures 7.45:1 on the fill. */
 .display-text {
   margin: 0;
   max-inline-size: 62ch;
@@ -901,8 +2095,6 @@ body::after {
 
 .display-text--secondary { color: var(--fg-secondary); }
 
-/* display-voice — the companion: one sentence, one italic accent word at its
- * end, never a paragraph. */
 .display-voice {
   margin: 0;
   max-inline-size: 30ch;
@@ -920,13 +2112,12 @@ body::after {
   font-style: italic;
   font-weight: 400;
   color: var(--accent);
-  /* An oblique cut leans into whatever follows it; give the slant room. */
+
   padding-inline-end: 0.06em;
 }
 
 .display-voice[data-size="l"] { --t-voice: 40px; }
 
-/* display-list / display-item — rows with a hairline, never cards inside cards. */
 .display-item {
   display: flex;
   align-items: baseline;
@@ -952,8 +2143,7 @@ body::after {
 }
 
 .display-item-k { flex: 1 1 auto; min-inline-size: 0; color: var(--fg-primary); }
-/* A value may be a sentence, not only a number: it shrinks and wraps rather
- * than running out of the line. */
+
 .display-item-v {
   flex: 0 1 auto;
   min-inline-size: 0;
@@ -964,7 +2154,6 @@ body::after {
 .display-item--accent .display-item-marker { color: var(--accent); }
 .display-item--accent .display-item-k { font-weight: var(--w-title); }
 
-/* display-table — a figure around a grid. */
 .display-table { margin: 0; }
 
 .display-table-grid {
@@ -992,16 +2181,39 @@ body::after {
 .display-table-grid td:first-child { color: var(--fg-primary); }
 .display-table-grid tbody tr:last-child td { border-bottom: 0; }
 
-/* display-weather */
 .display-weather-now {
   display: flex;
   align-items: center;
-  gap: 12px;
+  justify-content: flex-start;
+  gap: 16px;
   margin: 0;
 }
 
-.display-weather-glyph { flex: none; font-size: 34px; line-height: 1; }
-.display-weather-condition { margin: 0; font-size: var(--t-small); color: var(--fg-secondary); }
+.display-weather-temp {
+  font-family: var(--font-ui);
+  font-size: var(--t-value);
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: start;
+}
+
+.display-weather-unit {
+  font-size: var(--t-small);
+  font-weight: var(--w-body);
+  color: var(--fg-tertiary);
+}
+
+.display-weather-glyph {
+  order: 2;
+  flex: none;
+  font-size: calc(44px * var(--type-scale));
+  line-height: 1;
+}
+
+.display-weather-condition,
+.display-clock-date { margin: 0; font-size: var(--t-small); color: var(--fg-secondary); }
 
 .display-weather-range {
   display: flex;
@@ -1014,12 +2226,16 @@ body::after {
 
 .display-weather-hi { color: var(--fg-primary); font-weight: var(--w-title); }
 .display-weather-lo { color: var(--fg-tertiary); }
-.display-weather-range .display-weather-place { margin-inline-start: auto; }
 
-/* display-clock */
-.display-clock-date { margin: 0; font-size: var(--t-small); color: var(--fg-secondary); }
+.display-weather-place {
+  font-size: var(--t-caption);
+  color: var(--fg-tertiary);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
 
-/* display-timer — the escalation lives in § 7, the geometry here. */
+.display-weather-range:not(:has(.display-weather-hi, .display-weather-lo)) { display: none; }
+
 .display-timer-bar,
 .display-progress-track {
   block-size: 6px;
@@ -1038,7 +2254,6 @@ body::after {
   transform-origin: left center;
 }
 
-/* display-chat — who speaks is a role, and the bubble follows it. */
 .display-chat-lines { gap: 8px; }
 
 .display-chat-line {
@@ -1053,9 +2268,6 @@ body::after {
   color: var(--fg-primary);
 }
 
-/* The two speakers -- the kit 5 rule, carried into kit 6 (ruling, 08.09.):
- * the companion is kit 1 unchanged, a light fill and its hairline; "you"
- * keeps kit 1's peach fill and states the same contour loudly, 2px at 35 %. */
 .display-chat-line[data-role="you"] {
   align-self: flex-end;
   align-items: flex-end;
@@ -1073,12 +2285,27 @@ body::after {
 
 .display-chat-line-text { margin: 0; }
 
+.display-chat-line-meta {
+  order: -1;
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: baseline;
+  gap: 0.6ch;
+}
+
+.display-chat-line-meta:empty { display: none; }
+
+.display-chat-line-source,
 .display-chat-line-time {
   font-size: 11px;
   font-weight: var(--w-title);
-  font-variant-numeric: tabular-nums;
+  font-variant-caps: all-small-caps;
+  letter-spacing: 0.06em;
   color: var(--fg-tertiary);
+  white-space: nowrap;
 }
+
+.display-chat-line-time { font-variant-numeric: tabular-nums; }
 
 .display-chat-line--partial .display-chat-line-text {
   color: var(--fg-secondary);
@@ -1087,19 +2314,38 @@ body::after {
 
 .display-chat-line--partial .display-chat-line-text::after { content: "\2009…"; }
 
-/* display-notification */
-.display-notification {
+.display-input {
   display: flex;
-  flex-direction: column;
-  gap: 5px;
-  padding: 14px 16px;
-  border-radius: var(--r-inner);
-  background-color: var(--inner-fill-strong);
-  /* Quiet keeps its hairline, darker than kit 1 (ruling, 08.09.): the edge
-   * against the window's inner fill has to read as an edge. */
-  box-shadow: inset 0 0 0 1px rgba(74, 46, 39, 0.22),
-    inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  margin: 0;
+
+  flex: 0 0 auto;
 }
+
+.display-input-field {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  margin: 0;
+  padding: 10px 14px;
+  border: 0;
+  border-radius: var(--r-control);
+  background-color: var(--inner-fill-strong);
+  box-shadow: var(--rim-top), var(--shadow-contact);
+  font-family: var(--font-ui);
+
+  font-size: max(16px, var(--t-body));
+  font-weight: var(--w-body);
+  line-height: 1.4;
+  color: var(--fg-primary);
+}
+
+.display-input-field::placeholder { color: var(--fg-tertiary); }
+
+.display-input-field:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.display-notification { display: flex; flex-direction: column; gap: 5px; }
 
 .display-notification-title { font-size: var(--t-body); line-height: 1.3; }
 .display-notification-body { margin: 0; font-size: var(--t-small); color: var(--fg-secondary); }
@@ -1110,16 +2356,13 @@ body::after {
   color: var(--fg-tertiary);
 }
 
-/* Notification is kit 1 unchanged (ruling, 08.09.): a light fill with its
- * hairline, and urgent as the 3px accent bar at the leading edge. */
-.display-notification[data-level="urgent"] {
-  /* Ruling, 08.09.: the relevant frame around it (depth-2 shadow with its
-   * coral glow) and the dark bar at the leading edge twice as wide. */
+.display-notification[data-notice="urgent"] {
+
   box-shadow: inset 6px 0 0 var(--accent-soft),
     inset 0 0 0 1px rgba(74, 46, 39, 0.1),
     inset 0 1px 0 rgba(255, 255, 255, 0.9),
     var(--shadow-2);
-  /* The bar breathes like the urgent ring does: one signal, one rhythm. */
+
   animation: display-notification-breathe 1000ms ease-in-out infinite;
 }
 
@@ -1138,10 +2381,8 @@ body::after {
   }
 }
 
-.display-notification[data-level="urgent"] .display-notification-source { color: var(--accent); }
+.display-notification[data-notice="urgent"] .display-notification-source { color: var(--accent); }
 
-/* display-media / display-chart — the figure is inline SVG from the sender; the sheet
- * owns the frame, so no component carries its own palette. */
 .display-media,
 .display-chart { display: flex; flex-direction: column; gap: 8px; margin: 0; }
 
@@ -1164,13 +2405,11 @@ body::after {
   border-radius: var(--r-inner);
 }
 
-/* A framed ratio letterboxes its figure; it never crops a drawing. */
 .display-media[data-ratio] .display-media-frame > svg { block-size: 100%; object-fit: contain; }
 
 .display-media-caption,
 .display-chart-caption { font-size: var(--t-caption); color: var(--fg-tertiary); }
 
-/* display-document */
 .display-document-body { font-size: var(--t-body); color: var(--fg-secondary); }
 .display-document-body > * { margin: 0 0 10px; }
 .display-document-body > *:last-child { margin-bottom: 0; }
@@ -1187,7 +2426,6 @@ body::after {
 
 .display-document-total::before { content: " / "; }
 
-/* display-status */
 .display-status {
   display: flex;
   align-items: center;
@@ -1223,9 +2461,6 @@ body::after {
   50% { opacity: 0.45; }
 }
 
-/* display-action / display-option — controls: control radius, rim without the cast
- * shadow (they sit on a pane, they do not float above one). Hover is a
- * brightening, never an outline. */
 .display-action,
 .display-option-chip {
   display: inline-flex;
@@ -1255,8 +2490,11 @@ body::after {
   color: var(--fg-secondary);
 }
 
-.display-action:hover,
-.display-option-chip:hover { filter: brightness(1.06); transform: translateY(-2px); }
+.display-columns:is([data-inputs~="pointer"], [data-inputs~="touch"]) .display-action:hover,
+.display-columns:is([data-inputs~="pointer"], [data-inputs~="touch"]) .display-option-chip:hover {
+  filter: brightness(1.06);
+  transform: translateY(-2px);
+}
 .display-action:active,
 .display-option-chip:active { transform: translateY(0) scale(0.985); }
 
@@ -1271,31 +2509,16 @@ body::after {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45), var(--shadow-contact);
 }
 
-/* display-choice */
 .display-choice-options { flex-direction: row; flex-wrap: wrap; gap: 8px; }
 .display-option { display: inline-flex; }
 
-/* display-chart */
 .display-chart-figure { display: block; }
 
-/* display-progress */
 .display-progress-fill {
   inline-size: calc(var(--value, 0) * 1%);
   transition: inline-size var(--t-focus) var(--ease);
 }
 
-/* Fields — an inner element that is a THING and not a line of text sits in the
- * window the way a quiet notification does (ruling, 08.09.): a light fill, one
- * hairline that reads as an edge, one light edge on top, the derived radius,
- * and its own padding. The window keeps its own inset, so a field inside one is
- * inset twice; that is the point, and it is why the padding is stated here
- * rather than borrowed from the pane.
- *
- * Rows of text are NOT fields. `.display-text`, `.display-voice`, `.display-kicker`,
- * `.display-value`, `.display-action`, `.display-stack`, `.display-item`, `.display-chat-line` and
- * `.display-option` stay type on the inner surface. The contour is an inset shadow
- * and never a border, so no field grows by the pixel it wears — the same reason
- * the four state rings are shadows. */
 .display-list,
 .display-table,
 .display-chat,
@@ -1307,72 +2530,43 @@ body::after {
 .display-weather,
 .display-clock,
 .display-timer,
+.display-notification,
 .display-status {
   padding: 14px 16px;
   border-radius: var(--r-inner);
   background-color: var(--inner-fill-strong);
+
   box-shadow: inset 0 0 0 1px rgba(74, 46, 39, 0.22),
     inset 0 1px 0 rgba(255, 255, 255, 0.8);
 }
 
-/* A picture inside a field needs no second surface under it, and a table head
- * stays legible as a band rather than as the line kit 6 took away. */
 .display-media .display-media-frame { background-color: transparent; }
 .display-table-grid thead { background-color: rgba(74, 46, 39, 0.06); }
 
-/* ── 7. States (contract § 3) ────────────────────────────────────────────
- * Focus is handed out by the STATE, never by a click and never by a gaze: on
- * a screen without eyes, the companion looks for you. The server writes
- * data-state on exactly one window. */
-
-/* Hidden is gone -- unless it is on its way out, in which case the leave
- * keyframe below plays first and the next pass deletes it (0-2-0). */
-:where(.display-pane, .display-panel, .display-overlay, .display-ornament)[data-state="hidden"]:not([data-age="leaving"]) {
+:where(.display-pane, .display-panel, .display-overlay)[data-rung="hidden"]:not([data-age="leaving"]) {
   display: none;
 }
 
-/* A window nobody assigned a state to stands at the top rung: the compose
-   cell writes a state on every window it minds, so an empty one is a window
-   some other hand put up. Both windows that scroll and those that do not.
-   `:is()` on the class and
-   `:where()` on the state keep the rule at 0-1-0 like every rung of the
-   ladder, so it wins over the `.glass` base rule above by order alone and loses to the
-   forced-colours fallback below. */
-:is(.display-pane, .display-panel):where(:not([data-state]), [data-state=""]) {
+:is(.display-pane, .display-panel):where(:not([data-rung]), [data-rung=""]) {
   box-shadow: inset 0 0 0 2px var(--accent-soft), var(--rim-top), var(--shadow-2);
 }
 
-/* Rungs 1 and 2 -- ambient and relevant -- have no rule on a window since
- * 2.3.0: nothing ambient or relevant stands on the canvas. The canvas
- * carries what is large, focus and urgent, and everything else on the
- * ladder is a TILE (§ 11), where the rung is a colour and a ring. The
- * curator writes only `focus`, `urgent` and `hidden` on a window; the rung
- * itself travels on the tile. */
-
-/* Rung 3 — focus takes what urgent used to have: a 2px coral ring, drawn as
- * an inset shadow so it costs no space. Depth 2 is still depth 2: the lift,
- * the scale and the flat text are kit 1's. */
-:where(.display-pane, .display-panel, .display-overlay)[data-state="focus"] {
-  transform: translateY(-4px) scale(1.02);
+:where(.display-pane, .display-panel, .display-overlay)[data-rung="focus"] {
+  --rung-scale: var(--rung-lift-scale);
+  transform: translateY(-4px) scale(var(--rung-scale));
   opacity: 1;
   background-color: var(--glass-focus);
   box-shadow: inset 0 0 0 2px var(--accent-soft), var(--rim-top),
     var(--shadow-2);
-  z-index: 5;
 }
 
-/* Rung 4 — urgent is new: a 4px ring in vermilion, the darker half of the
- * accent, on the densest glass in the sheet. Twice the ring focus wears and a
- * different colour, so the last step of the ladder cannot be mistaken for the
- * one before it. Still an inset shadow, so the window does not change size. */
-:where(.display-pane, .display-panel, .display-overlay)[data-state="urgent"] {
-  transform: translateY(-4px) scale(1.02);
+:where(.display-pane, .display-panel, .display-overlay)[data-rung="urgent"] {
+  --rung-scale: var(--rung-lift-scale);
+  transform: translateY(-4px) scale(var(--rung-scale));
   opacity: 1;
   background-color: var(--glass-tint-thick);
   box-shadow: inset 0 0 0 4px var(--accent-soft), var(--rim-top), var(--shadow-2);
-  z-index: 30;
-  /* Urgent breathes in the WIDTH of its coral ring (ruling, 08.09.): 3px to
-   * 6px and back once a second. No fill, no halo -- the ring is the signal. */
+
   animation: display-urgent-breathe 1000ms ease-in-out infinite;
 }
 
@@ -1387,69 +2581,85 @@ body::after {
   }
 }
 
-/* ── 7b. Presence follows the rung ──────────────────────────────────────
- * A person reads how loud a window is off its title: size, colour, motion.
- * The rung decides all three (GH #679). Focus is the big title; urgent the
- * big title in the accent, breathing. The two rungs below focus have no
- * title rule since 2.3.0: a window on the canvas is never ambient or
- * relevant, and a tile has no title. One title slot on every window -- the
- * pane's, the panel's, the prose view's -- and no fixed kicker form. Each
- * rule is 0-2-0, so it wins over the title voice above (0-1-0). */
-[data-state="focus"] :is(.display-pane-title, .display-panel-title) {
+[data-rung="focus"] :is(.display-pane-title, .display-panel-title) {
   font-size: var(--t-title-2);
   color: var(--fg-primary);
 }
 
-[data-state="urgent"] :is(.display-pane-title, .display-panel-title) {
+[data-rung="urgent"] :is(.display-pane-title, .display-panel-title) {
   font-size: var(--t-title-2);
   color: var(--accent);
   animation: display-title-breathe 1000ms ease-in-out infinite;
 }
 
-/* The title breathes in its ink, not in a ring: the ring is the window's. */
 @keyframes display-title-breathe {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.55; }
 }
 
-/* ── 7c. Tone: one accent, or a quieter voice ───────────────────────────
- * `tone` is a word an application says about a window: `accent` colours its
- * figure -- the one number a value, a clock, a weather tile or a timer shows
- * -- in the accent; `muted` lowers the whole fill to the secondary ink. No
- * `alert`: an alarm is the urgent rung. Both 0-2-0. */
 [data-tone="accent"] :is(.display-value-number, .display-weather-temp, .display-clock-time, .display-timer-remaining) {
   color: var(--accent);
 }
 
 [data-tone="muted"] .inner { color: var(--fg-secondary); }
 
-/* Level of detail followed the state until 2.2.3 -- the Nest Hub rule,
- * .display-line from relevant on, .display-detail from focus on. Since 2.3.0
- * a window on the canvas is in focus or urgent, and both show everything;
- * the reduced levels are the tile's, which shows a glyph, a value and a
- * line by construction. The three levels keep their names -- an
- * application still says which line is the lead -- and all three are drawn. */
 .display-lead, .display-line, .display-detail { display: block; }
 
-/* Blur is for modal moments only (D-12, since 2.3.0). Until 2.2.3 a window in
- * focus made every other window on the screen recede -- one `:has()` on the
- * group, no JavaScript, and exactly the wrong meaning: asking about the
- * weather is not a moment that has to be finished before anything else can
- * happen. What is left is the modal case, which an application says about
- * itself and which nothing in this wave says. */
-.display-columns:has([data-modal="true"])
-  :where(.display-pane, .display-panel, .display-overlay)[data-state]:not([data-modal="true"]):not([data-state="hidden"]) {
-  filter: blur(6px);
-  opacity: 0.6;
+:where(.display-pane, .display-panel, .display-overlay)[data-level="1"] {
+  z-index: var(--plane-canvas);
 }
 
-/* Life cycle: fresh → settled → leaving. A whole tree after a lost frame
- * carries `settled`, so nothing flies in twice. */
-:where(.display-pane, .display-panel, .display-overlay, .display-ornament)[data-age="fresh"] {
+:where(.display-pane, .display-panel, .display-overlay)[data-level="2"] {
+  z-index: var(--plane-modal);
+}
+
+:where(.display-pane, .display-panel, .display-overlay)[data-level="3"] {
+  z-index: var(--plane-urgent);
+}
+
+.display-columns > [data-region] :is([data-level="2"], [data-level="3"]) {
+  position: fixed;
+  inset-block-start: 50%;
+  inset-inline-start: 50%;
+  translate: -50% -50%;
+  inline-size: min(100% - 2 * var(--pad-window), clamp(22rem, 44vw, 40rem));
+  margin-inline: 0;
+}
+
+.display-columns > [data-region] :is([data-level="1"], [data-level="2"], [data-level="3"]) {
+  box-sizing: border-box;
+  max-block-size: calc((100vh - 2 * var(--pad-window)) / var(--rung-scale));
+  max-block-size: calc((100dvh - 2 * var(--pad-window)
+    - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px))
+    / var(--rung-scale));
+}
+
+.display-columns > [data-region] :is([data-level="1"], [data-level="2"], [data-level="3"]) :is(.inner, .display-pane-body, .display-panel-body) {
+  min-block-size: 0;
+}
+
+.display-columns > [data-region] :is([data-level="1"], [data-level="2"], [data-level="3"]) :is(.display-pane-body, .display-panel-body) > :not(.display-input),
+.display-columns > [data-region] :is([data-level="1"], [data-level="2"], [data-level="3"]) > .inner > .display-overlay-body {
+  min-block-size: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.display-columns:has([data-level="2"]) [data-level="1"] {
+  filter: var(--f-back-2);
+  opacity: 0.72;
+}
+
+.display-columns:has([data-level="3"]) :is([data-level="1"], [data-level="2"]) {
+  filter: var(--f-back-3);
+  opacity: 0.5;
+}
+
+:where(.display-pane, .display-panel, .display-overlay)[data-age="fresh"] {
   animation: display-enter var(--t-enter) var(--ease) both;
 }
 
-:where(.display-pane, .display-panel, .display-overlay, .display-ornament)[data-age="leaving"] {
+:where(.display-pane, .display-panel, .display-overlay)[data-age="leaving"] {
   animation: display-leave var(--t-leave) var(--ease) both;
   pointer-events: none;
 }
@@ -1464,7 +2674,6 @@ body::after {
   to { opacity: 0; transform: translateY(-6px); filter: blur(2px); }
 }
 
-/* For engines that animate a new node before a class can reach it. */
 @starting-style {
   :where(.display-pane, .display-panel, .display-overlay)[data-age="fresh"] {
     opacity: 0;
@@ -1472,12 +2681,6 @@ body::after {
   }
 }
 
-/* Timer escalation without a server tick. The template writes --end-at
- * (epoch ms) and --total (ms); the start follows from both, the elapsed time
- * from an optional --now the shell stamps once per page. A negative
- * animation-delay drops the animation in at the right frame and the browser
- * runs the rest. With no --now the bar drains over --total from first paint —
- * the honest degradation. */
 .display-timer {
   --start-at: calc(var(--end-at) - var(--total));
   --elapsed: calc(var(--now, var(--start-at)) - var(--start-at));
@@ -1501,7 +2704,6 @@ body::after {
   to { transform: scaleX(0); }
 }
 
-/* The last tenth is the escalation: coral turns to vermilion. */
 @keyframes display-timer-heat {
   0%, 82% { background-color: var(--accent-soft); }
   92%, 100% { background-color: var(--accent); }
@@ -1520,29 +2722,18 @@ body::after {
 
 .display-timer--done .display-timer-remaining { animation: none; color: var(--accent); }
 
-/* Stable identity. The template writes `view-transition-name: <id>` inline,
- * so the sheet only says how a transition moves, never which one. Glass keeps
- * its blur under a name; during the transition itself the snapshot is flat,
- * which is why the DNA says glass does not move. */
 ::view-transition-group(*) {
   animation-duration: var(--t-focus);
   animation-timing-function: var(--ease);
 }
 
-/* ── 8. The screen ───────────────────────────────────────────────────────
- * The kit had a gallery page before it had a screen. This is what the screen
- * says about its own typography and its air: one size, one weight, one
- * leading, and the space between the windows. That the canvas is one centred
- * column is NOT said here -- that is a statement about this screen and stays
- * in the shell's own layout rules, beside the sheet. */
 .display-columns {
   position: relative;
   z-index: 1;
   --gap: 20px;
-  padding: 28px;
-  /* The dock is an overlay, so the canvas keeps its own gutter: a window that
-   * ran under the tiles would be unreadable exactly where it matters. */
-  padding-inline-end: calc(var(--tile) + 3 * var(--dock-pad));
+  padding: 0;
+
+  padding-inline-end: calc(var(--tile) + 3 * var(--dock-pad) - var(--gutter));
   gap: 24px;
   font-family: var(--font-ui);
   font-size: 15px;
@@ -1552,34 +2743,58 @@ body::after {
   color: var(--fg-primary);
 }
 
-.display-columns > [data-region] { gap: 24px; }
+.display-columns > [data-region="aside"] { display: contents; }
 
-@media (max-width: 60rem) {
-  .display-columns {
-    padding: 16px;
-    gap: 16px;
-    /* The shorthand above would take the dock's gutter with it. */
-    padding-inline-end: calc(var(--tile) + 3 * var(--dock-pad));
-  }
-  /* A television is far, not small: it keeps its air. */
-  .display-columns[data-profile="tv"] { padding: 28px; padding-inline-end: calc(var(--tile) + 3 * var(--dock-pad)); gap: 24px; }
+.display-columns > [data-region="aside"] :where(.display-pane, .display-panel, .display-overlay) {
+  min-block-size: 0;
+
+  margin-inline-start: var(--gutter);
 }
 
-/* ── 9. The screen's own furniture: the OS mark ──────────────────────────
- * The mark is the one thing on the screen that belongs to the screen and not
- * to anything standing on it, and since 2.3.0 it is also the button: press
- * and hold to speak, release to send (D-3). It has no card and no capsule --
- * a power symbol in the current ink with a stylised S in its gap, drawn in
- * strokes so it costs one colour. What was heard is NOT said beside it
- * (D-17): the mark says its phase in light, and the words go to the chat
- * application. The line below is for a screen reader and is not drawn. */
+.display-columns > [data-region="aside"]
+  :where(.display-pane, .display-panel, .display-overlay):last-child {
+  margin-block-end: var(--gutter);
+}
+
+.display-columns > [data-region="main"] {
+  display: grid;
+  padding: var(--gutter);
+  grid-auto-rows: max-content;
+  align-content: start;
+  gap: var(--gap);
+  flex: 1 1 auto;
+  min-block-size: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.display-columns[data-exit="monitor"] > [data-region="main"] { grid-template-columns: repeat(3, minmax(0, calc((100% - 2 * var(--gap)) / 3))); }
+.display-columns[data-exit="tv"] > [data-region="main"] { grid-template-columns: repeat(2, minmax(0, calc((100% - var(--gap)) / 2))); }
+.display-columns[data-exit="phone"] > [data-region="main"] { grid-template-columns: minmax(0, 1fr); }
+
+.display-columns[data-exit="phone"] > [data-region="main"] [data-level="1"][data-rung="focus"] {
+  order: -1;
+  min-block-size: var(--lead-min-phone);
+}
+
+.display-columns[data-exit="phone"] > [data-region="main"] [data-level="1"]:not([data-rung="focus"]) {
+  max-block-size: var(--sibling-max-phone);
+}
+
+.display-columns[data-exit="phone"] > [data-region="main"] [data-level="2"] {
+  max-block-size: var(--modal-max-phone);
+}
+
+.display-columns > [data-region] [data-level="0"] { display: none; }
+
 .display-os {
   position: fixed;
-  inset-inline-end: var(--dock-pad);
-  inset-block-end: var(--dock-pad);
+
+  inset-inline-end: calc(var(--dock-pad) + env(safe-area-inset-right, 0px));
+  inset-block-end: calc(var(--dock-pad) + env(safe-area-inset-bottom, 0px));
   inline-size: var(--os);
   block-size: var(--os);
-  z-index: 30;
+  z-index: calc(var(--plane-os) + 1);
   background: transparent;
   touch-action: none;
 }
@@ -1629,7 +2844,7 @@ body::after {
   border-radius: var(--r-capsule);
 }
 
-.display-os[data-phase="listening"] .display-os-mark {
+.display-columns[data-inputs~="audio"] .display-os[data-phase="listening"] .display-os-mark {
   color: var(--accent);
   filter: drop-shadow(0 0 calc(0.5rem * var(--scale)) var(--accent-ring));
 }
@@ -1643,13 +2858,30 @@ body::after {
 
 .display-os[data-phase="error"] .display-os-mark { color: var(--fg-tertiary); }
 
+.display-columns[data-inputs~="audio"] .display-os[data-phase="error"] .display-os-mark {
+  opacity: var(--mark-dim);
+}
+
+html:not([data-dock-open]) .display-columns[data-dock="hidden"] .display-os[data-unseen]:not([data-unseen="0"]):not([data-unseen=""])::after,
+html[data-dock-open="0"] .display-columns .display-os[data-unseen]:not([data-unseen="0"]):not([data-unseen=""])::after {
+  content: "";
+  position: absolute;
+
+  pointer-events: none;
+  inset-block-start: calc(var(--os) * 0.06);
+  inset-inline-end: calc(var(--os) * 0.06);
+  inline-size: calc(0.55rem * var(--scale));
+  block-size: calc(0.55rem * var(--scale));
+  border-radius: var(--r-capsule);
+  background-color: var(--dot-fill, var(--accent));
+  box-shadow: 0 0 calc(0.4rem * var(--scale)) var(--accent-ring);
+}
+
 @keyframes display-os-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.55; }
 }
 
-/* Said, never shown: the phase is light on the mark, and this is the same
- * thing for somebody who cannot see the light. */
 .display-os-state {
   position: absolute;
   inline-size: 1px;
@@ -1661,11 +2893,23 @@ body::after {
   white-space: nowrap;
 }
 
-/* ── 10. The scene — a stack that is a picture of a screen ──────────────
- * `display-stack` with `scene` writes it: a screen inside the page. It
- * carries the ground, so glass has something behind it (the modal rule hangs
- * its :has() on `.display-columns`, not here). 16:9 is the reference frame;
- * that it is mostly empty is the point. */
+.display-columns[data-inputs~="audio"] .display-os[data-phase="error"] .display-os-state {
+  inset-block-end: calc((var(--os) - 1.3em) / 2);
+  inset-inline-end: calc(100% + var(--dock-gap));
+  margin: 0;
+  inline-size: max-content;
+  max-inline-size: calc(100vw - var(--os) - 2 * var(--dock-pad) - var(--dock-gap)
+    - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px));
+  block-size: auto;
+  overflow: hidden;
+  clip-path: none;
+  font-size: var(--t-caption);
+  line-height: 1.3;
+  color: var(--fg-secondary);
+  pointer-events: none;
+  opacity: var(--mark-dim);
+}
+
 .display-scene {
   position: relative;
   isolation: isolate;
@@ -1681,8 +2925,6 @@ body::after {
   box-shadow: var(--shadow-1);
 }
 
-/* The reference frame, asked for by ratio: 16:9, capped at 1280 wide so a
- * 1920 page does not blow it up to 1600 x 900, panes centred in the void. */
 .display-scene[data-ratio="16:9"] {
   aspect-ratio: 16 / 9;
   inline-size: 100%;
@@ -1697,31 +2939,26 @@ body::after {
 .display-scene > .display-ornament { align-self: flex-end; margin: auto auto 0; }
 .display-scene .display-voice { max-inline-size: 34ch; }
 
-/* ── 11. The dock and the canvas it floats over ──────────────────────────
- * The canvas answers "what is in focus", the dock "what is active at all"
- * (D-27). The dock is the same place and the same size whatever the canvas
- * does, so it is fixed and it is a layer, not a column in the flow (D-10).
- * It fills from the bottom, because its origin is the OS mark below it, and
- * it ends above the mark by exactly the mark's own height. */
 .display-dock {
   position: fixed;
   inset-block: 0;
   inset-inline-end: 0;
-  z-index: 20;
+  z-index: var(--plane-os);
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
   gap: var(--dock-gap);
   inline-size: calc(var(--tile) + 2 * var(--dock-pad));
   padding: var(--dock-pad);
-  padding-block-end: calc(var(--os) + 2 * var(--dock-pad));
-  /* The layer itself takes no clicks; the tiles do. A click that fell
-   * through the dock onto the canvas would be a click nobody aimed. */
+
+  padding-block-end: calc(var(--os) + 2 * var(--dock-pad) + env(safe-area-inset-bottom, 0px));
+
   pointer-events: none;
+
+  transition: opacity var(--t-dock) var(--ease), translate var(--t-dock) var(--ease),
+    display var(--t-dock) allow-discrete;
 }
 
-/* ONE size, and no second background inside it: a tile is one surface with
- * three lines on it, not a window with an interior (D-1, S8). */
 .display-tile {
   position: relative;
   isolation: isolate;
@@ -1733,7 +2970,8 @@ body::after {
   aspect-ratio: 1;
   padding: calc(var(--dock-pad) * 0.8);
   border-radius: var(--r-control);
-  background-color: var(--glass-tint-thin);
+
+  background-color: var(--glass-tint-thick);
   -webkit-backdrop-filter: blur(14px) saturate(var(--glass-saturate));
   backdrop-filter: blur(14px) saturate(var(--glass-saturate));
   box-shadow: var(--rim-top), var(--shadow-contact);
@@ -1751,8 +2989,6 @@ body::after {
   color: var(--fg-secondary);
 }
 
-/* One size, always (D-1): the value and the line are one line each, cut
- * with an ellipsis. A long fact does not grow the tile. */
 .display-tile-value {
   align-self: end;
   font-size: var(--t-title-2);
@@ -1776,34 +3012,34 @@ body::after {
   white-space: nowrap;
 }
 
-/* Presence on a tile is a ring and a colour, never a size (D-1). Below the
- * bar the tile reads as ambient: present, quiet -- a window under the bar is
- * hidden on the canvas, but its tile is not, and it must not stand fully
- * opaque beside a relevant one. */
-.display-tile[data-state="ambient"],
-.display-tile[data-state="hidden"] { opacity: 0.72; }
+.display-tile[data-rung="ambient"],
+.display-tile[data-rung="hidden"] { opacity: var(--tile-open-opacity); }
 
-.display-tile[data-state="relevant"] { opacity: 1; }
+.display-tile[data-rung="relevant"] { opacity: 1; }
 
-.display-tile[data-state="focus"] {
+.display-tile[data-rung="focus"] {
   opacity: 1;
   box-shadow: inset 0 0 0 2px var(--accent-soft), var(--rim-top), var(--shadow-contact);
 }
 
-.display-tile[data-state="urgent"] {
+.display-tile[data-rung="urgent"] {
   opacity: 1;
   background-color: var(--glass-tint-thick);
   box-shadow: inset 0 0 0 3px var(--accent), var(--rim-top), var(--shadow-contact);
   animation: display-urgent-breathe 1000ms ease-in-out infinite;
 }
 
-/* The same object, just large right now: the tile steps back a little rather
- * than disappearing, because dual representation is the rule (D-7). */
-.display-tile[data-on-canvas="true"] { opacity: 0.7; }
+.display-tile[data-open="1"] { opacity: var(--tile-open-opacity); }
 
-/* Pinned is the one word about the dock a person says (D-15): relevance
- * sinks, the tile stays. Until 2.3.0 it froze a number and showed nothing. */
-.display-tile[data-pinned="true"]::after {
+.display-seat {
+  inline-size: var(--tile);
+  aspect-ratio: 1;
+  background: none;
+  box-shadow: none;
+  pointer-events: none;
+}
+
+.display-tile[data-pinned="1"]::after {
   content: "";
   position: absolute;
   inset-block-start: 6px;
@@ -1814,40 +3050,58 @@ body::after {
   background-color: var(--accent-soft);
 }
 
-/* The frame a zoom lands on, set by the hook for the length of one movement. */
 .display-tile[data-zoomed="true"] {
   box-shadow: inset 0 0 0 2px var(--accent-soft), var(--rim-top), var(--shadow-2);
 }
 
-/* The canvas is one centred column since 2.3.0, and a window in focus is
- * compact and bounded rather than a strip across the width (D-11). Every
- * window on the canvas that is not inside another window: a prose window
- * under the region, an application's window under its wrapper, a card
- * under the stack an application put around it. */
+.display-tile[phx-click] { cursor: pointer; }
+.display-tile[phx-click]:active { transform: scale(0.96); }
+
+.display-tile[data-topic="chat"] .display-tile-glyph {
+  font-size: var(--t-title-1);
+  color: var(--accent);
+}
+
+.display-tile[data-topic="chat"] .display-tile-line {
+  align-self: end;
+  font-size: var(--t-small);
+  color: var(--fg-secondary);
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+}
+
+.display-tile[data-unread="1"]::before {
+  content: "";
+  position: absolute;
+  inset-block-start: 6px;
+  inset-inline-start: 6px;
+  inline-size: 7px;
+  block-size: 7px;
+  border-radius: var(--r-capsule);
+  background-color: var(--accent);
+}
+
+.display-tile-unit {
+  font-size: var(--t-caption);
+  font-weight: var(--w-body);
+  color: var(--fg-tertiary);
+  margin-inline-start: 0.1em;
+}
+
 .display-columns > [data-region] :where(.display-pane, .display-panel, .display-overlay):not(:where(.display-pane, .display-panel, .display-overlay) *) {
   inline-size: 100%;
   max-inline-size: clamp(22rem, 44vw, 40rem);
   margin-inline: auto;
 }
 
-/* An application's window hangs in a wrapper (`display-view-custom`, a bare
- * `<div data-view>`). The wrapper is a box of its own and would be the
- * column's flex item -- shrink-to-fit, every window another width, the
- * chat a strip (D-11). So the wrapper generates no box either, like the
- * region above it, and the window inside is the item the rule above sizes.
- * A prose window carries `data-view` ITSELF and is a window, not a wrapper:
- * it keeps its box, or this 0-3-0 rule would beat the 0-2-0 hidden rule
- * above and draw a hidden prose window's title and body on the canvas. */
 .display-columns > [data-region] > [data-view]:not(.display-pane, .display-panel, .display-overlay) { display: contents; }
 
-/* And a stack an application put directly under its wrapper, around its
- * cards, generates no box either: the canvas carries only what is large,
- * so there is nothing for a stack to lay out, and a card inside one would
- * otherwise be a strip across the width again. */
 .display-columns > [data-region] > [data-view] > .display-stack { display: contents; }
 
-/* ── 11b. Night — a variant, not a second design ──────────────────────────
- * Nothing below is a new rule; it is the same vocabulary with other values. */
 [data-ground="night"] {
   color-scheme: dark;
   --ground: #17100e;
@@ -1872,11 +3126,10 @@ body::after {
   --accent-wash: rgba(240, 135, 110, 0.18);
   --accent-ring: rgba(240, 135, 110, 0.28);
   --rim-top: inset 0 1px 0 rgba(255, 255, 255, 0.26);
-  --rim-edge: 0 0 transparent;
   --rim-bottom: 0 0 transparent;
   --sheen: linear-gradient(135deg, rgba(255, 255, 255, 0.14) 0%,
     rgba(255, 255, 255, 0.04) 26%, rgba(255, 255, 255, 0) 56%);
-  /* The two lines the shadow channels were built for. */
+
   --shadow-hue: 20 32% 8%;
   --shadow-strength: 30%;
 }
@@ -1890,7 +3143,6 @@ body::after {
     linear-gradient(178deg, var(--ground) 0%, var(--ground-2) 100%);
 }
 
-/* Fills are materials, not colour roles, so their literals switch by hand. */
 [data-ground="night"] :is(.inner, .display-notification, .display-media-frame) {
   box-shadow: none;
 }
@@ -1917,11 +3169,6 @@ body::after {
   background-color: var(--accent-wash);
 }
 
-/* ── 12. The profile: one number, and the type and the dock follow ───────
- * The root says which screen this is (`data-profile`), what that screen can
- * take (`data-inputs`) and one scale. Everything below is derived; there is
- * no second sheet for a television and no media query that pretends a far
- * screen is a small one. */
 .display-columns {
   --type-scale: var(--scale);
   --tile: calc(5.25rem * var(--scale));
@@ -1939,40 +3186,80 @@ body::after {
   font-size: var(--t-body);
 }
 
-/* Three metres away the second and third ink are not readable at the alphas
- * a desk gets (D-24). Only the two that carry label and body text move; the
- * accent and the material stay what they are. */
-.display-columns[data-profile="tv"] {
+.display-columns[data-exit="tv"] {
   --fg-secondary: rgba(43, 29, 25, 0.92);
   --fg-tertiary: rgba(43, 29, 25, 0.78);
 }
 
-.display-columns[data-profile="tv"][data-ground="night"] {
+.display-columns[data-exit="tv"][data-ground="night"] {
   --fg-secondary: rgba(247, 239, 230, 0.9);
   --fg-tertiary: rgba(247, 239, 230, 0.74);
 }
 
-/* `data-inputs` steers what is VISIBLE and nothing else: a screen with no
- * audio keeps its mark and loses the light that says it is listening. Which
- * device an answer came from is the member's knowledge, never the screen's. */
-.display-columns:not([data-inputs~="audio"]) .display-os-mark { opacity: 0.5; }
+.display-columns:not([data-inputs~="audio"]) .display-os-mark { opacity: var(--mark-dim); }
 
 .display-columns:not([data-inputs~="pointer"]):not([data-inputs~="touch"]) .display-os-mark {
   cursor: default;
 }
 
-/* ── 13. Fallbacks ───────────────────────────────────────────────────────
- * The material has three ways of not existing; each gets an opaque surface
- * rather than a degraded glass, because a translucent fill with no blur
- * behind it is text over noise. Every window carries one of the three glass
- * classes, so those three are the whole list. */
+.display-columns[data-exit="phone"] {
+
+  --pad-window: 18px;
+  --pad-inner: 14px;
+  --r-window: 18px;
+  --gutter: 14px;
+  gap: 14px;
+}
+
+.display-columns[data-exit="phone"] > [data-region]
+  :where(.display-pane, .display-panel, .display-overlay):not(:where(.display-pane, .display-panel, .display-overlay) *) {
+  max-inline-size: 100%;
+}
+
+.display-columns[data-dock="hidden"] .display-dock,
+html[data-dock-open="0"] .display-columns[data-dock="shown"] .display-dock {
+  display: none;
+  opacity: 0;
+  translate: 12px 0;
+}
+
+.display-columns[data-dock="hidden"] {
+  padding-inline-end: calc(var(--pad-window) - var(--gutter));
+}
+
+html[data-dock-open="1"] .display-columns[data-dock="hidden"] .display-dock {
+  display: flex;
+
+  opacity: 1;
+  translate: none;
+}
+
+@starting-style {
+  html[data-dock-open="1"] .display-columns[data-dock] .display-dock {
+    opacity: 0;
+    translate: 12px 0;
+  }
+}
+
+html[data-dock-open="1"] .display-columns[data-dock="hidden"] {
+  padding-inline-end: calc(var(--tile) + 3 * var(--dock-pad) - var(--gutter));
+}
+
+html[data-dock-open="0"] .display-columns[data-dock="shown"] {
+  padding-inline-end: calc(var(--pad-window) - var(--gutter));
+}
+
+body:has([data-exit="tv"]) { animation: none; }
+
+body:has([data-exit="tv"])::after { display: none; }
 
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
   :is(.glass, .glass--thin, .glass--thick) { background-color: var(--glass-opaque); }
 }
 
 @media (prefers-reduced-transparency: reduce) {
-  :is(.glass, .glass--thin, .glass--thick) {
+
+  :is(.glass, .glass--thin, .glass--thick), .display-tile {
     background-color: var(--glass-opaque);
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
@@ -1982,11 +3269,12 @@ body::after {
   body { background-image: none; animation: none; }
   body::after { display: none; }
 
-  .display-tile {
+  .display-input-field {
     background-color: var(--glass-opaque);
-    -webkit-backdrop-filter: none;
-    backdrop-filter: none;
+    box-shadow: none;
   }
+
+  :root { --f-back-2: none; --f-back-3: none; }
 }
 
 @media (prefers-contrast: more) {
@@ -1995,16 +3283,16 @@ body::after {
     --fg-tertiary: rgba(43, 29, 25, 0.76);
     --hairline: rgba(74, 46, 39, 0.3);
     --hairline-strong: rgba(74, 46, 39, 0.5);
-    --rim-edge: 0 0 transparent;
     --inner-fill: rgba(255, 255, 255, 0.72);
     --inner-fill-strong: rgba(255, 255, 255, 0.86);
     --accent: #962a17;
+    --f-back-2: none;
+    --f-back-3: none;
   }
 
   [data-ground="night"] {
     --fg-secondary: rgba(247, 239, 230, 0.9);
     --fg-tertiary: rgba(247, 239, 230, 0.74);
-    --rim-edge: 0 0 transparent;
   }
 
   :is(.glass, .glass--thin, .glass--thick) {
@@ -2014,7 +3302,6 @@ body::after {
   }
 }
 
-/* Forced colours: the OS owns every colour and we get out of the way. */
 @media (forced-colors: active) {
   .display-pane,
   .display-panel,
@@ -2045,17 +3332,17 @@ body::after {
   .display-timer-fill,
   .display-progress-fill { background: Highlight; }
 
+  .display-os[data-unseen]:not([data-unseen="0"]):not([data-unseen=""])::after {
+    --dot-fill: Highlight;
+    forced-color-adjust: none;
+  }
+
   :is(.display-pane, .display-panel, .display-overlay, .display-ornament)::before { display: none; }
   .display-scene, body { background-image: none; }
   .display-os-ring,
   .display-os-s { stroke: CanvasText; }
 }
 
-/* ── 14. Motion ──────────────────────────────────────────────────────────
- * Reduced motion: the light stands still, nothing translates or scales, and a
- * state change is a 150ms crossfade. The base sheet flattens every duration
- * to 0.01ms with !important, so the crossfade has to shout back — that is the
- * only !important here. */
 @media (prefers-reduced-motion: reduce) {
   body { animation: none; }
 
@@ -2065,43 +3352,35 @@ body::after {
   .display-ornament,
   .display-action,
   .display-option-chip,
-  .display-progress-fill {
-    transition: opacity 150ms linear !important;
-    animation: none !important;
-  }
+  .display-progress-fill,
 
-  :where(.display-pane, .display-panel, .display-overlay)[data-state="focus"],
-  :where(.display-pane, .display-panel, .display-overlay)[data-state="urgent"],
-  .display-action:hover,
-  .display-option-chip:hover { transform: none; }
-
-  /* The dock does not move under reduced motion either: a tile changes its
-   * rank by being somewhere else next frame, not by sliding there. */
   .display-tile {
     transition: opacity 150ms linear !important;
     animation: none !important;
   }
 
-  .display-tile[data-state="urgent"] {
-    animation: display-urgent-breathe 2000ms ease-in-out infinite !important;
-  }
+  :where(.display-pane, .display-panel, .display-overlay)[data-rung="focus"],
+  :where(.display-pane, .display-panel, .display-overlay)[data-rung="urgent"],
+  .display-tile[phx-click]:active,
+  .display-columns:is([data-inputs~="pointer"], [data-inputs~="touch"]) .display-action:hover,
+  .display-columns:is([data-inputs~="pointer"], [data-inputs~="touch"]) .display-option-chip:hover { transform: none; }
 
-  .display-os[data-phase="speaking"] .display-os-mark { animation: none !important; }
+  .display-dock { transition: none !important; }
 
+  .display-os[data-phase="speaking"] .display-os-mark,
   .display-status .display-status-dot { animation: none !important; }
-  /* Urgent keeps breathing under reduced motion, only slower: it is the one
-   * animation that carries meaning (ruling, 08.09.). */
-  :where(.display-pane, .display-panel, .display-overlay)[data-state="urgent"] {
+
+  :where(.display-pane, .display-panel, .display-overlay)[data-rung="urgent"],
+  .display-tile[data-rung="urgent"] {
     animation: display-urgent-breathe 2000ms ease-in-out infinite !important;
   }
-  [data-state="urgent"] :is(.display-pane-title, .display-panel-title) {
+  [data-rung="urgent"] :is(.display-pane-title, .display-panel-title) {
     animation: display-title-breathe 2000ms ease-in-out infinite !important;
   }
-  .display-notification[data-level="urgent"] {
+  .display-notification[data-notice="urgent"] {
     animation: display-notification-breathe 2000ms ease-in-out infinite !important;
   }
 
-  /* Timer and overlay keep their clocks: they are information, not decoration. */
   .display-timer-fill,
   .display-timer-remaining {
     animation-duration: calc(var(--total, 0) * 1ms) !important;
@@ -2110,40 +3389,24 @@ body::after {
   .display-overlay::after { animation-duration: calc(var(--ttl, 0) * 1ms) !important; }
 }
 
-/* ── 15. Screen sizes ────────────────────────────────────────────────────
- * 1920 is the reference; 1280 and 390 stay readable. Nothing here changes the
- * language, only how much air it gets. */
 @media (max-width: 80rem) {
-  .display-scene { padding: 22px; }
-  /* A television is far, not small: its air comes from the profile. */
-  .display-columns[data-profile="tv"] .display-scene { padding: 30px; }
+  .display-scene:not(.display-columns *) { padding: 22px; }
 }
 
 @media (max-width: 48rem) {
-  :root {
+  .display-scene:not(.display-columns *) {
     --pad-window: 18px;
     --pad-inner: 14px;
     --r-window: 18px;
     --t-voice: 24px;
     --t-value: 30px;
-  }
-
-  /* Same rule, the other way round: the profile wins over the width. The
-   * `:root` block above still serves the gallery page, which has no shell. */
-  .display-columns[data-profile="tv"] {
-    --pad-window: 22px;
-    --pad-inner: 16px;
-    --r-window: 22px;
-  }
-
-  .display-scene {
     aspect-ratio: auto;
     flex-direction: column;
     align-items: stretch;
     padding: 16px;
   }
-  .display-scene > .display-pane[data-region="aside"] { flex: 1 1 auto; }
-  .display-ornament > .inner { white-space: normal; }
+  .display-scene:not(.display-columns *) > .display-pane[data-region="aside"] { flex: 1 1 auto; }
+  .display-scene:not(.display-columns *) .display-ornament > .inner { white-space: normal; }
 }
 """
 
@@ -2162,8 +3425,10 @@ SHELL_TEMPLATE = (
     "<style>" + LAYOUT_RULES + "{{&faces}}" + KIT_CSS + "</style>"
     + '<div class="stack display-columns" id="display-shell"'
     + ' phx-hook="DisplayScene" data-ground="{{ground}}"'
-    + ' data-profile="{{profile}}" data-inputs="{{inputs}}"'
-    + ' data-screen="{{screen}}" style="--scale: {{scale}}">{{children}}</div>'
+    + ' data-exit="{{exit}}" data-inputs="{{inputs}}"'
+    + ' data-dock="{{dock}}" data-switch="{{switch}}"'
+    + ' data-default="{{default_screen}}" data-screens="{{screens}}"'
+    + ' data-screen-name="{{screen_name}}" style="--scale: {{scale}}">{{children}}</div>'
     + "<script>{{&client_js}}</script>"
 )
 
@@ -2176,8 +3441,10 @@ REGION_TEMPLATE = '<div class="stack" data-region="{{region}}">{{children}}</div
 # One title slot, no fixed kicker -- how loud the title is follows the rung.
 PROSE_TEMPLATE = (
     '<section class="display-pane glass--thin" data-view="{{view_id}}"'
-    ' data-owner="{{owner}}" data-state="{{state}}" data-age="{{age}}"'
-    ' data-since="{{since}}" data-score="{{score}}"><div class="inner">'
+    ' data-owner="{{owner}}" data-rung="{{rung}}" data-age="{{age}}"'
+    ' data-level="{{level}}" data-layer="{{layer}}" data-front="{{front}}"'
+    ' data-led="{{led}}" data-pinned="{{pinned}}" data-topic="{{topic}}"'
+    ' data-since="{{since}}" data-acted="{{acted}}" data-score="{{score}}"><div class="inner">'
     '{{#if title}}<h2 class="display-pane-title display-lead">{{title}}</h2>{{/if}}'
     '<div class="display-pane-body">'
     '<p class="display-text display-line">{{body}}</p></div></div></section>'
@@ -2202,9 +3469,10 @@ CUSTOM_TEMPLATE = (
 
 PANE_TEMPLATE = (
     '<section class="display-pane glass{{#if thin}}--thin{{/if}}" id="{{pane_id}}"'
-    ' data-state="{{state}}" data-age="{{age}}"'
-    ' data-since="{{since}}" data-score="{{score}}" data-tone="{{tone}}" data-pinned="{{pinned}}"'
-    ' data-modal="{{modal}}" data-topic="{{topic}}"'
+    ' data-rung="{{rung}}" data-age="{{age}}"'
+    ' data-since="{{since}}" data-acted="{{acted}}" data-score="{{score}}" data-tone="{{tone}}" data-pinned="{{pinned}}"'
+    ' data-level="{{level}}" data-layer="{{layer}}" data-front="{{front}}"'
+    ' data-led="{{led}}" data-topic="{{topic}}"'
     ' data-region="{{region}}"'
     ' style="view-transition-name: {{pane_id}}">'
     '<div class="inner">'
@@ -2216,9 +3484,10 @@ PANE_TEMPLATE = (
 
 PANEL_TEMPLATE = (
     '<section class="display-panel glass{{#if scroll}} display-panel--scroll{{/if}}"'
-    ' id="{{pane_id}}" data-state="{{state}}" data-age="{{age}}"'
-    ' data-since="{{since}}" data-score="{{score}}" data-tone="{{tone}}" data-pinned="{{pinned}}"'
-    ' data-modal="{{modal}}" data-topic="{{topic}}"'
+    ' id="{{pane_id}}" data-rung="{{rung}}" data-age="{{age}}"'
+    ' data-since="{{since}}" data-acted="{{acted}}" data-score="{{score}}" data-tone="{{tone}}" data-pinned="{{pinned}}"'
+    ' data-level="{{level}}" data-layer="{{layer}}" data-front="{{front}}"'
+    ' data-led="{{led}}" data-topic="{{topic}}" data-region="{{region}}"'
     ' style="view-transition-name: {{pane_id}}">'
     '<div class="inner">'
     '{{#if title}}<h2 class="display-panel-title display-lead">{{title}}</h2>{{/if}}'
@@ -2230,8 +3499,10 @@ PANEL_TEMPLATE = (
 # duration. The server never ticks: the browser owns elapsed time.
 OVERLAY_TEMPLATE = (
     '<aside class="display-overlay glass--thick" id="{{pane_id}}"'
-    ' data-state="{{state}}" data-age="{{age}}" data-since="{{since}}" data-score="{{score}}"'
-    ' data-modal="{{modal}}" data-topic="{{topic}}"'
+    ' data-rung="{{rung}}" data-age="{{age}}" data-since="{{since}}" data-acted="{{acted}}" data-score="{{score}}"'
+    ' data-level="{{level}}" data-layer="{{layer}}" data-front="{{front}}"'
+    ' data-led="{{led}}" data-topic="{{topic}}" data-pinned="{{pinned}}"'
+    ' data-region="{{region}}"'
     ' data-position="{{position}}"'
     ' style="view-transition-name: {{pane_id}}; --ttl: {{ttl_ms}}">'
     '<div class="inner">'
@@ -2258,24 +3529,42 @@ ORNAMENT_TEMPLATE = (
 # can use without walking back up to the root.
 DOCK_TEMPLATE = (
     '<div class="display-dock" id="display-dock" aria-label="dock"'
-    ' data-count="{{count}}" data-profile="{{profile}}">{{children}}</div>'
+    ' data-count="{{count}}">{{children}}</div>'
 )
 
 # One tile. ONE size, always (D-1): a glyph, a value and a line, and the
 # presence rung as a colour and a ring rather than as a size. `for` is the
 # `pane_id` of the window it stands for, which is what lets the client match
-# the two halves of one object for the zoom. `data-end-at` is the epoch the
+# the two halves of one object for the zoom; `oid` is the window's OBJECT id
+# and the only thing a tap has to carry, because the screen answers the tap
+# itself (R-23-1). The binding is written only where the exit has a finger
+# (`tap`, OR-F18): a television takes no taps, and a dead `phx-click` on it
+# would be a promise the screen cannot keep. `data-end-at` is the epoch the
 # seconds run to; the client writes the remainder into `[data-role=…]` once a
 # second, and the server never ticks for it.
 TILE_TEMPLATE = (
-    '<div class="display-tile" data-for="{{for}}" data-state="{{state}}"'
+    '<div class="display-tile" data-for="{{for}}" data-rung="{{rung}}"'
     ' data-rank="{{rank}}" data-pinned="{{pinned}}"'
-    ' data-on-canvas="{{on_canvas}}" data-topic="{{topic}}"'
-    ' data-end-at="{{end_at}}">'
-    '{{#if glyph}}<span class="display-tile-glyph">{{glyph}}</span>{{/if}}'
+    ' data-open="{{open}}" data-topic="{{topic}}"'
+    ' data-seat="{{seat}}" data-unread="{{unread}}"'
+    ' data-end-at="{{end_at}}"'
+    # Interpolated and not spelled out: the absorber listens for TAP_EVENT,
+    # and a tile that shouted a name nobody opens would send the tap out of
+    # the hive as an ordinary application event, silently.
+    + ('{{#if tap}} phx-click="%s" phx-value-for="{{oid}}"{{/if}}>' % TAP_EVENT)
+    + '{{#if glyph}}<span class="display-tile-glyph">{{glyph}}</span>{{/if}}'
     '{{#if value}}<span class="display-tile-value" data-role="remaining">{{value}}</span>{{/if}}'
+    '{{#if unit}}<span class="display-tile-unit">{{unit}}</span>{{/if}}'
     '{{#if line}}<span class="display-tile-line">{{line}}</span>{{/if}}'
     "</div>"
+)
+
+# An empty seat (§ 4.29). A seat guarantees nothing: when its tile is missing its
+# place stays visibly EMPTY -- empty space, not a placeholder. So the object carries no
+# content at all and is hidden from a screen reader; what it does is hold the gap open,
+# so no seat tile moves into it and no ranked tile slides into a seat (R-23-3).
+SEAT_TEMPLATE = (
+    '<div class="display-seat" data-seat-ord="{{seat_ord}}" aria-hidden="true"></div>'
 )
 
 # ---------------------------------------------------------------------------
@@ -2367,16 +3656,36 @@ CHAT_TEMPLATE = (
     '<ol class="display-chat-lines">{{children}}</ol></div>'
 )
 
+# The line says two things about itself beside its text: WHERE it came from and
+# WHEN it arrived (§ 8.4, R-26-1, owner ruling 18.09.). They share one row --
+# `display-chat-line-meta` -- because "beside the source" is the sentence, and two
+# order-swapped siblings in a column flex box would stand under each other.
+#
+# `at` travels RAW, as the epoch milliseconds of the line (§ 3.3, § 8.5), and the
+# `<time>` element is empty: the screen state has no time zone and the device has
+# one, so the client formats HH:MM for whoever is looking (`clocks()` in the scene).
+# `{{#if at}}` keeps a line that carries no time from drawing an empty box -- such a
+# line renders exactly as it did before the ruling.
 CHAT_LINE_TEMPLATE = (
     '<li class="display-chat-line display-line'
-    '{{#if partial}} display-chat-line--partial{{/if}}" data-role="{{role}}">'
+    '{{#if partial}} display-chat-line--partial{{/if}}" data-role="{{role}}"'
+    ' data-channel="{{channel}}">'
     '<p class="display-chat-line-text">{{text}}</p>'
-    '{{#if time}}<span class="display-chat-line-time display-detail">{{time}}</span>{{/if}}'
+    '<span class="display-chat-line-meta">'
+    '{{#if source}}<span class="display-chat-line-source display-detail">{{source}}</span>{{/if}}'
+    '{{#if at}}<time class="display-chat-line-time display-detail" data-at="{{at}}"></time>{{/if}}'
+    '</span>'
     "</li>"
 )
 
 NOTIFICATION_TEMPLATE = (
-    '<div class="display-notification" data-level="{{level}}">'
+    # `data-notice`, not `data-level`: since 2.5.0 `data-level` is the drawing
+    # level of a WINDOW (§ 4.24), and one word with two meanings in one sheet
+    # is what § 2 forbids. The prop stays `level`, because that is the word an
+    # application already sends. Not `data-class` either: the shell carries the
+    # whole sheet inline, and a scanner that looks for `class=` reads the value
+    # of `data-class` in a selector as a class the catalogue writes.
+    '<div class="display-notification" data-notice="{{level}}">'
     '{{#if source}}<p class="display-notification-source display-line">{{source}}</p>{{/if}}'
     '<h3 class="display-notification-title display-lead">{{title}}</h3>'
     '{{#if body}}<p class="display-notification-body display-detail">{{body}}</p>{{/if}}'
@@ -2425,6 +3734,27 @@ OPTION_TEMPLATE = (
     '<li class="display-option{{#if selected}} display-option--selected{{/if}}">'
     '<button class="display-option-chip" type="button"'
     '{{#if event}} phx-click="{{event}}"{{/if}}>{{label}}</button></li>'
+)
+
+# A line a person types into (contract § 8). `keyup` with `phx-key` and NOT a
+# form: the LiveView client serialises a form to a URL-encoded string, and this
+# scope reads object ids out of `event.value` -- a query string is not one, so
+# a submitted form dead-letters (OR-F17). On `keyup` the client sends an object
+# instead: every `phx-value-*` plus `value`, the text as it stands. `for` is
+# filled by the SCREEN with the object id of the window the field stands in,
+# the way a tile's `oid` is: the application cannot know that id, it is the
+# index chain the tree walk mints.
+#
+# `enterkeyhint` is what makes a phone keyboard say "send"; emptying the field
+# after Enter is the client's job (`DisplayScene`), because the server does
+# not own what a person is in the middle of typing.
+INPUT_TEMPLATE = (
+    '<div class="display-input">'
+    '<input class="display-input-field" type="text" autocomplete="off"'
+    ' enterkeyhint="send" placeholder="{{placeholder}}"'
+    '{{#if event}} phx-keyup="{{event}}" phx-key="Enter"'
+    ' phx-value-for="{{for}}"{{/if}}>'
+    "</div>"
 )
 
 CHART_TEMPLATE = (
@@ -2504,10 +3834,14 @@ def faces(font_base):
 # keeps the name the client half has always had: the gesture did not change,
 # only where the words go. What was heard does NOT stand beside the mark any
 # more (D-17); the state line is left for a screen reader and the mark itself
-# says its phase in light (`data-phase`).
+# says its phase in light (`data-phase`) -- with the one exception the sheet
+# makes for a refused channel, where § 5.4 asks the mark to SAY the refusal and
+# the same line is drawn as a caption (OR-H2.1, GH #722). Detail-level text,
+# and it says so itself (§ 7): what the line is does not depend on the rule
+# that reads its phase.
 OS_TEMPLATE = (
     '<div class="display-os" id="display-os" phx-hook="DisplayMic"'
-    ' data-mount="{{mount}}" data-phase="">'
+    ' data-mount="{{mount}}" data-phase="" data-unseen="{{unseen}}">'
     '<button type="button" class="display-os-mark" aria-pressed="false"'
     ' aria-label="hold to talk">'
     '<svg class="display-os-glyph" viewBox="0 0 64 64" aria-hidden="true"'
@@ -2518,7 +3852,8 @@ OS_TEMPLATE = (
     " C 50 32 52.25 34.25 52.25 37 C 52.25 39.75 50 42 47.25 42"
     ' C 44.5 42 42.25 39.75 42.25 37"></path>'
     "</svg></button>"
-    '<span class="display-os-state" data-role="state" aria-live="polite"></span>'
+    '<span class="display-os-state display-detail" data-role="state"'
+    ' aria-live="polite"></span>'
     "</div><script>{{&client_js}}</script>"
 )
 
@@ -2563,21 +3898,138 @@ OS_TEMPLATE = (
 # of it. The number is measured rather than chosen: the larger of the capture
 # latency the track reports and the context's own buffering, one worklet block,
 # and the longest delivery gap this take saw, floored at 120 ms and capped at 600.
+#
+# Since 2.4.0 the press has a threshold. Under `HOLD_MS` it is a tap and means
+# the dock (R-23-4); over it, it is a hold and means speech, and the hold says
+# so to BOTH halves -- a `hold` frame to the `voice` cell and a `touch` event
+# to `compose`, because holding the mark is where a dialogue starts (R-23-5).
+# Two ways lead into the tap, and both are measured rather than assumed: Safari
+# sends a `click` after `touchend`, and under `touch-action: none` with a
+# captured pointer the `pointerup` can go missing entirely.
 OS_CLIENT_JS = (
     "(function (root) {\n"
+    # A duration out of the sheet's own tokens, so a quantity is the
+    # template's decision and not this script's (display-hive.md § 2). The
+    # same six lines stand in the scene hook: the two hooks are separate
+    # scripts on the page and share no scope.
+    "  function dur(el, name, fallback) {\n"
+    "    var v = root.getComputedStyle(el).getPropertyValue(name).trim();\n"
+    "    var n = parseFloat(v);\n"
+    "    return isNaN(n) ? fallback : (v.indexOf(\"ms\") > -1 ? n : n * 1000);\n"
+    "  }\n"
     "  var hook = {\n"
     "    mounted: function () {\n"
     "      var el = this.el, mount = el.dataset.mount || \"voice\";\n"
-    "      var st = { sent: 0, flushed: 0, drainMs: 0, played: 0, turns: 0, speakEnd: 0, hello: null, code: null };\n"
+    "      var st = { sent: 0, flushed: 0, drainMs: 0, played: 0, turns: 0, speakEnd: 0, hello: null, code: null,\n"
+    "                 taps: 0, touches: 0, holdMs: 0, prebuffered: 0, setupMs: 0, refused: 0,\n"
+    "                 holdsRefused: 0, bound: false, audio: false, phase: \"\", said: \"\" };\n"
     "      root.__displayMic = st;\n"
     "      var state = el.querySelector('[data-role=\"state\"]'), btn = el.querySelector(\"button\");\n"
-    "      function phase(p) { el.setAttribute(\"data-phase\", p); }\n"
-    "      function say(t) { state.textContent = t; }\n"
+    "      var cols = document.querySelector(\".display-columns\");\n"
+    "      // The handle `updated()` reaches for. Taken BEFORE the switch\n"
+    "      // returns below: a page that is about to replace itself renders\n"
+    "      // patches too, and a hook with no handle answers none of them.\n"
+    "      this.__mic = { st: st, repaint: repaint };\n"
+    "      // What this output can take (display-hive.md § 6.4). The profile\n"
+    "      // says it, the door normalises it, the root carries it -- and the\n"
+    "      // client binds NOTHING it does not name. A television is an output\n"
+    "      // device (`inputs: []`): a press it cannot receive, a microphone it\n"
+    "      // cannot open and an event for a finger that does not exist are\n"
+    "      // three promises a screen must not make.\n"
+    "      // § 6.5: this page is the switch and is about to replace itself.\n"
+    "      // Binding a listener, opening a socket and joining a voice channel\n"
+    "      // for the half second before `location.replace` is exactly what the\n"
+    "      // scene hook returns early to avoid -- and the mark is a script of\n"
+    "      // its own, so it asks the same question again.\n"
+    "      if (cols && cols.getAttribute(\"data-switch\") === \"1\") { phase(\"idle\"); return; }\n"
+    "      var inputs = ((cols && cols.getAttribute(\"data-inputs\")) || \"\").split(/\\s+/);\n"
+    "      var finger = inputs.indexOf(\"pointer\") > -1 || inputs.indexOf(\"touch\") > -1;\n"
+    "      var audio = inputs.indexOf(\"audio\") > -1;\n"
+    "      st.bound = finger; st.audio = audio;\n"
+    "      if (!finger) { phase(\"idle\"); return; }\n"
+    "      // The threshold (display-hive.md § 5.5: \"a token, 250 ms\"). It is\n"
+    "      // READ, not written here: the sheet is where a quantity lives (§ 2),\n"
+    "      // and a script with its own copy is a screen with two thresholds.\n"
+    "      var HOLD_MS = dur(cols || el, \"--hold-ms\", 250);\n"
+    "      // The dock toggle, and it is the whole of what a tap means (R-23-4,\n"
+    "      // OR-F5). Two attributes, two owners: the GROUND state is the\n"
+    "      // server's (`data-dock` on the root, out of the profile, in the dead\n"
+    "      // render), the OPENING is this line. <html> is outside the LiveView\n"
+    "      // container, so no patch overwrites it, and a reload puts the screen\n"
+    "      // back into its profile default -- which is exactly \"the toggle is\n"
+    "      // not remembered\". Nothing is pushed: a gesture with no semantics has\n"
+    "      // nothing to tell the colony, and an iteration that pushed one\n"
+    "      // anyway paid a full curation pass per tap, measured on a device.\n"
+    "      // Which way the gesture that is running already ended. Safari sends\n"
+    "      // a `click` after `touchend`, and under `touch-action: none` with a\n"
+    "      // captured pointer it is the `pointerup` that can go missing -- so\n"
+    "      // both ways are wired and the SECOND one is dropped. Not by a span\n"
+    "      // of time: a 700 ms window was a number outside the sheet (§ 2) and\n"
+    "      // a browser state that decides (§ 3.2). Debouncing one physical\n"
+    "      // gesture carries no meaning; asking the clock would.\n"
+    "      var hookSelf = this, gesture = \"\";\n"
+    "      function tapDock() {\n"
+    "        var html = document.documentElement;\n"
+    "        var open = html.getAttribute(\"data-dock-open\");\n"
+    "        // The FIRST tap has no opening to flip, and assuming \"closed\"\n"
+    "        // made the mark a one-way switch: on an exit whose profile ships\n"
+    "        // the dock open, that first tap wrote the \"1\" it already was and\n"
+    "        // nothing moved (GH #705). So it starts from the GROUND state the\n"
+    "        // server rendered on the columns, and one tap always means the\n"
+    "        // other one -- whatever the profile ships.\n"
+    "        if (open !== \"1\" && open !== \"0\") {\n"
+    "          open = cols && cols.getAttribute(\"data-dock\") === \"hidden\" ? \"0\" : \"1\";\n"
+    "        }\n"
+    "        html.setAttribute(\"data-dock-open\", open === \"1\" ? \"0\" : \"1\");\n"
+    "        st.taps++;\n"
+    "      }\n"
+    "      // The mark's two marks: the attribute the sheet draws by, and the\n"
+    "      // line a screen reader hears. Both are kept HERE as well, because\n"
+    "      // the server renders an empty phase and an empty line and every\n"
+    "      // patch would otherwise take them back (GH #720).\n"
+    "      function phase(p) { st.phase = p; el.setAttribute(\"data-phase\", p); }\n"
+    "      function say(t) { st.said = t; if (state) state.textContent = t; }\n"
+    "      // After a morph: put both back, and only what the morph actually\n"
+    "      // took. Writing the same words into an `aria-live` region again is\n"
+    "      // an announcement a person hears twice. The line is re-queried\n"
+    "      // rather than remembered: morphdom may have replaced the span.\n"
+    "      function repaint() {\n"
+    "        if (el.getAttribute(\"data-phase\") !== st.phase) el.setAttribute(\"data-phase\", st.phase);\n"
+    "        var s = el.querySelector('[data-role=\"state\"]');\n"
+    "        if (s && s.textContent !== st.said) s.textContent = st.said;\n"
+    "      }\n"
+    "      // What ends a refusal: a NEW press, and a microphone that opened\n"
+    "      // after all. Never a clock -- a dim that times out would be a\n"
+    "      // quantity outside the sheet (§ 2). What is left standing is what\n"
+    "      // is still true about this screen: a refused CHANNEL is the\n"
+    "      // socket's word and outlives the gesture, a refused DEVICE does\n"
+    "      // not -- the person may have said yes in the meantime.\n"
+    "      function clearMark() { phase(refused ? \"error\" : \"\"); say(refused ? refusal : idleText()); }\n"
     "      var socket = root.SurfaceSocket && root.SurfaceSocket.getSocket && root.SurfaceSocket.getSocket();\n"
-    "      if (!socket) { say(\"no socket\"); return; }\n"
     "      var call = \"\", topic = \"\", chan = null, joined = false, joinWait = null;\n"
+    "      // A refused join is an answer about SPEECH and about nothing else.\n"
+    "      // It used to be kept on the button as its `disabled` property, and a\n"
+    "      // disabled control dispatches no pointer events at all -- so the dock\n"
+    "      // toggle died with the voice cell, although a toggle is pure\n"
+    "      // presentation and owes the colony nothing (R-23-4, OR-F5). On a\n"
+    "      // screen that has a voice cell it never showed; after a restart of\n"
+    "      // that cell the mark stayed dead until a reload, and on the phone the\n"
+    "      // dock is the only way to the tiles. So the refusal lives here, where\n"
+    "      // only the half that needs a channel reads it.\n"
+    "      var refused = false, refusal = \"\";\n"
+    "      // What a refusal does, in one place: it is SAID -- in the live region\n"
+    "      // a screen reader hears and in the phase the sheet dims the mark by --\n"
+    "      // and it is never announced as `aria-disabled`. The mark still answers\n"
+    "      // a finger, and a control that answers must not tell assistive\n"
+    "      // technology that it does not.\n"
+    "      function refuseFrom(why) { refusal = why; say(why); phase(\"error\"); refused = true; }\n"
+    "      // No socket at all -- the same question the refused join asks, one\n"
+    "      // layer lower. Leaving here would take every listener below with it,\n"
+    "      // including the two that carry the dock toggle, so it is answered the\n"
+    "      // same way: the speech half is refused, the screen half is wired.\n"
+    "      if (!socket) refuseFrom(\"no socket\");\n"
     "      var ctx = null, mctx = null, worklet = null, stream = null, playAt = 0;\n"
-    "      function frame(obj) { chan.push(\"frame\", obj); }\n"
+    "      function frame(obj) { if (chan) chan.push(\"frame\", obj); }\n"
     "      function onFrame(f) {\n"
     "        if (f.type === \"hello\") {\n"
     "          st.hello = f;\n"
@@ -2617,6 +4069,7 @@ OS_CLIENT_JS = (
     "      // One join at a time: a press during a join in flight waits for that\n"
     "      // one instead of opening a second channel on the same socket.\n"
     "      function join() {\n"
+    "        if (!socket) return Promise.resolve(false);\n"
     "        if (joinWait) return joinWait;\n"
     "        call = \"c\" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);\n"
     "        topic = \"voice:\" + call;\n"
@@ -2626,16 +4079,19 @@ OS_CLIENT_JS = (
     "        joinWait = new Promise(function (done) {\n"
     "          chan.join()\n"
     "            .receive(\"ok\", function () { joined = true; joinWait = null; say(idleText()); done(true); })\n"
-    "            .receive(\"error\", function (e) { say((e && e.reason) || \"refused\"); phase(\"error\"); btn.disabled = true; joined = false; joinWait = null; done(false); })\n"
+    "            .receive(\"error\", function (e) { refuseFrom((e && e.reason) || \"refused\"); joined = false; joinWait = null; done(false); })\n"
     "            .receive(\"timeout\", function () { say(\"the screen never answered\"); joined = false; joinWait = null; done(false); });\n"
     "        });\n"
     "        return joinWait;\n"
     "      }\n"
-    "      join();\n"
+    "      if (audio && !refused) join();\n"
     "      function sendAudio(ab) { if (!joined) return; socket.push({ topic: topic, event: \"audio\", payload: ab, ref: \"\", join_ref: chan.joinRef() }); st.sent++; }\n"
     "      var WORKLET = \"class P extends AudioWorkletProcessor{constructor(o){super();this.rate=o.processorOptions.rate;this.acc=[];this.pos=0;var s=this;this.port.onmessage=function(e){if(e.data==='flush')s.f()}}f(){var n=Math.floor(this.rate/50);if(!this.acc.length)return;while(this.acc.length<n)this.acc.push(0);var out=new Int16Array(n);for(var j=0;j<n;j++)out[j]=this.acc[j]*32767;this.acc=this.acc.slice(n);this.port.postMessage(out.buffer,[out.buffer])}process(i){var ch=i[0]&&i[0][0];if(!ch)return true;var r=sampleRate/this.rate;for(var k=0;k<ch.length;k+=r){this.acc.push(Math.max(-1,Math.min(1,ch[Math.floor(k)])))}var n=Math.floor(this.rate/50);while(this.acc.length>=n){var out=new Int16Array(n);for(var j=0;j<n;j++)out[j]=this.acc[j]*32767;this.acc=this.acc.slice(n);this.port.postMessage(out.buffer,[out.buffer])}return true}}registerProcessor('mic',P);\";\n"
     "      async function openMic() {\n"
-    "        if (!root.isSecureContext) { say(\"microphone needs https or localhost\"); return false; }\n"
+    "        // `localhost` read as a signpost and pointed at the wrong place; the\n"
+    "        // address that WOULD work lives in a proxy this page knows nothing\n"
+    "        // about, so the client says only what it knows for certain (#741).\n"
+    "        if (!root.isSecureContext) { say(\"the microphone needs https \\u2014 this page is \" + root.location.origin); return false; }\n"
     "        // The permission prompt opens INSIDE the gesture, and a person who is\n"
     "        // being asked is looking at a button that does nothing. Saying so is\n"
     "        // the difference between waiting and a screen that is broken.\n"
@@ -2647,6 +4103,10 @@ OS_CLIENT_JS = (
     "          var tr = stream.getAudioTracks()[0];\n"
     "          var lat = tr && tr.getSettings && tr.getSettings().latency;\n"
     "          micLat = (typeof lat === \"number\" && lat > 0) ? lat : 0;\n"
+    "          // The device said yes. Nothing else would ever take an\n"
+    "          // earlier refusal off the mark, and a microphone granted a\n"
+    "          // minute later must not need a reload (GH #720, OR-H0.15).\n"
+    "          clearMark();\n"
     "        } catch (e) {\n"
     "          // A refused or missing microphone is the ordinary case, not a crash:\n"
     "          // an unhandled rejection here left the button doing nothing at all,\n"
@@ -2673,6 +4133,12 @@ OS_CLIENT_JS = (
     "          lastFrameAt = now;\n"
     "          if (holding) { sendAudio(e.data); }\n"
     "          else if (draining) { sendAudio(e.data); st.flushed++; }\n"
+    "          // From the touch until the hold: KEPT, not sent. The ring is 2 s\n"
+    "          // long, and the oldest frame falls out rather than the ring\n"
+    "          // growing into a leak on a screen that is touched all day.\n"
+    "          else if (armed) { pre.push(e.data); if (pre.length > PRE_MAX) pre.shift(); }\n"
+    "          // And outside a hold, nothing: a frame that left the device\n"
+    "          // without one would be the button breaking its own promise.\n"
     "        };\n"
     "        src.connect(worklet); return true;\n"
     "      }\n"
@@ -2684,6 +4150,38 @@ OS_CLIENT_JS = (
     "      // opens a window instead: the worklet is told to flush, whatever arrives\n"
     "      // for the next `drainMs` still goes out, and `release` is sent last.\n"
     "      var FLUSH_MIN = 120, FLUSH_MAX = 600;\n"
+    "      var pressAt = 0, byPointer = false, holdTimer = null, ready = false;\n"
+    "      // The ring behind the threshold (E-3, OR-F25). 100 frames of 20 ms =\n"
+    "      // 2 s, which covers the whole setup ever measured here (0,3 to 2 s on\n"
+    "      // a phone: permission, device, worklet). It fills from the first\n"
+    "      // TOUCH, not from the press, and it is sent behind the `hold` that\n"
+    "      // frames it. Without it the threshold would cost the first quarter\n"
+    "      // second of every take.\n"
+    "      var PRE_MAX = 100;\n"
+    "      var pre = [], armed = false, armedAt = 0, micWait = null;\n"
+    "      function arm() { armed = true; armedAt = Date.now(); pre.length = 0; }\n"
+    "      function disarm() { armed = false; armedAt = 0; pre.length = 0; }\n"
+    "      // One microphone at a time: a touch and the press that follows it are\n"
+    "      // two callers, and two `getUserMedia` in flight would build two graphs\n"
+    "      // of which one is never heard from again.\n"
+    "      function mic() {\n"
+    "        if (worklet) return Promise.resolve(true);\n"
+    "        if (micWait) return micWait;\n"
+    "        micWait = openMic().then(function (ok) { micWait = null; return ok; },\n"
+    "                                 function () { micWait = null; return false; });\n"
+    "        return micWait;\n"
+    "      }\n"
+    "      // The first touch anywhere on the mark, in the CAPTURE phase, so it is\n"
+    "      // ahead of the button's own handler: the device is asked for while the\n"
+    "      // finger is still going down, and from there on what it hears is kept.\n"
+    "      // A touch is a gesture, so the permission prompt may open.\n"
+    "      function warm() {\n"
+    "        // § 6.4: without audio the client records nothing -- no ring, no\n"
+    "        // permission prompt, no graph. The press below still lives.\n"
+    "        if (!audio) return;\n"
+    "        if (refused) return;\n"
+    "        arm(); if (!worklet) mic();\n"
+    "      }\n"
     "      var holding = false, pressed = false, draining = false, drainTimer = null;\n"
     "      var lastFrameAt = 0, gapMax = 0, micLat = 0;\n"
     "      // Three summands, and each says where it comes from. `base` is the\n"
@@ -2714,12 +4212,50 @@ OS_CLIENT_JS = (
     "        // has to reach the cell before this hold does, or the cell sees a\n"
     "        // `hold` while one is open and refuses it (`already_holding`).\n"
     "        if (draining) endDrain();\n"
-    "        if (holding || btn.disabled) return;\n"
-    "        pressed = true;\n"
+    "        if (holding) return;\n"
+    "        pressed = true; pressAt = Date.now(); ready = false;\n"
+    "        // A new gesture: whatever the last one ended with is spent.\n"
+    "        gesture = \"\";\n"
+    "        // Only a finger or a mouse can mean the dock. The space key is the\n"
+    "        // desk's way of speaking and has no dock to ask for.\n"
+    "        byPointer = !!(e && e.pointerId !== undefined);\n"
+    "        // The press is recorded; now the mark. This press is not the\n"
+    "        // last one (GH #720): the dim left over from a device that said\n"
+    "        // no belonged to that gesture, and what the socket has said\n"
+    "        // about this screen is put back by the same line. It stands\n"
+    "        // AFTER the two lines above on purpose -- everything a tap\n"
+    "        // needs is set before anything about the channel is read (GH\n"
+    "        // #704).\n"
+    "        clearMark();\n"
     "        // The gesture stays on the button whatever moves under the pointer --\n"
     "        // the button itself, when the state line below it grows on a fresh\n"
-    "        // screen, or a finger that drifts while holding (GH #684).\n"
+    "        // screen, or a finger that drifts while holding (GH #684). It is\n"
+    "        // taken before anything is opened: it belongs to the PRESS, and\n"
+    "        // every press has one, including the one that cannot speak.\n"
     "        if (e && e.pointerId !== undefined && btn.setPointerCapture) { try { btn.setPointerCapture(e.pointerId); } catch (err) { /* no capture, no harm */ } }\n"
+    "        // § 6.4: on an output without audio a long press is a PRESS. No\n"
+    "        // threshold clock, no join, no microphone, no `hold` -- `up()`\n"
+    "        // switches the dock however long the finger stayed down.\n"
+    "        if (!audio) {\n"
+    "          if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }\n"
+    "          st.holdsRefused++;\n"
+    "          return;\n"
+    "        }\n"
+    "        // Nothing to speak into: no ring, no microphone, no second join.\n"
+    "        // The press itself still counts, because a short one means the dock\n"
+    "        // and the dock has nothing to do with speech. What is armed instead\n"
+    "        // is the same threshold clock, and at the end of it stands a refusal\n"
+    "        // a person can read -- a mark that goes quiet is the one failure\n"
+    "        // nobody can tell from a broken screen.\n"
+    "        if (refused) {\n"
+    "          if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }\n"
+    "          holdTimer = setTimeout(refuse, HOLD_MS);\n"
+    "          return;\n"
+    "        }\n"
+    "        // A press with no touch in front of it -- the space key, or a driver\n"
+    "        // that calls the handle -- starts the ring here instead. Late by a\n"
+    "        // gesture, but never empty.\n"
+    "        if (!armed) arm();\n"
     "        if (!joined && !(await join())) return;\n"
     "        // The playback context was built on join, which is not a gesture: under\n"
     "        // an autoplay policy it starts suspended and its clock does not run, so\n"
@@ -2727,23 +4263,120 @@ OS_CLIENT_JS = (
     "        // the first gesture there is, so it is where it gets resumed.\n"
     "        if (ctx && ctx.state === \"suspended\") { try { await ctx.resume(); } catch (e) { /* nothing to resume */ } }\n"
     "        if (mctx && mctx.state === \"suspended\") { try { await mctx.resume(); } catch (e) { /* nothing to resume */ } }\n"
-    "        if (!worklet && !(await openMic())) return;\n"
+    "        if (!worklet && !(await mic())) {\n"
+    "          // The device said no; the press did not (GH #719, OR-H0.15). It\n"
+    "          // runs off the SAME threshold clock as a take, so a tap stays a tap\n"
+    "          // and the dock keeps answering it -- only a real hold opens the chat\n"
+    "          // with no voice behind it.\n"
+    "          var noMic = HOLD_MS - (Date.now() - pressAt);\n"
+    "          if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }\n"
+    "          if (noMic > 0) { holdTimer = setTimeout(refuseMic, noMic); return; }\n"
+    "          refuseMic();\n"
+    "          return;\n"
+    "        }\n"
     "        // Let go while the browser was still asking: the microphone is open\n"
     "        // now and the gesture is over, so the next press is a whole take.\n"
     "        if (!pressed) { say(\"press again\"); return; }\n"
-    "        // And the waiting sentence goes: a screen that still says it is\n"
-    "        // asking for the microphone, minutes after it got one, is the same\n"
-    "        // kind of lie as a screen that said nothing at all.\n"
     "        // The gap is measured per take: the worklet posts between holds too,\n"
     "        // and a screen rendering patches in between would otherwise carry\n"
     "        // its worst pause into every window that follows. `lastFrameAt`\n"
     "        // stays, or the first gap of this take would be lost.\n"
     "        gapMax = 0;\n"
+    "        ready = true;\n"
+    "        // Everything is open; what is left is the threshold. A finger that\n"
+    "        // has already been down that long starts its take in this turn.\n"
+    "        var wait = HOLD_MS - (Date.now() - pressAt);\n"
+    "        if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }\n"
+    "        if (wait > 0) { holdTimer = setTimeout(begin, wait); return; }\n"
+    "        begin();\n"
+    "      }\n"
+    "      // What `begin` is for a screen that can speak. It runs off the same\n"
+    "      // threshold clock and refuses the same press: a finger that is already\n"
+    "      // up gets nothing, because that press was a tap and the dock already\n"
+    "      // answered it.\n"
+    "      function refuse() {\n"
+    "        holdTimer = null;\n"
+    "        if (!pressed || holding) return;\n"
+    "        say(refusal); phase(\"error\"); st.refused++; st.holdsRefused++;\n"
+    "      }\n"
+    # OR-H0.15 (18.09.2026, GH #719): a refused MICROPHONE is not a refused
+    # channel. The hold is the event and the audio is best effort.
+    "      // The end of a press whose microphone said no. The device is refused,\n"
+    "      // the HOLD is not: § 5.4 asks the mark to say the refusal and dim, and\n"
+    "      // OR-H0.15 adds that the hold still reaches the screen -- on an output\n"
+    "      // with a keyboard the chat's own input line (§ 7.3) then carries what\n"
+    "      // the voice cannot. `openMic()` has already said what happened in the\n"
+    "      // live region, so this is the other half: `data-phase=\"error\"`, which\n"
+    "      // is what the sheet dims on (`--mark-dim`), and a counter that makes it\n"
+    "      // measurable from outside. What it does NOT do is set `refused` -- that\n"
+    "      // latch is the socket's word, and a sticky device refusal would make a\n"
+    "      // microphone granted a minute later need a page reload. Measured before\n"
+    "      // this existed (Chromium and WebKit, http:// on a LAN address): a 900 ms\n"
+    "      // press did nothing at all -- no hold, no dock, no dim, every counter 0.\n"
+    "      function refuseMic() {\n"
+    "        holdTimer = null;\n"
+    "        if (!pressed || holding) return;\n"
+    "        phase(\"error\"); st.holdsRefused++;\n"
+    "        if (hookSelf.pushEvent) { hookSelf.pushEvent(\"hold\", {}); st.touches++; }\n"
+    "      }\n"
+    "      // The take itself. It runs from `down` or from the threshold timer,\n"
+    "      // and it refuses both a finger that is already up and a second entry.\n"
+    "      function begin() {\n"
+    "        if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }\n"
+    "        if (!pressed || holding || !ready) return;\n"
     "        holding = true; btn.setAttribute(\"aria-pressed\", \"true\"); say(\"listening\\u2026\"); phase(\"listening\"); frame({ type: \"hold\" });\n"
+    "        // And the other half of a hold (§ 5.4): holding the mark is where a\n"
+    "        // dialogue starts, so the curator gets the hold at the same moment\n"
+    "        // the voice cell gets the frame. The event carries NO field\n"
+    "        // (§ 5.6, S-088): which window it lands on is step 3's business --\n"
+    "        // the one with `topic: chat` -- and a topic sent from here would\n"
+    "        // be ignored, which makes sending it a promise about the wrong\n"
+    "        // thing. The counter keeps its old name; what the wire says is\n"
+    "        // `hold`, and `touch` is the curator's word for the effect (§ 2).\n"
+    "        st.holdMs = Date.now() - pressAt;\n"
+    # § 5.6: the event is `hold` and it carries NOTHING. Which window a hold reaches
+    # is the SCREEN's knowledge, not the browser's (§ 5.4, § 8.5); a `topic` a client
+    # sent with it would not be read (S-088).
+    "        if (hookSelf.pushEvent) { hookSelf.pushEvent(\"hold\", {}); st.touches++; }\n"
+    "        // What was said between the touch and this line, in order, ahead of\n"
+    "        // the live frames. The cell queues them behind the hold that frames\n"
+    "        // them (the text frame opens the session, the binary frames behind\n"
+    "        // it go into its channel). The wait for the threshold is INSIDE this\n"
+    "        // window: 250 ms of a 2 s ring.\n"
+    "        st.setupMs = armedAt ? Date.now() - armedAt : 0;\n"
+    "        st.prebuffered = pre.length;\n"
+    "        while (pre.length) sendAudio(pre.shift());\n"
+    "        disarm();\n"
     "      }\n"
     "      function up() {\n"
-    "        pressed = false; if (!holding) return;\n"
+    "        if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }\n"
+    "        var was = pressed, held = pressAt ? Date.now() - pressAt : 0;\n"
+    "        // The gesture ended HERE, whether it spoke or not: a `click` that\n"
+    "        // follows belongs to it and switches nothing.\n"
+    "        if (was && byPointer) gesture = \"pointer\";\n"
+    "        pressed = false; ready = false;\n"
+    "        if (!holding) {\n"
+    "          // A touch that never became a hold: what the ring heard belonged\n"
+    "          // to a take that did not happen, so it goes with the gesture.\n"
+    "          disarm();\n"
+    "          // Let go before the threshold: that was a TAP (E-18). Nothing was\n"
+    "          // sent, so there is nothing to release, and the one thing it means\n"
+    "          // is the dock. `blur` and `visibilitychange` land here too, with\n"
+    "          // no press behind them, and must not switch anything.\n"
+    "          // § 6.4/§ 5.5: with audio, only a press under the threshold is\n"
+    "          // a press -- a longer one spoke. Without audio there is no\n"
+    "          // hold to tell it from, so every press means the dock.\n"
+    "          if (was && byPointer && (!audio || held < HOLD_MS)) tapDock();\n"
+    "          return;\n"
+    "        }\n"
     "        holding = false; btn.setAttribute(\"aria-pressed\", \"false\"); say(idleText()); phase(\"sending\");\n"
+    "        // The ring belongs to the take that just ended. `begin()` disarmed\n"
+    "        // on the way in, but a second finger on the mark re-arms it, and\n"
+    "        // leaving it armed here would keep the ring filling BETWEEN takes:\n"
+    "        // `down()` would skip its own `arm()`, and the next hold would\n"
+    "        // carry up to 2 s of room tone from before this release in front\n"
+    "        // of it, with a `setup_ms` that never happened.\n"
+    "        disarm();\n"
     "        // The key is up for the person the moment it is up. For the audio it\n"
     "        // is up one window later, and `release` goes at the END of it.\n"
     "        draining = true; st.drainMs = flushMs();\n"
@@ -2752,25 +4385,49 @@ OS_CLIENT_JS = (
     "        drainTimer = setTimeout(endDrain, st.drainMs);\n"
     "      }\n"
     "      // A display is a surface other people's components render onto, so the\n"
-    "      // window-wide key must keep its hands off their controls -- and off the\n"
-    "      // button once a refused join disabled it.\n"
+    "      // window-wide key must keep its hands off their controls. It asks\n"
+    "      // nothing about the channel: a press with nothing to speak into says\n"
+    "      // so at the threshold, in the open.\n"
     "      function typing(e) {\n"
     "        var t = e.target;\n"
     "        if (!t || t === root || t === document.body) return false;\n"
     "        var tag = (t.tagName || \"\").toLowerCase();\n"
     "        return tag === \"input\" || tag === \"textarea\" || tag === \"select\" || t.isContentEditable === true;\n"
     "      }\n"
-    "      function keydown(e) { if (e.code !== \"Space\" || e.repeat || btn.disabled || typing(e)) return; e.preventDefault(); down(); }\n"
+    "      function keydown(e) { if (e.code !== \"Space\" || e.repeat || typing(e)) return; e.preventDefault(); down(); }\n"
     "      function keyup(e) { if (e.code !== \"Space\" || typing(e)) return; e.preventDefault(); up(); }\n"
     "      // A hold ends when the page does: a key held while switching windows\n"
     "      // would otherwise keep the microphone open with nothing left to release it.\n"
     "      function onBlur() { up(); }\n"
     "      function onHide() { if (document.hidden) up(); }\n"
-    "      btn.addEventListener(\"pointerdown\", down); btn.addEventListener(\"pointerup\", up); btn.addEventListener(\"pointercancel\", up); btn.addEventListener(\"lostpointercapture\", up);\n"
+    "      // The second way in. `pointerup` is the first and answers fastest;\n"
+    "      // this one answers where it never came. What it must NOT do is\n"
+    "      // switch after a `pointerup` that already did -- nor after a HOLD,\n"
+    "      // because a press that spoke also ends in a click. Both are the same\n"
+    "      // question: did this gesture already end by pointer?\n"
+    "      function onClick() {\n"
+    "        if (holding || draining) return;\n"
+    "        if (gesture !== \"\") return;\n"
+    "        // A click is the END of the gesture it belongs to, and sometimes\n"
+    "        // the only end there is: under `touch-action: none` with a captured\n"
+    "        // pointer the `pointerup` can go missing entirely. Without these\n"
+    "        // two lines the tap would count here and the threshold timer would\n"
+    "        // still fire afterwards -- a `hold` frame and a `touch` event for a\n"
+    "        // finger that is long gone, and a microphone nothing releases.\n"
+    "        if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }\n"
+    "        pressed = false; ready = false;\n"
+    "        tapDock();\n"
+    "      }\n"
+    "      // On the MARK and in the capture phase, ahead of the button's own\n"
+    "      // handler: the ring has to be armed before anything else reads the\n"
+    "      // gesture, and the element is what a finger lands on.\n"
+    "      el.addEventListener(\"pointerdown\", warm, true);\n"
+    "      btn.addEventListener(\"pointerdown\", down); btn.addEventListener(\"pointerup\", up); btn.addEventListener(\"pointercancel\", up); btn.addEventListener(\"lostpointercapture\", up); btn.addEventListener(\"click\", onClick);\n"
     "      window.addEventListener(\"blur\", onBlur); document.addEventListener(\"visibilitychange\", onHide);\n"
     "      root.addEventListener(\"keydown\", keydown);\n"
     "      root.addEventListener(\"keyup\", keyup);\n"
     "      st.down = down; st.up = up; st.cancel = function () { frame({ type: \"cancel\" }); };\n"
+    "      st.holdThreshold = HOLD_MS; st.tapDock = tapDock; st.warm = warm;\n"
     "      // What a re-mount has to undo. LiveView re-mounts a hook after a reconnect,\n"
     "      // and without this the listeners, the microphone and the contexts of every\n"
     "      // previous life stay open.\n"
@@ -2778,7 +4435,15 @@ OS_CLIENT_JS = (
     "        root.removeEventListener(\"keydown\", keydown);\n"
     "        root.removeEventListener(\"keyup\", keyup);\n"
     "        window.removeEventListener(\"blur\", onBlur); document.removeEventListener(\"visibilitychange\", onHide);\n"
+    "        btn.removeEventListener(\"pointerdown\", down); btn.removeEventListener(\"pointerup\", up); btn.removeEventListener(\"pointercancel\", up); btn.removeEventListener(\"lostpointercapture\", up);\n"
+    "        btn.removeEventListener(\"click\", onClick);\n"
+    "        el.removeEventListener(\"pointerdown\", warm, true);\n"
+    "        disarm(); micWait = null;\n"
+    "        pressAt = 0; byPointer = false; ready = false;\n"
+    "        gesture = \"\";\n"
+    "        if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }\n"
     "        holding = false; pressed = false; joined = false; joinWait = null;\n"
+    "        refused = false; refusal = \"\";\n"
     "        draining = false; if (drainTimer) { clearTimeout(drainTimer); drainTimer = null; }\n"
     "        lastFrameAt = 0; gapMax = 0; micLat = 0;\n"
     "        phase(\"\"); btn.setAttribute(\"aria-pressed\", \"false\");\n"
@@ -2789,8 +4454,17 @@ OS_CLIENT_JS = (
     "        if (chan) { try { chan.leave(); } catch (e) { /* the socket may be gone already */ } chan = null; }\n"
     "      };\n"
     "    },\n"
+    "    // The patch does not own the mark. The mark rides in the pass's\n"
+    "    // render, so every pass morphs the hook's own element, and the\n"
+    "    // server's phase is always empty -- because the colony does not\n"
+    "    // know, and by § 3.2 must not know, what this browser's microphone\n"
+    "    // said (GH #720).\n"
+    "    updated: function () {\n"
+    "      if (this.__mic) this.__mic.repaint();\n"
+    "    },\n"
     "    destroyed: function () {\n"
     "      if (this.__displayMicTeardown) { this.__displayMicTeardown(); this.__displayMicTeardown = null; }\n"
+    "      this.__mic = null;\n"
     "    }\n"
     "  };\n"
     "  root.SurfaceHooks = Object.assign(root.SurfaceHooks || {}, { DisplayMic: hook });\n"
@@ -2831,14 +4505,18 @@ SCENE_CLIENT_JS = (
     "    for (i = 0; i < t.length; i++) {\n"
     "      out.tiles[t[i].getAttribute(\"data-for\")] = { node: t[i], rect: t[i].getBoundingClientRect() };\n"
     "    }\n"
-    "    var w = el.querySelectorAll(\"[data-region] [id][data-state]\");\n"
+    "    var w = el.querySelectorAll(\"[data-region] [id][data-level]\");\n"
     "    for (i = 0; i < w.length; i++) {\n"
     "      out.wins[w[i].id] = { node: w[i], rect: w[i].getBoundingClientRect(),\n"
-    "        state: w[i].getAttribute(\"data-state\"), age: w[i].getAttribute(\"data-age\") };\n"
+    "        level: w[i].getAttribute(\"data-level\"), age: w[i].getAttribute(\"data-age\") };\n"
     "    }\n"
     "    return out;\n"
     "  }\n"
-    "  function onCanvas(s) { return s === \"focus\" || s === \"urgent\"; }\n"
+    "  // Open is a LEVEL, not a rung (display-hive.md § 4.24). The recorded\n"
+    "  // VALUE is what is compared, never the node: `flip` runs in `updated`,\n"
+    "  // after the patch, so a live node already carries the new attribute --\n"
+    "  // the snapshot is the only place the old one still exists.\n"
+    "  function open(level) { return !!level && level !== \"0\"; }\n"
     "  // One movement: the element is put back where it was and let go.\n"
     "  function move(node, from, to, ms, fade) {\n"
     "    if (!node.animate || !to.width || !to.height) return false;\n"
@@ -2864,15 +4542,110 @@ SCENE_CLIENT_JS = (
     "    node.setAttribute(\"data-zoomed\", \"true\");\n"
     "    root.setTimeout(function () { node.removeAttribute(\"data-zoomed\"); }, ms);\n"
     "  }\n"
+    "  // The effect of a tap, drawn before the pass answers (§ 5.7). The\n"
+    "  // movement below (`away`) does NOT run for a tap any more, and that is\n"
+    "  // the point rather than a loss: this function writes the end state, so\n"
+    "  // the snapshot `beforeUpdate` takes already holds it and `flip` finds\n"
+    "  // nothing that moved (§ 5.8: the series draws its end state, and ten\n"
+    "  // taps in a second are not ten flights). What the FINGER did is\n"
+    "  // instant; what the SYSTEM did -- an app withdrawing its view, a judge\n"
+    "  // hiding a window, a modal co-closed by a tap on another output --\n"
+    "  // still arrives as a patch nobody drew here, and flies into its tile\n"
+    "  // exactly as before. Both halves are wanted, and this is where the line\n"
+    "  // between them runs (OR-H2.9).\n"
+    "  // curator confirms it one pass later; because the finger stands above\n"
+    "  // the score (§ 4.19) the pass never disagrees, and a deviation is a\n"
+    "  // defect -- Q-20 is the pass this is checked against. The client writes\n"
+    "  // exactly the words the curator writes, so the confirming patch changes\n"
+    "  // nothing and nothing moves twice.\n"
+    "  function optimistic(el, tile, st) {\n"
+    "    var id = tile.getAttribute(\"data-for\"), win = id && document.getElementById(id);\n"
+    "    if (!win) return;\n"
+    "    var open = win.getAttribute(\"data-level\") !== \"0\";\n"
+    "    var closed = [];\n"
+    "    el.dataset.optimistic = \"1\";\n"
+    "    if (open) {\n"
+    "      // § 5.2 put away: the window goes back into its tile.\n"
+    "      win.setAttribute(\"data-level\", \"0\"); win.setAttribute(\"data-rung\", \"ambient\");\n"
+    "      tile.setAttribute(\"data-open\", \"\");\n"
+    "    } else {\n"
+    "      // § 5.1 open: the window leads its ladder.\n"
+    "      var modal = win.getAttribute(\"data-layer\") === \"modal\";\n"
+    "      win.setAttribute(\"data-level\", modal ? \"2\" : \"1\"); win.setAttribute(\"data-rung\", \"focus\");\n"
+    "      tile.setAttribute(\"data-open\", \"1\");\n"
+    "    }\n"
+    "    if (win.getAttribute(\"data-layer\") === \"canvas\") {\n"
+    "      // § 5.3, on open AND on put-away: the rule reads the tapped\n"
+    "      // window's LAYER, never its rung (S-077).\n"
+    "      var modals = el.querySelectorAll('[data-region] [data-level=\"2\"]'), i;\n"
+    "      for (i = 0; i < modals.length; i++) {\n"
+    "        modals[i].setAttribute(\"data-level\", \"0\"); modals[i].setAttribute(\"data-rung\", \"ambient\");\n"
+    "        if (modals[i].id) closed.push({ id: modals[i].id,\n"
+    "          was: Number(modals[i].getAttribute(\"data-acted\") || 0) });\n"
+    "      }\n"
+    "    }\n"
+    "    st.optimistic++;\n"
+    "    // What was drawn, and the stamp the window wore when the finger landed. The\n"
+    "    // stamp is the SERVER's (`data-acted` = the last touch or put-away of this\n"
+    "    // window, § 4.9/§ 5.2), read out of the DOM rather than taken off this\n"
+    "    // device's clock: a comparison between two values of one clock cannot be\n"
+    "    // skewed, and a skewed browser would otherwise let go of the drawing early.\n"
+    "    st.drawn[id] = { at: Date.now(), was: Number(win.getAttribute(\"data-acted\") || 0),\n"
+    "      level: win.getAttribute(\"data-level\"), rung: win.getAttribute(\"data-rung\"),\n"
+    "      open: tile.getAttribute(\"data-open\") || \"\", closed: closed };\n"
+    "    root.requestAnimationFrame(function () { delete el.dataset.optimistic; });\n"
+    "  }\n"
+    "  // The other half of § 5.7 (Decision 18.09.): a patch from a pass that started\n"
+    "  // BEFORE the tap renders the state before the tap and writes it over the\n"
+    "  // drawing. Measured in the owner's own session on the candidate colony -- five\n"
+    "  // taps on the chat tile in four seconds, every one of them processed, and a\n"
+    "  // window that flashed open and shut each time\n"
+    "  // (`plans/welle-h3-2026-09-18/messungen/B-klickserie.md` § 3, 16:38:16). So the\n"
+    "  // drawing is put back until a patch carries a state computed after the tap,\n"
+    "  // which the curator's stamp says: `data-acted` bigger than the one the window\n"
+    "  // wore. It is not a promise the client can keep for ever -- a tap the pass\n"
+    "  // absorbs (§ 6.12, S-053) never moves the stamp at all -- so the hold also ends\n"
+    "  // by the clock: KEEP_MS is above the longest pass measured on a loaded twin\n"
+    "  // (1.6-3.4 s, § 4a of the same report) and far below the time a person would\n"
+    "  // spend looking at a window that is wrong.\n"
+    "  var KEEP_MS = 6000;\n"
+    "  function redraw(el, st) {\n"
+    "    var now = Date.now(), id, h, win, tile, m, c, i;\n"
+    "    for (id in st.drawn) {\n"
+    "      h = st.drawn[id]; win = document.getElementById(id);\n"
+    "      if (!win || now - h.at > KEEP_MS) { delete st.drawn[id]; continue; }\n"
+    "      if (Number(win.getAttribute(\"data-acted\") || 0) > h.was) { delete st.drawn[id]; continue; }\n"
+    "      win.setAttribute(\"data-level\", h.level); win.setAttribute(\"data-rung\", h.rung);\n"
+    "      tile = el.querySelector('[data-for=\"' + id + '\"]');\n"
+    "      if (tile) tile.setAttribute(\"data-open\", h.open);\n"
+    "      // A co-closed window is held by its OWN stamp, exactly like the tapped one:\n"
+    "      // \u00a7 5.7 runs in both directions. The state is one for all outputs (\u00a7 3.1), and\n"
+    "      // this hook only ever sees one of them -- a chat opened by a HOLD (\u00a7 5.4, which\n"
+    "      // never passes through the tile handler) or a tap on the phone reaches this\n"
+    "      // browser only as a patch. Closing it again from a list drawn seconds ago is\n"
+    "      // the same \"the tile does nothing\" from the other side.\n"
+    "      for (i = 0; i < h.closed.length; i++) {\n"
+    "        c = h.closed[i];\n"
+    "        if (st.drawn[c.id]) continue;\n"
+    "        m = document.getElementById(c.id);\n"
+    "        if (!m || Number(m.getAttribute(\"data-acted\") || 0) > c.was) continue;\n"
+    "        m.setAttribute(\"data-level\", \"0\"); m.setAttribute(\"data-rung\", \"ambient\");\n"
+    "      }\n"
+    "      st.restored++;\n"
+    "    }\n"
+    "  }\n"
     "  // The zoom, both ways, plus the dock's own reordering. Nothing here\n"
     "  // knows what an object IS -- only that a tile and a window share a name.\n"
     "  function flip(el, before, st) {\n"
+    "    // § 5.8: while the client draws, the series draws its END state. An\n"
+    "    // animation per patch is the flashing ten taps in a second would be.\n"
+    "    if (el.dataset.optimistic === \"1\") return;\n"
     "    if (reduced()) return;\n"
     "    var after = scan(el), id;\n"
     "    var enter = dur(el, \"--t-enter\", 360), leave = dur(el, \"--t-leave\", 240);\n"
     "    for (id in after.wins) {\n"
     "      var now = after.wins[id], was = before.wins[id];\n"
-    "      if (!onCanvas(now.state) || (was && onCanvas(was.state))) continue;\n"
+    "      if (!open(now.level) || (was && open(was.level))) continue;\n"
     "      var from = before.tiles[id];\n"
     "      if (!from) continue;\n"
     "      if (move(now.node, from.rect, now.rect, enter, 0.4)) st.flips++;\n"
@@ -2880,8 +4653,8 @@ SCENE_CLIENT_JS = (
     "    }\n"
     "    for (id in before.wins) {\n"
     "      var gone = !after.wins[id] || after.wins[id].age === \"leaving\"\n"
-    "        || !onCanvas(after.wins[id].state);\n"
-    "      if (!gone || !onCanvas(before.wins[id].state)) continue;\n"
+    "        || !open(after.wins[id].level);\n"
+    "      if (!gone || !open(before.wins[id].level)) continue;\n"
     "      var tile = after.tiles[id];\n"
     "      var node = after.wins[id] ? after.wins[id].node : null;\n"
     "      if (!tile || !node) continue;\n"
@@ -2896,6 +4669,77 @@ SCENE_CLIENT_JS = (
     "        [{ transform: \"translateY(\" + dy + \"px)\" }, { transform: \"none\" }],\n"
     "        { duration: leave, easing: EASE });\n"
     "      st.flips++;\n"
+    "    }\n"
+    "  }\n"
+    "  // The conversation shows its NEWEST line -- the foot of whatever scrolls\n"
+    "  // above the lines, found rather than named. Held back only where somebody\n"
+    "  // scrolled away from the anchor stamped below, read before the patch:\n"
+    "  // distance to the foot would read content that grew by itself as a reader\n"
+    "  // and never follow an answer again (OR-F78 argues both halves).\n"
+    "  var END_SLACK = 24;\n"
+    "  function tails(el) {\n"
+    "    var l = el.querySelectorAll(\".display-chat-lines\"), out = [], i, p;\n"
+    "    for (i = 0; i < l.length; i++) {\n"
+    "      for (p = l[i]; p && p !== document.body; p = p.parentElement) {\n"
+    "        if (p.scrollHeight - p.clientHeight > 1) { out.push(p); break; }\n"
+    "      }\n"
+    "    }\n"
+    "    return out;\n"
+    "  }\n"
+    "  function held(el) {\n"
+    "    return tails(el).filter(function (n) { return n.__end > n.scrollTop + END_SLACK; });\n"
+    "  }\n"
+    "  function toEnd(el, keep, st) {\n"
+    "    tails(el).forEach(function (n) {\n"
+    "      if (keep.indexOf(n) > -1) return;\n"
+    "      n.scrollTop = n.scrollHeight;\n"
+    "      n.__end = n.scrollTop;\n"
+    "      st.ends++;\n"
+    "    });\n"
+    "  }\n"
+    "  // § 8.4 (R-26-1): the line carries `at` as epoch milliseconds, and nothing\n"
+    "  // else. The screen state has no time zone -- the DEVICE in front of a person\n"
+    "  // has one -- so the clock is written here, in the browser of whoever is\n"
+    "  // looking. HH:MM, never seconds; a line of today carries no date, a line of\n"
+    "  // any other day carries DD.MM. in front of it (§ 8.4).\n"
+    "  var HHMM = null;\n"
+    "  function hhmm(d) {\n"
+    "    if (HHMM === null) {\n"
+    "      try {\n"
+    "        HHMM = new Intl.DateTimeFormat(undefined,\n"
+    "          { hour: \"2-digit\", minute: \"2-digit\", hourCycle: \"h23\" });\n"
+    "      } catch (e) { HHMM = false; }\n"
+    "    }\n"
+    "    if (HHMM) return HHMM.format(d);\n"
+    "    var h = d.getHours(), m = d.getMinutes();\n"
+    "    return (h < 10 ? \"0\" : \"\") + h + \":\" + (m < 10 ? \"0\" : \"\") + m;\n"
+    "  }\n"
+    "  function daykey(d) {\n"
+    "    return d.getFullYear() + \"-\" + (d.getMonth() + 1) + \"-\" + d.getDate();\n"
+    "  }\n"
+    "  // `data-at` is the truth and the text is derived from it, so a node already\n"
+    "  // written for the same `at` ON THE SAME DAY is left alone. Idempotence is not\n"
+    "  // a nicety here: this runs on EVERY patch, and rewriting the text of a node\n"
+    "  // would drop a selection somebody is making inside the line. The day is part\n"
+    "  // of the stamp because a line written before midnight has to grow its date\n"
+    "  // when the day turns over, and the first patch after it does that.\n"
+    "  function clocks(el, st) {\n"
+    "    var nodes = el.querySelectorAll(\"time[data-at]\"), today = daykey(new Date()), i;\n"
+    "    for (i = 0; i < nodes.length; i++) {\n"
+    "      var n = nodes[i], raw = n.getAttribute(\"data-at\"), at = parseInt(raw, 10);\n"
+    "      if (!at) continue;\n"
+    "      var stamp = raw + \"@\" + today;\n"
+    "      if (n.dataset.clocked === stamp && n.textContent) continue;\n"
+    "      var d = new Date(at), text = hhmm(d);\n"
+    "      if (daykey(d) !== today) {\n"
+    "        var dd = d.getDate(), mm = d.getMonth() + 1;\n"
+    "        text = (dd < 10 ? \"0\" : \"\") + dd + \".\"\n"
+    "               + (mm < 10 ? \"0\" : \"\") + mm + \". \" + text;\n"
+    "      }\n"
+    "      n.textContent = text;\n"
+    "      n.setAttribute(\"datetime\", d.toISOString());\n"
+    "      n.dataset.clocked = stamp;\n"
+    "      st.clocks++;\n"
     "    }\n"
     "  }\n"
     "  var CHIME_EVERY_MS = 2000, CHIME_MAX_MS = 60000;\n"
@@ -2951,19 +4795,20 @@ SCENE_CLIENT_JS = (
     "      st.chimes++;\n"
     "    } catch (e) { /* a page with no audio stays a page */ }\n"
     "  }\n"
-    "  // A window that ARRIVES urgent rings; one that has been urgent for a\n"
-    "  // while rings again every two seconds, and gives up after a minute --\n"
-    "  // the ring has an end, which is the whole of D-14/2.\n"
+    "  // The FRONT urgent rings (§ 6.13): on its appearance on level 3, then\n"
+    "  // every two seconds, at most one minute. Which window that is, the\n"
+    "  // curator says -- `data-front` on exactly one window or on none\n"
+    "  // (§ 4.18). Until 2.5.0 this collected every window with the rung\n"
+    "  // `urgent`, so two ringing timers rang twice.\n"
     "  function ring(el, st, seen) {\n"
-    "    var n = el.querySelectorAll('[data-region] [id][data-state=\"urgent\"]');\n"
-    "    var now = {}, fresh = false, any = false, i, id;\n"
-    "    for (i = 0; i < n.length; i++) { now[n[i].id] = true; any = true; }\n"
-    "    for (id in now) { if (!seen.ids[id]) fresh = true; }\n"
-    "    seen.ids = now;\n"
-    "    if (!any) { seen.since = 0; return; }\n"
+    "    var n = el.querySelector('[data-region] [id][data-front=\"1\"]');\n"
+    "    var id = n ? n.id : \"\";\n"
+    "    if (!id) { seen.id = \"\"; seen.since = 0; return; }\n"
     "    var t = Date.now();\n"
-    "    if (fresh) { seen.since = t; seen.last = t; chime(st); return; }\n"
-    "    if (seen.since && t - seen.since < CHIME_MAX_MS && t - seen.last >= CHIME_EVERY_MS) {\n"
+    "    // Another id is another window: it just appeared up there, whatever\n"
+    "    // stood there before.\n"
+    "    if (id !== seen.id) { seen.id = id; seen.since = t; seen.last = t; chime(st); return; }\n"
+    "    if (t - seen.since < CHIME_MAX_MS && t - seen.last >= CHIME_EVERY_MS) {\n"
     "      seen.last = t; chime(st);\n"
     "    }\n"
     "  }\n"
@@ -2984,33 +4829,102 @@ SCENE_CLIENT_JS = (
     "      root.removeEventListener(\"keydown\", go, true);\n"
     "    };\n"
     "  }\n"
+    "  // display-hive.md § 6.5: `/<mount>/` is a switch, and the check is the\n"
+    "  // client's because only the client knows the device. It runs ONCE,\n"
+    "  // before anything is registered: a page that is about to leave should\n"
+    "  // not first boot a socket and pay a curation pass. An explicit exit\n"
+    "  // carries no `data-switch`, which is what \"explicit URLs override the\n"
+    "  // switch\" means here.\n"
+    "  function switchExit(cols) {\n"
+    "    if (!cols || cols.getAttribute(\"data-switch\") !== \"1\") return false;\n"
+    "    var screens = [], to = cols.getAttribute(\"data-default\") || \"\";\n"
+    "    try {\n"
+    "      var raw = JSON.parse(cols.getAttribute(\"data-screens\") || \"[]\");\n"
+    "      screens = Array.isArray(raw) ? raw : Object.keys(raw);\n"
+    "    } catch (e) { screens = []; }\n"
+    "    var small = root.matchMedia && root.matchMedia(\"(pointer: coarse) and (max-width: 600px)\").matches;\n"
+    "    if (small && screens.indexOf(\"phone\") > -1) to = \"phone\";\n"
+    "    if (!to) return false;\n"
+    "    var base = root.location.pathname.replace(/\\/+$/, \"\");\n"
+    "    root.location.replace(base + \"/\" + to + root.location.search);\n"
+    "    return true;\n"
+    "  }\n"
+    "  if (switchExit(document.querySelector(\".display-columns\"))) return;\n"
     "  var hook = {\n"
     "    mounted: function () {\n"
     "      var el = this.el;\n"
-    "      var st = { flips: 0, ticks: 0, chimes: 0, audio: null, said: false };\n"
+    "      var st = { flips: 0, ticks: 0, chimes: 0, ends: 0, clocks: 0, optimistic: 0,\n"
+    "                 restored: 0, drawn: {}, audio: null, said: false };\n"
     "      root.__displayScene = st;\n"
-    "      // What has rung is remembered across mounts: a wall screen that\n"
-    "      // reconnects all day must not chime again for a window it heard.\n"
-    "      var seen = root.__displaySceneSeen || (root.__displaySceneSeen = { ids: {}, since: 0, last: 0 });\n"
+    "      // The beat of the ring, and nothing more: which window is up there\n"
+    "      // now, since when, when it last rang. It belongs to THIS mount\n"
+    "      // (§ 3.2: the dock is the one browser state with meaning), and a\n"
+    "      // reconnect starts it afresh -- a memory of what was heard is the\n"
+    "      // \"seen\" memory § 4.33 does without.\n"
+    "      var seen = { id: \"\", since: 0, last: 0 };\n"
     "      var disarm = arm(st);\n"
+    "      // The optimistic half of a tile tap (§ 5.7). Capture phase, so it is\n"
+    "      // ahead of LiveView's own click path and the ring is on the tile in\n"
+    "      // the same frame the finger lands. The ring is the press; the window\n"
+    "      // beside it is the EFFECT, drawn here and confirmed by the pass.\n"
+    "      var press = function (e) {\n"
+    "        var t = e.target && e.target.closest && e.target.closest(\".display-tile[phx-click]\");\n"
+    "        if (!t) return;\n"
+    "        t.setAttribute(\"data-zoomed\", \"true\");\n"
+    "        root.setTimeout(function () { t.removeAttribute(\"data-zoomed\"); }, dur(el, \"--t-enter\", 360));\n"
+    "        optimistic(el, t, st);\n"
+    "      };\n"
+    "      el.addEventListener(\"pointerdown\", press, true);\n"
+    "      // Enter in a `display-input` sends the line; emptying it afterwards is\n"
+    "      // the screen's job, because the server never holds the field's value\n"
+    "      // as state. It happens in a MACROTASK of its own, and that shape is\n"
+    "      // measured rather than argued: the vendored LiveView binds `keyup` on\n"
+    "      // `window` and not on this container, and in the bubble phase\n"
+    "      // `document` runs BEFORE `window` -- while LiveView reads the value\n"
+    "      // synchronously as it pushes. Emptying the field here and now would\n"
+    "      // hand the server an empty string, and a sentence somebody typed\n"
+    "      // would never become a turn. A macrotask runs after EVERY synchronous\n"
+    "      // handler, wherever LiveView hangs its own (OR-F17, OR-F48).\n"
+    "      var typed = function (e) {\n"
+    "        if (e.key !== \"Enter\") return;\n"
+    "        var f = e.target;\n"
+    "        if (!f || !f.classList || !f.classList.contains(\"display-input-field\")) return;\n"
+    "        root.setTimeout(function () { f.value = \"\"; }, 0);\n"
+    "      };\n"
+    "      document.addEventListener(\"keyup\", typed);\n"
     "      var iv = root.setInterval(function () { tick(el, st); ring(el, st, seen); }, 1000);\n"
     "      st.tick = function () { tick(el, st); };\n"
     "      st.ring = function () { ring(el, st, seen); };\n"
-    "      this.__scene = { st: st, before: scan(el), seen: seen, iv: iv, disarm: disarm };\n"
-    "      tick(el, st); ring(el, st, seen);\n"
+    "      st.clock = function () { clocks(el, st); };\n"
+    "      this.__scene = { st: st, before: scan(el), held: [], seen: seen, iv: iv, disarm: disarm,\n"
+    "                       press: press, typed: typed };\n"
+    "      tick(el, st); ring(el, st, seen); clocks(el, st);\n"
+    "      toEnd(el, [], st);\n"
     "    },\n"
     "    beforeUpdate: function () {\n"
-    "      if (this.__scene) this.__scene.before = scan(this.el);\n"
+    "      if (!this.__scene) return;\n"
+    "      this.__scene.before = scan(this.el);\n"
+    "      this.__scene.held = held(this.el);\n"
     "    },\n"
     "    updated: function () {\n"
     "      if (!this.__scene) return;\n"
+    "      // Before the movement, always: `flip` compares the snapshot with what stands\n"
+    "      // NOW, so a drawing put back after it would be a movement nobody asked for.\n"
+    "      redraw(this.el, this.__scene.st);\n"
     "      flip(this.el, this.__scene.before, this.__scene.st);\n"
     "      tick(this.el, this.__scene.st);\n"
     "      ring(this.el, this.__scene.st, this.__scene.seen);\n"
+    "      clocks(this.el, this.__scene.st);\n"
+    "      toEnd(this.el, this.__scene.held || [], this.__scene.st);\n"
     "    },\n"
     "    destroyed: function () {\n"
     "      if (!this.__scene) return;\n"
     "      root.clearInterval(this.__scene.iv);\n"
+    "      // Both handles out of the bag first: what is given back has to read\n"
+    "      // as the same two names it was registered with.\n"
+    "      var press = this.__scene.press, typed = this.__scene.typed;\n"
+    "      this.el.removeEventListener(\"pointerdown\", press, true);\n"
+    "      document.removeEventListener(\"keyup\", typed);\n"
     "      this.__scene.disarm();\n"
     "      if (this.__scene.st.audio) { try { this.__scene.st.audio.close(); } catch (e) { /* gone */ } }\n"
     "      this.__scene = null;\n"
@@ -3042,22 +4956,22 @@ def _c(name, template, props, layer="content"):
 # number out of a string. The `web` cell refuses an undeclared prop, so a
 # hint has to stand here before an application may say it.
 CURATED = {
-    "since": "text", "score": "text",
-    "judged_relevance": "text", "judged_hidden": "boolean",
-    "context": "text", "relevance": "text", "class": "text",
-    "pinned": "boolean", "relevant_until": "int", "touched": "text",
-    # The subject of the window (R-D4), whether the canvas behind it may
-    # blur (D-12), and the floor's mark that another application already
-    # says this (spec 2.10).
-    "topic": "text", "modal": "boolean", "topic_dupe": "boolean",
-    # The window's place on the ladder (ambient, relevant, focus, urgent,
-    # hidden). `state` is the canvas's word and knows three of them -- focus,
-    # urgent, hidden -- because the canvas carries only what is large (spec
-    # 2.2); the tile and the judge read the rung.
-    "rung": "text",
-    # The relevance a standing window borrowed from an answer it took (R-D4,
-    # OR-D-Bau-6): text of a number while the answer stands, else empty.
-    "topic_relevance": "text",
+    # The app's hints (§ 3): what an application may say about its own window. Numbers
+    # travel as TEXT, because the template language reads an `int 0` as empty and § 3.3
+    # says so in as many words; the `web` cell refuses an undeclared prop, so a hint has
+    # to stand here before an application may send it.
+    "context": "text", "relevance": "text", "class": "text", "pinned": "boolean",
+    "relevant_until": "text", "touched": "text", "topic": "text", "layer": "text",
+    "seat": "text", "seat_ord": "text", "linger": "text", "state": "text",
+    # § 8.3: the turn a window came out of. The chat closes on it (§ 4.13).
+    "turn_id": "text",
+    # The curator's rendering values (§ 3.1): systemwide, the same on every output.
+    # `level` is text for the same reason `since` is -- `data-level=""` matches no rule.
+    "rung": "text", "level": "text", "front": "text", "age": "text", "led": "text",
+    "since": "text", "score": "text", "region": "text",
+    # The stamp the client reads to tell a patch of its own tap's pass from a patch of
+    # one that started earlier (GH #744, § 5.7).
+    "acted": "text",
 }
 
 
@@ -3070,16 +4984,14 @@ def windows():
     """
     return [
         _c("display-pane", PANE_TEMPLATE, dict({
-            "pane_id": "text", "state": "text", "age": "text",
-            "kicker": "text", "title": "text", "region": "text",
+            "pane_id": "text", "kicker": "text", "title": "text",
             "thin": "boolean", "tone": "text",
         }, **CURATED), "navigation"),
         _c("display-panel", PANEL_TEMPLATE, dict({
-            "pane_id": "text", "state": "text", "age": "text",
-            "title": "text", "scroll": "boolean", "tone": "text",
+            "pane_id": "text", "title": "text", "scroll": "boolean", "tone": "text",
         }, **CURATED), "navigation"),
         _c("display-overlay", OVERLAY_TEMPLATE, dict({
-            "pane_id": "text", "state": "text", "age": "text", "title": "text",
+            "pane_id": "text", "title": "text",
             "body": "text", "ttl_ms": "int", "position": "text",
         }, **CURATED), "navigation"),
         _c("display-ornament", ORNAMENT_TEMPLATE, {
@@ -3089,7 +5001,7 @@ def windows():
 
 
 def contents():
-    """Catalogue B: the twenty-four content components, all `layer: "content"`.
+    """Catalogue B: the twenty-six content components, all `layer: "content"`.
 
     None of them writes glass: a content component sits on a window's
     `.inner` fill, and the `web` cell refuses the material on this layer.
@@ -3117,8 +5029,8 @@ def contents():
             "total_ms": "int", "now": "int", "done": "boolean"}),
         _c("display-chat", CHAT_TEMPLATE, {"title": "text"}),
         _c("display-chat-line", CHAT_LINE_TEMPLATE, {
-            "role": "text", "text": "text", "time": "text",
-            "partial": "boolean"}),
+            "role": "text", "text": "text", "channel": "text", "source": "text",
+            "at": "int", "partial": "boolean"}),
         _c("display-notification", NOTIFICATION_TEMPLATE, {
             "source": "text", "title": "text", "body": "text",
             "time": "text", "level": "text"}),
@@ -3134,18 +5046,28 @@ def contents():
         _c("display-choice", CHOICE_TEMPLATE, {"label": "text"}),
         _c("display-option", OPTION_TEMPLATE, {
             "label": "text", "event": "text", "selected": "boolean"}),
+        _c("display-input", INPUT_TEMPLATE, {
+            "placeholder": "text", "event": "text", "for": "text"}),
         _c("display-chart", CHART_TEMPLATE, {"figure": "html", "caption": "text"}),
         _c("display-stack", STACK_TEMPLATE, {
             "row": "boolean", "gap": "text", "scene": "boolean",
             "ratio": "text"}),
         _c("display-progress", PROGRESS_TEMPLATE, {
             "value": "int", "label": "text"}),
-        _c("display-dock", DOCK_TEMPLATE, {
-            "count": "int", "profile": "text"}),
+        _c("display-dock", DOCK_TEMPLATE, {"count": "int"}),
+        _c("display-seat", SEAT_TEMPLATE, {"seat_ord": "text"}),
         _c("display-tile", TILE_TEMPLATE, {
             "glyph": "text", "line": "text", "value": "text", "topic": "text",
-            "for": "text", "state": "text", "on_canvas": "boolean",
-            "pinned": "boolean", "rank": "text", "end_at": "int"}),
+            "for": "text", "rung": "text", "open": "text",
+            "pinned": "text", "rank": "text", "end_at": "int",
+            # New in 2.4.0. `oid` is the OBJECT id of the window and the target of
+            # a tap (`for` stays the `pane_id`, which is what the client's
+            # zoom matches on -- two names, two jobs, and merging them would
+            # break one of them). `tap` says whether this exit has a finger at
+            # all (OR-F18); `seat` and `unread` are selectors for the sheet,
+            # and `unit` is the degree sign the weather sets beside its value.
+            "oid": "text", "tap": "boolean", "seat": "text",
+            "unit": "text", "unread": "text"}),
     ]
 
 
@@ -3179,8 +5101,7 @@ def own():
                             # The screen's state (GH #679): the bar, the
                             # per-context weights, when the judge last spoke,
                             # and the schedule the clock holds. None rendered.
-                            "focus": "text", "weights": "text",
-                            "judged_at": "text", "asked_at": "text", "due": "text",
+                            "due": "text",
                             # The operator's ground: `day` or `night`.
                             "ground": "text",
                             # The screen this tree is rendered for (§ 2.8):
@@ -3189,13 +5110,26 @@ def own():
                             # and the one number every size derives from. The
                             # floor computes them from the `screens` setting;
                             # the sheet reads them off the root.
-                            "screen": "text", "profile": "text",
+                            "exit": "text", "screen_name": "text",
                             "inputs": "text", "scale": "text",
+                            "default_screen": "text",
+                            # § 6.5: the root of `/<mount>/` is the switch and says
+                            # so; an explicit output carries an empty word. § 6.4:
+                            # whether a tap and the input line are bound here.
+                            "switch": "text", "tap": "boolean",
+                            "input_line": "boolean",
                             # What did not fit in the dock, and the exits as
-                            # JSON: the judge reads the first, and the floor
+                            # JSON: the sheet may read the first (since 2.4.0
+                            # the judge does not, R-23-6), and the floor
                             # compares the second to know whether the routes
                             # have to be written again.
-                            "dock_overflow": "int", "screens": "text",
+                            "screens": "text",
+                            # The exit's own dials (contract § 6): whether the
+                            # dock is shown at all on this kind of screen, how
+                            # many tiles it carries and how many windows may
+                            # stand on plane 1 here. One state, and each exit
+                            # renders as much of it as it can carry (R-23-6).
+                            "dock": "text", "dock_max": "int",
                             # The screen's own motion, once the scene hook
                             # ships; empty until then. `"html"` is what makes
                             # a prop RAW, and a script rendered escaped is a
@@ -3227,20 +5161,13 @@ def own():
             # at `component.define`.
             "name": "display-view-prose",
             "template": PROSE_TEMPLATE,
-            "prop_schema": {
-                "view_id": "text",
-                "owner": "text",
-                "title": "text",
-                "body": "text",
-                # A prose view is a window: the curator writes on it, and
-                # the sender may hint (the `in_notice` and `in_view` bodies).
-                "state": "text", "age": "text", "since": "text", "score": "text",
-                "judged_relevance": "text", "judged_hidden": "boolean",
-                "context": "text", "relevance": "text", "class": "text",
-                "pinned": "boolean", "relevant_until": "int", "touched": "text",
-                "topic": "text", "modal": "boolean", "topic_dupe": "boolean",
-                "rung": "text", "topic_relevance": "text",
-            },
+            # A prose view IS a window (§ 2 Window), so it declares the same contract as
+            # the other three: the hints of § 3 and the curator's rendering values. One
+            # list, one place -- a schema that drifted from `CURATED` refused exactly the
+            # props the pass had just written.
+            "prop_schema": dict({
+                "view_id": "text", "owner": "text", "title": "text", "body": "text",
+            }, **CURATED),
             "editable": [],
             "layer": "navigation",
         },
@@ -3264,7 +5191,13 @@ def own():
             # HOOK kept its name, because the gesture is the same one.
             "name": "display-os",
             "template": OS_TEMPLATE,
-            "prop_schema": {"mount": "text", "client_js": "html"},
+            "prop_schema": {"mount": "text", "client_js": "html",
+                            # The light on the mark (OR-F4): how many present
+                            # windows want attention and are not on a plane.
+                            # Text, because the template language reads an
+                            # `int 0` as empty and the sheet selects on the
+                            # value.
+                            "unseen": "text"},
             "editable": [],
             "layer": "content",
         },
@@ -3483,43 +5416,59 @@ def check_components(declared, view_id):
     return out, None, None
 
 
-def declared_ord(view):
-    """The `ord` a view asked for, or 0.
+# The wire of § 3.3, for the hints the PASS reads and for no other prop. `pinned` is the
+# one boolean; everything else a hint says is TEXT, the five numbers included -- the
+# template language reads an `int 0` as empty, so a number on the wire would arrive as
+# "nothing said" somewhere down the line. Whatever else a window component declares
+# (`thin`, `scroll`, `position`, an overlay's own `ttl_ms`) is that component's business
+# and is typed by the `web` cell against its `prop_schema`, not here.
+BOOL_HINTS = ("pinned",)
+TEXT_HINTS = ("context", "class", "topic", "layer", "seat", "state", "turn_id")
 
-    A BAND rather than a slot: a standing widget asks for -10 and stands above
-    a conversation that asked for nothing, and two views in one band are still
-    ordered by everything after it. Anything that is not a plain integer counts
-    as 0 here; the door refuses it outright, and this is the reading for a row
-    that is already in the table.
+
+def hint_shape(hints):
+    """Why a hint does not arrive in the shape § 3.3 names, or None.
+
+    The WIRE, not the vocabulary: which words a hint may carry is `step2_door`'s question
+    (§ 4.6) and is asked right after this. This one exists because the pass is the
+    reference model: a list where it expects a word does not come back as a refusal
+    there, it raises -- and the whole write pass dies with it instead of answering the
+    sender a receipt they can read.
     """
-    value = view.get("ord")
-    if isinstance(value, bool) or not isinstance(value, int):
-        return 0
-    return value
+    for key in BOOL_HINTS:
+        if key in hints and not isinstance(hints[key], bool):
+            return 'hint "%s" is not a boolean (§ 3.3)' % (key,)
+    for key in TEXT_HINTS:
+        if key in hints and not isinstance(hints[key], str):
+            return 'hint "%s" is not text (§ 3.3)' % (key,)
+    for key in NUMERIC_HINTS:
+        if key in hints and not isinstance(hints[key], str):
+            return 'hint "%s" travels as text, not as a number (§ 3.3)' % (key,)
+    return None
 
 
-def check_prose_hints(content):
-    """Why the hints of a prose `content` do not hold, or None (GH #679)."""
-    if "context" in content and not isinstance(content["context"], str):
-        return 'a prose "context" is not a string'
-    if "class" in content and content["class"] not in NOTICE_CLASSES:
-        return 'unknown "class" %r' % (content["class"],)
-    rel = content.get("relevance")
-    if rel is not None and (isinstance(rel, bool) or not isinstance(rel, (int, float))):
-        return 'a prose "relevance" is not a number'
-    if "pinned" in content and not isinstance(content["pinned"], bool):
-        return 'a prose "pinned" is not a boolean'
-    until = content.get("relevant_until")
-    if until is not None and (isinstance(until, bool) or not isinstance(until, int)):
-        return 'a prose "relevant_until" is not an integer'
-    touched = content.get("touched")
-    if touched is not None and (isinstance(touched, bool)
-                                or not isinstance(touched, (str, int))):
-        return 'a prose "touched" is not a string or an integer'
-    if "topic" in content and not isinstance(content["topic"], str):
-        return 'a prose "topic" is not a string'
-    if "modal" in content and not isinstance(content["modal"], bool):
-        return 'a prose "modal" is not a boolean'
+def door_refusal(row):
+    """Why the door would not take this row, or None. ONE door, two questions.
+
+    First the wire of § 3.3 (`hint_shape`), then the words of § 4.6: the write lane asks
+    exactly the `step2_door` the pass asks, on a throwaway state. The words it knows
+    (`state`, `seat`, `ttl_ms`) live in the pass section, which is byte-identical with
+    the reference model, so a change to § 4.6 in the document moves ONE implementation
+    instead of two that drift apart. The throwaway state carries the shipped settings and
+    no screens -- the door's profile half has nothing to say about a view, and its
+    `default_screen` error lands in `errors`, which this never reads.
+    """
+    hints = hints_of_row(row)
+    why = hint_shape(hints)
+    if why:
+        return why
+    oid = object_id(row.get("owner"), row.get("view_id"))
+    state = {"settings": dict(DEFAULT_SETTINGS), "screens": {}, "views": {},
+             "pass": {"refused": [], "errors": [], "new": [], "touched": {}}}
+    step2_door(state, {"kind": "app_write", "oid": oid, "view": hints}, 0)
+    for entry in state["pass"]["refused"]:
+        if str(entry[0]) == oid:
+            return 'the door does not take "%s" %r (§ 4.6)' % (entry[1], entry[2])
     return None
 
 
@@ -3565,9 +5514,6 @@ def validate(body, owner, withdraw):
             return None, "invalid_view", 'a prose "title" is not a string'
         if declared:
             return None, "invalid_view", "a prose view brings no components"
-        why = check_prose_hints(content)
-        if why:
-            return None, "invalid_view", why
         clean = []
     else:
         why = check_node(content, 0)
@@ -3594,24 +5540,26 @@ def validate(body, owner, withdraw):
     if isinstance(view_ord, bool) or not isinstance(view_ord, int):
         return None, "invalid_view", '"ord" is not an integer'
 
-    return (
-        {
-            "owner": owner,
-            "view_id": view_id,
-            "region": region,
-            "ord": view_ord,
-            "kind": kind,
-            # The two `json` columns are written as canonical text so the value
-            # that comes back out of the store compares byte for byte against
-            # the value that went in.
-            "content": canon(content),
-            "components": canon(clean),
-            "ttl_ms": ttl_ms,
-            "updated_at": now_ms(),
-        },
-        None,
-        None,
-    )
+    row = {
+        "owner": owner,
+        "view_id": view_id,
+        "region": region,
+        "ord": view_ord,
+        "kind": kind,
+        # The two `json` columns are written as canonical text so the value
+        # that comes back out of the store compares byte for byte against
+        # the value that went in.
+        "content": canon(content),
+        "components": canon(clean),
+        "ttl_ms": ttl_ms,
+        "updated_at": now_ms(),
+    }
+    # And last, the one door (§ 4.6): a word the pass would refuse is refused here, so
+    # the row never reaches the store (S-039).
+    why = door_refusal(row)
+    if why:
+        return None, "view_refused", why
+    return row, None, None
 
 
 def pass_request(body, envelope, withdraw):
@@ -3673,7 +5621,6 @@ def write_row(owner, row, withdraw=False):
     ]
 
 
-NOTICE_CLASSES = ("system_error", "error", "warning", "important_note", "note")
 # A channel's failure, translated. The codes are the substrate's public error_code
 # strings; a code this table does not know is still shown, with the code in it.
 NOTICE_TEXT = {
@@ -3693,11 +5640,11 @@ def owner_slug(owner):
     return str(owner or "").replace("/", "~")
 
 
-def notice_row(body, hop, owner, now, knobs):
+def notice_row(body, hop, owner, now, knobs=None):
     """The view row an `in_notice` becomes, or (None, code, detail)."""
     code = str(hop.get("error_code") or "")
     klass = str(body.get("class") or ("system_error" if code else ""))
-    if klass not in NOTICE_CLASSES:
+    if klass not in NOTICE_DEFAULTS:
         return None, "invalid_notice", 'unknown "class" %r' % (klass,)
     text = body.get("text")
     if not isinstance(text, str) or not text:
@@ -3713,7 +5660,9 @@ def notice_row(body, hop, owner, now, knobs):
     if not is_view_id(view_id):
         return None, "invalid_notice", '"view_id" must match [a-z0-9-]{1,64}'
     content = {"title": klass.replace("_", " "), "body": text, "context": context,
-               "relevance": as_unit(body.get("relevance"), rel), "class": klass}
+               # § 3.3: a numeric hint travels as TEXT. A notice is a view like any
+               # other and goes on the same wire, so the door takes it.
+               "relevance": str(as_unit(body.get("relevance"), rel)), "class": klass}
     ttl_ms = body.get("ttl_ms")
     if isinstance(ttl_ms, bool) or not isinstance(ttl_ms, int) or ttl_ms < 0:
         ttl_ms = ttl
@@ -3727,7 +5676,7 @@ def pass_notice(body, envelope, hop):
     owner = envelope.get("reply_to")
     if not isinstance(owner, str) or not owner:
         return refuse("owner_unknown", "the message carries no envelope.reply_to, so it has no owner", "", "")
-    row, code, detail = notice_row(body, hop, owner, now_ms(), KNOBS)
+    row, code, detail = notice_row(body, hop, owner, now_ms(), None)
     if code:
         vid = body.get("view_id")
         return refuse(code, detail, vid if isinstance(vid, str) else "", owner)
@@ -3753,6 +5702,20 @@ def parse_object_id(oid):
     return slug.replace("~", "/"), view_id
 
 
+# The keys of `event.value` that may carry an object id, in the order they are
+# asked. The catalogue writes exactly one `phx-value-*` -- `for`, on a tile and
+# on the input line -- and a window's own button may name `id` beside it to say
+# WHICH action it is; those two are the whole set, and a name outside it is
+# something a person did rather than something the screen wrote.
+#
+# Asking every string of the payload instead read the typed sentence as a
+# candidate: `{"for": "", "key": "Enter", "value": "view.mallory.evil/0"}` came
+# back as owner `mallory`, view `evil`, so a person could route their own line
+# to somebody else's view by typing its id. A filled `for` won that race by
+# alphabet alone, which is not a rule -- it is an accident of two key names.
+ID_KEYS = ("id", "for")
+
+
 def event_object_id(event):
     """The object id a browser event names, preferring the key `id`."""
     value = event.get("value")
@@ -3760,16 +5723,50 @@ def event_object_id(event):
         return value if value.startswith(VIEW_PREFIX) else None
     if not isinstance(value, dict):
         return None
-    candidates = []
-    if isinstance(value.get("id"), str):
-        candidates.append(value["id"])
-    for key in sorted(value):
-        if key != "id" and isinstance(value[key], str):
-            candidates.append(value[key])
-    for candidate in candidates:
-        if candidate.startswith(VIEW_PREFIX):
+    for key in ID_KEYS:
+        candidate = value.get(key)
+        if isinstance(candidate, str) and candidate.startswith(VIEW_PREFIX):
             return candidate
     return None
+
+
+def absorb(mark):
+    """A read pass without a write, carrying one mark: the tick's own shape.
+
+    Not a store bundle (OR-F6): nothing is written, the table is only read
+    again, and the mark rides on the request the way `struck` does. That is
+    what makes an absorbed gesture cost one round trip and no row.
+    """
+    legs = [tool_call({"operation": "select", "table": TABLE, "columns": COLUMNS}, "d-select")]
+    request = {"tick": True}
+    request.update(mark)
+    return [emission("views", {"messages": legs},
+                     display_request=json.dumps(request, sort_keys=True))]
+
+
+def pass_tap(event):
+    """A finger on a tile (\u00a7 5.6). The value carries the id of its window."""
+    value = event.get("value")
+    oid = value.get("for") if isinstance(value, dict) else None
+    if not isinstance(oid, str) or parse_object_id(oid)[0] is None:
+        # An absorbed gesture has no receipt and no dead letter, so a payload
+        # the screen cannot read would vanish without a trace -- and a client
+        # defect with it.
+        sys.stderr.write("%s: the value carries no object id\n" % TAP_EVENT)
+        return []
+    return absorb({"tap": wrapper_of(oid)})
+
+
+def pass_hold(event):
+    """The OS mark was held (\u00a7 5.4, \u00a7 5.6). The event carries NOTHING.
+
+    The recording itself rides the voice channel and never passes through here
+    (`frame({"type": "hold"})`, OS_CLIENT_JS); this is the second half the hook sends
+    over the LiveView so the screen can open the window the turn belongs in. Which
+    window that is, is the SCREEN's knowledge: the curator picks the one with
+    `topic: chat` (\u00a7 8.5). A `topic` a client sends with the hold is not read (S-088).
+    """
+    return absorb({"hold": True})
 
 
 def pass_event(body):
@@ -3790,6 +5787,11 @@ def pass_event(body):
     event = body.get("event")
     if not isinstance(event, dict):
         return []
+    name = str(event.get("name") or "")
+    if name == TAP_EVENT:
+        return pass_tap(event)
+    if name == HOLD_EVENT:
+        return pass_hold(event)
     out = {
         "messages": body.get("messages") or [text_turn(str(event.get("name") or ""))],
         "event": event,
@@ -3841,29 +5843,86 @@ def read_rows(body):
     return [r for r in doc if isinstance(r, dict)]
 
 
-def expired(row, now):
-    """A view is expired when `now - updated_at >= ttl_ms`, and `ttl_ms` is set.
+def rows_affected_of(body, hop, operation):
+    """How many rows the leg of `operation` moved, or None when nothing says so.
 
-    The row stays in the table and simply stops being drawn; the next pass
-    is what makes it disappear from the screen -- and since the due clock
-    (`next_due`) that pass is ordered for the moment the view expires.
+    A bundle of several legs answers per leg in `results[]`, a single-op reply carries
+    the same number on the hop (`crates/meclaw-cells/src/store/output.rs`). The state
+    write is one leg, so it is normally the hop -- but the body is asked first, because
+    a reply that does carry `results[]` is the more precise of the two.
     """
+    for entry in body.get("results") or []:
+        if isinstance(entry, dict) and str(entry.get("operation") or "") == operation:
+            return int_or_none(entry.get("rows_affected"))
+    if str(hop.get("operation") or "") == operation:
+        return int_or_none(hop.get("rows_affected"))
+    return None
+
+
+def int_or_none(value):
+    """`value` as an int, or None when it is not one. `0` is a value, not a miss."""
     try:
-        ttl = int(row.get("ttl_ms") or 0)
-        written = int(row.get("updated_at") or 0)
+        return int(value)
     except (TypeError, ValueError):
-        return False
-    return ttl > 0 and now - written >= ttl
+        return None
+
+
+def state_write_again(request, body, hop):
+    """Nothing, or this very pass once more (GH #744).
+
+    The compare-and-set of `state_write_ops` refuses a write whose row has moved on since
+    the pass read it. That refusal is not an error: it means another event's pass landed
+    in between, and the answer is to run THIS pass again on the row the store now holds.
+    The mark it started from rides the request, so no memory in the cell is needed -- and
+    a repeat is an `absorb`, so it writes nothing of its own (OR-F6).
+
+    The count is capped (`STATE_RETRY_MAX`), and the cap is a guard against a loop rather
+    than a budget for contention -- the comment on the constant has the measurement. When
+    it is reached the event IS lost, so the refusal names the view it belonged to: an
+    application whose write was dropped has to be able to hear it, and a receipt with an
+    empty `owner` fails every owner guard by construction and dead-letters where nobody
+    reads it (fourteen of them were measured on the twin). A mark with no owner -- a tap,
+    a hold, a verdict, a stroke -- still leaves the two keys empty, because there is
+    nobody to tell.
+    """
+    mark = request.get("retry")
+    if not isinstance(mark, dict):
+        return []
+    why = bundle_failed(body, hop)
+    if why:
+        # A refused leg is not a collision: repeating it would repeat the refusal three
+        # times over. The state row stands as the pass before left it, and that is worth
+        # saying once.
+        sys.stderr.write("compose: the state write failed: %s\n" % (why,))
+        return refuse("store_failed", "the state write failed: %s" % (why,), "", "")
+    if rows_affected_of(body, hop, "update") != 0:
+        return []
+    tries = int_or_none(mark.get(STATE_RETRIES)) or 0
+    if tries >= STATE_RETRY_MAX:
+        event = event_of_request(dict(mark, tick=True)) or {}
+        detail = ("the state row moved under %d repeats of one pass; its event (%s) was "
+                  "not applied" % (STATE_RETRY_MAX, event.get("kind") or "?"))
+        sys.stderr.write("compose: %s\n" % (detail,))
+        return refuse("store_failed", detail,
+                      str(mark.get("view_id") or ""), str(mark.get("owner") or ""))
+    again = dict(mark)
+    again[STATE_RETRIES] = tries + 1
+    return absorb(again)
 
 
 def pass_views(body, ctx, hop):
-    """The store's answer: compute the after-state, then ask the display."""
+    """The store's answer: the rows, the state row, and the ONE event of this pass."""
     try:
         request = json.loads(str(ctx.get("display_request") or ""))
     except (TypeError, ValueError):
         request = None
     if not isinstance(request, dict):
         return []
+    # The reply to the state write is silence (OR-H2): a pass out of it would be an
+    # endless round, and the row it wrote is the one this cell just computed. With ONE
+    # exception, and it is the whole of GH #744 -- a write that did not land.
+    if request.get("state"):
+        return state_write_again(request, body, hop)
 
     owner = str(request.get("owner") or "")
     view_id = str(request.get("view_id") or "")
@@ -3879,9 +5938,13 @@ def pass_views(body, ctx, hop):
             "store_failed", "the store's reply carried no rows for leg 0", view_id, owner
         )
 
+    held = None
     prior = None
     after = []
     for old in before:
+        if is_state_row(old):
+            held = old
+            continue
         if str(old.get("owner") or "") == owner and str(old.get("view_id") or "") == view_id:
             prior = old
             continue
@@ -3890,17 +5953,15 @@ def pass_views(body, ctx, hop):
         after.append(row)
 
     now = now_ms()
-    live = [r for r in after if not expired(r, now)]
-    # A `select` without `order_by` is explicitly an unspecified selection, so
-    # the determinism has to be made here -- and it is made WITHOUT a clock:
-    # region, the band the view asked for, then identity. Sorting on
-    # `updated_at` was GH #609 itself, and it is not a step this list takes any
-    # more; the seats that decide what a person sees are read one pass later,
-    # off the display, in `seated`.
-    live.sort(
+    # No `ttl_ms` filter here any more: the pass decides when a view leaves the state
+    # (step 4, step 12), and a leaving window still needs its content to be drawn one
+    # last time. The store holds the row until the app withdraws it.
+    # A deterministic order for the plan, and nothing more: what a person SEES is the
+    # pass's word (`canvas_order`, `dock_order`), so the `ord` a sender asked for is not
+    # read here any more (§ 2 Seat: "Not the first-appearance order of views (`ord`)").
+    after.sort(
         key=lambda r: (
             REGION_INDEX.get(str(r.get("region") or REGIONS[0]), 0),
-            declared_ord(r),
             str(r.get("owner") or ""),
             str(r.get("view_id") or ""),
         )
@@ -3916,9 +5977,11 @@ def pass_views(body, ctx, hop):
             parsed = json.loads(row["components"])
             define = parsed if isinstance(parsed, list) else []
 
-    plan = {"views": live, "define": define, "now": now}
-    if isinstance(request.get("verdict"), dict):
-        plan["verdict"] = request["verdict"]
+    # The mark travels on: pass 3 writes the state row under a condition, and a write
+    # that does not land has to be able to run THIS pass again (GH #744). It is the
+    # request itself, because that is exactly what `absorb` needs back.
+    plan = {"views": after, "define": define, "now": now, "state": held,
+            "event": event_of_request(request), "mark": request}
     if request.get("struck"):
         plan["struck"] = str(request["struck"])
     return [
@@ -3928,10 +5991,6 @@ def pass_views(body, ctx, hop):
             display_views=json.dumps(plan, sort_keys=True),
         )
     ]
-
-
-# ---------------------------------------------------------------------------
-# Pass 3: the display answered
 
 
 def read_objects(body):
@@ -3970,7 +6029,7 @@ def read_objects(body):
     return out
 
 
-def add_tree(want, parent, node, index, tiles=None):
+def add_tree(want, parent, node, index, tiles=None, window="", attrs=None, region=""):
     """One component-tree node and everything under it, as objects.
 
     The id is the index chain in `children` order, which makes it a function of
@@ -3995,12 +6054,36 @@ def add_tree(want, parent, node, index, tiles=None):
     # The state is the curator's word. An application may say `urgent` or
     # `hidden` about a window; any other word is dropped before the curator
     # looks, so a `focus` an app claims never reaches the screen (GH #679).
-    if props.get("state") not in APP_WORDS:
+    if props.get("state") not in STATE_WORDS:
         props.pop("state", None)
     # `age` belongs to the channel: it is how the screen tells a window that
     # arrived from one that is on its way out, and an application's word for
     # it would fly a window in twice.
     props.pop("age", None)
+    # The ladder is resolved at the door, once, on every window (R-23-2,
+    # OR-F19): the sheet reads `data-layer` and a half-empty attribute is a
+    # rule that never fires.
+    if str(node.get("component") or "") in WINDOWS:
+        # The curator's values, systemwide (§ 3.1): the same numbers on every output.
+        # `layer` is resolved here once so the sheet always reads one of the two words.
+        props["layer"] = layer_of(props)
+        props["region"] = region
+        props.update(attrs or {})
+        # Taken, once. The values belong to the ONE window of a view (§ 7.1), which is
+        # the one `unwrap_window` reads the hints off -- the first in the tree. They are
+        # handed DOWN past everything that is not a window (below), because an app may
+        # wrap its window in a `display-stack` and `unwrap_window` says so.
+        attrs = None
+        window = oid
+    # The screen names the window a typed line belongs to (contract § 8): the
+    # application cannot, because the id is the index chain this walk mints,
+    # and a field that named the wrong object would send a person's sentence
+    # to somebody else's application.
+    # Written even when nothing encloses the field: an empty `for` makes the
+    # event nameless and it dead-letters where a person reads it, while a value
+    # the application invented would send the sentence to a foreign view.
+    if str(node.get("component") or "") == "display-input":
+        props["for"] = window
     want[oid] = {
         "component": str(node.get("component") or ""),
         "parent": parent,
@@ -4022,8 +6105,25 @@ def add_tree(want, parent, node, index, tiles=None):
             else:
                 rest.append(kid)
         kids = rest
+    # The curator's values travel DOWN until a window takes them (above). Handing the
+    # children `None` was the same statement for a window at the root of a view and a
+    # falsehood for one inside a wrapper: `unwrap_window` lets an app put its window in a
+    # `display-stack`, the pass reads the hints through it, and the RENDER then drew the
+    # window with nothing but the app's own props. Measured on e25, whose `chat@0.3.0`
+    # wraps its pane: `<section id="chat" data-rung="" data-level="" data-pinned="true">`
+    # beside its own tile from the same pass, `data-rung="ambient" data-pinned="1"`. No
+    # level rule of § 7d reaches such a window -- not even the one that hides level 0 --
+    # so a conversation the curator had put away stood open and 4948 px tall on a 852 px
+    # phone (B-09), every proof that asks about levels saw a stage with none (B-20), and
+    # the pass answered every tap by wiping the level the client had just drawn (B-06).
     for j, kid in enumerate(kids):
-        add_tree(want, oid, kid, j, tiles)
+        add_tree(want, oid, kid, j, tiles, window, attrs, region)
+        # And once only. § 7.1: a view is ONE window, and the one the pass computed a
+        # rung for is the one `unwrap_window` reads -- the first in the tree. A second
+        # window beside it is not this view's, and wearing the first one's level would
+        # draw it at a depth nobody decided.
+        if attrs is not None and unwrap_window(kid):
+            attrs = None
 
 
 def drawable(views):
@@ -4057,75 +6157,6 @@ def drawable(views):
     return out
 
 
-def seat_of(wrapper, region, have):
-    """The `ord` the display is already holding this view at, or `NEW_SEAT`.
-
-    A view the screen does not hold, or holds under ANOTHER region, is new
-    here: moving a widget from `main` to `aside` puts it at the end of the
-    aside rather than at whatever height it happened to have in the column it
-    came from.
-    """
-    held = have.get(wrapper)
-    if not isinstance(held, dict) or held.get("parent") != REGION_PREFIX + region:
-        return NEW_SEAT
-    try:
-        seat = int(held.get("ord") or 0)
-    except (TypeError, ValueError):
-        return NEW_SEAT
-    # A seat below zero is not a seat: it is the band `canvas_order` lifts an
-    # urgent window into. When the window stops ringing it is seated again
-    # like a new arrival, behind everything standing -- not at the top, where
-    # the lift happened to leave it.
-    return seat if seat >= 0 else NEW_SEAT
-
-
-def seated(views, have):
-    """`(region, index, row)` for every view, in the order it stands.
-
-    Three keys, and the interesting one is the key that is NOT among them: the
-    moment a view was last written does not appear at all. Sorting on it was
-    GH #609 -- a view rewritten every twenty seconds took the top slot on every
-    tick, not because it was important but because it was recent, which is the
-    right answer for a card and the wrong one for anything standing.
-
-    1. the `ord` the view DECLARED, default 0.
-    2. the seat the display is already holding it at. That is FIRST APPEARANCE,
-       remembered by the screen instead of by a column: a new view sorts behind
-       everything already up, is given the next seat, and keeps it through
-       every rewrite until something above it goes away. A page this cell has
-       to bootstrap has no seats at all, and every view on it is new together.
-    3. `(owner, view_id)`, so the one tie left is broken on identity rather
-       than on whatever order the store happened to return.
-    """
-    out = []
-    rows = drawable(views)
-    for region in REGIONS:
-        here = [r for r in rows if r[0] == region]
-        here.sort(
-            key=lambda r: (declared_ord(r[5]), seat_of(r[3], region, have), r[1], r[2])
-        )
-        for i, row in enumerate(here):
-            out.append((region, i, row))
-    return out
-
-
-# ---------------------------------------------------------------------------
-# The curator (GH #679): a score per window, a bar on the root, five rungs
-
-
-def region_of(oid, want):
-    """The region a window stands in: up the parent chain to a display-region."""
-    spec = want.get(oid)
-    while spec is not None and spec.get("component") != "display-region":
-        spec = want.get(spec.get("parent"))
-    return str(((spec or {}).get("props") or {}).get("region") or "main")
-
-
-def content_props(props):
-    """Everything the sender said, minus what this cell writes: the basis of 'touched'."""
-    return {k: v for k, v in (props or {}).items() if k not in CURATOR_KEYS}
-
-
 def as_unit(value, default):
     """A number clamped to 0..1, or the default when it is not a number."""
     try:
@@ -4134,412 +6165,825 @@ def as_unit(value, default):
         return default
 
 
-def decay_of(props, now, knobs):
-    """1 while a window is pinned or still in its linger, then linear to 0.
+# ---------------------------------------------------------------------------
+# The state row (display-hive.md § 3.1, OR-H2)
+#
+# ONE screen state per member, and it lies in the store `views`, as one row beside the
+# app rows -- not on the display's objects. What the display holds is a RENDERING of
+# that state; a rendering is never the memory, because then every output would carry a
+# memory of its own (§ 3.1).
 
-    The one place the fade is computed: the score reads it, the rank reads it,
-    and presence IS it -- a window with no decay left and no pin is gone from
-    the dock whatever anybody judged (spec 2.2).
+STATE_OWNER = "display"
+STATE_VIEW_ID = "screen-state"
+STATE_KIND = "state"
+# Everything of the state that survives a pass; `pass` is what THIS pass saw and dies
+# with it. `settings` and `screens` are in the row because the door normalises them IN
+# the state (§ 4.7): a value it replaced is refused "once, in the pass that replaces
+# it", and a pass that started from the raw dials again would refuse it in every pass.
+STATE_KEYS = ("settings", "screens", "views", "bar", "weights", "chat", "unseen",
+              "strokes", "dock_order", "judge")
+# What the dials SAID when the row was written. When they say something else, the raw
+# values enter the state again and the door speaks again -- which is how a member who
+# changes a setting learns that the screen would not take it.
+STATE_DIALS = "dials"
+# What the pass before SAID out loud. § 4.7 keeps `display_type missing` and an unknown
+# `default_screen` in the state of every pass (`state["pass"]["errors"]`), and that stays
+# true -- but a receipt is a MESSAGE, and one misconfigured profile would otherwise send
+# one per pass, for ever, to nobody (a screen refusal has no owner). So the emission is
+# once per value: what stood here last pass is not said again.
+STATE_SAID = "said"
+
+_LAST_STATE = None
+
+
+def is_state_row(row):
+    """Whether a store row is the state row rather than an app's view."""
+    return (isinstance(row, dict)
+            and str(row.get("owner") or "") == STATE_OWNER
+            and str(row.get("view_id") or "") == STATE_VIEW_ID)
+
+
+def state_from_row(held_row, settings, screens):
+    """The `state` of the reference model out of the state row of the pass before.
+
+    A view enters the state only through the event `app_write` of its own pass (§ 4.8 a),
+    so a store row this row does not know yet is not made up here: the store holds what
+    an app wrote, the state holds what the curator computed about it.
     """
-    since = int(props.get("since") or now)
-    if props.get("pinned") is True or now - since < knobs["linger_ms"]:
-        return 1.0
-    return max(0.0, 1.0 - (now - since - knobs["linger_ms"]) / float(knobs["fade_ms"]))
-
-
-def relevance_of(props, now):
-    """The judged relevance, else the hinted one, else the class's -- clamped after its hour."""
-    judged = str(props.get("judged_relevance") or "")
-    r = as_unit(judged, None) if judged else None
-    if r is None:
-        r = as_unit(props.get("relevance"),
-                    CLASS_RELEVANCE.get(str(props.get("class") or ""), DEFAULT_WEIGHT))
-        # An answer the window took from another application (OR-D-Bau-6a):
-        # the standing window is as relevant as the card it stands in for.
-        # Unless the judge said a number -- a verdict overrules the floor's
-        # mark, which is why it stands under the judged branch and not over it.
-        borrowed = str(props.get("topic_relevance") or "")
-        if borrowed:
-            r = max(r, as_unit(borrowed, 0.0))
-    until = props.get("relevant_until")
-    if isinstance(until, (int, float)) and until > 0 and now >= until:
-        r = min(r, 0.2)
-    return r
-
-
-def score_of(props, weights, now, knobs):
-    """w x r x decay, per the design: hidden is 0, urgent is 1. What may be LARGE."""
-    word = str(props.get("state") or "")
-    if (word == "hidden" or props.get("judged_hidden") is True
-            or props.get("topic_dupe") is True):
-        return 0.0
-    if word == "urgent":
-        return 1.0
-    w = as_unit(weights.get(str(props.get("context") or "")), DEFAULT_WEIGHT)
-    return round(w * relevance_of(props, now) * decay_of(props, now, knobs), 4)
-
-
-def deadline_stands(props, now):
-    """Whether the window named a `relevant_until` that has not passed yet."""
-    until = props.get("relevant_until")
-    return (isinstance(until, (int, float)) and not isinstance(until, bool)
-            and until > 0 and now < until)
-
-
-def rank_of(props, weights, now, knobs):
-    """The dock's order: the same arithmetic WITHOUT the hidden clamp.
-
-    The judge decides what is large, never what exists (OR-D1), so a window it
-    hid still has a place in the dock -- and a context it weighed to nothing
-    still has one, because the weight is floored at RANK_FLOOR here and only
-    here. A window that is present only by its deadline (OR-D-Bau-7) has faded
-    to nothing; it is read as RANK_FLOOR so it keeps a readable, last place.
-    """
-    if str(props.get("state") or "") == "urgent":
-        return 1.0
-    w = max(as_unit(weights.get(str(props.get("context") or "")), DEFAULT_WEIGHT), RANK_FLOOR)
-    decay = decay_of(props, now, knobs)
-    if decay <= 0.0 and deadline_stands(props, now):
-        decay = RANK_FLOOR
-    return round(w * relevance_of(props, now) * decay, 4)
-
-
-def is_present(props, now, knobs):
-    """In the table and not yet faded, or not yet past its own deadline: the one condition for a tile.
-
-    Pinned, or decay left, or a `relevant_until` that has not passed
-    (OR-D-Bau-7): a window that names its own deadline is present until it --
-    a timer that rang stands as a quiet tile for the minutes its application
-    said, and the score stays decay-driven, so it is never large by that.
-    """
-    return (props.get("pinned") is True or decay_of(props, now, knobs) > 0.0
-            or deadline_stands(props, now))
-
-
-def ghosts(want, have):
-    """Windows the screen holds and nobody wants any more: one more frame, as leaving.
-
-    A window (and its subtree) missing from `want` is laid back byte for byte
-    with `age: leaving`; the next pass finds it already leaving and lets
-    `patches()` delete it. The wrappers above it stand with it for that frame,
-    because a delete does not cascade. A wrapper with no window under it is no
-    ghost.
-    """
-    for oid, held in have.items():
-        if oid in want or held.get("component") not in WINDOWS:
+    held = {}
+    if isinstance(held_row, dict):
+        try:
+            held = json.loads(str(held_row.get("content") or "{}"))
+        except (TypeError, ValueError):
+            held = {}
+    if not isinstance(held, dict):
+        held = {}
+    state = empty_state(settings, screens)
+    same_dials = held.get(STATE_DIALS) == {"settings": settings, "screens": screens}
+    for key in STATE_KEYS:
+        if key not in held:
             continue
-        # A mirrored exit's window (`desk.view.`) is a copy, never a ghost:
-        # the copy follows the original, and the original is what leaves.
-        if not oid.startswith(VIEW_PREFIX):
+        if key in ("settings", "screens") and not same_dials:
+            continue                      # the dials changed: the raw values face the door
+        state[key] = copy.deepcopy(held[key])
+    return state
+
+
+def state_row_content(state, settings, screens, said):
+    out = {key: state[key] for key in STATE_KEYS}
+    out[STATE_DIALS] = {"settings": settings, "screens": screens}
+    out[STATE_SAID] = said
+    return json.dumps(out, sort_keys=True)
+
+
+def state_row(state, now, settings, screens, said):
+    return {"owner": STATE_OWNER, "view_id": STATE_VIEW_ID, "region": REGIONS[0], "ord": 0,
+            "kind": STATE_KIND,
+            "content": state_row_content(state, settings, screens, said),
+            "components": "[]", "ttl_ms": 0, "updated_at": now}
+
+
+def said_before(held_row):
+    """What the pass before said out loud, as comparable rows."""
+    if not isinstance(held_row, dict):
+        return []
+    try:
+        held = json.loads(str(held_row.get("content") or "{}"))
+    except (TypeError, ValueError):
+        return []
+    spoken = held.get(STATE_SAID) if isinstance(held, dict) else None
+    return [list(row) for row in spoken] if isinstance(spoken, list) else []
+
+
+def spoken_of(state):
+    """Every refusal and every error of this pass, as comparable rows."""
+    return ([["refused"] + [str(x) for x in entry]
+             for entry in state["pass"].get("refused") or []]
+            + [["error"] + [str(x) for x in entry]
+               for entry in state["pass"].get("errors") or []])
+
+
+# How often one pass may be run again after a lost compare-and-set, and the key the
+# count rides under.
+#
+# The number is a guard against a pathological writer, NOT a budget for ordinary
+# contention -- and it took a measurement to see the difference. A repeat always makes
+# progress: every round has exactly ONE winner, so the field of contenders shrinks by one
+# each time and a set of N passes that started together needs at most N-1 repeats for its
+# last member. The bound is therefore the FAN-OUT of the hive -- every application that
+# writes in one breath -- and not a constant somebody picks.
+#
+# Three was picked from the taps of one hand
+# (`plans/welle-h3-2026-09-18/messungen/B-klickserie.md` § 3) and is far too small for a
+# screen full of applications. Measured on the twin over 39 minutes of the acceptance
+# runs, 401 state writes read back with the store's `rows_affected` beside each one
+# (`plans/welle-h3-2026-09-18/berichte/taps-report.md` § 21): seven applications wrote in
+# the same breath, 190 of the 401 writes were refused and repeated, and FOURTEEN passes
+# ran out of repeats and lost their event -- `app_write` on the chat and on the cards, in
+# exactly the windows where the screen flickered.
+#
+# Sixteen is more than twice the measured fan-out and still a hard stop: a writer that
+# keeps a pass from landing sixteen times in a row is not a screen full of applications
+# any more, it is a loop, and this cell says so instead of joining it.
+STATE_RETRY_MAX = 16
+STATE_RETRIES = "retries"
+
+
+def state_write_ops(state, now, settings, screens, said, held=None, mark=None):
+    """The second store bundle of a read pass: the state row, written under a condition.
+
+    A compare-and-set, and not the blind `delete` + `insert` this used to be (GH #744).
+    Every event starts a read pass of its own and this cell has no memory between two
+    messages (`crates/meclaw-cells/src/code/harness.rs`: warm == cold), so its whole
+    memory is this one row -- and between the `select` that read it and the write that
+    replaces it lies a full message round trip. Anything that starts its own pass inside
+    that window computes on the row this pass read and then overwrites what this pass
+    concluded.
+
+    Measured on the twin (`plans/welle-h3-2026-09-18/messungen/B-klickserie.md` § 3): two
+    tap passes 36 ms apart both took the OPEN branch, so ten taps on one tile ended with
+    the window open where § 5.8/S-024 says an even count ends put away; and three
+    `app_write` passes 18-46 ms after a tap pass carried the state from before the tap.
+
+    So the write names the version it read (`where updated_at = <the one the pass got>`)
+    and the store answers how many rows that moved. Zero means somebody wrote in between,
+    and `pass_views` runs this pass again on what the store now holds -- for which the
+    pass's own mark rides along (`retry`), because there is nowhere else to keep it.
+
+    The first creation has no version to compare against, and it stays the two-leg bundle
+    it always was: `delete` on `(owner, view_id)` then `insert`. The table declares no
+    PRIMARY KEY and no UNIQUE -- a store schema carries column types and nothing else
+    (`templates/display/views/config.json`, `not_in_scope`) -- so that pair IS the identity,
+    and it is held by writing it in one message, in that order. A bare `insert` would let
+    two passes that both found no row leave TWO state rows behind, and the second of them
+    would never again satisfy any `where updated_at`: the screen has no broom for its own
+    table. At a colony's boot, several apps writing at once is the normal case, not the
+    rare one (`B-klickserie.md` § 3 measured three passes 18-46 ms apart).
+    """
+    prev = held.get("updated_at") if isinstance(held, dict) else None
+    try:
+        prev = int(prev)
+    except (TypeError, ValueError):
+        prev = None
+    # The row is the VERSION, so the stamp has to move even when two passes land inside
+    # one millisecond -- otherwise two different rows could carry the same `updated_at`
+    # and a third pass's condition would hold against the wrong one.
+    stamp = now if prev is None or now > prev else prev + 1
+    row = state_row(state, stamp, settings, screens, said)
+    request = {"state": True}
+    if isinstance(mark, dict):
+        request["retry"] = mark
+    if prev is None:
+        legs = [tool_call({"operation": "delete", "table": TABLE,
+                           "where": {"owner": STATE_OWNER, "view_id": STATE_VIEW_ID}},
+                          "s-delete"),
+                tool_call({"operation": "insert", "table": TABLE, "row": row}, "s-insert")]
+    else:
+        # Every column but the identity: an update that wrote only `content` would leave
+        # a row half from this pass and half from the one before it.
+        legs = [tool_call({"operation": "update", "table": TABLE,
+                           "set": {key: value for key, value in row.items()
+                                   if key not in ("owner", "view_id")},
+                           "where": {"owner": STATE_OWNER, "view_id": STATE_VIEW_ID,
+                                     "updated_at": prev}}, "s-update")]
+    return [emission("views", {"messages": legs},
+                     display_request=json.dumps(request, sort_keys=True))]
+
+
+def state_row_of(em):
+    """For the driver and the tests: the state row a state write bundle puts up.
+
+    Both spellings, because the first creation inserts and every later pass updates
+    (GH #744): the update sets every column but the identity, so the row it leaves is
+    the two identity values plus what it set.
+    """
+    for leg in em.get("messages") or []:
+        try:
+            args = json.loads(str(leg.get("text") or "{}"))
+        except (TypeError, ValueError):
             continue
-        if ((held.get("props") or {}).get("age")) == "leaving":
+        if not isinstance(args, dict):
             continue
-        want[oid] = dict(held, props=dict(held.get("props") or {}, age="leaving"))
-        for kid, kspec in have.items():
-            if kid.startswith(oid + "/") and kid not in want:
-                want[kid] = dict(kspec)
-        parent = held.get("parent")
-        while parent and parent not in want and parent in have:
-            want[parent] = dict(have[parent])
-            parent = have[parent].get("parent")
+        if args.get("operation") == "insert":
+            return args.get("row")
+        if args.get("operation") == "update":
+            row = {"owner": STATE_OWNER, "view_id": STATE_VIEW_ID}
+            row.update(args.get("set") or {})
+            return row
+    return None
+
+
+def last_state():
+    """The state the last `pass_read` computed. For the driver and the tests only."""
+    return _LAST_STATE
+
+
+# ---------------------------------------------------------------------------
+# Between the store row and the model's `view`: the door's own wire format
+#
+# The model knows a window as a flat dict of hints plus `children`; the store knows it
+# as the component tree the app sent. These two functions are the translation, and they
+# are inverses of each other -- `window_node(hints_of_row(row))` is the same tree again.
+
+CHAT_COMPONENT = "display-chat"
+CHAT_LINE_COMPONENT = "display-chat-line"
+CHILD_COMPONENT = "display-value"
+# The role a chat line wears for the sheet, per kind of line (§ 8.5).
+LINE_ROLES = {"turn": "you", "answer": "companion"}
+
+
+def object_id(owner, view_id):
+    """The id of a window in the screen state: `view.<owner slug>.<view_id>` (§ 2 Id).
+
+    A path segment inside an id would otherwise be indistinguishable from the child
+    index chain, so a `/` in the owner is written `~` -- the same spelling `drawable`
+    and `parse_object_id` use.
+    """
+    return "%s%s.%s" % (VIEW_PREFIX, str(owner or "").replace("/", "~"), view_id)
+
+
+def wrapper_of(oid):
+    """The window id out of any id under it: a tap names a child, the state names the window."""
+    return str(oid or "").split("/")[0]
+
+
+def unwrap_window(node):
+    """The window node of a content tree: the first node whose component is a window.
+
+    An app may wrap its window in a `display-stack`; the pass reads the window.
+    """
+    if not isinstance(node, dict):
+        return {}
+    if str(node.get("component") or "") in WINDOWS:
+        return node
+    for kid in node.get("children") or []:
+        found = unwrap_window(kid)
+        if found:
+            return found
+    return {}
+
+
+def hints_of_row(row):
+    """The model's `view` out of a store row: the window's own props plus `children`.
+
+    `children` carries only what the pass may read (§ 4.8: a child change is no touch):
+    the `tile`, the chat's lines for the judge (§ 4.4), and every other keyed child as
+    its text -- enough for the merge of § 4.6 and for nothing else.
+
+    A `prose` row is FLAT: its content IS the hints (`notice_row`, `validate`), so there
+    is no window node to unwrap. Reading it like a component tree handed the pass an
+    empty view, and a `system_error` notice scored like a silent one.
+    """
+    try:
+        root = json.loads(str(row.get("content") or "{}"))
+    except (TypeError, ValueError):
+        root = {}
+    if not isinstance(root, dict):
+        root = {}
+    if str(row.get("kind") or "") == "prose":
+        props = dict(root)
+        props["children"] = {}
+        props["ttl_ms"] = row.get("ttl_ms")
+        return props
+    win = unwrap_window(root) or root
+    props = dict(win.get("props") or {})
+    kids = {}
+    for child in win.get("children") or []:
+        if not isinstance(child, dict):
+            continue
+        component = str(child.get("component") or "")
+        key = child.get("key")
+        if key == TILE_KEY:
+            kids["tile"] = dict(child.get("props") or {})
+        elif component == CHAT_COMPONENT:
+            kids["lines"] = [
+                {"kind": "turn"
+                 if (c.get("props") or {}).get("role") == LINE_ROLES["turn"] else "answer",
+                 "text": (c.get("props") or {}).get("text"),
+                 "channel": (c.get("props") or {}).get("channel")}
+                for c in child.get("children") or [] if isinstance(c, dict)]
+        elif isinstance(key, str) and key:
+            kids[key] = (child.get("props") or {}).get("text")
+    props["children"] = kids
+    # `ttl_ms` stands at the VIEW, beside the window (§ 3.3), and the model reads it off
+    # the same dict as the hints.
+    props["ttl_ms"] = row.get("ttl_ms")
+    return props
+
+
+def window_node(props, children=None):
+    """A store row's content out of the model's `view`: the inverse of `hints_of_row`."""
+    props = dict(props or {})
+    props.pop("children", None)
+    props.pop("ttl_ms", None)
+    kids = []
+    children = children if isinstance(children, dict) else {}
+    if isinstance(children.get("tile"), dict):
+        kids.append({"component": "display-tile", "key": TILE_KEY,
+                     "props": dict(children["tile"])})
+    if isinstance(children.get("lines"), list):
+        kids.append({"component": CHAT_COMPONENT, "props": {}, "children": [
+            {"component": CHAT_LINE_COMPONENT,
+             "props": {"role": LINE_ROLES.get(str(line.get("kind") or ""), "companion"),
+                       "text": line.get("text") or "",
+                       "channel": line.get("channel") or ""}}
+            for line in children["lines"] if isinstance(line, dict)]})
+    for key in sorted(children):
+        if key in ("tile", "lines"):
+            continue
+        kids.append({"component": CHILD_COMPONENT, "key": key,
+                     "props": {"text": children[key]}})
+    return {"component": "display-pane", "props": props, "children": kids}
+
+
+# ---------------------------------------------------------------------------
+# The events of the model out of what reaches the cell (§ 4.1, closed list)
+
+
+def event_of_request(request):
+    """The ONE event of this pass. § 4.1: nothing else triggers a pass.
+
+    The write and the withdrawal carry the row, a tap its window id, the hold nothing
+    (S-088: a `topic` a client sends with it is not read), a verdict its payload, a
+    stroke its order id.
+    """
+    if request.get("state"):
+        return None
+    if request.get("withdraw"):
+        return {"kind": "app_withdraw",
+                "oid": object_id(request.get("owner"), request.get("view_id"))}
+    row = request.get("row")
+    if isinstance(row, dict):
+        return {"kind": "app_write", "oid": object_id(row.get("owner"), row.get("view_id")),
+                "view": hints_of_row(row)}
+    if request.get("tap"):
+        return {"kind": "tap", "for": wrapper_of(request["tap"])}
+    if request.get("hold"):
+        return {"kind": "hold"}
+    if isinstance(request.get("verdict"), dict):
+        return dict({"kind": "verdict"}, **request["verdict"])
+    return {"kind": "stroke"}
+
+
+def calls_of(em):
+    """The `object.*` calls of a patch bundle. For the driver and the tests."""
+    out = []
+    for leg in em.get("messages") or []:
+        try:
+            call = json.loads(str(leg.get("text") or ""))
+        except (TypeError, ValueError):
+            continue
+        if isinstance(call, dict):
+            out.append(call)
+    return out
+
+
+def apply_call(have, call):
+    """One call of a patch bundle on the tree a display holds. For the driver and the tests."""
+    op = str(call.get("op") or "")
+    oid = str(call.get("id") or "")
+    if op == "object.create":
+        have[oid] = {"id": oid, "parent": call.get("parent"), "ord": call.get("ord") or 0,
+                     "component": call.get("component") or "",
+                     "props": dict(call.get("props") or {})}
+    elif op == "object.update" and oid in have:
+        have[oid]["props"].update(call.get("props") or {})
+        if call.get("parent") is not None:
+            have[oid]["parent"] = call["parent"]
+    elif op == "object.move" and oid in have:
+        have[oid]["parent"] = call.get("parent")
+        have[oid]["ord"] = call.get("ord") or 0
+    elif op == "object.delete":
+        have.pop(oid, None)
+
+
+# ---------------------------------------------------------------------------
+# What the curator says out loud about what it would not take (§ 4.6, § 4.7)
+
+# Which refusal of the pass leaves on which `error_code`. A refusal of the door is a
+# receipt and never a silent default: a member who sets a value the screen will not
+# take has to be able to read that.
+REFUSAL_CODES = {"settings": "setting_refused", "screen": "profile_refused"}
+ERROR_CODES = {"settings": "setting_error", "screen": "profile_error"}
+
+
+def refusals_of(state, spoken, before):
+    """One receipt per refusal and per error THIS pass says for the first time.
+
+    Two rules beyond the list itself:
+
+      * An absorbed gesture is not a refusal to anybody. A tap on a window with no tile
+        and a hold with no chat view are "absorbed and recorded" (§ 5.4, § 6.12, S-017,
+        S-053): the pass writes them down so a scenario can read them, and the screen
+        says nothing out loud -- a receipt there is noise on the lane of an app that did
+        nothing wrong.
+      * A value is said ONCE. Settings and profile dials replace themselves at the door
+        and so speak once by themselves (§ 4.7); the two errors replace nothing and would
+        otherwise repeat in every pass, so the pass before's list (`said`) silences them.
+        § 4.7 stays true where it is written -- in the state (`errors()`), every pass.
+    """
+    out = []
+    fresh = [row for row in spoken if row not in before]
+    for row in fresh:
+        kind, first, rest = row[0], row[1], row[2:]
+        detail = " ".join(rest)
+        if kind == "error":
+            out += refuse(ERROR_CODES.get(first, "profile_error"), detail, "", "")
+            continue
+        if first in REFUSAL_CODES:
+            out += refuse(REFUSAL_CODES[first], detail, "", "")
+            continue
+        if first == "hold" or (rest and rest[0] == "tap"):
+            continue                       # absorbed, not refused (§ 5.4, S-053)
+        if first == "verdict":
+            out += refuse("view_refused", "verdict: %s" % (detail,), "", "")
+            continue
+        owner, view_id = parse_object_id(first)
+        out += refuse("view_refused", detail, view_id or "", owner or "")
+    return out
+
+
+# ---------------------------------------------------------------------------
+# The rendering: the object tree is a rendering of ONE state (§ 3.1, § 6)
+
+# The names the sheet and the hooks read. One list, one place (OR-H3).
+ATTRS = {
+    "rung": "data-rung",        # hidden | ambient | relevant | focus | urgent   (§ 4.17)
+    "level": "data-level",      # 0 | 1 | 2 | 3                                  (§ 4.24)
+    "front": "data-front",      # "1" on the front urgent only                   (§ 4.18)
+    "age": "data-age",          # fresh | settled | leaving                      (§ 4.35)
+    "layer": "data-layer",      # canvas | modal                                 (§ 4.17)
+    "led": "data-led",          # "1" while led_until > now                      (§ 4.19)
+    # The moment the window's own state last MOVED under a touch or a put-away
+    # (`max(since, dismissed_at)`, § 4.9/§ 5.2). The client compares against the value it
+    # read when the finger landed and holds its optimistic drawing until a patch carries
+    # a bigger one -- a patch of a pass that started before the tap renders the state
+    # before it (GH #744, § 5.7 Decision 18.09.). A server stamp and not a browser clock:
+    # the comparison is between two values of the SAME clock, so a skewed device cannot
+    # release the hold early.
+    "acted": "data-acted",      # epoch ms, the last touch or put-away of this window
+    "open": "data-open",        # "1" on the tile of an open window              (§ 6.10)
+    "pinned": "data-pinned",    # "1"                                            (§ 7.6)
+    "unread": "data-unread",    # "1"                                            (§ 7.2)
+    "seat": "data-seat",        # "1" on a seat tile; an empty seat is a `display-seat`
+    "unseen": "data-unseen",    # the count, on the OS mark                      (§ 4.33)
+    "exit": "data-exit",        # tv | monitor | phone, on the root              (§ 6.1)
+    "inputs": "data-inputs",    # space-joined words, on the root                (§ 6.4)
+    "dock": "data-dock",        # shown | hidden, on the columns                 (§ 6.1)
+    "switch": "data-switch",    # "1" on the root of /<mount>/ only              (§ 6.5)
+    "scale": "--scale",         # the token, on the root style                   (§ 6.6)
+}
+# The props a window wears for the sheet, out of the curator's values. Everything else
+# on the object is the app's own (§ 3 hints, title, kicker).
+WINDOW_ATTRS = ("rung", "level", "front", "age", "layer", "led", "pinned", "topic",
+                "since", "score", "acted")
+
+
+def window_attrs(view, now):
+    """The rendering values of one window, systemwide (§ 3.1): the same on every output."""
+    c = view["curator"]
+    return {"rung": str(c["rung"] or ""),
+            "level": str(c["level"]),
+            "front": "1" if c.get("front") else "",
+            "age": str(c["age"] or ""),
+            "layer": layer_of(view),
+            "led": "1" if (c.get("led_until") or 0) > now else "",
+            "pinned": "1" if view.get("pinned") is True else "",
+            "topic": str(view.get("topic") or ""),
+            "since": str(c.get("since") or ""),
+            "score": str(c.get("score") or 0),
+            # `max(since, dismissed_at)` and nothing else: both are written by the pass
+            # that acted, so the value only moves when this window's own state did. It
+            # therefore survives the dedup of GH #412 -- a pass that changed nothing
+            # about this window sends no update for it.
+            "acted": str(max(int(c.get("since") or 0), int(c.get("dismissed_at") or 0)))}
+
+
+def profile_broken(state, name):
+    """Whether this profile never passed the door: `display_type` is mandatory (§ 4.7).
+
+    Such a profile stays RAW and is reported in every pass; it carries no normalised
+    `inputs` and no `dock_max`, so nothing that reads one may be asked about it.
+    """
+    return "error" in ((state.get("screens") or {}).get(name) or {})
+
+
+def profile_of(state, name):
+    """This output's profile after the door (§ 4.7), plus the scale of § 6.6."""
+    prof = dict((state.get("screens") or {}).get(name) or {})
+    kind = str(prof.get("display_type") or "")
+    if kind not in SCREEN_BASE:
+        kind = "tv"
+    try:
+        distance = float(prof.get("viewing_distance_m"))
+    except (TypeError, ValueError):
+        distance = SCREEN_REFERENCE[kind]
+    if distance <= 0:
+        distance = SCREEN_REFERENCE[kind]
+    scale = SCREEN_BASE[kind] * (distance / SCREEN_REFERENCE[kind])
+    # A profile that never passed the door keeps its raw words in the state (§ 4.7), but
+    # nothing is BOUND on it: the kind is unknown, so the screen promises no finger and no
+    # keyboard here. Half a television -- the tv fallback with the raw `inputs` -- would be
+    # exactly the silent default § 4.7 forbids.
+    said = prof.get("inputs") if isinstance(prof.get("inputs"), list) else []
+    words = [] if "error" in prof else [w for w in said if w in INPUT_WORDS]
+    return {"type": kind,
+            "scale": scale_text(min(SCALE_MAX, max(SCALE_MIN, scale))),
+            "inputs": " ".join(words),
+            "dock": prof.get("dock_default") or PROFILE_DEFAULTS[kind][0],
+            "dock_max": prof.get("dock_max") or PROFILE_DEFAULTS[kind][1]}
+
+
+def root_objects(state, now, name):
+    """The structure every output has: shell, regions, the OS mark, the dock."""
+    prof = profile_of(state, name)
+    want = {
+        ROOT_ID: {
+            "component": "display-shell",
+            "parent": None,
+            "ord": 0,
+            "props": {"stylesheet": True, "faces": faces(FONT_BASE), "vocab": VOCAB,
+                      "ground": GROUND, "client_js": SCENE_CLIENT_JS,
+                      # § 6.5: the switch reads the outputs by NAME and which of them
+                      # is the default; the sheet reads the TYPE (§ 6.3, § 6.6). So the
+                      # root wears both, under two names.
+                      "screens": json.dumps(sorted(state.get("screens") or {})),
+                      "default_screen": str(state["settings"].get("default_screen") or ""),
+                      "exit": prof["type"], "screen_name": name,
+                      "inputs": prof["inputs"],
+                      "scale": prof["scale"], "dock": prof["dock"],
+                      "dock_max": prof["dock_max"], "switch": "",
+                      "tap": False, "input_line": False, "due": ""},
+            "keep": [],
+        }
+    }
+    for i, region in enumerate(REGIONS):
+        want[REGION_PREFIX + region] = {
+            "component": "display-region", "parent": ROOT_ID, "ord": i * ORD_STEP,
+            "props": {"region": region}, "keep": [],
+        }
+    want[DOCK_ID] = {
+        "component": "display-dock", "parent": ROOT_ID, "ord": len(REGIONS) * ORD_STEP,
+        "props": {"count": 0}, "keep": [],
+    }
+    want[OS_ID] = {
+        "component": "display-os", "parent": ROOT_ID,
+        "ord": (len(REGIONS) + 1) * ORD_STEP,
+        "props": {"mount": VOICE_MOUNT, "client_js": OS_CLIENT_JS,
+                  "unseen": str(state.get("unseen") or 0)},
+        "keep": [],
+    }
     return want
 
 
-def topic_dupes(windows, have, now, knobs):
-    """A fresh window repeating another application's subject yields to it (R-D4).
+def ghost(want, have, oid, attrs):
+    """Lay a leaving window back from what the display is already holding.
 
-    The floor decides this, not the judge: three to five seconds of latency
-    would put a second weather card on the screen and take it off again. An
-    owner is never compared with itself (R-D4a) -- three timers are three
-    timers, and it is the APPLICATION that decides how many windows it has.
-    The judge may overrule by naming the window with `hidden: false`, which
-    `apply_verdict` turns into a cleared mark. Returns the standing windows
-    that took an answer, for the touched list.
+    § 4.35 gives a window one last pass so the sheet can fade it out, and a withdrawal is
+    one of the three ways to leave -- but a withdrawal takes the ROW with it, and the row
+    is where the content lives. Without this, every withdrawn window vanished between two
+    renders instead of leaving: the state said `leaving`, and there was nothing to draw it
+    from. So the objects the display holds stand in for the row for exactly that one pass;
+    the next pass has no such view in the state any more and `patches` sweeps them.
     """
-    taken = []
-    for oid, spec in windows.items():
-        p = spec["props"]
-        topic = str(p.get("topic") or "")
-        p["topic_dupe"] = False
-        if not topic:
+    for held_id, held in (have or {}).items():
+        if held_id != oid and not held_id.startswith(oid + "/"):
             continue
-        owner, _ = parse_object_id(oid)
-        rivals = [o for o, s in windows.items()
-                  if o != oid
-                  and str(s["props"].get("topic") or "") == topic
-                  and parse_object_id(o)[0] != owner
-                  and s["props"].get("age") != "fresh"
-                  and is_present(s["props"], now, knobs)]
-        if not rivals:
+        spec = {"component": str(held.get("component") or ""),
+                "parent": held.get("parent"),
+                "ord": held.get("ord") or 0,
+                "props": dict(held.get("props") or {}),
+                "keep": []}
+        if spec["component"] in WINDOWS:
+            spec["props"].update(attrs)
+        want[held_id] = spec
+
+
+def objects_from_state(state, rows, now, name, have=None):
+    """Every object the screen holds, keyed by id -- a rendering of ONE state (§ 3.1).
+
+    Windows: every view the pass computes (present, or in its leaving pass), with the
+    curator's values as attributes; tiles: `state["dock_order"]` bottom -> top, an empty
+    seat as a `display-seat`; the OS mark with `unseen`. `name` is the output this first
+    tree is drawn for -- the switch's, which draws the `default_screen` (§ 6.5) -- and it
+    reaches nothing but the root's own profile words: every per-output DECISION, the dock
+    cut of § 4.30 included, is `apply_exit`, once per copy.
+    """
+    want = root_objects(state, now, name)
+    tiles = {}            # window id -> the props of the `tile` child the app handed in
+    faces = {}            # window id -> the DOM id its tile points at (§ 7.2)
+    by_oid = {}
+    for row in rows:
+        if is_state_row(row):
             continue
-        was = ((have.get(oid) or {}).get("props") or {}).get("topic_dupe") is True
-        if p.get("age") != "fresh" and not was:
+        for region, owner, view_id, wrapper, content, view in drawable([row]):
+            by_oid[wrapper] = (region, owner, view_id, content, view)
+    # Every window that is not open sits at the same `ord`: it is a tile, and its
+    # wrapper is not drawn (§ 6.3). Numbering them would move every window of a region
+    # whenever one arrives whose id sorts ahead -- an `object.move` per window for a
+    # difference nobody sees. What IS ordered stands in the band below zero, further down.
+    for oid in sorted(state["views"]):
+        view = state["views"][oid]
+        if not in_state(view):
             continue
-        p["topic_dupe"] = True
-        if p.get("age") == "fresh":
-            # The standing window takes the answer: touched, so it is a focus
-            # candidate and zooms out of its tile. TOUCHED, not only `since`:
-            # the floor's weights follow the last touch, and a since-tie broken
-            # by id would hand the weight to the repetition instead.
-            # And it is as relevant as the answer it took (OR-D-Bau-6a), if
-            # that is more than its own word: the card said how much the
-            # member wanted this, and the window that shows it inherits that.
-            offered = relevance_of(p, now)
-            for o in rivals:
-                rp = windows[o]["props"]
-                rp["since"] = now
-                held_r = as_unit(str(rp.get("topic_relevance") or ""), 0.0)
-                if offered > max(relevance_of(rp, now), held_r):
-                    rp["topic_relevance"] = str(offered)
-                if o not in taken:
-                    taken.append(o)
-    return taken
+        if oid not in by_oid:
+            # A window the pass still computes whose row is gone: its leaving pass
+            # (§ 4.35). The display's own objects stand in for the content it no longer
+            # has -- see `ghost`.
+            ghost(want, have, oid, window_attrs(view, now))
+            continue
+        region, owner, view_id, content, row = by_oid[oid]
+        parent = REGION_PREFIX + region
+        attrs = window_attrs(view, now)
+        if str(row.get("kind") or "") == "prose":
+            want[oid] = {
+                "component": "display-view-prose", "parent": parent, "ord": 0,
+                "props": dict({"view_id": view_id, "owner": owner,
+                               "title": str(content.get("title") or ""),
+                               "body": str(content.get("body") or ""),
+                               "region": region}, **attrs),
+                "keep": [],
+            }
+            continue
+        want[oid] = {
+            "component": "display-view-custom", "parent": parent, "ord": 0,
+            "props": {"view_id": view_id, "owner": owner}, "keep": [],
+        }
+        # The tile comes out of the tree under the WINDOW's id, not under the node id
+        # `add_tree` mints: the dock is keyed by window, and the two were two maps.
+        mine = {}
+        add_tree(want, oid, content, 0, mine, attrs=attrs, region=region)
+        if mine:
+            tiles[oid] = list(mine.values())[0]
+        # `data-for` is the DOM id of the window element, which is its `pane_id`: that is
+        # what the client matches the two halves of one object on. A prose window has no
+        # `pane_id` and no id in the DOM; its tile names the object instead.
+        win = unwrap_window(content)
+        faces[oid] = str((win.get("props") or {}).get("pane_id") or "") or oid
+    # § 6.3: the open canvas windows stand in the canvas in `canvas_order`, the leading
+    # one first. A band below zero, so a window that is drawn at all stands ahead of
+    # everything that is only a tile.
+    lane = canvas_order(state)
+    for i, oid in enumerate(lane):
+        if oid in want:
+            want[oid]["ord"] = -(len(lane) - i) * ORD_STEP
+    # The dock, bottom -> top. `ord` runs the other way: the column is anchored at the
+    # bottom edge, so what stands lowest needs the highest `ord` (OR-F29).
+    entries = state["dock_order"]
+    n = len(entries)
+    for i, entry in enumerate(entries):
+        ord_ = (n - 1 - i) * ORD_STEP
+        oid = entry["oid"]
+        if entry["empty"]:
+            # § 4.29: an empty seat is empty SPACE, not a placeholder -- an object with
+            # no content, so nothing slides into the gap and nothing is drawn in it.
+            want[tile_id(oid) + "~seat"] = {
+                "component": "display-seat", "parent": DOCK_ID, "ord": ord_,
+                "props": {"seat_ord": str(entry["seat_ord"] or 0)}, "keep": [],
+            }
+            continue
+        view = state["views"].get(oid)
+        if view is None:
+            continue
+        _tile(want, oid, view, ord_, entry, tiles.get(oid) or {}, faces.get(oid) or oid)
+    want[DOCK_ID]["props"]["count"] = len([e for e in entries if not e["empty"]])
+    return want
 
 
-def curate(want, have, now, knobs, verdict=None, tiles=None):
-    """Every window's state, age, since and score -- the screen's judgement.
+def mirror_screens(state, want, now):
+    """One copy of the whole tree per output, and the switch at `/<mount>/`.
 
-    Objects in, the same objects out with the curator props written in place
-    (and the judge's verdict applied first, when the pass carries one).
-    Reads the bar and the weights off the root's props (the floor writes them
-    when nothing else did), never off anything outside `want`/`have`.
+    The curator ran once; an output is the same objects under a prefix, rendered by its
+    own profile (§ 6). The unprefixed tree is the SWITCH: it draws the `default_screen`
+    and carries `data-switch="1"`, and the client leads from there to the output that
+    matches (§ 6.5).
     """
-    root = want[ROOT_ID]["props"]
-    # A ghost (`ghosts()`) keeps state, since and score as the display holds
-    # them and stands aside: not touched, not scored, not a candidate.
-    windows = {oid: spec for oid, spec in want.items()
-               if spec.get("component") in WINDOWS
-               and spec["props"].get("age") != "leaving"}
-    touched = []
-    for oid, spec in windows.items():
-        prior = (have.get(oid) or {}).get("props") or {}
-        p = spec["props"]
-        # Only what the sender says NOW is compared: `object.update` merges
-        # per key, so a prop said once and left out later stands on the
-        # screen, and leaving it out is not a touch. A kept prop is the
-        # browser's, never the sender's, and does not count either.
-        sent = {k: v for k, v in content_props(p).items() if k not in (spec.get("keep") or [])}
-        said = str(prior.get("touched") or "") != str(p.get("touched") or "")
-        if p.get("pinned") is True:
-            # A pinned window's own content change is no touch (D-15):
-            # pinned means the tile stays, not that it asks for attention.
-            # The clock rewrites its time and the weather its degrees
-            # without waking the screen -- only the `touched` hint does,
-            # and the rival touch of `topic_dupes` below. Arrival is no
-            # touch either: `since` stays at 0, "never touched", so the
-            # floor's weight does not go to a context nobody asked about.
-            hit = said
-        else:
-            hit = oid not in have or any(prior.get(k) != v for k, v in sent.items())
-        if hit:
-            touched.append(oid)
-            # The moment of the touch is the pass -- unless the application
-            # said when (GH #689): a `touched` hint that is an epoch inside
-            # the fade window, later than the last touch and not in the
-            # future, IS the moment. An answer stored at 12:00:00.000 whose
-            # view reaches the screen a pass after the card it caused is
-            # older than that card, and the window that took the answer
-            # stays the last touched one (OR-D-Bau-6, -8).
-            p["since"] = now
-            if said:
-                moment = as_int(p.get("touched"), 0)
-                floor = max(int(prior.get("since") or 0),
-                            now - knobs["linger_ms"] - knobs["fade_ms"])
-                if floor < moment <= now:
-                    p["since"] = moment
-            p["judged_relevance"] = ""
-            p["judged_hidden"] = False
-            p["topic_relevance"] = ""
-        elif oid not in have:
-            p["since"] = 0
-            p["judged_relevance"] = ""
-            p["judged_hidden"] = False
-            p["topic_relevance"] = ""
-        else:
-            p["since"] = int(prior.get("since") or 0)
-            # A borrowed relevance (OR-D-Bau-6a) stands as long as a verdict
-            # would -- linger + fade from the rival touch, which is the
-            # window's `since` -- and goes with the next real touch above.
-            borrowed = str(prior.get("topic_relevance") or "")
-            p["topic_relevance"] = borrowed if (
-                borrowed and now - p["since"] < knobs["linger_ms"] + knobs["fade_ms"]) else ""
-            # The judged props are part of the verdict and fade with it
-            # (OR-C-Bau-11): once the verdict no longer stands they are
-            # dropped on carry-over, exactly as a touch drops them.
-            standing = verdict_stands(root, now, knobs)
-            p["judged_relevance"] = str(prior.get("judged_relevance") or "") if standing else ""
-            p["judged_hidden"] = standing and prior.get("judged_hidden") is True
-        # A window on its way out that comes back is settled: no second entrance.
-        p["age"] = "fresh" if oid not in have else "settled"
-    answered = topic_dupes(windows, have, now, knobs)
-    touched += [o for o in answered if o not in touched]
-    if isinstance(verdict, dict):
-        apply_verdict(want, windows, verdict, now, knobs)
-    weights = floor_weights(root, windows, touched, now, knobs, answered)
-    for oid, spec in windows.items():
-        spec["props"]["score"] = score_of(spec["props"], weights, now, knobs)
-    bar = floor_bar(root, windows, want, now, knobs)
-    root["focus"] = bar
-    root["weights"] = json.dumps(weights, sort_keys=True)
-    assign_rungs(windows, want, bar, have)
-    canvas_order(want, windows)
-    for oid, spec in windows.items():
-        # Pushed under the bar while standing on the page: hidden AND leaving
-        # in the same update, so the sheet plays the leave before `display:
-        # none` takes hold. The next pass finds it hidden already and settles it.
-        prior = (have.get(oid) or {}).get("props") or {}
-        p = spec["props"]
-        if (p["state"] == "hidden" and oid in have
-                and prior.get("state") != "hidden" and prior.get("age") != "leaving"):
-            p["age"] = "leaving"
-    # The rank AFTER the rungs: `assign_rungs` leaves `state == "urgent"` on
-    # exactly the windows whose application said so, so the rank reads the
-    # hint back off the rung without a second bookkeeping.
-    ranks = {oid: rank_of(spec["props"], weights, now, knobs)
-             for oid, spec in windows.items()}
-    dock(want, windows, ranks, tiles if isinstance(tiles, dict) else {}, now, knobs)
-    return want, touched
+    names = sorted(state.get("screens") or {})
+    default = str(state["settings"].get("default_screen") or "")
+    pages = [{"route": PAGE_ROUTE, "root": ROOT_ID, "title": PAGE_TITLE}]
+    originals = sorted(want)
+    for name in names:
+        for oid in originals:
+            spec = want[oid]
+            want[name + "." + oid] = {
+                "component": spec["component"],
+                "parent": None if spec["parent"] is None else name + "." + spec["parent"],
+                "ord": spec["ord"],
+                "props": dict(spec["props"]),
+                "keep": list(spec.get("keep") or []),
+            }
+        pages.append({"route": "/" + name, "root": name + "." + ROOT_ID, "title": PAGE_TITLE})
+    for name in names:
+        apply_exit(state, want, name + ".", name, "")
+    if default in names:
+        apply_exit(state, want, "", default, "1")
+    return pages
 
 
-def verdict_stands(root, now, knobs):
-    """A verdict rules until the situation it judged has faded: linger + fade.
+def cut_of(state, name, prof):
+    """`dock(state, screen)` for an output whose profile may never have passed the door.
 
-    After that the floor judges again (OR-C-Bau-7): a judge that fell silent
-    after its last verdict -- timeout, quota, no model -- must not leave its
-    bar standing over a screen it no longer sees.
+    A raw profile has no `dock_max` (§ 4.7 leaves it raw and reports the error), and
+    `dock` reads one. Skipping the cut instead would make `dock_max` an exception on
+    exactly the output whose configuration is broken -- and § 4.30 says "without
+    exception". So the type default of the fallback kind stands in for the number, and
+    the output is cut like any other (OR-H1.16).
     """
-    try:
-        judged = int(root.get("judged_at") or 0)
-    except (TypeError, ValueError):
-        return False
-    return judged > 0 and now - judged < knobs["linger_ms"] + knobs["fade_ms"]
+    screens = state["screens"]
+    if "dock_max" in (screens.get(name) or {}):
+        return dock(state, name)
+    patched = dict(state)
+    patched["screens"] = dict(screens)
+    patched["screens"][name] = dict(screens.get(name) or {}, dock_max=prof["dock_max"])
+    return dock(patched, name)
 
 
-def floor_weights(root, windows, touched, now, knobs, answered=()):
-    """The judge's map, or the floor: the last touched context weighs 1, every other 0.5.
+def apply_exit(state, want, prefix, name, switch):
+    """Render ONE output out of the one state: the profile's words and the dock's cut.
 
-    The floor has no memory of its own -- the windows carry `since`, so the
-    last touched context is read off them on every pass, and a context
-    touched before that falls back to the default. Once a judge has spoken
-    its map stands; a touch adds only a context the map does not know.
+    This is the ONLY place an output decides anything (§ 4.30): `dock(state, screen)`
+    says which tiles it draws. A tile that does not fit is ABSENT here -- the app stays
+    present, its window stays open, and on every other output with a tile it can be put
+    away (R-23-6, R-24-2).
     """
-    judged = verdict_stands(root, now, knobs)
-    try:
-        held = json.loads(str(root.get("weights") or "")) or {}
-    except ValueError:
-        held = {}
-    if not isinstance(held, dict):
-        held = {}
-    if not windows:
-        return {}
-    if judged:
-        weights = dict(held)
-        for oid in touched:
-            ctx = str(windows[oid]["props"].get("context") or "")
-            if ctx and ctx not in weights:
-                weights[ctx] = 1.0
-        return weights
-    # A window with no context says nothing about the weights: the last
-    # touched window AMONG THOSE THAT NAME ONE decides, ties on `since`
-    # broken by id. A repetition the floor holds back (`topic_dupe`) says
-    # nothing either: the standing window took its answer, and the weight
-    # goes with the answer, not with the copy.
-    named = [o for o in windows if str(windows[o]["props"].get("context") or "")
-             and windows[o]["props"].get("topic_dupe") is not True
-             # A `since` of 0 is a pinned window nobody touched: it stands,
-             # but it does not steer the weights.
-             and int(windows[o]["props"].get("since") or 0) > 0]
-    if not named:
-        return {}
-    # A window that took another application's answer in THIS pass is the
-    # last touched one (OR-D-Bau-6b): the rival touch IS the answer to the
-    # turn that touched the chat beside it. And while the answer stands
-    # (`topic_relevance`), it wins a tie on `since` against the question.
-    pool = [o for o in answered if o in named] or named
-    last = max(pool, key=lambda o: (int(windows[o]["props"].get("since") or 0),
-                                    bool(windows[o]["props"].get("topic_relevance")), o))
-    # The weight of a touch fades like a verdict (OR-D-Bau-8): linger + fade
-    # after the last touch every context weighs the default again, so a
-    # pinned window that took an answer goes back to its tile by itself.
-    if now - int(windows[last]["props"].get("since") or 0) >= knobs["linger_ms"] + knobs["fade_ms"]:
-        return {}
-    return {str(windows[last]["props"]["context"]): 1.0}
+    root = want.get(prefix + ROOT_ID)
+    if root is None:
+        return
+    prof = profile_of(state, name)
+    broken = profile_broken(state, name)
+    root["props"].update({"exit": prof["type"], "screen_name": name,
+                          "inputs": prof["inputs"],
+                          "scale": prof["scale"], "dock": prof["dock"],
+                          "dock_max": prof["dock_max"], "switch": switch,
+                          "tap": not broken and tap_bound(state, name),
+                          "input_line": not broken and input_line(state, name)})
+    finger = not broken and tap_bound(state, name)
+    kept = set(o for o in cut_of(state, name, prof) if o)
+    seats = {e["oid"]: e for e in state["dock_order"] if e["seat"] and not e["empty"]}
+    for key in [k for k in want if k.startswith(prefix + DOCK_PREFIX)]:
+        spec = want[key]
+        if spec["component"] != "display-tile":
+            continue
+        oid = str(spec["props"].get("oid") or "")
+        if oid in kept:
+            # § 6.4: only an output with a finger gets the binding.
+            spec["props"]["tap"] = finger
+            continue
+        del want[key]
+        if oid in seats:
+            # § 4.30: a cut seat tile leaves an EMPTY seat (§ 4.29) -- the place stays,
+            # so nothing below it climbs into the gap on this output alone.
+            want[prefix + tile_id(oid) + "~seat"] = {
+                "component": "display-seat", "parent": prefix + DOCK_ID, "ord": spec["ord"],
+                "props": {"seat_ord": str(seats[oid]["seat_ord"] or 0)}, "keep": [],
+            }
+    dockobj = want.get(prefix + DOCK_ID)
+    if dockobj is not None:
+        dockobj["props"]["count"] = len(kept)
+    mark = want.get(prefix + OS_ID)
+    if mark is not None:
+        mark["props"]["unseen"] = str(state.get("unseen") or 0)
 
 
-def floor_bar(root, windows, want, now, knobs):
-    """The judge's bar while its verdict stands, else focus_default -- or 0 on an empty canvas.
+def _tile(want, oid, view, ord_, entry, said, face_id):
+    """One tile of the dock, at the `ord` its caller decided (§ 7.2, § 4.31).
 
-    `aside` is a word the screen still accepts and draws as the canvas
-    (OR-D3), so the rule that lowers the bar for an empty canvas reads EVERY
-    window and not only the wide column: the empty screen has an empty canvas
-    and a dock with a clock in it (S1, D-1).
+    `tap` starts false and is written per output (§ 6.4): a `phx-click` on an output with
+    no finger is a promise the screen cannot keep.
     """
-    if verdict_stands(root, now, knobs) and root.get("focus") not in (None, ""):
-        return as_unit(root.get("focus"), knobs["focus_default"])
-    scores = [s["props"]["score"] for s in windows.values()]
-    return knobs["focus_default"] if any(v >= knobs["focus_default"] for v in scores) else 0.0
-
-
-def assign_rungs(windows, want, bar, have):
-    """hidden below the bar; every urgent window urgent; one focus; then the midpoint.
-
-    An urgent window used to take the focus away from everything else (one
-    ringing timer hid the answer somebody was reading). Now the canvas carries
-    both: the urgent windows stand on top, and the focus is chosen among the
-    rest (OR-D2, from D-14).
-
-    Two words per window. The RUNG is the place on the ladder, and the tile
-    and the judge read it. The STATE is the canvas's word, and the canvas
-    carries only what is large (spec 2.2): focus and urgent stand on it,
-    everything else is hidden there and is a tile. A window that steps down
-    from the focus leaves the canvas the way a window under the bar does --
-    with one `leaving` frame -- and its tile does not move.
-    """
-    urgent = [o for o, s in windows.items() if s["props"].get("state") == "urgent"
-              and s["props"].get("topic_dupe") is not True]
-    visible = [o for o, s in windows.items()
-               if s["props"]["score"] >= bar and s["props"]["score"] > 0]
-    candidates = [o for o in visible
-                  if o not in urgent and windows[o]["props"]["age"] != "fresh"]
-    # No focus under a lowered bar. `floor_bar` answers 0 when nothing on the
-    # screen reaches the bar, and that gives every window a rung -- ambient,
-    # relevant, a coloured tile -- but does not make the best of nothing
-    # large: the empty screen is an empty canvas and a dock with a clock in
-    # it (spec 2.2, S1).
-    top = None if bar <= 0 else max(
-        candidates, key=lambda o: (windows[o]["props"]["score"],
-                                   windows[o]["props"]["since"], o), default=None)
-    mid = (bar + 1.0) / 2.0
-    for oid, spec in windows.items():
-        p = spec["props"]
-        if oid in urgent:
-            rung = "urgent"
-        elif oid not in visible:
-            rung = "hidden"
-        elif oid == top:
-            rung = "focus"
-        elif p["score"] >= mid:
-            rung = "relevant"
-        else:
-            rung = "ambient"
-        p["rung"] = rung
-        p["state"] = rung if rung in ("focus", "urgent") else "hidden"
-
-
-def canvas_order(want, windows):
-    """Urgent windows above the focus, the youngest of them on top (spec 2.3).
-
-    The order of the canvas is the `ord` of the WRAPPERS, and the seats
-    (`seated`) hand out `0, 10, 20 ...` per region. An urgent window is lifted
-    into a band below zero instead, so it stands over everything the seats
-    ordered; when it stops being urgent the next pass gives it its seat back.
-    """
-    ringing = [o for o, s in windows.items() if s["props"].get("state") == "urgent"]
-    ringing.sort(key=lambda o: (-int(windows[o]["props"].get("since") or 0), o))
-    for i, oid in enumerate(ringing):
-        wrapper = oid.split("/")[0]
-        if wrapper in want:
-            want[wrapper]["ord"] = -(len(ringing) - i) * ORD_STEP
+    face = fallback_tile(oid, view)
+    for key in ("glyph", "line", "value", "end_at"):
+        value = said.get(key)
+        if value not in (None, ""):
+            face[key] = value
+    c = view["curator"]
+    want[tile_id(oid)] = {
+        "component": "display-tile",
+        "parent": DOCK_ID,
+        "ord": ord_,
+        "props": {
+            "glyph": str(face["glyph"] or TILE_FALLBACK_GLYPH),
+            "line": cut(face["line"]),
+            "value": str(face["value"] or ""),
+            "unit": str(said.get("unit") or ""),
+            "unread": "1" if said.get("unread") is True else "",
+            "end_at": face["end_at"] if isinstance(face["end_at"], int)
+                      and not isinstance(face["end_at"], bool) else 0,
+            "topic": str(view.get("topic") or ""),
+            # Two names, two jobs: `for` is the DOM id the client matches the window on,
+            # `oid` is the window id a tap carries back (§ 5.6).
+            "for": face_id,
+            "oid": oid,
+            "tap": False,
+            "rung": str(c["rung"] or ""),
+            # § 6.10: the tile of an open window says so, and the sheet dims it.
+            "open": "1" if c.get("open") else "",
+            "pinned": "1" if entry["pinned"] else "",
+            "seat": "1" if entry["seat"] else "",
+            "rank": str(entry["rank"]),
+        },
+        "keep": [],
+    }
 
 
 def tile_id(oid):
@@ -4568,94 +7012,6 @@ def fallback_tile(oid, props):
     return {"glyph": glyph, "line": line, "value": "", "end_at": 0}
 
 
-def tile_for(oid, props):
-    """The name a tile carries for its window: the `pane_id`, else the object id.
-
-    The window's element wears its `pane_id` as the DOM id, and the client
-    matches a tile to a window by that name alone. A prose window has no
-    `pane_id` and no id in the DOM; its tile names the object instead, which
-    is unique and matches nothing on purpose.
-    """
-    return str(props.get("pane_id") or oid)
-
-
-def keep_in_dock(present, windows, knobs):
-    """The tiles that fit: the lowest ranks fall, pinned and urgent never do.
-
-    `present` arrives in rank order, so the cut is a slice. The order of what
-    is kept is the order it came in -- dropping a tile never reshuffles the
-    ones above it.
-    """
-    limit = knobs.get("dock_max") or 0
-    if limit <= 0 or len(present) <= limit:
-        return present
-    held = [o for o in present if windows[o]["props"].get("pinned") is True
-            or windows[o]["props"].get("state") == "urgent"]
-    rest = [o for o in present if o not in held]
-    keep = set(held) | set(rest[:max(0, limit - len(held))])
-    return [o for o in present if o in keep]
-
-
-def dock(want, windows, ranks, tiles, now, knobs):
-    """The dock object and one tile per present window, the highest rank on top.
-
-    Presence, not the rung: a window the judge hid, or one that never reached
-    the bar, has a tile as long as it stands in the table and has not faded.
-    Ties go to the younger window, then to the id, so two passes over the same
-    situation order the dock the same way.
-    """
-    # A repetition (`topic_dupe`) has no tile: it is the same statement as
-    # the standing window's, and that one has the tile already.
-    present = [o for o in windows
-               if windows[o]["props"].get("topic_dupe") is not True
-               and is_present(windows[o]["props"], now, knobs)]
-    present.sort(key=lambda o: (-ranks[o], -int(windows[o]["props"].get("since") or 0), o))
-    kept = keep_in_dock(present, windows, knobs)
-    # What did not fit, on the ROOT: the judge is told the dock is full and
-    # reads the number instead of counting the same set a second time.
-    want[ROOT_ID]["props"]["dock_overflow"] = len(present) - len(kept)
-    present = kept
-    want[DOCK_ID] = {
-        "component": "display-dock",
-        "parent": ROOT_ID,
-        "ord": len(REGIONS) * ORD_STEP,
-        # A copy of the root's profile, so a sheet rule inside the dock's
-        # slot does not have to walk back up the tree.
-        "props": {"count": len(present),
-                  "profile": str((want.get(ROOT_ID) or {}).get("props", {}).get("profile") or "")},
-        "keep": [],
-    }
-    for i, oid in enumerate(present):
-        p = windows[oid]["props"]
-        face = fallback_tile(oid, p)
-        for key in ("glyph", "line", "value", "end_at"):
-            said = (tiles.get(oid) or {}).get(key)
-            if said not in (None, ""):
-                face[key] = said
-        want[tile_id(oid)] = {
-            "component": "display-tile",
-            "parent": DOCK_ID,
-            "ord": i * ORD_STEP,
-            "props": {
-                "glyph": str(face["glyph"] or TILE_FALLBACK_GLYPH),
-                "line": cut(face["line"]),
-                "value": str(face["value"] or ""),
-                "end_at": face["end_at"] if isinstance(face["end_at"], int)
-                          and not isinstance(face["end_at"], bool) else 0,
-                "topic": str(p.get("topic") or ""),
-                "for": tile_for(oid, p),
-                # The rung, not the canvas's word: a tile is the one place
-                # where ambient and relevant are still drawn.
-                "state": str(p.get("rung") or p.get("state") or ""),
-                "on_canvas": p.get("state") in ("focus", "urgent"),
-                "pinned": p.get("pinned") is True,
-                "rank": str(ranks[oid]),
-            },
-            "keep": [],
-        }
-    return want
-
-
 def scale_text(scale):
     """The scale as the root wears it: `1.6`, `1.0`, `1.25` -- one value, one spelling.
 
@@ -4664,69 +7020,6 @@ def scale_text(scale):
     """
     text = ("%.2f" % scale).rstrip("0")
     return text + "0" if text.endswith(".") else text
-
-
-def screen_profile(entry):
-    """`(display_type, scale, inputs)` out of one `screens` entry.
-
-    An entry that says nothing readable is a television at its reference
-    distance: a screen with a broken setting still has to be a screen.
-    """
-    entry = entry if isinstance(entry, dict) else {}
-    kind = str(entry.get("display_type") or "tv")
-    if kind not in SCREEN_BASE:
-        kind = "tv"
-    try:
-        distance = float(entry.get("viewing_distance_m"))
-    except (TypeError, ValueError):
-        distance = SCREEN_REFERENCE[kind]
-    if distance <= 0:
-        distance = SCREEN_REFERENCE[kind]
-    scale = SCREEN_BASE[kind] * (distance / SCREEN_REFERENCE[kind])
-    scale = min(SCALE_MAX, max(SCALE_MIN, scale))
-    inputs = sorted({str(i) for i in (entry.get("inputs") or []) if isinstance(i, str)})
-    return kind, round(scale, 2), " ".join(inputs)
-
-
-def root_profile():
-    """The three words the sheet reads off the root, plus the name of the exit."""
-    kind, scale, inputs = screen_profile(SCREENS.get(SCREEN))
-    return {"screen": SCREEN, "profile": kind, "inputs": inputs,
-            "scale": scale_text(scale)}
-
-
-def mirror_screens(want):
-    """One copy of the whole tree per FURTHER exit, and the routes of all of them.
-
-    The curator runs once and the tree is built once (R-D3): a second exit is
-    the same objects under a prefix, with another profile at its root. Ids
-    repeat across PAGES, which is what makes them the same windows -- each
-    route materialises its own document, so two roots never meet in one DOM.
-    """
-    pages = [{"route": PAGE_ROUTE, "root": ROOT_ID, "title": PAGE_TITLE}]
-    originals = sorted(want)
-    for name in sorted(SCREENS):
-        if name == SCREEN:
-            pages.append({"route": "/" + name, "root": ROOT_ID, "title": PAGE_TITLE})
-            continue
-        kind, scale, inputs = screen_profile(SCREENS[name])
-        for oid in originals:
-            spec = want[oid]
-            copy = {
-                "component": spec["component"],
-                "parent": None if spec["parent"] is None else name + "." + spec["parent"],
-                "ord": spec["ord"],
-                "props": dict(spec["props"]),
-                "keep": list(spec.get("keep") or []),
-            }
-            if oid == ROOT_ID:
-                copy["props"].update({"screen": name, "profile": kind,
-                                      "inputs": inputs, "scale": scale_text(scale)})
-            elif spec["component"] == "display-dock":
-                copy["props"]["profile"] = kind
-            want[name + "." + oid] = copy
-        pages.append({"route": "/" + name, "root": name + "." + ROOT_ID, "title": PAGE_TITLE})
-    return pages
 
 
 def page_ops(want, have, pages, bootstrap):
@@ -4741,116 +7034,9 @@ def page_ops(want, have, pages, bootstrap):
     # the two names between one root and a prefixed one, with the same
     # `screens` text on both sides.
     if (not bootstrap and held.get("screens") == mine.get("screens")
-            and held.get("screen") == mine.get("screen")):
+            and held.get("default_screen") == mine.get("default_screen")):
         return []
     return [dict({"op": "page.set"}, **page) for page in pages]
-
-
-def build(views, have=None, now=None, knobs=None, verdict=None):
-    """Every object the screen should hold, keyed by id.
-
-    `have` is what the display is holding now, and it is an INPUT to the layout
-    rather than only something to diff against: it carries the seats, and the
-    seats are the order of the screen (see `seated`).
-    """
-    have = have if isinstance(have, dict) else {}
-    # The tiles the applications handed in, collected while the trees are read
-    # (an empty map means every window falls back).
-    tiles = {}
-    want = {
-        ROOT_ID: {
-            "component": "display-shell",
-            "parent": None,
-            "ord": 0,
-            "props": dict({"stylesheet": True, "faces": faces(FONT_BASE),
-                           "vocab": VOCAB, "ground": GROUND,
-                           # What did not fit in the dock; `dock()` overwrites
-                           # it every pass, and the judge reads it.
-                           "dock_overflow": 0,
-                           # The screen's own motion: the scene hook, raw,
-                           # rendered after the shell's element.
-                           "client_js": SCENE_CLIENT_JS,
-                           "screens": json.dumps(SCREENS, sort_keys=True)},
-                          **root_profile()),
-            "keep": [],
-        }
-    }
-    # The screen's state lives on the root and is carried over from what the
-    # display holds: the bar and the weights are the curator's memory between
-    # passes, and `object.update` merges per key, so a prop left out would
-    # stand for ever. `curate()` rewrites `focus` and `weights` below.
-    held_root = (have.get(ROOT_ID) or {}).get("props") or {}
-    for key in ("focus", "weights", "judged_at", "due", "asked_at"):
-        want[ROOT_ID]["props"][key] = held_root.get(key, "")
-    # Every region exists whether or not anything is in it: a region is a
-    # structural promise, not a consequence of there being views. Their `ord`
-    # is the order of the declaration, which is what puts `main` left of
-    # `aside` -- two regions at `ord: 0` were the second half of GH #609.
-    for i, region in enumerate(REGIONS):
-        want[REGION_PREFIX + region] = {
-            "component": "display-region",
-            "parent": ROOT_ID,
-            "ord": i * ORD_STEP,
-            "props": {"region": region},
-            "keep": [],
-        }
-
-    # The OS mark, behind the regions AND behind the dock, outside all of
-    # them: it belongs to the screen and not to a column, its own sheet takes
-    # it out of the flow, and it is a SIBLING of the dock rather than a child
-    # (OR-D4) -- its `client_js` must survive every re-render of the dock.
-    # Written on every tick like a region, because it is structural in the
-    # same way: a screen HAS a way to speak to it.
-    want[OS_ID] = {
-        "component": "display-os",
-        "parent": ROOT_ID,
-        "ord": (len(REGIONS) + 1) * ORD_STEP,
-        "props": {"mount": VOICE_MOUNT, "client_js": OS_CLIENT_JS},
-        "keep": [],
-    }
-
-    for region, i, row in seated(views, have):
-        _, owner, view_id, wrapper, content, view = row
-        parent = REGION_PREFIX + region
-        if str(view.get("kind") or "") == "prose":
-            want[wrapper] = {
-                "component": "display-view-prose",
-                "parent": parent,
-                "ord": i * ORD_STEP,
-                "props": {
-                    "view_id": view_id,
-                    "owner": owner,
-                    # Always written, empty when absent: `object.update` merges
-                    # per key, so a title left out would stand for ever.
-                    "title": str(content.get("title") or ""),
-                    "body": str(content.get("body") or ""),
-                    # The hints, the same way: a prose view that names no
-                    # context stands in its owner's, so the answer somebody
-                    # just wrote weighs 1.0 and is visible.
-                    "context": str(content.get("context") or owner_slug(owner)),
-                    "relevance": content.get("relevance") if isinstance(
-                        content.get("relevance"), (int, float)) else "",
-                    "class": str(content.get("class") or ""),
-                    "pinned": content.get("pinned") is True,
-                    "relevant_until": content.get("relevant_until") if isinstance(
-                        content.get("relevant_until"), int) else 0,
-                    "touched": str(content.get("touched") or ""),
-                    "topic": str(content.get("topic") or ""),
-                    "modal": content.get("modal") is True,
-                },
-                "keep": [],
-            }
-        else:
-            want[wrapper] = {
-                "component": "display-view-custom",
-                "parent": parent,
-                "ord": i * ORD_STEP,
-                "props": {"view_id": view_id, "owner": owner},
-                "keep": [],
-            }
-            add_tree(want, wrapper, content, 0, tiles)
-    ghosts(want, have)
-    return curate(want, have, now or now_ms(), knobs or KNOBS, verdict, tiles)
 
 
 def update_props(spec):
@@ -4999,132 +7185,6 @@ def iso_z(ms):
     return datetime.fromtimestamp(-(-int(ms) // 1000), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def cross_at(props, weights, bar, now, knobs):
-    """The next moment this window's fading score crosses the bar or the midpoint, or None.
-
-    score(t) = w * r * (1 - (t - since - linger) / fade) once t is past the linger;
-    solved for score == target. Pinned and urgent windows do not fade; a
-    window whose rung is hidden fades only out of the DOCK -- its one moment
-    is the zero crossing, when its tile goes (spec 2.2).
-    """
-    rung = str(props.get("rung") or props.get("state") or "")
-    if props.get("pinned") is True or rung == "urgent":
-        return None
-    w = as_unit(weights.get(str(props.get("context") or "")), DEFAULT_WEIGHT)
-    # The same relevance the score reads -- judged, else hinted, else the
-    # class's, with a borrowed answer and the clamp past `relevant_until` --
-    # so the clock strikes at the crossings the score will actually make.
-    peak = w * relevance_of(props, now)
-    if peak <= 0:
-        return None
-    starts = int(props.get("since") or now) + knobs["linger_ms"]
-    crossings = []
-    if rung != "hidden":
-        for target in (bar, (bar + 1.0) / 2.0):
-            if 0 < target < peak:
-                crossings.append(starts + int(knobs["fade_ms"] * (1.0 - target / peak)) + 1)
-    crossings.append(starts + knobs["fade_ms"] + 1)      # score reaches 0
-    future = [t for t in crossings if t > now]
-    return min(future) if future else None
-
-
-def next_due(want, views, now, knobs):
-    """The earliest moment something on the screen changes if nothing else happens."""
-    root = want[ROOT_ID]["props"]
-    bar = as_unit(root.get("focus"), knobs["focus_default"])
-    try:
-        weights = json.loads(str(root.get("weights") or "")) or {}
-    except ValueError:
-        weights = {}
-    if not isinstance(weights, dict):
-        weights = {}
-    due = []
-    for spec in want.values():
-        if spec.get("component") not in WINDOWS:
-            continue
-        p = spec["props"]
-        if p.get("age") in ("fresh", "leaving"):
-            due.append(now + 1000)
-        t = cross_at(p, weights, bar, now, knobs)
-        if t:
-            due.append(t)
-        # The fade of the floor's weight (OR-D-Bau-8) is a moment of the
-        # screen too: a pinned window whose context weighs 1 by its touch
-        # steps off the canvas then, and a pinned window has no fade of its
-        # own to strike for.
-        since = int(p.get("since") or 0)
-        if p.get("pinned") is True and since > 0:
-            fade = since + knobs["linger_ms"] + knobs["fade_ms"] + 1
-            if fade > now:
-                due.append(fade)
-        until = p.get("relevant_until")
-        if isinstance(until, (int, float)) and not isinstance(until, bool) and until > now:
-            due.append(int(until) + 1)
-    for row in views:
-        try:
-            ttl = int(row.get("ttl_ms") or 0)
-            written = int(row.get("updated_at") or 0)
-        except (TypeError, ValueError):
-            continue
-        if ttl > 0:
-            due.append(written + ttl + 1)
-    return min(due) if due else None
-
-
-def due_ops(want, have, views, now, knobs, struck=""):
-    """Zero, one or two timer ops: remove the last order, add the next. Writes root.due.
-
-    Each pass replaces the previous order, so the clock holds at most one
-    schedule for this screen. The order that just struck (`struck`, the
-    strike's own `schedule_id`) is gone from the timer and is not removed; a
-    `remove` on any other order that already struck is answered
-    `schedule_not_found`, which the hive's edge turns into `in_tick_error`
-    -- expected, and ignored.
-
-    The order's id is derived from the moment it is due (`DUE_NAMESPACE`),
-    not drawn at random: two passes that run close together read the same
-    stale `due`, remove the same old order and each add their own -- with a
-    deterministic id the two adds are the same order, and the clock takes
-    the second as the same order: acknowledged, nothing changes, one order
-    results (GH #681; until #690 the second answered `schedule_id_exists`).
-    The moment is the second the timer strikes at, rounded up like `iso_z`.
-
-    And the same id is never removed and added in one pass (GH #690): a
-    pass that computes the moment already standing on the root orders the
-    same second again without removing it first -- a `remove` marks the
-    timer's row `removed`, and an `add` of the same id right after it
-    collided with that row, so the moment never struck. The clock treats a
-    repeated order as one order: an `add` it already holds is acknowledged
-    and changes nothing, an `add` on a removed row of the same id revives
-    it (a second revisited after another moment came between). So the `add`
-    is always sent, and the root's `due` is never a promise the clock does
-    not hold.
-    """
-    old = str(((have.get(ROOT_ID) or {}).get("props") or {}).get("due") or "")
-    at = next_due(want, views, now, knobs)
-    ops = []
-    if at is None:
-        if old and old != struck:
-            ops.append(emission("due", {"messages": [], "op": "remove", "schedule_id": old}))
-        want[ROOT_ID]["props"]["due"] = ""
-        return ops
-    # The timer is exact to the second and refuses an `at` in the past, so
-    # the earliest order is the next full second.
-    at_ms = max(at, now + 1000)
-    # The id is the SECOND the timer is told (the same rounding as `iso_z`),
-    # not the millisecond: two passes a few ms apart compute two due
-    # milliseconds for the same strike, and they have to be the same order.
-    sec = -(-int(at_ms) // 1000)
-    sid = str(uuid.uuid5(DUE_NAMESPACE, "due:%d" % sec))
-    want[ROOT_ID]["props"]["due"] = sid
-    if old and old not in (struck, sid):
-        ops.append(emission("due", {"messages": [], "op": "remove", "schedule_id": old}))
-    ops.append(emission("due", {"messages": [], "op": "add", "schedule_id": sid,
-                                "schedule_name": "due", "at": iso_z(at_ms),
-                                "emit_to": ".", "emit_body": {"messages": []}}))
-    return ops
-
-
 def pass_tick(hop):
     """A pass without a write: read the table, then let pass 2 and 3 run as usual.
 
@@ -5139,142 +7199,210 @@ def pass_tick(hop):
                      display_request=json.dumps(request, sort_keys=True))]
 
 
+def due_ops_from_strokes(state, want, have, now, struck=""):
+    """Zero, one or two timer ops: remove the last order, add the next (§ 4.34).
+
+    The curator ORDERS; the clock cell keeps the order. `state["strokes"]` is the whole
+    ordered list of § 4.34 and the earliest of them is what the clock is told -- `due`
+    on the root is the order the clock holds and no curator value.
+
+    Each pass replaces the previous order, so the clock holds at most one schedule for
+    this screen. The order that just struck (`struck`) is gone from the timer and is not
+    removed. The order's id is derived from the SECOND it is due (`DUE_NAMESPACE`), not
+    drawn at random: two passes that run close together order the same second, and the
+    clock takes the second as the same order (GH #681, GH #690).
+    """
+    old = str(((have.get(ROOT_ID) or {}).get("props") or {}).get("due") or "")
+    strokes = [t for t in (state.get("strokes") or []) if isinstance(t, (int, float))]
+    at = int(strokes[0]) if strokes else None
+    ops = []
+    if at is None:
+        if old and old != struck:
+            ops.append(emission("due", {"messages": [], "op": "remove", "schedule_id": old}))
+        want[ROOT_ID]["props"]["due"] = ""
+        return ops
+    at_ms = max(at, now + 1000)
+    sec = -(-int(at_ms) // 1000)
+    sid = str(uuid.uuid5(DUE_NAMESPACE, "due:%d" % sec))
+    want[ROOT_ID]["props"]["due"] = sid
+    if old and old not in (struck, sid):
+        ops.append(emission("due", {"messages": [], "op": "remove", "schedule_id": old}))
+    ops.append(emission("due", {"messages": [], "op": "add", "schedule_id": sid,
+                                "schedule_name": "due", "at": iso_z(at_ms),
+                                "emit_to": ".", "emit_body": {"messages": []}}))
+    return ops
+
+
+def judge_ops_from_state(state, now):
+    """One message to the judge: what `judge_sees` shows (§ 4.4), and nothing else.
+
+    WHETHER it is asked is the pass's own decision (§ 4.3, `step1_judge_call`): the
+    interval lives in the state, not on the root, so two outputs cannot ask twice.
+    """
+    return [{"header": {"route": "judge"},
+             "system": {"instructions": {"text": JUDGE_INSTRUCTIONS}},
+             "messages": [{"origin": "user", "type": "text",
+                           "text": json.dumps(judge_sees(state, now), sort_keys=True)}]}]
+
+
+def _written_at(value, fallback):
+    """A store row's `updated_at` as a moment, never later than the pass's own."""
+    try:
+        at = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    return min(at, fallback)
+
+
+def reconcile(state, rows, event, now):
+    """Catch the state up with the store before this pass's own event runs (OR-H0.9).
+
+    The reference model assumes that passes run one after the other: every write is an
+    event, and every event runs on the state the event before it left. The CELL cannot
+    promise that by itself -- a write and its read pass are four messages apart, so a
+    second write that lands before the first pass's state row is in the store gets handed
+    the SAME state row the first one got. Measured on the minimal colony: the ambient app
+    sends three views in one tick, the second read pass computes its state out of the
+    first pass's input, and the first view is gone -- for ever, because no later event
+    ever writes it again.
+
+    So the adapter makes the promise the model assumes. The store's rows are the truth
+    about what the apps have said; before the pass's own event, every row the state does
+    not know yet, or knows older than the store does, is replayed as the `app_write` it
+    was (§ 4.8 a/b/c), at the moment the store wrote it -- so `ttl_ms` and `since` land
+    where they would have landed. A view the state holds whose row is gone is marked
+    `withdrawn` instead -- that is all a withdrawal IS in the model (`step2_door` sets one
+    flag and returns), and doing it as a flag rather than as a replayed pass leaves the
+    LEAVING pass of § 4.35 to this pass, so the sheet still gets its one frame to fade the
+    window out.
+
+    The pass's OWN row is left out of both: its event is the next thing to run, and
+    running it twice would make the second one a repeated write and swallow its touch.
+
+    One thing a replay cannot give back: `age`. The pass it repairs is the pass in which
+    the window was `fresh`, and that pass is over -- the window arrives `settled` and
+    misses its fly-in. Making it `fresh` again would mean writing into the `new` list
+    inside the pass section, which is byte-identical with the reference model and not
+    ours to reach into; and `since` would then be this pass's moment instead of the one
+    the store recorded, which is what `ttl_ms` and the decay are measured from.
+
+    The judge's bookkeeping is put back afterwards. A replayed write is a repair of a
+    pass that never ran, and that pass never asked the judge; advancing `last_call` here
+    would swallow the ONE question this pass is allowed to ask for the whole batch
+    (§ 4.3 discards a call inside the interval, and this is exactly that case).
+    """
+    kind = str(event.get("kind") or "")
+    own = str(event.get("oid") or "") if kind in ("app_write", "app_withdraw") else ""
+    seen = dict(state["views"])
+    replays = []
+    live = set()
+    for row in rows:
+        oid = object_id(row.get("owner"), row.get("view_id"))
+        live.add(oid)
+        if oid == own:
+            continue
+        at = _written_at(row.get("updated_at"), now)
+        held = seen.get(oid)
+        if held is not None and _written_at(held.get("written_at"), now) >= at:
+            continue
+        try:
+            ttl = int(row.get("ttl_ms") or 0)
+        except (TypeError, ValueError):
+            ttl = 0
+        if ttl > 0 and at + ttl <= now:
+            continue        # already expired: replaying it would only delete it again
+        replays.append((at, oid, {"kind": "app_write", "oid": oid,
+                                  "view": hints_of_row(row)}))
+    gone = [oid for oid, view in sorted(seen.items())
+            if oid not in live and oid != own and not view.get("withdrawn")]
+    if not replays and not gone:
+        return state
+    judge = copy.deepcopy(state["judge"])
+    for at, _oid, replay in sorted(replays, key=lambda r: (r[0], r[1])):
+        state = run_pass(state, replay, at)
+    state["judge"] = judge
+    for oid in gone:
+        if oid in state["views"]:
+            state["views"][oid]["withdrawn"] = True
+    return state
+
+
 def pass_read(body, ctx):
-    """The display's answer: ONE bundle that makes the screen match the table."""
+    """The display's answer: the pass of § 4, then ONE bundle that renders its state."""
+    global _LAST_STATE
     try:
         plan = json.loads(str(ctx.get("display_views") or ""))
     except (TypeError, ValueError):
         plan = None
     if not isinstance(plan, dict):
         return []
-    views = plan.get("views")
-    define = plan.get("define")
-
+    rows = [r for r in (plan.get("views") or []) if isinstance(r, dict) and not is_state_row(r)]
     have = read_objects(body)
-    # "Is this page mine", not "did the query fail". A display whose `/` has
-    # never been set refuses the query; a display carrying the `web` template's
-    # own seeded demo answers it, with a tree that has no root of ours in it.
-    # Both are bootstrap (GH #402).
     bootstrap = have is None or ROOT_ID not in have
-    if bootstrap:
-        # Deliberately NOT the foreign objects: another route may still point
-        # at them, and they were never this cell's to remove.
-        have = {}
-
-    # The clock is the one the views pass read, so the two halves of one
-    # round agree on `now`; a plan without one (an older sender) reads the
-    # clock here.
+    have = {} if bootstrap else have
     try:
         now = int(plan.get("now") or now_ms())
     except (TypeError, ValueError):
         now = now_ms()
-    views = views if isinstance(views, list) else []
-    verdict = plan.get("verdict") if isinstance(plan.get("verdict"), dict) else None
-    want, touched = build(views, have, now, KNOBS, verdict)
-    # The order for the clock is computed BEFORE the patch is cut, so the
-    # root's `object.update` carries the new `due`. The judge is asked after
-    # it -- and never on the pass that carries its own verdict.
-    ops = due_ops(want, have, views, now, KNOBS, str(plan.get("struck") or ""))
-    if verdict is None:
-        ops += judge_ops(want, have, touched, now, KNOBS)
-    # The exits are mirrored AFTER the clock and the judge have read the one
-    # tree: a copy is a rendering of the same state, and neither the schedule
-    # nor the situation may count a window twice.
-    pages = mirror_screens(want)
+    event = plan.get("event") if isinstance(plan.get("event"), dict) else {"kind": "stroke"}
+
+    held = plan.get("state")
+    state = state_from_row(held, KNOB_SETTINGS, KNOB_SCREENS)
+    state = reconcile(state, rows, event, now)               # OR-H0.9: one pass at a time
+    state = run_pass(state, event, now)                      # § 4, verbatim
+    _LAST_STATE = state
+    if not state["pass"].get("runs"):
+        # § 4.1: nothing else triggers a pass. Nothing was computed, so nothing is
+        # written -- a delete+insert of an unchanged row is a store round for nothing.
+        return []
+    spoken = spoken_of(state)
+
+    default = str(state["settings"].get("default_screen") or "")
+    mark = plan.get("mark") if isinstance(plan.get("mark"), dict) else None
+    want = objects_from_state(state, rows, now, default, have)
+    ops = due_ops_from_strokes(state, want, have, now, str(plan.get("struck") or ""))
+    # The judge is asked ONCE per event (§ 4.3), and a repeat of a pass is the same event
+    # (GH #744). The pass whose write the store refused had already sent its question --
+    # only its state write was turned away -- and the verdict it gets back arrives as its
+    # own event, on whatever state stands by then. Asking again would be two questions and
+    # two answers for one thing that happened. The state still records the call, because
+    # it HAS been made.
+    if state["judge"]["called"] and not (int_or_none((mark or {}).get(STATE_RETRIES)) or 0):
+        ops += judge_ops_from_state(state, now)
+    pages = mirror_screens(state, want, now)
+    define = plan.get("define")
     calls = patches(want, have, define if isinstance(define, list) else [], bootstrap)
     calls += page_ops(want, have, pages, bootstrap)
-    if not calls:
-        # Nothing to say. A bundle with no legs is refused as `invalid_input`
-        # by the display, so silence is the only honest form of "no change".
-        return ops
-    return [emission("patch", {"messages": [tool_call(c, "d-%d" % i) for i, c in enumerate(calls)]})] + ops
+    out = []
+    if calls:
+        out.append(emission("patch",
+                            {"messages": [tool_call(c, "d-%d" % i) for i, c in enumerate(calls)]}))
+    return (out + ops + refusals_of(state, spoken, said_before(held))
+            + state_write_ops(state, now, KNOB_SETTINGS, KNOB_SCREENS, spoken, held, mark))
 
 
 # ---------------------------------------------------------------------------
-# The judge: the situation it sees, the question, the verdict (GH #679)
+# The judge (§ 4.3-4.5): what it sees is `judge_sees`, what it answers is a verdict
 
-JUDGE_INSTRUCTIONS = """You are the judge of one person's screen. The guideline you judge by, word for word (the screen's README, section "What the screen is for"):
-Focus is the state of the whole screen, not the highlighting of one active element. It answers which information should be visible at this moment -- and which, deliberately, should not. The screen must look clearly structured, calm and relevant at every moment. Visible is only what has concrete use in the current context; everything else is hidden, reduced or moved to the back. That principle is display hygiene, and it is a continuous duty of the display system rather than a one-off design choice: every planned or executed change of the screen asks what is relevant to the member right now, what has priority, what supports the current task, what merely distracts, and what can disappear entirely without losing anything the member needs. The screen is always reduced to the minimum necessary information state.
-The screen has no agenda of its own. It is not a source of information. Its content comes from applications, from the member's agents and from system states with immediate display relevance, and it shows nothing permanently only because interfaces traditionally do. A clock is an application like any other and obeys the same rules of priority, focus and visibility: in a high-focus situation it is noise and goes; on an otherwise empty screen it may stand.
-Priority is dynamic. No fixed hierarchy, and the member's main agent does not automatically outrank everything -- a calendar with an imminent appointment may matter more than the agent's current output. Whoever judges takes the current context, the member's activity, time relevance, urgency, importance, running interactions, the cost of an interruption, the member's own preferences and the current focus level into account, and decides not only how something is shown but whether, when and ahead of what.
-Display hygiene is personal. Members differ in what they want shown, prioritised, arranged or hidden; those preferences are learned and kept. A correction the member has to repeat is not a situational correction any more but, probably, one of that member's display rules, and it becomes part of the persistent profile that shapes later decisions.
-The guiding sentence: show as little as possible at every moment -- and everything that truly matters at that moment. Relevance is not static; it arises from context, time, priority, activity and the member's preferences.
-Judge the whole screen anew. Weigh: the current context, the person's current activity, time relevance, urgency, importance, running interactions, the cost of an interruption, the person's preferences (given as sentences), and the current focus level.
-The dock on the right shows everything that is present; your verdict decides only what stands LARGE on the canvas. A window you hide keeps its tile, so hiding costs the member nothing but the space.
-A window marked `topic_dupe` is a fresh window repeating what a standing window of ANOTHER application already says; the floor holds it back. Name it with `hidden: false` if the repetition is the better window.
+JUDGE_INSTRUCTIONS = """You are the judge of one person's screen. The guideline you judge by, word for word:
+Focus is the state of the whole screen, not one highlighted element. Visible is only what is of use now; everything else is closed, small or gone. At every real event the situation is judged anew: relevant? what priority? does it support the activity? does it distract? can it go entirely?
+The display has no agenda of its own. The clock is an application like any other and its window follows score and bar. No sender has a bonus. No rule says "X always stands".
+Weigh the current context, the person's activity, time relevance, urgency, importance, running interactions, the cost of an interruption and the person's preferences. Decide not only how something is shown but whether, when and ahead of what.
+Show as little as possible at every moment -- and everything that truly matters at that moment.
+You are given the screen state as JSON: every present window with its owner, context, class, topic, relevance hint, its own last verdict, rung, age, whether it leads its ladder and a glimpse of its text; beside them the bar, the weights, the last turn and the last answer.
+The dock shows everything that is present; your verdict decides only what stands LARGE. A window you hide keeps its tile, so hiding costs the person nothing but the space.
+Your numbers: the screen computes score = weight x relevance x decay for every window -- the weight of its context, your `judged_relevance`, and a decay that falls from 1 towards 0 as the window ages -- and draws the window LARGE when score >= bar. All three factors are at most 1, so the bar is a threshold on a PRODUCT: weight 0.8, relevance 0.9 and decay 0.7 make a score of 0.50. A usable bar lies between 0.2 and 0.5, and 0.3 is the normal choice; go higher only when the person wants quiet or is asleep, or when one urgent thing has to push everything else off the screen. From 0.8 up almost nothing can reach the bar any more, and that is a closed screen, not a concentrated one.
+A weight is not an off switch: it says how much a context counts right now, for every window of that context at once. A context whose window answers the person's last question weighs at least 0.7 -- and "no sender has a bonus" holds for the conversation too, so `conversation` is not automatically 1.0.
+What matters now is the window that shows the answer: when a window's topic or content is what `last_answer` is about (`weather:berlin` after a question about the weather, a card whose title or topic fits the question), give it a `judged_relevance` of 0.8 or more and do not hide it. The conversation (topic `chat`) then steps back by itself: once a window carries the turn the answer belongs to, the screen puts the chat away, so you do not have to hide it.
+Your own last verdict rides in the picture as information, not as an anchor. Without a new event -- a new turn, a new answer, a new window, a window whose content changed, a timer that ran out -- do not move a verdict: the same picture gets the same verdict.
+Hide only what would disturb the person now. A clock or a weather window with no occasion belongs in the dock, and you say that with a low relevance, never with a high bar.
+`topic_dupe` is not yours to lift: a window the curator holds back repeats what another application already says.
 A weight below 0.05 is read as 0.05 for the dock's order only, so the dock stays readable whatever you weigh to nothing.
 Answer with ONE JSON object and nothing else:
-{"focus": <0..1, the bar: a window is visible only when its score reaches it; high means an empty, concentrated screen>,
+{"bar": <0..1, the threshold the score is measured against; 0.3 unless the situation asks for another>,
  "weights": {"<context>": <0..1>, ...},
- "windows": [{"id": "<object id>", "hidden": <true|false, optional>, "relevance": <0..1, optional>}]}
-Windows you do not name keep their hints. A context you do not name weighs 0.5."""
-
-
-def situation(want, have, touched, now, knobs):
-    """What the judge sees: every window with its hints and a glimpse of its text."""
-    root = want[ROOT_ID]["props"]
-    try:
-        weights = json.loads(str(root.get("weights") or "{}"))
-    except ValueError:
-        weights = {}
-    windows = []
-    for oid, spec in want.items():
-        if spec.get("component") not in WINDOWS:
-            continue
-        p = spec["props"]
-        glimpse = " ".join(str(p.get(k) or "") for k in ("title", "kicker", "body", "text"))[:200]
-        owner, view_id = parse_object_id(oid)
-        windows.append({"id": oid, "owner": owner or "", "view_id": view_id or "",
-                        "region": region_of(oid, want), "context": p.get("context") or "",
-                        "since": int(p.get("since") or now),
-                        "relevance": p.get("relevance"), "class": p.get("class") or "",
-                        "pinned": p.get("pinned") is True,
-                        # The rung: the judge weighs the ladder, and
-                        # `on_canvas` below says which of them are large.
-                        "state": p.get("rung") or p.get("state"),
-                        "age_s": max(0, (now - int(p.get("since") or now)) // 1000),
-                        "touched": oid in touched,
-                        # The application's own word, when it said one (GH #689).
-                        "touched_at": str(p.get("touched") or ""),
-                        # The dock, so the verdict knows what it is NOT deciding.
-                        # Rank and canvas are read off the WINDOW: a window
-                        # that fell out of a full dock still ranks and may
-                        # still be the focus.
-                        "topic": str(p.get("topic") or ""),
-                        "topic_dupe": p.get("topic_dupe") is True,
-                        # What the window borrowed from an answer it took;
-                        # a verdict's `relevance` overrules it.
-                        "topic_relevance": str(p.get("topic_relevance") or ""),
-                        "tile": tile_id(oid) in want,
-                        "rank": str(rank_of(p, weights, now, knobs)),
-                        "on_canvas": p.get("state") in ("focus", "urgent"),
-                        "text": glimpse.strip()})
-    return {"now": now, "focus": root.get("focus"), "weights": weights,
-            # Both come off the root, where `dock()` and `build()` left them:
-            # the dock is counted once per pass, not twice.
-            "screen": str(root.get("screen") or ""),
-            "dock_overflow": int(root.get("dock_overflow") or 0),
-            "preferences": ["a touched window keeps full weight for %d s, then fades over %d s"
-                            % (knobs["linger_ms"] // 1000, knobs["fade_ms"] // 1000)],
-            "windows": windows}
-
-
-def judge_ops(want, have, touched, now, knobs):
-    """One message to the judge, or none: only on a content change, only when allowed."""
-    if knobs.get("judge") != "on" or not touched:
-        return []
-    held = (have.get(ROOT_ID) or {}).get("props") or {}
-    # The brake counts from the QUESTION as well as from the answer: a judge
-    # that never answers (no model, a slow provider) is still asked at most
-    # once per interval.
-    last = max(as_int(held.get("judged_at"), 0), as_int(held.get("asked_at"), 0))
-    if last and now - last < knobs["judge_min_interval_ms"]:
-        return []
-    want[ROOT_ID]["props"]["asked_at"] = now
-    return [{"header": {"route": "judge"},
-             "system": {"instructions": {"text": JUDGE_INSTRUCTIONS}},
-             "messages": [{"origin": "user", "type": "text",
-                           "text": json.dumps(situation(want, have, touched, now, knobs), sort_keys=True)}]}]
+ "windows": [{"id": "<window id>", "judged_hidden": <true|false, optional>, "judged_relevance": <0..1, optional>}]}
+Your verdict REPLACES the one before it: a window you do not name loses its old verdict, and a context you do not name weighs 0.5."""
 
 
 def parse_model_json(text):
@@ -5297,44 +7425,39 @@ def parse_model_json(text):
 
 
 def pass_verdict(body, hop):
-    """The judge answered: a pass without a write that carries the verdict into pass 3."""
+    """The judge answered: a pass without a write that carries the verdict into pass 3.
+
+    The payload is translated into the ONE event of \u00a7 4.1 here, at the edge, so the pass
+    reads a verdict and never a model's answer: `windows` becomes a map by id, and the
+    two per-window words keep the names \u00a7 3 gives them.
+    """
     if str(hop.get("finish_reason") or "") != "stop":
-        return []                                   # error, length, filter: the floor stands
+        return []                                   # error, length, filter: the state stands
     text = next((m.get("text") for m in body.get("messages") or []
                  if isinstance(m, dict) and m.get("type") == "text" and m.get("text")), "")
-    verdict = parse_model_json(text)
-    if not isinstance(verdict, dict):
+    answer = parse_model_json(text)
+    if not isinstance(answer, dict):
         sys.stderr.write("judge: no JSON in the verdict\n")
         return []
+    windows = {}
+    for entry in answer.get("windows") or []:
+        if not isinstance(entry, dict) or not entry.get("id"):
+            continue
+        one = {}
+        if isinstance(entry.get("judged_hidden"), bool):
+            one["judged_hidden"] = entry["judged_hidden"]
+        rel = entry.get("judged_relevance")
+        if isinstance(rel, (int, float)) and not isinstance(rel, bool):
+            one["judged_relevance"] = rel
+        windows[str(entry["id"])] = one
+    verdict = {"windows": windows,
+               "weights": answer.get("weights") if isinstance(answer.get("weights"), dict) else {}}
+    if isinstance(answer.get("bar"), (int, float)) and not isinstance(answer.get("bar"), bool):
+        verdict["bar"] = answer["bar"]
     legs = [tool_call({"operation": "select", "table": TABLE, "columns": COLUMNS}, "d-select")]
     return [emission("views", {"messages": legs},
-                     display_request=json.dumps({"tick": True, "verdict": verdict}, sort_keys=True))]
-
-
-def apply_verdict(want, windows, verdict, now, knobs):
-    """The judge's word on the root and on the windows it named, before the score."""
-    root = want[ROOT_ID]["props"]
-    root["judged_at"] = now
-    root["focus"] = as_unit(verdict.get("focus"), knobs["focus_default"])
-    weights = verdict.get("weights") if isinstance(verdict.get("weights"), dict) else {}
-    root["weights"] = json.dumps({str(k): as_unit(v, DEFAULT_WEIGHT) for k, v in weights.items()},
-                                 sort_keys=True)
-    for entry in verdict.get("windows") or []:
-        if not isinstance(entry, dict) or str(entry.get("id") or "") not in windows:
-            continue
-        p = windows[str(entry["id"])]["props"]
-        if isinstance(entry.get("hidden"), bool):
-            p["judged_hidden"] = entry["hidden"]
-        if entry.get("hidden") is False:
-            # The judge overrules the floor's duplicate mark by saying the
-            # window may stand: it names the window, so it saw it.
-            p["topic_dupe"] = False
-        if isinstance(entry.get("relevance"), (int, float)) and not isinstance(entry.get("relevance"), bool):
-            p["judged_relevance"] = str(as_unit(entry["relevance"], DEFAULT_WEIGHT))
-
-
-# ---------------------------------------------------------------------------
-# The dispatcher
+                     display_request=json.dumps({"tick": True, "verdict": verdict},
+                                                sort_keys=True))]
 
 
 def as_int(value, default):
@@ -5347,29 +7470,21 @@ def as_int(value, default):
 
 
 def read_knobs(params):
-    """The curator's dials out of `params`, over the defaults (GH #679).
+    """The curator's dials out of `params`, RAW (\u00a7 4.7).
 
-    Every knob is declared in `contract.settings` with the same
-    default: they are the member's dials, and what a member wants shown
-    differently is another value on that member's own screen.
+    Raw is the point: the door of the reference model normalises settings and profiles
+    in every pass and refuses what it replaces -- once, in the pass that replaces it.
+    A value normalised here would be refused by nobody and read by nobody.
+
+    Every knob is declared in `contract.settings` with the same default: they are the
+    member's dials, and what a member wants shown differently is another value on that
+    member's own screen.
     """
-    KNOBS["linger_ms"] = as_int(params.get("linger_ms"), DEFAULT_LINGER_MS)
-    KNOBS["fade_ms"] = as_int(params.get("fade_ms"), DEFAULT_FADE_MS)
-    KNOBS["focus_default"] = as_unit(params.get("focus_default"), DEFAULT_FOCUS)
-    KNOBS["judge"] = "on" if str(params.get("judge") or "") == "on" else "off"
-    KNOBS["judge_min_interval_ms"] = as_int(params.get("judge_min_interval_ms"), 3000)
-    global SCREENS, SCREEN
+    global KNOB_SETTINGS, KNOB_SCREENS
+    KNOB_SETTINGS = {k: params[k] for k in SETTING_KEYS if k in params}
     said = params.get("screens")
-    said = said if isinstance(said, dict) else {}
-    SCREENS = {k: v for k, v in said.items() if is_view_id(k) and isinstance(v, dict)}
-    if not SCREENS:
-        SCREENS = dict(DEFAULT_SCREENS)
-    name = str(params.get("default_screen") or DEFAULT_SCREEN)
-    SCREEN = name if name in SCREENS else sorted(SCREENS)[0]
-    KNOBS["dock_max"] = as_int(
-        params.get("dock_max"),
-        DOCK_MAX_BY_TYPE.get(screen_profile(SCREENS[SCREEN])[0], 7))
-    global GROUND
+    KNOB_SCREENS = said if isinstance(said, dict) and said else copy.deepcopy(DEFAULT_SCREENS)
+    global VOICE_MOUNT, FONT_BASE, GROUND
     GROUND = "night" if str(params.get("ground") or "") == "night" else "day"
     defaults = params.get("notice_defaults")
     if isinstance(defaults, dict):
@@ -5394,7 +7509,7 @@ def main():
     if isinstance(params, dict):
         VOICE_MOUNT = str(params.get("voice_mount") or "voice")
         FONT_BASE = str(params.get("font_base") or "")
-        read_knobs(params)
+    read_knobs(params if isinstance(params, dict) else {})
     body = doc.get("body") or {}
     envelope = doc.get("envelope") or {}
     header = envelope.get("header") or {}

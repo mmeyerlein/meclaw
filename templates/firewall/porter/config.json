@@ -107,7 +107,7 @@
   },
   "description": {
     "purpose": "The one cell that can hand this hive's rule table out as a versioned document, and take one back. The rules are the screen every inbound turn passes, so a member reborn with an empty one is a different security posture than the one that was exported. The walk is a single part -- schema declaration first, one row per rule after it -- and it carries the completeness marker. The same cell reads a part back on `in_import`, and applying the same part twice leaves the same state.",
-    "use_when": "Never on its own -- it travels with firewall@2.3.0 and is reached by the hive's own `in_export` / `in_import` lanes. A birth does not use this lane at all: write the part out as `rules/seed/rules.jsonl` and instantiate. What a seed cannot do is reach a hive that is ALREADY RUNNING, and that is the half this lane exists for.",
+    "use_when": "Never on its own -- it travels with firewall@2.3.1 and is reached by the hive's own `in_export` / `in_import` lanes. A birth does not use this lane at all: write the part out as `rules/seed/rules.jsonl` and instantiate. What a seed cannot do is reach a hive that is ALREADY RUNNING, and that is the half this lane exists for.",
     "not_in_scope": "It transfers; it does not decide. It does not carry `arrivals`: the rate window is what THIS installation spent, and a colony that inherited a full one would refuse turns for traffic it never saw. It writes no files itself -- since GH #555 the STORE writes the seed set, through the substrate's `transfer` slot and inside the fence it declares in `params.transfer.base_path`; this cell names the directory and says when it is whole. And it evaluates nothing: which rule fires is the screen's business and stays there."
   }
 }

@@ -216,11 +216,12 @@ fn error_code(frame: &Frame) -> Option<&str> {
 
 /// A cell with both provider fakes and an idle deadline of [`IDLE_MS`].
 ///
-/// `release_grace_ms` is left at the shipped 1500, on purpose: the released
-/// boundary then waits for the recogniser's own end of turn instead of cutting
-/// at the frame, and the WORDS are what this file's receipt is made of — an
-/// empty turn would also be a turn. They arrive when the fake has the audio,
-/// not when a cap expires, so no assertion here waits on a clock.
+/// `release_grace_ms` is left at the shipped default (2500 since `voice@2.0.4`),
+/// on purpose: the released boundary then waits for the recogniser's own end
+/// of turn instead of cutting at the frame, and the WORDS are what this file's
+/// receipt is made of — an empty turn would also be a turn. They arrive when
+/// the fake has the audio, not when a cap expires, so no assertion here waits
+/// on a clock.
 fn params(stt: &MockDeepgram, tts: &MockCartesia) -> Value {
     json!({
         "mount": MOUNT,

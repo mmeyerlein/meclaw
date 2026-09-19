@@ -1,4 +1,4 @@
-# `web@2.0.1`
+# `web@2.0.4`
 
 A display as one cell, with a name of its own. One `web` cell, one `cell.db`,
 one mount on the colony's listener, and a token stylesheet in the visionOS
@@ -42,6 +42,29 @@ unchanged.
 
 Nothing sits below it. `./web` is the node, not a scope with a door: there is no
 `hive_port_boundary` to trip over and no lane name to hit.
+
+**One write is one diff; one bundle is one push per route.** Since `web@2.0.4`
+a message carrying two or more `tool_call` turns pushes once after the last leg
+-- the slots it touched bundled per route -- and what goes out is the state the
+last leg left behind. A leg that moves a root object still reaches every route,
+because the whole page is what changed and no slot can name it. A bundle is one
+caller's one intention -- a curator pass is exactly that -- and the tree halfway
+through it is a picture nobody should see. Pushing per leg drew a window open,
+closed and open again inside 250 ms for one tap, which is what a second browser
+watching the same state saw as a blink. A single call is unchanged: it pushes
+where it always did, the moment it lands.
+
+Per route is the load-bearing half of that sentence, and it is what `web@2.0.4`
+repaired (GH #723): the push carries EVERY slot the pass touched, in one diff
+`{"0": ..., "1": ..., "2": ...}`, and never one frame per slot. A browser
+re-renders the whole page container out of its cached tree whenever a diff
+arrives and patches only the keys that diff names -- so a frame naming one slot
+re-draws the others from the values the cache held BEFORE the pass and writes
+them back over the DOM. Measured on the fresh instance (18.09.2026): closing a
+window sent the dock slot and the main slot as two frames 5 ms apart, and the
+window the client had already closed optimistically sprang open again for those
+5 ms. Two routes still hear two frames, one each -- one output is never handed
+another's slots.
 
 ## What it serves, and where
 
@@ -105,7 +128,7 @@ second display takes its own. The template is one cell, so `override_params`
 takes the flat form -- there is no path inside it to address:
 
 ```json
-{"name": "web-two", "template": "web@2.0.1",
+{"name": "web-two", "template": "web@2.0.4",
  "override_params": {"mount": "screen"}}
 ```
 
@@ -233,6 +256,13 @@ materialised page can know. So the link is relative and the shell's
 `<base href="<prefix>/<mount>/">` resolves it, from `/<mount>/` and from
 `/<mount>/a/b` alike. A link written `/vision.css` would leave the mount and ask
 the listener for a surface called `vision.css`.
+
+**The viewport declares both halves since `web@2.0.2`.** The head writes
+`width=device-width, initial-scale=1, viewport-fit=cover`. Without the third
+part a browser on a phone with a notch or a home indicator lays the page out
+inside the safe area, and every `env(safe-area-inset-*)` a stylesheet asks for
+reads 0 -- a correct answer to the wrong question, and furniture a sheet meant
+to lift off the bottom edge sits under the home indicator anyway.
 
 **The one exception, and why it is not one.** The shell's `<head>` carries a
 handful of inline CSS lines for the LiveView *connection states* --

@@ -6,7 +6,7 @@
         "add_nodes": [
           {
             "name": "display",
-            "template": "display@2.3.3",
+            "template": "display@2.5.0",
             "override_params": {
               "web": {
                 "mount": "display"
@@ -15,7 +15,7 @@
           },
           {
             "name": "colony-view",
-            "template": "colony-view@1.1.1"
+            "template": "colony-view@1.1.2"
           },
           {
             "name": "sink",

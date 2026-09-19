@@ -1,4 +1,4 @@
-# `collector@4.1.0`
+# `collector@4.1.1`
 
 Context assembly as a hive of existing cell types -- no new cell type, no Rust. Two cells:
 `assemble` (a `code` cell, the state machine) and `window` (a `store` cell, the state). The
@@ -121,7 +121,7 @@ Exits leave **from the hive path** on `hop.route`:
 | `schemas` | a tools hive's `in_schemas` door | the tool names `params.tools` declares, as the whole body (`{"tools": [...]}`); `["*"]` asks for everything that hive has. It leaves on a TICK, not per turn. A parent that wires this must wire the answer back, or the tick asks into a dead letter every period |
 | `menu` | the agent LLM | the menu as `system.tools` -- and, since `4.1.0`, the block contract beside it on `system.instructions.sidecar` (GH #606) -- with **no** `messages[]` beside either. Durable, like `pack`, and for the same reason: an `llm` cell upserts the subtree into its own `cell.db` and it stands there until something overwrites that path. The `tools` subtree carries `$replace`, so a menu with nothing usable in it writes NOTHING rather than an empty menu that would revoke the model's whole tool set; the block contract carries none, and an empty one is written EMPTY rather than withheld. Since `3.4.0` what travels here is not one answer but the UNION over every answerer's stored row, plus the names this hive serves itself (GH #529), and since `4.1.0` the two halves are read separately -- an answerer that offered a section without declaring a tool leaves `system.tools` untouched. `hop.menu_answerers` names the answerers it was derived from, beside `menu_count`, `menu_self`, `menu_unknown` and `sidecar_sections` |
 | `condense` | -- | **reserved, never emitted today.** The value is declared in the enum so the fold lane can be wired later without widening a published contract; nothing in this cell writes it. |
-| `cstore` | `window`, inside the hive | **interior, and it never crosses the hive path.** Every store round-trip of the state machine rides on it (`hop.phase` carries the state, `hop.turn_id` the turn). It is in the enum because the assembler emits it, and it is in no parent's wiring because the seal gives it nowhere to go. |
+| `cstore` | `window`, inside the hive | **interior, and it never crosses the hive path.** The `turn_id` every round runs under is the one the arriving turn CARRIES -- the id a channel assigned on acceptance (display-hive § 8.2) -- and `uuid4` only where a turn arrives with none; an `in_advice` round always mints, because its hop belongs to the advisor and not to a channel. Since `collector@4.1.1`: before it every round minted, which renamed the turn halfway down its own road and left the answer naming an id no window had ever seen. A `|` in an adopted id becomes `_` -- this cell builds composite ids on that separator. Every store round-trip of the state machine rides on it (`hop.phase` carries the state, `hop.turn_id` the turn). It is in the enum because the assembler emits it, and it is in no parent's wiring because the seal gives it nowhere to go. |
 
 The enum itself is `contract.emits.hop.route` in `assemble/config.json` -- that declaration
 is the authority, this table is its prose. Ten of its twelve values are the hive's declared
@@ -352,7 +352,7 @@ caller that may use it, and no caller can offer a model anything nobody typed.
 own template says it uses -- and the schemas behind those names are **asked for**:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "collector@4.1.0",
+{"add_nodes": [{"name": "scribe", "template": "collector@4.1.1",
                 "override_params": {"assemble": {"tools": ["web_search", "web_fetch"]}}}]}
 ```
 

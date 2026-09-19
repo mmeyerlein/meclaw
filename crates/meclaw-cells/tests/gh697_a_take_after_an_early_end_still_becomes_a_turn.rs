@@ -49,6 +49,19 @@ const MARK: &str = "voice_out";
 /// recommends.
 const FRAME: usize = 640;
 
+/// One drain's worth of silence at the 200 ms cap of the first test below
+/// (GH #717): from the `release` the cell feeds the provider one 20 ms frame
+/// every 20 ms until the turn ends or the grace runs out.
+const EARLY_TAIL: usize = (200 / 20) * FRAME;
+
+/// What one take of that test sends by hand, before or after its key.
+///
+/// Eight drains wide, and that is the whole point: the script's gates are byte
+/// counts, three drains happen between the first gate and the last, and a gate
+/// one frame above the previous one would be opened by silence instead of by
+/// the take it belongs to. With this step no run of drains can move a gate.
+const STEP: usize = 8 * EARLY_TAIL;
+
 /// A booted colony holding exactly one `voice` cell, plus the door its
 /// emissions leave through.
 struct Fixture {
@@ -270,19 +283,22 @@ async fn a_second_take_survives_a_first_one_the_provider_ended_early() {
     // Take one: a whole take, its end gated on the audio the client sends AFTER
     // the release, so the boundary is closed by the provider and the `turn`
     // that reaches the topology is the rendezvous for everything after it.
+    // Every gate is a whole [`STEP`] apart rather than a frame: since GH #717 a
+    // drain feeds the provider silence, and three drains happen between the
+    // first gate and the last.
     // Take two: the key held over silence — the provider never starts a turn,
     // and the cap closes the boundary with the provider idle. Exactly the
     // condition under which the old code recorded a debt nobody owed.
     // Take three: another whole take, its end again gated behind the release.
     // With the debt in place that end was eaten and the cap cut with nothing.
     let script = DeepgramScript::new()
-        .require_audio_bytes(FRAME)
+        .require_audio_bytes(STEP)
         .turn_info("Update", "first take")
-        .require_audio_bytes(FRAME * 2)
+        .require_audio_bytes(2 * STEP)
         .turn_info("EndOfTurn", "first take whole")
-        .require_audio_bytes(FRAME * 4)
+        .require_audio_bytes(4 * STEP)
         .turn_info("Update", "third take")
-        .require_audio_bytes(FRAME * 5)
+        .require_audio_bytes(5 * STEP)
         .turn_info("EndOfTurn", "third take whole");
     let fake = fakes::deepgram(script).await;
     let quiet_tts = fakes::cartesia(fakes::cartesia_silent()).await;
@@ -294,11 +310,11 @@ async fn a_second_take_survives_a_first_one_the_provider_ended_early() {
     let (mut client, _) = fx.connect("session=early-end&mode=hold").await;
 
     client.hold().await.expect("open the first boundary");
-    client.send_audio(&vec![0u8; FRAME]).await.expect("audio");
+    client.send_audio(&vec![0u8; STEP]).await.expect("audio");
     wait_for_partial(&mut client, "first take").await;
     client.release().await.expect("let the key go");
     client
-        .send_audio(&vec![0u8; FRAME])
+        .send_audio(&vec![0u8; STEP])
         .await
         .expect("the audio still in the capture chain when the key came up");
     let mut turns: Vec<String> = fx
@@ -328,7 +344,7 @@ async fn a_second_take_survives_a_first_one_the_provider_ended_early() {
     // after the cut rather than being the cut. That is the incident's path:
     // the boundary closed by `release_grace_ms`, with the provider idle.
     client.hold().await.expect("open the second boundary");
-    client.send_audio(&vec![0u8; FRAME]).await.expect("audio");
+    client.send_audio(&vec![0u8; STEP]).await.expect("audio");
     client.release().await.expect("let the key go over silence");
     let empty = client
         .next_frame_of_type("turn", DEADLINE)
@@ -341,11 +357,11 @@ async fn a_second_take_survives_a_first_one_the_provider_ended_early() {
     );
 
     client.hold().await.expect("open the third boundary");
-    client.send_audio(&vec![0u8; FRAME]).await.expect("audio");
+    client.send_audio(&vec![0u8; STEP]).await.expect("audio");
     wait_for_partial(&mut client, "third take").await;
     client.release().await.expect("let the key go again");
     client
-        .send_audio(&vec![0u8; FRAME])
+        .send_audio(&vec![0u8; STEP])
         .await
         .expect("the audio still in the capture chain when the key came up");
 
@@ -393,6 +409,22 @@ const IDLE_MS: u64 = 500;
 /// is a receipt that the idle deadline was due before it.
 const GRACE_MS: u64 = 1000;
 
+/// One drain's worth of silence at that cap (GH #717), in bytes.
+const TAIL_MAX: usize = (GRACE_MS as usize / 20) * FRAME;
+
+/// Where the provider's end of turn is gated, in total bytes per connection.
+///
+/// Above everything the FIRST take can produce — its own frame plus a whole
+/// drain of silence — so that take really does reach the cap with the provider
+/// still inside its turn, which is the debt this test is about. Sixteen frames
+/// of margin on top: the drain's length is bounded by the grace, not by a
+/// clock this test owns.
+const END_GATE: usize = FRAME + TAIL_MAX + 16 * FRAME;
+
+/// What the SECOND take sends once its key is up: past [`END_GATE`] by hand,
+/// because silence alone must not be able to get there.
+const SECOND_TAKE_DRAIN: usize = TAIL_MAX + 32 * FRAME;
+
 /// Wait until the fake has accepted `n` connections. A rendezvous on a fact
 /// the fake records, never a sleep: the loop yields to the runtime between
 /// looks and gives up at the failure marker.
@@ -421,15 +453,24 @@ async fn wait_for_connections(fake: &MockDeepgram, n: usize) {
 /// which the adapter sends no `Closed` of its own, so this is the branch A3
 /// changed and nothing else pins.
 ///
-/// The script is per connection, so the second session plays the same lines:
-/// on the first it gets one frame and then goes quiet, on the second it gets
-/// the frame that releases its end of turn only after the key came up.
+/// The script is per connection, so the second session plays the same lines,
+/// and the two takes are told apart by how much audio each one gets: the end of
+/// turn sits behind a gate only the second take reaches.
+///
+/// **That gate moved with GH #717.** A released boundary is no longer silent —
+/// the cell feeds the provider 20 ms frames of silence for the whole grace — so
+/// a gate two frames wide is opened by the drain itself, the first take ends on
+/// the provider's own word, and no debt is ever owed. The gate therefore sits
+/// beyond everything one drain can carry ([`END_GATE`]), and the second take
+/// walks past it by hand. What makes the first take reach the cap with the
+/// provider still inside its turn is now what makes it reach the cap in the
+/// field: a provider that says nothing, however much audio it is given.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_session_that_ends_between_two_holds_writes_its_debt_off() {
     let script = DeepgramScript::new()
         .require_audio_bytes(FRAME)
         .turn_info("Update", "take")
-        .require_audio_bytes(FRAME * 2)
+        .require_audio_bytes(END_GATE)
         .turn_info("EndOfTurn", "take whole");
     let fake = fakes::deepgram(script).await;
     let quiet_tts = fakes::cartesia(fakes::cartesia_silent()).await;
@@ -501,7 +542,7 @@ async fn a_session_that_ends_between_two_holds_writes_its_debt_off() {
     );
     client.release().await.expect("let the key go again");
     client
-        .send_audio(&vec![0u8; FRAME])
+        .send_audio(&vec![0u8; SECOND_TAKE_DRAIN])
         .await
         .expect("the audio still in the capture chain when the key came up");
 

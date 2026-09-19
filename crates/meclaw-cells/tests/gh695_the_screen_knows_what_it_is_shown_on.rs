@@ -53,8 +53,17 @@ fn find<'a>(all: &'a [Value], name: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("components() defines no {name}"))
 }
 
+/// The root of one output (§ 6.1): what KIND of display it is, what that display can
+/// take, the one number every size derives from -- and, since § 6.5, the three words the
+/// switch at `/` reads: which outputs exist, which of them is the default, and which one
+/// this page is.
+///
+/// `screen`, `profile` and `dock_overflow` were props this test used to name. All three
+/// are struck: the kind is called `exit` now and the NAME of the output stands beside it
+/// as `screen_name`, and what does not fit in a dock is simply absent from that output's
+/// tree rather than counted at its root (§ 4.30).
 #[test]
-fn the_root_wears_the_profile_the_inputs_and_the_scale() {
+fn the_root_wears_the_exit_the_inputs_and_the_scale() {
     if !library_ships() {
         return;
     }
@@ -64,14 +73,37 @@ fn the_root_wears_the_profile_the_inputs_and_the_scale() {
     let shell = find(&all, "display-shell");
     // The whole contract surface at once: a schema the floor writes into is
     // not something to grow one prop at a time.
-    for key in ["screen", "profile", "inputs", "scale", "screens"] {
+    for key in [
+        "exit",
+        "screen_name",
+        "default_screen",
+        "screens",
+        "inputs",
+        "scale",
+        "dock",
+        "switch",
+    ] {
         assert_eq!(
             shell["prop_schema"][key], "text",
             "display-shell declares `{key}`: {}",
             shell["prop_schema"]
         );
     }
-    assert_eq!(shell["prop_schema"]["dock_overflow"], "int");
+    assert_eq!(shell["prop_schema"]["dock_max"], "int");
+    for struck in [
+        "screen",
+        "profile",
+        "dock_overflow",
+        "focus",
+        "weights",
+        "judged_at",
+    ] {
+        assert!(
+            shell["prop_schema"][struck].is_null(),
+            "`{struck}` is struck from the root: {}",
+            shell["prop_schema"]
+        );
+    }
     assert_eq!(
         shell["prop_schema"]["client_js"], "html",
         "raw, or the screen's own motion would ship escaped"
@@ -79,28 +111,49 @@ fn the_root_wears_the_profile_the_inputs_and_the_scale() {
     let page = render_pieces_plain(
         shell["template"].as_str().expect("a template"),
         &json!({"stylesheet": true, "faces": "", "ground": "day",
-                "screen": "tv", "profile": "tv", "inputs": "audio",
-                "scale": "1.6", "dock_overflow": 0, "screens": "{}",
-                "client_js": ""}),
+                "exit": "tv", "screen_name": "living-room", "inputs": "audio",
+                "scale": "1.6", "dock_max": 7, "screens": "[\"living-room\"]",
+                "default_screen": "living-room", "switch": "1",
+                "tap": false, "input_line": false, "due": "", "vocab": "",
+                "dock": "shown", "client_js": ""}),
         &shell["prop_schema"],
     )
     .expect("the web cell renders the shell");
     assert!(
-        page.contains("data-profile=\"tv\""),
-        "the root says which screen it is: {page}"
+        page.contains("data-exit=\"tv\""),
+        "the root says which KIND of display it is -- that is what the sheet reads: {page}"
+    );
+    assert!(
+        page.contains("data-screen-name=\"living-room\""),
+        "and which named output of the one state this page is: {page}"
     );
     assert!(
         page.contains("data-inputs=\"audio\""),
         "and what that screen can take: {page}"
     );
     assert!(
-        page.contains("data-screen=\"tv\""),
-        "and which exit of the one state this page is: {page}"
+        page.contains("data-switch=\"1\""),
+        "and, on `/`, that it is the switch: {page}"
+    );
+    assert!(
+        page.contains("data-default=\"living-room\""),
+        "which needs the default's name to lead anywhere: {page}"
+    );
+    assert!(
+        page.contains("data-screens="),
+        "and the list of outputs it may lead to: {page}"
+    );
+    assert!(
+        page.contains("data-dock=\"shown\""),
+        "and whether its dock is drawn to begin with: {page}"
     );
     assert!(
         page.contains("--scale: 1.6"),
         "and the one number the sizes are derived from: {page}"
     );
+    // The struck names are pinned on the SCHEMA above, not on the page: the sheet the
+    // shell inlines still selects on `[data-profile]` and would make a needle here green
+    // for the wrong reason.
 }
 
 #[test]
@@ -142,10 +195,16 @@ fn the_sheet_derives_every_size_from_the_scale() {
         );
     }
     assert!(
-        sheet.contains(".display-columns[data-profile=\"tv\"] {"),
+        sheet.contains(".display-columns[data-exit=\"tv\"] {"),
         "a television gets its own contrast (D-24)"
     );
-    // No pixel media query undoes the profile: both width blocks name it.
+    // No pixel media query reaches a profiled screen at all (§ 6.6: "the sheet
+    // scales only through tokens; no width query overrides a profile"). Until
+    // 2.5.0 the two blocks below set `:root` tokens by width and took them back
+    // for `[data-exit="tv"]` -- the same sentence said twice and answered wrong
+    // for every other type, because a monitor at 780px is a monitor. What is
+    // left is the gallery page, which has no shell and therefore no profile,
+    // and its selector says so.
     for query in ["@media (max-width: 80rem)", "@media (max-width: 48rem)"] {
         let body = sheet
             .split(query)
@@ -156,8 +215,19 @@ fn the_sheet_derives_every_size_from_the_scale() {
             .map(|i| i + 3)
             .unwrap_or(body.len().min(1200))];
         assert!(
-            body.contains("[data-profile=\"tv\"]"),
-            "{query} does not shrink a television: {body}"
+            !body.contains("[data-exit=\"tv\"]"),
+            "{query} still answers for a television -- a far screen is not a \
+             small one, and it needs no compensation because the query does not \
+             reach it any more: {body}"
+        );
+        assert!(
+            body.contains(".display-scene:not(.display-columns *)"),
+            "{query} reaches something other than the gallery: {body}"
+        );
+        assert!(
+            !body.contains(":root"),
+            "{query} sets a token on `:root`, which every profiled screen \
+             inherits: {body}"
         );
     }
 }

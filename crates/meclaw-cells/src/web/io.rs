@@ -417,6 +417,18 @@ pub(crate) fn base_of(headers: &HeaderMap, mount: &str) -> String {
     format!("{prefix}/{mount}")
 }
 
+/// The viewport every page of a `web` cell declares.
+///
+/// `width=device-width` is what makes a phone lay the page out at its own
+/// width instead of at an assumed 980 px. `viewport-fit=cover` is the other
+/// half and the one that is invisible when it is missing: without it a
+/// browser on a device with a notch or a home indicator lays the page out
+/// INSIDE the safe area, and every `env(safe-area-inset-*)` a stylesheet asks
+/// for reads 0 — a correct answer to the wrong question. The display sheet
+/// lifts its OS mark by exactly that inset (`display@2.4.0`), so without this
+/// attribute the mark sits under the home indicator on an iPhone.
+const VIEWPORT: &str = "width=device-width, initial-scale=1, viewport-fit=cover";
+
 /// The dead render this cell serves, relative to `base`.
 ///
 /// `body` is the materialised page, already rendered — so this is a string
@@ -445,7 +457,7 @@ pub(crate) fn shell(base: &str, cell_path: &str, title: &str, body: &str) -> Str
     format!(
         "<!doctype html>\n<html lang=\"en\">\n<head>\n\
          <meta charset=\"utf-8\">\n\
-         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
+         <meta name=\"viewport\" content=\"{VIEWPORT}\">\n\
          <base href=\"{base}/\">\n\
          <meta name=\"csrf-token\" content=\"{token}\">\n\
          <title>{title}</title>\n\

@@ -39,7 +39,7 @@ fn read_json(rel: &str) -> Value {
 }
 
 /// What the shipped script says: its components, the faces it builds for an
-/// empty and for a set base, and the root props `build()` writes when the
+/// empty and for a set base, and the root props `objects_from_state()` writes when the
 /// module-level base is set the way the dispatcher sets it from `params`.
 /// `None` when there is no `python3` on this host.
 fn probe() -> Option<Value> {
@@ -51,7 +51,10 @@ fn probe() -> Option<Value> {
              m = importlib.util.module_from_spec(spec)\n\
              spec.loader.exec_module(m)\n\
              m.FONT_BASE = 'fonts/'\n\
-             root = m.build([])[0][m.ROOT_ID]['props']\n\
+             m.read_knobs({})\n\
+             st = m.run_pass(m.empty_state({'default_screen': 'tv'}, m.DEFAULT_SCREENS),\n\
+                             {'kind': 'stroke'}, 0)\n\
+             root = m.objects_from_state(st, [], 0, 'tv')[m.ROOT_ID]['props']\n\
              print(json.dumps({'components': m.components(),\n\
                                'unset': m.faces(''),\n\
                                'set': m.faces('fonts/'),\n\
@@ -213,7 +216,12 @@ fn bootstrap_root(font_base: Option<&str>) -> Option<Value> {
             "hop": {"operation": "query"},
             "context": {
                 "display_origin": "read",
-                "display_views": json!({"views": [], "define": []}).to_string(),
+                // The plan of one pass since 2.5.0: the rows, the state row of the pass
+                // before (none on a bootstrap), the moment and the one event of § 4.1.
+                "display_views": json!({
+                    "views": [], "state": null, "define": [], "now": 1000,
+                    "event": {"kind": "stroke"},
+                }).to_string(),
             },
         }},
     });
@@ -241,9 +249,19 @@ fn bootstrap_root(font_base: Option<&str>) -> Option<Value> {
     );
     let answer: Value =
         meclaw_core::serde_json::from_slice(&out.stdout).expect("the answer is JSON");
-    let root = answer["messages"]
+    // A read pass answers with SEVERAL emissions since 2.5.0: the patch, and the store
+    // bundle that writes the state row back (OR-H2). The patch is the one on `patch`.
+    let emissions: Vec<Value> = match answer {
+        Value::Array(list) => list,
+        one => vec![one],
+    };
+    let patch = emissions
+        .iter()
+        .find(|e| e["header"]["route"] == "patch")
+        .expect("a bootstrap answers with a bundle");
+    let root = patch["messages"]
         .as_array()
-        .expect("a bootstrap answers with a bundle")
+        .expect("a bundle has messages")
         .iter()
         .map(|turn| -> Value {
             meclaw_core::serde_json::from_str(turn["text"].as_str().expect("a call"))

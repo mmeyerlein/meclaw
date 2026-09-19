@@ -1,212 +1,86 @@
-//! D1 -- one screen state, many exits (R-D3): every entry of the `screens`
-//! setting is a page of the same tree, the root wears the profile of the
-//! exit it is rendered for, and the routes are written only when the exits
-//! change.
+//! One screen state, many exits (`display-hive.md` § 6): every entry of the `screens`
+//! setting is a page of the SAME state, the root of that page wears the profile of the
+//! exit it is rendered for, and the routes are written only when the exits change.
 //!
-//! The script runs the way a `code` cell runs it: as a subprocess, with the
-//! read-pass document on stdin.
+//! Two sentences this file used to pin are struck. The default output is no longer the
+//! one WITHOUT a prefix: every named exit has its own copy (`tv.display.root`,
+//! `desk.display.root`), and the unprefixed tree is the SWITCH at `/` -- it draws the
+//! `default_screen`'s profile, says `data-switch="1"` and carries the names the client
+//! needs to lead on (§ 6.5). And the root's word for its output is `exit` now, which is
+//! the TYPE (`tv`/`monitor`/`phone`, what the sheet selects on); the NAME stands beside
+//! it as `screen_name`. `screen`, `profile` and `dock_overflow` are gone.
+//!
+//! The script runs the way a `code` cell runs it: as a subprocess, one pass at a time,
+//! with the state row and the held tree carried between the passes (`support::Screen`).
 
-use std::io::Write;
-use std::process::{Command, Stdio};
+mod support;
 
 use meclaw_core::serde_json::{Value, json};
+use support::{Screen, component_view, library_ships, pages, pane};
 
-fn repo(rel: &str) -> std::path::PathBuf {
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join(rel)
+fn note(view_id: &str, relevance: &str) -> Value {
+    component_view(
+        view_id,
+        "main",
+        pane(
+            view_id,
+            json!({"context": "conversation", "relevance": relevance}),
+        ),
+    )
 }
 
-const COMPOSE: &str = "templates/display/compose/compose.py";
-
-fn library_ships() -> bool {
-    repo("templates/display/template.json").is_file()
-}
-
-fn pane(pane: &str, props: Value) -> Value {
-    let mut props = props;
-    props["pane_id"] = json!(pane);
-    json!({"component": "display-pane", "props": props, "key": format!("c.{pane}")})
-}
-
-fn component_view(view_id: &str, region: &str, tree: Value) -> Value {
-    json!({
-        "owner": "alex", "view_id": view_id, "region": region, "ord": 0,
-        "kind": "component", "content": tree.to_string(), "components": "[]",
-        "ttl_ms": 0, "updated_at": 1,
-    })
-}
-
-fn run(doc: &Value) -> Option<Vec<Value>> {
-    let mut child = Command::new("python3")
-        .arg(repo(COMPOSE))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .ok()?;
-    child
-        .stdin
-        .take()
-        .expect("stdin")
-        .write_all(doc.to_string().as_bytes())
-        .expect("the document reaches the script");
-    let out = child.wait_with_output().expect("the script ends");
-    assert!(
-        out.status.success(),
-        "compose.py failed:\n{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let answer: Value =
-        meclaw_core::serde_json::from_slice(&out.stdout).expect("the answer is JSON");
-    let emissions = match answer {
-        Value::Array(list) => list,
-        one @ Value::Object(_) => vec![one],
-        other => panic!("emissions are objects: {other}"),
-    };
-    let patches: Vec<&Value> = emissions
-        .iter()
-        .filter(|e| e["header"]["route"] == "patch")
-        .collect();
-    assert!(patches.len() <= 1, "at most one patch: {emissions:?}");
-    Some(match patches.first() {
-        None => Vec::new(),
-        Some(emission) => emission["messages"]
-            .as_array()
-            .expect("a bundle has messages")
-            .iter()
-            .map(|turn| {
-                meclaw_core::serde_json::from_str(turn["text"].as_str().expect("a call"))
-                    .expect("a call is JSON")
-            })
-            .collect(),
-    })
-}
-
-fn read_pass_with(
-    views: &[Value],
-    objects: Option<&Value>,
-    now: u64,
-    params: Value,
-) -> Option<Vec<Value>> {
-    let messages = match objects {
-        None => json!([]),
-        Some(objs) => json!([{
-            "origin": "tool", "type": "tool_result", "id": "d-query",
-            "text": json!({"objects": objs}).to_string(),
-        }]),
-    };
-    let doc = json!({
-        "params": params,
-        "body": {"messages": messages},
-        "envelope": {"header": {
-            "hop": {"operation": "query"},
-            "context": {
-                "display_origin": "read",
-                "display_views": json!({"views": views, "define": [], "now": now}).to_string(),
-            },
-        }},
-    });
-    run(&doc)
-}
-
-fn read_pass(views: &[Value], objects: Option<&Value>, now: u64) -> Option<Vec<Value>> {
-    read_pass_with(views, objects, now, json!({}))
-}
-
-fn apply(held: &mut Value, calls: &[Value]) {
-    let list = held.as_array_mut().expect("the display holds a list");
-    for c in calls {
-        match c["op"].as_str().unwrap_or("") {
-            "object.create" => list.push(json!({
-                "id": c["id"], "parent": c["parent"], "ord": c["ord"],
-                "component": c["component"], "props": c["props"],
-            })),
-            "object.update" => {
-                let obj = list
-                    .iter_mut()
-                    .find(|o| o["id"] == c["id"])
-                    .unwrap_or_else(|| panic!("an update names a held object: {}", c["id"]));
-                for (k, v) in c["props"].as_object().expect("props") {
-                    obj["props"][k] = v.clone();
-                }
-                if !c["parent"].is_null() {
-                    obj["parent"] = c["parent"].clone();
-                }
-            }
-            "object.move" => {
-                let obj = list
-                    .iter_mut()
-                    .find(|o| o["id"] == c["id"])
-                    .expect("a move names a held object");
-                obj["parent"] = c["parent"].clone();
-                obj["ord"] = c["ord"].clone();
-            }
-            "object.delete" => list.retain(|o| o["id"] != c["id"]),
-            _ => {}
-        }
-    }
-}
-
-fn written(calls: &[Value], id: &str) -> Option<Value> {
-    calls
-        .iter()
-        .find(|c| (c["op"] == "object.create" || c["op"] == "object.update") && c["id"] == id)
-        .map(|c| c["props"].clone())
-}
-
-fn pages(calls: &[Value]) -> Vec<(String, String)> {
-    calls
-        .iter()
-        .filter(|c| c["op"] == "page.set")
-        .map(|c| {
-            (
-                c["route"].as_str().unwrap_or("").to_string(),
-                c["root"].as_str().unwrap_or("").to_string(),
-            )
-        })
-        .collect()
-}
-
-/// One screen state, N exits (R-D3). The default exit shares the root with
-/// `/`; every further one is a prefixed copy of the same tree with its own
-/// profile at the root.
+/// One screen state, N exits. Every exit is a prefixed copy of the one tree with its own
+/// profile at the root; `/` is the switch and draws the default's.
 #[test]
 fn every_exit_is_a_page_of_the_same_state() {
     if !library_ships() {
         return;
     }
-    let params = json!({"screens": {
-        "tv": {"display_type": "tv", "viewing_distance_m": 3.0,
-               "physical_size_in": 55, "inputs": ["audio"]},
+    let mut screen = Screen::new(json!({"screens": {
+        "tv": {"display_type": "tv", "viewing_distance_m": 3.0, "inputs": ["audio"]},
         "desk": {"display_type": "monitor", "viewing_distance_m": 0.7,
-                 "physical_size_in": 27, "inputs": ["pointer", "keyboard"]}
-    }, "default_screen": "tv"});
-    let views = vec![component_view(
-        "a",
-        "main",
-        pane("a", json!({"context": "conversation", "relevance": 0.8})),
-    )];
-    let calls = read_pass_with(&views, None, 1000, params).expect("python3 answers");
+                 "inputs": ["pointer", "keyboard"]},
+    }, "default_screen": "tv"}));
+    let calls = screen.write(note("a", "0.8"), 1000);
+
     let set = pages(&calls);
-    assert!(
-        set.contains(&("/".to_string(), "display.root".to_string())),
-        "the root route stands: {set:?}"
+    for (route, root) in [
+        ("/", "display.root"),
+        ("/tv", "tv.display.root"),
+        ("/desk", "desk.display.root"),
+    ] {
+        assert!(
+            set.contains(&(route.to_string(), root.to_string())),
+            "{route} is a page of this screen: {set:?}"
+        );
+    }
+
+    let switch = screen.props("display.root").expect("the switch");
+    let tv = screen.props("tv.display.root").expect("the television");
+    let desk = screen.props("desk.display.root").expect("the monitor");
+    assert_eq!(switch["switch"], "1", "`/` is the switch (§ 6.5): {switch}");
+    assert_eq!(tv["switch"], "", "a named exit is not: {tv}");
+    assert_eq!(desk["switch"], "");
+    assert_eq!(
+        switch["screen_name"], "tv",
+        "and it is drawn as the default output: {switch}"
     );
-    assert!(
-        set.contains(&("/tv".to_string(), "display.root".to_string())),
-        "the default exit is the same tree: {set:?}"
-    );
-    assert!(
-        set.contains(&("/desk".to_string(), "desk.display.root".to_string())),
-        "a further exit gets its own root: {set:?}"
-    );
-    let tv = written(&calls, "display.root").expect("the root");
-    let desk = written(&calls, "desk.display.root").expect("the second root");
-    assert_eq!(tv["profile"], "tv", "the profile at the root: {tv}");
+    assert_eq!(switch["exit"], tv["exit"], "with the default's profile");
+    assert_eq!(switch["scale"], tv["scale"]);
+    // What makes it a switch rather than a fourth screen: it knows the names.
+    for root in [&switch, &tv, &desk] {
+        assert_eq!(root["default_screen"], "tv", "{root}");
+        assert_eq!(
+            root["screens"], "[\"desk\", \"tv\"]",
+            "every root names the outputs: {root}"
+        );
+    }
+
+    assert_eq!(tv["exit"], "tv", "the KIND of display at the root: {tv}");
+    assert_eq!(tv["screen_name"], "tv", "and the name beside it: {tv}");
     assert_eq!(tv["scale"], "1.6", "a television is scaled up: {tv}");
-    assert_eq!(tv["inputs"], "audio");
-    assert_eq!(tv["screen"], "tv");
+    assert_eq!(tv["inputs"], "", "§ 4.7: a television takes nothing: {tv}");
+    assert_eq!(tv["dock_max"], 7, "and carries the type's dock: {tv}");
     assert!(
         tv["client_js"]
             .as_str()
@@ -214,32 +88,56 @@ fn every_exit_is_a_page_of_the_same_state() {
         "the shell script is the scene hook: {}",
         tv["client_js"]
     );
-    assert_eq!(desk["profile"], "monitor", "{desk}");
+    assert_eq!(desk["exit"], "monitor", "{desk}");
+    assert_eq!(
+        desk["screen_name"], "desk",
+        "the name is the member's word, the kind is the screen's: {desk}"
+    );
     assert_eq!(desk["scale"], "1.0", "{desk}");
     assert_eq!(
-        desk["inputs"], "keyboard pointer",
-        "sorted, space separated"
+        desk["inputs"], "pointer keyboard",
+        "as the profile said them"
     );
-    assert_eq!(desk["screen"], "desk");
+    assert_eq!(desk["dock_max"], 8);
     assert_eq!(
         desk["client_js"], tv["client_js"],
         "the second exit carries the same motion"
     );
-    assert!(
-        written(&calls, "desk.view.alex.a").is_some(),
-        "the same windows stand on the second exit: {calls:?}"
-    );
-    assert!(
-        written(&calls, "desk.display.dock").is_some(),
-        "with the same dock: {calls:?}"
-    );
-    let dock = written(&calls, "display.dock").expect("the dock");
-    assert_eq!(
-        dock["profile"], "tv",
-        "the dock copies the root's profile: {dock}"
-    );
-    let desk_dock = written(&calls, "desk.display.dock").expect("the mirrored dock");
-    assert_eq!(desk_dock["profile"], "monitor", "{desk_dock}");
+
+    // The same windows, the same dock, on every exit -- the state ran once (§ 3.1).
+    for prefix in ["", "tv.", "desk."] {
+        assert!(
+            screen.holds(&format!("{prefix}view.alex.a/c.a")),
+            "{prefix} draws the window: {:?}",
+            screen.held
+        );
+        assert!(
+            screen.holds(&format!("{prefix}display.dock")),
+            "{prefix} draws the dock"
+        );
+    }
+    // The KIND of display is said once, at the root (§ 6.1: `data-exit`), and
+    // every exit's tree says its own. The dock used to carry a copy of it in a
+    // prop no selector read; display 2.5.0 took the copy away, because a value
+    // in two places is a value that can disagree with itself.
+    for (prefix, kind) in [("tv", "tv"), ("desk", "monitor")] {
+        assert_eq!(
+            screen
+                .props(&format!("{prefix}.display.root"))
+                .expect("the root")["exit"],
+            kind,
+            "{prefix} is drawn as a {kind}"
+        );
+        let dock = screen
+            .props(&format!("{prefix}.display.dock"))
+            .expect("dock");
+        assert_eq!(
+            dock["profile"],
+            Value::Null,
+            "the dock says the type a second time: {dock}"
+        );
+    }
+
     // The routes go LAST: `page.set` refuses a root that does not exist yet.
     let last = calls.last().expect("calls");
     assert_eq!(
@@ -254,110 +152,115 @@ fn the_routes_are_not_rewritten_every_tick() {
     if !library_ships() {
         return;
     }
-    let params = json!({"screens": {
-        "tv": {"display_type": "tv", "viewing_distance_m": 3.0, "inputs": ["audio"]}
-    }, "default_screen": "tv"});
-    let first = read_pass_with(&[], None, 1000, params.clone()).expect("python3 answers");
-    let mut held = json!([]);
-    apply(&mut held, &first);
-    let second = read_pass_with(&[], Some(&held), 2000, params).expect("python3");
-    assert!(
-        pages(&second).is_empty(),
-        "a quiet tick sets no page: {second:?}"
+    let mut screen = Screen::new(
+        json!({"screens": {"tv": {"display_type": "tv", "viewing_distance_m": 3.0}},
+               "default_screen": "tv"}),
     );
-    let more = json!({"screens": {
-        "tv": {"display_type": "tv", "viewing_distance_m": 3.0, "inputs": ["audio"]},
-        "hand": {"display_type": "phone", "viewing_distance_m": 0.35, "inputs": ["touch"]}
+    screen.pass(json!({"kind": "stroke"}), 1000);
+    let quiet = screen.pass(json!({"kind": "stroke"}), 2000);
+    assert!(
+        pages(&quiet).is_empty(),
+        "a quiet tick sets no page: {quiet:?}"
+    );
+
+    screen.params = json!({"screens": {
+        "tv": {"display_type": "tv", "viewing_distance_m": 3.0},
+        "hand": {"display_type": "phone", "viewing_distance_m": 0.35, "inputs": ["touch"]},
     }, "default_screen": "tv"});
-    let third = read_pass_with(&[], Some(&held), 3000, more).expect("python3");
-    let set = pages(&third);
+    let grown = screen.pass(json!({"kind": "stroke"}), 3000);
+    let set = pages(&grown);
     assert!(
         set.contains(&("/hand".to_string(), "hand.display.root".to_string())),
         "a new exit is routed when the setting changes: {set:?}"
     );
 }
 
-/// Without a setting the screen is one television at three metres; a
-/// `default_screen` that names no entry falls to the first one.
+/// With no `screens` of its own the screen is one television at three metres -- and
+/// nothing else is guessed: a profile without `display_type` and a `default_screen` that
+/// names no entry are ERRORS the screen says out loud (§ 4.7), not a silent television.
 #[test]
 fn the_shipped_screen_is_a_television() {
     if !library_ships() {
         return;
     }
-    let calls = read_pass(&[], None, 1000).expect("python3 answers");
-    let root = written(&calls, "display.root").expect("the root");
-    assert_eq!(root["screen"], "tv");
-    assert_eq!(root["profile"], "tv");
+    let mut screen = Screen::new(json!({"default_screen": "tv"}));
+    screen.pass(json!({"kind": "stroke"}), 1000);
+    let root = screen.props("tv.display.root").expect("the shipped exit");
+    assert_eq!(root["exit"], "tv");
+    assert_eq!(root["screen_name"], "tv");
     assert_eq!(root["scale"], "1.6");
-    assert_eq!(root["inputs"], "audio");
-    assert_eq!(root["dock_overflow"], 0);
-    let screens: Value =
-        meclaw_core::serde_json::from_str(root["screens"].as_str().expect("JSON text"))
-            .expect("the screens parse");
-    assert_eq!(screens["tv"]["display_type"], "tv");
+    assert_eq!(root["inputs"], "");
+    assert_eq!(root["dock_max"], 7);
     assert_eq!(
-        pages(&calls),
-        vec![
-            ("/".to_string(), "display.root".to_string()),
-            ("/tv".to_string(), "display.root".to_string())
-        ]
+        root["screens"], "[\"tv\"]",
+        "the root names its exits: {root}"
     );
-    let odd = read_pass_with(
-        &[],
-        None,
-        1000,
-        json!({"screens": {"z": {"display_type": "phone"}, "b": {}}, "default_screen": "nope"}),
-    )
-    .expect("python3");
-    let root = written(&odd, "display.root").expect("the root");
-    assert_eq!(root["screen"], "b", "the first entry by name: {root}");
     assert_eq!(
-        root["profile"], "tv",
-        "an entry that says nothing is a television"
+        pages(&screen.pass(json!({"kind": "stroke"}), 2000)),
+        Vec::new(),
+        "and a second tick changes no route"
+    );
+
+    let mut broken = Screen::new(
+        json!({"screens": {"z": {"display_type": "phone"}, "b": {}}, "default_screen": "nope"}),
+    );
+    broken.pass(json!({"kind": "stroke"}), 1000);
+    let said: Vec<String> = broken
+        .lane("receipt")
+        .iter()
+        .map(|e| {
+            e["receipt"]["error_code"]
+                .as_str()
+                .unwrap_or("")
+                .to_string()
+        })
+        .collect();
+    assert!(
+        said.iter().any(|c| c == "profile_error"),
+        "a profile without `display_type` is refused, not made a television: {said:?}"
+    );
+    assert!(
+        said.iter().any(|c| c == "setting_error"),
+        "and a `default_screen` that names no exit is refused too: {said:?}"
     );
 }
 
-/// A change of `default_screen` alone -- the exits unchanged -- moves the
-/// routes: `/` and the new default share the root, the old default gets a
-/// prefixed root of its own.
+/// A change of `default_screen` alone -- the exits unchanged -- leaves every named route
+/// where it is (§ 6.5) and re-draws the SWITCH as the new default output.
 #[test]
-fn a_new_default_screen_moves_the_routes() {
+fn a_new_default_screen_moves_only_the_switch() {
     if !library_ships() {
         return;
     }
     let screens = json!({
-        "tv": {"display_type": "tv", "viewing_distance_m": 3.0, "inputs": ["audio"]},
-        "desk": {"display_type": "monitor", "viewing_distance_m": 0.7, "inputs": ["pointer"]}
+        "tv": {"display_type": "tv", "viewing_distance_m": 3.0},
+        "desk": {"display_type": "monitor", "viewing_distance_m": 0.7, "inputs": ["pointer"]},
     });
-    let first = read_pass_with(
-        &[],
-        None,
-        1000,
-        json!({"screens": screens, "default_screen": "tv"}),
-    )
-    .expect("python3 answers");
-    let mut held = json!([]);
-    apply(&mut held, &first);
-    let second = read_pass_with(
-        &[],
-        Some(&held),
-        2000,
-        json!({"screens": screens, "default_screen": "desk"}),
-    )
-    .expect("python3");
+    let mut screen = Screen::new(json!({"screens": screens, "default_screen": "tv"}));
+    screen.pass(json!({"kind": "stroke"}), 1000);
+    assert_eq!(screen.props("display.root").expect("switch")["exit"], "tv");
+
+    screen.params = json!({"screens": screens, "default_screen": "desk"});
+    let second = screen.pass(json!({"kind": "stroke"}), 2000);
+
+    let switch = screen.props("display.root").expect("the switch");
+    assert_eq!(
+        switch["screen_name"], "desk",
+        "the switch follows the default: {switch}"
+    );
+    assert_eq!(switch["exit"], "monitor", "{switch}");
+    assert_eq!(switch["default_screen"], "desk", "and says so: {switch}");
+    assert_eq!(switch["switch"], "1", "and stays the switch");
+    assert_eq!(
+        screen.props("tv.display.root").expect("the television")["exit"],
+        "tv",
+        "the television's own page did not move"
+    );
     let set = pages(&second);
     assert!(
-        set.contains(&("/".to_string(), "display.root".to_string()))
-            && set.contains(&("/desk".to_string(), "display.root".to_string()))
-            && set.contains(&("/tv".to_string(), "tv.display.root".to_string())),
-        "every route is set again, on the right root: {set:?}"
-    );
-    assert!(
-        written(&second, "tv.display.root").is_some_and(|r| r["profile"] == "tv"),
-        "the old default gets its own root: {second:?}"
-    );
-    assert!(
-        written(&second, "display.root").is_some_and(|r| r["screen"] == "desk"),
-        "and the shared root wears the new default: {second:?}"
+        set.is_empty()
+            || set.contains(&("/tv".to_string(), "tv.display.root".to_string()))
+                && set.contains(&("/desk".to_string(), "desk.display.root".to_string())),
+        "no named route changed its root: {set:?}"
     );
 }

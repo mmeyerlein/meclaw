@@ -15,9 +15,12 @@
 //! (d) an application's view carries its components, every name prefixed with
 //!     the view's own id -- driven with the bytes `colony-view` really emits;
 //! (e) both views reach a REAL display, over HTTP, on a page a browser gets;
-//! (f) a view whose `ttl_ms` has elapsed is not laid out.
+//! (f) a view whose `ttl_ms` has elapsed still travels to the pass -- the store holds
+//!     what an app wrote -- and the PASS is what takes it off the screen.
 //!
 //! Free of a provider by construction: neither template holds a model.
+
+mod support;
 
 use meclaw_cells::web::WebCellFactory;
 use meclaw_colony::{CellFactory, ContractView, SpawnedCellKind};
@@ -240,6 +243,115 @@ fn calls_of(emission: &Value) -> Vec<Value> {
         .collect()
 }
 
+/// One output, named and complete: since § 4.7 `display_type` and `default_screen` are
+/// both mandatory, so there is no pass without a profile.
+fn params() -> Value {
+    json!({"screens": {"tv": {"display_type": "tv", "viewing_distance_m": 3.0}},
+           "default_screen": "tv"})
+}
+
+/// A component row: a `display-pane` with one line of text under it.
+///
+/// Not a prose row, although the promise is the same one: `display-view-prose` is the
+/// one window class whose `prop_schema` was not carried over to the contract of § 3.1
+/// (see the report of this strand), so a real `web` cell refuses its objects today and
+/// this test would go red on somebody else's gap.
+fn component_row(owner: &str, view_id: &str, title: &str, text: &str) -> Value {
+    let tree = json!({
+        "component": "display-pane", "key": format!("c.{view_id}"),
+        "props": {"pane_id": view_id, "title": title},
+        "children": [{"component": "display-text", "key": "body", "props": {"body": text}}],
+    });
+    json!({
+        "owner": owner, "view_id": view_id, "region": "main", "ord": 0,
+        "kind": "component", "content": tree.to_string(), "components": "[]",
+        "ttl_ms": 0, "updated_at": 2_000,
+    })
+}
+
+/// The store and the display between two passes of the shipped cell: the rows the store
+/// keeps, the ONE state row of § 3.1, and the object tree the display holds.
+///
+/// A view enters the state only through the `app_write` event of ITS OWN pass (§ 4.8 a),
+/// so two owners are two rounds -- which is what a screen with two applications on it
+/// really is.
+struct Screen {
+    rows: Vec<Value>,
+    state: Value,
+    held: Value,
+}
+
+impl Screen {
+    fn new() -> Self {
+        Screen {
+            rows: Vec::new(),
+            state: Value::Null,
+            held: json!([]),
+        }
+    }
+
+    /// Pass 2 (the store answered) and pass 3 (the display answered) of one write, run
+    /// through the SHIPPED bytes. Returns the calls of the patch.
+    fn write(&mut self, root: &std::path::Path, row: Value) -> Vec<Value> {
+        let request = json!({"withdraw": false, "owner": row["owner"], "view_id": row["view_id"],
+                             "row": row});
+        let mut before = self.rows.clone();
+        if !self.state.is_null() {
+            before.push(self.state.clone());
+        }
+        let read = only(run_shipped(
+            root,
+            "compose",
+            stdin_doc(
+                store_reply(before, &["delete", "insert"]),
+                json!({"operation": "bundle", "bundle_errors": 0}),
+                views_context(&request),
+                None,
+            ),
+        ));
+        let plan = plan_of(&read);
+        self.rows = plan["views"]
+            .as_array()
+            .expect("the plan carries the rows")
+            .clone();
+
+        let mut doc = stdin_doc(
+            json!({"messages": [{"origin": "tool", "type": "tool_result", "id": "d-query",
+                                 "text": json!({"objects": self.held}).to_string()}]}),
+            json!({"operation": "query"}),
+            json!({"display_origin": "read",
+                   "display_views": read["header"]["display_views"]}),
+            None,
+        );
+        doc["params"] = params();
+        let out = run_shipped(root, "compose", doc);
+        for em in &out {
+            let request = em["header"]["display_request"].as_str().unwrap_or("");
+            if em["header"]["route"] == "views" && request.contains("\"state\"") {
+                for leg in em["messages"].as_array().unwrap_or(&Vec::new()) {
+                    let call: Value =
+                        meclaw_core::serde_json::from_str(leg["text"].as_str().unwrap_or("{}"))
+                            .expect("a call is JSON");
+                    // Insert on the first creation, a conditional update after it
+                    // (GH #744) -- the store merges, so this screen does too.
+                    support::put_state(&mut self.state, &call);
+                }
+            }
+        }
+        let calls = calls_of(&patch_of(out));
+        support::apply(&mut self.held, &calls);
+        calls
+    }
+
+    fn props(&self, id: &str) -> Option<Value> {
+        self.held
+            .as_array()?
+            .iter()
+            .find(|o| o["id"] == id)
+            .map(|o| o["props"].clone())
+    }
+}
+
 // ────────────────────────────────────────────────────── (a) the owner rule
 
 #[test]
@@ -396,16 +508,19 @@ fn two_owners_hold_two_views_in_an_order_that_reads_no_clock() {
     );
 }
 
+/// An elapsed view still travels -- and the PASS is what takes it off the screen.
+///
+/// Until the contract of § 4.34 pass 2 dropped a row whose `ttl_ms` had run out, so a
+/// window could never be drawn one last time on its way out. The filter is gone: the
+/// store holds what an application wrote until the application withdraws it, and the
+/// pass decides when the view leaves the state (step 4, step 12).
 #[test]
-fn an_elapsed_view_is_not_laid_out() {
+fn an_elapsed_view_leaves_in_the_pass_and_not_in_the_plan() {
     let Some(root) = display() else { return };
     if !have_python() {
         return;
     }
 
-    // Written at the epoch with a one-second life: elapsed by any clock this
-    // test could run under, which is what makes the assertion deterministic
-    // rather than a race with `time.time()`.
     let stale = row(BOB, "flash", 1_000, 1_000, "Gone", "…");
     let fresh = row(ALICE, "note", 2_000, 0, "Here", "…");
     let request = json!({"withdraw": false, "owner": ALICE, "view_id": "note",
@@ -415,7 +530,7 @@ fn an_elapsed_view_is_not_laid_out() {
         &root,
         "compose",
         stdin_doc(
-            store_reply(vec![stale], &["delete", "insert"]),
+            store_reply(vec![stale.clone()], &["delete", "insert"]),
             json!({"operation": "bundle", "bundle_errors": 0}),
             views_context(&request),
             None,
@@ -423,8 +538,34 @@ fn an_elapsed_view_is_not_laid_out() {
     ));
     let plan = plan_of(&out);
     let views = plan["views"].as_array().expect("views");
-    assert_eq!(views.len(), 1, "the elapsed one is not drawn: {views:#?}");
-    assert_eq!(views[0]["owner"], ALICE);
+    assert_eq!(
+        views.len(),
+        2,
+        "pass 2 hands on what the store holds, elapsed or not: {views:#?}"
+    );
+
+    // And what a row DOES on the screen is the pass's alone. A view enters the state
+    // through the `app_write` event of its own pass (§ 4.8 a) -- so the elapsed row,
+    // which travels in every plan until its app withdraws it, is laid out by nobody:
+    // this pass is Alice's, and the state it computes knows one window.
+    let mut screen = Screen::new();
+    screen.rows = vec![stale];
+    screen.write(
+        &root,
+        component_row(ALICE, "note", "Here", "the one window"),
+    );
+    let mine = format!("view.{}.note/c.note", ALICE.replace('/', "~"));
+    let theirs = format!("view.{}.flash", BOB.replace('/', "~"));
+    assert!(
+        screen.props(&mine).is_some(),
+        "the written view is drawn: {:?}",
+        screen.held
+    );
+    assert!(
+        screen.props(&theirs).is_none(),
+        "and the elapsed one is on no screen: {:?}",
+        screen.held
+    );
 }
 
 #[test]
@@ -820,9 +961,13 @@ async fn apply(live: &mut Live, calls: &[Value]) -> Value {
         .content
 }
 
-/// The whole point of the re-cut, end to end: two owners' views come out of the
-/// shipped compose cell, a real `web` cell takes the bundle, and the page a
-/// browser would get carries both of them.
+/// The whole point of the re-cut, end to end: two owners' views come out of the shipped
+/// compose cell, a real `web` cell takes the bundles, and the page a browser would get
+/// carries both of them.
+///
+/// Two owners are two ROUNDS here, and that is the contract and not the harness: a view
+/// enters the screen state through the `app_write` event of its own pass (§ 4.8 a), so a
+/// screen with two applications on it has seen two writes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn both_views_reach_a_real_display() {
     let Some(root) = display() else { return };
@@ -830,58 +975,38 @@ async fn both_views_reach_a_real_display() {
         return;
     }
 
-    let mine = row(ALICE, "note", 2_000, 0, "From Alice", "the newer paragraph");
-    let theirs = row(BOB, "board", 1_000, 0, "From Bob", "the older paragraph");
-    let request = json!({"withdraw": false, "owner": ALICE, "view_id": "note",
-                         "row": mine});
-
-    // Pass 2 -> the plan; pass 3 against an empty display -> the bootstrap.
-    let read = only(run_shipped(
+    let mut screen = Screen::new();
+    let first = screen.write(
         &root,
-        "compose",
-        stdin_doc(
-            store_reply(vec![theirs], &["delete", "insert"]),
-            json!({"operation": "bundle", "bundle_errors": 0}),
-            views_context(&request),
-            None,
-        ),
-    ));
-    let plan = read["header"]["display_views"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let patch = patch_of(run_shipped(
+        component_row(BOB, "board", "From Bob", "the older paragraph"),
+    );
+    let second = screen.write(
         &root,
-        "compose",
-        stdin_doc(
-            // A display whose `/` was never set refuses the query. That is one
-            // of the two bootstrap cases, and the cheaper one to stage.
-            json!({"messages": [{"origin": "tool", "type": "tool_result",
-                                 "id": "d-query", "text": "{}"}]}),
-            json!({"operation": "query", "error_code": "invalid_input"}),
-            json!({"display_origin": "read", "display_views": plan}),
-            None,
-        ),
-    ));
-    let calls = calls_of(&patch);
+        component_row(ALICE, "note", "From Alice", "the newer paragraph"),
+    );
 
     let td = TempDir::new().expect("td");
     let cell_dir = td.path().join("web");
     std::fs::create_dir_all(&cell_dir).expect("dir");
     let mut live = start(&cell_dir).await;
 
-    let reply = apply(&mut live, &calls).await;
-    assert_eq!(
-        reply["header"]["bundle_errors"],
-        json!(0),
-        "the bundle the screen builds is one the display accepts: {reply:#?}"
-    );
+    for calls in [&first, &second] {
+        let reply = apply(&mut live, calls).await;
+        assert_eq!(
+            reply["header"]["bundle_errors"],
+            json!(0),
+            "the bundle the screen builds is one the display accepts: {reply:#?}"
+        );
+    }
 
-    // One wrapper object per view, straight out of the display's own database.
+    // One wrapper object per view, straight out of the display's own database. Counted
+    // on the unprefixed tree alone -- every named exit is a copy of it (§ 6), so the
+    // whole table holds one wrapper per view per exit.
     let conn = rusqlite::Connection::open(live.cell_dir.join("cell.db")).expect("open");
     let wrappers: i64 = conn
         .query_row(
-            "SELECT count(*) FROM objects WHERE component LIKE 'display-view-%'",
+            "SELECT count(*) FROM objects WHERE component LIKE 'display-view-%' \
+             AND id LIKE 'view.%'",
             [],
             |r| r.get(0),
         )
@@ -913,9 +1038,10 @@ async fn both_views_reach_a_real_display() {
     }
     assert!(
         body.find("the newer paragraph") < body.find("the older paragraph"),
-        "the order holds on the page and not only in the plan. This page is a \
-         BOOTSTRAP, so neither view has a seat yet and both are new together: \
-         equal band, and `alice` before `bob` on identity (GH #609):\n{body}"
+        "the order holds on the page and not only in the plan. Neither window is open \
+         here -- both are `fresh` in their own pass and neither reaches the bar -- so \
+         they stand in the order the state keys them, and `alice` sorts before `bob` \
+         (§ 6.3, GH #609):\n{body}"
     );
     // Each wrapper says whose it is, which is what a member reads off a browser
     // event to route it back to the one agent that put the view up.

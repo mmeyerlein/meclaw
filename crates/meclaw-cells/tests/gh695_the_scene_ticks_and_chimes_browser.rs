@@ -99,3 +99,50 @@ fn a_browser_runs_the_seconds_and_hears_the_timer() {
         "and the remainder was written where the template said: {line}"
     );
 }
+
+/// Welle F: the line a person types into still holds its value straight after
+/// Enter and is empty one macrotask later (E-10, OR-F17, OR-F48). The file
+/// beside this one greps the handler out of `compose.py`; this one runs it. A
+/// string that is present and a listener that fires are two different
+/// statements, and only the second is the contract -- a hook registered in
+/// the capture phase, or on the wrong node, greps identically and behaves
+/// differently.
+///
+/// What this does NOT prove: the page the driver builds carries no LiveView,
+/// so nothing here reads the field the way a real client does. The order the
+/// hook promises is what is measured; that the order is the RIGHT one was
+/// measured against the vendored client and is written down as OR-F48.
+#[test]
+fn a_browser_empties_the_line_after_enter() {
+    if !library_ships() || !repo(DRIVER).is_file() {
+        return;
+    }
+    let td = tempfile::TempDir::new().expect("tempdir");
+    let js = td.path().join("scene.js");
+    if scene_js(&js).is_none() {
+        return;
+    }
+    let out = match Command::new("node").arg(repo(DRIVER)).arg(&js).output() {
+        Ok(out) => out,
+        Err(_) => return,
+    };
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    if out.status.code() == Some(3) || stderr.contains("SKIP") {
+        println!("{stderr}");
+        return;
+    }
+    assert!(
+        out.status.success(),
+        "the driver failed:\n{stdout}\n{stderr}"
+    );
+    let line = stdout
+        .lines()
+        .find(|l| l.starts_with("SCENE "))
+        .unwrap_or_else(|| panic!("the driver printed no counters:\n{stdout}\n{stderr}"));
+    println!("{line}");
+    assert!(
+        line.contains("typed=empty"),
+        "Enter empties the field, another key does not: {line}"
+    );
+}

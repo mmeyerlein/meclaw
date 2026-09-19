@@ -85,6 +85,25 @@ path = "junit.xml"
 # one entry would silently retry the same helper everywhere.)
 #
 # --- current quarantine ----------------------------------------------------
-# EMPTY. Nothing is quarantined: no measured flake has an issue yet.
-# Do not add the candidate above without first filing the issue that says what
-# makes it flaky -- an entry without that is just a retry.
+[[profile.default.overrides]]
+# GH #714 -- a stage rebuild loses one app write in ~1 of 5-12 runs (release-only lock).
+filter = 'binary_id(=meclaw-cells::710_the_colony_holds_in_both_engines_browser)'
+retries = 2
+
+# ---------------------------------------------------------------------------
+# SLOW BY DESIGN -- a longer leash, never a retry.
+# ---------------------------------------------------------------------------
+#
+# The four-minute kill of the default profile says "a meclaw test that needs
+# four minutes is wedged, not busy". One test is busy: the colony half of the
+# B-proofs boots a throwaway colony once and then drives six real browser
+# sessions through it -- two engines on three exits, with gestures and page
+# loads in each. It is `#[ignore]`d and runs only in `release` (station
+# `browser:display`, scope `sheet+colony`); measured it takes three and a half
+# minutes on this host. The cap is raised for THIS test alone. (Its retries are
+# NOT zero any more -- see the quarantine entry above, GH #714; the two
+# overrides address the same test for two different reasons and nextest merges
+# them.)
+[[profile.default.overrides]]
+filter = 'binary_id(=meclaw-cells::710_the_colony_holds_in_both_engines_browser)'
+slow-timeout = { period = "60s", terminate-after = 10 }

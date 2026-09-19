@@ -94,6 +94,16 @@ use crate::voice::wire::{ClientFrame, Mode, PROTOCOL, ServerFrame, SpeakEndReaso
 /// off than one that is told to reconnect.
 const STT_RETRY_DELAY: Duration = Duration::from_secs(1);
 
+/// The length of one frame of the silence a released `hold` is followed by
+/// (GH #717).
+///
+/// 20 ms is the frame this wire recommends in both directions, and the cadence
+/// matters more than the size: an endpointing provider measures silence by the
+/// audio clock, so the tail has to arrive at roughly the rate real audio would
+/// have arrived at. A longer frame would make the provider's own 0.7 s
+/// threshold jump in coarser steps and nothing else.
+const TAIL_FRAME: Duration = Duration::from_millis(20);
+
 /// How many audio chunks may be in flight between a provider and this task.
 const AUDIO_QUEUE: usize = 32;
 
@@ -398,6 +408,32 @@ pub async fn run_connection(
     // to pick a threshold.
     let mut bad_frames: u32 = 0;
     let frame_bytes = input.frame_bytes();
+    // The silence tail of a released hold (GH #717). `tail_until` is the
+    // deadline it stops at — the grace, because past that the boundary is cut
+    // anyway — and `tail_next` is when the next frame is due. Both `None`
+    // whenever no tail is running, which is the whole time outside a drain.
+    //
+    // WHY this exists at all: an endpointing provider ends a turn after a
+    // stretch of silence IN THE AUDIO STREAM (Deepgram Flux `eot_threshold`,
+    // 0.7 s by default), and a client stops sending about 120 ms after the key
+    // comes up. Measured on the fresh instance on 18.09.2026 with a fixture
+    // released 20 ms after the last word: no audio after the release, no
+    // `EndOfTurn` ever, the boundary cut at the 1500 ms cap with the interim
+    // transcript — which lags the audio, so the end of the sentence was gone.
+    // The same take released 1.62 s later, with silence still streaming,
+    // closed 137 ms after the release with the full text. The difference was
+    // the silence, so the cell produces it.
+    let mut tail_until: Option<Instant> = None;
+    let mut tail_next: Option<Instant> = None;
+    // One 20 ms frame of digital silence at the rate THIS connection
+    // negotiated — a telephony edge runs 8 kHz while the browser beside it
+    // runs 16 kHz, and a frame of the wrong length is a frame the provider
+    // reads as noise.
+    let tail_frame: Vec<u8> =
+        vec![
+            0u8;
+            input.sample_rate as usize * frame_bytes * TAIL_FRAME.as_millis() as usize / 1000
+        ];
 
     loop {
         tokio::select! {
@@ -534,6 +570,14 @@ pub async fn run_connection(
                     Some(event) => {
                         // An event is a completed provider round trip (issue #7).
                         shared.liveness.mark_success();
+                        // The tail has done its job the moment the provider
+                        // leaves its turn (GH #717): what it was there for was
+                        // this event, and more silence after it belongs to
+                        // nobody's take.
+                        if matches!(event, SttEvent::EndOfTurn { .. }) {
+                            tail_until = None;
+                            tail_next = None;
+                        }
                         shared.emit(VoiceEvent::Stt {
                             session_id: session_id.clone(),
                             event,
@@ -543,6 +587,9 @@ pub async fn run_connection(
                     // the same problem for the client — nothing is being
                     // recognised any more — so both take the retry path.
                     None => {
+                        // There is nothing left to feed.
+                        tail_until = None;
+                        tail_next = None;
                         let Some(session) = stt.take() else { break };
                         // GH #657: in `hold` mode a session that ends with no
                         // key held ended the way the arrangement intends.
@@ -663,6 +710,13 @@ pub async fn run_connection(
                                 } else if holding {
                                     hold_frames = hold_frames.saturating_add(1);
                                     hold_bytes = hold_bytes.saturating_add(len);
+                                } else if tail_next.is_some() {
+                                    // The client is still draining its capture
+                                    // graph, so its audio outranks the cell's
+                                    // silence (GH #717): the tail waits a frame
+                                    // rather than interleaving zeroes between
+                                    // the last two words of the take.
+                                    tail_next = Some(Instant::now() + TAIL_FRAME);
                                 }
                             }
                         }
@@ -688,6 +742,12 @@ pub async fn run_connection(
                                 // machine (`already_holding`) and must not zero
                                 // the numbers of the one that is running.
                                 if !holding {
+                                    // A new take owns the stream: whatever is
+                                    // left of the previous one's tail would be
+                                    // silence in the middle of this one's
+                                    // first word.
+                                    tail_until = None;
+                                    tail_next = None;
                                     hold_frames = 0;
                                     hold_bytes = 0;
                                     hold_since = Some(Instant::now());
@@ -730,6 +790,22 @@ pub async fn run_connection(
                             // the client is still holding the key down.
                             Ok(Some(ClientFrame::Release)) => {
                                 holding = false;
+                                // The drain begins, and with it the tail
+                                // (GH #717). Only where it can do anything: in
+                                // `hold`, with a session to feed, and with a
+                                // grace to run inside — `release_grace_ms: 0`
+                                // cuts on this very frame, so a tail would be
+                                // audio for a boundary that is already closed.
+                                if mode == Mode::Hold
+                                    && stt.is_some()
+                                    && shared.release_grace_ms > 0
+                                {
+                                    let now = Instant::now();
+                                    tail_until = Some(
+                                        now + Duration::from_millis(shared.release_grace_ms),
+                                    );
+                                    tail_next = Some(now + TAIL_FRAME);
+                                }
                                 // The one line a lost take is reconstructed from:
                                 // how much audio this hold actually pushed, and
                                 // how long it was open. No transcript, ever —
@@ -777,6 +853,44 @@ pub async fn run_connection(
                     Incoming::Close => break,
                 }
             }
+            // The silence tail of a released hold (GH #717). Deliberately below
+            // the client and the provider in the `biased` order: real audio and
+            // a provider event both outrank a frame the cell invented.
+            () = sleep_until_opt(tail_next) => {
+                let now = Instant::now();
+                match (tail_until, stt.as_ref()) {
+                    (Some(until), Some(session)) if now < until => {
+                        // `try_send`, never `send`. The client's own frames may
+                        // block this loop — that is its backpressure and the
+                        // socket carries it — but a frame the cell made up must
+                        // not: a full queue is already 32 frames the provider
+                        // has not read, one more would not move its endpointing,
+                        // and waiting for room would park the very arm that is
+                        // waiting for `EndOfTurn`.
+                        if session.audio_tx.try_send(tail_frame.clone()).is_err() {
+                            // Reported rather than swallowed: a drain whose
+                            // silence never lands is a take that will be cut at
+                            // the cap again, and the queue being full says the
+                            // provider is already 32 frames behind.
+                            tracing::debug!(
+                                %session_id,
+                                "voice: the silence tail dropped a frame — the \
+                                 recognition queue is full"
+                            );
+                        }
+                        tail_next = Some(now + TAIL_FRAME);
+                    }
+                    // The grace has run out, or there is nothing left to feed.
+                    // The cap closes the boundary (`turns.rs`, `ProviderDebt`),
+                    // and the tail ends with it rather than running for the
+                    // rest of the call.
+                    _ => {
+                        tail_until = None;
+                        tail_next = None;
+                    }
+                }
+            }
+
             tick = next_synth_tick(&mut speaking) => {
                 match tick {
                     SynthTick::Chunk(bytes) => {

@@ -401,15 +401,23 @@ fn build_tree(td: &tempfile::TempDir, member: &std::path::Path, assistant: &std:
     for who in [DEFAULT_ASSISTANT, OTHER_ASSISTANT] {
         let dst = root.join(format!("main/person/assistants/{who}"));
         copy_cells(assistant, &dst);
-        write(
-            root,
-            &format!("main/person/assistants/{who}/talky/config.json"),
-            &double(
-                SURFACE,
-                json!({"who": who}),
-                "Test double for the conversation surface of one generation.",
-            ),
-        );
+        // BOTH keepers get the answering double since `assistant@2.7.0`. The channel this
+        // file wires is called `chat`, so the level's own split delivers its turns to
+        // `./talky-chat` (GH #709) -- and what this file measures is WHICH GENERATION a
+        // turn reaches, not which keeper inside it, so both answer the same way. A ref
+        // left unresolved would keep its `${ctx.model_surface}` token as well, which no
+        // `.env` of a test tree answers.
+        for keeper in ["talky", "talky-chat"] {
+            write(
+                root,
+                &format!("main/person/assistants/{who}/{keeper}/config.json"),
+                &double(
+                    SURFACE,
+                    json!({"who": who}),
+                    "Test double for a conversation surface of one generation.",
+                ),
+            );
+        }
         for sibling in ["cogny", "tools"] {
             write(
                 root,

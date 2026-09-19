@@ -22,6 +22,7 @@ CLASSES (a path can carry several)
                   plans/**/expected_*_body.txt, .github/gates/corridor_byte_gates.sh
     template      templates/<name>/**          (templates/README.md -> catalogue)
                   -- selection by REFERENCE shape, see `_template_reference_re`
+                     and `_names_the_shipped_root` (GH #713)
     catalogue     templates/README.md
     example       examples/<name>/**
     docs          docs/**, top-level *.md, plans/** (minus corridor/export fixtures)
@@ -31,6 +32,14 @@ CLASSES (a path can carry several)
     evals_memory  workshop/evals/scenarios/**, workshop/fixtures/**memory-hive**,
                   workshop/evals/p5-longmemeval/tools/**
     evals_builder workshop/evals/builder-scenarios/**
+    display_scenarios  templates/display/compose/scenarios/**
+                  -- carries `template` as well (the path lies under
+                     templates/), so it pulls the template stations with it.
+                     The class of its own exists so the station is planned
+                     when only the driver changes
+    display_browser  workshop/tools/display-*, and the two Rust locks that
+                  run the layout driver (BROWSER_LOCKS). Never `template`:
+                  the driver lies under workshop/, which does not travel
     gate_infra    scripts/gate.sh, scripts/gate_plan.py, scripts/tests/**,
                   scripts/test-tier.sh
     unwrap_infra  .github/gates/unwrap_budget.{py,txt}
@@ -61,7 +70,27 @@ STATIONS (S strand, I integration, R release, C ci)
                     expression -- see `T0_FLOOR`
     doctests        I/R with rust_src/workspace
     deny            workspace; I/R always
-    scenarios:*     see the template/example/evals triggers; I/R always
+    scenarios:*     see the template/example/evals triggers; I/R always.
+                    `scenarios:display` runs the scenarios of display-hive.md
+                    § 11 against the real curator AND the reference model
+                    against itself (development-rules § 10). It travels: the
+                    driver and its scenario file live under templates/, so ci
+                    runs it too -- it is NOT in CI_EXCLUDED, and it is planned
+                    in I, R and C for EVERY diff, not only when one names it
+    browser:display the B-proofs of display-hive.md § 5-9 in Chromium AND
+                    WebKit (§ 6.7, R-23-10). TWO shapes, one station name:
+                    S runs the SHEET half (scope `sheet`) -- a page the driver
+                    builds out of `compose.py`'s own parts, ~30 s, no colony;
+                    I and R run that AND the COLONY half (scope
+                    `sheet+colony`), six boots against three exits in two
+                    engines, 4-6 min, behind `#[ignore]` and
+                    `--run-ignored all`. The colony half was release-only
+                    until 0.39.0, and the first gate that ever ran it found it
+                    red on three proofs (GH #746): a proof only the release
+                    night reaches is a proof nobody sees, and the pass that
+                    declares a wave done is where it belongs. In CI_EXCLUDED,
+                    unlike `scenarios:display`: the driver lives under
+                    workshop/, which never travels
     recall-harness  memory-hive template, recall sources, evals_memory; I/R always
     deny-advisories R always (the runner grades it NOTE, never RED)
     export-selftest export_infra; I/R always (seconds, pure Python)
@@ -183,6 +212,7 @@ CI_EXCLUDED = frozenset({
     "scenarios:memory",  # workshop/evals/scenarios/
     "scenarios:builder",  # workshop/evals/builder-scenarios/
     "recall-harness",    # workshop/evals/p5-longmemeval/
+    "browser:display",   # workshop/tools/display-layout-browser.mjs
     "export-selftest",   # plans/export-fixtures/
     "export-audit",      # plans/export-fixtures/
     "deny",              # the CI `deny` job runs the cargo-deny action itself
@@ -197,10 +227,21 @@ STATION_ORDER = (
     "corpus-committed", "corpus", "catalogue", "shellcheck", "gate-selftest",
     "fmt", "clippy", "unwrap-budget", "corridor",
     "tests", "doctests", "deny",
-    "scenarios:memory", "scenarios:builder", "recall-harness",
+    "scenarios:memory", "scenarios:builder", "scenarios:display",
+    "browser:display", "recall-harness",
     "deny-advisories", "export-selftest", "export-audit",
 )
 
+
+# The two Rust locks the station `browser:display` runs. They are named here and
+# nowhere else: `gate_plan.py` is THE place a station trigger may be written down,
+# and a test that changes the way a browser proof is driven must plan the station
+# that drives it -- the `tests` filter would build the binary without ever saying
+# which station owns it.
+BROWSER_LOCKS = frozenset({
+    "crates/meclaw-cells/tests/710_the_sheet_holds_in_both_engines_browser.rs",
+    "crates/meclaw-cells/tests/710_the_colony_holds_in_both_engines_browser.rs",
+})
 
 # The empty-diff floor. `plan()` turns it into `scripts/test-tier.sh t0`
 # rather than a `filter` run: the tier passes `--lib --bins` and builds only the
@@ -347,6 +388,18 @@ def _classes_of_path(path):
         cls.add("evals_memory")
     if path.startswith("workshop/evals/builder-scenarios/"):
         cls.add("evals_builder")
+
+    # The pins of the display hive travel with the template, so the path also
+    # carries `template` above and pulls the template stations. The class of
+    # its own is what plans `scenarios:display` when the driver alone changes.
+    if path.startswith("templates/display/compose/scenarios/"):
+        cls.add("display_scenarios")
+
+    # The browser half of the same document: the layout driver under workshop/ and
+    # the two locks that run it. No `template` class comes with it -- workshop/ is a
+    # FORBIDDEN_PREFIX of the export, which is why the station is in CI_EXCLUDED.
+    if path.startswith("workshop/tools/display-") or path in BROWSER_LOCKS:
+        cls.add("display_browser")
 
     if (path in ("scripts/gate.sh", "scripts/gate_plan.py", "scripts/test-tier.sh")
             or path.startswith("scripts/tests/")):
@@ -501,6 +554,24 @@ CATALOGUE_WINDOW = 3
 # rather than over some directory the test happens to hold.
 CATALOGUE_TOKENS = ("templates_root", '"templates', "templates/")
 
+# The SHIPPED catalogue root, however a test spells it: the helper that
+# resolves it (`templates_root()`, `templates_dir()`) or the literal path that
+# builds it (`PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../templates")`
+# -- any literal ENDING in `/templates`). A bare `"templates"` segment is
+# deliberately NOT one: `tempdir.join("templates")` is a fixture library the
+# test writes itself, and a shipped template that changes says nothing about
+# it. This is the anchor of two rules -- the catalogue sweep below and
+# `_names_the_shipped_root` -- and it was one spelling short in both: the two
+# real sweeps of the tree name their root `templates_dir()` and
+# `"../../templates"`, so neither was read as a sweep and neither travelled
+# with any template diff (GH #713).
+_SHIPPED_ROOT_RE = re.compile(r'templates_root\(|templates_dir\(|"[^"]*/templates"')
+
+# A test's own recursive walker, `fn walk(dir, ..)` called on the root it just
+# resolved. It is not in CATALOGUE_WALKS because the `read_dir(` is inside the
+# helper, pages away from the line that names the root.
+_LOCAL_WALK_RE = re.compile(r'\bwalk\w*\(')
+
 # A template path built by a format string: `format!("templates/{dir}")`,
 # `panic!("templates/{name} declares no contract")`. WHICH template it names is
 # a runtime value, so such a file counts for EVERY template -- over-selection
@@ -544,6 +615,13 @@ def _is_catalogue_wide(text):
         every shipped template. A root narrowed by a following `.join(...)`
         (`templates_root().join("talky")`) does NOT count -- that is one
         template -- and neither does the `fn templates_root()` signature;
+    (g) a line names the SHIPPED root (`_SHIPPED_ROOT_RE`) and a walk of any
+        shape -- `read_dir(`, `WalkDir`, or the file's own `walk(` -- follows
+        within `CATALOGUE_WINDOW` lines. (b) and (c) know one spelling of the
+        root and (e) another; `store_wake_failure_modes` (`let root = ...
+        .join("../../templates"); walk(&root, ..)`) and
+        `gh494_no_interior_marker_leaves_a_hive` (`fn templates_dir()`) read
+        every shipped `config.json` through neither;
     (f) a line builds a template path with a format string --
         `format!("templates/{dir}")`, `panic!("templates/{name} ...")`. The
         name is a runtime value and cannot be resolved from the source, so the
@@ -562,7 +640,8 @@ def _is_catalogue_wide(text):
         return True
     lines = text.splitlines()
     for line in lines:
-        if "read_dir" in line and any(tok in line for tok in CATALOGUE_TOKENS):
+        if "read_dir" in line and (any(tok in line for tok in CATALOGUE_TOKENS)
+                                   or _SHIPPED_ROOT_RE.search(line)):
             return True
         if "glob(" in line and "templates/*" in line:
             return True
@@ -576,6 +655,12 @@ def _is_catalogue_wide(text):
     if any(walk in text for walk in CATALOGUE_WALKS):
         for line in lines:
             if not _FN_RE.match(line) and CATALOGUE_ROOT_RE.search(line):
+                return True
+    for i, line in enumerate(lines):
+        if _FN_RE.match(line) or not _SHIPPED_ROOT_RE.search(line):
+            continue
+        for nxt in lines[i + 1:i + 1 + CATALOGUE_WINDOW]:
+            if any(walk in nxt for walk in CATALOGUE_WALKS) or _LOCAL_WALK_RE.search(nxt):
                 return True
     return False
 
@@ -616,11 +701,73 @@ def _template_reference_re(name):
     return rx
 
 
+# A test that reads a SHIPPED template without ever spelling its path. It
+# resolves the catalogue root once -- `fn templates_root() -> PathBuf` over
+# `CARGO_MANIFEST_DIR/../../templates` -- and joins a RUNTIME value onto it:
+# `fn shipped(rel) { templates_root().join(rel) }`, called as
+# `shipped("assistant/config.json")`. The literal `templates/assistant` is
+# nowhere in the file, so `_template_reference_re` does not see it; the diff
+# path `templates/assistant/config.json` is nowhere either, so rule 8 does
+# not; and the root is narrowed by a `.join(`, so `_is_catalogue_wide` does
+# not. `gh529_the_menu_merges_every_answerers_declarations` and
+# `gh561_the_pack_rides_a_v_lane` read exactly that file and fell out of the
+# strand gate that changed it -- both went red on the integration branch
+# afterwards (GH #713).
+#
+# The root must be the SHIPPED one: `tempdir.join("templates").join(name)`
+# builds a fixture library the test writes itself, and a shipped template that
+# changes says nothing about it. So only a root spelled `templates_root(` or a
+# literal path ENDING in `/templates` ("../../templates") counts -- a bare
+# `"templates"` segment does not.
+# What is left of the path below the root is not the resolver's business:
+# `join(rel)`, `join(name)` and `join("memory-hive/embed/config.json")` are the
+# same reach through the same helper. Requiring a RUNTIME join kept
+# `gh204_the_shipped_embedding_generation_agrees` --
+# `templates_root().join("memory-hive/embed/config.json")` -- out of that
+# file's own diff, which is the defect of GH #713 one spelling further on.
+
+
+def _names_the_shipped_root(text):
+    """Does this test reach into the shipped catalogue at all?"""
+    return bool(_SHIPPED_ROOT_RE.search(text))
+
+
+_ROOT_RELATIVE_CACHE = {}
+
+
+def _root_relative_reference_re(name):
+    """The template `name` as it arrives at such a helper, root-relative.
+
+    Two shapes, and only these two:
+
+        "<name>/..."        a path INTO the template -- `"assistant/config.json"`
+        ([,) "<name>"       the bare name HANDED to something -- `shipped(
+                            "assistant", FILES)`, `&["collector"]`
+
+    The second shape is why the bare name may not count on its own anywhere
+    else: `{"origin": "assistant"}` is an LLM role, and it is in a third of
+    the suite. A delimiter in front of it is a cheap filter, not a proof --
+    `turn("assistant", ..)` is that same role handed to a helper, and
+    `cfg["tools"]` is a Rust index. It may over-select; what it buys is that
+    the JSON-body form, which is most of them, drops out: measured on the tree
+    that is 3 binaries selected for `templates/assistant` instead of 18.
+    """
+    rx = _ROOT_RELATIVE_CACHE.get(name)
+    if rx is None:
+        n = re.escape(name)
+        rx = _ROOT_RELATIVE_CACHE[name] = re.compile(
+            r'"%s/|[(,\[]\s*&?"%s"' % (n, n))
+    return rx
+
+
 def _tests_referencing_template(repo, name):
     ref = _template_reference_re(name)
+    rel = _root_relative_reference_re(name)
     out = set()
     for crate, stem, text in _test_sources(repo):
         if ref.search(text) or _is_catalogue_wide(text):
+            out.add(_binary_id(crate, stem))
+        elif _names_the_shipped_root(text) and rel.search(text):
             out.add(_binary_id(crate, stem))
     return out
 
@@ -681,8 +828,11 @@ def test_filter(paths, mode, repo=None):
                                      error that kills the whole station
     4. template <name>            -> the binaries that REFERENCE it
                                      (`_template_reference_re` -- a bare
-                                     `"<name>"` does not count), plus the
-                                     catalogue-wide ones (`_is_catalogue_wide`)
+                                     `"<name>"` does not count), the ones that
+                                     name the shipped root and `<name>`
+                                     below it (`_names_the_shipped_root`),
+                                     plus the catalogue-wide ones
+                                     (`_is_catalogue_wide`)
     5. example <name>             -> the binaries that reference it
     6. none of the above, diff not empty -> None (no `tests` station at all)
     7. empty diff                 -> the t0 floor, `T0_FLOOR`; `plan()` turns
@@ -749,6 +899,22 @@ def _case_scope(repo, rel):
     if not os.path.isdir(path):
         return "cases"
     return "%d cases" % len([f for f in os.listdir(path) if f.endswith(".json")])
+
+
+def _scenario_scope(repo, rel):
+    """`<n> scenarios` counted from the scenario file, or `scenarios` when absent.
+
+    The number stands in every GATE line and in every receipt, so a scenario that
+    silently left the file is visible in the pass that ran without it.
+    """
+    root = REPO_ROOT if repo is None else repo
+    path = os.path.join(root, rel)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return "scenarios"
+    return "%d scenarios" % len(data.get("scenarios", ()))
 
 
 def _shell_files(repo, globs):
@@ -936,6 +1102,52 @@ def plan(paths, mode, repo=None):
             _case_scope(repo, "workshop/evals/builder-scenarios/cases"), False,
             [["python3", "run_builder_scenarios.py"]],
             cwds=["workshop/evals/builder-scenarios"])
+
+    # The pins of the one normative display document (development-rules § 10).
+    # Pure Python, seconds, no colony and no browser -- so it runs in S as soon
+    # as the diff touches the template or the scenario file, and in I, R and C
+    # ALWAYS. C is where the other scenario suites cannot run at all, because
+    # workshop/ does not travel; this one does, and two seconds is not a price
+    # worth making conditional (wave H, plan § 10 "Produces": I/R/C always).
+    if ir or mode == "ci" or "display" in templates or "display_scenarios" in classes:
+        out["scenarios:display"] = station(
+            "scenarios:display",
+            _scenario_scope(repo, "templates/display/compose/scenarios/scenarios.json"),
+            False,
+            [["python3",
+              "templates/display/compose/scenarios/run_display_scenarios.py"]])
+
+    # The B-proofs of the same document, in a real engine (§ 6.7, R-23-10). Two
+    # shapes of one station, like `export-audit`: the SHEET half builds its page out
+    # of `compose.py`'s own parts, needs no colony and costs about half a minute, so
+    # a strand pays for it; the COLONY half boots the throwaway colony once and
+    # drives three exits in two engines -- 4 to 6 minutes, a fifth of the pass's
+    # whole budget. It is `#[ignore]`d in the tree, and the two modes that declare
+    # work finished take it off the shelf.
+    #
+    # Both of them, and not `release` alone (GH #746): the station was written with
+    # the colony half in `release` only, the release gate of 0.39.0 was the first
+    # gate of any mode to run it, and it was red on three proofs that had stood
+    # unmeasured since the day the arm was added. An expensive proof nobody reaches
+    # until the release night is a proof nobody reads, and the pass that says a wave
+    # is done is exactly where that has to be paid.
+    #
+    # `cargo: True` -- both halves are nextest runs and build test binaries, so they
+    # belong under the same nice/ionice/flock/build-width hygiene as any other cargo
+    # station. Through `test-tier.sh`, which owns the nextest profile and knows not
+    # to take the cargo lock twice.
+    #
+    # No browser on this host is a SKIP, never a RED: the driver leaves with 3 and
+    # the Rust locks return green (R2b). That judgement is the test's, not the
+    # runner's -- `gate.sh` grades a station by its exit code alone.
+    if ir or "display" in templates or "display_browser" in classes:
+        colony = ir
+        cmds = [["scripts/test-tier.sh", "filter", "binary(/710_the_sheet_holds/)"]]
+        if colony:
+            cmds.append(["scripts/test-tier.sh", "filter",
+                         "binary(/710_the_colony_holds/)", "--run-ignored", "all"])
+        out["browser:display"] = station(
+            "browser:display", "sheet+colony" if colony else "sheet", True, cmds)
 
     recall_src = any(p.startswith("crates/meclaw-cells/src/") and "recall" in p
                      for p in files)

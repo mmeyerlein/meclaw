@@ -167,12 +167,15 @@ fn stated_route(condition: Option<&str>) -> Option<String> {
 
 /// The three occupants of the level, as this template addresses them. There is
 /// no fourth endpoint: what used to be `./channels` is a node of the MEMBER now.
-const SIBLINGS: [&str; 3] = ["./talky", "./cogny", "./tools"];
+/// Since GH #709 the conversation surface is a ROLE two nodes fill: one talky per
+/// channel that asks for its own (`display-hive.md` § 8.2). Both are refs onto the same
+/// template at the same version, so "occupant" is still three templates.
+const SIBLINGS: [&str; 4] = ["./talky", "./talky-chat", "./cogny", "./tools"];
 
 // ─────────────────────────────── (1) three children, all refs, no container
 
 #[test]
-fn the_level_ships_three_refs_and_no_container() {
+fn the_level_ships_four_refs_at_three_templates_and_no_container() {
     let Some(root) = shipped() else { return };
 
     let mut children: Vec<String> = std::fs::read_dir(&root)
@@ -189,17 +192,21 @@ fn the_level_ships_three_refs_and_no_container() {
         vec![
             "cogny".to_string(),
             "talky".to_string(),
+            "talky-chat".to_string(),
             "tools".to_string()
         ],
         "one generation is the conversation surface, the reasoning core and the tool \
-         surface — three refs and nothing else. A fourth child is a sibling this level did \
-         not have to own: a memory, a firewall and an identity belong to the MEMBER \
-         (GH #122), and since GH #454 so do the CHANNELS, which is why the container that \
-         used to stand here is gone rather than empty."
+         surface — and since GH #709 the first of the three is one node PER CHANNEL that \
+         asks for its own voice (`display-hive.md` § 8.2). Four refs at three templates, \
+         and nothing else: a child that is not one of them is a sibling this level did not \
+         have to own — a memory, a firewall and an identity belong to the MEMBER (GH #122), \
+         and since GH #454 so do the CHANNELS, which is why the container that used to \
+         stand here is gone rather than empty."
     );
 
     for (name, want) in [
         ("talky", "talky@"),
+        ("talky-chat", "talky@"),
         ("cogny", "cogny@"),
         ("tools", "tools@"),
     ] {
@@ -481,7 +488,11 @@ fn no_regular_out_edge_of_either_brain_is_unconditional() {
     // arose; `memory_recall` leaves the level on a NAMED edge out of `./cogny`
     // now, and a named edge beside an unconditional one delivers the same call
     // twice. Suppression is per SENDER, so the rule is per sender too.
-    for sender in ["./talky", "./cogny"] {
+    // Since GH #709 there are THREE senders with an exit onto the tool surface: the two
+    // conversation keepers and the core. A twin that lost its `default: true` in the
+    // copy would take the tool surface dark for the channel it serves and for that one
+    // alone, which is the quietest possible version of this defect.
+    for sender in ["./talky", "./talky-chat", "./cogny"] {
         let mut default_on_tool = 0;
         for e in hp.graph.edges.iter().filter(|e| e.from == sender) {
             if e.is_default {
@@ -883,7 +894,9 @@ fn number_word(n: usize) -> String {
     if n < 20 {
         return ONES[n].to_string();
     }
-    let tens = ["", "", "twenty", "thirty", "forty", "fifty"];
+    let tens = [
+        "", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy",
+    ];
     let t = tens
         .get(n / 10)
         .copied()
@@ -1360,6 +1373,11 @@ fn build_tree(td: &tempfile::TempDir, source: &std::path::Path) {
     write(root, "main/driver/config.json", &driver_cell());
     copy_cells(source, &root.join("main/agent"));
     write(root, "main/agent/talky/config.json", &talky_cell());
+    // GH #709: the second keeper is a ref too, and a ref this tree cannot resolve leaves
+    // the level unbootable. It is doubled with the SAME script as its sibling, because
+    // nothing in this file drives the chat channel -- what is measured here is the
+    // spoken road, and the typed one has its own file.
+    write(root, "main/agent/talky-chat/config.json", &talky_cell());
     write(root, "main/agent/cogny/config.json", &cogny_cell());
     write(root, "main/agent/tools/config.json", &tools_cell());
     std::fs::write(root.join(".env"), "").unwrap();
@@ -1679,7 +1697,7 @@ async fn a_core_tool_call_reaches_the_tool_surface_exactly_once() {
 }
 
 /// #303's acceptance, read after GH #454 moved the subject: a second channel
-/// costs this level NOTHING AT ALL.
+/// costs this level NOTHING AT ALL — unless it asks for a voice of its own.
 ///
 /// #303's ruling was that the fan-in edges between the container and its
 /// siblings are internal edges of the TEMPLATE, so a second channel cost two
@@ -1694,6 +1712,13 @@ async fn a_core_tool_call_reaches_the_tool_surface_exactly_once() {
 /// tree: two channels and twenty produce the same file, because the file does
 /// not mention a channel anywhere. A count that grew per channel would have to
 /// grow HERE, and there is nothing here for it to grow.
+///
+/// GH #709 is the one exception, and it is stated rather than hidden: a channel that
+/// asks for a TALKY of its own costs this level a ref and its twin edges, because a
+/// keeper is a node and a node is an endpoint. What stays free is everything else — the
+/// door a screened turn arrives on is still one per keeper and never one per channel,
+/// the exit an answer leaves on is still one, and the word `chat` appears in this file
+/// only as the value of a context key, never as a path.
 #[test]
 fn a_second_channel_costs_this_level_nothing_at_all() {
     let Some(root) = shipped() else { return };
@@ -1712,9 +1737,9 @@ fn a_second_channel_costs_this_level_nothing_at_all() {
             assert!(
                 endpoint == "." || SIBLINGS.contains(&endpoint.as_str()),
                 "the edge {} -> {} touches {endpoint:?}, which is neither this level's own \
-                 path nor one of its three occupants {SIBLINGS:?}. A fourth endpoint is a \
-                 node the level would have to be filled with — and the level is complete at \
-                 birth.",
+                 path nor one of its occupants {SIBLINGS:?}. A further endpoint is a node \
+                 the level would have to be FILLED with — and the level is complete at \
+                 birth, keepers included.",
                 e.from,
                 e.to
             );

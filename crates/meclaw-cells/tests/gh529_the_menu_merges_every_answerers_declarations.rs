@@ -469,9 +469,13 @@ fn every_declaration_answer_in_the_shipped_assistant_names_its_answerer() {
         .collect();
     assert_eq!(
         answers.len(),
-        3,
-        "two answerers reach the surface's and the core's menus: the tool hive answers \
-         both callers and the core answers the surface: {answers:#?}"
+        5,
+        "two answerers reach the menus of the three askers: the tool hive answers all \
+         three callers and the core answers the two conversation keepers. Three of the \
+         five were the whole set until GH #709 gave the channel `chat` a keeper of its \
+         own -- the return edges are told apart by `context.tool_caller` exactly as they \
+         already were, so a menu comes back to the keeper that asked for it and never to \
+         the other: {answers:#?}"
     );
     for e in &answers {
         let who = e["modifier"]["set_context"]["tool_answerer"]
@@ -487,31 +491,36 @@ fn every_declaration_answer_in_the_shipped_assistant_names_its_answerer() {
         );
     }
 
-    let asks: Vec<&Value> = edges
-        .iter()
-        .filter(|e| {
-            e["from"] == json!("./talky")
-                && e["condition"]
-                    .as_str()
-                    .is_some_and(|c| c.contains("hop.route == 'schemas'"))
-        })
-        .collect();
-    assert_eq!(
-        asks.len(),
-        3,
-        "the surface asks both occupants AND the level's rim what they serve — the tool hive \
-         has nothing under `consult_cogny`, the core has nothing under the search tools, the \
-         member's memory has nothing under any of them, and since #529 none of those is a \
-         finding: {asks:#?}"
-    );
-    let mut targets: Vec<&str> = asks.iter().map(|e| e["to"].as_str().unwrap()).collect();
-    targets.sort_unstable();
-    assert_eq!(
-        targets,
-        vec![".", "./cogny", "./tools"],
-        "the third one leaves the level, because a memory belongs to the MEMBER and not to \
-         one of its generations (GH #552)"
-    );
+    // Both conversation keepers ask, and each asks the same three places. Since GH #709
+    // the level holds one talky per channel that asks for its own, and a keeper that did
+    // not ask would run on a menu somebody else's round had merged.
+    for surface in ["./talky", "./talky-chat"] {
+        let asks: Vec<&Value> = edges
+            .iter()
+            .filter(|e| {
+                e["from"] == json!(surface)
+                    && e["condition"]
+                        .as_str()
+                        .is_some_and(|c| c.contains("hop.route == 'schemas'"))
+            })
+            .collect();
+        assert_eq!(
+            asks.len(),
+            3,
+            "{surface} asks both occupants AND the level's rim what they serve — the tool \
+             hive has nothing under `consult_cogny`, the core has nothing under the search \
+             tools, the member's memory has nothing under any of them, and since #529 none \
+             of those is a finding: {asks:#?}"
+        );
+        let mut targets: Vec<&str> = asks.iter().map(|e| e["to"].as_str().unwrap()).collect();
+        targets.sort_unstable();
+        assert_eq!(
+            targets,
+            vec![".", "./cogny", "./tools"],
+            "the third one leaves the level, because a memory belongs to the MEMBER and not \
+             to one of its generations (GH #552)"
+        );
+    }
 
     assert!(
         !edges.iter().any(|e| e["condition"]

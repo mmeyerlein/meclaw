@@ -415,7 +415,9 @@ fn the_shell_draws_the_edge_no_other_level_could() {
     // (GH #556) and is now the front door's.
     assert_eq!(
         read("templates/meclaw-os/builder/config.json")["cell"]["template"],
-        "builder@1.10.0"
+        // 1.11.0 since GH #709: the `grow_level` recipe renders a screen's down-edge
+        // for `withdraw` beside `view`. The shell pin moves with the occupant.
+        "builder@1.11.0"
     );
     assert_eq!(
         read("templates/meclaw-os/operator/config.json")["cell"]["template"],

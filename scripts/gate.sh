@@ -362,6 +362,21 @@ else
                  printf '%s\n' "$dirty_files"; } | sed '/^$/d' | sort -u)
 fi
 
+# Say which commit the diff was taken against, and how wide it came out. The
+# plan is only ever as good as this base: a strand branched from a tip that
+# already carries half its own work plans for the other half, leaves the locks
+# that read the untouched files unrun, and still reports GREEN -- which is how
+# two `templates/assistant/config.json` locks reached the integration branch
+# red (GH #713). The number is the file count the resolver is about to read.
+changed_n=$(printf '%s\n' "$changed" | sed '/^$/d' | wc -l | tr -d ' ')
+changed_unit="files"
+[ "$changed_n" = 1 ] && changed_unit="file"
+if [ "$full_scope" = 1 ]; then
+    echo "gate: base = full tree ($changed_n $changed_unit)"
+else
+    echo "gate: base = $(git rev-parse --short "$base" 2>/dev/null || printf '%s' "$base") ($changed_n $changed_unit)"
+fi
+
 # --- the plan ---------------------------------------------------------------
 if [ -n "${MECLAW_GATE_PLAN:-}" ]; then
     plan_tsv=$(cat "$MECLAW_GATE_PLAN")
