@@ -244,16 +244,25 @@ pub fn apply(
         } => (*network, filesystem, *limits, *syscalls),
     };
 
-    let abi = landlock_abi().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::Unsupported,
-            "params.sandbox declares trust \"restricted\" but this kernel has no Landlock \
-             (needs Linux 5.13+ with the LSM enabled); refusing to run the cell unsandboxed",
-        )
-    })?;
-
-    let handled = handled_access_fs(abi);
-    let fds = open_allowed_paths(filesystem, network, handled)?;
+    // Landlock is asked for only when a view was declared (GH #766). A profile
+    // that declares a cap alone installs no ruleset, so a kernel without the
+    // LSM is not a reason to refuse it -- and refusing it would say "this host
+    // cannot enforce your profile" about a profile the host enforces fully.
+    let view = match filesystem {
+        Some(fs) => {
+            let abi = landlock_abi().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "params.sandbox declares a filesystem view but this kernel has no Landlock \
+                     (needs Linux 5.13+ with the LSM enabled); refusing to run the cell \
+                     unsandboxed",
+                )
+            })?;
+            let handled = handled_access_fs(abi);
+            Some((handled, open_allowed_paths(fs, network, handled)?))
+        }
+        None => None,
+    };
 
     // The cap is state outside the process, so it is created here, in the
     // parent, and owned by the returned scope. A failure to create it fails the
@@ -292,15 +301,28 @@ pub fn apply(
             if let Some(fd) = procs_raw {
                 super::cgroup::join_via(fd)?;
             }
-            if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
+            // `no_new_privs` is the precondition of the two mechanisms below
+            // and of nothing else, so it is set for them and not for every
+            // `restricted` profile (GH #766). Measured 18.09.2026:
+            // `snap-confine`, the launcher of a snap-packaged browser, does not
+            // start under it -- and a packaged browser is exactly the child
+            // that asks for neither Landlock nor a filter, because it brings
+            // its own.
+            if (view.is_some() || filter.is_some())
+                && libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0
+            {
                 return Err(io::Error::last_os_error());
             }
             // Before Landlock: creating the namespaces needs no filesystem
-            // access, and doing it first keeps the ordering obvious.
+            // access, and doing it first keeps the ordering obvious. It is
+            // independent of the flag above: `unshare` asks for no privilege
+            // this process is about to drop.
             if network == NetworkPolicy::Deny {
                 unshare_network()?;
             }
-            restrict_self(handled, &fds)?;
+            if let Some((handled, fds)) = view.as_ref() {
+                restrict_self(*handled, fds)?;
+            }
             // Last, and deliberately so: everything above is a syscall the
             // filter would have to allow, and a filter installed before them
             // would only be a longer allow-list. From here on nothing else in

@@ -249,24 +249,32 @@ fn bootstrap_root(font_base: Option<&str>) -> Option<Value> {
     );
     let answer: Value =
         meclaw_core::serde_json::from_slice(&out.stdout).expect("the answer is JSON");
-    // A read pass answers with SEVERAL emissions since 2.5.0: the patch, and the store
-    // bundle that writes the state row back (OR-H2). The patch is the one on `patch`.
+    // A read pass answers with SEVERAL emissions since 2.5.0: the store bundle that
+    // writes the state row back (OR-H2), and beside it the judge's question or a timer
+    // order. Since GH #765 (way A) the patch is not among them: the calls the pass
+    // computed ride the state write's own request and are drawn from its reply, once the
+    // store has said the row landed.
     let emissions: Vec<Value> = match answer {
         Value::Array(list) => list,
         one => vec![one],
     };
-    let patch = emissions
+    let drawn = emissions
         .iter()
-        .find(|e| e["header"]["route"] == "patch")
-        .expect("a bootstrap answers with a bundle");
-    let root = patch["messages"]
-        .as_array()
-        .expect("a bundle has messages")
-        .iter()
-        .map(|turn| -> Value {
-            meclaw_core::serde_json::from_str(turn["text"].as_str().expect("a call"))
-                .expect("a call is JSON")
+        .find_map(|em| {
+            if em["header"]["route"] != "views" {
+                return None;
+            }
+            let request: Value =
+                meclaw_core::serde_json::from_str(em["header"]["display_request"].as_str()?)
+                    .expect("a request is JSON");
+            if request["state"] != json!(true) {
+                return None;
+            }
+            Some(request["patch"].as_array().cloned().unwrap_or_default())
         })
+        .expect("a bootstrap answers with a state write that carries its drawing");
+    let root = drawn
+        .into_iter()
         .find(|call| call["op"] == "object.create" && call["id"] == "display.root")
         .expect("the bootstrap creates the root");
     Some(root)

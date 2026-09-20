@@ -34,6 +34,40 @@ impl SandboxScope {
     pub fn empty() -> Self {
         Self
     }
+
+    /// Always `None`: no cgroup was created, because there are none here.
+    pub fn dir(&self) -> Option<&std::path::Path> {
+        None
+    }
+}
+
+/// The same shape as on Linux, for a witness that never exists here.
+pub type OomWitness = (std::path::PathBuf, u64);
+
+/// Always `None`: cgroup v2 is a Linux mechanism, so no process sits in one.
+pub fn cgroup_of(_pid: u32) -> Option<std::path::PathBuf> {
+    None
+}
+
+/// Always `None`: without a cgroup there is no `memory.events` to count.
+pub fn oom_kills(_dir: &std::path::Path) -> Option<u64> {
+    None
+}
+
+/// Always a refusal (GH #766): a declared ceiling cannot be placed off Linux,
+/// and an unplaced ceiling is never silently dropped.
+pub async fn follow_process(
+    _pid: u32,
+    _owned: Option<&std::path::Path>,
+    _limits: &super::profile::ResourceLimits,
+    _budget: std::time::Duration,
+) -> io::Result<Option<OomWitness>> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "params.sandbox.limits declares a ceiling, and cgroup v2 — the only mechanism that \
+         enforces one — is a Linux mechanism; declare params.sandbox {\"trust\": \"trusted\"} \
+         to run without one",
+    ))
 }
 
 /// Always `false`: cgroup v2 is a Linux mechanism.

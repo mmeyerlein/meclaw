@@ -1,0 +1,131 @@
+{
+  "ruling": "R-P3",
+  "decided": "2026-09-19",
+  "title": "Wave retro -- the ten numbers",
+  "title_de": "Wellen-Retro — die zehn Kennzahlen",
+  "note": "A breach is a finding, never a blocker. Thresholds change by ruling only, and the ruling carries a date.",
+  "note_de": "Ein Verstoß ist ein Befund, nie ein Blocker. Schwellen ändern sich nur per Ruling, und das Ruling trägt ein Datum.",
+  "metrics": [
+    {
+      "id": "Q1",
+      "title": "gate runs per strand",
+      "title_de": "Gate-Läufe je Strang",
+      "unit": "runs",
+      "cmp": "<=",
+      "threshold": 1.5,
+      "source": "gate runs of the strand's own archive and the GATE-SUMMARY lines on its own commits",
+      "source_de": "Gate-Läufe aus dem Archiv des Strangs und den GATE-SUMMARY-Zeilen auf seinen eigenen Commits",
+      "advice": "Every run beyond the first is a second opinion on the same commit: pull the cheap form checks in front of the lock.",
+      "advice_de": "Jeder Lauf ab dem zweiten ist eine zweite Meinung zum selben Commit: die billigen Form-Prüfungen vor den Lock ziehen."
+    },
+    {
+      "id": "Q2",
+      "title": "red runs the strand did not cause",
+      "title_de": "fremdverschuldete rote Läufe",
+      "unit": "%",
+      "cmp": "<=",
+      "threshold": 25,
+      "source": "red strand runs whose own section names drift, a flake or a foreign session and no failure of the strand's own",
+      "source_de": "rote Strang-Läufe, deren eigener Abschnitt Basis-Drift, Flake oder fremde Session nennt und keinen eigenen Fehler",
+      "advice": "A gate that goes red for someone else's reason teaches the builder to ignore it: pin the drifting source, quarantine the measured flake.",
+      "advice_de": "Ein Gate, das aus fremdem Grund rot wird, erzieht den Bauer zum Wegsehen: die driftende Quelle verplomben, die gemessene Flake in die Quarantäne."
+    },
+    {
+      "id": "Q3",
+      "title": "gate and lock share of strand wall clock",
+      "title_de": "Gate + Lock am Strang-Wanduhr-Anteil",
+      "unit": "%",
+      "cmp": "<=",
+      "threshold": 25,
+      "source": "summed gate and lock-wait seconds over the wall clock of the strands, builder dispatch to the last turn of review or fix round",
+      "source_de": "Summe der Gate- und lock-wait-Sekunden über der Strang-Wanduhr, Bauer-Dispatch bis zum letzten Turn von Review oder Fix-Runde",
+      "advice": "Over a quarter of the wave spent waiting on the runner means the queue, not the build, sets the pace.",
+      "advice_de": "Mehr als ein Viertel der Welle im Warten auf den Runner heißt: die Schlange gibt den Takt vor, nicht der Bau."
+    },
+    {
+      "id": "Q4",
+      "title": "fix round against first build",
+      "title_de": "Fix-Runde gegen Erstbau",
+      "unit": "ratio",
+      "cmp": "<=",
+      "threshold": 1.0,
+      "source": "wall clock of the fix rounds of a strand -- later sections of the builder plus its own fix-round agents -- over the first build",
+      "source_de": "Wanduhr der Fix-Runden eines Strangs — spätere Abschnitte des Bauers plus eigene Fix-Runden-Agenten — geteilt durch den Erstbau",
+      "advice": "A fix round longer than the build means the review found the design, not the detail: brief harder, review earlier.",
+      "advice_de": "Eine Fix-Runde länger als der Bau heißt: der Review fand den Entwurf, nicht das Detail — schärfer briefen, früher reviewen."
+    },
+    {
+      "id": "Q5",
+      "title": "form findings among all review findings",
+      "title_de": "Form-Funde an allen Review-Funden",
+      "unit": "%",
+      "cmp": "<=",
+      "threshold": 30,
+      "source": "findings in the wave's review documents, classified by wording vocabulary",
+      "source_de": "Funde in den Review-Dokumenten der Welle, klassifiziert über ein Form-Vokabular",
+      "advice": "Wording, changelog lines and comment nits belong in a mechanical pre-check, not in a human review round.",
+      "advice_de": "Wortlaut, CHANGELOG-Zeilen und Kommentar-Nits gehören in eine mechanische Vorprüfung, nicht in eine Review-Runde."
+    },
+    {
+      "id": "Q6",
+      "title": "builder peak context and large cache creations",
+      "title_de": "Bauer-Spitzenkontext und große Cache-Neuanlagen",
+      "unit": "tokens / count",
+      "cmp": "<=",
+      "threshold": 250000,
+      "threshold_secondary": 2,
+      "source": "peak of input+cache_creation+cache_read per turn, de-duplicated by requestId",
+      "source_de": "Spitze aus input+cache_creation+cache_read je Turn, dedupliziert über requestId",
+      "advice": "A builder past the quarter-million mark re-reads its own history every turn: hand the fix round to a fresh agent with report and review as input.",
+      "advice_de": "Ein Bauer jenseits der Viertelmillion liest jeden Turn seine eigene Geschichte nach: die Fix-Runde bekommt ein frischer Agent mit Bericht und Review als Eingabe."
+    },
+    {
+      "id": "Q7",
+      "title": "polls on a running job",
+      "title_de": "Polls auf einen laufenden Job",
+      "unit": "calls",
+      "cmp": "<=",
+      "threshold": 0,
+      "source": "every look at a log, a gate station log or a background task's output, plus every sleep and idle echo",
+      "source_de": "jeder Blick auf ein Log, ein Gate-Stationslog oder die Ausgabe eines Hintergrund-Laufs, plus jedes sleep und echo idle",
+      "advice": "A long run belongs in the background with a notification; a second read of the same log is context paid for nothing.",
+      "advice_de": "Ein langer Lauf gehört in den Hintergrund mit Benachrichtigung; die zweite Lesung desselben Logs ist Kontext für nichts."
+    },
+    {
+      "id": "Q8",
+      "title": "repeated rule sentences in dispatch prompts",
+      "title_de": "wiederholte Regel-Sätze in Dispatch-Prompts",
+      "unit": "%",
+      "cmp": "<=",
+      "threshold": 5,
+      "source": "median share of words in sentences that appear in several dispatch prompts of the wave",
+      "source_de": "Median-Anteil der Wörter in Sätzen, die in mehreren Dispatch-Prompts der Welle vorkommen",
+      "advice": "A rule copied into every prompt drifts into variants: one preamble, and the prompt points at it.",
+      "advice_de": "Eine in jeden Prompt kopierte Regel zerfällt in Varianten: eine Präambel, und der Prompt verweist darauf."
+    },
+    {
+      "id": "Q9",
+      "title": "idle time per strand",
+      "title_de": "Liegezeit je Strang",
+      "unit": "min",
+      "cmp": "<=",
+      "threshold": 30,
+      "source": "median over strands of the gaps above five minutes between two turns",
+      "source_de": "Median über die Stränge der Lücken über fünf Minuten zwischen zwei Turns",
+      "advice": "Idle time is the cheapest thing a wave can lose: dispatch the next question before the last one is answered.",
+      "advice_de": "Liegezeit ist das Billigste, was eine Welle verlieren kann: die nächste Frage rausgeben, bevor die letzte beantwortet ist."
+    },
+    {
+      "id": "Q10",
+      "title": "orchestrator share of all context read",
+      "title_de": "Orchestrator-Anteil am gelesenen Kontext",
+      "unit": "%",
+      "cmp": "<=",
+      "threshold": 15,
+      "source": "context read by the orchestrator session over the context read by the whole wave",
+      "source_de": "gelesener Kontext der Orchestrator-Sitzung über dem gelesenen Kontext der ganzen Welle",
+      "advice": "An orchestrator that reads a sixth of the wave is doing strand work: delegate the reading, keep the decision.",
+      "advice_de": "Ein Orchestrator, der ein Sechstel der Welle liest, macht Strang-Arbeit: das Lesen delegieren, die Entscheidung behalten."
+    }
+  ]
+}

@@ -19,7 +19,7 @@ mod support;
 
 use meclaw_core::serde_json::{Value, json};
 use support::{
-    Screen, apply, calls, component_view, library_ships, pane, put_state, raw, window_id,
+    Screen, apply, component_view, drawn, library_ships, pane, put_state, raw, window_id,
 };
 
 /// One pass whose plan also carries `struck`: the id of the order this pass arrives as
@@ -45,7 +45,8 @@ fn struck_pass(screen: &mut Screen, event: Value, now: u64, struck: &str) -> Vec
         }},
     });
     let emissions = raw(&doc);
-    let patch = calls(&emissions);
+    // GH #765 (way A): the patch rides the state write and is drawn from its reply.
+    let patch = drawn(&emissions);
     apply(&mut screen.held, &patch);
     for em in &emissions {
         let request = em["header"]["display_request"].as_str().unwrap_or("");

@@ -200,15 +200,26 @@ fn only(mut out: Vec<Value>) -> Value {
     out.remove(0)
 }
 
-/// The one `patch` of a read pass. Since the due clock (GH #679) the pass may
-/// carry timer orders beside it; the patch is what the display gets.
-fn patch_of(out: Vec<Value>) -> Value {
-    let mut patches: Vec<Value> = out
-        .into_iter()
-        .filter(|e| e["header"]["route"] == "patch")
-        .collect();
-    assert_eq!(patches.len(), 1, "exactly one patch: {patches:#?}");
-    patches.remove(0)
+/// The `object.*` calls the pass handed to its own state write (GH #765, way A).
+///
+/// A pass draws nothing of its own any more: the calls ride the state write's request and
+/// are emitted from the reply, once the store has said the row landed. What a pass would
+/// draw is therefore read off that request.
+fn drawn_of(emissions: &[Value]) -> Vec<Value> {
+    for em in emissions {
+        if em["header"]["route"] != "views" {
+            continue;
+        }
+        let request: Value = match em["header"]["display_request"].as_str() {
+            Some(text) => meclaw_core::serde_json::from_str(text).expect("a request is JSON"),
+            None => continue,
+        };
+        if request["state"] != json!(true) {
+            continue;
+        }
+        return request["patch"].as_array().cloned().unwrap_or_default();
+    }
+    Vec::new()
 }
 
 /// Drive pass 1 and read the request it put on the hop.
@@ -338,7 +349,7 @@ impl Screen {
                 }
             }
         }
-        let calls = calls_of(&patch_of(out));
+        let calls = drawn_of(&out);
         support::apply(&mut self.held, &calls);
         calls
     }

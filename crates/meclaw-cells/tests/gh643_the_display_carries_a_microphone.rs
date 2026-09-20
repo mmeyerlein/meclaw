@@ -163,7 +163,7 @@ async fn the_page_carries_the_hook_the_mount_and_the_topic() {
         }),
     );
     copy_tree(&repo("templates/display"), &root.join("main/screen"));
-    // The display refs `web@2.0.4`, so the template it grows from has to be on
+    // The display refs `web@2.1.0`, so the template it grows from has to be on
     // disk before the boot resolves the ref (GH #424).
     copy_tree(&repo("templates/web"), &root.join("templates/web"));
     patch(&root.join("main/screen/web/config.json"), |v| {
@@ -328,7 +328,7 @@ fn the_template_says_it_carries_a_microphone() {
     }
     let template = read_json(&repo("templates/display/template.json"));
     assert_eq!(
-        template["version"], "2.5.0",
+        template["version"], "2.6.0",
         "the screen shipped the microphone at 1.2.0 — a new component is a \
          minor version — moved to 2.0.0 when its own port went with \
          `web@2.0.0`, to 2.0.1 for what the button says while it waits \
@@ -352,7 +352,11 @@ fn the_template_says_it_carries_a_microphone() {
          long it lingers (GH #702), and to 2.5.0 for the curator that is \
          the reference model of the description: one state row, the two events \
          `tap` and `hold`, and a rendering per named output (GH #707) -- \
-         new abilities both times, a minor version"
+         new abilities both times, a minor version -- and to 2.5.1 for a \
+         curator that runs one message at a time (GH #765), a repair, and to \
+         2.6.0 because a patch now leaves only after the state row landed \
+         (GH #765, way A): what a browser is told is what the store agreed to, \
+         which changes when every screen draws and is therefore the SECOND digit"
     );
     let purpose = template["description"]["purpose"]
         .as_str()
@@ -367,7 +371,7 @@ fn the_template_says_it_carries_a_microphone() {
     // own.
     let readme = std::fs::read_to_string(repo("templates/display/README.md")).expect("README");
     assert!(
-        readme.starts_with("# `display@2.5.0`"),
+        readme.starts_with("# `display@2.6.0`"),
         "the README heads with the version it describes"
     );
     assert!(

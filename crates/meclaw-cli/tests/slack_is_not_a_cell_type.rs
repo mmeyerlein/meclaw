@@ -31,9 +31,14 @@ fn slack_did_not_add_a_cell_type() {
     let reg = built_in_factories(std::sync::Arc::new(meclaw_colony::SurfaceRegistry::new()));
     assert_eq!(
         reg.len(),
-        16,
+        17,
         "a cell type was added or removed — if that was deliberate, say why here; \
-         a chat platform in particular is params.platform on proxy, never a type"
+         a chat platform in particular is params.platform on proxy, never a type. \
+         The seventeenth is `browser` (GH #766, ADR-0044): a browser holds a \
+         child process, its own contexts and a picture per page, and the nearest \
+         neighbour `web` serves a page rather than driving one — the opposite \
+         direction and a different lifetime, which is the same reasoning that \
+         made the display a type of its own."
     );
     assert!(
         reg.contains_key("proxy"),

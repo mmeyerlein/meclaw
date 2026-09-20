@@ -105,4 +105,8 @@ Long-running, serving under the mount named in its own `params` and holding its 
 
 Long-running, built like `web` with audio instead of a page: one WebSocket connection is one client. Audio terminates in the I/O half and no sample ever enters a mailbox, because a message here is a routed, logged JSON body and a stream of samples is not. What travels inwards is text turns, what travels back out is speech. One instance per member is the shape; `voice` is the template, and `freeswitch` puts a telephone in front of it. Since `voice@1.5.0` the page you are looking at can carry the call: a `display` joins a `voice:<call>` topic on its own socket and the frames reach the voice cell without a second connection.
 
+### [`browser`](cell-types.md#browser-one-browser-per-member)
+
+Long-running, built like `voice` with a browser instead of a call: one Chromium-based browser per member, a browser context per identity, a page per card. The picture of a page goes out on a `page:<page>` topic of a display's own socket, and pointers, wheels, keys and text come back on the same link, so a frame never becomes a message. The browser itself is a prerequisite out of the machine's package system, and one whose own sandbox does not hold does not start.
+
 Two things on this page are substrate rather than cell type, and both are documented once for all types: the `transfer` slot that every cell with a `cell.db` answers, in [`cell-types.md`](cell-types.md#content-transfer-through-the-transfer-body-slot), and the universal body format they consume and emit, in [`meclaw-overview.md`](meclaw-overview.md#body-format-universal).

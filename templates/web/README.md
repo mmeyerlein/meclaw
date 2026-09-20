@@ -1,4 +1,4 @@
-# `web@2.0.4`
+# `web@2.1.0`
 
 A display as one cell, with a name of its own. One `web` cell, one `cell.db`,
 one mount on the colony's listener, and a token stylesheet in the visionOS
@@ -66,6 +66,30 @@ window the client had already closed optimistically sprang open again for those
 5 ms. Two routes still hear two frames, one each -- one output is never handed
 another's slots.
 
+## Topics on the socket that are not this page
+
+The socket a page holds carries the page's own `lv:` topic and, since
+`web@2.1.0`, **two kinds** of topic that belong to other cells entirely. The
+loop does not interpret either: it asks the process's mount table for a link,
+forwards text one way and binary the other, and repeats a close with its code.
+A wrong frame therefore produces the refusal the cell behind the mount wrote,
+not one invented on the way.
+
+| prefix | default mount | binary out of the cell | binary from the client | per socket |
+|---|---|---|---|---|
+| `voice:<call>` | `voice` | `audio` | `audio` | 4 |
+| `page:<page>` | `browser` | `image` | none | 8 |
+
+A binary frame from the client on a `page:` topic is dropped: a page sends
+pointers, wheels and keys as text, and a picture only ever travels the other
+way. The count is kept **per kind** -- `too many voice topics on this socket`
+and `too many page topics on this socket` are two different refusals -- so a
+screen already holding four calls can still open a window.
+
+The join payload is flat. `mount` chooses the door; everything else the door
+hands to the cell unread, one level deep, so a `page:` join brings its viewport
+and the socket learns nothing about what a viewport is.
+
 ## What it serves, and where
 
 The cell owns everything under `/<mount>/`. Four things answer there, and the
@@ -128,7 +152,7 @@ second display takes its own. The template is one cell, so `override_params`
 takes the flat form -- there is no path inside it to address:
 
 ```json
-{"name": "web-two", "template": "web@2.0.4",
+{"name": "web-two", "template": "web@2.1.0",
  "override_params": {"mount": "screen"}}
 ```
 

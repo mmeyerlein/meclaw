@@ -520,3 +520,208 @@ fn every_state_write_moves_the_row_it_compares_against() {
         );
     }
 }
+
+/// GH #765, way A (the owner's ruling, 19.09.): the client gets the patch only once the
+/// state row has landed.
+///
+/// The compare-and-set above keeps the STORE right. It did nothing for the browsers: the
+/// pass sent its patch in the same breath as its write, so a pass whose write was refused
+/// had already drawn a state that never became the screen's — 190 of 401 measured writes
+/// were refused, and every one of them had patched. What the person saw was a window that
+/// flashed open and shut, and the client-side hold of GH #744 was the brake against it.
+///
+/// So the patch rides the write's own request and is emitted from the REPLY: `rows_affected
+/// 1` draws it, `rows_affected 0` draws nothing at all and repeats the pass instead. The
+/// price is one message round trip of latency per event, and it is the point rather than a
+/// cost — a drawing that is never taken back is worth a round trip.
+#[test]
+fn the_patch_waits_for_the_state_row() {
+    if !library_ships() {
+        return;
+    }
+    let mut screen = Screen::new(json!({}));
+    screen.write(
+        component_view(
+            "a",
+            "main",
+            pane("a", json!({"context": "work", "relevance": "0.5"})),
+        ),
+        1000,
+    );
+
+    // --- the pass itself draws nothing ---------------------------------------
+    assert!(
+        screen.last.iter().all(|e| e["header"]["route"] != "patch"),
+        "the pass sent its patch before its write had landed: {:?}",
+        screen.last
+    );
+    let birth = state_write(&screen.last);
+    let request = request_of(&birth);
+    let carried = request["patch"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the write carries the patch it owes: {request}"));
+    assert!(
+        !carried.is_empty(),
+        "a pass that rendered something carries its calls: {request}"
+    );
+
+    // --- the write lands, and THEN the browsers hear it -----------------------
+    let landed = write_reply(&screen, &birth, 1);
+    let drawn: Vec<&Value> = landed
+        .iter()
+        .filter(|e| e["header"]["route"] == "patch")
+        .collect();
+    assert_eq!(
+        drawn.len(),
+        1,
+        "the landed write draws exactly one patch: {landed:?}"
+    );
+    let sent: Vec<Value> = drawn[0]["messages"]
+        .as_array()
+        .expect("a bundle has messages")
+        .iter()
+        .map(|turn| {
+            meclaw_core::serde_json::from_str(turn["text"].as_str().expect("a call"))
+                .expect("a call is JSON")
+        })
+        .collect();
+    assert_eq!(
+        sent,
+        carried.clone(),
+        "and it draws what the pass computed, call for call -- nothing is recomputed on \
+         the reply: {landed:?}"
+    );
+
+    // --- a refused write draws nothing and repeats ----------------------------
+    let window = window_id("alex", "a");
+    screen.pass(json!({"kind": "tap", "for": window.as_str()}), 2000);
+    let tap = state_write(&screen.last);
+    let refused = refused_write(&screen, &request_of(&tap));
+    assert!(
+        refused.iter().all(|e| e["header"]["route"] != "patch"),
+        "a refused write may not draw: the state it rendered never became the screen's \
+         (GH #765, way A): {refused:?}"
+    );
+    assert_eq!(
+        refused.len(),
+        1,
+        "one answer per refused write: {refused:?}"
+    );
+    assert_eq!(
+        refused[0]["header"]["route"], "views",
+        "what it does instead is run its own pass again: {refused:?}"
+    );
+    assert!(
+        request_of(&refused[0])["patch"].is_null(),
+        "and the repeat carries no patch of its own -- the next pass computes it fresh on \
+         the row the store now holds: {refused:?}"
+    );
+}
+
+/// The store's reply to a state write that says nothing about the row it moved.
+///
+/// Neither `results[]` nor the hop names an `update` leg. A reply of this shape is what a
+/// truncated, foreign or future answer looks like from inside the cell — it is not an
+/// error (nothing carries an `error_code`), it simply does not say whether the row landed.
+fn mute_write_reply(screen: &Screen, request: &Value) -> Vec<Value> {
+    let doc = json!({
+        "params": screen.params,
+        "body": {
+            "messages": [{
+                "origin": "tool", "type": "tool_result", "id": "s-update", "text": "null",
+            }],
+        },
+        "envelope": {"header": {
+            "hop": {},
+            "context": {"display_origin": "views",
+                        "display_request": request.to_string()},
+        }},
+    });
+    raw(&doc)
+}
+
+/// The store's reply to the BIRTH bundle: `delete` then `insert`, answered per leg.
+///
+/// The first creation has no version to compare against, so it is the two-leg bundle of
+/// `state_write_ops` and the store answers it in `results[]` with `operation: "bundle"` on
+/// the hop (`crates/meclaw-cells/src/store/output.rs`, `build_bundle_result`).
+fn birth_reply(screen: &Screen, emission: &Value) -> Vec<Value> {
+    let request = emission["header"]["display_request"]
+        .as_str()
+        .expect("the state write names itself on the hop");
+    let doc = json!({
+        "params": screen.params,
+        "body": {
+            "messages": [{
+                "origin": "tool", "type": "tool_result", "id": "s-insert", "text": "null",
+            }],
+            "results": [
+                {"tool_call_id": "s-delete", "operation": "delete",
+                 "rows_affected": 0, "duration_ms": 1},
+                {"tool_call_id": "s-insert", "operation": "insert",
+                 "rows_affected": 1, "duration_ms": 1},
+            ],
+        },
+        "envelope": {"header": {
+            "hop": {"operation": "bundle", "rows_affected": 1},
+            "context": {"display_origin": "views", "display_request": request},
+        }},
+    });
+    raw(&doc)
+}
+
+/// GH #765, way A: "the store did not say" is not "the store agreed".
+///
+/// The landing check is the whole of way A — a patch may leave only once the row it
+/// renders stands in the store. A check that draws whenever it cannot read a refusal
+/// inverts that promise for every reply it cannot parse: a truncated body, a hop without
+/// the leg it expects, a store that answers in a shape this cell does not know. None of
+/// those carry an `error_code`, so `bundle_failed` lets them through, and "unknown" then
+/// means "drawn" — which is precisely the state way A forbids to leave the cell.
+///
+/// So the branch is positive on both spellings and on nothing else: the update that moved
+/// its one row, and the birth bundle that inserted it. Everything else draws nothing and
+/// runs the pass again on the row the store now holds.
+#[test]
+fn a_reply_that_does_not_say_does_not_draw() {
+    if !library_ships() {
+        return;
+    }
+    let mut screen = Screen::new(json!({}));
+    screen.write(
+        component_view(
+            "a",
+            "main",
+            pane("a", json!({"context": "work", "relevance": "0.5"})),
+        ),
+        1000,
+    );
+
+    // --- the birth is recognised by its OWN legs, not by the absence of an update ------
+    let birth = state_write(&screen.last);
+    let born = birth_reply(&screen, &birth);
+    assert!(
+        born.iter().any(|e| e["header"]["route"] == "patch"),
+        "the birth bundle lands with `insert`, and a landed birth draws: {born:?}"
+    );
+
+    // --- a reply that names no leg at all draws nothing and repeats --------------------
+    let window = window_id("alex", "a");
+    screen.pass(json!({"kind": "tap", "for": window.as_str()}), 2000);
+    let tap = state_write(&screen.last);
+    let mute = mute_write_reply(&screen, &request_of(&tap));
+    assert!(
+        mute.iter().all(|e| e["header"]["route"] != "patch"),
+        "a reply the cell cannot read is not a landing: drawing on it means way A promises \
+         `rows_affected 1` and delivers `anything but 0` (GH #765): {mute:?}"
+    );
+    assert_eq!(mute.len(), 1, "one answer, and it is the repeat: {mute:?}");
+    assert_eq!(
+        mute[0]["header"]["route"], "views",
+        "what it does instead is run its own pass again on the row the store holds: {mute:?}"
+    );
+    assert!(
+        request_of(&mute[0])["patch"].is_null(),
+        "and it carries no patch of its own: {mute:?}"
+    );
+}

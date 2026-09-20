@@ -112,4 +112,8 @@ workshop/evals/.exp-*/
 # workshop/tools puts the module here; nothing else in the tree imports it.
 # The lock beside package.json is CHECKED IN -- `npm ci` reads it and refuses
 # to run without one, and it is what pins the tree under the one dependency.
-/workshop/tools/node_modules/
+# No trailing slash, and that is the point: a pattern ending in `/` matches a
+# DIRECTORY only, and a worktree that borrows the module by symlink would leave
+# the link untracked-but-not-ignored -- one `git add -A` away from a foreign
+# tree in a commit.
+/workshop/tools/node_modules

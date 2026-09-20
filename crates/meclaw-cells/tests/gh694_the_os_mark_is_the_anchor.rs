@@ -48,23 +48,22 @@ fn run(doc: &Value) -> Option<Vec<Value>> {
         one @ Value::Object(_) => vec![one],
         other => panic!("emissions are objects: {other}"),
     };
-    let patches: Vec<&Value> = emissions
-        .iter()
-        .filter(|e| e["header"]["route"] == "patch")
-        .collect();
-    assert!(patches.len() <= 1, "at most one patch: {emissions:?}");
-    Some(match patches.first() {
-        None => Vec::new(),
-        Some(emission) => emission["messages"]
-            .as_array()
-            .expect("a bundle has messages")
-            .iter()
-            .map(|turn| {
-                meclaw_core::serde_json::from_str(turn["text"].as_str().expect("a call"))
-                    .expect("a call is JSON")
-            })
-            .collect(),
-    })
+    // GH #765 (way A): the pass draws nothing of its own -- its calls ride the state
+    // write and are emitted from the reply, once the store has said the row landed. So
+    // what a pass would draw is read off that request.
+    let drawn = emissions.iter().find_map(|em| {
+        if em["header"]["route"] != "views" {
+            return None;
+        }
+        let request: Value =
+            meclaw_core::serde_json::from_str(em["header"]["display_request"].as_str()?)
+                .expect("a request is JSON");
+        if request["state"] != json!(true) {
+            return None;
+        }
+        Some(request["patch"].as_array().cloned().unwrap_or_default())
+    });
+    Some(drawn.unwrap_or_default())
 }
 
 fn read_pass_with(

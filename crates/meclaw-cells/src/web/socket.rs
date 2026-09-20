@@ -14,16 +14,24 @@
 //! R-W8-4b lands here: **a join does no diff work**. It answers from
 //! [`Materialized::packed_tree`], which was built by a write, not by this read.
 //!
-//! # A topic that is not this page (GH #643)
+//! # A topic that is not this page (GH #643, GH #766)
 //!
-//! A topic whose name starts with `voice:` is not a page and is not answered
-//! here at all. The loop asks the process's mount table for a link, forwards
-//! text one way and binary the other, and repeats a close with its code. It
-//! interprets none of it: a frame this loop does not understand is a frame the
-//! cell behind the mount answers, which is why a wrong frame produces the
-//! **cell's** refusal rather than one invented on the way. That is what makes a
-//! second surface reachable in the window a person is already looking at,
-//! without a second port and without a second listener.
+//! A topic whose name starts with one of the prefixes in [`TOPIC_KINDS`] is not
+//! a page and is not answered here at all. The loop asks the process's mount
+//! table for a link, forwards text one way and binary the other, and repeats a
+//! close with its code. It interprets none of it: a frame this loop does not
+//! understand is a frame the cell behind the mount answers, which is why a
+//! wrong frame produces the **cell's** refusal rather than one invented on the
+//! way. That is what makes a second surface reachable in the window a person is
+//! already looking at, without a second port and without a second listener.
+//!
+//! There are two prefixes since GH #766, and the second one is the reason the
+//! three `starts_with` guards became a table: `voice:` carries a call, `page:`
+//! carries a browser page, and everything that differs between them — which
+//! mount a join reaches when it names none, which event a binary frame from the
+//! cell rides on, whether the client may send binary at all, and how many of
+//! them one socket may hold — is a column rather than a branch. The loop still
+//! knows nothing about either: it knows that a prefix names a kind.
 //!
 //! # Which page a socket belongs to
 //!
@@ -74,22 +82,82 @@ pub enum ViewerMsg {
     Close,
 }
 
-/// The topic prefix a link rides on. Everything after it is the call.
-const VOICE_TOPIC: &str = "voice:";
-
-/// The mount a `voice:` join reaches when it names none.
-const DEFAULT_VOICE_MOUNT: &str = "voice";
-
-/// How many live `voice:` links one socket may hold.
+/// One kind of link topic: a prefix and everything that follows from it.
 ///
-/// A `voice:` join presents no session token, by ruling: the socket was opened
-/// by the page, and the door behind the mount has no authentication of its own
-/// either (R-W8-2 on both). What the ruling never sized is the COUNT. Every
-/// accepted join opens a link, and a link starts a recognition session with a
-/// provider that bills for it — so an uncapped map is an unbounded number of
-/// paid sessions per socket. Four is what a screen can plausibly be having at
-/// once, and a page that wants a fifth call gives one up first.
-const MAX_VOICE_LINKS: usize = 4;
+/// A kind is named by its prefix, and the name in an operator-facing sentence
+/// is the prefix without the colon — `too many page topics on this socket`.
+struct TopicKind {
+    /// What a topic of this kind starts with. Everything after it is the
+    /// session: the call for `voice:`, the page for `page:`.
+    prefix: &'static str,
+    /// The mount a join of this kind reaches when it names none.
+    default_mount: &'static str,
+    /// The event a binary frame FROM the cell rides on, on its way to the page.
+    binary_event: &'static str,
+    /// The event a binary frame FROM the client may carry, if any at all.
+    ///
+    /// `None` is a one-way kind: a `page:` client sends pointers and keys as
+    /// text and never a picture, so a binary push on such a topic is dropped
+    /// rather than forwarded. Accepting it would make the socket a way into the
+    /// cell for bytes nothing on the other side knows how to read.
+    client_binary_event: Option<&'static str>,
+    /// How many live links of this kind one socket may hold.
+    max_links: usize,
+}
+
+/// The kinds this loop carries. Closed set, read in order.
+///
+/// The numbers, and why they are not the same: a `voice:` join presents no
+/// session token, by ruling — the socket was opened by the page, and the door
+/// behind the mount has no authentication of its own either (R-W8-2 on both).
+/// What the ruling never sized is the COUNT. Every accepted join opens a link,
+/// and a `voice:` link starts a recognition session with a provider that bills
+/// for it, so an uncapped map is an unbounded number of paid sessions per
+/// socket; four is what a screen can plausibly be having at once, and a page
+/// that wants a fifth call gives one up first. A `page:` link costs a screencast
+/// out of a browser the member already runs, and a screen full of windows is a
+/// plausible thing to look at — eight, the same number the browser cell caps its
+/// pages at (OR-G6, OR-G7). The count is kept PER KIND: a screen with four calls
+/// on it must still be able to open a window.
+const TOPIC_KINDS: &[TopicKind] = &[
+    TopicKind {
+        prefix: "voice:",
+        default_mount: "voice",
+        binary_event: "audio",
+        client_binary_event: Some("audio"),
+        max_links: 4,
+    },
+    TopicKind {
+        prefix: "page:",
+        default_mount: "browser",
+        binary_event: "image",
+        client_binary_event: None,
+        max_links: 8,
+    },
+];
+
+impl TopicKind {
+    /// The kind's name in a sentence an operator reads: the prefix, no colon.
+    fn name(&self) -> &'static str {
+        self.prefix.trim_end_matches(':')
+    }
+}
+
+/// Which kind `topic` belongs to, or `None` for a topic this loop answers itself.
+fn kind_of(topic: &str) -> Option<&'static TopicKind> {
+    TOPIC_KINDS.iter().find(|k| topic.starts_with(k.prefix))
+}
+
+/// How many live links of `kind` this socket holds.
+///
+/// A link the cell already closed does not count: it is absent, which is the
+/// same reading the rejoin path takes of it.
+fn live_of(links: &HashMap<String, TopicLink>, kind: &TopicKind) -> usize {
+    links
+        .iter()
+        .filter(|(topic, held)| topic.starts_with(kind.prefix) && !held.to_cell.is_closed())
+        .count()
+}
 
 /// One `voice:` topic this socket holds.
 struct TopicLink {
@@ -110,6 +178,7 @@ async fn forward(
     out_tx: mpsc::Sender<ViewerMsg>,
     join_ref: Value,
     topic: String,
+    binary_event: &'static str,
 ) {
     while let Some(frame) = from_cell.recv().await {
         let out = match frame {
@@ -123,7 +192,7 @@ async fn forward(
                 ViewerMsg::Frame(frames::push(&join_ref, &topic, "frame", payload))
             }
             LinkFrame::Binary(bytes) => {
-                let encoded = frames::binary_broadcast(&topic, "audio", &bytes);
+                let encoded = frames::binary_broadcast(&topic, binary_event, &bytes);
                 if encoded.is_empty() {
                     // A topic or event too long for a single length byte. The
                     // codec says so by returning nothing, and nothing is sent.
@@ -279,6 +348,10 @@ pub async fn run_connection(
     let mut links: HashMap<String, TopicLink> = HashMap::new();
     // Audio frames that arrived for a topic this socket does not hold (GH #697).
     let mut unrouted_binaries: u64 = 0;
+    // Binary a KIND does not accept at all, which is not the same thing: a
+    // `page:` topic declares no client binary, so a display that pushed one
+    // used to have it vanish without a trace on either side.
+    let mut refused_binaries: u64 = 0;
 
     loop {
         tokio::select! {
@@ -327,7 +400,22 @@ pub async fn run_connection(
                         let Some(binary) = frames::parse_binary(&bytes) else {
                             continue;
                         };
-                        if binary.event != "audio" {
+                        // The kind decides whether the client may send binary at
+                        // all, and under which event. A `page:` topic declares
+                        // none: pointers and keys travel as text, and a picture
+                        // only ever goes the other way (OR-G25).
+                        let admitted = kind_of(&binary.topic)
+                            .and_then(|kind| kind.client_binary_event)
+                            .is_some_and(|event| event == binary.event);
+                        if !admitted {
+                            refused_binaries = refused_binaries.saturating_add(1);
+                            if refused_binaries == 1 {
+                                tracing::warn!(
+                                    topic = %binary.topic,
+                                    event = %binary.event,
+                                    "web: this kind of topic takes no binary from the client"
+                                );
+                            }
                             continue;
                         }
                         let Some(to_cell) = links.get(&binary.topic).map(|l| l.to_cell.clone())
@@ -420,6 +508,12 @@ pub async fn run_connection(
             "web: binary frames dropped for topics this socket did not hold"
         );
     }
+    if refused_binaries > 0 {
+        tracing::info!(
+            count = refused_binaries,
+            "web: binary frames refused because the topic's kind takes none"
+        );
+    }
     viewers.remove(&viewer_id).await;
 }
 
@@ -462,7 +556,13 @@ async fn answer(
         // session token is asked for: the socket was opened by the page, and the
         // door behind the mount has no authentication of its own either
         // (R-W8-2 holds on both).
-        (topic, "phx_join") if topic.starts_with(VOICE_TOPIC) => {
+        (topic, "phx_join") if kind_of(topic).is_some() => {
+            // Unreachable through the guard, and written as a refusal rather
+            // than as an `expect`: this loop serves a page, and a panic in it
+            // takes the socket the page is looking through.
+            let Some(kind) = kind_of(topic) else {
+                return refuse("this socket does not carry that kind of topic".to_string());
+            };
             // A link the cell already closed is ABSENT, not joined. The forwarder
             // writes `close` and `phx_close` and ends, and it has no way to reach
             // this map — so the entry outlives the call it named, and a client
@@ -477,26 +577,35 @@ async fn answer(
                     return refuse("topic already joined".to_string());
                 }
             }
-            // The count is the whole guard (GH #639). A link the cell already
-            // closed does not count: it is absent, which is the same reading the
-            // rejoin path above takes of it.
-            let live = links
-                .values()
-                .filter(|held| !held.to_cell.is_closed())
-                .count();
-            if live >= MAX_VOICE_LINKS {
-                return refuse("too many voice topics on this socket".to_string());
+            // The count is the whole guard (GH #639), and it is per kind
+            // (GH #766): a screen already holding four calls must still be able
+            // to open a window.
+            if live_of(links, kind) >= kind.max_links {
+                return refuse(format!("too many {} topics on this socket", kind.name()));
             }
             let mount = frame
                 .payload
                 .get("mount")
                 .and_then(Value::as_str)
-                .unwrap_or(DEFAULT_VOICE_MOUNT)
+                .unwrap_or(kind.default_mount)
                 .to_string();
+            // Everything the payload said except the `mount` that chose the
+            // door, one level deep (OR-G32). The door reads the four voice
+            // fields because it always did; what it does NOT read — a viewport,
+            // say — travels whole, because only the cell behind the mount knows
+            // what it means.
+            let params = match frame.payload.as_object() {
+                Some(obj) => {
+                    let mut rest = obj.clone();
+                    rest.remove("mount");
+                    Value::Object(rest)
+                }
+                None => Value::Null,
+            };
             let request = LinkRequest {
-                // The call is the topic suffix and nothing else names it, so a
-                // page cannot join one topic and speak for another.
-                session: Some(topic[VOICE_TOPIC.len()..].to_string()),
+                // The session is the topic suffix and nothing else names it, so
+                // a page cannot join one topic and speak for another.
+                session: Some(topic[kind.prefix.len()..].to_string()),
                 mode: frame
                     .payload
                     .get("mode")
@@ -512,6 +621,7 @@ async fn answer(
                     .get("encoding")
                     .and_then(Value::as_str)
                     .map(str::to_string),
+                params,
             };
             match io.surfaces.open_link(&mount, request).await {
                 None => refuse(format!("no surface is mounted as {mount:?}")),
@@ -524,6 +634,7 @@ async fn answer(
                         out_tx.clone(),
                         frame.join_ref.clone(),
                         topic.to_string(),
+                        kind.binary_event,
                     ));
                     links.insert(
                         topic.to_string(),
@@ -539,7 +650,7 @@ async fn answer(
 
         // One client frame, as JSON, on its way to the cell. Replied to so the
         // client's own timeout never fires for a frame that arrived (O-639-4).
-        (topic, "frame") if topic.starts_with(VOICE_TOPIC) => {
+        (topic, "frame") if kind_of(topic).is_some() => {
             let Some(to_cell) = links.get(topic).map(|l| l.to_cell.clone()) else {
                 return refuse("this topic is not joined".to_string());
             };
@@ -566,7 +677,7 @@ async fn answer(
 
         // The page is done with the topic. Dropping the sender is what the cell
         // reads as a disconnect, which is the same fact a closed socket carries.
-        (topic, "phx_leave") if topic.starts_with(VOICE_TOPIC) => {
+        (topic, "phx_leave") if kind_of(topic).is_some() => {
             if let Some(link) = links.remove(topic) {
                 link.forwarder.abort();
             }

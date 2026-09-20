@@ -17,8 +17,8 @@ four Linux mechanisms: Landlock for the filesystem view, `unshare(CLONE_NEWUSER|
 for `network: "deny"`, a delegated cgroup v2 sub-cgroup for memory, pids and CPU, and a
 seccomp-bpf filter against `ptrace`, raw sockets and signals to processes outside the sandbox.
 
-Four cell types read the block: `bash`, `code`, `harness` and `mcp`. Instantiation writes a
-default into the first three, so a template that declares nothing still gets one:
+Five cell types read the block: `bash`, `code`, `harness`, `mcp` and `browser`. Instantiation
+writes a default into the first three, so a template that declares nothing still gets one:
 
 ```json
 "sandbox": { "trust": "restricted", "network": "deny", "filesystem": { "runtime": true } }

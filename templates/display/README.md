@@ -1,4 +1,4 @@
-# `display@2.5.0`
+# `display@2.6.0`
 
 > **Normative source:** this README is the public rendering of the display-hive description (`meclaw-next/23-display/display-hive.md`, internal), with its reference model and its scenarios, which travel with this template in `compose/scenarios/`. Where the two differ, that document rules and this README is redrawn from it (`docs/development-rules.md` § 10).
 
@@ -47,7 +47,27 @@ got>`, and the first creation is an `insert`. A read pass and its write are a fu
 round trip apart, so two events that arrive inside it are handed the same row; without the
 condition the second write would erase what the first pass concluded, and a tap would be
 lost. When the store reports that no row moved, the same pass runs again on the row that
-now stands, at most three times.
+now stands, at most sixteen times -- twice the fan-out measured on a screen whose seven
+applications wrote in one breath.
+
+The curator takes one message at a time (`params.max_concurrency` is 1). Events that
+arrive together are therefore read, computed and answered in the order they arrived, and
+never four at once. It does not close the round trip above: a pass is two messages with a
+store between them, so two events inside one trip still read the same row and the
+condition on the write is still what keeps the first of them -- measured on a test colony,
+the refused writes under a burst of ten taps are the same with one worker as with four.
+
+**The browsers hear the store, not the pass.** The calls a pass computed for the display
+travel on its own state write and are sent from the reply to it: a write that landed draws
+them, a write the condition refused draws nothing and runs its pass again. A patch says
+what the screen IS, and before this a refused pass had already said it -- the drawing was
+then taken back by the next pass that landed, which is what a flicker is. The price is one
+message round trip of latency per event.
+
+What this does not reach is a pass that LANDED: an event that arrives while another pass
+is in the air is answered first by that pass, whose state is the truth of that instant and
+is older than the finger. The client keeps its own drawing until a patch carries a state
+computed after the touch (§ 5.7), and that is still what covers this case.
 
 Time points are epoch milliseconds, durations are milliseconds. A hint that is a number
 travels as text, because the template language reads `0` as empty.
@@ -87,6 +107,7 @@ A word the door does not know is refused: a `state` other than the two, a `seat`
 | `judge` | `off` | `on` lets the curator ask the judge cell |
 | `screens.<name>` | none | one output per entry, with its profile |
 | `default_screen` | none | mandatory, and it names an entry of `screens` |
+| `browser_mount` | `browser` | the browser cell a page is streamed from; the screen writes it on every page it draws |
 | `params.mount` of the cell `web` | `display` | the path prefix of every output |
 
 The judge writes four things and nothing else: `judged_relevance` and `judged_hidden` per
@@ -231,6 +252,19 @@ owner is the sender, the ladder is `canvas`, and the class supplies the relevanc
 The chat competes on the modal ladder. The clock, the weather, a timer and every
 voice2vision card compete on the canvas.
 
+An app may show a **page**: a picture a browser cell of the member's renders and streams on
+a topic of its own. The window is an ordinary window, a `display-pane` with the content
+component `display-browser` in it, and the page is content rather than a fifth kind of
+window. The screen joins the page's topic while that window carries a level of 1 or more
+and leaves it at 0; the level is one for the whole screen, so every output joins or none
+does, and a dock cut never takes a window. The page adds nothing to the state: no field, no
+hint, no rung of its own.
+
+Which browser cell answers is `browser_mount`, a setting of this cell, shipped as `browser`.
+The screen writes it onto every `display-browser` it draws, the way it writes the window a
+typed line belongs to, because the name is the operator's arrangement of the member's colony
+and an application cannot know it.
+
 ## The chat app and the channel `chat`
 
 The chat is the whole conversation of the member with their assistant, across every
@@ -332,3 +366,8 @@ touch.
   of its own with `/<mount>/` as the switch between them, each profile carries its own
   `dock_max`, and the scenarios travel with the template. A chat line carries its clock
   time beside its channel word, raw as `at`, and the browser formats it.
+- `2.5.1` The curator runs one message at a time.
+- `2.6.0` A patch leaves only after the state row has landed. What the store
+  refused is never drawn. And a window may hold a page: a picture a browser cell
+  renders and streams, joined while the window stands and given back when it is
+  put away.

@@ -119,8 +119,26 @@ const ALLOWED: &[(&str, &str)] = &[
     ("data-gap", "a stack's gap"),
     ("data-tone", "a window's tone"),
     ("data-position", "an overlay's corner"),
+    (
+        "data-page-state",
+        "a page's own state: loading | ready | error | suspended (§ 7.9). \
+         NOT `data-state` -- that word is the curator's and is struck",
+    ),
     // The client's own press ring, for the length of one movement (§ 5.7).
     ("data-zoomed", "the pressed tile, drawn by the scene hook"),
+    // The hook's word about its OWN channel, and the reason it puts beside the
+    // address. `data-page-state` above says what the CELL is doing and belongs
+    // to the curator; two writers on that one attribute made a sleeping page
+    // look like a waking one (OR-G.g18.1).
+    (
+        "data-page-link",
+        "up | down: whether the page's channel stands, drawn by the scene hook \
+         (§ 7.9)",
+    ),
+    (
+        "data-keys",
+        "the page whose hidden field holds the focus, drawn by the scene hook (§ 7.9)",
+    ),
     // A notification says its own class; `data-level` is the drawing level of
     // a WINDOW since 2.5.0, and one word says one thing (§ 2).
     ("data-notice", "the class of a notification (§ 7.7)"),

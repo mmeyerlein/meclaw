@@ -31,11 +31,20 @@ fn trusted_is_the_escape_hatch_and_carries_nothing() {
 }
 
 #[test]
-fn restricted_requires_a_filesystem_block() {
+fn restricted_requires_a_filesystem_block_or_a_cap() {
+    // The rule moved with GH #766 and got smaller: a view is required as soon
+    // as `syscalls` is declared, and otherwise a profile has to carry at least
+    // one of view and cap. A bare `restricted` still carries neither, and the
+    // refusal still names the view first, because that is the shape almost
+    // every reader of this key wants.
     let e = SandboxProfile::parse(&json!({"sandbox": {"trust": "restricted"}})).unwrap_err();
     assert!(
         e.contains("params.sandbox.filesystem"),
         "the error must name the missing key: {e}"
+    );
+    assert!(
+        e.contains("params.sandbox.limits"),
+        "and the other way out of it: {e}"
     );
 }
 
@@ -60,6 +69,7 @@ fn restricted_parses_read_write_and_defaults_network_to_deny() {
                 NetworkPolicy::Deny,
                 "a restricted profile without a network key is default-deny"
             );
+            let filesystem = filesystem.expect("a declared view is carried");
             assert_eq!(filesystem.read, vec![std::path::PathBuf::from("/srv/data")]);
             assert_eq!(
                 filesystem.write,
@@ -89,6 +99,7 @@ fn restricted_honours_an_explicit_network_allow_and_runtime_false() {
             ..
         } => {
             assert_eq!(network, NetworkPolicy::Allow);
+            let filesystem = filesystem.expect("a declared view is carried");
             assert!(!filesystem.runtime);
             assert!(filesystem.write.is_empty());
         }

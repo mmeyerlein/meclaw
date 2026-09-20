@@ -5,6 +5,7 @@
 
 pub mod bash;
 pub mod boundary;
+pub mod browser;
 pub mod code;
 pub mod edit;
 pub mod file;
@@ -29,6 +30,7 @@ pub mod web;
 pub mod web_fetch;
 pub mod web_search;
 pub use bash::{BashCell, BashCellFactory};
+pub use browser::BrowserCellFactory;
 pub use edit::{EditCell, EditCellFactory};
 pub use file::{FileCell, FileCellFactory};
 pub use llm::{LlmCellFactory, LlmParams};

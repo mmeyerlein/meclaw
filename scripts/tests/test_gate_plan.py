@@ -69,7 +69,7 @@ class Classify(unittest.TestCase):
         st = gp.plan(["docs/memory.en.md", "README.md"], "strand", repo=repo)
         self.assertEqual(
             {s.name for s in st},
-            {"roadmap-anchors", "adr-anchors", "claims", "tree-rules",
+            {"precheck", "roadmap-anchors", "adr-anchors", "claims", "tree-rules",
              "corpus-committed", "corpus"})
         self.assertFalse(any(s.cargo for s in st))
 
@@ -234,7 +234,8 @@ class Classify(unittest.TestCase):
         self.assertEqual(
             st["scenarios:display"].cmds,
             [["python3", "templates/display/compose/scenarios/"
-              "run_display_scenarios.py"]])
+              "run_display_scenarios.py"],
+             ["python3", "scripts/display_sync.py", "--check-source"]])
         # The number stands in every GATE line and in every receipt.
         self.assertEqual(st["scenarios:display"].scope, "116 scenarios")
 
@@ -260,6 +261,81 @@ class Classify(unittest.TestCase):
                         order.index("scenarios:display"))
         self.assertLess(order.index("scenarios:display"),
                         order.index("recall-harness"))
+
+    def test_display_lab_is_its_own_cheap_station(self):
+        """The measuring library owes a contract, and a contract owes a station.
+
+        `workshop/tools/display-lab/` is the one copy of the tools that read a
+        running screen (befund `04-struktur.md` section 8). Its contract --
+        inventory, the head with both traps, the mandatory `--port` -- is a
+        unittest, and a unittest nothing plans is not a lock.
+        """
+        tool = "workshop/tools/display-lab/staterow.py"
+        test = "scripts/tests/test_display_lab.py"
+        self.assertIn("display_lab", gp.classify([tool]))
+        self.assertIn("display_lab", gp.classify([test]))
+        self.assertNotIn("display_lab", gp.classify(["workshop/tools/judge_eval.py"]))
+
+        st = by_name(gp.plan([tool], "strand", repo=None))
+        self.assertIn("display-lab", st)
+        self.assertFalse(st["display-lab"].cargo, "a python unittest builds nothing")
+        self.assertEqual(
+            st["display-lab"].cmds,
+            [["python3", "-m", "unittest", "scripts.tests.test_display_lab"]])
+
+        # A diff that touches neither does not plan it.
+        self.assertNotIn("display-lab",
+                         {s.name for s in gp.plan(["docs/x.md"], "strand", repo=None)})
+        # ci never plans it: workshop/ does not travel, so the library is not
+        # in the tree the published mirror gates.
+        self.assertIn("display-lab", gp.CI_EXCLUDED)
+        self.assertNotIn("display-lab",
+                         {s.name for s in gp.plan([tool], "ci", repo=None)})
+
+        order = gp.STATION_ORDER
+        self.assertLess(order.index("gate-selftest"), order.index("display-lab"))
+        self.assertLess(order.index("display-lab"), order.index("fmt"))
+
+    def test_the_library_pulls_nothing_but_its_own_station(self):
+        """A measuring tool is not a layout driver.
+
+        `display_browser` is `workshop/tools/display-*`, and the library lies
+        under that prefix -- so every file of it used to drag the browser locks
+        and the Chromium/WebKit run behind a five-second unittest. The longer
+        prefix wins, and a `.sh` of the library still carries `shell` because
+        shellcheck is the thing that reads it.
+        """
+        tool = "workshop/tools/display-lab/runline.sh"
+        self.assertEqual({"display_lab", "shell"}, gp.classify([tool]))
+        self.assertEqual({"display_lab"},
+                         gp.classify(["workshop/tools/display-lab/staterow.py"]))
+        # the driver itself keeps its class
+        self.assertIn("display_browser",
+                      gp.classify(["workshop/tools/display-browser-lab.mjs"]))
+
+        planned = {s.name for s in gp.plan([tool], "strand", repo=None)}
+        self.assertIn("display-lab", planned)
+        self.assertNotIn("browser:display", planned)
+
+    def test_shellcheck_reads_the_library(self):
+        """The class plans the station; the globs decide what it looks at.
+
+        `runline.sh` carries `shell`, so the station runs -- but `SHELL_GLOBS`
+        named three directories and `workshop/` was not among them, so the file
+        that carries a `# shellcheck` directive was never read by shellcheck.
+        """
+        self.assertIn("workshop/tools/display-lab/*.sh", gp.SHELL_GLOBS)
+        # ci runs on the published mirror, which has no workshop/ and no plans/
+        self.assertEqual(("scripts/*.sh", ".github/gates/*.sh"), gp.SHELL_GLOBS[:2])
+
+    def test_every_class_is_in_the_register(self):
+        """The docstring's CLASSES list is the only place the classes are written
+        down, so a class missing from it does not exist for the next reader."""
+        register = gp.__doc__.split("STATIONS")[0]
+        for name in sorted(gp.classify(["workshop/tools/display-lab/runline.sh"])
+                           | gp.classify(["scripts/gate_plan.py"])):
+            with self.subTest(cls=name):
+                self.assertIn("    %s " % name, register)
 
     def test_display_browser_is_a_station_that_stays_home(self):
         """The B-proofs of display-hive.md § 5-9, measured in Chromium and WebKit.
@@ -371,12 +447,54 @@ class Classify(unittest.TestCase):
         st = by_name(gp.plan([".github/workflows/ci.yml"], "strand", repo=repo))
         self.assertNotIn("tests", st)
 
-    def test_integration_always_runs_scenarios_doctests_deny(self):
+    def test_integration_always_runs_the_unconditional_stations(self):
         st = by_name(gp.plan(["crates/meclaw-core/src/lib.rs"], "integration", repo=None))
-        for name in ("scenarios:memory", "scenarios:builder", "recall-harness",
-                     "doctests", "deny", "catalogue"):
+        for name in ("scenarios:builder", "scenarios:display", "doctests",
+                     "catalogue"):
             self.assertIn(name, st)
         self.assertIn("--workspace", st["clippy"].cmds[0])
+
+    def test_integration_skips_the_memory_suites_and_deny_without_a_trigger(self):
+        """R-P2: 43 runs of the three, 16 317 s, no finding (wave P, finding 04 § 3.4).
+
+        A diff that names neither the memory hive, nor a recall source, nor the
+        workspace cannot make any of them speak, so the pass pays 385 s per run
+        for an answer it already knows.
+        """
+        st = by_name(gp.plan(["docs/x.md"], "integration", repo=None))
+        for name in ("scenarios:memory", "recall-harness", "deny"):
+            self.assertNotIn(name, st)
+
+    def test_integration_runs_the_memory_suites_when_the_diff_asks(self):
+        st = by_name(gp.plan(["workshop/evals/scenarios/cases/a.json"],
+                             "integration", repo=None))
+        self.assertIn("scenarios:memory", st)
+        self.assertIn("recall-harness", st)
+
+    def test_integration_runs_only_the_recall_harness_for_a_recall_source(self):
+        """The recall lane is the one trigger `recall-harness` owns alone.
+
+        Before R-P2 the condition was dead weight -- the station ran in every
+        integration pass anyway. Now it is the only thing that still asks about
+        a change to the recall lane outside a release, so it needs its own
+        pin (OR-P.rulings.2: the two memory stations do NOT share this
+        trigger, because a source under `crates/meclaw-cells/src/` does not
+        move the scenario cases).
+        """
+        st = by_name(gp.plan(["crates/meclaw-cells/src/recall.rs"],
+                             "integration", repo=None))
+        self.assertIn("recall-harness", st)
+        self.assertNotIn("scenarios:memory", st)
+
+    def test_integration_runs_deny_for_the_workspace_class(self):
+        st = by_name(gp.plan(["Cargo.lock"], "integration", repo=None))
+        self.assertIn("deny", st)
+
+    def test_release_runs_all_three_for_any_diff(self):
+        """The release keeps them unconditional -- it ships the tree."""
+        st = by_name(gp.plan(["docs/x.md"], "release", repo=None))
+        for name in ("scenarios:memory", "recall-harness", "deny"):
+            self.assertIn(name, st)
 
     def test_release_ends_with_export_audit_and_has_advisories(self):
         st = gp.plan(["docs/x.md"], "release", repo=None)
@@ -758,7 +876,7 @@ class Classify(unittest.TestCase):
         `.../builder-scenarios/workshop/evals/builder-scenarios/...` and the
         station died on "No such file".
         """
-        st = by_name(gp.plan(["docs/x.md"], "integration", repo=None))
+        st = by_name(gp.plan(["docs/x.md"], "release", repo=None))
         for name in ("scenarios:builder", "recall-harness"):
             for cmd, cwd in zip(st[name].cmds, st[name].cwds):
                 self.assertTrue(cwd, name)
@@ -850,12 +968,62 @@ class Classify(unittest.TestCase):
         self.assertNotIn("corpus-committed",
                          {s.name for s in gp.plan(["README.md"], "ci", repo=None)})
 
-    def test_gate_selftest_runs_resolver_and_runner_tests(self):
-        """One command, both modules -- the runner's tests arrive with it."""
+    def test_gate_selftest_runs_every_script_test(self):
+        """One command, every module -- every script under `scripts/` that
+        carries its own tests is run here, or its tests are a habit."""
         st = by_name(gp.plan(["scripts/gate_plan.py"], "strand", repo=None))
         self.assertEqual(st["gate-selftest"].cmds, [[
             "python3", "-m", "unittest",
-            "scripts.tests.test_gate_plan", "scripts.tests.test_gate_sh"]])
+            "scripts.tests.test_gate_plan", "scripts.tests.test_gate_sh",
+            "scripts.tests.test_strand_sh",
+            "scripts.tests.test_wave_receipt",
+            "scripts.tests.test_wave_retro",
+            "scripts.tests.test_git_merge_display_sync",
+            "scripts.tests.test_precheck",
+            "scripts.tests.test_display_sync",
+            "scripts.tests.test_nextest_quarantine"]])
+
+    def test_the_quarantine_config_is_gate_infrastructure(self):
+        """`.config/nextest.toml` decides which test may be retried, and
+        `test_nextest_quarantine.py` is its drift lock: a filterset that
+        reaches no test parses cleanly and leaves the station green over a
+        debt nobody pays (wave P review C1, GH #763)."""
+        path = ".config/nextest.toml"
+        self.assertIn("gate_infra", gp.classify([path]))
+        self.assertIn("gate-selftest",
+                      {s.name for s in gp.plan([path], "strand", repo=None)})
+
+    def test_the_source_mark_travels_with_the_display_template(self):
+        """The mark `SOURCE` is the strand half of the drift lock, so a diff
+        that touches it must plan the lock that reads it -- and so must any
+        other diff in the display template. Without the `template` class the
+        mark would be a file nothing runs (wave P review M4)."""
+        mark = "templates/display/compose/scenarios/SOURCE"
+        self.assertIn("template", gp.classify([mark]))
+        for path in (mark, "templates/display/compose/config.json"):
+            expr = gp.test_filter([path], "integration", repo=None) or ""
+            self.assertIn(
+                "binary_id(=meclaw-cells::710_the_scenarios_run_against_the_curator)",
+                expr, path)
+
+    def test_scenarios_display_also_checks_the_source_mark(self):
+        """The cheap half of the drift question, in the station that runs in
+        I, R and C always: does the mark still describe the living tree? It is
+        a NOTE, never a verdict -- the Rust lock is what goes red."""
+        st = by_name(gp.plan(["README.md"], "integration", repo=None))
+        self.assertIn(["python3", "scripts/display_sync.py", "--check-source"],
+                      st["scenarios:display"].cmds)
+
+    def test_the_retro_library_is_gate_infrastructure(self):
+        """`scripts/retro/**` and `scripts/wave_retro.py` carry the numbers a
+        wave is judged by, and `gate-selftest` runs their test. Without a
+        class the station is planned only for whoever edits the test file
+        itself -- the habit OR-P.retro.3 was written against."""
+        for path in ("scripts/wave_retro.py", "scripts/retro/metrics.py",
+                     "scripts/retro/thresholds.json"):
+            self.assertIn("gate_infra", gp.classify([path]), path)
+            names = {s.name for s in gp.plan([path], "strand", repo=None)}
+            self.assertIn("gate-selftest", names, path)
 
     def test_gate_infrastructure_under_github_gates_has_a_class(self):
         """The unwrap ratchet and the byte gates are gates, not stray files."""
@@ -1067,6 +1235,51 @@ class Classify(unittest.TestCase):
                 "CORPUS_SOURCES does not cover templates/**/config.json")
 
 
+class Precheck(unittest.TestCase):
+    """The cheap form station: first in the plan, no cargo, not in ci.
+
+    Measured over the waves H2/H3/G0: four of twenty-three red strand runs
+    (5 771 s) were pure form, and fifty of a hundred and eleven review
+    findings were. None of it needs a build, so none of it may wait for the
+    lock.
+    """
+
+    def test_every_mode_but_ci_plans_it_first(self):
+        for mode in ("strand", "integration", "release"):
+            st = gp.plan(["docs/x.md"], mode, repo=None)
+            self.assertEqual("precheck", st[0].name, mode)
+            self.assertEqual("form", st[0].scope, mode)
+            self.assertFalse(st[0].cargo, mode)
+        self.assertEqual("precheck", gp.STATION_ORDER[0])
+
+    def test_it_carries_the_diff_on_its_argv(self):
+        """The runner runs every station with stdin closed, so `--files` it is."""
+        paths = ["crates/meclaw-core/src/lib.rs", "docs/x.md"]
+        st = by_name(gp.plan(paths, "strand", repo=None))
+        self.assertEqual([["python3", "scripts/precheck.py", "--files"] + sorted(paths)],
+                         st["precheck"].cmds)
+
+    def test_an_empty_diff_plans_no_precheck(self):
+        self.assertNotIn("precheck", {s.name for s in gp.plan([], "strand", repo=None)})
+
+    def test_ci_never_plans_it(self):
+        """The published tree has no `plans/`, and ci's diff is often the whole tree.
+
+        Three of the ten checks read the export's own lists and would fall
+        silent there; `fmt` is the `fmt` station's job in that mode anyway;
+        and a full-tree diff offers files nobody changed, which turns the two
+        artefact notes into a fixture of every workflow log.
+        """
+        self.assertIn("precheck", gp.CI_EXCLUDED)
+        self.assertNotIn("precheck",
+                         {s.name for s in gp.plan(["docs/x.md"], "ci", repo=None)})
+
+    def test_the_gate_selftest_runs_its_tests_too(self):
+        st = by_name(gp.plan(["scripts/precheck.py"], "strand", repo=None))
+        self.assertIn("scripts.tests.test_precheck", st["gate-selftest"].cmds[0])
+        self.assertIn("gate_infra", gp.classify(["scripts/precheck.py"]))
+
+
 class Cli(unittest.TestCase):
     script = str(SCRIPTS / "gate_plan.py")
 
@@ -1124,7 +1337,7 @@ class Cli(unittest.TestCase):
         self.assertIn("docs", doc["classes"])
 
     def test_cwd_column_is_filled_for_the_builder_suite(self):
-        r = self.run_cli("--mode", "integration", "--files",
+        r = self.run_cli("--mode", "release", "--files",
                          "docs/a.md", "--format", "tsv")
         rows = [line.split("\t") for line in r.stdout.rstrip("\n").splitlines()]
         by_row = {row[0]: row for row in rows}

@@ -96,8 +96,15 @@ pub enum SandboxProfile {
     Restricted {
         /// Network policy for the child.
         network: NetworkPolicy,
-        /// The declared filesystem view.
-        filesystem: FilesystemProfile,
+        /// The declared filesystem view, `None` when the operator declared none.
+        ///
+        /// Absent is the third shape (GH #766, R-G13): a child that brings its
+        /// own confinement — a browser out of the distribution's packages — and
+        /// needs a ceiling from the substrate rather than a second boundary.
+        /// Without a view there is no Landlock, and without Landlock there is no
+        /// `no_new_privs`, which is the flag a packaged browser's launcher does
+        /// not start under.
+        filesystem: Option<FilesystemProfile>,
         /// Resource caps, `None` when the operator declared none.
         limits: Option<ResourceLimits>,
         /// Syscall filter axes, `None` when the operator declared none.
@@ -178,14 +185,35 @@ impl SandboxProfile {
                         }
                     },
                 };
-                let fs_raw = obj.get("filesystem").ok_or(
-                    "params.sandbox.filesystem is required under trust \"restricted\" \
-                     (default-deny means naming what is allowed; use {\"read\":[\"/\"],\
-                     \"write\":[\"/\"]} to allow everything explicitly)",
-                )?;
-                let filesystem = parse_filesystem(fs_raw)?;
+                let filesystem = obj.get("filesystem").map(parse_filesystem).transpose()?;
                 let limits = obj.get("limits").map(parse_limits).transpose()?;
                 let syscalls = obj.get("syscalls").map(parse_syscalls).transpose()?;
+                // The smallest consistent rule, and the two halves of it
+                // (GH #766). A seccomp filter without a filesystem view is half
+                // a boundary: the axes it closes are the ones Landlock leaves
+                // open, so declaring it without the view it complements says
+                // something the profile does not deliver. And a `restricted`
+                // profile that declares NEITHER a view nor a cap is `trusted`
+                // under another name -- the one thing this key exists to make
+                // impossible.
+                if syscalls.is_some() && filesystem.is_none() {
+                    return Err(
+                        "params.sandbox.filesystem is required once params.sandbox.syscalls is \
+                         declared: the filter closes the axes a filesystem view leaves open, \
+                         and without the view it is half a boundary"
+                            .into(),
+                    );
+                }
+                if filesystem.is_none() && limits.is_none() {
+                    return Err(
+                        "params.sandbox under trust \"restricted\" must declare at least one of \
+                         params.sandbox.filesystem (the allowed view; use \
+                         {\"read\":[\"/\"],\"write\":[\"/\"]} to allow everything explicitly) \
+                         or params.sandbox.limits (the resource cap) -- a profile that restricts \
+                         nothing is trust \"trusted\" under another name"
+                            .into(),
+                    );
+                }
                 Ok(Some(SandboxProfile::Restricted {
                     network,
                     filesystem,
@@ -210,14 +238,20 @@ impl SandboxProfile {
     /// it exists for the length of one spawn.
     ///
     /// A [`SandboxProfile::Trusted`] profile enforces nothing and is returned
-    /// unchanged.
+    /// unchanged. So is a profile that declares no view at all (GH #766): there
+    /// is no Landlock ruleset to widen, and inventing one would install the
+    /// boundary — and with it the `no_new_privs` that shape exists to avoid —
+    /// as a side effect of materialising a file.
     #[must_use]
     pub fn with_readable_file(&self, path: &std::path::Path) -> Self {
         match self {
             Self::Trusted => Self::Trusted,
             Self::Restricted {
+                filesystem: None, ..
+            } => self.clone(),
+            Self::Restricted {
                 network,
-                filesystem,
+                filesystem: Some(filesystem),
                 limits,
                 syscalls,
             } => {
@@ -225,7 +259,7 @@ impl SandboxProfile {
                 filesystem.read.push(path.to_path_buf());
                 Self::Restricted {
                     network: *network,
-                    filesystem,
+                    filesystem: Some(filesystem),
                     limits: *limits,
                     syscalls: *syscalls,
                 }

@@ -201,33 +201,63 @@ fn the_state_is_written_as_one_row_and_read_back() {
     );
 }
 
+/// The reply to a state write, and what it may say.
+///
+/// It starts no new pass -- a pass out of it would be an endless round, and the row it
+/// wrote is the one the cell just computed. Since GH #744 that holds for the write that
+/// LANDED: a write the store refused repeats its own pass, and that case is locked in
+/// `744_two_taps_in_one_round_trip.rs`. Since GH #765 (way A) the landed reply has one
+/// thing to say after all, and exactly one: the drawing the pass handed to this very
+/// write. A pass that rendered nothing still answers with silence.
 #[test]
-fn the_state_row_is_no_view_and_the_answer_to_its_write_is_silence() {
+fn the_state_row_is_no_view_and_its_write_answers_with_the_drawing_and_nothing_else() {
     if !library_ships() {
         eprintln!("SKIP: the template library is not in this tree");
         return;
     }
-    // The store's reply to the state write carries `state: true` on the request; the cell
-    // swallows it. A second pass out of it would be an endless round. Since GH #744 that
-    // holds for the write that LANDED -- a write the store refused repeats its own pass,
-    // and that case is locked in `744_two_taps_in_one_round_trip.rs`. So the request here
-    // carries its `retry` mark and the reply says the row moved: this has to be the
-    // silence of a write that WORKED, not the silence of a request with no mark on it.
-    let doc = json!({
-        "params": {},
-        "body": {"messages": [{"origin": "tool", "type": "tool_result", "id": "s-update",
-                               "text": "null"}],
-                 "results": [{"tool_call_id": "s-update", "operation": "update",
-                              "rows_affected": 1, "duration_ms": 1}]},
-        "envelope": {"header": {
-            "hop": {"operation": "update", "rows_affected": 1},
-            "context": {"display_origin": "views",
-                        "display_request": json!({"state": true,
-                                                  "retry": {"tick": true}}).to_string()},
-        }},
-    });
+    // The request carries its `retry` mark and the reply says the row moved: this has to
+    // be the answer to a write that WORKED, not to a request with no mark on it.
+    let landed = |request: Value| {
+        json!({
+            "params": {},
+            "body": {"messages": [{"origin": "tool", "type": "tool_result", "id": "s-update",
+                                   "text": "null"}],
+                     "results": [{"tool_call_id": "s-update", "operation": "update",
+                                  "rows_affected": 1, "duration_ms": 1}]},
+            "envelope": {"header": {
+                "hop": {"operation": "update", "rows_affected": 1},
+                "context": {"display_origin": "views",
+                            "display_request": request.to_string()},
+            }},
+        })
+    };
+
     assert!(
-        run(&doc).is_empty(),
-        "the answer to the state write is silence"
+        run(&landed(json!({"state": true, "retry": {"tick": true}}))).is_empty(),
+        "a pass that drew nothing answers its own write with silence"
+    );
+
+    // And the one thing a landed write does say: the calls the pass computed, which
+    // travelled on the request because this cell has no memory between two messages.
+    let call = json!({"op": "object.update", "id": "display.root", "props": {"dock": "shown"}});
+    let out = run(&landed(
+        json!({"state": true, "retry": {"tick": true}, "patch": [call.clone()]}),
+    ));
+    assert_eq!(out.len(), 1, "one emission, and it is the drawing: {out:?}");
+    assert_eq!(out[0]["header"]["route"], "patch", "{out:?}");
+    let sent: Vec<Value> = out[0]["messages"]
+        .as_array()
+        .expect("a bundle has messages")
+        .iter()
+        .map(|turn| {
+            meclaw_core::serde_json::from_str(turn["text"].as_str().expect("a call"))
+                .expect("a call is JSON")
+        })
+        .collect();
+    assert_eq!(
+        sent,
+        vec![call],
+        "call for call what the pass handed to its write -- nothing is computed on a \
+         reply that carries no state to compute from: {out:?}"
     );
 }

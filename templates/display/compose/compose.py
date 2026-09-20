@@ -2543,6 +2543,96 @@ body::after {
 .display-media .display-media-frame { background-color: transparent; }
 .display-table-grid thead { background-color: rgba(74, 46, 39, 0.06); }
 
+.display-browser {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  min-inline-size: 0;
+}
+
+.display-browser-view {
+  inline-size: 100%;
+  block-size: auto;
+  aspect-ratio: var(--browser-ratio, 16 / 10);
+  border-radius: var(--r-inner);
+  background-color: var(--inner-fill-strong);
+  box-shadow: inset 0 0 0 1px rgba(74, 46, 39, 0.22);
+  image-rendering: auto;
+  touch-action: none;
+}
+
+.display-browser-bar {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  min-inline-size: 0;
+  color: var(--fg-tertiary);
+}
+
+.display-browser-title {
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-secondary);
+}
+
+.display-browser-url {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--t-caption);
+}
+
+.display-browser[data-page-state="loading"] .display-browser-view { opacity: 0.55; }
+
+.display-browser[data-page-state="suspended"] .display-browser-view {
+  opacity: 0.5;
+  filter: grayscale(1);
+}
+
+.display-browser[data-page-state="error"] .display-browser-view,
+.display-browser[data-page-link="down"] .display-browser-view {
+  box-shadow: inset 0 0 0 2px var(--accent-ring);
+}
+
+.display-browser[data-page-state="error"] .display-browser-url,
+.display-browser[data-page-link="down"] .display-browser-url { color: var(--accent); }
+
+.display-browser-reason {
+  flex: 0 1 auto;
+  font-size: var(--t-caption);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--accent);
+}
+
+.display-browser-reason:empty { display: none; }
+
+.display-browser-view:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.display-browser[data-keys="true"] .display-browser-view {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.display-browser-keys {
+  position: fixed;
+  inset-block-start: -100px;
+  inset-inline-start: -100px;
+  inline-size: 1px;
+  block-size: 1px;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+}
+
 :where(.display-pane, .display-panel, .display-overlay)[data-rung="hidden"]:not([data-age="leaving"]) {
   display: none;
 }
@@ -3161,6 +3251,10 @@ html[data-dock-open="0"] .display-columns .display-os[data-unseen]:not([data-uns
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3);
 }
 
+[data-ground="night"] .display-browser-view {
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+}
+
 [data-ground="night"] :is(.display-timer-bar, .display-progress-track) {
   background-color: rgba(255, 255, 255, 0.12);
 }
@@ -3270,6 +3364,11 @@ body:has([data-exit="tv"])::after { display: none; }
   body::after { display: none; }
 
   .display-input-field {
+    background-color: var(--glass-opaque);
+    box-shadow: none;
+  }
+
+  .display-browser-view {
     background-color: var(--glass-opaque);
     box-shadow: none;
   }
@@ -3703,6 +3802,49 @@ MEDIA_TEMPLATE = (
     "</figcaption>{{/if}}</figure>"
 )
 
+# A live page inside a window (display-hive.md § 7.9). It is CONTENT and not a
+# fifth window object: a page is a `display-pane` with this as its child, so it
+# stands beside `display-media` -- the same furniture, a frame with a caption
+# under it -- and never beside `display-pane`.
+#
+# The canvas is the picture and the handles the scene hook reads off it:
+# `data-page` is the topic suffix (`page:<page>`, OR-G3) and the one attribute
+# the sweep looks for, `data-mount` names the browser cell the frames come from
+# (the CURATOR fills it, see `add_tree`), and `data-viewport` is the page's own
+# size in CSS pixels, so the frame has its proportions before the first image
+# arrives. `tabindex="0"` is what lets a keyboard reach the picture at all.
+#
+# `role="img"` with the page's title as its label, because that is what a
+# screen reader can honestly say about a screencast: a picture, named. The
+# caption says the same thing in ink -- the title of the PAGE (the window's own
+# `title` hint is the MODEL's title, and the two are different words on purpose,
+# OR-G48) and the address under it.
+#
+# The state rides as `data-page-state` and NOT as `data-state`: § 2 struck
+# `state` as a word of the curator (the step is `rung`, where a window is drawn
+# is `level`), and a page's own loading state is a different thing entirely. One
+# word, one meaning -- so this one gets its own word.
+#
+# Nothing here is raw and nothing is a link: the bytes on the canvas are an
+# image, not markup an application wrote, and an address a viewer could follow
+# would take them off this screen to the page's own site.
+BROWSER_TEMPLATE = (
+    '<figure class="display-browser" data-page-state="{{state}}">'
+    '<canvas class="display-browser-view" data-page="{{page}}" data-mount="{{mount}}"'
+    ' data-viewport="{{viewport}}" tabindex="0" role="img" aria-label="{{title}}">'
+    "</canvas>"
+    '<figcaption class="display-browser-bar display-line">'
+    '{{#if title}}<span class="display-browser-title">{{title}}</span>{{/if}}'
+    '<span class="display-browser-url">{{url}}</span>'
+    # The client's own word about the join, and it ships EMPTY: no application
+    # writes it, the hook does (contracts § 4 -- a refused join says "no
+    # browser mounted"). An attribute the sheet reads is not an answer to a
+    # person standing in front of an empty frame. `polite`, because a page
+    # that cannot be shown is news, not an alarm.
+    '<span class="display-browser-reason" data-role="reason"'
+    ' aria-live="polite"></span></figcaption></figure>'
+)
+
 DOCUMENT_TEMPLATE = (
     '<article class="display-document">'
     '{{#if title}}<h2 class="display-document-title display-lead">{{title}}</h2>{{/if}}'
@@ -3792,6 +3934,29 @@ PROGRESS_TEMPLATE = (
 # this page's own socket, and the `web` cell hands the frames to whichever cell
 # holds that name in the process (GH #643).
 VOICE_MOUNT = "voice"
+
+# The name of the `browser` cell this screen shows pages from, from
+# `params.browser_mount`. The same kind of value as `VOICE_MOUNT` and for the
+# same reason: a mount is an operator's arrangement of one member's colony, and
+# an application cannot know it. So the SCREEN writes it on every
+# `display-browser` (see `add_tree`) and the client joins `page:<page>` with it,
+# exactly as the microphone joins `voice:<call>`.
+BROWSER_MOUNT = "browser"
+
+# The four words a page may wear, and the ONLY four (wave G contracts 4). The
+# cell knows seven states and the application maps them down -- `opening` to
+# `loading`, `active`/`background`/`reopened`/`throttled` to `ready`,
+# `suspended` to itself, everything else to `error`. Three of the four have a
+# rule in the sheet (`KIT_CSS`, `data-page-state`), so the word is the whole
+# of the difference between a frame that fills and a frame that failed.
+#
+# They are NOT `STATE_WORDS`: that pair is what an application may say about a
+# WINDOW, and the two lists meet nowhere. Measured on the twin with a real page
+# up (reports `g15.md`/`g16.md`): the guard in `add_tree` that keeps a window's
+# word down to `urgent`/`hidden` ran on every node of the tree, so every one of
+# these four was dropped on the way and the figure came out as
+# `data-page-state=""` -- an `error` page looking exactly like a `ready` one.
+PAGE_STATES = ("loading", "ready", "error", "suspended")
 
 # Where the two faces are served from, from `params.font_base`. A URL prefix
 # RELATIVE to the page's own base (the page carries `<base href>`), so an
@@ -4608,6 +4773,15 @@ SCENE_CLIENT_JS = (
     "  // by the clock: KEEP_MS is above the longest pass measured on a loaded twin\n"
     "  // (1.6-3.4 s, § 4a of the same report) and far below the time a person would\n"
     "  // spend looking at a window that is wrong.\n"
+    "  // GH #765 (way A) did NOT make this redundant, and that was measured rather than\n"
+    "  // argued: way A stops a REFUSED pass from drawing, and the flash that is left\n"
+    "  // comes from a pass that LANDED. In a six-run series without this hold, one of\n"
+    "  // the twenty-two taps that reached the screen was answered first by the pass of\n"
+    "  // the clock's own STROKE -- the order the screen placed itself, coming due --\n"
+    "  // which started 66 ms before the finger and wrote its row with `rows_affected 1`,\n"
+    "  // so its drawing was the truth of that instant, and it rendered the state before\n"
+    "  // the tap for 90 ms until the tap's own patch arrived. No order of the writes\n"
+    "  // takes that case away; only the client can, and this is the client doing it.\n"
     "  var KEEP_MS = 6000;\n"
     "  function redraw(el, st) {\n"
     "    var now = Date.now(), id, h, win, tile, m, c, i;\n"
@@ -4850,11 +5024,453 @@ SCENE_CLIENT_JS = (
     "    return true;\n"
     "  }\n"
     "  if (switchExit(document.querySelector(\".display-columns\"))) return;\n"
+    "  // ── Pages (display-hive.md § 7.9) ──────────────────────────────────────\n"
+    "  // A page is CONTENT in a window, and what a window is doing is its LEVEL.\n"
+    "  // So the sweep below joins a topic while the window STANDS and gives it back\n"
+    "  // when it is put away -- never \"while the element exists\". The difference is\n"
+    "  // the whole point: a window on level 0 is still in the DOM (the pass computes\n"
+    "  // the level, § 4.24, and the sheet hides it), so a hook that counted elements\n"
+    "  // would hold a screencast open for every page ever shown until the tab closes.\n"
+    "  // The signal is `updated`: LiveView morphs the attribute in place, and neither\n"
+    "  // `mounted` nor `destroyed` fires for it.\n"
+    "  //\n"
+    "  // The level is SYSTEMWIDE (§ 3.1): every output joins or none does. Nothing\n"
+    "  // here decides anything about relevance or size, and nothing here sends the\n"
+    "  // curator a thing -- a finger in a page is not a gesture of the screen (§ 5.6,\n"
+    "  // § 5.11). That the page does not expire under the hand is the CELL's business\n"
+    "  // (a throttled `active_at`) together with the APP's (`touched`).\n"
+    "  var PAGE_VIEWPORTS = {\n"
+    "    tv: { width: 1280, height: 800, dpr: 1, mobile: false },\n"
+    "    monitor: { width: 1920, height: 1080, dpr: 1, mobile: false },\n"
+    "    phone: { width: 393, height: 852, dpr: 3, mobile: true }\n"
+    "  };\n"
+    "  // One rejoin, one second later. A `phx_close` on a `page:` topic is the CELL\n"
+    "  // letting go -- restarted or replaced -- while the window goes on standing, and\n"
+    "  // a screen that gave up here would show a still picture that looks like a live\n"
+    "  // page. A topic that turns the second join down IS a refusal, and then the\n"
+    "  // frame says so instead of knocking at a dead cell once a second all day. The\n"
+    "  // Phoenix client does not do this for us: its rejoin timer is RESET on\n"
+    "  // `phx_close`, which only a `phx_error` drives.\n"
+    "  var PAGE_REJOIN_MS = 1000;\n"
+    "  // The mouse buttons of the wire, in the order the DOM numbers them.\n"
+    "  var PAGE_BUTTONS = [\"left\", \"middle\", \"right\", \"back\", \"forward\"];\n"
+    "  // The viewport a join declares is the PROFILE of this output (§ 6.6), never a\n"
+    "  // measurement: a measured box changes with every patch, the cell would write\n"
+    "  // each change into the page as an `Emulation.setDeviceMetricsOverride`, and the\n"
+    "  // screen would reflow the streamed page under the reader's hand.\n"
+    "  function pageViewport(el) {\n"
+    "    return PAGE_VIEWPORTS[el.getAttribute(\"data-exit\") || \"\"] || PAGE_VIEWPORTS.tv;\n"
+    "  }\n"
+    "  function pageWord(el, word) {\n"
+    "    return ((el.getAttribute(\"data-inputs\") || \"\").split(/\\s+/)).indexOf(word) > -1;\n"
+    "  }\n"
+    "  // What the CLIENT knows, and the only thing it knows: whether its own\n"
+    "  // channel stands. It rides `data-page-link` (`up`/`down`) and never\n"
+    "  // `data-page-state` -- that one is the curator's word about the CELL, out\n"
+    "  // of the seven states the application maps (contracts § 4), and a second\n"
+    "  // writer on it made a sleeping page look like a waking one: measured\n"
+    "  // 20.09. at the seam, curator `suspended` + a join that worked came out of\n"
+    "  // the DOM as `ready`, and the sheet's grayscale rule never drew\n"
+    "  // (`display-page-browser.mjs --mode local`, field `asleep`; OR-G.g18.1).\n"
+    "  //\n"
+    "  // Two voices, two attributes, and the second one carries the words a\n"
+    "  // PERSON reads as well: the outline alone left someone in front of an\n"
+    "  // empty rectangle with an address in it -- \"no browser mounted\" is a\n"
+    "  // different repair from \"unknown page\", and only the line says which one\n"
+    "  // it is (contracts § 4). Both are kept on the link, because the server\n"
+    "  // renders neither and a morph would take them back (the same trap the\n"
+    "  // mark's state line fell into, GH #720).\n"
+    "  function pageLink(link, word, why) {\n"
+    "    var canvas = link.canvas;\n"
+    "    link.word = word;\n"
+    "    link.reason = why || \"\";\n"
+    "    var fig = canvas.closest ? canvas.closest(\".display-browser\") : null;\n"
+    "    if (!fig) return;\n"
+    "    fig.setAttribute(\"data-page-link\", word);\n"
+    "    if (why) fig.setAttribute(\"data-reason\", why);\n"
+    "    else fig.removeAttribute(\"data-reason\");\n"
+    "    // Re-said only when the words CHANGED: writing the same sentence into an\n"
+    "    // `aria-live` region again is an announcement a person hears twice.\n"
+    "    var line = fig.querySelector('[data-role=\"reason\"]');\n"
+    "    why = why || \"\";\n"
+    "    if (line && line.textContent !== why) line.textContent = why;\n"
+    "  }\n"
+    "  // The proportions of the frame, set by the HOOK and not by the sheet: the sheet\n"
+    "  // cannot know them, and `--browser-ratio` is only the named way in from a\n"
+    "  // window. Before the first image they come from `data-viewport` (what the cell\n"
+    "  // was asked for), afterwards from every frame head that changes them.\n"
+    "  function pageShape(canvas, w, h) {\n"
+    "    if (w > 0 && h > 0) canvas.style.aspectRatio = w + \" / \" + h;\n"
+    "  }\n"
+    "  function pageSaid(canvas) {\n"
+    "    var parts = (canvas.getAttribute(\"data-viewport\") || \"\").split(\"x\");\n"
+    "    return { w: parseInt(parts[0], 10) || 0, h: parseInt(parts[1], 10) || 0 };\n"
+    "  }\n"
+    "  // One frame: sixteen bytes of head, then a JPEG.\n"
+    "  //\n"
+    "  // The head is BIG-endian and carries the PAGE viewport in CSS pixels, not the\n"
+    "  // size of the picture -- the cell caps the picture (`screencast.max_*`) and the\n"
+    "  // two ends agree on the page's own numbers, which is what a click has to be\n"
+    "  // expressed in. `scroll_x`/`scroll_y` are read and deliberately not applied: a\n"
+    "  // screencast frame IS the cutout already.\n"
+    "  //\n"
+    "  // `createImageBitmap` decodes off the main thread and needs neither an `<img>`\n"
+    "  // nor an object URL that would have to live until `onload` -- twenty frames a\n"
+    "  // second would be twenty URLs a second. The bitmap is closed as soon as it is\n"
+    "  // drawn and never outlives its frame.\n"
+    "  //\n"
+    "  // A frame that arrives while the last one is still decoding is DROPPED, not\n"
+    "  // queued: a queue buys latency with memory and ends up showing an old picture.\n"
+    "  // The cell is not told; it drops a viewer that cannot keep up itself\n"
+    "  // (`client_too_slow`).\n"
+    "  //\n"
+    "  // `prefers-reduced-motion` does not reach in here. Frames are CONTENT, not the\n"
+    "  // screen moving: somebody who wants less motion does not want the page they are\n"
+    "  // reading to freeze.\n"
+    "  //\n"
+    "  // `again` is a REPAINT of the frame already held, not a new one: it neither\n"
+    "  // counts nor drops, because the proof counts what the cell sent.\n"
+    "  function pageDraw(link, buf, again) {\n"
+    "    if (link.busy) { if (!again) link.dropped++; return; }\n"
+    "    if (!buf || buf.byteLength < 17) return;\n"
+    "    var head = new DataView(buf, 0, 16);\n"
+    "    var w = head.getUint32(0), h = head.getUint32(4);\n"
+    "    link.scrollX = head.getUint32(8);\n"
+    "    link.scrollY = head.getUint32(12);\n"
+    "    if (!w || !h) return;\n"
+    "    if (!again) { link.last = buf; link.lastW = w; link.lastH = h; }\n"
+    "    link.busy = true;\n"
+    "    var canvas = link.canvas;\n"
+    "    root.createImageBitmap(new Blob([new Uint8Array(buf, 16)])).then(function (bmp) {\n"
+    "      // Writing `width` CLEARS the canvas, so it is written only where the shape\n"
+    "      // really changed -- otherwise the picture blinks between two frames.\n"
+    "      if (canvas.width !== w || canvas.height !== h) {\n"
+    "        canvas.width = w;\n"
+    "        canvas.height = h;\n"
+    "        pageShape(canvas, w, h);\n"
+    "      }\n"
+    "      link.w = w;\n"
+    "      link.h = h;\n"
+    "      var g = canvas.getContext(\"2d\");\n"
+    "      if (g) g.drawImage(bmp, 0, 0, canvas.width, canvas.height);\n"
+    "      if (bmp.close) bmp.close();\n"
+    "      if (!again) {\n"
+    "        link.frames++;\n"
+    "        link.st.pageFrames[link.key] = link.frames;\n"
+    "      }\n"
+    "      link.busy = false;\n"
+    "    }, function () { link.busy = false; });\n"
+    "  }\n"
+    "  // The picture back onto a canvas that lost it.\n"
+    "  //\n"
+    "  // Measured in a colony on 2026-09-20 (wave G, g9, finding B-G23): the hook\n"
+    "  // writes `canvas.width`, which IS the content attribute `width`, and the\n"
+    "  // server renders the `<canvas>` WITHOUT one -- so the next LiveView patch\n"
+    "  // reconciles the attribute away. A canvas without `width` is 300x150 again\n"
+    "  // and its bitmap is blank. Read off one exit eight seconds after the frame:\n"
+    "  // the same node (`link.canvas === the canvas in the document`), `link.w`\n"
+    "  // still 1280, `canvas.width` 300, `getAttribute(\"width\")` NULL. An\n"
+    "  // animating page hides this, because its next frame sets the size again; a\n"
+    "  // page that stands still has no next frame, and its window stays empty for\n"
+    "  // good -- which is every PDF, every article, every form.\n"
+    "  //\n"
+    "  // The repair is the frame already in hand, not a second stream: no roundtrip,\n"
+    "  // no keyframe, nothing the cell has to be asked for. It costs one held JPEG\n"
+    "  // per page (measured 15.8 kB in wave G) and one decode per patch that\n"
+    "  // actually took the size away.\n"
+    "  function pageRepaint(link) {\n"
+    "    if (!link.last || link.busy) return;\n"
+    "    pageDraw(link, link.last, true);\n"
+    "  }\n"
+    "  function pageMods(e) {\n"
+    "    return (e.altKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.metaKey ? 4 : 0) | (e.shiftKey ? 8 : 0);\n"
+    "  }\n"
+    "  function pageSend(link, obj) {\n"
+    "    if (link.chan) link.chan.push(\"frame\", obj);\n"
+    "  }\n"
+    "  // Event coordinates into PAGE pixels: x and y scaled on their own, because a\n"
+    "  // frame and its box need not have the same proportions for a single patch.\n"
+    "  function pageAt(link, e) {\n"
+    "    var box = link.canvas.getBoundingClientRect();\n"
+    "    var said = pageSaid(link.canvas);\n"
+    "    var w = link.w || said.w || box.width;\n"
+    "    var h = link.h || said.h || box.height;\n"
+    "    return {\n"
+    "      x: Math.round((e.clientX - box.left) * (w / (box.width || 1))),\n"
+    "      y: Math.round((e.clientY - box.top) * (h / (box.height || 1)))\n"
+    "    };\n"
+    "  }\n"
+    "  function pagePoint(link, touch) {\n"
+    "    var box = link.canvas.getBoundingClientRect();\n"
+    "    var said = pageSaid(link.canvas);\n"
+    "    var w = link.w || said.w || box.width;\n"
+    "    var h = link.h || said.h || box.height;\n"
+    "    return {\n"
+    "      x: Math.round((touch.clientX - box.left) * (w / (box.width || 1))),\n"
+    "      y: Math.round((touch.clientY - box.top) * (h / (box.height || 1)))\n"
+    "    };\n"
+    "  }\n"
+    "  // The keyboard goes into a HIDDEN FIELD on `document.body`, and that was\n"
+    "  // measured rather than chosen. A canvas is focusable but not editable: the\n"
+    "  // engine sends it no `beforeinput`, no `input` and no `composition*`, so every\n"
+    "  // dead-key sequence, every emoji out of a picker and every on-screen keyboard\n"
+    "  // produces text and no usable `keydown`; and CDP's `Input.insertText` reaches\n"
+    "  // nothing on a canvas at all. A field in the TEMPLATE was the other way and is\n"
+    "  // worse: it would be patched, read by `phx-change` and reported to an\n"
+    "  // application that never asked. So the field hangs outside what LiveView\n"
+    "  // patches, for the same reason wave F writes `data-dock-open` on `<html>`.\n"
+    "  //\n"
+    "  // It is `position: fixed` far off-screen with `opacity: 0` and NOT\n"
+    "  // `display: none`: a box that is not rendered takes no focus and opens no\n"
+    "  // keyboard on a telephone.\n"
+    "  function pageKeys() {\n"
+    "    var field = document.createElement(\"input\");\n"
+    "    field.className = \"display-browser-keys\";\n"
+    "    field.setAttribute(\"type\", \"text\");\n"
+    "    field.setAttribute(\"autocomplete\", \"off\");\n"
+    "    field.setAttribute(\"autocorrect\", \"off\");\n"
+    "    field.setAttribute(\"aria-hidden\", \"true\");\n"
+    "    document.body.appendChild(field);\n"
+    "    return field;\n"
+    "  }\n"
+    "  function pageMark(canvas, on) {\n"
+    "    var fig = canvas.closest ? canvas.closest(\".display-browser\") : null;\n"
+    "    if (!fig) return;\n"
+    "    if (on) fig.setAttribute(\"data-keys\", \"true\");\n"
+    "    else fig.removeAttribute(\"data-keys\");\n"
+    "  }\n"
+    "  // What this output can do decides what is wired. A television declares\n"
+    "  // `[\"audio\"]` and sends nothing -- the honest answer for a thing that only\n"
+    "  // shows. An exit with neither pointer nor touch nor keyboard wires NOTHING: no\n"
+    "  // listener, no field, no work.\n"
+    "  //\n"
+    "  // Every listener hangs on the CANVAS or on the hidden field. None on the root,\n"
+    "  // none on `document` in the capture phase, and not one of them calls\n"
+    "  // `stopPropagation` -- otherwise the page would swallow the tap of the tile\n"
+    "  // beside it, and on a telephone the dock is the only way to a window\n"
+    "  // (§ 5.1, § 5.2, § 5.7).\n"
+    "  function pageWire(link, el) {\n"
+    "    var canvas = link.canvas, offs = [];\n"
+    "    function on(node, type, fn) {\n"
+    "      node.addEventListener(type, fn);\n"
+    "      offs.push(function () { node.removeEventListener(type, fn); });\n"
+    "    }\n"
+    "    if (pageWord(el, \"pointer\")) {\n"
+    "      var send = function (kind) {\n"
+    "        return function (e) {\n"
+    "          var at = pageAt(link, e);\n"
+    "          pageSend(link, { type: \"pointer\", kind: kind, x: at.x, y: at.y,\n"
+    "            button: PAGE_BUTTONS[e.button] || \"left\", clicks: e.detail || 1 });\n"
+    "        };\n"
+    "      };\n"
+    "      var up = send(\"up\");\n"
+    "      on(canvas, \"pointerdown\", function (e) {\n"
+    "        send(\"down\")(e);\n"
+    "        if (link.field) link.field.focus();\n"
+    "      });\n"
+    "      on(canvas, \"pointerup\", up);\n"
+    "      // A cancel travels as an `up` and is NOT a sixth type: the system takes the\n"
+    "      // pointer away (a system gesture, a menu), and a streamed page that never\n"
+    "      // heard the release keeps the button down.\n"
+    "      on(canvas, \"pointercancel\", up);\n"
+    "      on(canvas, \"pointermove\", send(\"move\"));\n"
+    "      on(canvas, \"wheel\", function (e) {\n"
+    "        var at = pageAt(link, e);\n"
+    "        pageSend(link, { type: \"wheel\", x: at.x, y: at.y, dx: e.deltaX, dy: e.deltaY });\n"
+    "      });\n"
+    "      // Swallowed, nothing else: a right click over a picture would otherwise\n"
+    "      // open the VIEWER's menu over a page rendered somewhere else entirely.\n"
+    "      on(canvas, \"contextmenu\", function (e) { e.preventDefault(); });\n"
+    "    }\n"
+    "    if (pageWord(el, \"touch\")) {\n"
+    "      var touches = function (kind) {\n"
+    "        return function (e) {\n"
+    "          var list = e.changedTouches || [], points = [], i;\n"
+    "          for (i = 0; i < list.length; i++) points.push(pagePoint(link, list[i]));\n"
+    "          pageSend(link, { type: \"touch\", kind: kind, points: points });\n"
+    "        };\n"
+    "      };\n"
+    "      on(canvas, \"touchstart\", touches(\"start\"));\n"
+    "      on(canvas, \"touchmove\", touches(\"move\"));\n"
+    "      on(canvas, \"touchend\", touches(\"end\"));\n"
+    "    }\n"
+    "    if (pageWord(el, \"keyboard\")) {\n"
+    "      link.field = pageKeys();\n"
+    "      on(link.field, \"keydown\", function (e) {\n"
+    "        pageSend(link, { type: \"key\", kind: \"down\", key: e.key, code: e.code,\n"
+    "          text: \"\", mods: pageMods(e) });\n"
+    "      });\n"
+    "      on(link.field, \"keyup\", function (e) {\n"
+    "        pageSend(link, { type: \"key\", kind: \"up\", key: e.key, code: e.code,\n"
+    "          text: \"\", mods: pageMods(e) });\n"
+    "      });\n"
+    "      // Whatever the field ends up holding is what was typed -- a dead-key\n"
+    "      // sequence, an emoji from a picker, a whole line from a phone's keyboard.\n"
+    "      // Read and emptied at once, so the next one starts from nothing.\n"
+    "      on(link.field, \"input\", function () {\n"
+    "        var text = link.field.value;\n"
+    "        link.field.value = \"\";\n"
+    "        if (text) pageSend(link, { type: \"text\", text: text });\n"
+    "      });\n"
+    "      on(link.field, \"focus\", function () { pageMark(canvas, true); });\n"
+    "      on(link.field, \"blur\", function () { pageMark(canvas, false); });\n"
+    "      on(canvas, \"focus\", function () { if (link.field) link.field.focus(); });\n"
+    "    }\n"
+    "    return function () {\n"
+    "      for (var i = 0; i < offs.length; i++) offs[i]();\n"
+    "    };\n"
+    "  }\n"
+    "  // A topic, opened. EVERY join of this hook goes through here, and a rejoin\n"
+    "  // builds a NEW channel rather than joining the old one again -- the shipped\n"
+    "  // client throws on the second one (`phoenix.min.js`: `if (this.joinedOnce)\n"
+    "  // throw new Error(\"tried to join multiple times\")`), silently, because the\n"
+    "  // call sits in a `setTimeout`. And even without the throw the old channel is\n"
+    "  // finished: its own `onClose` has already run `socket.remove(this)`, so it\n"
+    "  // hangs on nothing and would never see an `image` again. The microphone in\n"
+    "  // this same script builds a channel per call for the same reason.\n"
+    "  function pageOpen(link, socket, el) {\n"
+    "    var vp = pageViewport(el);\n"
+    "    // FLAT, one level (OR-G32). The `web` cell puts everything but `mount` into\n"
+    "    // `LinkRequest.params`, and the cell reads `params.viewport` -- a payload\n"
+    "    // nested one deeper would arrive as `params.params.viewport`, which nobody\n"
+    "    // reads, and every page would stand at the shipped default.\n"
+    "    var chan = socket.channel(\"page:\" + link.key, {\n"
+    "      mount: link.canvas.getAttribute(\"data-mount\") || \"browser\",\n"
+    "      viewport: { width: vp.width, height: vp.height, dpr: vp.dpr, mobile: vp.mobile }\n"
+    "    });\n"
+    "    link.chan = chan;\n"
+    "    chan.on(\"image\", function (buf) { pageDraw(link, buf); });\n"
+    "    chan.onClose(function () {\n"
+    "      // Only the channel that is CURRENT may ask for a successor: a close\n"
+    "      // arriving late from one already replaced would open a second stream on\n"
+    "      // the same topic, and the cell would send two screencasts for one frame.\n"
+    "      if (link.gone || link.chan !== chan || !link.rejoin) return;\n"
+    "      link.rejoin = 0;\n"
+    "      root.setTimeout(function () {\n"
+    "        if (!link.gone && link.chan === chan) pageOpen(link, socket, el);\n"
+    "      }, PAGE_REJOIN_MS);\n"
+    "    });\n"
+    "    chan.join()\n"
+    "      .receive(\"ok\", function () {\n"
+    "        // A join that WORKED earns the next rejoin, and that is the whole\n"
+    "        // budget: a cell restarting again hours later is picked up again,\n"
+    "        // while a topic that keeps closing without ever answering is not\n"
+    "        // knocked at once a second all day.\n"
+    "        link.rejoin = 1;\n"
+    "        pageLink(link, \"up\", \"\");\n"
+    "      })\n"
+    "      .receive(\"error\", function (e) {\n"
+    "        // The cell's own word, verbatim: \"no browser mounted\" is a different\n"
+    "        // repair from \"unknown page\".\n"
+    "        pageLink(link, \"down\", (e && e.reason) || \"refused\");\n"
+    "      })\n"
+    "      .receive(\"timeout\", function () {\n"
+    "        pageLink(link, \"down\", \"the browser never answered\");\n"
+    "      });\n"
+    "    return chan;\n"
+    "  }\n"
+    "  function pageJoin(el, st, canvas, key) {\n"
+    "    var socket = root.SurfaceSocket && root.SurfaceSocket.getSocket\n"
+    "      && root.SurfaceSocket.getSocket();\n"
+    "    if (!socket) { pageLink({ canvas: canvas }, \"down\", \"no socket\"); return null; }\n"
+    "    var link = { key: key, canvas: canvas, st: st, chan: null, field: null, unwire: null,\n"
+    "      frames: st.pageFrames[key] || 0, dropped: 0, busy: false, w: 0, h: 0,\n"
+    "      last: null, lastW: 0, lastH: 0,\n"
+    "      scrollX: 0, scrollY: 0, rejoin: 1, word: \"\", reason: \"\", gone: false };\n"
+    "    var said = pageSaid(canvas);\n"
+    "    pageShape(canvas, said.w, said.h);\n"
+    "    link.unwire = pageWire(link, el);\n"
+    "    pageOpen(link, socket, el);\n"
+    "    st.pages[key] = link;\n"
+    "    st.pageLinks++;\n"
+    "    return link;\n"
+    "  }\n"
+    "  // The ONE door out of a topic, and all four ways out go through it: level 0,\n"
+    "  // the object gone, the hook destroyed, and the driver's own hand. Channel,\n"
+    "  // field and listeners are given back in this order, and LETTING THE SENDER GO\n"
+    "  // is what the cell reads as \"the viewer left\" -- the last one stops the\n"
+    "  // screencast. There is no second message for it.\n"
+    "  function pageLeave(st, key) {\n"
+    "    var link = st.pages[key];\n"
+    "    if (!link) return;\n"
+    "    link.gone = true;\n"
+    "    link.last = null;\n"
+    "    delete st.pages[key];\n"
+    "    st.pageLinks--;\n"
+    "    if (link.unwire) link.unwire();\n"
+    "    // The field hangs on `document.body`, outside everything LiveView clears\n"
+    "    // away: one per reconnect would be a leak with a clock on it.\n"
+    "    if (link.field && link.field.parentNode) link.field.parentNode.removeChild(link.field);\n"
+    "    try { if (link.chan) link.chan.leave(); } catch (e) { /* the socket may be down */ }\n"
+    "    st.pageLeft++;\n"
+    "  }\n"
+    "  function pageSweep(el, st) {\n"
+    "    var list = el.querySelectorAll(\"canvas.display-browser-view[data-page]\");\n"
+    "    var seen = {}, keys = [], i, key, link, said;\n"
+    "    for (i = 0; i < list.length; i++) {\n"
+    "      var canvas = list[i];\n"
+    "      key = canvas.getAttribute(\"data-page\") || \"\";\n"
+    "      // A frame with no stream behind it: the window stands, and that is all\n"
+    "      // this one is (§ 6.14).\n"
+    "      if (!key) continue;\n"
+    "      var win = canvas.closest ? canvas.closest(\"[data-level]\") : null;\n"
+    "      // Text, always: the template language reads an `int 0` as empty, so the\n"
+    "      // number is parsed here and compared as a number.\n"
+    "      var level = win ? parseInt(win.getAttribute(\"data-level\"), 10) : 0;\n"
+    "      if (!(level >= 1)) continue;\n"
+    "      seen[key] = true;\n"
+    "      link = st.pages[key];\n"
+    "      if (link && link.canvas === canvas) {\n"
+    "        // The node survived the patch and its SIZE did not (B-G23).\n"
+    "        if (link.last\n"
+    "            && (canvas.width !== link.lastW || canvas.height !== link.lastH)) {\n"
+    "          pageShape(canvas, link.lastW, link.lastH);\n"
+    "          pageRepaint(link);\n"
+    "        }\n"
+    "        continue;\n"
+    "      }\n"
+    "      if (link) {\n"
+    "        // The same page on a NEW element: morphdom replaced the canvas. The\n"
+    "        // channel stays -- re-joining would cost the cell a whole page.\n"
+    "        if (link.unwire) link.unwire();\n"
+    "        if (link.field && link.field.parentNode) link.field.parentNode.removeChild(link.field);\n"
+    "        link.field = null;\n"
+    "        link.canvas = canvas;\n"
+    "        link.w = 0;\n"
+    "        link.h = 0;\n"
+    "        said = pageSaid(canvas);\n"
+    "        pageShape(canvas, said.w, said.h);\n"
+    "        // The new node came from the SERVER, which renders the curator's\n"
+    "        // `data-page-state` and an empty line -- what the CLIENT found out\n"
+    "        // about this join is said again, or a refusal would vanish on the\n"
+    "        // next unrelated patch. Only the client's own word: the server's is\n"
+    "        // freshly rendered and already right (OR-G.g18.1).\n"
+    "        if (link.word) pageLink(link, link.word, link.reason);\n"
+    "        link.unwire = pageWire(link, el);\n"
+    "        // A fresh node is blank, and the channel deliberately stays -- so the\n"
+    "        // only picture there will ever be for a page that stands still is the\n"
+    "        // one already held (B-G23).\n"
+    "        pageRepaint(link);\n"
+    "        continue;\n"
+    "      }\n"
+    "      pageJoin(el, st, canvas, key);\n"
+    "    }\n"
+    "    for (key in st.pages) keys.push(key);\n"
+    "    for (i = 0; i < keys.length; i++) {\n"
+    "      if (!seen[keys[i]]) pageLeave(st, keys[i]);\n"
+    "    }\n"
+    "  }\n"
+    "  function pageAll(st) {\n"
+    "    var keys = [], key, i;\n"
+    "    for (key in st.pages) keys.push(key);\n"
+    "    for (i = 0; i < keys.length; i++) pageLeave(st, keys[i]);\n"
+    "  }\n"
     "  var hook = {\n"
     "    mounted: function () {\n"
     "      var el = this.el;\n"
     "      var st = { flips: 0, ticks: 0, chimes: 0, ends: 0, clocks: 0, optimistic: 0,\n"
-    "                 restored: 0, drawn: {}, audio: null, said: false };\n"
+    "                 restored: 0, drawn: {}, audio: null, said: false,\n"
+    "                 pages: {}, pageFrames: {}, pageLinks: 0, pageLeft: 0 };\n"
     "      root.__displayScene = st;\n"
     "      // The beat of the ring, and nothing more: which window is up there\n"
     "      // now, since when, when it last rang. It belongs to THIS mount\n"
@@ -4896,9 +5512,11 @@ SCENE_CLIENT_JS = (
     "      st.tick = function () { tick(el, st); };\n"
     "      st.ring = function () { ring(el, st, seen); };\n"
     "      st.clock = function () { clocks(el, st); };\n"
+    "      st.pageSweep = function () { pageSweep(el, st); };\n"
     "      this.__scene = { st: st, before: scan(el), held: [], seen: seen, iv: iv, disarm: disarm,\n"
     "                       press: press, typed: typed };\n"
     "      tick(el, st); ring(el, st, seen); clocks(el, st);\n"
+    "      pageSweep(el, st);\n"
     "      toEnd(el, [], st);\n"
     "    },\n"
     "    beforeUpdate: function () {\n"
@@ -4916,6 +5534,9 @@ SCENE_CLIENT_JS = (
     "      ring(this.el, this.__scene.st, this.__scene.seen);\n"
     "      clocks(this.el, this.__scene.st);\n"
     "      toEnd(this.el, this.__scene.held || [], this.__scene.st);\n"
+    "      // Last, and after the patch: a page joins while its window STANDS,\n"
+    "      // and the level it stands on is what the patch has just written.\n"
+    "      pageSweep(this.el, this.__scene.st);\n"
     "    },\n"
     "    destroyed: function () {\n"
     "      if (!this.__scene) return;\n"
@@ -4926,6 +5547,8 @@ SCENE_CLIENT_JS = (
     "      this.el.removeEventListener(\"pointerdown\", press, true);\n"
     "      document.removeEventListener(\"keyup\", typed);\n"
     "      this.__scene.disarm();\n"
+    "      // Every topic this hook still holds, through the one door.\n"
+    "      pageAll(this.__scene.st);\n"
     "      if (this.__scene.st.audio) { try { this.__scene.st.audio.close(); } catch (e) { /* gone */ } }\n"
     "      this.__scene = null;\n"
     "    }\n"
@@ -5001,7 +5624,7 @@ def windows():
 
 
 def contents():
-    """Catalogue B: the twenty-six content components, all `layer: "content"`.
+    """Catalogue B: the twenty-seven content components, all `layer: "content"`.
 
     None of them writes glass: a content component sits on a window's
     `.inner` fill, and the `web` cell refuses the material on this layer.
@@ -5037,6 +5660,13 @@ def contents():
         _c("display-media", MEDIA_TEMPLATE, {
             "src": "text", "alt": "text", "caption": "text",
             "figure": "html", "ratio": "text"}),
+        # New in 2.6.0: a live page, drawn into the canvas by the scene hook at
+        # the root (R-G8) rather than by a script of its own. `mount` is the one
+        # prop an application leaves empty -- the screen writes it in `add_tree`
+        # out of `params.browser_mount`, the way it writes `for` on a field.
+        _c("display-browser", BROWSER_TEMPLATE, {
+            "page": "text", "mount": "text", "url": "text",
+            "title": "text", "viewport": "text", "state": "text"}),
         _c("display-document", DOCUMENT_TEMPLATE, {
             "title": "text", "body": "html", "page": "int",
             "pages": "int", "source": "text"}),
@@ -5867,14 +6497,71 @@ def int_or_none(value):
         return None
 
 
-def state_write_again(request, body, hop):
-    """Nothing, or this very pass once more (GH #744).
+def patch_ops(request):
+    """The drawing the pass handed to its own state write, now that the row has landed.
 
-    The compare-and-set of `state_write_ops` refuses a write whose row has moved on since
-    the pass read it. That refusal is not an error: it means another event's pass landed
-    in between, and the answer is to run THIS pass again on the row the store now holds.
-    The mark it started from rides the request, so no memory in the cell is needed -- and
-    a repeat is an `absorb`, so it writes nothing of its own (OR-F6).
+    GH #765, way A (the owner's ruling, 19.09.): a patch says what the screen IS, so it
+    may not leave before the store has agreed. The calls are the ones the pass computed --
+    nothing is recomputed here, because the reply carries no state to compute from.
+    """
+    calls = request.get("patch")
+    if not isinstance(calls, list) or not calls:
+        return []
+    return [emission("patch",
+                     {"messages": [tool_call(c, "d-%d" % i) for i, c in enumerate(calls)]})]
+
+
+def row_landed(body, hop):
+    """Did the store SAY the state row is this pass's now? Read, never assumed.
+
+    Both spellings of `state_write_ops` are recognised on their own leg and nothing else
+    is: the compare-and-set `update` of every later pass, and the `insert` of the birth
+    bundle, which has no version to compare against and therefore cannot be refused. A
+    reply that names neither leg -- truncated, cut short, shaped in a way this cell does
+    not know -- has said nothing about the row, and under GH #765 (way A) "nothing said"
+    is "not landed": a patch says what the screen IS, so it may not leave on an answer
+    nobody could read. The pass runs again instead, which is what a refusal does anyway
+    and costs the one round trip way A already pays.
+
+    The polarity is the whole of way A, so it is written positively here. The first cut
+    of the strand asked `rows_affected_of(...) != 0`, and `rows_affected_of` answers
+    `None` when neither `results[]` nor the hop names the leg -- `None != 0` is true, so
+    every unreadable reply drew. `bundle_failed` does not catch those: it reads
+    `error_code`, and an answer with no countable row carries none.
+
+    Exactly one row: the write names one identity (`owner`, `view_id`) and its version, so
+    the store's own count is 1 or it is a refusal. A reply of 2 means the table holds two
+    state rows, which is the very thing the birth bundle exists to prevent -- and then the
+    pass repeats until `STATE_RETRY_MAX` and tells the application, instead of drawing a
+    screen out of a table nobody can read back.
+    """
+    for operation in ("update", "insert"):
+        moved = rows_affected_of(body, hop, operation)
+        if moved is not None:
+            return moved == 1
+    return False
+
+
+def state_write_again(request, body, hop):
+    """The answer to a state write: the pass's drawing, or this very pass once more.
+
+    Two halves, and they are the whole of what a reply to the state row means.
+
+    The row LANDED (GH #765, way A): the state this pass computed is now the screen's, so
+    its patch goes out -- and not one message earlier. Before way A the patch travelled
+    with the write, so a pass whose write was refused had already drawn a state that never
+    became the screen's; 190 of 401 writes measured on the twin were refused
+    (`plans/welle-h3-2026-09-18/berichte/taps-report.md` § 21), and the flicker the owner
+    saw was those drawings being taken back by the next pass. The price is one round trip
+    of latency per event, and it is the trade way A makes on purpose.
+
+    The row did NOT land (GH #744): the compare-and-set of `state_write_ops` refuses a
+    write whose row has moved on since the pass read it -- or the reply never said the row
+    landed at all (`row_landed`), which counts the same way and for the same reason. That
+    refusal is not an error: it means another event's pass landed in between, and the
+    answer is to run THIS pass again on the row the store now holds -- and to draw NOTHING, because what this pass rendered
+    was never the screen. The mark it started from rides the request, so no memory in the
+    cell is needed -- and a repeat is an `absorb`, so it writes nothing of its own (OR-F6).
 
     The count is capped (`STATE_RETRY_MAX`), and the cap is a guard against a loop rather
     than a budget for contention -- the comment on the constant has the measurement. When
@@ -5885,18 +6572,18 @@ def state_write_again(request, body, hop):
     a hold, a verdict, a stroke -- still leaves the two keys empty, because there is
     nobody to tell.
     """
+    why = bundle_failed(body, hop)
+    if not why and row_landed(body, hop):
+        return patch_ops(request)
     mark = request.get("retry")
     if not isinstance(mark, dict):
         return []
-    why = bundle_failed(body, hop)
     if why:
         # A refused leg is not a collision: repeating it would repeat the refusal three
         # times over. The state row stands as the pass before left it, and that is worth
         # saying once.
         sys.stderr.write("compose: the state write failed: %s\n" % (why,))
         return refuse("store_failed", "the state write failed: %s" % (why,), "", "")
-    if rows_affected_of(body, hop, "update") != 0:
-        return []
     tries = int_or_none(mark.get(STATE_RETRIES)) or 0
     if tries >= STATE_RETRY_MAX:
         event = event_of_request(dict(mark, tick=True)) or {}
@@ -5918,9 +6605,10 @@ def pass_views(body, ctx, hop):
         request = None
     if not isinstance(request, dict):
         return []
-    # The reply to the state write is silence (OR-H2): a pass out of it would be an
-    # endless round, and the row it wrote is the one this cell just computed. With ONE
-    # exception, and it is the whole of GH #744 -- a write that did not land.
+    # The reply to the state write starts no new pass (OR-H2): a pass out of it would be
+    # an endless round, and the row it wrote is the one this cell just computed. What it
+    # does carry is the drawing of that very pass (GH #765, way A) -- or, when the write
+    # was refused, the repeat of GH #744 and no drawing at all.
     if request.get("state"):
         return state_write_again(request, body, hop)
 
@@ -6051,10 +6739,22 @@ def add_tree(want, parent, node, index, tiles=None, window="", attrs=None, regio
     key = node.get("key")
     oid = "%s/%s" % (parent, key if is_node_key(key) else index)
     props = dict(node.get("props") or {})
+    component = str(node.get("component") or "")
     # The state is the curator's word. An application may say `urgent` or
     # `hidden` about a window; any other word is dropped before the curator
     # looks, so a `focus` an app claims never reaches the screen (GH #679).
-    if props.get("state") not in STATE_WORDS:
+    #
+    # A PAGE is the one node with a state of its OWN, and the two lists meet
+    # nowhere: `loading|ready|error|suspended` is what the cell is doing with
+    # the page, not what the application wants of the window (contracts 4).
+    # Measured on the twin (`g15.md`, second finding at the edge): the window
+    # guard ran here on every node, so the word the application had mapped was
+    # dropped one step before the markup and every page stood as
+    # `data-page-state=""` -- the sheet's `error` rule had never once fired.
+    # Still fail-closed, and for the same reason: a word outside the four has
+    # no rule behind it, so wearing it would be a lie in the markup.
+    words = PAGE_STATES if component == "display-browser" else STATE_WORDS
+    if props.get("state") not in words:
         props.pop("state", None)
     # `age` belongs to the channel: it is how the screen tells a window that
     # arrived from one that is on its way out, and an application's word for
@@ -6063,7 +6763,7 @@ def add_tree(want, parent, node, index, tiles=None, window="", attrs=None, regio
     # The ladder is resolved at the door, once, on every window (R-23-2,
     # OR-F19): the sheet reads `data-layer` and a half-empty attribute is a
     # rule that never fires.
-    if str(node.get("component") or "") in WINDOWS:
+    if component in WINDOWS:
         # The curator's values, systemwide (§ 3.1): the same numbers on every output.
         # `layer` is resolved here once so the sheet always reads one of the two words.
         props["layer"] = layer_of(props)
@@ -6082,10 +6782,18 @@ def add_tree(want, parent, node, index, tiles=None, window="", attrs=None, regio
     # Written even when nothing encloses the field: an empty `for` makes the
     # event nameless and it dead-letters where a person reads it, while a value
     # the application invented would send the sentence to a foreign view.
-    if str(node.get("component") or "") == "display-input":
+    if component == "display-input":
         props["for"] = window
+    # And the screen names the cell a page is streamed from (§ 7.9), out of
+    # `params.browser_mount` -- the application cannot know that name either.
+    # Written on EVERY pass and not only into an empty slot: `object.update`
+    # merges per key, so a mount an application once invented would stand on
+    # that object for ever and the page would go on asking a cell that is not
+    # there.
+    if component == "display-browser":
+        props["mount"] = BROWSER_MOUNT
     want[oid] = {
-        "component": str(node.get("component") or ""),
+        "component": component,
         "parent": parent,
         "ord": index * ORD_STEP,
         "props": props,
@@ -6096,7 +6804,7 @@ def add_tree(want, parent, node, index, tiles=None, window="", attrs=None, regio
     # application says about itself in one line, and it belongs in the dock,
     # not a second time inside the big window. Exactly one per window; a
     # second one keeps its place in the tree and is drawn like any child.
-    if tiles is not None and str(node.get("component") or "") in WINDOWS:
+    if tiles is not None and component in WINDOWS:
         rest = []
         for kid in kids:
             if (oid not in tiles and kid.get("key") == TILE_KEY
@@ -6289,8 +6997,14 @@ STATE_RETRY_MAX = 16
 STATE_RETRIES = "retries"
 
 
-def state_write_ops(state, now, settings, screens, said, held=None, mark=None):
+def state_write_ops(state, now, settings, screens, said, held=None, mark=None, patch=None):
     """The second store bundle of a read pass: the state row, written under a condition.
+
+    Since GH #765 (way A) it carries the pass's whole drawing as well: `patch` is the list
+    of `object.*` calls the pass computed, and it travels on the request so the REPLY can
+    send it once the store has said the row landed. There is nowhere else to keep it -- the
+    cell has no memory between two messages -- and recomputing it on the reply would mean a
+    second pass over a state nobody read back.
 
     A compare-and-set, and not the blind `delete` + `insert` this used to be (GH #744).
     Every event starts a read pass of its own and this cell has no memory between two
@@ -6333,6 +7047,8 @@ def state_write_ops(state, now, settings, screens, said, held=None, mark=None):
     request = {"state": True}
     if isinstance(mark, dict):
         request["retry"] = mark
+    if patch:
+        request["patch"] = list(patch)
     if prev is None:
         legs = [tool_call({"operation": "delete", "table": TABLE,
                            "where": {"owner": STATE_OWNER, "view_id": STATE_VIEW_ID}},
@@ -7373,12 +8089,15 @@ def pass_read(body, ctx):
     define = plan.get("define")
     calls = patches(want, have, define if isinstance(define, list) else [], bootstrap)
     calls += page_ops(want, have, pages, bootstrap)
-    out = []
-    if calls:
-        out.append(emission("patch",
-                            {"messages": [tool_call(c, "d-%d" % i) for i, c in enumerate(calls)]}))
-    return (out + ops + refusals_of(state, spoken, said_before(held))
-            + state_write_ops(state, now, KNOB_SETTINGS, KNOB_SCREENS, spoken, held, mark))
+    # The patch does NOT leave here any more (GH #765, way A, the owner's ruling of
+    # 19.09.): it rides the state write and is drawn from the REPLY, once the store has
+    # said the row landed (`patch_ops`). Everything else this pass has to say goes now --
+    # the judge's question is about the EVENT and not about the drawing (and a repeat does
+    # not ask it a second time, just above), and a refusal belongs to the application that
+    # wrote, not to the browsers.
+    return (ops + refusals_of(state, spoken, said_before(held))
+            + state_write_ops(state, now, KNOB_SETTINGS, KNOB_SCREENS, spoken, held, mark,
+                              calls))
 
 
 # ---------------------------------------------------------------------------
@@ -7497,17 +8216,19 @@ def read_knobs(params):
 
 
 def main():
-    global VOICE_MOUNT, FONT_BASE
+    global VOICE_MOUNT, FONT_BASE, BROWSER_MOUNT
     doc = json.load(sys.stdin)
-    # The two params this cell reads. `voice_mount` names the `voice` cell the
-    # screen's microphone joins, so one screen can be pointed at a voice cell
-    # that was mounted under another name -- and a screen with no voice cell
-    # beside it simply has a button whose join is refused, out loud, on the
-    # page. `font_base` is where the operator serves the two faces from, or
-    # empty for no faces at all.
+    # The three params this cell reads by name. `voice_mount` names the `voice`
+    # cell the screen's microphone joins, so one screen can be pointed at a
+    # voice cell that was mounted under another name -- and a screen with no
+    # voice cell beside it simply has a button whose join is refused, out loud,
+    # on the page. `browser_mount` is the same statement for pages: the cell a
+    # `page:<page>` join finds. `font_base` is where the operator serves the two
+    # faces from, or empty for no faces at all.
     params = doc.get("params") or {}
     if isinstance(params, dict):
         VOICE_MOUNT = str(params.get("voice_mount") or "voice")
+        BROWSER_MOUNT = str(params.get("browser_mount") or "browser")
         FONT_BASE = str(params.get("font_base") or "")
     read_knobs(params if isinstance(params, dict) else {})
     body = doc.get("body") or {}

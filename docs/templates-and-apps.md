@@ -29,8 +29,9 @@ means instantiating the new version beside the old one and moving the edges.
 
 An app is a sealed hive at the rim of a member, instantiated by an ordinary mutation into that
 member's `./apps` container. It has no mount, no secret and no channel of its own. There are
-exactly three ways it plugs in: it may observe what the conversation carries, offer a tool to
-the member's assistant, and write to a screen. It is never an interception. Every edge it gets
+exactly four ways it plugs in: it may observe what the conversation carries, offer a tool to
+the member's assistant, write to a screen, and drive a device cell of the member's, such as a
+browser. It is never an interception. Every edge it gets
 is an additional one, so a path that existed before the app fires exactly as it did before,
 which is what makes an app installable and removable without re-reading the member.
 

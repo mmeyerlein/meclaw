@@ -64,7 +64,10 @@ pub struct ChildSpec {
 /// stderr in this design, and a full stderr pipe would wedge the child.
 pub struct StdioChild {
     pub(crate) child: Child,
-    pub(crate) stdin: ChildStdin,
+    /// What the child reads. `pub` because a consumer outside this module
+    /// writes to it without taking the child apart — the `harness` cell does,
+    /// and `ChildPipes` is the same half after a `split`.
+    pub stdin: ChildStdin,
     pub(crate) stdout: ChildLines,
     /// Reaps the child's process group on every teardown path, including the
     /// ones that never reach `terminate`.
@@ -193,12 +196,109 @@ impl StdioChild {
         self.child.id()
     }
 
+    /// Take the pipes apart from the process (GH #766).
+    ///
+    /// The one addition this core needed for a child that does not speak
+    /// line-JSON. A CDP browser talks NUL-separated JSON over a pair of pipes,
+    /// and the loop that reads it has to own the read half while three other
+    /// tasks write and reap — a shape `StdioChild`, which owns all three halves
+    /// so that exactly one task can, cannot hold.
+    ///
+    /// So the halves come apart, and the teardown does NOT: everything that
+    /// ends a child process lives in [`ChildReaper::terminate`], and
+    /// [`StdioChild::terminate`] is that same code reached through this split.
+    /// The three-stage escalation exists once in the tree.
+    pub fn split(self) -> (ChildPipes, ChildReaper) {
+        (
+            ChildPipes {
+                stdin: self.stdin,
+                stdout: self.stdout.into_inner(),
+            },
+            ChildReaper {
+                child: self.child,
+                guard: self.guard,
+                _journal_note: self._journal_note,
+                _sandbox: self._sandbox,
+            },
+        )
+    }
+
     /// End the child and reap it. Returns only once the process is gone.
     ///
-    /// Three stages, escalating: close stdin (a well-behaved line-JSON child
-    /// exits on EOF), wait for `grace`, then SIGKILL and wait unconditionally.
-    /// The final `wait()` is what turns a killed process into a reaped one —
-    /// without it we would leave a zombie behind.
+    /// Closing stdin first is the first of three escalating stages: a
+    /// well-behaved line-JSON child exits on EOF. The other two live in
+    /// [`ChildReaper::terminate`].
+    pub async fn terminate(self, grace: std::time::Duration) -> ChildExit {
+        let (pipes, reaper) = self.split();
+        drop(pipes.stdin);
+        let exit = reaper.terminate(grace).await;
+        // Held until the end, so the split changes nothing about what the child
+        // sees: closing the read half early would hand a writing child a
+        // `SIGPIPE` it never used to get.
+        drop(pipes.stdout);
+        exit
+    }
+}
+
+/// The child's two pipes, without the process (GH #766).
+///
+/// `stdout` is the buffered reader rather than the line stream: a consumer that
+/// frames on something other than a newline — a NUL byte, for CDP — needs the
+/// buffer and not the framing. A line-JSON consumer gets its `Lines` back with
+/// `.lines()`, which costs nothing.
+pub struct ChildPipes {
+    /// What the child reads.
+    pub stdin: ChildStdin,
+    /// What the child writes, buffered and unframed.
+    pub stdout: BufReader<ChildStdout>,
+}
+
+/// The process half of a split child: what has to be ended and reaped.
+///
+/// It owns every teardown guard the [`StdioChild`] owned — the process-group
+/// sweep, the orphan-journal note and the sandbox scope — so a split child is
+/// exactly as hard to leak as an unsplit one, on every path including the ones
+/// that never reach [`ChildReaper::terminate`].
+pub struct ChildReaper {
+    child: Child,
+    guard: ProcessGroupGuard,
+    _journal_note: crate::orphan_journal::SpawnNote,
+    _sandbox: crate::sandbox::SandboxScope,
+}
+
+impl ChildReaper {
+    /// OS process id while the child is running; `None` once it was reaped.
+    pub fn pid(&self) -> Option<u32> {
+        self.child.id()
+    }
+
+    /// The cgroup the sandbox created for this child, when it created one.
+    ///
+    /// The caller that asks is the one checking whether the child is still in
+    /// it (GH #766): a child that re-homed itself after `exec` left its
+    /// ceiling behind, and the only way to notice is to compare this against
+    /// where the child actually is.
+    pub fn sandbox_dir(&self) -> Option<&std::path::Path> {
+        self._sandbox.dir()
+    }
+
+    /// How the child ended, if it already has. Never waits.
+    ///
+    /// The difference between "the browser is gone" and "the browser is gone,
+    /// exit code 133" is the whole diagnosis: 133 with "No usable sandbox" on
+    /// its stderr is what a packaged browser does where its own sandbox cannot
+    /// run, and an operator who is not told the number has nothing to look up.
+    pub fn exited(&mut self) -> Option<ChildExit> {
+        match self.child.try_wait() {
+            Ok(Some(status)) => Some(exit_of(status)),
+            Ok(None) => None,
+            Err(_) => Some(ChildExit::SpawnLost),
+        }
+    }
+
+    /// Stages two and three: wait for `grace`, then SIGKILL and wait
+    /// unconditionally. The final `wait()` is what turns a killed process into
+    /// a reaped one — without it we would leave a zombie behind.
     ///
     /// With a process group every stage addresses the GROUP instead of the one
     /// process, and a final `SIGKILL` sweep follows. The sweep is not
@@ -206,7 +306,6 @@ impl StdioChild {
     /// descendants with it, so without it a harness's shell jobs would outlive
     /// the cell — the whole point of the group.
     pub async fn terminate(mut self, grace: std::time::Duration) -> ChildExit {
-        drop(self.stdin);
         let pgid = self.guard.pgid();
         signal_group(pgid, reap_signals::SIGTERM);
         let exit = match tokio::time::timeout(grace, self.child.wait()).await {

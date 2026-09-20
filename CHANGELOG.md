@@ -10,7 +10,152 @@ mount a `web` cell owns and the documented `error_code` strings
 listed under **Breaking** in its release, with the migration named. The Rust
 crates are internals and move without notice.
 
-## [Unreleased]
+## [0.40.0] — 2026-09-20
+
+### Added
+
+- **A browser is a cell** (`browser@1.0.0`, GH #766, ADR-0044). One
+  Chromium-based browser per member, a browser context per identity and a page
+  per card, with each page's picture on a `page:<page>` topic of a display's own
+  socket and pointers, wheels, keys and text coming back on the same link. A
+  frame never becomes a message; what the topology hears about are pages —
+  `page` on every state change, `error` on a failure, `receipt` per message.
+
+  The browser itself is a **prerequisite out of the machine's package system**,
+  not something this project ships: `params.chromium_path` is required, has no
+  default and no search path, and the cell adds no sandbox flag, refuses
+  `--no-sandbox` and does not start a browser whose own sandbox does not hold —
+  measured after the spawn, through the pid it remembers. What `params.sandbox`
+  does here is the cell's own ceiling, a cgroup cap and nothing else
+  (ADR-0043).
+
+  That cap follows the browser, because a packaged one does not stay where it
+  was started: its packaging re-homes the process into a scope of its own
+  within 41–83 ms, long before the cell's sandbox verdict at 159–194 ms, and
+  the sub-cgroup the substrate had made for it is then empty. So the cell reads
+  where its child actually sits and caps *that* — not by writing the three
+  files, which held for the life of the browser and was gone at the next
+  `daemon-reload`, but by asking whoever owns the cgroup (`set-property
+  --runtime` on the unit that carries it) and reading the values back. The
+  refusals are fail-closed and named: a cgroup that is no unit, a cgroup that
+  is the colony's own or an ancestor of it — capping that would cap the colony
+  — a manager that does not answer, and a read-back that disagrees. The escape
+  hatch is the same one as everywhere, an explicit `{"trust": "trusted"}`, and
+  every refusal says so. Measured cost: 7–18 ms against 1–3 ms for the write,
+  inside a window the spawn needs anyway. An OOM kill in a scope that is not
+  ours is still named -- the cell remembers the count of the cgroup above
+  before it caps, and reports `oom_kill=<n>` from the difference when its own
+  disappears with its last process.
+
+  CDP travels over `--remote-debugging-pipe` on a pair of file descriptors, so
+  no port is opened and no dependency is added. A context is ephemeral by
+  design, so a restart is a logged-out browser; the page rows are not, so a
+  restart reopens what the last life was holding.
+
+  `params.sandbox` is **required** for this one cell type, and a `restricted`
+  profile must carry `limits`. Everywhere else an absent block means the
+  unenforced historical behaviour; here it would mean a process tree with a
+  renderer per site and no cap at all, and only the shipped `config.json` made
+  that look safe. An operator who wants no ceiling writes `{"trust":
+  "trusted"}` and has said so.
+
+  A page comes back out of `suspended` two ways, `in_navigate` and a join on
+  its topic, and the viewport is applied to the page rather than only reported
+  about it -- a pointer's coordinates are CSS pixels of the page viewport. A
+  page displaced by `max_pages` emits `page {state:"closed"}`, so the
+  application that owned its card hears about it and the row goes with it. The
+  wait between the cell's two halves and a `page:` join both stand under
+  `params.external_timeout_ms` like every other wait in this cell: a
+  long-running cell has no message-timeout behind it.
+
+- **A second kind of topic on a display's socket** (`web@2.1.0`, GH #766). The
+  socket carried one foreign topic prefix, `voice:`, and three
+  `starts_with("voice:")` guards to do it. It now reads a table of kinds:
+  `page:<page>` reaches the mount `browser` when a join names none, carries
+  binary out of the cell as the event `image`, accepts no binary from the
+  client at all, and is capped at eight live links per socket -- against
+  `voice:`'s mount `voice`, event `audio` both ways and cap of four. The count
+  is per kind, so a screen already holding four calls can still open a window.
+
+  The join payload is flat, and what the door does not read now travels: a
+  `LinkRequest` carries `params`, the join payload minus the `mount` that chose
+  the door, one level deep. That is how a `page:` join brings its viewport to a
+  cell without the socket learning what a viewport is.
+
+### Changed
+
+- **The ref pins moved with it** (`canvy@2.3.2`, GH #766). A ref names a
+  version, and a version that no longer exists is `template_missing` at
+  instantiation — so every template that refs the `web` cell moved to
+  `web@2.1.0` in the same commit as the bump. Nothing else about `canvy`
+  changed.
+
+- **A window may hold a page** (`display@2.6.0`, GH #767). The catalogue gains
+  a twenty-seventh content component, `display-browser`: a frame with an address
+  under it, which a browser cell of the member's fills with a picture of a web
+  page. A page is content in an ordinary window and not a fifth kind of window,
+  so it takes part in everything a window takes part in -- one view, one window,
+  one tile, one rung -- and adds nothing to the screen's state.
+
+  The screen joins the page's topic while its window carries a level of 1 or
+  more and gives it back at 0. Joining by the ELEMENT instead would hold a
+  stream open for every page ever shown until the tab is closed, because a
+  window that has been put away is still in the page. The level is one for the
+  whole screen, so every output joins or none does.
+
+  Which cell answers is the new setting `browser_mount`, shipped as `browser`.
+  The screen writes it onto every page it draws, the way it already writes the
+  window a typed line belongs to: the name is the operator's arrangement of the
+  member's colony, and an application cannot know it.
+
+  What a person does inside a page reaches that cell and nothing else. The
+  pointer, the wheel and the keyboard travel to the browser as frames; the
+  curator hears none of it, and the tap of the tile beside the page still
+  reaches it.
+
+- **A patch leaves only after the state row has landed** (`display@2.6.0`,
+  GH #765). The curator sent the calls that redraw the browsers in the same
+  message as the write of the screen state row -- so a write the store's
+  compare-and-set refused had already drawn a state that never became the
+  screen's. On a test colony 190 of 401 measured state writes were refused, and
+  what a person saw was a window that flashed open and shut: the drawing of the
+  refused pass, taken back by the next pass that landed.
+
+  The calls now ride the write's own request and are sent from the reply to it.
+  `rows_affected 1` draws them; `rows_affected 0` draws nothing at all and runs
+  the pass again on the row the store now holds, up to `STATE_RETRY_MAX` times
+  as before. Measured on a test colony over 30 events: every event is drawn
+  exactly once, in 125 ms at the median and 244 ms at the slowest -- where
+  before, 18 of 60 events had their drawing sent between two and nine times,
+  the last of them as late as 4.2 s after the touch.
+
+  The client-side hold that GH #744 added stays, and the same measurement says
+  why: way A stops a REFUSED pass from drawing, and what is left is a pass that
+  LANDED. In a six-run series without the hold, one of the twenty-two taps that
+  reached the screen was answered first by the pass of the clock's own stroke,
+  which had started before the finger and wrote its row -- the state before the
+  tap, drawn for 90 ms, and no ordering of the writes reaches that case.
+
+  This release carries `display@2.5.1` as well, listed under Fixed below: that
+  version was cut inside this wave and never shipped on its own.
+
+### Fixed
+
+- **The curator runs one message at a time** (`display@2.5.1`, GH #765). The
+  compose cell named no `params.max_concurrency`, so the stateless dispatcher's
+  default of four applied and up to four workers read, computed and wrote the
+  one screen state row in the same instant. The cell now declares
+  `max_concurrency: 1`: its messages are handled one after another, in the order
+  they arrived.
+
+  What this does not do is remove the contention the state write's
+  compare-and-set is there for. A pass is TWO messages of that cell with a store
+  round trip between them, so two events that arrive inside one trip are still
+  handed the same row, and the write that loses is still repeated on the row
+  that now stands. Measured on a test colony -- six runs of ten taps in 800 ms
+  each, three with four workers and three with one -- the refused writes are the
+  same on both sides (1, 18 and 30 of 14, 31 and 44 writes against 1, 7 and 18
+  of 14, 24 and 31), and every tap reached the state in all six.
 
 ## [0.39.0] — 2026-09-19
 

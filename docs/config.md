@@ -141,13 +141,13 @@ Every cell that performs I/O of indeterminate duration (HTTP, DB, subprocess, fi
 
 #### `params.max_concurrency`
 
-*(optional, only for stateless cells)* The maximum number of concurrently running worker tasks in the stateless-cell dispatcher (see `meclaw-overview.md` § Stateless cell dispatcher). It lives in `params` and not in the `cell` block. Default: a high value, effectively unbounded for typical load paths. Configurable per cell, for example `web_fetch` with `32` (HTTP provider rate limits), `file` with `8` (disk I/O), `bash` one-shot with `4` (process resource limit). For stateful and long-running cells the value is ignored.
+*(optional, only for stateless cells)* The maximum number of concurrently running worker tasks in the stateless-cell dispatcher (see `meclaw-overview.md` § Stateless cell dispatcher). It lives in `params` and not in the `cell` block. Default: different per cell type and fixed in that type's params parser — `code` and `bash` 4, `file`, `edit` and `web_search` 8, `web_fetch` 32; on `code`, `runner_mode: "resident"` forces 1. Configurable per cell, for example `web_fetch` with `32` (HTTP provider rate limits), `file` with `8` (disk I/O), `bash` one-shot with `4` (process resource limit). For stateful and long-running cells the value is ignored.
 
 #### `params.sandbox`
 
 *(optional, from S4 / GH #35, completed in GH #85)* The sandbox block lives in `params` and not in the `cell` block. The `cell` key list is closed and describes how the colony runs the cell, whereas the sandbox describes the rights with which the cell starts its child process, a property of execution just like `external_timeout_ms`.
 
-Four cell types read it, the four that start foreign code: `bash`, `code`, `harness` and `mcp`. The last one since GH #96, with the same schema and the same parser (`crates/meclaw-cells/src/mcp/params.rs`). One difference remains, and it is meant: instantiation injects a default profile only for `bash`, `code` and `harness`, while an `mcp` child without a declaration of its own keeps the rights of the daemon (GH #96, pinned by `crates/meclaw-cells/tests/gh96_mcp_sandbox_profile.rs`). Every other cell type ignores the block.
+Five cell types read it: the four that start foreign code (`bash`, `code`, `harness`, `mcp`) and, since GH #766, `browser` — the one that reads it as a ceiling rather than as a boundary (§ The cap alone): a packaged browser brings its own confinement, and what the substrate adds is the cgroup cap. The last one since GH #96, with the same schema and the same parser (`crates/meclaw-cells/src/mcp/params.rs`). One difference remains, and it is meant: instantiation injects a default profile only for `bash`, `code` and `harness`, while an `mcp` child without a declaration of its own keeps the rights of the daemon (GH #96, pinned by `crates/meclaw-cells/tests/gh96_mcp_sandbox_profile.rs`). Every other cell type ignores the block.
 
 ```json
 "params": {
@@ -167,7 +167,7 @@ Four cell types read it, the four that start foreign code: `bash`, `code`, `harn
 |---|---|---|---|
 | `trust` | `"restricted"` \| `"trusted"` | yes | `restricted` = the sandbox is enforced. `trusted` = the explicit escape hatch for local cells, with **no** enforcement. |
 | `network` | `"deny"` \| `"allow"` | no, default `"deny"` | only under `restricted`. `deny` starts the child in a fresh network namespace (`unshare(CLONE_NEWUSER\|CLONE_NEWNET)`), which holds nothing but a `lo` in state DOWN, so even `127.0.0.1` is out of reach. `allow` leaves it in the daemon's network **and** puts the resolver configuration into the Landlock view (see below). |
-| `filesystem` | object | **yes** under `restricted` | the allowed filesystem view, enforced via Landlock. |
+| `filesystem` | object | under `restricted`: **yes** once `syscalls` is declared, otherwise at least one of it and `limits` | the allowed filesystem view, enforced via Landlock. Without it no Landlock ruleset is installed and `no_new_privs` is not set (§ The cap alone). |
 | `filesystem.read` | array of absolute paths | no, default `[]` | readable and executable, recursively. |
 | `filesystem.write` | array of absolute paths | no, default `[]` | readable, writable and creatable, recursively. |
 | `filesystem.runtime` | bool | no, default `true` | adds the runtime set (see below). |
@@ -224,7 +224,33 @@ A denial is `EPERM` and no kill: the program sees an ordinary permission error a
 
 The limit of `foreign_signals`, stated plainly: a BPF program cannot consult the process table, so it compares the target pid against exactly one constant, its own, patched in after the fork. What stays allowed is `kill(self)` and `tgkill(self, tid)`, which is what `raise()` and `abort()` compile down to. Denied are `kill(0, …)` (the own process group, which for a cell's child is the daemon's group), `kill(-1, …)` and every foreign pid. The cost: a shell script under this axis cannot end its own background job with `kill $!`. That is a real restriction. The opposite reading, "allow every positive pid", would protect nothing.
 
+#### The cap alone
+
+*(since GH #766, ruling R-G13)* A third shape of `params.sandbox`: `trust: "restricted"` with `limits` **alone** -- no `filesystem`, no `syscalls`.
+
+```json
+"params": {
+  "sandbox": {
+    "trust": "restricted",
+    "network": "allow",
+    "limits": {"memory_max_bytes": 2000000000, "cpu_max_percent": 200, "pids_max": 512}
+  }
+}
+```
+
+What it is for. The two older shapes were written for children that run code somebody sent them, and there the filesystem view is the first question. A program out of the distribution's packages is the other case: it brings its own confinement (the package's AppArmor or SELinux policy, plus the program's own namespace and seccomp sandbox), and what the substrate still has to add is not a second boundary but a ceiling. Measured on 2026-09-18: `snap-confine`, the launcher of a snap package, **does not start under `no_new_privs`**, and a browser whose own sandbox has been switched off is worse than one the substrate never fenced in.
+
+The rule in its smallest consistent form: `filesystem` is required **as soon as `syscalls` is declared** (the filter closes exactly the axes a filesystem view leaves open, and without the view it is half a boundary); otherwise a `restricted` profile must carry at least one of `filesystem` and `limits`. A `restricted` profile that restricts nothing would be `trusted` under another name.
+
+`no_new_privs` is since then set only for the two mechanisms that need it: Landlock and seccomp. `network: "deny"` is untouched by that and still bites, measured rather than assumed (`crates/meclaw-cells/tests/gh766_a_packaged_browser_needs_no_landlock.rs`). The key list stays at five: the shape removes a requirement, it adds no key. The first cell type to ship this shape is `browser` (`cell-types.en.md` § `browser`), and it is the one cell type for which the whole block is **required**: an absent `sandbox` means the unenforced historical behaviour everywhere else, and for a process tree with a renderer per site that is not a default anybody chose. ADR: `plans/adr/0043-a-cap-is-a-sandbox-shape-of-its-own.md`.
+
 The whole block is fail-closed. A `restricted` profile that cannot be enforced (no Landlock in the kernel, no namespaces on this host, a declared path that does not exist) makes the spawn fail, and the cell emits `error_code: "io_error"` with `sandbox not applied: <reason>`. No path lets a `restricted` cell quietly keep running unsandboxed.
+
+**The cap follows the process.** *(since GH #766, ruling R-G7)* The cgroup is written before the spawn and the child joins it before `exec`, which holds for a child that stays where it was put. A child that re-homes itself afterwards takes none of it with it, and a launcher that hands its process to the service manager does exactly that: measured on a snap-packaged browser, 2026-09-20, five runs of five, the browser is in a scope of the service manager's making 46-62 ms after the spawn, and there `memory.max` reads `max`, `pids.max` `38416` and `cpu.max` `max` -- the whole declared ceiling, gone. A cell with `limits` therefore reads, once the child chain has settled, which cgroup its child is REALLY in, has the ceiling put there and reads it back; a ceiling that cannot be placed, cannot be asked for or does not read back is a refusal like every other unenforceable profile. Nothing about this is one packaging format's peculiarity -- it is what any process that joins another cgroup after `exec` looks like from the outside.
+
+**The manager writes it, not the cell.** *(since GH #766, strand g12)* The cgroup a launcher hands its child to is a unit of the service manager, and the manager wins every reconciliation: writing the three files directly held over the child's life and was wiped by the next `systemctl --user daemon-reload`, which re-applies a unit view declaring no cap (measured 2026-09-20). So the ceiling is ASKED FOR -- `set-property` in the runtime form, on the unit the child ended up in -- and then read back, because the manager answers the call whether or not the property reached the cgroup. Measured on the same host with a real browser under a real colony: the three files carry the ceiling and still carry it after two `daemon-reload`s, and the call costs 7-18 ms against 1-3 ms for the file writes -- paid inside the window the cell already waits in. Two refusals belong to this: a cgroup that is not a unit of any manager, and a cgroup that carries the colony itself or lies above it, where a ceiling would cap the colony as well and so fail the very promise it serves.
+
+One property of the host comes with it. A scope the service manager created is removed together with its last process, so `memory.events` is already gone when the cell wants to read it -- which is why a cell whose child moved also remembers the nearest cgroup above it and the `oom_kill` count it carried before the ceiling was placed. That is where `oom_kill=<n>` in a dead browser's message comes from.
 
 `meclaw --sandbox-probe` (GH #97) asks before it hurts. Fail-closed means an unenforceable profile only shows up in production, as the `io_error` of a live cell. So that this need not be the first contact, the flag answers the same question up front, about the host, without running a cell. It needs no colony root, creates neither `colony.db` nor `log.jsonl`, and always exits 0, since the report is the answer even when the host can enforce nothing. One line per `params.sandbox` property, a verdict from the closed set `yes` / `no` / `skipped`, then the reason:
 

@@ -16,6 +16,18 @@
 # `Option<VoiceIo>` rather than unwrapped, and the session lookup in `handle`
 # uses a let-else.
 #
+# meclaw-cells 72 -> 74 (wave G, GH #766): the `browser` cell type's build
+# closure, which is the same call site the voice note above describes -- the
+# `cell.db` open, and beside it the idempotent DDL of the `pages` table. Both
+# sit inside a `RespawnFn` that returns the spawn tuple and has nowhere to put a
+# failure. `harness` carries the same pair for the same reason; a new
+# long-running type with a table of its own costs exactly two. The three this
+# wave would otherwise have taken were paid off instead of pinned: the page
+# lookup in the browser's `join` and the kind lookup in the web socket's join
+# arm are let-elses that refuse, and `split_io` is typed `Option<BrowserIo>`
+# rather than unwrapped -- both of those run in a loop where a panic takes a
+# person's screen with it.
+#
 # meclaw-testing 46 -> 45 (#653, 2026-09-11): back to what the tree measures.
 # The 46 was pinned for an `expect` on the bind in `surface_listener` (#654); the
 # fixture that shipped retries `free_port` instead and ends in an explicit
@@ -24,7 +36,7 @@
 
 meclaw 0
 meclaw-api 2
-meclaw-cells 72
+meclaw-cells 74
 meclaw-cli 0
 meclaw-colony 64
 meclaw-core 3

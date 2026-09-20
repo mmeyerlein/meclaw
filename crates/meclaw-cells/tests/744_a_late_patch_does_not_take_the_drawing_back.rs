@@ -24,6 +24,18 @@
 //! the comparison: the stamp is the SERVER's, read out of the DOM at the moment
 //! the finger lands, so a skewed device clock cannot release the hold early.
 //!
+//! GH #765 (way A) did not retire this, and the difference is worth one paragraph.
+//! Way A stops a pass whose state write the store REFUSED from drawing at all — the
+//! flicker of a state that never was. What is left is a pass that LANDED: measured on the
+//! twin on 19.09., in a six-run series without this hold, one of the twenty-two taps that
+//! reached the screen was answered first by the pass of the clock's own STROKE — the
+//! order the screen placed itself, coming due, not the `in_tick` lane the first draft of
+//! this paragraph named. It had started 66 ms before the finger and wrote its row with
+//! `rows_affected 1`, so its drawing was the truth of that instant — and it rendered the
+//! state before the tap for 90 ms until the tap's own patch arrived. No ordering of the
+//! writes reaches that case.
+//! The hold does, and that is why it stays.
+//!
 //! The source half of this claim is `708_the_client_draws_the_tap_before_the_pass.rs`;
 //! it is needles in a string and a one-line mutant keeps every one of them
 //! standing. This half runs the hook in a real engine and delivers two late

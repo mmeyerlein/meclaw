@@ -17,9 +17,9 @@ use meclaw_cells::store::StoreCellFactory;
 use meclaw_cells::subcolony::SubcolonyCellFactory;
 use meclaw_cells::vault::VaultCellFactory;
 use meclaw_cells::{
-    BashCellFactory, EditCellFactory, FileCellFactory, LlmCellFactory, McpCellFactory,
-    ProxyCellFactory, TimerCellFactory, VoiceCellFactory, WebCellFactory, WebFetchCellFactory,
-    WebSearchCellFactory,
+    BashCellFactory, BrowserCellFactory, EditCellFactory, FileCellFactory, LlmCellFactory,
+    McpCellFactory, ProxyCellFactory, TimerCellFactory, VoiceCellFactory, WebCellFactory,
+    WebFetchCellFactory, WebSearchCellFactory,
 };
 use meclaw_colony::{CellFactoryRegistry, SurfaceRegistry};
 use std::sync::Arc;
@@ -41,12 +41,13 @@ use std::sync::Arc;
 /// - `"harness"` → `HarnessCellFactory` (long-running agent-harness supervisor)
 /// - `"vault"` → `VaultCellFactory` (sealed secret store; no operation returns a secret)
 /// - `"voice"` → `VoiceCellFactory` (long-running voice channel bridge: audio in, turns out)
+/// - `"browser"` → `BrowserCellFactory` (long-running browser: one per member, a page per card)
 ///
 /// Returns an owned `CellFactoryRegistry` (`HashMap<String, Arc<dyn CellFactory>>`).
 /// Callers move or clone as needed.
 ///
 /// `surfaces` is the process's mount table (ADR-0031). The surface factories
-/// (`web`, `voice`) are handed the same `Arc`, so a cell that mounts by name is
+/// (`web`, `voice`, `browser`) are handed the same `Arc`, so a cell that mounts by name is
 /// reachable from the one listener and from `GET /colony/surfaces`; every other
 /// factory ignores it.
 ///
@@ -90,7 +91,14 @@ pub fn built_in_factories(surfaces: Arc<SurfaceRegistry>) -> CellFactoryRegistry
     // on the one listener (`voice@2.0.0`: no port, no bind).
     reg.insert(
         "voice".to_string(),
-        Arc::new(VoiceCellFactory::new(surfaces)),
+        Arc::new(VoiceCellFactory::new(Arc::clone(&surfaces))),
+    );
+    // Wave G (GH #766): one browser per member. Long-running and deliberately
+    // multiple, mounted by name like `web` and `voice` — a `page:` topic on a
+    // display's socket is answered through this table.
+    reg.insert(
+        "browser".to_string(),
+        Arc::new(BrowserCellFactory::new(surfaces)),
     );
     reg
 }
@@ -140,8 +148,8 @@ mod tests {
         }
         assert_eq!(
             reg.len(),
-            16,
-            "8 Phase-9 + proxy/timer/mcp + harness + subcolony + vault + web + voice"
+            17,
+            "8 Phase-9 + proxy/timer/mcp + harness + subcolony + vault + web + voice + browser"
         );
     }
 

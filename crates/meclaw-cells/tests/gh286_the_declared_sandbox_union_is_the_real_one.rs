@@ -146,8 +146,12 @@ fn computed_union() -> Union {
                 if network == NetworkPolicy::Allow {
                     network_allow = true;
                 }
-                for root in filesystem.read.iter().chain(filesystem.write.iter()) {
-                    roots.insert(root.display().to_string());
+                // A profile without a view declares no root at all (GH #766):
+                // it is a cap, and a cap widens nothing.
+                if let Some(filesystem) = filesystem {
+                    for root in filesystem.read.iter().chain(filesystem.write.iter()) {
+                        roots.insert(root.display().to_string());
+                    }
                 }
             }
         }

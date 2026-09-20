@@ -45,7 +45,10 @@ mod linux;
 #[cfg(target_os = "linux")]
 mod seccomp;
 #[cfg(target_os = "linux")]
-pub use cgroup::{SandboxScope, cgroup_delegation_supported, delegated_root, delegation_probe};
+pub use cgroup::{
+    OomWitness, SandboxScope, cgroup_delegation_supported, cgroup_of, delegated_root,
+    delegation_probe, follow_process, oom_kills,
+};
 #[cfg(target_os = "linux")]
 pub use linux::{apply, landlock_abi, network_isolation_supported};
 #[cfg(target_os = "linux")]
@@ -55,6 +58,7 @@ pub use seccomp::seccomp_supported;
 mod other;
 #[cfg(not(target_os = "linux"))]
 pub use other::{
-    SandboxScope, apply, cgroup_delegation_supported, delegated_root, delegation_probe,
-    landlock_abi, network_isolation_supported, seccomp_supported,
+    OomWitness, SandboxScope, apply, cgroup_delegation_supported, cgroup_of, delegated_root,
+    delegation_probe, follow_process, landlock_abi, network_isolation_supported, oom_kills,
+    seccomp_supported,
 };

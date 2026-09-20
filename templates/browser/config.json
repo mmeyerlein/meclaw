@@ -1,0 +1,179 @@
+{
+  "cell": {
+    "type": "browser",
+    "timeout": -1
+  },
+  "params": {
+    "mount": "browser",
+    "chromium_path": "",
+    "user_data_dir": "",
+    "extra_args": [],
+    "max_pages": 8,
+    "suspend_after_ms": 300000,
+    "throttle_after_ms": 30000,
+    "screencast": {
+      "format": "jpeg",
+      "quality": 60,
+      "max_width": 1280,
+      "max_height": 800,
+      "max_fps": 20
+    },
+    "sandbox": {
+      "trust": "restricted",
+      "network": "allow",
+      "limits": {
+        "memory_max_bytes": 2000000000,
+        "cpu_max_percent": 200,
+        "pids_max": 512
+      }
+    },
+    "external_timeout_ms": 10000,
+    "startup_timeout_ms": 20000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {
+      "mount": {
+        "type": "string",
+        "secret": false,
+        "default": "browser",
+        "description": "The name a page: join on a display's socket finds this cell under. [a-z0-9-], 1..=64 characters, and none of the names the API already answers."
+      },
+      "chromium_path": {
+        "type": "string",
+        "secret": false,
+        "default": "",
+        "description": "The Chromium-based browser binary from this machine's package system. Required, with no default and no search path: meclaw ships no browser and never goes looking for one."
+      },
+      "user_data_dir": {
+        "type": "string",
+        "secret": false,
+        "default": "",
+        "description": "The profile directory the browser runs in. Empty means the cell names one of its own under /tmp, creates it, and removes it when the cell ends."
+      },
+      "extra_args": {
+        "type": "array",
+        "secret": false,
+        "default": [],
+        "description": "Extra browser flags. The flags the cell owns (--headless, --remote-debugging-*, --user-data-dir, --disk-cache-dir) are refused, and so is --no-sandbox: the browser's sandbox belongs to the package it came from."
+      },
+      "max_pages": {
+        "type": "number",
+        "secret": false,
+        "default": 8,
+        "description": "How many pages may be open at once. Above it the oldest SUSPENDED page is closed to make room, and if none is suspended the request is refused with too_many_pages -- never a silent displacement."
+      },
+      "suspend_after_ms": {
+        "type": "number",
+        "secret": false,
+        "default": 300000,
+        "description": "How long a page nobody is watching stays open. Then its target is closed and its context kept; 0 never suspends."
+      },
+      "throttle_after_ms": {
+        "type": "number",
+        "secret": false,
+        "default": 30000,
+        "description": "How long a page may produce frames without a pause before the cell slows its acknowledgements to two a second and reports state throttled."
+      },
+      "screencast": {
+        "type": "object",
+        "secret": false,
+        "default": {
+          "format": "jpeg",
+          "quality": 60,
+          "max_width": 1280,
+          "max_height": 800,
+          "max_fps": 20
+        },
+        "description": "How the picture is cut and how fast it is acknowledged. format jpeg or png, quality 1..=100, max_width and max_height in device pixels, max_fps the pace of the acknowledgement rather than a promise about the page."
+      },
+      "sandbox": {
+        "type": "object",
+        "secret": false,
+        "default": {
+          "trust": "restricted",
+          "network": "allow",
+          "limits": {
+            "memory_max_bytes": 2000000000,
+            "cpu_max_percent": 200,
+            "pids_max": 512
+          }
+        },
+        "description": "The CELL's ceiling, as a cgroup v2 cap and nothing else (config.md, The cap alone). Required: a browser cell with no declared ceiling does not start, and a restricted profile must carry limits, since one without a cap is trusted under another name. It is not the browser's sandbox: that belongs to the package, and this cell neither switches it on nor off."
+      },
+      "external_timeout_ms": {
+        "type": "number",
+        "secret": false,
+        "default": 10000,
+        "description": "The A-timeout around every CDP round trip and around the spawn. This cell is long-running, so there is no message-timeout behind it."
+      },
+      "startup_timeout_ms": {
+        "type": "number",
+        "secret": false,
+        "default": 20000,
+        "description": "How long the browser has to answer Browser.getVersion before the spawn is given up."
+      }
+    },
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "page",
+            "error",
+            "receipt"
+          ],
+          "required": true
+        },
+        "platform": {
+          "type": "string",
+          "required": false
+        },
+        "page": {
+          "type": "string",
+          "required": false
+        },
+        "owner": {
+          "type": "string",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec",
+      "network:http",
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "One browser for one member: a browser context per identity, a page per card, and each page's picture on a topic of a display's socket. The topology hears about pages -- one opened, one moved, one went quiet, one came back -- and never about a frame.",
+    "use_when": "Wherever an application wants to put a web page on a screen instead of a summary of one. Instantiate it once per member, give it the mount a display's page: joins should reach, and point chromium_path at the browser this machine has installed. Wire four edges in the same mutation: open, close and navigate in, and the page lane back out.",
+    "not_in_scope": "No browser of its own: the binary is a prerequisite out of the distribution's package system, and this template ships none. No sandbox switch, no --no-sandbox and no flag of any kind about the browser's own confinement. No persistence of a logged-in session -- a context is ephemeral by design, so closing it is what logging out means and a restart is a logged-out browser. No video codec: the picture is a JPEG screencast, and a second stage is a later wave.",
+    "emits_meaning": "page: the state of one page, on every change -- opening, active, background, suspended, reopened, throttled, closed -- carrying its full address with fragment, its title, its context, its viewport, its content_type and, after somebody used it, active_at as epoch milliseconds in text. error: a spawn, a CDP or a crash failure with its error_code. receipt: the answer to one of the four verbs, with ok or the refusal's code.",
+    "consumes_meaning": "One tool_call turn whose text is the JSON args of one verb: in_open {page, url, context?, viewport?}, in_navigate {page, url}, in_close {page}, in_context_close {context}. There is no verb for an input -- a pointer, a key or a run of text travels on the link the picture comes down, never as a message.",
+    "examples": [
+      "PORTS - Entry: a tool_call turn naming one of the four verbs. Exit: a receipt per message and a page emission per state change, both on hop.route.",
+      "{\"name\": \"in_open\", \"arguments\": {\"page\": \"card-7\", \"url\": \"https://example.com/\", \"viewport\": {\"width\": 960, \"height\": 600, \"dpr\": 2, \"mobile\": false}}} -> receipt ok, then page {state: opening} and page {state: active} once somebody joins page:card-7",
+      "a ninth page while eight are open and none is suspended -> receipt error_code too_many_pages, and not one of the eight is displaced",
+      "a browser whose own sandbox does not hold -> error error_code spawn_failed, and no page at all"
+    ]
+  }
+}

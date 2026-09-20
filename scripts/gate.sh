@@ -16,10 +16,17 @@
 #     --only s1,s2   run exactly these stations
 #     --fail-fast    stop after the first RED (default: run everything)
 #     --plan-only    print the plan and a final `tests=true|false`, run nothing
-#     --log-dir DIR  additionally copy receipt and logs into DIR
+#     --archive DIR  additionally copy receipt and logs into DIR, and name DIR
+#                    in the receipt. `MECLAW_GATE_ARCHIVE` sets the default;
+#                    the flag wins. `--log-dir` is the same option under its
+#                    first name and stays.
+#     --log-dir DIR  see --archive
 #     --no-nice      do not wrap cargo stations in nice/ionice, and do not
 #                    cap the build width
 #     --resync       force a full touch of every build input (see GHOST BINARIES)
+#     --no-precheck-stop
+#                    run the cargo stations even when `precheck` is RED
+#                    (see A RED FORM STATION STOPS THE CARGO STATIONS)
 #
 # MODES
 # =====
@@ -50,6 +57,18 @@
 # `corpus-committed` in `strand`: there the committed corpus is allowed to be
 # behind the sources of a commit that has not been written yet).
 #
+# `stage-lock` is the other thing that may be running on this host: a twin
+# measurement takes a lock of its own while it works, and two integration
+# passes went red on timing tests under exactly that load (1 513 s, 1 385 s).
+# The runner PROBES that lock before the first cargo station -- never takes it,
+# never creates it, never turns red on it -- and says so when it is held.
+#
+# `master-moved` is the question a strand keeps asking by hand: how far has
+# master moved since the base this run plans against, and which files do both
+# sides touch. Twenty-one of thirty session-to-session messages on the busiest
+# day of the waves were about order and base commits. It is a strand note --
+# `integration` and `release` diff against the export base, not against master.
+#
 # `lock-wait` is the queue in front of the shared cargo lock, reported before
 # the first cargo station whenever it was a second or more -- so a station's
 # `secs` is the station, not the wait. The receipt carries it as
@@ -65,6 +84,12 @@
 #
 # ARTEFACTS
 # =========
+# A gate directory lives under `target/`, and `target/` is what disk hygiene
+# clears when a wave's worktrees go. `lock_wait_secs` of 24 of 36 strand runs
+# of three waves is unrecoverable for exactly that reason -- so a wave points
+# `--archive` at its own `receipts/` directory and the receipt says where its
+# copy went.
+#
 #   <gate>/<mode>-<rev>.json         the receipt, rewritten after each station
 #   <gate>/last-<mode>.json          a copy of the newest receipt
 #   <gate>/logs/<mode>-<station>.log
@@ -120,6 +145,31 @@
 # `scripts/test-tier.sh` takes the same lock when it runs on its own, so the
 # runner tells it not to: `MECLAW_CARGO_LOCK_HELD=1` is exported with the lock.
 #
+# A RED FORM STATION STOPS THE CARGO STATIONS
+# ===========================================
+# `precheck` runs FIRST and BEFORE the lock precisely so a `cargo fmt` somebody
+# forgot does not cost the queue and the build. It did anyway: measured on the
+# proof strand of wave P (receipt `plans/welle-p-2026-09-19/receipts/g0-t1/`),
+# `precheck` was RED on a rustfmt finding and the run went on to queue for the
+# lock and pay `catalogue`, `fmt` and `tests` -- for a verdict the form station
+# already had in seconds.
+#
+# So a RED `precheck` SKIPS every station that needs a build: every cargo
+# station of the plan, plus the ones whose own `cargo` column is 0 but that
+# read what those stations produce (`scenarios:memory` and `scenarios:builder`
+# boot `target/debug/meclaw`, `export-audit` grades this run's receipt). They
+# are reported as `SKIP precheck red`, the lock is never taken, and the cheap
+# stations run on -- all findings still come out of ONE run. The summary stays
+# RED, because `precheck` is. `--only precheck` is untouched (there is nothing
+# else in that plan), and `--no-precheck-stop` runs the lot anyway, for the
+# investigation that wants the red form station AND the build.
+#
+# THE MODE REACHES THE STATIONS
+# =============================
+# `MECLAW_GATE_MODE=<mode>` is exported for every station. One test reads it: the
+# display drift lock asks the committed source mark in a strand and the living
+# description tree in a pass (GH #753, docs/development-rules.md section 10).
+#
 # TEST HOOKS (part of the interface, used by scripts/tests/test_gate_sh.py)
 # ========================================================================
 #   MECLAW_GATE_PLAN=<file.tsv>  use this plan instead of calling the resolver
@@ -132,6 +182,31 @@
 #                                set it to 0: a full disk must not turn the
 #                                self-test station red with a message about
 #                                a build it never runs.
+#   MECLAW_GATE_GH=<cmd>         the GitHub CLI the runner comments the #721
+#                                occurrence with (default `gh`). The tests
+#                                point it at a stub: no test of this suite
+#                                ever reaches GitHub.
+#   MECLAW_STAGE_LOCK=<path>     the lock a twin measurement holds while it
+#                                runs. Probed, never taken. No default: which
+#                                lock that is belongs to the host, not to this
+#                                file -- unset, no probe happens.
+#
+# THE ONE RETRY, AND WHY IT IS NOT A RETRY BUDGET
+# ===============================================
+# `scenarios:builder` loses an endpoint the registry was just told about in
+# about one run in three (GH #721, reproduced on a clean tree). It is a Python
+# station, so the nextest quarantine cannot hold it, and the answer was a hand
+# rule: rerun that one station, paste both lines, comment on the issue. Eight
+# occurrences in three waves; one release paid 1 558 s for two of them.
+#
+# The runner now does exactly that, once: a non-zero exit whose log carries
+# `registry lacks` runs the station's commands a second time, and THE SECOND
+# ROUND DECIDES. The scope says so (`retry 1 GH #721`), a NOTE line names the
+# endpoint, and an occurrence THAT CAME BACK GREEN is commented on #721 -- a
+# retry stays tied to its issue, as the rules demand. A station that is red
+# twice is a defect and not a flake: it keeps the line and sends nothing.
+# Nothing else in this runner is retried, and a red without that signature is
+# red.
 #
 # Exit 0 = no station is RED.
 
@@ -145,8 +220,9 @@ usage() {
 }
 
 # --- arguments --------------------------------------------------------------
-mode=""; base=""; only=""; fail_fast=0; plan_only=0; log_dir=""
-no_nice=0; resync=0
+mode=""; base=""; only=""; fail_fast=0; plan_only=0
+log_dir="${MECLAW_GATE_ARCHIVE:-}"
+no_nice=0; resync=0; no_precheck_stop=0
 
 if [ $# -ge 1 ] && { [ "$1" = "-h" ] || [ "$1" = "--help" ]; }; then
     usage
@@ -177,11 +253,13 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --base)      need_value "$1" "$#"; base="$2"; shift 2 ;;
         --only)      need_value "$1" "$#"; only="$2"; shift 2 ;;
+        --archive)   need_value "$1" "$#"; log_dir="$2"; shift 2 ;;
         --log-dir)   need_value "$1" "$#"; log_dir="$2"; shift 2 ;;
         --fail-fast) fail_fast=1; shift ;;
         --plan-only) plan_only=1; shift ;;
         --no-nice)   no_nice=1; shift ;;
         --resync)    resync=1; shift ;;
+        --no-precheck-stop) no_precheck_stop=1; shift ;;
         -h|--help)   usage; exit 0 ;;
         *) echo "gate: unknown argument: $1" >&2; exit 2 ;;
     esac
@@ -449,6 +527,11 @@ if [ "$plan_only" = 1 ]; then
     exit 0
 fi
 
+# The mode is part of a station's environment: the display drift lock compares its
+# copies against the committed source mark in a strand and against the living
+# description tree in a pass (GH #753).
+export MECLAW_GATE_MODE="$mode"
+
 # --- hygiene (not in ci: there the runner owns the machine) ------------------
 wrap=()
 lock_path=""
@@ -494,6 +577,11 @@ if [ "$mode" != ci ]; then
     lock_path="${MECLAW_GATE_LOCK:-/tmp/meclaw-w26-cargo.lock}"
 fi
 
+# The lock a twin measurement holds while it runs. This runner never takes it,
+# and it has no default: the path is a property of the host that runs a twin,
+# and this file travels to hosts that do not.
+stage_lock_path="${MECLAW_STAGE_LOCK:-}"
+
 # The lock is taken at most once per run and released when the run ends.
 #
 # The QUEUE in front of it is reported, not swallowed. A wave once measured
@@ -504,17 +592,39 @@ fi
 # the summary count is unchanged.
 run_lock=0
 lock_wait_secs=0
+# Is a twin measurement loading this host right now? Only asked when the host
+# said which lock that is. `flock <file> <cmd>` CREATES the file, so the probe
+# asks whether it exists first: a run that left a lock file behind would be a
+# run that changed what it measured. And a host without `flock` answers 127,
+# which is not a holder -- without the tool there is nothing to ask.
+stage_lock_note() {
+    [ -n "$stage_lock_path" ] || return 0
+    command -v flock >/dev/null 2>&1 || return 0
+    [ -e "$stage_lock_path" ] || return 0
+    flock -n "$stage_lock_path" true 2>/dev/null && return 0
+    report stage-lock "$(basename -- "$stage_lock_path")" 0 NOTE "" \
+        "twin measurement running; timing tests may flake"
+    return 0
+}
+
 take_run_lock() {
     [ "$run_lock" = 1 ] && return 0
     [ -z "$lock_path" ] && return 0        # ci: the runner owns the machine
+    stage_lock_note
     exec 9>"$lock_path" || {
         echo "gate: cannot open the cargo lock $lock_path" >&2
         exit 2
     }
+    # Nanoseconds, truncated (GH #764). Two `date +%s` calls subtracted give
+    # floor(elapsed) or floor(elapsed)+1, depending on whether they straddle a
+    # tick -- so a run that waited for nothing reported one second whenever the
+    # two forks landed either side of one, which on a busy host is often enough
+    # to turn the self-test red over a lock nothing else can hold.
     local w_start
-    w_start=$(date +%s)
+    w_start=$(date +%s%N)
+    lock_wait_secs=0
     flock 9
-    lock_wait_secs=$(( $(date +%s) - w_start ))
+    lock_wait_secs=$(( ( $(date +%s%N) - w_start ) / 1000000000 ))
     run_lock=1
     # scripts/test-tier.sh takes this same lock when it runs on its own. Inside
     # the gate the run already holds it, and a second flock would deadlock the
@@ -551,7 +661,7 @@ write_receipt() {
     [ "${2:-}" = final ] && finished=$(date -Is)
     MECLAW_R_MODE="$mode" MECLAW_R_REV="$rev" MECLAW_R_BASE="$base" \
     MECLAW_R_DIRTY="$dirty" MECLAW_R_STARTED="$started" \
-    MECLAW_R_LOCK_WAIT="$lock_wait_secs" \
+    MECLAW_R_LOCK_WAIT="$lock_wait_secs" MECLAW_R_ARCHIVE="$log_dir" \
     MECLAW_R_FINISHED="$finished" MECLAW_R_VERDICT="$1" \
     MECLAW_R_ROWS="$rows_file" MECLAW_R_OUT="$receipt" \
     python3 - <<'PY'
@@ -573,6 +683,10 @@ doc = {
     # How long this run sat in the queue for the shared cargo lock. 0 = it did
     # not wait. The station seconds never carried it; nothing did, until now.
     "lock_wait_secs": int(os.environ.get("MECLAW_R_LOCK_WAIT") or 0),
+    # Where a copy of this receipt and its logs was put, or null. It is IN the
+    # receipt so the copy answers on its own where it came from, once the
+    # worktree it was written in no longer exists.
+    "archive": os.environ.get("MECLAW_R_ARCHIVE") or None,
     "started": os.environ["MECLAW_R_STARTED"],
     "finished": os.environ["MECLAW_R_FINISHED"] or None,
     "stations": rows,
@@ -719,6 +833,103 @@ write_stamp() {
         "$(printf '%s' "$dirty_files" | paste -sd, -)" >"$stamp"
 }
 
+# --- the one retry (GH #721) -------------------------------------------------
+# Everything about it lives in these four functions, so the station loop keeps
+# one call site and the rule keeps one home.
+BUILDER_FLAKE_STATION="scenarios:builder"
+BUILDER_FLAKE_SIGNATURE="registry lacks"
+BUILDER_FLAKE_ISSUE=721
+
+# Does this log carry the known signature?
+builder_flake_in() {
+    grep -qF "$BUILDER_FLAKE_SIGNATURE" "$1" 2>/dev/null
+}
+
+# The endpoint the registry lost, for the note and for the comment.
+builder_flake_endpoint() {
+    local ep
+    ep=$(sed -n "s/.*$BUILDER_FLAKE_SIGNATURE '\([^']*\)'.*/\1/p" "$1" 2>/dev/null | head -1)
+    printf '%s' "${ep:-unknown endpoint}"
+}
+
+# Run a station's commands again, into the same log. Only ever called for a
+# station with `cargo 0`, so there is no stamp and no wrap to repeat here.
+run_station_again() {   # cmds log -> the rc of the second round
+    local cmds="$1" log="$2" rc=0 cmd cwd argv
+    printf '\n# retry 1 (GH #%s): %s\n' \
+        "$BUILDER_FLAKE_ISSUE" "$BUILDER_FLAKE_SIGNATURE" >>"$log"
+    while IFS=$'\t' read -r cmd cwd; do
+        [ -z "$cmd" ] && continue
+        printf '$ %s\n' "$cmd" >>"$log"
+        [ -n "${MECLAW_GATE_DRY:-}" ] && continue
+        argv=()
+        eval "argv=( $cmd )"
+        ( [ "$run_lock" = 1 ] && exec 9>&-
+          if [ -n "$cwd" ]; then cd "$cwd" || exit 1; fi
+          "${argv[@]}" ) >>"$log" 2>&1 </dev/null
+        rc=$?
+        [ "$rc" -ne 0 ] && break
+    done <<<"$cmds"
+    return $rc
+}
+
+# The occurrence, on its own NOTE line and on the issue. A comment that cannot
+# be sent is said, not swallowed -- and it never changes the run's verdict.
+#
+# THE COMMENT GOES OUT FOR A FLAKE, NOT FOR A DEFECT. #721 collects runs where
+# the endpoint came back on the second round; a station that is red twice is
+# not one of those. Writing "passed on the retry" there would be an unattended
+# external action carrying a false statement, so a second red keeps the line
+# and drops the comment.
+builder_flake_note() {   # endpoint rc-of-the-second-round
+    local ep="$1" rc="$2" gh reason body
+    gh="${MECLAW_GATE_GH:-gh}"
+    if [ "$rc" -ne 0 ]; then
+        reason="comment skipped (the retry was red too)"
+    elif [ -n "${MECLAW_GATE_DRY:-}" ]; then
+        reason="comment skipped (dry run)"
+    elif ! command -v "$gh" >/dev/null 2>&1; then
+        reason="comment skipped (no gh)"
+    else
+        body="Seen again on \`${rev:0:7}\` (\`$mode\`): station \`$BUILDER_FLAKE_STATION\` \
+lost \`$ep\`, and the same station passed on the retry."
+        if "$gh" issue comment "$BUILDER_FLAKE_ISSUE" --body "$body" >/dev/null 2>&1; then
+            reason="commented on GH #$BUILDER_FLAKE_ISSUE"
+        else
+            reason="comment skipped (gh refused)"
+        fi
+    fi
+    report "$BUILDER_FLAKE_STATION-retry" "GH #$BUILDER_FLAKE_ISSUE $ep" 0 NOTE "" "$reason"
+}
+
+# --- the form station stops the cargo stations --------------------------------
+# See "A RED FORM STATION STOPS THE CARGO STATIONS" in the header. The list
+# names the stations whose own `cargo` column is 0 and that still cannot be
+# judged without the build: the two suites that boot `target/debug/meclaw`, and
+# the audit that grades this run's receipt -- which, after such a stop, is a
+# receipt the cargo stations are missing from. Everything with `cargo 1` is
+# covered by the column itself.
+PRECHECK_STOP_ALSO="scenarios:memory scenarios:builder export-audit"
+precheck_red=0
+
+# Does this station need what a cargo station builds?
+needs_the_build() {   # name cargo
+    [ "$2" = 1 ] && return 0
+    case " $PRECHECK_STOP_ALSO " in *" $1 "*) return 0 ;; esac
+    return 1
+}
+
+# --- the notes of the form station -------------------------------------------
+# `precheck` grades in two levels: a RED finding is the station's verdict, a
+# NOTE is a finding to read. The runner prints a red station's log tail and
+# nothing else, so a green station's notes would sit in a file nobody opens --
+# which is the same as not having found them.
+precheck_notes() {   # log
+    [ -f "$1" ] || return 0
+    grep '^NOTE ' "$1" 2>/dev/null | sed 's/^/    | /'
+    return 0
+}
+
 # --- run --------------------------------------------------------------------
 missing_tool() {   # station -> reason, or empty when everything is there
     case "$1" in
@@ -728,6 +939,33 @@ missing_tool() {   # station -> reason, or empty when everything is there
             command -v cargo-deny >/dev/null 2>&1 || echo "cargo-deny not installed" ;;
     esac
 }
+
+# How far master has moved since the base, and what both sides touch. A strand
+# question only: see the header. `comm` needs both sides sorted, and the
+# intersection is the whole point -- a master that moved somewhere else costs
+# this strand nothing, and one that moved into its own files is a re-merge
+# waiting to happen.
+master_moved_note() {
+    [ "$mode" = strand ] || return 0
+    [ -n "$base" ] || return 0
+    git rev-parse --verify --quiet master >/dev/null 2>&1 || return 0
+    # `HEAD..master`, not `base..master`: what matters is what master carries
+    # and this branch does not. After a master->strand re-merge those commits
+    # are IN HEAD, and `base..master` would keep counting them -- a note that
+    # repeats itself after the answer is a note nobody reads twice.
+    local n both
+    n=$(git rev-list --count "HEAD..master" 2>/dev/null || echo 0)
+    [ "${n:-0}" -gt 0 ] 2>/dev/null || return 0
+    both=$(comm -12 \
+        <(git diff --name-only "$base" master 2>/dev/null | sed '/^$/d' | sort -u) \
+        <(printf '%s\n' "$changed" | sed '/^$/d' | sort -u) | paste -sd' ' -)
+    local unit="commits"
+    [ "$n" = 1 ] && unit="commit"
+    report master-moved "$n $unit since the base" 0 NOTE "" \
+        "${both:+also in this diff: $both}"
+    return 0
+}
+master_moved_note
 
 for i in ${st_names[@]+"${!st_names[@]}"}; do
     name="${st_names[$i]}"; scope="${st_scopes[$i]}"; cargo="${st_cargo[$i]}"
@@ -747,6 +985,14 @@ for i in ${st_names[@]+"${!st_names[@]}"}; do
     why=$(missing_tool "$name")
     if [ -n "$why" ]; then
         report "$name" "$scope" 0 SKIP "" "$why"
+        continue
+    fi
+
+    # The form station had the verdict in seconds; nothing that needs a build
+    # is run for it, and the lock below is never reached.
+    if [ "$precheck_red" = 1 ] && [ "$no_precheck_stop" = 0 ] \
+       && needs_the_build "$name" "$cargo"; then
+        report "$name" "$scope" 0 SKIP "" "precheck red"
         continue
     fi
 
@@ -801,6 +1047,17 @@ for i in ${st_names[@]+"${!st_names[@]}"}; do
     done <<<"${st_cmds[$i]}"
     s_secs=$(( $(date +%s) - s_start ))
 
+    # The one retry. See "THE ONE RETRY" in the header.
+    flake_endpoint=""
+    if [ "$name" = "$BUILDER_FLAKE_STATION" ] && [ "$rc" -ne 0 ] \
+       && builder_flake_in "$log"; then
+        flake_endpoint=$(builder_flake_endpoint "$log")
+        run_station_again "${st_cmds[$i]}" "$log"
+        rc=$?
+        s_secs=$(( $(date +%s) - s_start ))
+        scope="$scope, retry 1 GH #$BUILDER_FLAKE_ISSUE"
+    fi
+
     if [ "$name" = "corpus-committed" ] && [ "$mode" = strand ]; then
         # A strand gates BEFORE its commit, so the committed corpus is allowed
         # to be behind the sources the strand just changed -- `corpus` is about
@@ -827,9 +1084,16 @@ for i in ${st_names[@]+"${!st_names[@]}"}; do
         report "$name" "$scope" "$s_secs" RED "$log_rel"
         tail -n 20 "$log" | sed 's/^/    | /'
         if [ "$fail_fast" = 1 ]; then
+            [ -n "$flake_endpoint" ] && builder_flake_note "$flake_endpoint" "$rc"
             echo "gate: --fail-fast -- stopping after $name." >&2
             break
         fi
+    fi
+
+    [ -n "$flake_endpoint" ] && builder_flake_note "$flake_endpoint" "$rc"
+    if [ "$name" = precheck ]; then
+        precheck_notes "$log"
+        [ "$rc" -ne 0 ] && precheck_red=1
     fi
 done
 

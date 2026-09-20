@@ -1,0 +1,6 @@
+# config.json carries the whole of compose.py as one `params.script_inline`
+# string, so any two branches that touch compose.py collide here as a single
+# unreadable line. scripts/git_merge_display_sync.py resolves that one file.
+# Git only runs a driver the clone itself configures -- see the script's head
+# for the two `git config` lines.
+templates/display/compose/config.json merge=display-sync

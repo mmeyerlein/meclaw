@@ -87,6 +87,15 @@ impl SandboxScope {
     pub(crate) fn empty() -> Self {
         Self { dir: None }
     }
+
+    /// The cgroup this scope created, when it created one.
+    ///
+    /// Read by a caller that has to ask whether its child is still IN it
+    /// ([`follow_process`]). Nobody may write through it: the caps are this
+    /// module's to write, and the directory is this value's to remove.
+    pub fn dir(&self) -> Option<&Path> {
+        self.dir.as_deref()
+    }
 }
 
 impl Drop for SandboxScope {
@@ -379,20 +388,7 @@ pub(crate) fn create(limits: &ResourceLimits) -> io::Result<(SandboxScope, Owned
         dir: Some(dir.clone()),
     };
 
-    if let Some(bytes) = limits.memory_max_bytes {
-        write_cap(&dir, "memory.max", &bytes.to_string())?;
-        // A memory cap a process can escape into swap is not a cap. Best
-        // effort: the file is absent when the kernel was built without swap
-        // accounting, and then there is no swap to escape into either.
-        let _ = std::fs::write(dir.join("memory.swap.max"), b"0");
-    }
-    if let Some(n) = limits.pids_max {
-        write_cap(&dir, "pids.max", &n.to_string())?;
-    }
-    if let Some(pct) = limits.cpu_max_percent {
-        let quota = pct.saturating_mul(CPU_PERIOD_US) / 100;
-        write_cap(&dir, "cpu.max", &format!("{quota} {CPU_PERIOD_US}"))?;
-    }
+    write_limits(&dir, limits)?;
 
     let procs = std::ffi::CString::new(dir.join("cgroup.procs").as_os_str().as_encoded_bytes())
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
@@ -478,9 +474,487 @@ pub(crate) fn sweep_stale(root: &Path) {
     }
 }
 
+/// Write every declared cap into `dir`.
+///
+/// Only for a directory this module CREATED. It sits inside a delegated root,
+/// so no service manager owns it and nothing will ever reconcile it away.
+/// Where the owner is systemd -- the unit a re-homed child lands in -- the
+/// ceiling is asked for instead ([`tell_the_manager`]), because a written
+/// value there survives only until the next `daemon-reload`.
+fn write_limits(dir: &Path, limits: &ResourceLimits) -> io::Result<()> {
+    if let Some(bytes) = limits.memory_max_bytes {
+        write_cap(dir, "memory.max", &bytes.to_string())?;
+        // A memory cap a process can escape into swap is not a cap. Best
+        // effort: the file is absent when the kernel was built without swap
+        // accounting, and then there is no swap to escape into either.
+        let _ = std::fs::write(dir.join("memory.swap.max"), b"0");
+    }
+    if let Some(n) = limits.pids_max {
+        write_cap(dir, "pids.max", &n.to_string())?;
+    }
+    if let Some(pct) = limits.cpu_max_percent {
+        write_cap(dir, "cpu.max", &cpu_quota(pct))?;
+    }
+    Ok(())
+}
+
+/// `cpu.max` for a percentage of one core, against the fixed period.
+fn cpu_quota(percent: u64) -> String {
+    format!(
+        "{} {CPU_PERIOD_US}",
+        percent.saturating_mul(CPU_PERIOD_US) / 100
+    )
+}
+
+// ---- the ceiling is the service manager's to write (GH #766, R-G7) -------
+
+/// Which service manager owns the unit a child ended up in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Manager {
+    /// The calling user's own manager (`systemctl --user`).
+    User,
+    /// The system manager, which an unprivileged daemon will simply be
+    /// refused by -- and a refusal is the right answer then.
+    System,
+}
+
+impl Manager {
+    fn flag(self) -> &'static str {
+        match self {
+            Manager::User => "--user",
+            Manager::System => "--system",
+        }
+    }
+}
+
+/// Which unit of which manager carries `dir`, or why none does.
+///
+/// Two refusals, and both are the honest answer rather than a fallback:
+///
+/// * `dir` is no unit. A cgroup below a delegated unit belongs to whoever was
+///   delegated it, and there is nobody to ask for a ceiling on it.
+/// * `dir` is an ANCESTOR of this process's own cgroup. Such a unit exists and
+///   the manager would cap it without complaint -- and the cap would land on
+///   the colony too. R-G7 is "the browser never displaces the colony"; capping
+///   the colony to keep the browser small fails it precisely. Measured in
+///   strand g11: the parent of the re-homed browser's scope is `app.slice`,
+///   where the colony runs.
+fn unit_for(dir: &Path) -> io::Result<(Manager, String)> {
+    let refuse = |why: String| {
+        io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!(
+                "{why}; params.sandbox.limits declares a ceiling that no service manager can \
+                 be asked for, and an unasked ceiling is no ceiling -- declare params.sandbox \
+                 {{\"trust\": \"trusted\"}} to run without one"
+            ),
+        )
+    };
+
+    if let Some(own) = cgroup_of(std::process::id())
+        && own.starts_with(dir)
+    {
+        return Err(refuse(format!(
+            "the child sits in {}, which is the colony's own cgroup or an ancestor of it; \
+             a ceiling there would cap the colony as well",
+            dir.display()
+        )));
+    }
+
+    let name = dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default()
+        .to_string();
+    if !(name.ends_with(".scope") || name.ends_with(".service") || name.ends_with(".slice")) {
+        return Err(refuse(format!(
+            "the child sits in {}, which is not a unit of any service manager",
+            dir.display()
+        )));
+    }
+
+    // A path under this user's own `user@<uid>.service` is the user manager's;
+    // anything else is the system manager's, and an unprivileged daemon will
+    // be refused there -- which is a refusal, not a second mechanism.
+    // SAFETY: `geteuid` reads a process property and cannot fail.
+    let uid = unsafe { libc::geteuid() };
+    let mine = format!("user@{uid}.service");
+    let manager = if dir.iter().any(|c| c == mine.as_str()) {
+        Manager::User
+    } else {
+        Manager::System
+    };
+    Ok((manager, name))
+}
+
+/// Ask the service manager to put `limits` on the unit that carries `dir`.
+///
+/// # Why this is said and not written
+///
+/// Writing the three cgroup files works, and it holds exactly until somebody
+/// runs `systemctl daemon-reload`: the manager knows its own unit with no cap
+/// declared on it and writes that view back, after which the files read `max`,
+/// `38416` and `max` again and nothing notices (measured 2026-09-20, strand
+/// g11). A node whose owner is systemd is systemd's to write. That is the same
+/// question the container world answered years ago when it chose the `systemd`
+/// cgroup driver over `cgroupfs`, and this is the same answer.
+///
+/// `--runtime` so the ceiling lives in `/run` and never lands on disk: it
+/// belongs to this browser, not to the host's configuration.
+///
+/// The call costs 7-18 ms against 1-3 ms for the four file writes (measured
+/// 2026-09-20, five runs each, packaged browser). The cell pays it inside the
+/// window it already waits in -- the child re-homes after 41-83 ms and the
+/// sandbox verdict falls at 159-194 ms -- so it buys the reload with time it
+/// was spending anyway.
+///
+/// # What it does NOT prove
+///
+/// The manager applies a property to the cgroup best-effort and answers the
+/// call either way. So this says nothing on its own, and the caller's
+/// read-back ([`confirm_limits`]) is what turns "we asked" into "it is there".
+async fn tell_the_manager(
+    dir: &Path,
+    limits: &ResourceLimits,
+    budget: std::time::Duration,
+) -> io::Result<()> {
+    let (manager, unit) = unit_for(dir)?;
+
+    let mut props: Vec<String> = Vec::new();
+    if let Some(bytes) = limits.memory_max_bytes {
+        props.push(format!("MemoryMax={bytes}"));
+        // A memory cap a process can escape into swap is not a cap. In the
+        // same call, not beside it: the manager takes the ceiling whole or
+        // the ceiling is not there.
+        props.push("MemorySwapMax=0".to_string());
+    }
+    if let Some(n) = limits.pids_max {
+        props.push(format!("TasksMax={n}"));
+    }
+    if let Some(pct) = limits.cpu_max_percent {
+        props.push(format!("CPUQuota={pct}%"));
+    }
+    if props.is_empty() {
+        return Ok(());
+    }
+
+    let mut cmd = tokio::process::Command::new("systemctl");
+    cmd.arg(manager.flag())
+        .arg("--runtime")
+        .arg("set-property")
+        .arg(&unit)
+        .args(&props)
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true);
+
+    let out = match tokio::time::timeout(budget, cmd.output()).await {
+        Ok(Ok(out)) => out,
+        Ok(Err(e)) => {
+            return Err(io::Error::new(
+                e.kind(),
+                format!(
+                    "the service manager could not be asked for a ceiling on {unit} \
+                     (running systemctl: {e}); declare params.sandbox {{\"trust\": \
+                     \"trusted\"}} to run without one"
+                ),
+            ));
+        }
+        Err(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!(
+                    "the service manager did not answer within {} ms when asked for a ceiling \
+                     on {unit}; params.sandbox.limits cannot be confirmed, and an unconfirmed \
+                     ceiling is no ceiling",
+                    budget.as_millis()
+                ),
+            ));
+        }
+    };
+    if !out.status.success() {
+        let said = String::from_utf8_lossy(&out.stderr);
+        return Err(io::Error::other(format!(
+            "the service manager refused the ceiling on {unit} ({}): {}; declare \
+             params.sandbox {{\"trust\": \"trusted\"}} to run without one",
+            out.status,
+            said.trim()
+        )));
+    }
+    Ok(())
+}
+
+// ---- the cap follows the process (GH #766, R-G7) -------------------------
+
+/// A cgroup that outlives a child's own, and the `oom_kill` count it carried
+/// before the cap was written.
+///
+/// The counter in `memory.events` is hierarchical, so an ancestor answers for
+/// its descendants; the baseline is what makes the answer about THIS child.
+pub type OomWitness = (PathBuf, u64);
+
+/// The cgroup `pid` sits in, under cgroup v2, or `None` on a host that
+/// publishes none.
+///
+/// `/proc/<pid>/cgroup` is one `0::<path>` line on a v2 host, and the absolute
+/// path is that under the v2 mount.
+pub fn cgroup_of(pid: u32) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(format!("/proc/{pid}/cgroup")).ok()?;
+    let relative = text
+        .lines()
+        .find_map(|line| line.strip_prefix("0::"))?
+        .trim()
+        .trim_start_matches('/');
+    Some(Path::new(CGROUP_ROOT).join(relative))
+}
+
+/// How many times the kernel OOM-killed something in `dir` or below it.
+pub fn oom_kills(dir: &Path) -> Option<u64> {
+    let text = std::fs::read_to_string(dir.join("memory.events")).ok()?;
+    text.lines()
+        .find_map(|line| line.strip_prefix("oom_kill "))
+        .and_then(|n| n.trim().parse().ok())
+}
+
+/// Put `limits` on the cgroup `pid` REALLY sits in, and hand back the witness
+/// that will still answer once that cgroup is gone.
+///
+/// # Why a cap written before the spawn is not always a cap
+///
+/// [`create`] writes the caps on a directory of ours and the child joins it
+/// before `exec`. That holds for a child that stays where it was put. It does
+/// not hold for a child that re-homes itself, and a launcher that hands its
+/// process to the service manager does exactly that. Measured on the target
+/// platform, 2026-09-20, five runs out of five: 46-62 ms after the spawn the
+/// browser is in a scope of the service manager's making, and there
+/// `memory.max` reads `max`, `pids.max` `38416`, `cpu.max` `max` — the whole
+/// declared ceiling, gone (finding B-G9, wave G). Nothing about that is one
+/// package's peculiarity; it is what any process that joins another cgroup
+/// after `exec` looks like from here.
+///
+/// So the ceiling follows the process: the caller says WHEN it is worth
+/// looking — after the child chain has settled, which is the same moment it
+/// already waits for — and this reads where the child went and writes the
+/// ceiling there.
+///
+/// # Who writes it
+///
+/// Not this function. The cgroup a launcher hands its child to is a unit of
+/// the service manager, and the manager wins every reconciliation: writing
+/// the three files directly held over the child's life and was wiped by the
+/// next `systemctl --user daemon-reload`, which re-applies a unit view that
+/// declares no cap (measured 2026-09-20, strand g11). So the ceiling is ASKED
+/// FOR, through `set-property` in the runtime form ([`tell_the_manager`]),
+/// and then read back. Measured 2026-09-20 on the packaged browser: the three
+/// files carry the ceiling and still carry it after two `daemon-reload`s.
+///
+/// # Fail-closed
+///
+/// Every failure is a refusal, never a shrug: not being able to see where the
+/// child is, not being allowed to write the ceiling there, a read-back that
+/// does not agree, and a child that moved on again while we wrote. The
+/// operator's one deliberate way past all of them is an explicitly written
+/// `{"trust": "trusted"}` (OR-G56), which declares no ceiling and so never
+/// reaches here.
+pub async fn follow_process(
+    pid: u32,
+    owned: Option<&Path>,
+    limits: &ResourceLimits,
+    budget: std::time::Duration,
+) -> io::Result<Option<OomWitness>> {
+    let actual = cgroup_of(pid).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "cannot read which cgroup the child sits in (/proc/{pid}/cgroup); \
+                 params.sandbox.limits declares a ceiling that cannot be placed, and an \
+                 unplaced ceiling is no ceiling — declare params.sandbox {{\"trust\": \
+                 \"trusted\"}} to run without one"
+            ),
+        )
+    })?;
+    if Some(actual.as_path()) == owned {
+        // The child stayed in the cgroup it was spawned into. That directory
+        // is ours and outlives the child, so it is its own witness.
+        return Ok(None);
+    }
+
+    // Before the write, because a kill can only happen once the ceiling is
+    // there: a baseline taken afterwards could miss the first one.
+    let witness = actual
+        .parent()
+        .filter(|p| p.join("memory.events").is_file())
+        .map(|p| (p.to_path_buf(), oom_kills(p).unwrap_or(0)));
+
+    tell_the_manager(&actual, limits, budget).await?;
+    // The manager answers the call whether or not the property reached the
+    // cgroup, so this read is not a belt on braces: it is the only place the
+    // ceiling becomes a fact.
+    confirm_limits(&actual, limits)?;
+
+    // It could have moved on while we wrote. Then the ceiling is on a cgroup
+    // it no longer sits in, which is the defect this function exists for.
+    match cgroup_of(pid) {
+        Some(now) if now == actual => Ok(witness),
+        other => Err(io::Error::other(format!(
+            "the child moved out of {} again while its ceiling was being written (it is in {:?} \
+             now); params.sandbox.limits cannot be enforced on a moving target",
+            actual.display(),
+            other.as_ref().map(|p| p.display().to_string())
+        ))),
+    }
+}
+
+/// Read every written cap back and refuse anything that does not agree.
+///
+/// A write to a cgroup file can succeed and mean nothing: a controller the
+/// parent does not hand down, a value the kernel clamped, a directory that is
+/// not the one we think. The read-back is what turns "we wrote it" into "it is
+/// there".
+fn confirm_limits(dir: &Path, limits: &ResourceLimits) -> io::Result<()> {
+    if let Some(bytes) = limits.memory_max_bytes {
+        let seen = read_cap(dir, "memory.max")?;
+        // The kernel rounds a memory cap DOWN to a whole page, so the byte we
+        // asked for is not the byte we read: 2 000 000 000 comes back as
+        // 1 999 998 976 on a 4 KiB page. Anything further off — `max` above
+        // all — is a cap that is not there.
+        let got: u64 = seen.parse().map_err(|_| {
+            io::Error::other(format!(
+                "memory.max in {} reads {seen:?} after the ceiling was written; \
+                 params.sandbox.limits.memory_max_bytes is not enforced there",
+                dir.display()
+            ))
+        })?;
+        if got > bytes || bytes - got >= page_size() {
+            return Err(io::Error::other(format!(
+                "memory.max in {} reads {got} after {bytes} was written; \
+                 params.sandbox.limits.memory_max_bytes is not enforced there",
+                dir.display()
+            )));
+        }
+    }
+    if let Some(n) = limits.pids_max {
+        confirm_exact(dir, "pids.max", &n.to_string(), "pids_max")?;
+    }
+    if let Some(pct) = limits.cpu_max_percent {
+        confirm_exact(dir, "cpu.max", &cpu_quota(pct), "cpu_max_percent")?;
+    }
+    Ok(())
+}
+
+/// One cap file, trimmed.
+fn read_cap(dir: &Path, file: &str) -> io::Result<String> {
+    Ok(std::fs::read_to_string(dir.join(file))?.trim().to_string())
+}
+
+/// A cap the kernel stores verbatim: it reads back as it was written or it is
+/// not enforced.
+fn confirm_exact(dir: &Path, file: &str, want: &str, knob: &str) -> io::Result<()> {
+    let seen = read_cap(dir, file)?;
+    if seen != want {
+        return Err(io::Error::other(format!(
+            "{file} in {} reads {seen:?} after {want:?} was written; \
+             params.sandbox.limits.{knob} is not enforced there",
+            dir.display()
+        )));
+    }
+    Ok(())
+}
+
+/// The page a memory cap is rounded down to.
+fn page_size() -> u64 {
+    // SAFETY: `sysconf` reads a static system parameter and writes nothing.
+    let n = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    if n > 0 { n as u64 } else { 4096 }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The three shapes of "which unit carries this cgroup", decided without
+    /// touching a manager. Pure, so it runs on every host.
+    #[test]
+    fn a_cgroup_below_a_unit_belongs_to_nobody_we_can_ask() {
+        // SAFETY: `geteuid` reads a process property and cannot fail.
+        let uid = unsafe { libc::geteuid() };
+        let app = PathBuf::from(format!(
+            "{CGROUP_ROOT}/user.slice/user-{uid}.slice/user@{uid}.service/app.slice"
+        ));
+
+        let scope = app.join("snap.chromium.chromium-abc.scope");
+        assert_eq!(
+            unit_for(&scope).expect("a scope of the user manager"),
+            (
+                Manager::User,
+                "snap.chromium.chromium-abc.scope".to_string()
+            )
+        );
+
+        let system = PathBuf::from(format!("{CGROUP_ROOT}/system.slice/something.service"));
+        assert_eq!(
+            unit_for(&system).expect("a unit of the system manager"),
+            (Manager::System, "something.service".to_string())
+        );
+
+        // A directory INSIDE a delegated unit: the delegatee owns it, and no
+        // manager has a name for it.
+        let leaf = app.join("some.scope").join("meclaw-sbx-1-abc");
+        let err = unit_for(&leaf).expect_err("a cgroup that is not a unit is a refusal");
+        let said = err.to_string();
+        assert!(
+            said.contains("not a unit") && said.contains("trusted"),
+            "the refusal names what is missing and the one deliberate way out (OR-G56): {said}"
+        );
+    }
+
+    /// R-G7 read backwards: the ceiling may never land on a cgroup the colony
+    /// itself sits in or below. Such a unit exists and the manager would cap
+    /// it without a word.
+    #[test]
+    fn an_ancestor_of_our_own_cgroup_is_refused_by_name() {
+        let Some(own) = cgroup_of(std::process::id()) else {
+            eprintln!("[an_ancestor_of_our_own_cgroup_is_refused_by_name] SKIPPED: no cgroup v2");
+            return;
+        };
+        for dir in std::iter::successors(Some(own.as_path()), |p| p.parent())
+            .take_while(|p| p.starts_with(CGROUP_ROOT))
+        {
+            let err = unit_for(dir).expect_err("our own cgroup and its ancestors are refused");
+            assert!(
+                err.to_string().contains("the colony"),
+                "the refusal says whose ceiling it would have been: {err}"
+            );
+        }
+    }
+
+    /// A unit nobody knows: the manager says so, and the cell passes that on
+    /// instead of shrugging. No delegation needed, and the unit name cannot
+    /// collide with a real one.
+    #[tokio::test]
+    async fn a_unit_the_manager_does_not_know_is_a_refusal() {
+        const T: &str = "a_unit_the_manager_does_not_know_is_a_refusal";
+        // SAFETY: `geteuid` reads a process property and cannot fail.
+        let uid = unsafe { libc::geteuid() };
+        let dir = PathBuf::from(format!(
+            "{CGROUP_ROOT}/user.slice/user-{uid}.slice/user@{uid}.service/app.slice/\
+             meclaw-g12-no-such-unit-{}.scope",
+            std::process::id()
+        ));
+        let limits = ResourceLimits {
+            memory_max_bytes: Some(2_000_000_000),
+            pids_max: Some(512),
+            cpu_max_percent: Some(200),
+        };
+        let err = tell_the_manager(&dir, &limits, std::time::Duration::from_millis(10_000)).await;
+        let Err(err) = err else {
+            panic!("[{T}] a unit that does not exist was capped anyway");
+        };
+        let said = err.to_string();
+        assert!(
+            said.contains("trusted"),
+            "every refusal names the one deliberate way out (OR-G56): {said}"
+        );
+    }
 
     #[test]
     fn cpu_percent_becomes_a_quota_against_the_fixed_period() {

@@ -1224,6 +1224,157 @@ body::after {
 .display-media .display-media-frame { background-color: transparent; }
 .display-table-grid thead { background-color: rgba(74, 46, 39, 0.06); }
 
+/* ── 6c. A page, looked at through a cell ────────────────────────────────
+ * `display-browser` (2.6.0, display-hive.md § 7.9). A page is CONTENT in a
+ * window, not a fifth kind of window: a frame with an address under it, the
+ * same furniture as `display-media`. What is inside the frame is rendered by
+ * a browser somewhere else and arrives as pictures, so the rules here are
+ * about the FRAME -- it has to stand, and stand at the right proportions,
+ * before the first picture is there (§ 6.14: a window without a stream stands
+ * all the same). */
+.display-browser {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  min-inline-size: 0;
+}
+
+/* The four load-bearing declarations of the picture.
+ *
+ * `inline-size: 100%` -- the frame takes the window's width, and the window's
+ * width is the curator's business (§ 6.14: every output draws in ITS window
+ * size). `aspect-ratio` from `--browser-ratio` gives it a height before any
+ * frame has arrived; the HOOK sets the property, first from `data-viewport`
+ * and then from every frame head that changes it, because the sheet cannot
+ * know what a page is. `image-rendering: auto` because a page is TEXT and
+ * reads better softly scaled -- the opposite decision belongs to pixel art.
+ * And `touch-action: none`, or the viewer's own browser takes the first swipe
+ * as a scroll of the page it is standing on and the finger never reaches the
+ * page in the frame. */
+.display-browser-view {
+  inline-size: 100%;
+  block-size: auto;
+  aspect-ratio: var(--browser-ratio, 16 / 10);
+  border-radius: var(--r-inner);
+  background-color: var(--inner-fill-strong);
+  box-shadow: inset 0 0 0 1px rgba(74, 46, 39, 0.22);
+  image-rendering: auto;
+  touch-action: none;
+}
+
+/* The address, under the picture, in the caption's voice. The title is the
+ * PAGE's title and may be missing; the address never is. */
+.display-browser-bar {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  min-inline-size: 0;
+  color: var(--fg-tertiary);
+}
+
+.display-browser-title {
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-secondary);
+}
+
+.display-browser-url {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--t-caption);
+}
+
+/* Three states a person sees without reading. `loading` is dimmed; `suspended`
+ * is dimmed AND drained of colour, because the picture standing there is the
+ * last one before the page was closed and must not be mistaken for a living
+ * one; `error` wears an outline and puts the address forward, since the
+ * address is the only thing still true. `ready` says NOTHING on purpose -- a
+ * page that works is a page, not a status. */
+.display-browser[data-page-state="loading"] .display-browser-view { opacity: 0.55; }
+
+.display-browser[data-page-state="suspended"] .display-browser-view {
+  opacity: 0.5;
+  filter: grayscale(1);
+}
+
+.display-browser[data-page-state="error"] .display-browser-view,
+.display-browser[data-page-link="down"] .display-browser-view {
+  box-shadow: inset 0 0 0 2px var(--accent-ring);
+}
+
+.display-browser[data-page-state="error"] .display-browser-url,
+.display-browser[data-page-link="down"] .display-browser-url { color: var(--accent); }
+
+/* Two writers on one attribute made a sleeping page look like a waking one
+ * (measured 20.09., OR-G.g18.1), so the two voices got two attributes: the
+ * curator says what the CELL is doing, above; the hook says whether ITS
+ * channel stands, here. The error look is drawn by either -- a page the
+ * application still believes is coming up, whose join the cell turned down,
+ * is broken from where the reader sits whatever the application thinks. And
+ * a channel that stands says nothing at all: `up` has no rule, the same way
+ * `ready` has none. */
+
+/* The client's own word about the join, beside the address. Written by the
+ * HOOK, never by an application: "no browser mounted" is the repair, and the
+ * `error` state alone -- an outline and an accent-coloured address -- tells a
+ * person that something is wrong without telling them what. In the accent, so
+ * the two read as one statement.
+ *
+ * The span ships on every page and is empty on almost all of them; `:empty`
+ * takes it out of the flex row, or every working page would carry its gap. */
+.display-browser-reason {
+  flex: 0 1 auto;
+  font-size: var(--t-caption);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--accent);
+}
+
+.display-browser-reason:empty { display: none; }
+
+/* Two focus rules, and they are not the same statement -- which of them draws
+ * depends on what the OUTPUT can do (§ 6.4). Where `data-inputs` carries
+ * `keyboard`, the hook hands the canvas's focus straight on to the hidden
+ * field, so the canvas never keeps `:focus-visible` and the second rule is the
+ * one that draws. Where it does not, no field is ever built, and the canvas a
+ * TAB reached keeps its own focus and the first rule draws. Both carry the
+ * same two declarations for that reason: the ring is the same ring, and only
+ * the element holding the focus differs. The field hangs on `document.body`,
+ * outside this figure, so no `:has()` on the figure could ever see it. */
+.display-browser-view:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.display-browser[data-keys="true"] .display-browser-view {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* The hidden field the keyboard actually types into (§ 7.9). No template
+ * writes this class -- the hook creates the element -- and the rule stands
+ * all the same, because the hook writes it.
+ *
+ * `position: fixed` far off the screen with `opacity: 0`, and deliberately
+ * NOT `display: none` or `visibility: hidden`: a box that is not rendered
+ * takes no focus and opens no keyboard on a telephone. */
+.display-browser-keys {
+  position: fixed;
+  inset-block-start: -100px;
+  inset-inline-start: -100px;
+  inline-size: 1px;
+  block-size: 1px;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+}
+
 /* ── 7. States (contract § 3) ────────────────────────────────────────────
  * Focus is handed out by the STATE, never by a click and never by a gaze: on
  * a screen without eyes, the companion looks for you. The curator writes
@@ -2158,6 +2309,12 @@ html[data-dock-open="0"] .display-columns .display-os[data-unseen]:not([data-uns
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3);
 }
 
+/* The frame of a page is a field like the others, and its hairline is the
+ * literal one -- the same hand-switch as `.inner` above. */
+[data-ground="night"] .display-browser-view {
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+}
+
 [data-ground="night"] :is(.display-timer-bar, .display-progress-track) {
   background-color: rgba(255, 255, 255, 0.12);
 }
@@ -2327,6 +2484,13 @@ body:has([data-exit="tv"])::after { display: none; }
   body::after { display: none; }
 
   .display-input-field {
+    background-color: var(--glass-opaque);
+    box-shadow: none;
+  }
+
+  /* The frame a page stands in is a surface too, and a translucent one with
+   * nothing blurred behind it is a picture over noise. */
+  .display-browser-view {
     background-color: var(--glass-opaque);
     box-shadow: none;
   }

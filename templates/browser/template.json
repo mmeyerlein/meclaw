@@ -1,0 +1,26 @@
+{
+  "name": "browser",
+  "version": "1.0.0",
+  "description": {
+    "purpose": "A web page on a screen, as a cell. One Chromium-based browser per member, a browser context per identity, a page per card, and each page's picture streamed onto a topic of the display's own socket -- so a person looks at the page itself rather than at somebody's summary of it, and can reach into it with a pointer, a finger or a keyboard. The browser is a PREREQUISITE, not a delivery: it comes from the machine's package system, brings its own confinement with it, and this template points at it.",
+    "use_when": "Wherever an application would otherwise have to choose between a link somebody has to click and an iframe a site is allowed to refuse. Instantiate it once per member under the mount a display's page: joins should reach, point chromium_path at the installed browser, and draw four edges in the same mutation: open, close and navigate in, and the page lane back out.",
+    "not_in_scope": "No browser ships with this template, and no cache path, no AppArmor profile and no sandbox switch either: a browser whose own sandbox does not hold does not start, and there is no way to say otherwise. No persistence of a logged-in session -- a context is an identity and an ephemeral one, so a restart is a logged-out browser and that is the design rather than a gap. No video codec: the picture is a JPEG screencast, and a codec is a later wave. No opinion about what to open: the addresses come from the application, and this cell holds pages rather than choosing them.",
+    "examples": [
+      "PORTS - Entry: one tool_call turn per verb -- in_open {page, url, context?, viewport?}, in_navigate {page, url}, in_close {page}, in_context_close {context}. Exit: a receipt per message and a page emission per state change, plus error for a spawn, a CDP or a crash failure.",
+      "THE TOPIC IS THE PAGE - a display joins page:<page> on its own socket, the mount table hands the join to this cell, and the frames travel as an image broadcast: sixteen bytes of head (width, height, scroll x, scroll y, big-endian) and then the JPEG. Inputs come back on the same link as text, so a keystroke is never a message.",
+      "ONE BROWSER, MANY WINDOWS - { \"add_nodes\": [{\"name\": \"browser\", \"template\": \"browser@1.0.0\", \"override_params\": {\"mount\": \"browser\", \"chromium_path\": \"/usr/bin/chromium\"}}], \"add_edges\": [{\"from\": \"./app\", \"to\": \"./browser\", \"condition\": \"hop.route == 'open'\", \"set_hop\": {\"route\": \"in_open\"}}, {\"from\": \"./browser\", \"to\": \"./app\", \"condition\": \"hop.route == 'page'\"}] }",
+      "a page nobody has looked at for five minutes -> its target is closed and its context kept; the next join or navigation opens it again, in the same identity, and nobody had to be told it was gone"
+    ]
+  },
+  "tags": [
+    "browser",
+    "surface",
+    "display",
+    "page"
+  ],
+  "requires": {
+    "env": {}
+  },
+  "author": "@mmeyerlein",
+  "license": "MIT"
+}

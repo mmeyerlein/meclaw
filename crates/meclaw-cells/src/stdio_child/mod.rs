@@ -30,3 +30,4 @@ pub use error::{ChildExit, StdioChildError};
 pub use frame::Frame;
 pub use serve::{ChildCommand, ChildEvent, CorrelationKey, ServeConfig};
 pub use spawn::{ChildLines, ChildSpec, StdioChild};
+pub use spawn::{ChildPipes, ChildReaper};

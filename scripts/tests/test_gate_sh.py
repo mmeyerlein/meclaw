@@ -136,6 +136,16 @@ def run_gate(repo, *args, plan=None, dry=True, extra_env=None, timeout_s=None):
     # A full disk must not turn the self-test station red over a build that
     # these fake stations never run.
     env.setdefault("MECLAW_GATE_MIN_FREE_G", "0")
+    # The stage lock is a property of the HOST, and a value in the surrounding
+    # shell would decide what the probe tests say. Each test sets its own.
+    env.pop("MECLAW_STAGE_LOCK", None)
+    # ... and so is the archive default: `strand.sh gate` exports
+    # `MECLAW_GATE_ARCHIVE` around the run it starts, so the self-test station
+    # inside that run inherited it and every strand of this wave saw
+    # `test_a_run_without_an_archive_says_so_in_the_field` go red. The two
+    # tests that are ABOUT the variable set it themselves, through
+    # `extra_env`.
+    env.pop("MECLAW_GATE_ARCHIVE", None)
     env.update({
         "GIT_AUTHOR_NAME": "gate test", "GIT_AUTHOR_EMAIL": "gate@example.invalid",
         "GIT_COMMITTER_NAME": "gate test", "GIT_COMMITTER_EMAIL": "gate@example.invalid",
@@ -272,6 +282,33 @@ class TestBuildWidth(GateShTestCase):
         self.assertNotIn("cargo hygiene", log)
 
 
+class TestGateMode(GateShTestCase):
+    """The runner names its mode to the stations -- GH #753.
+
+    One test reads it: the display drift lock compares its copies against the
+    committed source mark in a strand and against the living description tree
+    in the passes. The strand half is deterministic, and that is the point --
+    six strand gates once went red on that test alone because another session
+    moved the description while they ran.
+    """
+
+    PLAN_MODE = "say\tmode\t0\tbash -c 'echo mode=$MECLAW_GATE_MODE'\t\n"
+
+    def mode_in_log(self, mode):
+        run_gate(self.repo, mode, "--base", "0" * 40, dry=False,
+                 plan=self.plan_file(self.PLAN_MODE))
+        return self.station_log("say", mode=mode).read_text()
+
+    def test_a_strand_says_strand(self):
+        self.assertIn("mode=strand", self.mode_in_log("strand"))
+
+    def test_a_pass_says_which_pass(self):
+        self.assertIn("mode=integration", self.mode_in_log("integration"))
+
+    def test_ci_says_ci(self):
+        self.assertIn("mode=ci", self.mode_in_log("ci"))
+
+
 class TestBaseLine(GateShTestCase):
     """The runner names the commit its diff was taken against -- GH #713.
 
@@ -338,8 +375,8 @@ class TestReceipt(GateShTestCase):
         self.assertTrue(receipt.exists(), res.stdout + res.stderr)
         doc = json.loads(receipt.read_text())
         self.assertEqual(
-            {"mode", "rev", "base", "dirty", "lock_wait_secs", "started",
-             "finished", "stations", "verdict"},
+            {"mode", "rev", "base", "dirty", "lock_wait_secs", "archive",
+             "started", "finished", "stations", "verdict"},
             set(doc))
         self.assertEqual("strand", doc["mode"])
         self.assertEqual(rev, doc["rev"])
@@ -1181,6 +1218,12 @@ class TestLockWait(GateShTestCase):
         return self.repo.parent / "cargo.lock.test"
 
     def hold_the_lock(self, seconds):
+        """Hold the run lock for `seconds`; the runner's own start eats some of it.
+
+        Six, not three: since GH #764 the wait is truncated rather than rounded
+        up by a tick, so the margin between what the runner still sees and the
+        two-second floor below has to come from the hold itself.
+        """
         lock = self.lock_path()
         lock.touch()
         holder = subprocess.Popen(["flock", str(lock), "sleep", str(seconds)])
@@ -1194,7 +1237,7 @@ class TestLockWait(GateShTestCase):
         self.skipTest("the background holder never took the lock")
 
     def test_the_wait_is_its_own_note_line_before_the_cargo_station(self):
-        self.hold_the_lock(3)
+        self.hold_the_lock(6)
         res = run_gate(self.repo, "strand", plan=self.plan_file(PLAN_CARGO),
                        dry=False, timeout_s=60)
         self.assertEqual(0, res.returncode, res.stdout + res.stderr)
@@ -1211,7 +1254,7 @@ class TestLockWait(GateShTestCase):
         self.assertLessEqual(int(rows[names.index("build")]["secs"]), 1, res.stdout)
 
     def test_the_wait_is_in_the_receipt_and_counts_as_no_judgement(self):
-        self.hold_the_lock(3)
+        self.hold_the_lock(6)
         res = run_gate(self.repo, "strand", plan=self.plan_file(PLAN_CARGO),
                        dry=False, timeout_s=60)
         receipt = self.last_receipt()
@@ -1229,12 +1272,511 @@ class TestLockWait(GateShTestCase):
         self.assertEqual(0, self.last_receipt()["lock_wait_secs"])
 
 
+class TestStageLock(GateShTestCase):
+    """A twin measurement on the same host is a reason a timing test flakes.
+
+    Two integration passes went red on timing tests while a twin measurement
+    loaded the same machine (1 513 s and 1 385 s), and the same load tripped
+    the twin's own watchdog. The lock is PROBED, never taken: the note says
+    what else is running, it never blocks and it is never RED.
+    """
+
+    def stage_lock(self):
+        return pathlib.Path(self._tmp.name) / "stage.lock"
+
+    def run_with_stage(self, lock):
+        return run_gate(self.repo, "strand", plan=self.plan_file(PLAN_CARGO),
+                        dry=False, timeout_s=60,
+                        extra_env={"MECLAW_STAGE_LOCK": str(lock)})
+
+    def test_a_held_lock_is_a_note_before_the_cargo_station(self):
+        lock = self.stage_lock()
+        lock.touch()
+        holder = subprocess.Popen(["flock", str(lock), "sleep", "5"])
+        self.addCleanup(holder.wait)
+        self.addCleanup(holder.terminate)
+        for _ in range(500):
+            if subprocess.run(["flock", "-n", str(lock), "true"]).returncode != 0:
+                break
+            time.sleep(0.01)
+        else:
+            self.skipTest("the background holder never took the lock")
+        res = self.run_with_stage(lock)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        rows = gate_lines(res.stdout)
+        names = [r["name"] for r in rows]
+        self.assertIn("stage-lock", names, res.stdout)
+        row = rows[names.index("stage-lock")]
+        self.assertEqual("NOTE", row["verdict"])
+        self.assertIn("twin measurement", row["reason"])
+        self.assertLess(names.index("stage-lock"), names.index("build"), names)
+
+    def test_a_free_lock_says_nothing(self):
+        lock = self.stage_lock()
+        lock.touch()
+        res = self.run_with_stage(lock)
+        self.assertNotIn("stage-lock", [r["name"] for r in gate_lines(res.stdout)])
+
+    def test_a_missing_lock_file_is_not_created(self):
+        """`flock <file>` would create it -- a probe may not leave a lock behind."""
+        lock = self.stage_lock()
+        res = self.run_with_stage(lock)
+        self.assertFalse(lock.exists(), res.stdout)
+        self.assertNotIn("stage-lock", [r["name"] for r in gate_lines(res.stdout)])
+
+    def test_the_path_comes_from_the_environment_with_no_default(self):
+        """This file travels; the lock of one host's twin does not belong in it.
+
+        A default here would be a private path in a published tree, and it
+        would also be the wrong path everywhere else. Without the variable
+        there is no twin to ask about, so there is no probe.
+        """
+        m = re.search(r'stage_lock_path="\$\{MECLAW_STAGE_LOCK([^}]*)\}"',
+                      GATE_SH.read_text())
+        self.assertIsNotNone(m, "the stage lock path is read from the environment")
+        self.assertEqual(":-", m.group(1), "no default belongs in a travelling file")
+
+    def test_without_the_variable_nothing_is_probed(self):
+        res = run_gate(self.repo, "strand", plan=self.plan_file(PLAN_CARGO),
+                       dry=False, timeout_s=60)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertNotIn("stage-lock", [r["name"] for r in gate_lines(res.stdout)])
+
+    def test_without_flock_the_probe_says_nothing(self):
+        """`flock -n <file> true` exits 127 when the tool is absent.
+
+        127 is not zero, so the `&&` fell through and the note went out -- a
+        host without `util-linux` was told a twin measurement was running.
+        """
+        lock = self.stage_lock()
+        lock.touch()
+        res = run_gate(self.repo, "strand", plan=self.plan_file(PLAN_CARGO),
+                       dry=False, timeout_s=60,
+                       extra_env={"MECLAW_STAGE_LOCK": str(lock),
+                                  "PATH": self.path_without_flock()})
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertNotIn("stage-lock", [r["name"] for r in gate_lines(res.stdout)])
+
+    def path_without_flock(self):
+        """A PATH holding everything the runner uses except `flock`."""
+        bin_dir = pathlib.Path(self._tmp.name) / "no-flock"
+        bin_dir.mkdir(exist_ok=True)
+        for entry in os.environ["PATH"].split(os.pathsep):
+            if not os.path.isdir(entry):
+                continue
+            for name in os.listdir(entry):
+                if name == "flock" or (bin_dir / name).exists():
+                    continue
+                try:
+                    (bin_dir / name).symlink_to(os.path.join(entry, name))
+                except OSError:
+                    pass
+        return str(bin_dir)
+
+    def test_a_run_without_a_cargo_station_never_probes(self):
+        lock = self.stage_lock()
+        lock.touch()
+        holder = subprocess.Popen(["flock", str(lock), "sleep", "5"])
+        self.addCleanup(holder.wait)
+        self.addCleanup(holder.terminate)
+        res = run_gate(self.repo, "strand", plan=self.plan_file(PLAN_OK_BAD),
+                       dry=False, extra_env={"MECLAW_STAGE_LOCK": str(lock)})
+        self.assertNotIn("stage-lock", [r["name"] for r in gate_lines(res.stdout)])
+
+
+class TestMasterMoved(GateShTestCase):
+    """The base a strand plans against is the base it was branched from.
+
+    Twenty-one of thirty session-to-session messages on the three-session day
+    were about order and base commits, and five master re-merges landed in the
+    two strands that touched the same file. The runner can say it by itself:
+    how far master has moved, and which files both sides touch.
+    """
+
+    def strand_on(self, files, master_files):
+        """A branch off master, with master moved on after the branch point."""
+        for name in files | master_files:
+            (self.repo / name).write_text("base\n")
+        _git(self.repo, "add", "-A")
+        _git(self.repo, "commit", "-q", "-m", "base")
+        _git(self.repo, "checkout", "-q", "-b", "welle-p/strand")
+        for name in files:
+            (self.repo / name).write_text("strand\n")
+        _git(self.repo, "add", "-A")
+        _git(self.repo, "commit", "-q", "-m", "strand")
+        _git(self.repo, "checkout", "-q", "master")
+        for name in master_files:
+            (self.repo / name).write_text("master\n")
+        _git(self.repo, "add", "-A")
+        _git(self.repo, "commit", "-q", "-m", "master moves")
+        _git(self.repo, "checkout", "-q", "welle-p/strand")
+
+    def note(self, res):
+        rows = {r["name"]: r for r in gate_lines(res.stdout)}
+        return rows.get("master-moved")
+
+    def test_a_moved_master_is_a_note_with_the_count(self):
+        self.strand_on({"a.txt"}, {"b.txt"})
+        res = run_gate(self.repo, "strand", plan=self.plan_file(PLAN_OK_BAD))
+        row = self.note(res)
+        self.assertIsNotNone(row, res.stdout)
+        self.assertEqual("NOTE", row["verdict"])
+        self.assertIn("1 commit", row["scope"])
+
+    def test_the_files_both_sides_touch_are_named(self):
+        self.strand_on({"a.txt", "shared.txt"}, {"shared.txt"})
+        row = self.note(run_gate(self.repo, "strand", plan=self.plan_file(PLAN_OK_BAD)))
+        self.assertIn("shared.txt", row["reason"])
+        self.assertNotIn("a.txt", row["reason"])
+
+    def test_an_empty_intersection_is_only_the_count(self):
+        self.strand_on({"a.txt"}, {"b.txt"})
+        row = self.note(run_gate(self.repo, "strand", plan=self.plan_file(PLAN_OK_BAD)))
+        self.assertEqual("", row["reason"] or "")
+
+    def test_a_master_that_did_not_move_says_nothing(self):
+        res = run_gate(self.repo, "strand", plan=self.plan_file(PLAN_OK_BAD))
+        self.assertIsNone(self.note(res), res.stdout)
+
+    def test_a_merged_master_stops_the_note(self):
+        """The answer to the note is a merge, and the note takes the answer."""
+        self.strand_on({"a.txt"}, {"b.txt"})
+        _git(self.repo, "-c", "user.name=gate test",
+             "-c", "user.email=gate@example.invalid",
+             "merge", "-q", "--no-edit", "master")
+        res = run_gate(self.repo, "strand", plan=self.plan_file(PLAN_OK_BAD))
+        self.assertIsNone(self.note(res), res.stdout)
+
+    def test_only_a_strand_asks(self):
+        """`integration` and `release` diff against the export base, not master."""
+        self.strand_on({"a.txt"}, {"b.txt"})
+        res = run_gate(self.repo, "integration", "--base", "master",
+                       plan=self.plan_file(PLAN_OK_BAD))
+        self.assertIsNone(self.note(res), res.stdout)
+
+    def test_the_note_is_no_judgement(self):
+        self.strand_on({"a.txt"}, {"b.txt"})
+        res = run_gate(self.repo, "strand", plan=self.plan_file(PLAN_OK_BAD))
+        summary = [m.groupdict() for m in
+                   (SUMMARY_LINE.match(ln) for ln in res.stdout.splitlines()) if m]
+        self.assertEqual("3", summary[0]["total"], res.stdout)
+
+
+class TestArchive(GateShTestCase):
+    """The receipt has to outlive the worktree it was written in.
+
+    `lock_wait_secs` of 24 of 36 strand runs of the waves H2/H3/G0 is gone:
+    the receipts lived under `target/`, and the worktrees were removed and the
+    disk hygiene run. A wave that names its own `receipts/` directory keeps
+    them, and the receipt says where its copy went.
+    """
+
+    def archive_dir(self, name="archive"):
+        return pathlib.Path(self._tmp.name) / name
+
+    def test_archive_copies_the_receipt_and_the_logs(self):
+        out = self.archive_dir()
+        res = run_gate(self.repo, "strand", "--archive", str(out),
+                       plan=self.plan_file(PLAN_OK_BAD))
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertTrue((out / "last-strand.json").is_file())
+        self.assertTrue((out / "logs" / "strand-ok.log").is_file())
+
+    def test_the_receipt_names_the_directory_it_was_copied_to(self):
+        out = self.archive_dir()
+        run_gate(self.repo, "strand", "--archive", str(out),
+                 plan=self.plan_file(PLAN_OK_BAD))
+        self.assertEqual(str(out), self.last_receipt()["archive"])
+        # ... and the copy carries it too, which is what makes the copy
+        # readable on its own once the worktree is gone.
+        self.assertEqual(str(out),
+                         json.loads((out / "last-strand.json").read_text())["archive"])
+
+    def test_a_run_without_an_archive_says_so_in_the_field(self):
+        run_gate(self.repo, "strand", plan=self.plan_file(PLAN_OK_BAD))
+        self.assertIsNone(self.last_receipt()["archive"])
+
+    def test_the_environment_names_the_default(self):
+        out = self.archive_dir("from-env")
+        run_gate(self.repo, "strand", plan=self.plan_file(PLAN_OK_BAD),
+                 extra_env={"MECLAW_GATE_ARCHIVE": str(out)})
+        self.assertTrue((out / "last-strand.json").is_file())
+
+    def test_the_flag_wins_over_the_environment(self):
+        env_dir = self.archive_dir("from-env")
+        flag_dir = self.archive_dir("from-flag")
+        run_gate(self.repo, "strand", "--archive", str(flag_dir),
+                 plan=self.plan_file(PLAN_OK_BAD),
+                 extra_env={"MECLAW_GATE_ARCHIVE": str(env_dir)})
+        self.assertTrue((flag_dir / "last-strand.json").is_file())
+        self.assertFalse(env_dir.exists())
+
+    def test_log_dir_is_the_same_option_under_its_old_name(self):
+        """Callers and two waves of receipts spell it `--log-dir`; it stays."""
+        out = self.archive_dir("old-name")
+        run_gate(self.repo, "strand", "--log-dir", str(out),
+                 plan=self.plan_file(PLAN_OK_BAD))
+        self.assertTrue((out / "last-strand.json").is_file())
+        self.assertEqual(str(out), self.last_receipt()["archive"])
+
+
+class TestBuilderFlakeRetry(GateShTestCase):
+    """GH #721: the builder scenarios lose an endpoint in about one run in three.
+
+    Eight occurrences in three waves, answered by hand every time -- rerun the
+    one station, paste both lines, comment on the issue. In H2 that was three
+    of eight gate runs; the 0.39.0 release paid 1 558 s for two repeats.
+    """
+
+    def flaky(self, name="flaky.sh", always=False):
+        """A station that prints the #721 signature -- once, or every time."""
+        path = pathlib.Path(self._tmp.name) / name
+        body = ("#!/bin/sh\n"
+                "mark=\"$0.ran\"\n")
+        if not always:
+            body += 'if [ -e "$mark" ]; then echo "17 cases, 17 ok"; exit 0; fi\n'
+        body += ('touch "$mark"\n'
+                 "echo \"A1 registry lacks '/os/builder/eyes'\"\n"
+                 "exit 1\n")
+        path.write_text(body)
+        path.chmod(0o755)
+        return path
+
+    def other_red(self):
+        path = pathlib.Path(self._tmp.name) / "other.sh"
+        path.write_text("#!/bin/sh\necho 'A1 expected two windows, saw one'\nexit 1\n")
+        path.chmod(0o755)
+        return path
+
+    def gh_stub(self, ok=True):
+        """A stand-in for `gh`, so no test of this suite ever reaches GitHub."""
+        path = pathlib.Path(self._tmp.name) / "gh-stub.sh"
+        path.write_text("#!/bin/sh\n"
+                        "for a in \"$@\"; do printf '%s\\n' \"$a\"; done >> \"$0.argv\"\n"
+                        "exit " + ("0" if ok else "1") + "\n")
+        path.chmod(0o755)
+        return path
+
+    def plan_for(self, script):
+        return self.plan_file(
+            "scenarios:builder\t17 cases\t0\t%s\t\n" % script, name="builder.tsv")
+
+    def run_builder(self, script, gh=None, ok=True):
+        return run_gate(self.repo, "strand", plan=self.plan_for(script), dry=False,
+                        extra_env={"MECLAW_GATE_GH": str(gh or self.gh_stub(ok))})
+
+    def test_the_known_signature_is_retried_once_and_named(self):
+        res = self.run_builder(self.flaky())
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        rows = {r["name"]: r for r in gate_lines(res.stdout)}
+        self.assertIn("scenarios:builder", rows)
+        self.assertEqual("GREEN", rows["scenarios:builder"]["verdict"], res.stdout)
+        self.assertEqual("17 cases, retry 1 GH #721", rows["scenarios:builder"]["scope"])
+
+    def test_the_retry_is_its_own_note_line(self):
+        res = self.run_builder(self.flaky())
+        rows = {r["name"]: r for r in gate_lines(res.stdout)}
+        self.assertIn("scenarios:builder-retry", rows, res.stdout)
+        note = rows["scenarios:builder-retry"]
+        self.assertEqual("NOTE", note["verdict"])
+        self.assertIn("/os/builder/eyes", note["scope"])
+        # A note is no judgement: the summary still counts one station.
+        summary = [m.groupdict() for m in
+                   (SUMMARY_LINE.match(ln) for ln in res.stdout.splitlines()) if m]
+        self.assertEqual("1", summary[0]["total"], res.stdout)
+        self.assertEqual("1", summary[0]["green"], res.stdout)
+
+    def test_the_second_round_decides(self):
+        res = self.run_builder(self.flaky(always=True))
+        self.assertEqual(1, res.returncode, res.stdout)
+        rows = {r["name"]: r for r in gate_lines(res.stdout)}
+        self.assertEqual("RED", rows["scenarios:builder"]["verdict"])
+        self.assertIn("retry 1 GH #721", rows["scenarios:builder"]["scope"])
+
+    def test_a_retry_that_stays_red_sends_no_comment(self):
+        """A comment is an external action, and it may not say what is untrue.
+
+        The note used to read "the same station passed on the retry" in both
+        outcomes, so a station that was red twice still put that sentence into
+        a public tracker. A second red is not a flake: the line stays, the
+        comment does not go out.
+        """
+        gh = self.gh_stub()
+        res = self.run_builder(self.flaky(always=True), gh=gh)
+        self.assertEqual(1, res.returncode, res.stdout)
+        self.assertFalse(pathlib.Path(str(gh) + ".argv").exists(), res.stdout)
+        rows = {r["name"]: r for r in gate_lines(res.stdout)}
+        self.assertEqual("RED", rows["scenarios:builder"]["verdict"])
+        self.assertIn("retry was red too", rows["scenarios:builder-retry"]["reason"])
+
+    def test_the_comment_says_the_retry_passed(self):
+        gh = self.gh_stub()
+        self.run_builder(self.flaky(), gh=gh)
+        body = pathlib.Path(str(gh) + ".argv").read_text().splitlines()[4]
+        self.assertIn("passed on the retry", body)
+
+    def test_a_red_without_the_signature_is_not_retried(self):
+        res = self.run_builder(self.other_red())
+        rows = {r["name"]: r for r in gate_lines(res.stdout)}
+        self.assertEqual("RED", rows["scenarios:builder"]["verdict"])
+        self.assertEqual("17 cases", rows["scenarios:builder"]["scope"])
+        self.assertNotIn("scenarios:builder-retry", rows)
+
+    def test_the_occurrence_is_commented_on_the_issue(self):
+        gh = self.gh_stub()
+        res = self.run_builder(self.flaky(), gh=gh)
+        argv = pathlib.Path(str(gh) + ".argv").read_text().splitlines()
+        self.assertEqual(["issue", "comment", "721", "--body"], argv[:4], argv)
+        body = argv[4]
+        self.assertIn("/os/builder/eyes", body)
+        self.assertIn("scenarios:builder", body)
+        rows = {r["name"]: r for r in gate_lines(res.stdout)}
+        self.assertIn("commented", rows["scenarios:builder-retry"]["reason"])
+
+    def test_without_the_tool_the_note_says_the_comment_was_skipped(self):
+        missing = pathlib.Path(self._tmp.name) / "no-such-gh"
+        res = self.run_builder(self.flaky(), gh=missing)
+        rows = {r["name"]: r for r in gate_lines(res.stdout)}
+        self.assertIn("skipped", rows["scenarios:builder-retry"]["reason"], res.stdout)
+
+    def test_a_refusing_tool_does_not_fail_the_run(self):
+        res = self.run_builder(self.flaky(), ok=False)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        rows = {r["name"]: r for r in gate_lines(res.stdout)}
+        self.assertIn("skipped", rows["scenarios:builder-retry"]["reason"], res.stdout)
+
+    def test_both_rounds_are_in_the_one_log(self):
+        self.run_builder(self.flaky())
+        log = self.station_log("scenarios:builder").read_text()
+        self.assertIn("registry lacks", log)
+        self.assertIn("retry 1", log)
+        self.assertIn("17 cases, 17 ok", log)
+
+
+class TestPrecheckNotes(GateShTestCase):
+    """A green form station with notes says them, or nobody reads them."""
+
+    def station(self, body):
+        path = pathlib.Path(self._tmp.name) / "form.sh"
+        path.write_text("#!/bin/sh\n" + body)
+        path.chmod(0o755)
+        return self.plan_file("precheck\tform\t0\t%s\t\n" % path, name="form.tsv")
+
+    def test_the_notes_of_a_green_station_are_echoed(self):
+        plan = self.station("echo 'NOTE run-artefact: last_run.json is a run artefact'\n")
+        res = run_gate(self.repo, "strand", plan=plan, dry=False)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertIn("    | NOTE run-artefact: last_run.json is a run artefact",
+                      res.stdout)
+        rows = {r["name"]: r for r in gate_lines(res.stdout)}
+        self.assertEqual("GREEN", rows["precheck"]["verdict"])
+
+    def test_a_station_without_notes_says_nothing_extra(self):
+        plan = self.station("exit 0\n")
+        res = run_gate(self.repo, "strand", plan=plan, dry=False)
+        self.assertNotIn("    | ", res.stdout)
+
+
+class TestPrecheckStop(GateShTestCase):
+    """A red form station stops the cargo stations, and the lock stays free.
+
+    Measured on the beweis strand of wave P (receipt
+    `plans/welle-p-2026-09-19/receipts/g0-t1/`): `precheck` was RED on a
+    `rustfmt` finding and the run still queued for the cargo lock and paid
+    `catalogue`, `fmt` and `tests` -- three cargo stations and the whole wait
+    -- for a verdict the form station had in seconds. The station sits BEFORE
+    the lock exactly so that does not happen (OR-P12).
+    """
+
+    # `precheck` is red, one cheap station follows it, and one cargo station.
+    PLAN = ("precheck\tform\t0\tfalse\t\n"
+            "cheap\tanchors\t0\ttrue\t\n"
+            "build\tworkspace\t1\ttrue\t\n")
+    # The three stations that need the cargo artefacts although their own
+    # `cargo` column is 0, plus one that does not.
+    PLAN_ARTEFACTS = ("precheck\tform\t0\tfalse\t\n"
+                      "scenarios:builder\tcases\t0\ttrue\t\n"
+                      "scenarios:display\tscenarios\t0\ttrue\t\n"
+                      "export-audit\tR1-R17 dry\t0\ttrue\t\n")
+    PLAN_GREEN_FORM = ("precheck\tform\t0\ttrue\t\n"
+                       "build\tworkspace\t1\ttrue\t\n")
+
+    def lock_path(self):
+        return self.repo.parent / "cargo.lock.test"
+
+    def test_a_red_form_station_skips_the_cargo_stations(self):
+        res = run_gate(self.repo, "strand", plan=self.plan_file(self.PLAN), dry=False)
+        rows = {r["name"]: r for r in gate_lines(res.stdout)}
+        self.assertEqual("RED", rows["precheck"]["verdict"], res.stdout)
+        self.assertEqual("SKIP", rows["build"]["verdict"], res.stdout)
+        self.assertEqual("precheck red", rows["build"]["reason"])
+
+    def test_a_skipped_station_never_ran_a_command(self):
+        run_gate(self.repo, "strand", plan=self.plan_file(self.PLAN), dry=False)
+        self.assertFalse(self.station_log("build").exists(),
+                         "the skipped station wrote a log, so it ran")
+
+    def test_the_cheap_stations_keep_running(self):
+        res = run_gate(self.repo, "strand", plan=self.plan_file(self.PLAN), dry=False)
+        rows = {r["name"]: r for r in gate_lines(res.stdout)}
+        self.assertEqual("GREEN", rows["cheap"]["verdict"], res.stdout)
+
+    def test_the_cargo_lock_is_never_taken(self):
+        run_gate(self.repo, "strand", plan=self.plan_file(self.PLAN), dry=False)
+        self.assertFalse(self.lock_path().exists(),
+                         "the run opened the cargo lock although precheck was red")
+
+    def test_the_summary_stays_red(self):
+        res = run_gate(self.repo, "strand", plan=self.plan_file(self.PLAN), dry=False)
+        summary = [m.groupdict() for m in
+                   (SUMMARY_LINE.match(ln) for ln in res.stdout.splitlines()) if m]
+        self.assertEqual("RED", summary[0]["verdict"], res.stdout)
+        # The skip is in neither half of the count -- it is no judgement.
+        self.assertEqual("1", summary[0]["green"])
+        self.assertEqual("2", summary[0]["total"])
+        self.assertEqual(1, res.returncode)
+
+    def test_the_stations_that_need_the_artefacts_are_skipped_too(self):
+        res = run_gate(self.repo, "strand", plan=self.plan_file(self.PLAN_ARTEFACTS), dry=False)
+        rows = {r["name"]: r for r in gate_lines(res.stdout)}
+        self.assertEqual("SKIP", rows["scenarios:builder"]["verdict"], res.stdout)
+        self.assertEqual("SKIP", rows["export-audit"]["verdict"], res.stdout)
+        # ... and a station that reads none of them still runs.
+        self.assertEqual("GREEN", rows["scenarios:display"]["verdict"], res.stdout)
+
+    def test_no_precheck_stop_runs_everything(self):
+        res = run_gate(self.repo, "strand", "--no-precheck-stop",
+                       plan=self.plan_file(self.PLAN), dry=False)
+        rows = {r["name"]: r for r in gate_lines(res.stdout)}
+        self.assertEqual("GREEN", rows["build"]["verdict"], res.stdout)
+        self.assertTrue(self.station_log("build").exists())
+
+    def test_a_green_form_station_changes_nothing(self):
+        res = run_gate(self.repo, "strand", plan=self.plan_file(self.PLAN_GREEN_FORM), dry=False)
+        rows = {r["name"]: r for r in gate_lines(res.stdout)}
+        self.assertEqual("GREEN", rows["build"]["verdict"], res.stdout)
+
+    def test_only_precheck_is_unchanged(self):
+        res = run_gate(self.repo, "strand", "--only", "precheck",
+                       plan=self.plan_file(self.PLAN), dry=False)
+        rows = gate_lines(res.stdout)
+        self.assertEqual(["precheck"], [r["name"] for r in rows])
+        self.assertEqual("RED", rows[0]["verdict"])
+        self.assertEqual(1, res.returncode)
+
+    def test_fail_fast_still_stops_at_the_form_station(self):
+        res = run_gate(self.repo, "strand", "--fail-fast",
+                       plan=self.plan_file(self.PLAN), dry=False)
+        self.assertEqual(["precheck"], [r["name"] for r in gate_lines(res.stdout)])
+
+
 class TestUsage(GateShTestCase):
     def test_help_mentions_every_flag(self):
         res = run_gate(self.repo, "--help", plan=self.plan_file(PLAN_OK_BAD))
         self.assertEqual(0, res.returncode, res.stderr)
         for flag in ("--base", "--only", "--fail-fast", "--plan-only",
-                     "--log-dir", "--no-nice", "--resync"):
+                     "--archive", "--log-dir", "--no-nice", "--resync",
+                     "--no-precheck-stop"):
             self.assertIn(flag, res.stdout)
 
     def test_unknown_mode_is_an_error(self):

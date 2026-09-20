@@ -83,7 +83,7 @@ are the exception.
 |---|---|---|
 | Stateful cell (`llm`, `store`, `code` with `cell.db`) | 1 long-lived task | own mpsc mailbox |
 | Stateless cell (`web_fetch`, `web_search`, `file`, `edit`, `bash` one-shot) | 1 long-lived dispatcher task plus one short-lived worker task per message | own mpsc mailbox |
-| Long-running cell (`proxy`, `timer`, `mcp`, `web`, `voice`) | 2 work tasks (handler and I/O), wrapped in one outer supervision task with exactly one `JoinHandle` | external mailbox plus internal channel |
+| Long-running cell (`proxy`, `timer`, `mcp`, `web`, `voice`, `browser`) | 2 work tasks (handler and I/O), wrapped in one outer supervision task with exactly one `JoinHandle` | external mailbox plus internal channel |
 | Colony | 1 long-lived task | own mpsc mailbox (central routing plus `/colony/*` endpoints) |
 | HTTP API (`axum`) | Tokio-native task per request | translates each request into a message and hands it to colony |
 
@@ -127,7 +127,8 @@ Everything not listed above runs in parallel across all worker threads of the To
 
 ### Long-running cells and the double task
 
-Cells of type `proxy`, `timer`, `mcp`, `web` and `voice` have a cell-internal double-task setup,
+Cells of type `proxy`, `timer`, `mcp`, `web`, `voice` and `browser` have a cell-internal
+double-task setup,
 mandatory for these types. From the topology's perspective the cell is one address with one external
 mailbox.
 
@@ -1894,7 +1895,8 @@ registry lookup, and `/colony/*` paths are virtual endpoints in the same registr
   directly. **Stateless** cells are reentrant and get one long-lived `stateless_dispatcher` task
   that pulls the mailbox and spawns a short-lived worker task per message which runs
   `factory.invoke()` and terminates, with a per-cell concurrency limit via `tokio::sync::Semaphore`
-  (`params.max_concurrency`). **Long-running** cells (`proxy`, `timer`, `mcp`, `web`, `voice`) use
+  (`params.max_concurrency`). **Long-running** cells (`proxy`, `timer`, `mcp`, `web`, `voice`,
+  `browser`) use
   the double-task pattern, both sub-tasks under one logical cell identity.
 - No inner loop in cell code: cells wait for incoming messages, or for external events in the
   long-running types. Iteration is a topology matter.
@@ -2291,9 +2293,10 @@ exists only in the RAM of the requesting task.
 An app is a sub-form of the member: an ordinary sealed hive (`ports: []`) instantiated by an
 ordinary mutation into the member's `./apps` container. It has no port, no secret and no channel of
 its own. Everything it learns it learns over edges the member's topology draws, and everything it
-says it says on lanes that member already carries. There are exactly three ways to plug in, all at
+says it says on lanes that member already carries. There are exactly four ways to plug in, all at
 the rim: an app may observe what the conversation carries, offer a tool to the member's assistant,
-and write to a screen. It may not stand in the way, because an app is never an interception. Every
+write to a screen, and drive a device cell of the member's, such as a browser. It may not stand in
+the way, because an app is never an interception. Every
 edge it gets is an additional one, so a path that existed without the app fires exactly as it did
 before, which makes an app installable and removable without re-reading the member.
 
@@ -3456,7 +3459,8 @@ consumers came after. `CHANGELOG.md` carries what shipped when.
 6. Hydrate the edge table. Colony reads the persisted edge table from `colony.db`. On conflicts
    between `params.graph` hints and persisted edges the persisted state wins, because hints are only
    the initial desired state at first instantiation.
-7. Spawn long-running cells. For each active `proxy`, `timer`, `mcp`, `web` and `voice` cell, start
+7. Spawn long-running cells. For each active `proxy`, `timer`, `mcp`, `web`, `voice` and `browser`
+   cell, start
    the double-task pattern directly, with no lazy wake. Inactive long-running cells are not started.
    Emissions that arise during the first apply, because an eager I/O task polls from its spawn on,
    are held back by the colony until the InitialApply bundle has committed, and route afterwards in
@@ -3732,7 +3736,8 @@ emits a generic timeout error message to `reply_to` (`header.finish_reason: "err
 reloaded at the respawn. Configuration is a global default in `colony.json`
 `message_timeout_default_ms` (recommendation 60000), overridable per cell via
 `cell.message_timeout`; a value of `0` or `-1` means no backstop, typically for `proxy`, `timer`,
-`mcp`, `web` and `voice`. The stateless dispatcher and the long-running handler use the same wrapper
+`mcp`, `web`, `voice` and `browser`. The stateless dispatcher and the long-running handler use the
+same wrapper
 pattern around their respective `handle` call.
 
 The stateless worker task spawned per message is ephemeral: it is not observed by the supervisor and

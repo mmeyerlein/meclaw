@@ -66,8 +66,16 @@ pub enum LinkFrame {
     },
 }
 
-/// What a client asks for when it opens a link — the voice door's query string.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// What a client asks for when it opens a link — the voice door's query string,
+/// plus whatever the join said that the door has no business reading.
+///
+/// The four named fields describe a `voice:` call and were the whole request
+/// until GH #766: a `page:` join brings a viewport instead, and what a viewport
+/// means is known only by the cell behind the mount. So there is one generic
+/// slot beside the four (OR-G2). The door fills it with the join payload minus
+/// the `mount` that chose the door — ONE level deep, so a cell reads
+/// `params.viewport` and never `params.params.viewport` (OR-G32).
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct LinkRequest {
     /// The session (a call) this link belongs to.
     pub session: Option<String>,
@@ -77,6 +85,14 @@ pub struct LinkRequest {
     pub sample_rate: Option<u32>,
     /// The encoding of the audio the client will send.
     pub encoding: Option<String>,
+    /// Everything else the join payload carried, verbatim.
+    ///
+    /// `Null` is absence, and it is what `Default` gives: an empty object would
+    /// say "the join said `{}`", which is a different fact from "the join said
+    /// nothing". `Eq` is gone from the derive because a `Value` can hold a
+    /// float; `PartialEq` stays, and nothing in the tree compared two requests
+    /// for identity.
+    pub params: serde_json::Value,
 }
 
 /// A refusal, with the HTTP status the socket door would have answered and its text.

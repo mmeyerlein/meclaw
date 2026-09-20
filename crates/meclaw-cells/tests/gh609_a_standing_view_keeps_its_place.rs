@@ -205,7 +205,7 @@ fn no_order_of_the_screen_reads_a_clock() {
     let readers = [
         "def reconcile(state, rows, event, now):",
         "def _written_at(value, fallback):",
-        "def state_write_ops(state, now, settings, screens, said, held=None, mark=None):",
+        "def state_write_ops(state, now, settings, screens, said, held=None, mark=None, patch=None):",
     ];
     let inside: usize = readers
         .iter()

@@ -94,9 +94,22 @@ fn the_hook_no_longer_writes_a_transcript() {
     }
     // The client script lives in a Python string, so every JS quote is `\"`
     // on disk; read it the way the browser gets it.
-    let src = std::fs::read_to_string(repo(COMPOSE))
+    let whole = std::fs::read_to_string(repo(COMPOSE))
         .expect("compose.py")
         .replace("\\\"", "\"");
+    // D-17 is a statement about the MARK, and the mark's script is
+    // `OS_CLIENT_JS`. The same file also carries the scene hook, which since
+    // GH #767 writes the `textContent` of a line of its own -- the word a
+    // refused page says to a person (wave G contracts § 4). Read whole, this
+    // case called that a transcript beside the microphone. It is not one, and
+    // the fix is to look where the rule is about, not to rename a variable.
+    let from = whole
+        .find("OS_CLIENT_JS = (")
+        .expect("the mark carries a script");
+    let to = whole[from..]
+        .find("\nSCENE_CLIENT_JS = (")
+        .expect("and it ends before the scene hook");
+    let src = &whole[from..from + to];
     assert!(
         !src.contains("line.textContent"),
         "the hook still writes a transcript line"

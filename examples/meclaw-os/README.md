@@ -339,7 +339,7 @@ you what it *would* have done before you let it do anything.
 
 ## Step four: the colony draws itself
 
-`grow-canvy.json` adds [`canvy@2.3.1`](../../templates/canvy/) — a timer, two `code` cells and a
+`grow-canvy.json` adds [`canvy@2.3.2`](../../templates/canvy/) — a timer, two `code` cells and a
 `web` cell that serves one interactive canvas of this colony under a name of its own:
 
 ```bash

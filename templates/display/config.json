@@ -86,7 +86,8 @@
               "display_origin": "'patch'"
             },
             "delete_context": [
-              "display_views"
+              "display_views",
+              "display_request"
             ]
           }
         },

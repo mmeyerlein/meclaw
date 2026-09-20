@@ -40,8 +40,15 @@ CLASSES (a path can carry several)
     display_browser  workshop/tools/display-*, and the two Rust locks that
                   run the layout driver (BROWSER_LOCKS). Never `template`:
                   the driver lies under workshop/, which does not travel
-    gate_infra    scripts/gate.sh, scripts/gate_plan.py, scripts/tests/**,
-                  scripts/test-tier.sh
+    display_lab   workshop/tools/display-lab/**, scripts/tests/test_display_lab.py
+                  -- the measuring library. Its prefix is the longer one and
+                     wins: a tool that READS a screen is not the driver that
+                     lays one out, and must not pull `browser:display`
+    gate_infra    scripts/gate.sh, scripts/gate_plan.py, scripts/precheck.py,
+                  scripts/tests/**, scripts/test-tier.sh, scripts/wave_retro.py,
+                  scripts/retro/**, scripts/display_sync.py, .config/nextest.toml
+                  (the profile that decides what may be retried is gate
+                  infrastructure too)
     unwrap_infra  .github/gates/unwrap_budget.{py,txt}
     export_infra  plans/export-fixtures/**
     shell         **/*.sh
@@ -49,6 +56,19 @@ CLASSES (a path can carry several)
 
 STATIONS (S strand, I integration, R release, C ci)
 ===================================================
+    precheck        the cheap form checks of the diff, FIRST and before the
+                    cargo lock: `rustfmt --check` on the changed sources, the
+                    sheet's byte ceiling, an ADR's anchor line, a `scripts/`
+                    path a test reads without an export entry, a docs page
+                    changed without its twin -- plus five findings that are
+                    notes rather than judgements (`scripts/precheck.py`).
+                    A RED stops the cargo stations: the runner skips every
+                    station that needs a build, takes no lock, and runs the
+                    cheap rest on (`gate.sh --no-precheck-stop` overrides).
+                    Never in C: the published tree has no `plans/`, so three
+                    of the checks have no input there, and ci's diff is often
+                    the whole tree, where the artefact notes grade files
+                    nobody changed. An empty diff plans nothing to check
     roadmap-anchors adr-anchors claims tree-rules   always
     corpus-committed  the seed corpus against the tree AS IT IS, before
                     anything regenerates it. NEVER in C, for the same reason
@@ -59,7 +79,11 @@ STATIONS (S strand, I integration, R release, C ci)
                     seed corpus AND `build_librarian.py` (the R11 pair)
     catalogue       template/catalogue class; I/R always
     shellcheck      shell/gate_infra; C always
-    gate-selftest   gate_infra; C always (resolver AND runner self-tests)
+    gate-selftest   gate_infra; C always (resolver, runner, strand kit, wave
+                    retro, merge driver, form station, the source mark of the
+                    display scenarios and the quarantine grammar of nextest)
+    display-lab     display_lab (workshop/tools/display-lab/** and its test);
+                    I/R always; never in C -- workshop/ does not travel
     fmt             rust_src/rust_test/workspace
     clippy          rust_src/rust_test/workspace  (-p <crates> in S, else --workspace)
     unwrap-budget   rust_src/workspace/unwrap_infra; C always (cargo: it
@@ -69,14 +93,23 @@ STATIONS (S strand, I integration, R release, C ci)
                     An empty diff plans the t0 TIER, not the equivalent filter
                     expression -- see `T0_FLOOR`
     doctests        I/R with rust_src/workspace
-    deny            workspace; I/R always
-    scenarios:*     see the template/example/evals triggers; I/R always.
+    deny            workspace; R always. NOT in I for every diff (R-P2,
+                    2026-09-19): the `workspace` class is what moves the
+                    dependency graph it grades
+    scenarios:*     see the template/example/evals triggers; I/R always --
+                    EXCEPT `scenarios:memory`, which R plans always and I only
+                    when the diff carries `evals_memory` or the memory-hive
+                    template (R-P2, 2026-09-19: 43 integration runs,
+                    16 317 s, no finding -- wave P, finding 04 § 3.4).
                     `scenarios:display` runs the scenarios of display-hive.md
                     § 11 against the real curator AND the reference model
                     against itself (development-rules § 10). It travels: the
                     driver and its scenario file live under templates/, so ci
                     runs it too -- it is NOT in CI_EXCLUDED, and it is planned
-                    in I, R and C for EVERY diff, not only when one names it
+                    in I, R and C for EVERY diff, not only when one names it.
+                    Second command: the cheap mark check
+                    `display_sync.py --check-source`, a NOTE on stdout and
+                    never a verdict (the Rust lock is what goes red)
     browser:display the B-proofs of display-hive.md § 5-9 in Chromium AND
                     WebKit (§ 6.7, R-23-10). TWO shapes, one station name:
                     S runs the SHEET half (scope `sheet`) -- a page the driver
@@ -91,7 +124,11 @@ STATIONS (S strand, I integration, R release, C ci)
                     declares a wave done is where it belongs. In CI_EXCLUDED,
                     unlike `scenarios:display`: the driver lives under
                     workshop/, which never travels
-    recall-harness  memory-hive template, recall sources, evals_memory; I/R always
+    recall-harness  memory-hive template, recall sources, evals_memory; R always.
+                    NOT in I for every diff (R-P2), same measure as
+                    `scenarios:memory` and one trigger more: a recall source
+                    under `crates/meclaw-cells/src/` reaches the harness and
+                    not the scenario cases
     deny-advisories R always (the runner grades it NOTE, never RED)
     export-selftest export_infra; I/R always (seconds, pure Python)
     export-audit    I/R always, last station. TWO shapes, one station name:
@@ -199,20 +236,26 @@ CORPUS_SOURCES = (
     "workshop/fixtures/negative/*/expected_error.json",
 )
 
-# The shell sources shellcheck reads. CI has no `plans/` (it runs on the
-# published export mirror), so the third pattern is dropped there.
-SHELL_GLOBS = ("scripts/*.sh", ".github/gates/*.sh", "plans/meclaw-os/*.sh")
+# The shell sources shellcheck reads. CI runs on the published export mirror,
+# which has neither `plans/` nor `workshop/`, so only the first two patterns
+# are used there (`SHELL_GLOBS[:2]`).
+SHELL_GLOBS = ("scripts/*.sh", ".github/gates/*.sh", "plans/meclaw-os/*.sh",
+               "workshop/tools/display-lab/*.sh")
 
 # Stations that are never planned in ci mode. ci runs in the published tree:
 # no workshop/, no plans/, and cargo-deny runs in its own job. Planning any of
 # these there produces a red station or a silent duplicate run (GH #234).
 CI_EXCLUDED = frozenset({
+    # The form station reads what the published tree does not carry, and ci's
+    # diff is often `git ls-files` -- see its entry in the docstring.
+    "precheck",
     "corpus",            # workshop/tools/build_librarian*.py
     "corpus-committed",  # ... and its pre-check reads the same builder
     "scenarios:memory",  # workshop/evals/scenarios/
     "scenarios:builder",  # workshop/evals/builder-scenarios/
     "recall-harness",    # workshop/evals/p5-longmemeval/
     "browser:display",   # workshop/tools/display-layout-browser.mjs
+    "display-lab",       # workshop/tools/display-lab/
     "export-selftest",   # plans/export-fixtures/
     "export-audit",      # plans/export-fixtures/
     "deny",              # the CI `deny` job runs the cargo-deny action itself
@@ -223,8 +266,10 @@ CI_EXCLUDED = frozenset({
 # seconds instead of a full cargo build; the release audit is last because it
 # reads the tree every earlier station just proved.
 STATION_ORDER = (
+    "precheck",
     "roadmap-anchors", "adr-anchors", "claims", "tree-rules",
     "corpus-committed", "corpus", "catalogue", "shellcheck", "gate-selftest",
+    "display-lab",
     "fmt", "clippy", "unwrap-budget", "corridor",
     "tests", "doctests", "deny",
     "scenarios:memory", "scenarios:builder", "scenarios:display",
@@ -395,14 +440,32 @@ def _classes_of_path(path):
     if path.startswith("templates/display/compose/scenarios/"):
         cls.add("display_scenarios")
 
+    # The measuring library: the one copy of the tools that read a running
+    # screen (befund `04-struktur.md` section 8). Its contract is a unittest,
+    # and a unittest no station plans is not a lock. The prefix is asked FIRST
+    # and the browser prefix below excludes it: the library lies under
+    # `workshop/tools/display-`, so without this every one of its files dragged
+    # the two Rust locks and the Chromium/WebKit run behind a 5 s unittest.
+    lab = (path.startswith("workshop/tools/display-lab/")
+           or path == "scripts/tests/test_display_lab.py")
+    if lab:
+        cls.add("display_lab")
+
     # The browser half of the same document: the layout driver under workshop/ and
     # the two locks that run it. No `template` class comes with it -- workshop/ is a
     # FORBIDDEN_PREFIX of the export, which is why the station is in CI_EXCLUDED.
-    if path.startswith("workshop/tools/display-") or path in BROWSER_LOCKS:
+    if (path.startswith("workshop/tools/display-") and not lab) or path in BROWSER_LOCKS:
         cls.add("display_browser")
 
-    if (path in ("scripts/gate.sh", "scripts/gate_plan.py", "scripts/test-tier.sh")
-            or path.startswith("scripts/tests/")):
+    # `.config/nextest.toml` is gate infrastructure as much as the runner is:
+    # it decides which test may be retried, and `test_nextest_quarantine.py`
+    # is the lock that keeps an entry from reaching nothing. It keeps
+    # `workspace` as well -- a changed profile changes every test run.
+    if (path in ("scripts/gate.sh", "scripts/gate_plan.py", "scripts/precheck.py",
+                 "scripts/test-tier.sh", "scripts/wave_retro.py",
+                 "scripts/display_sync.py", ".config/nextest.toml")
+            or path.startswith("scripts/tests/")
+            or path.startswith("scripts/retro/")):
         cls.add("gate_infra")
 
     if path.startswith("plans/export-fixtures/"):
@@ -952,6 +1015,17 @@ def plan(paths, mode, repo=None):
 
     out = {}
 
+    # --- form, before anything takes the lock. A red form station costs the
+    # queue and the build for a `cargo fmt` somebody forgot; measured over
+    # three waves, that was four of twenty-three red strand runs (5 771 s).
+    # The paths travel on the ARGV, not on stdin: the runner runs every
+    # station with stdin closed, because a station that reads it eats the
+    # rest of its own command list.
+    if files and not ci:
+        out["precheck"] = station(
+            "precheck", "form", False,
+            [["python3", "scripts/precheck.py", "--files"] + list(files)])
+
     # --- always: the anchor and claim gates. Seconds, and they are the ones
     # that catch a doc that promised something the code no longer carries.
     out["roadmap-anchors"] = station(
@@ -1025,10 +1099,29 @@ def plan(paths, mode, repo=None):
     if "gate_infra" in classes or ci:
         out["gate-selftest"] = station(
             "gate-selftest", "unittest", False,
-            # One command, both modules: the resolver's own tests and the
-            # runner's. `scripts.tests.test_gate_sh` arrives with the runner.
+            # One command, every module: the resolver's own tests, the
+            # runner's, the strand kit's, the wave retro's and the merge
+            # driver's. They all arrive with the runner (ROOT_FILES), so this
+            # list is the same in both trees; the retro's one private-tree
+            # case skips itself there.
             [["python3", "-m", "unittest",
-              "scripts.tests.test_gate_plan", "scripts.tests.test_gate_sh"]])
+              "scripts.tests.test_gate_plan", "scripts.tests.test_gate_sh",
+              "scripts.tests.test_strand_sh",
+              "scripts.tests.test_wave_receipt",
+              "scripts.tests.test_wave_retro",
+              "scripts.tests.test_git_merge_display_sync",
+              "scripts.tests.test_precheck",
+              "scripts.tests.test_display_sync",
+              "scripts.tests.test_nextest_quarantine"]])
+
+    # `ir` as well as the class: the library is what every display measurement
+    # of the next wave is read with, it costs five seconds, and a pass that
+    # declares a wave done is exactly where a broken instrument has to surface
+    # (the same reasoning as `browser:display` below, GH #746).
+    if (ir or "display_lab" in classes) and not ci:
+        out["display-lab"] = station(
+            "display-lab", "unittest", False,
+            [["python3", "-m", "unittest", "scripts.tests.test_display_lab"]])
 
     # --- cargo work.
     if classes & {"rust_src", "rust_test", "workspace"}:
@@ -1075,7 +1168,11 @@ def plan(paths, mode, repo=None):
         out["doctests"] = station("doctests", "workspace", True,
                                   [["cargo", "test", "--workspace", "--doc"]])
 
-    if "workspace" in classes or ir:
+    # `workspace` only, plus the release (R-P2, 2026-09-19): cargo-deny grades
+    # the dependency graph, and the `workspace` class is what moves that graph.
+    # 39 integration runs over five waves, 0 RED (wave P, finding 04 § 3.2-3.4).
+    # The release keeps it unconditional -- it is the run that ships the tree.
+    if "workspace" in classes or mode == "release":
         out["deny"] = station(
             "deny", "bans licenses sources", True,
             [["cargo", "deny", "check", "bans", "licenses", "sources"]])
@@ -1083,7 +1180,11 @@ def plan(paths, mode, repo=None):
     # --- the offline suites. They are Python, they need no network and no
     # model, and they are the only place the memory-hive state machine and the
     # declaration lane run as a whole.
-    if ir or "evals_memory" in classes or "memory-hive" in templates:
+    # Triggered by the diff, not by the mode (R-P2, 2026-09-19): the two
+    # memory stations answer only about the memory hive, its recall lane and
+    # their own cases. 43 integration runs over five waves, 16 317 s, not one
+    # finding (wave P, finding 04 § 3.4). `release` keeps both unconditional.
+    if mode == "release" or "evals_memory" in classes or "memory-hive" in templates:
         out["scenarios:memory"] = station(
             "scenarios:memory",
             _case_scope(repo, "workshop/evals/scenarios/cases"), False,
@@ -1115,7 +1216,15 @@ def plan(paths, mode, repo=None):
             _scenario_scope(repo, "templates/display/compose/scenarios/scenarios.json"),
             False,
             [["python3",
-              "templates/display/compose/scenarios/run_display_scenarios.py"]])
+              "templates/display/compose/scenarios/run_display_scenarios.py"],
+             # The cheap half of the drift question (GH #753): does the mark
+             # `SOURCE` still describe the living description tree? Seconds,
+             # no cargo, and it never fails the station -- it prints a NOTE
+             # and exits 0, because the verdict belongs to the Rust lock
+             # `710_the_scenarios_run_against_the_curator`. Where the living
+             # tree is absent (ci, a foreign clone) there is nothing to
+             # compare and it says so.
+             ["python3", "scripts/display_sync.py", "--check-source"]])
 
     # The B-proofs of the same document, in a real engine (§ 6.7, R-23-10). Two
     # shapes of one station, like `export-audit`: the SHEET half builds its page out
@@ -1151,7 +1260,8 @@ def plan(paths, mode, repo=None):
 
     recall_src = any(p.startswith("crates/meclaw-cells/src/") and "recall" in p
                      for p in files)
-    if ir or "memory-hive" in templates or "evals_memory" in classes or recall_src:
+    if (mode == "release" or "memory-hive" in templates
+            or "evals_memory" in classes or recall_src):
         # cwd-relative argv, same rule as `scenarios:builder` above.
         out["recall-harness"] = station(
             "recall-harness", "tier-1", False,

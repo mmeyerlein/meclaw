@@ -54,25 +54,40 @@ pub fn raw(doc: &Value) -> Vec<Value> {
     }
 }
 
-/// The `object.*` calls of the one patch bundle, or none.
-pub fn calls(emissions: &[Value]) -> Vec<Value> {
-    let patches: Vec<&Value> = emissions
-        .iter()
-        .filter(|e| e["header"]["route"] == "patch")
-        .collect();
-    assert!(patches.len() <= 1, "at most one patch: {emissions:?}");
-    match patches.first() {
-        None => Vec::new(),
-        Some(emission) => emission["messages"]
-            .as_array()
-            .expect("a bundle has messages")
-            .iter()
-            .map(|turn| {
-                meclaw_core::serde_json::from_str(turn["text"].as_str().expect("a call"))
-                    .expect("a call is JSON")
-            })
-            .collect(),
+/// The `object.*` calls the pass handed to its own state write, or none.
+///
+/// GH #765 (way A): a pass draws nothing of its own any more -- the calls ride the state
+/// write's request and are emitted from the reply, once the store has said the row landed.
+/// A `Screen` applies every state write unconditionally, so for a `Screen` the write always
+/// lands and this is the drawing the browsers get.
+pub fn drawn(emissions: &[Value]) -> Vec<Value> {
+    // The promise the predecessors of this helper each carried once ("exactly one patch",
+    // "at most one patch"), now in the one place every caller passes through: under way A
+    // a pass emits NO patch of its own. A pass that drew here again would hand the
+    // browsers a state the store has not agreed to, and the list below would still look
+    // right.
+    assert!(
+        emissions.iter().all(|e| e["header"]["route"] != "patch"),
+        "a pass drew on its own: since GH #765 (way A) the calls ride its state write and \
+         leave from the reply, so a pass has no patch to send: {emissions:?}"
+    );
+    for em in emissions {
+        if em["header"]["route"] != "views" {
+            continue;
+        }
+        let request: Value = match em["header"]["display_request"].as_str() {
+            Some(text) => meclaw_core::serde_json::from_str(text).expect("a request is JSON"),
+            None => continue,
+        };
+        if request["state"] != json!(true) {
+            continue;
+        }
+        return match request["patch"].as_array() {
+            Some(calls) => calls.clone(),
+            None => Vec::new(),
+        };
     }
+    Vec::new()
 }
 
 /// One `display-pane` tree with `props`, keyed so its object id is stable.
@@ -239,7 +254,11 @@ impl Screen {
             }},
         });
         let emissions = raw(&doc);
-        let patch = calls(&emissions);
+        // GH #765 (way A): the patch rides the state write and is drawn from its reply.
+        // This screen is the store that took the write, so the drawing is the one the
+        // request carries -- and a pass whose write a real store refused draws nothing,
+        // which is the case `744_two_taps_in_one_round_trip.rs` walks through by hand.
+        let patch = drawn(&emissions);
         apply(&mut self.held, &patch);
         // The state row of this pass: the store would hold it, so this screen does.
         for em in &emissions {

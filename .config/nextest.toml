@@ -66,19 +66,27 @@ path = "junit.xml"
 #
 #   [[profile.default.overrides]]
 #   # GH #NNN -- one line on WHY it is flaky, not on what the test does.
-#   filter = 'test(=<binary>::<test path>)'
+#   filter = 'binary_id(=<crate>::<binary>) & test(=<test name>)'
 #   retries = 2
 #
-# The exact spelling nextest wants is `<crate>::<binary> <test path>` as printed
-# by `cargo nextest list`; in a filter it is written without the space:
+# TWO terms, and they are not interchangeable. `cargo nextest list` PRINTS
+# `<crate>::<binary> <test name>`, but that spelling belongs in no filter:
+# `test()` compares its matcher against the TEST NAME alone, and the binary is
+# its own term, `binary_id()`. A test name carries neither `::` nor a space, so
+# `test(=<crate>::<binary> <test name>)` parses cleanly, matches nothing, and
+# leaves the station green over an entry that does nothing -- which is exactly
+# what the first #763 entry did for a whole wave (wave P review C1).
 #
-#   filter = 'test(=meclaw-cells::w10b_remember_colony a_broken_annotation_costs_the_answer_nothing)'
+#   the whole binary   filter = 'binary_id(=meclaw-cells::w10b_remember_colony)'
+#   two named tests    filter = 'binary_id(=meclaw-cells::w10b_remember_colony) \\
+#                                 & (test(=a_broken_annotation_costs_the_answer_nothing) \\
+#                                  + test(=an_annotated_turn_is_a_fact_candidate_on_the_turn_it_answered))'
 #
-# Verified spellings for the first candidate that was raised
-# (`w10b_remember_colony`, meclaw-cells) -- both of its real tests:
-#
-#   meclaw-cells::w10b_remember_colony a_broken_annotation_costs_the_answer_nothing
-#   meclaw-cells::w10b_remember_colony an_annotated_turn_is_a_fact_candidate_on_the_turn_it_answered
+#   5. An entry is proved, not written: `cargo nextest list -E '<filter>'` must
+#      print exactly the tests the comment claims. The `nextest list` output
+#      alone proves the spelling of a NAME, never the reach of a FILTER.
+#      `scripts/tests/test_nextest_quarantine.py` holds the grammar half of
+#      that rule without cargo; the list run is still yours.
 #
 # (The binary also lists `mock_openai::tests::*` -- those are the unit tests of
 # a shared helper module, compiled into many binaries. Never quarantine those:
@@ -89,6 +97,45 @@ path = "junit.xml"
 # GH #714 -- a stage rebuild loses one app write in ~1 of 5-12 runs (release-only lock).
 filter = 'binary_id(=meclaw-cells::710_the_colony_holds_in_both_engines_browser)'
 retries = 2
+
+[[profile.default.overrides]]
+# GH #763 -- the CDP driver of the display audio tests trips under parallel browser
+# load and passes on repetition; five occurrences, every one of them isolated-green:
+#   strand c466abe 10/11 521s RED -> 11/11 329s GREEN, isolated 3/3
+#     (plans/kleinkram-2026-09-13/berichte/k1-report.md:69-74)
+#   hand-run 5/5 green with five browser colonies on 4 threads
+#     (plans/welle-h-2026-09-17/berichte/H2-report.md:266-268)
+#   a torn browser lock when a second gate ran in the same worktree
+#     (plans/welle-p-2026-09-19/befund/01-zeit.md:110)
+#   strand e0c235b 13/14 449s RED -> run 3 green, isolated green
+#     (plans/welle-h3-2026-09-18/berichte/taps-report.md:464,492-503)
+#   integration 0f95bae 20/22 1385s RED -> 043eb66 22/22 1170s GREEN
+#     (plans/welle-h3-2026-09-18/receipt.md:80,89-90)
+# Only the two measured tests, not the binary: the other three of this file have never
+# been seen flaky and stay strict. One retry, not two -- a second trip in the same run
+# is a driver that is broken, not a host that is busy.
+filter = 'binary_id(=meclaw-cells::gh643_audio_in_the_display_window_browser) & (test(=a_browser_holds_the_button_and_the_colony_answers) + test(=the_release_drains_before_it_lets_go))'
+retries = 1
+
+# ---------------------------------------------------------------------------
+# LOUD WHEN GREEN -- the two tests that may decide not to measure.
+# ---------------------------------------------------------------------------
+#
+# `failure-output` says nothing about a test that PASSES, and both tests below
+# pass by returning early on a host that cannot delegate a cgroup or unshare a
+# network namespace. That made the only measurement behind R-G13 -- "a denied
+# network still bites without `no_new_privs`" -- able to be silently absent on
+# any host, with a green station either way (GH #766, review I13). They now
+# print one line on the way in, SKIPPED or MEASURED, and this override is what
+# puts that line in the gate log. It is not a retry and not a leash: the two
+# tests are strict.
+[[profile.default.overrides]]
+filter = 'binary_id(=meclaw-cells::gh766_a_packaged_browser_needs_no_landlock) & (test(=the_cap_alone_sets_the_cap_and_no_flag) + test(=a_denied_network_still_bites_without_the_flag))'
+success-output = "immediate-final"
+
+[[profile.ci.overrides]]
+filter = 'binary_id(=meclaw-cells::gh766_a_packaged_browser_needs_no_landlock) & (test(=the_cap_alone_sets_the_cap_and_no_flag) + test(=a_denied_network_still_bites_without_the_flag))'
+success-output = "immediate-final"
 
 # ---------------------------------------------------------------------------
 # SLOW BY DESIGN -- a longer leash, never a retry.

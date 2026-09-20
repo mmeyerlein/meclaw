@@ -134,3 +134,7 @@ adr	status	anchor_home	target
 0042-the-display-pass-is-the-reference-model.md	accepted	self	test:the_pass_in_the_cell_is_the_reference_model
 0042-the-display-pass-is-the-reference-model.md	accepted	self	test:the_state_is_written_as_one_row_and_read_back
 0042-the-display-pass-is-the-reference-model.md	accepted	self	file:templates/display/compose/scenarios/run_display_scenarios.py
+0043-a-cap-is-a-sandbox-shape-of-its-own.md	accepted	self	test:a_cap_alone_is_a_restricted_profile
+0043-a-cap-is-a-sandbox-shape-of-its-own.md	accepted	self	test:syscalls_without_a_filesystem_view_is_still_refused
+0044-a-browser-is-a-cell-and-its-picture-is-a-topic.md	accepted	self	test:a_page_topic_rides_the_same_socket
+0044-a-browser-is-a-cell-and-its-picture-is-a-topic.md	accepted	self	test:the_last_viewer_out_leaves_a_page_that_then_decays

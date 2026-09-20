@@ -3,7 +3,7 @@
 //! A screen that ships a design language ships the components the language is
 //! written against, or the language styles nothing. The compose cell's
 //! `components()` is where the display's own components are defined, and this
-//! file pins what that list says: the four GLASS components and the twenty-six
+//! file pins what that list says: the four GLASS components and the twenty-seven
 //! content components of the kit, under the screen's own prefix, on the layer the
 //! `web` cell would demand of them, and none of them editable.
 //!
@@ -50,8 +50,8 @@ const GLASS: [&str; 4] = [
     "display-ornament",
 ];
 
-/// The twenty-six content components, in the kit's own order.
-const CONTENT: [&str; 26] = [
+/// The twenty-seven content components, in the kit's own order.
+const CONTENT: [&str; 27] = [
     "display-value",
     "display-text",
     "display-voice",
@@ -66,6 +66,11 @@ const CONTENT: [&str; 26] = [
     "display-chat-line",
     "display-notification",
     "display-media",
+    // A live page inside a window (display-hive.md § 7.9, display 2.6.0). It stands
+    // beside `display-media` because it is the same furniture -- a frame with a
+    // caption -- and it is CONTENT: a page is a `display-pane` with this child, never
+    // a fifth window object.
+    "display-browser",
     "display-document",
     "display-status",
     "display-action",
@@ -171,9 +176,9 @@ fn the_scope_defines_the_four_glass_components() {
     assert_eq!(&names[5..9], &GLASS, "then the four glass components");
 }
 
-/// Five of the screen's own, four glass components, twenty-six content components.
+/// Five of the screen's own, four glass components, twenty-seven content components.
 #[test]
-fn the_scope_defines_thirty_five_components() {
+fn the_scope_defines_thirty_six_components() {
     if !library_ships() {
         return;
     }
@@ -181,14 +186,14 @@ fn the_scope_defines_thirty_five_components() {
         return;
     };
     let names: Vec<&str> = all.iter().map(name).collect();
-    assert_eq!(all.len(), 35, "{names:?}");
+    assert_eq!(all.len(), 36, "{names:?}");
 }
 
-/// The catalogue is these thirty names and no others, held as a sorted
+/// The catalogue is these thirty-one names and no others, held as a sorted
 /// constant: a typo in one name is a red test here and not a component an
 /// application names in vain.
 #[test]
-fn the_catalogue_names_are_exactly_the_thirty() {
+fn the_catalogue_names_are_exactly_the_thirty_one() {
     if !library_ships() {
         return;
     }
@@ -200,7 +205,7 @@ fn the_catalogue_names_are_exactly_the_thirty() {
     let mut catalogue: Vec<&str> = all.iter().map(name).filter(|n| !OWN.contains(n)).collect();
     catalogue.sort_unstable();
     assert_eq!(catalogue, expected);
-    // And the twenty-six stand in the kit's order, after the glass.
+    // And the twenty-seven stand in the kit's order, after the glass.
     let names: Vec<&str> = all.iter().map(name).collect();
     assert_eq!(&names[9..], &CONTENT, "the content components, in order");
 }
@@ -322,8 +327,8 @@ fn the_catalogue_and_the_faces_agree_with_the_contract() {
     let catalogue: Vec<&str> = all.iter().map(name).filter(|n| !OWN.contains(n)).collect();
     assert_eq!(
         catalogue.len(),
-        30,
-        "thirty beyond the screen's own: {catalogue:?}"
+        31,
+        "thirty-one beyond the screen's own: {catalogue:?}"
     );
     let mut sorted = catalogue.clone();
     sorted.sort_unstable();

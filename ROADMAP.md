@@ -29,6 +29,19 @@ Release detail is in [CHANGELOG.md](CHANGELOG.md) and the
 
 ## Now
 
+The numbers are measured now rather than expected. Against a packaged browser on a disposable
+colony, one animating page reaches television, monitor and phone at 19.4 frames a second each
+-- one screencast, three joins -- at around 15.8 kB a frame in JPEG; a page that stands sends
+its one frame and then nothing until it moves. Eight pages open with one viewer holding all
+eight cost 989 MB and 215 processes, 57 % of the two gigabytes and 42 % of the 512 tasks the
+cell declares. A page that animates without end is acknowledged at 2 frames a second after
+thirty seconds and says so in its state. And the cap is asked of whoever owns the cgroup the
+browser ends up in rather than written into it: a packaged browser is re-homed by its packaging
+the moment it starts, and a directory somebody else manages is restored the next time they
+reload.
+[#610](https://github.com/mmeyerlein/meclaw/issues/610), [#766](https://github.com/mmeyerlein/meclaw/issues/766),
+[#767](https://github.com/mmeyerlein/meclaw/issues/767), [#768](https://github.com/mmeyerlein/meclaw/issues/768)
+
 v0.39.0 builds the screen to its description (`display@2.5.0`, GH #707, #739,
 #740, #741, #742, #744). One document describes this template, the curator's
 pass is byte-identical with that document's reference model, and its scenarios
@@ -215,15 +228,6 @@ gold session.
   problem. The likely shape is a description layer: mutable display names held
   in a database, never an address, with the tree untouched underneath. It gets
   a design round before it gets an issue. *(register: display-names)*
-- A browser as a cell. A `link` card frames the page it names, and that is as
-  far as a frame goes: a page decides whether it may be embedded, a growing
-  share of the web says no, and nothing behind a login was ever reachable that
-  way. The shape that lifts the limit is a browser running as a cell, with the
-  page rendered where the colony runs, its picture streamed into the card, and
-  pointer and keys routed back. A screen then shows any page, including the
-  ones that refuse to be framed. It waits on the sidecar `display` section
-  being in daily use, because only then is it clear which pages a person
-  actually asks for. [#610](https://github.com/mmeyerlein/meclaw/issues/610)
 - Erasure, despite append-only. Nothing here deletes: a path is an identity, a
   log only grows, and a blob file is never unlinked. That rigidity is what makes
   the record auditable, and it is also why removing every trace of one person is
@@ -269,6 +273,22 @@ there.
 
 ## Shipped
 
+- On master, unreleased: a page is a window. `browser@1.0.0` holds one browser
+  per member and speaks to it over a pipe; a context is an identity, a page is
+  one window, and the picture travels as a topic of the display socket — one
+  screencast, as many joins as there are outputs, pointer, wheel, keys and text
+  back on the same link. `display@2.6.0` draws it and joins while the window
+  stands; `web@2.1.0` counts live topics per kind. The cap the browser runs
+  under follows it into the confinement's own cgroup and is told to the service
+  manager, so a reload cannot quietly drop it. Six proof runs against a
+  disposable colony and a delivery measured at the receiver on two instances
+  (GH #610, #766, #767, #768, closed with their receipts).
+
+- On master, unreleased: a strand costs less. The strand kit, a form
+  station in front of the cargo lock, a two-stage copy lock, a measurement
+  library, a retry tied to its issue, a merge driver for the compose config and
+  a ten-figure retrospective after every wave, measured before and after on one
+  real strand (GH #750, closed with its receipt).
 One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 

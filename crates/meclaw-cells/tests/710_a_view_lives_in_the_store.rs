@@ -12,18 +12,47 @@
 //! what is on the screen are two questions), **S-039** (a word the door refuses never
 //! reaches the store), **S-014**, **S-037** and **S-075** (an expiry takes a window off the
 //! screen and leaves the row -- the app's withdrawal is what takes the row).
+//!
+//! And since GH #765 (way A) the seam carries one more promise, which only a real colony
+//! can show: the browsers are told what the STORE agreed to. The calls a pass computed
+//! ride its own state write and leave from the reply to it, so in the colony's own message
+//! log no patch ever stands ahead of the write it belongs to. A subprocess test sees the
+//! two emissions of one pass; it cannot see that they are two messages apart in time.
 
 #[path = "support/display_colony.rs"]
 mod display_colony;
 
 use std::time::Duration;
 
-use display_colony::{Boot, boot, curator, have_python, library_ships};
+use display_colony::{Boot, body_of, boot, curator, have_python, hop_of, library_ships};
 use meclaw_core::serde_json::{Value, json};
 
 const APP: &str = "/alex/apps/note";
 
 const QUIET: Duration = Duration::from_millis(300);
+
+/// Did the store say this reply's state write moved its one row?
+///
+/// The same reading the curator does (`compose.py`, `row_landed`): a bundle answers per
+/// leg in `results[]`, a single-op reply carries the count on the hop.
+fn landed(row: &meclaw_colony::api_dto::MessageLogDto) -> bool {
+    let body = body_of(row);
+    let hop = hop_of(row);
+    for operation in ["update", "insert"] {
+        let leg = body["results"].as_array().and_then(|entries| {
+            entries
+                .iter()
+                .find(|e| e["operation"].as_str() == Some(operation))
+        });
+        if let Some(entry) = leg {
+            return entry["rows_affected"].as_i64() == Some(1);
+        }
+        if hop["operation"].as_str() == Some(operation) {
+            return hop["rows_affected"].as_i64() == Some(1);
+        }
+    }
+    false
+}
 
 /// The rows of one owner in the table the store handed back.
 fn rows_of<'a>(rows: &'a [Value], owner: &str) -> Vec<&'a Value> {
@@ -187,6 +216,62 @@ async fn a_view_lives_in_the_store() {
         last["views"].get(&flash).is_none()
             || last["views"][&flash]["curator"]["present"] != json!(true),
         "and the withdrawn one does not"
+    );
+
+    // -- GH #765 (way A): no patch stands ahead of the write it belongs to ------------
+    // Everything above happened through real cells, so the colony's log is the whole
+    // history of this screen. Read forwards, the count of patches the `web` cell got can
+    // never be larger than the count of state writes the store has ANSWERED by then --
+    // that is what "the client hears the store, not the pass" means when it is a message
+    // order rather than a sentence. Before way A the two travelled in one emission, so a
+    // refused write had drawn before its refusal was even read.
+    let rows = colony.log(None).await;
+    let (mut answered, mut drawn, mut seen) = (0usize, 0usize, 0usize);
+    for row in &rows {
+        let headers: Value =
+            meclaw_core::serde_json::from_str(&row.headers_json).unwrap_or_else(|_| json!({}));
+        let request: Value = meclaw_core::serde_json::from_str(
+            headers["context"]["display_request"].as_str().unwrap_or(""),
+        )
+        .unwrap_or_else(|_| json!({}));
+        // The request is PARSED, not searched for a substring: `display_request` is JSON
+        // text inside a header, and a `"state"` anywhere in a nested body would count.
+        // And only a LANDED write counts, because the promise below is about the write
+        // this patch belongs to -- a refusal is an answer too, and it draws nothing.
+        if row.to_path.ends_with("/compose") && request["state"] == json!(true) && landed(row) {
+            answered += 1;
+        }
+        if hop_of(row)["route"] == "patch" {
+            drawn += 1;
+            seen += 1;
+            assert!(
+                drawn <= answered,
+                "patch {drawn} reached the display before the store had answered {drawn} \
+                 state writes (only {answered} so far): a drawing left before the row it \
+                 renders had landed"
+            );
+            // GH #765 (way A) moved the patch onto the reply to the state write, and that
+            // reply carries `display_request` -- with the pass's whole call list under
+            // `request["patch"]`. Unless the edge drops it, the drawing rides to the
+            // browsers and back again: measured on the twin, the same time-lapse line
+            // grew from 17 432 B of `display_request` to 1 749 944 B, and the largest
+            // single header from 1 184 B to 100 559 B, because an `object.update` on
+            // `display.root` carries the whole client script.
+            assert!(
+                headers["context"]["display_request"].is_null(),
+                "the patch carries the pass's own request to the browsers: the drawing \
+                 travels a second time for nobody ({} B)",
+                headers["context"]["display_request"]
+                    .as_str()
+                    .unwrap_or("")
+                    .len()
+            );
+        }
+    }
+    assert!(
+        seen > 0 && answered > 0,
+        "the run drew nothing and wrote nothing -- the order above proves nothing: \
+         {seen} patches, {answered} answered writes"
     );
 
     colony.shutdown().await;
