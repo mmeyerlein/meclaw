@@ -1,186 +1,34 @@
 # Roadmap
 
-The [issue tracker](https://github.com/mmeyerlein/meclaw/issues) is the single
-source of truth for everything actionable. This file only orders it: what comes
-next, what comes after, and why.
+The [issue tracker](https://github.com/mmeyerlein/meclaw/issues) holds everything
+actionable. This file only orders it: what comes next, what comes after, and why.
 
-The four horizons are relative to the work and not to a calendar. Now is the
-running wave. Next is the wave after the next instance rebuild. Later has no
-date. Alongside is cross-cutting, so it rides with whatever wave touches it.
+The horizons are relative to the work, not to a calendar. Now is the wave that
+is running. Next is the wave after the next instance rebuild. Later has no
+date. Alongside rides with whatever wave touches it.
 
-Four rules keep it from silting up:
+Four rules keep the file from silting up:
 
-- A stream names open issues only. Work that shipped leaves the stream and
-  appears once, as one line, under [§ Shipped](#shipped).
-- No content lives here twice. The issue carries the detail; this file carries
-  the ordering and the reason.
-- Closed issues are not eulogised here. Their record lives where they closed,
-  in the issue itself.
-- Every entry carries an anchor: an open issue, or `(register: <id>)`. The
-  second marks something deliberately not built, with a named trigger that
-  would make it due. The register holding those reasons is internal, so the
-  marker is all this file gives you about such a line.
+- A stream names open issues only. Released work appears once, as one line,
+  under [§ Shipped](#shipped).
+- Nothing lives here twice. The issue carries the detail, this file carries the
+  order and the reason.
+- Closed issues get no eulogy. Their record is the issue.
+- Every entry carries an anchor: an open issue, or `(register: <id>)` for
+  something deliberately not built, with a trigger that would make it due. The
+  register itself is internal, so the marker is all this file gives you.
 
-A gate resolves both kinds on every push, and a line pointing at a closed issue
-is a red build.
+A gate resolves both kinds on every push. A line pointing at a closed issue is
+a red build.
 
 Release detail is in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
 ## Now
 
-The numbers are measured now rather than expected. Against a packaged browser on a disposable
-colony, one animating page reaches television, monitor and phone at 19.4 frames a second each
--- one screencast, three joins -- at around 15.8 kB a frame in JPEG; a page that stands sends
-its one frame and then nothing until it moves. Eight pages open with one viewer holding all
-eight cost 989 MB and 215 processes, 57 % of the two gigabytes and 42 % of the 512 tasks the
-cell declares. A page that animates without end is acknowledged at 2 frames a second after
-thirty seconds and says so in its state. And the cap is asked of whoever owns the cgroup the
-browser ends up in rather than written into it: a packaged browser is re-homed by its packaging
-the moment it starts, and a directory somebody else manages is restored the next time they
-reload.
-[#610](https://github.com/mmeyerlein/meclaw/issues/610), [#766](https://github.com/mmeyerlein/meclaw/issues/766),
-[#767](https://github.com/mmeyerlein/meclaw/issues/767), [#768](https://github.com/mmeyerlein/meclaw/issues/768)
-
-v0.39.0 builds the screen to its description (`display@2.5.0`, GH #707, #739,
-#740, #741, #742, #744). One document describes this template, the curator's
-pass is byte-identical with that document's reference model, and its scenarios
-travel with the template -- a rule changes in the document first and reaches the
-code by copy. The whole screen state is one row in the store, one screen serves
-many exits from a switch at the root, and the two events it sends are `tap` and
-`hold`. Beside it a typed sentence becomes a turn of its own channel
-(`chat-channel@1.0.0`, `assistant@2.7.0`, `member@1.8.0`, `builder@1.11.0`,
-GH #709): the channel mints the `turn_id` that the answer and every window built
-from it carry, the level holds a talky per channel, and an application takes a
-view back down instead of waiting out its `ttl_ms`. That id now survives the
-whole road (GH #724), and a curator pass reaches the browser as one frame per
-output (GH #723). What the release contains is the [`[0.39.0]`](CHANGELOG.md)
-section of the changelog.
-
-v0.38.1 makes a held recording arrive whole (GH #697, #698, #699): the cell
-records a provider debt only while the provider is inside a take and keeps an
-interim an empty end of turn used to drop, the browser drains before it lets
-the key go, and the voice service's negative control waits for its
-happens-before. Nothing in the contract moved.
-
-v0.38.0 gives the screen a dock (`display@2.3.2`, GH #694, #695, #696). One
-canvas for what is in focus, a column of tiles of one size for everything that
-is present, and the OS mark at the bottom right that is the place one talks to
-the system. Presence and focus are two axes: a judgement decides what stands
-large and never what exists. An application brings its own tile and names its
-topic, so the same subject is one window across application boundaries; the
-renderer reads a profile per screen and renders the one curated state once per
-exit. With it the colony loop stops waiting on reads of its own log (GH #683,
-ADR-0041). What the release contains is the [`[0.38.0]`](CHANGELOG.md) section
-of the changelog.
-
-v0.37.0 lifts a standing hive in place (`replace_nodes`, GH #682, ADR-0040). A
-hive that is running is brought to a new version of its template under its own
-path: the outer edges stay, a child the new version leaves unchanged keeps its
-`cell.db`, a changed one is replaced under its name with the old one parked
-beside it, a new one is grown, and the committed receipt names what happened
-to every child. The two-act workaround with a restart is no longer the way.
-With it the screen curates what it shows (`display@2.2.3`): a focus number, a
-judge, one order on a clock, and notices from its channels. What the release
-contains is the [`[0.37.0]`](CHANGELOG.md) section of the changelog.
-
-v0.36.0 gives the screen its own design language. `display@2.1.0` ships the
-token sheet and a vocabulary of twenty-six components that an application names
-without defining, a swapped-in compose cell brings an older page's vocabulary
-up to date, and the two faces the sheet names are an operator asset. Under it,
-a template can mark the params that have no usable default and the door refuses
-a node grown without them, a class may carry more than one version in the
-library, a colony logs to stderr as well as to its file, and a member wish
-counts nothing any more. What the release contains is the
-[`[0.36.0]`](CHANGELOG.md) section of the changelog.
-
-The first days on that release turned up five repairs, and v0.36.1 carries
-them: a cell a swap reactivated can be swapped away again, the dialplan contract
-is keyed by the pair (dialled number, caller number), the `web` README's proxy
-example strips the prefix and carries the socket, the export audit refuses a
-test that reaches into a directory the export never carries, and the origin of
-a mounted `web` cell is written down.
-
-v0.35.0 takes the port away from a surface cell. A colony has one listener, and
-a display or a voice door is reached under a name on it, `/<mount>/` for the
-page and `/<mount>/ws` for the socket: `params.port` and `params.bind` leave the
-`web` and the `voice` type, and a document that still carries one is refused
-with the migration in the message. The OS hands out a mount per member instead
-of a port, a proxy may move a display onto a domain path and say so with
-`X-Forwarded-Prefix`, and in front of a telephone the switch is the proxy — it
-maps number and PIN to a colony's listener and the mount of its telephone half
-and stamps who is calling. What the release contains is the
-[`[0.35.0]`](CHANGELOG.md) section of the changelog.
-
-v0.34.0 is the documentation with one shape and a quick start that asks for
-the key. The README is a hub, `docs/` has a concept layer between the start
-page and the reference files, and every page answers one question in the same
-order. `start.sh` asks for the key on a terminal and can boot the shell, so
-getting started grows an organisation, a member and an agent into a running
-colony and talks to it. A `voice` client that stops reading is dropped with an
-`error_code`, and `meclaw ask` waits out a sibling hop's dead letter. What the
-release contains is the [`[0.34.0]`](CHANGELOG.md) section of the changelog.
-
-v0.33.0 is first contact and the telephone findings. `meclaw ask` sends one turn
-to a running colony and prints the answer, so the quickstart is four steps,
-install, start, grow, ask, and the README is rewritten against it, with one word
-for the node, a sentence on why the project exists, three comparison rows and a
-picture of the screen. Three substrate defects found by the first colonies are
-repaired: a hive contract reads an edge by direction, a message addressed past a
-hive boundary is delivered exactly or refused with a receipt that names the
-boundary, and a timer fires every schedule due at the same second. On the
-telephone side every media message names its call, a second call gets a declared
-policy, and the wire rate is negotiated per connection so telephony audio reaches
-the recogniser at 8 kHz. What the release contains is the
-[`[0.33.0]`](CHANGELOG.md) section of the changelog.
-
-v0.32.1 was a documentation patch on top of v0.32.0: the README and the public
-docs were rewritten so that a person can read them, and nothing in the contract
-moved. The wave under it is v0.32.0.
-
-v0.32.0 turns the block a front model appends to its answer into a typed offer.
-The fence opens with ```` ```sidecar ````, holds one JSON object, and each
-top-level key is a section. `memory` is what the old extraction lane carried;
-everything else is offered to whatever listens. The member sorts them, memory
-up into its hive and every other section into `./apps`, and the edge into the
-app that offered a section comes from the mutation that installs the app, never
-from the template. That is the app rim, and together with the screen's second
-column it is what turns a spoken turn into something on a screen. Beside it, a
-telephone became a channel of a person: a `freeswitch` template in front of the
-`voice` cell, one call one session, the signalling kept as a book. What the
-release contains is the [`[0.32.0]`](CHANGELOG.md) section of the changelog.
-
-That release is also where v0.31.0 first reaches the public. It gave the
-substrate a `voice` cell type: raw audio over a WebSocket in, text turns into
-the tree, an assistant's turn back out as speech. It is built like the `web`
-cell, and the audio terminates in the cell's I/O half, so no sample ever
-becomes a message. Two speech-to-text and two text-to-speech providers sit
-behind traits, an `echo` provider calibrates the wire before anybody blames a
-model, and the cell serves its own browser test page. It was cut as the
-[`[0.31.0]`](CHANGELOG.md) section and never tagged, so `v0.32.0` carries both.
-
-Behind them, two releases that were already out. The clean-up wave shipped as
-v0.30.0, and with it every issue the tracker held is either built or ruled. The
-poll timers are gone: the mutation door leaves a receipt, and the menu and the
-screen follow it. File transfer is a substrate slot, so every store writes and
-reads the directories it owns, and the one cell that did it for the holders is
-gone. `memory_recall` is an ordinary tool call answered by the member's own
-memory hive. Every member grows a screen and an app, and the OS hands out the
-port. The last ~140 environment knobs in the template library are params, with
-a gate that keeps the surface closed. What the wave did is the
-[`[0.30.0]`](CHANGELOG.md) section of the changelog. The wave that prepared it
-left the gate process behind as one entry point whose scope comes from the
-diff.
-
-The first colony built on that release turned up four repairs, and v0.30.1
-carries them: a member wish is one submission again, and `--validate` reads the
-`override_params` a `ref` marker carries.
-
-Nothing is cut and waiting. Three designs, a lane across a colony boundary,
-erasure of one member across every store, and a persona regression gate, are
-specified with plans and proposed ADRs and wait for their build wave.
-
-The streams below carry what comes next; the tracker carries the rest.
+Between waves. What the last one built is in v0.40.0 and v0.40.1, under
+[§ Shipped](#shipped). The open findings are in the tracker and get their
+horizon when the next wave is cut.
 
 ## Next
 
@@ -188,168 +36,156 @@ Findings from running the thing.
 
 - Re-measuring the builder's acceptance quota, once the acceptance cases stop
   moving under it. The last run measured four cases, one of them ordering a
-  build no template could deliver; a quota read off that is a reading about the
-  cases. *(register: builder-acceptance-quota)*
-- Metering what a subscription plan actually carries until it resets. A trigger
-  starts it: it fires when a recurring lane wants the subscription path.
+  build no template could deliver, so a quota read off that is a reading about
+  the cases. *(register: builder-acceptance-quota)*
+- Metering what a subscription plan carries until it resets. The trigger fires
+  when a recurring lane wants the subscription path.
   *(register: subscription-budget)*
 - The message-header size watch. Headers carry no cap by design, so the watch
-  is the instrument: it fires on drift past ~100 KB on a single hop, and the
-  last reading was 5.4 KB max. *(register: header-size)*
+  is the instrument: it fires on drift past ~100 KB on a single hop. Last
+  reading was 5.4 KB max. *(register: header-size)*
 - A gate for what the assistant is like. Nothing today guards tone, brevity,
-  refusal, what is remembered and when the colony speaks: a model swap, a prompt
-  edit or a changed seed passes every gate green, and the drift is noticed weeks
-  later by whoever is talking to it. The design is in the tree: synthetic
-  personas through scripted multi-turn sessions, three blocks scored — core
-  invariants, memory, timing — with the paid measurement committed as an
-  artefact and two free stations holding the tree against it.
+  refusal, what is remembered and when the colony speaks. A model swap, a
+  prompt edit or a changed seed passes every gate green, and whoever talks to
+  it notices the drift weeks later. The design is in the tree: synthetic
+  personas through scripted multi-turn sessions, scored on core invariants,
+  memory and timing, with the paid measurement committed as an artefact and two
+  free stations holding the tree against it.
   [#621](https://github.com/mmeyerlein/meclaw/issues/621)
 - Telling submissions apart by the door they came in at. Every question the
   broker is asked carries the same requester and the same subject whichever
-  front raised it, so a rule that would open the shell to the operator and hold
-  it shut against an agent cannot be written today. The shell-scoped rule ships
+  front raised it, so a rule that opens the shell to the operator and holds it
+  shut against an agent cannot be written today. The shell-scoped rule ships
   switched off instead. *(register: policy-by-requester-origin)*
 
 ## Later
 
-The memory hive is public since 0.9.0. One finding from a 50-question
-LongMemEval run orders this stream: the bottleneck sits in the synthesis. In
-nineteen of twenty-one wrong answers the retrieval had already delivered the
-gold session.
+The memory hive has been public since 0.9.0. A 50-question LongMemEval run
+orders this stream: the bottleneck is in the synthesis, because in nineteen of
+twenty-one wrong answers the retrieval had already delivered the gold session.
 
 - Re-running the answer half of that measurement, directed and stratified. It
   waits until the memory chain (collector, recall, curator, memory hive) stops
-  moving between builds. A measurement of a surface still in motion buys a
-  number that is stale by the next build. *(register: memory-answer-half)*
-- Renaming, despite append-only. Nothing in the tree is ever deleted, and a
-  path is a cell's identity; that rigidity is what makes the record auditable.
-  Giving a thing a name and changing it later is a human act, and today the
-  only answer is `move_nodes`, an identity-level operation for a presentation
-  problem. The likely shape is a description layer: mutable display names held
-  in a database, never an address, with the tree untouched underneath. It gets
-  a design round before it gets an issue. *(register: display-names)*
-- Erasure, despite append-only. Nothing here deletes: a path is an identity, a
-  log only grows, and a blob file is never unlinked. That rigidity is what makes
-  the record auditable, and it is also why removing every trace of one person is
-  not an operation today — the traces sit in a memory hive, in the last input of
-  every brain that answered, in the colony's own books, and in blobs nothing
-  attributes to anybody. The likely shape is one mutation that plans per store,
-  forgets through the same slot an export already reads from, redacts the log's
-  payloads while every other row stays byte-identical, and proves itself with an
-  export that comes back empty. It has a design and no build yet; the question
-  that decides its size is whether a person's name may be a path segment at all.
+  moving between builds, because a measurement of a surface in motion is stale
+  by the next build. *(register: memory-answer-half)*
+- Renaming, despite append-only. Nothing in the tree is ever deleted and a path
+  is a cell's identity, which is what makes the record auditable. Naming a
+  thing and changing that name later is a human act, and today the only answer
+  is `move_nodes`, an identity-level operation for a presentation problem. The
+  likely shape is a description layer: mutable display names in a database,
+  never an address, with the tree untouched underneath. It gets a design round
+  before it gets an issue. *(register: display-names)*
+- Erasure, despite append-only. A log only grows and a blob file is never
+  unlinked, so removing every trace of one person is not an operation today.
+  The traces sit in a memory hive, in the last input of every brain that
+  answered, in the colony's own books, and in blobs nothing attributes to
+  anybody. The likely shape is one mutation that plans per store, forgets
+  through the same slot an export reads from, redacts the log's payloads while
+  every other row stays byte-identical, and proves itself with an export that
+  comes back empty. It has a design and no build. The question that decides its
+  size is whether a person's name may be a path segment at all.
   [#618](https://github.com/mmeyerlein/meclaw/issues/618)
 - A lane that crosses a colony boundary. An edge exists only inside one colony,
-  and nothing anywhere declares what may leave one or enter one. Two colonies
-  that each hold one person's memory will need to exchange abstracted things — a
-  topic, a pattern, a proposal — without either side ever seeing the other's
-  observations about a person. The design is written and is not a cluster: the
-  boundary is a cell that declares its lanes on each side the way a hive declares
-  a door, each side judges its own edge against its own declaration, a field the
-  lane does not name is refused rather than quietly dropped, and every crossing
-  and every refusal leaves a receipt. It waits on a second colony that has
-  something to say to the first.
-  [#617](https://github.com/mmeyerlein/meclaw/issues/617)
+  and nothing declares what may leave one or enter one. Two colonies that each
+  hold one person's memory will need to exchange abstracted things, a topic, a
+  pattern, a proposal, without either side seeing the other's observations
+  about a person. The design is written and is not a cluster: the boundary is a
+  cell that declares its lanes on each side the way a hive declares a door,
+  each side judges its own edge against its own declaration, a field the lane
+  does not name is refused rather than dropped, and every crossing and refusal
+  leaves a receipt. It waits on a second colony that has something to say to
+  the first. [#617](https://github.com/mmeyerlein/meclaw/issues/617)
 
 ## Alongside
 
-Cross-cutting work: surfaces, docs and the way a colony is operated.
+Surfaces, docs, and the way a colony is operated.
 
 - Voice-to-graph. The channel exists: a `voice` cell takes speech in and puts
   turns into the tree. A spoken intent still arrives as a sentence somebody
-  else has to act on, and never as a node and an edge. What is missing is the
+  else has to act on, never as a node and an edge. What is missing is the
   operating form: which utterances count as build intents, what a speaker hears
   while the graph grows, and what taking something back looks like when nobody
   pressed Enter. It waits on a `voice` instance being used in earnest for more
   than a day, because that is what tells a real intent from an invented one.
-  Dictation, a voice note through the ordinary text path, stays fully designed
-  and explicitly secondary. *(register: voice-to-graph)*
+  Dictation through the ordinary text path stays designed and explicitly
+  secondary. *(register: voice-to-graph)*
 
-The template surface is open alongside all of this, and it needs no entry to
-stay that way: a template is a directory, a README and a `template.json`.
-Forty-one are listed in [`templates/README.md`](templates/README.md) as worked
-examples, and what a hive template has to satisfy is § *The hive boundary*
-there.
+The template surface stays open and needs no entry to stay that way: a template
+is a directory, a README and a `template.json`. The worked examples are listed
+in [`templates/README.md`](templates/README.md), where § *The hive boundary*
+says what a hive template has to satisfy.
 
 ## Shipped
 
-- On master, unreleased: a page is a window. `browser@1.0.0` holds one browser
-  per member and speaks to it over a pipe; a context is an identity, a page is
-  one window, and the picture travels as a topic of the display socket — one
-  screencast, as many joins as there are outputs, pointer, wheel, keys and text
-  back on the same link. `display@2.6.0` draws it and joins while the window
-  stands; `web@2.1.0` counts live topics per kind. The cap the browser runs
-  under follows it into the confinement's own cgroup and is told to the service
-  manager, so a reload cannot quietly drop it. Six proof runs against a
-  disposable colony and a delivery measured at the receiver on two instances
-  (GH #610, #766, #767, #768, closed with their receipts).
-
-- On master, unreleased: a strand costs less. The strand kit, a form
-  station in front of the cargo lock, a two-stage copy lock, a measurement
-  library, a retry tied to its issue, a merge driver for the compose config and
-  a ten-figure retrospective after every wave, measured before and after on one
-  real strand (GH #750, closed with its receipt).
-One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
+One line per release. Details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
-- v0.39.0: the screen is built to its description, and a typed sentence is a
-  turn of its own channel. One document, one reference model and one state row
-  for the screen; one switch at the root for many exits; a channel that mints
-  the turn id the answer carries, a talky per channel, and a view an application
-  can take back down.
+- v0.40.1: the workspace compiles on Windows again. Nothing that ships moved,
+  and no topology needs anything done to it.
+- v0.40.0: a browser is a cell. `browser@1.0.0` runs one Chromium-based browser
+  per member over a pair of file descriptors, a context per identity and a page
+  per card, and puts each page's picture on a `page:` topic of a display's own
+  socket, with pointers, wheels, keys and text coming back on the same link.
+  The browser is a prerequisite out of the machine's package system, and the
+  ceiling on the process is a cgroup cap asked of whoever owns the cgroup it
+  re-homed itself into. `display@2.6.0` draws a page as ordinary content in an
+  ordinary window, `web@2.1.0` reads a table of topic kinds where it carried
+  one prefix, and a patch now leaves only after the state row has landed.
+  Beside it, a strand costs less: the strand kit, a form station in front of
+  the cargo lock, a two-stage copy lock, a measurement library, a retry tied to
+  its issue, and a retrospective after every wave.
+- v0.39.0: the screen is built from its description, and typed input is a
+  channel of its own. One document, one reference model, one state row for the
+  screen; one switch at the root for many exits; a channel that mints the turn
+  id the answer carries, a talky per channel, and a view an application can
+  take back down.
 - v0.38.1: a held recording arrives whole. A provider debt only while the
-  provider is inside a take, an empty end of turn keeps the interim, the browser
-  drains before it lets go, and the wedged-client control waits for its
-  happens-before.
-- v0.38.0: the screen has a dock. One canvas, a column of one-size tiles for
-  everything present, the OS mark as the hold-to-talk button; presence and focus
-  as two axes, tiles and topics from the applications, a profile per screen; and
-  the colony loop no longer waits on reads of its own log.
+  provider is inside a take, an empty end of turn that keeps the interim, a
+  browser that drains before it lets go.
+- v0.38.0: the screen has a dock. One canvas, a column of tiles of one size for
+  everything present, the OS mark as the hold-to-talk button. Presence and
+  focus are two axes, tiles and topics come from the applications, and the
+  colony loop no longer waits on reads of its own log.
 - v0.37.0: a standing hive is lifted in place. `replace_nodes` brings a running
-  hive to a new version of its template under its own path, judges every child
-  kept, replaced, added or left, and says so in the receipt; the screen
-  curates what it shows, keeps its own time and hears its channels' failures.
+  hive to a new version of its template under its own path and says in the
+  receipt what happened to every child.
 - v0.36.1: the repairs the first days on 0.36.0 turned up. A reactivated cell
   can be swapped away again, the dialplan is keyed by the pair, the proxy
   example strips its prefix, and the export audit sees every never-exported
   root.
 - v0.36.0: the screen brings its own design language. A token sheet and a
-  component vocabulary in `display@2.1.0`, a vocabulary fingerprint on the root,
-  faces as an operator asset; `operator_set` params, more than one version per
-  class, stderr logging, and a member wish that counts nothing.
+  component vocabulary in `display@2.1.0`, `operator_set` params, more than one
+  version per class, and stderr logging.
 - v0.35.0: no port for a surface cell. One listener, a mount per surface, a
-  prefix-aware shell under `/<mount>/`, the OS handing out mounts instead of
-  ports, and a switch that is the proxy in front of several colonies.
+  prefix-aware shell under `/<mount>/`, and a switch that is the proxy in front
+  of several colonies.
 - v0.34.0: the documentation has one shape and the quick start asks for the
-  key. README as a hub, a concept layer in `docs/`, the why pages rewritten,
-  the reference files with heads; `start.sh` boots the shell and getting
-  started runs end to end; `client_too_slow` on the voice error lane; `ask`
-  waits out a sibling's dead letter.
+  key. README as a hub, a concept layer in `docs/`, and `start.sh` booting the
+  shell so getting started runs end to end.
 - v0.33.0: first contact and the telephone findings. `meclaw ask` prints the
-  answer to one turn, the README is written against a four-step quickstart, a
-  sealed hive's interior stops being addressable from outside, and a call names
-  itself, declares what a second call gets and runs at 8 kHz.
-- v0.32.1: the README and the public docs rewritten in plain language, nine why
-  pages became six, the catalogue descriptions shortened; no code change.
+  answer to one turn, a sealed hive's interior stops being addressable from
+  outside, and a call names itself and runs at 8 kHz.
+- v0.32.1: the README and the public docs rewritten in plain language. No code
+  change.
 - v0.32.0: the answer carries typed offers. One ```` ```sidecar ```` block with
-  sections, a member that sorts them into its apps, a screen with a second
-  column, and a telephone as a channel of a person.
+  sections, a member that sorts them into its apps, and a telephone as a
+  channel of a person.
 - v0.31.0: speech is a channel. The `voice` cell type and `voice@1.0.0`, two
   STT and two TTS providers behind traits, an echo provider, a test page.
 - v0.30.1: the repairs a first colony on 0.30.0 turned up. A member wish is one
   submission, and `--validate` reads a `ref` marker's `override_params`.
 - v0.30.0: every open issue is built or ruled. The poll timers are gone, a
-  store writes its own files, memory answers an ordinary tool call, every
-  member grows a screen, and one gate process reads the diff.
+  store writes its own files, memory answers an ordinary tool call, and one
+  gate process reads the diff.
 - v0.29.0: the tracker is clean. The front door is one place, the deep edge is
   the declared form, and a generation grows with its keys in one act.
 - v0.28.0: the organism grows its own surfaces. Four composition levels from
-  one catalogue, a builder that submits through one front, a core with one
-  brain that declares its own errand, and one memory hive for several askers.
+  one catalogue, a builder that submits through one front, and one memory hive
+  for several askers.
 - v0.27.0: the builder stops guessing and starts looking. The intake is a
   bounded, typed tool loop with four eyes and no hand.
 - v0.26.0: a template arrives in a running colony (`add_templates`), and the
-  shutdown finally drains.
+  shutdown drains.
 - v0.25.0: a wish in the chat becomes a manifest somebody else submits.
 - v0.24.0: the vault delivers without giving anything away.
 - v0.23.0: a display moves without being rebuilt.
@@ -373,8 +209,8 @@ One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
 - v0.16.0: a fact remembers who was there.
 - v0.15.x: every shipped hive is behind its boundary.
 - v0.14.0: a name means one thing.
-- v0.13.0 / v0.12.x: the canvas keeps its stylesheet's word; a surface installs
-  into a running colony.
+- v0.13.0 / v0.12.x: the canvas keeps its stylesheet's word, and a surface
+  installs into a running colony.
 - v0.11.x: a colony serves surfaces over HTTP.
 - v0.10.x: the wave before the launch. Vault, audience sets, the steward.
 - v0.9.x: sealed hives, open memory.
