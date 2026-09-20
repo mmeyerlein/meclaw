@@ -49,13 +49,37 @@
 //! Deliberately synchronous and dependency-free apart from `serde_json`: a
 //! subtle bug in here would look like a bug in the code under test.
 
+// On a platform without Unix descriptors, every helper in this file is
+// unreachable: the entry point that uses them is Unix-only. Saying so here
+// keeps a non-Unix `cargo check --all-targets` quiet instead of noisy about
+// code that is deliberately not compiled in.
+#![cfg_attr(not(unix), allow(dead_code, unused_imports))]
+
 use serde_json::{Value, json};
 use std::io::{Read, Write};
+#[cfg(unix)]
 use std::os::fd::FromRawFd;
+#[cfg(unix)]
 use std::os::unix::fs::FileTypeExt;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+// The double speaks CDP over inherited descriptors 3 and 4 and forks children
+// into user namespaces of their own -- both Unix, like the packaged browser it
+// stands in for. Elsewhere it is a binary that says so, so that
+// `cargo check --all-targets` has something to check instead of six errors
+// about descriptors that do not exist there. The CI of the v0.40.0 push found
+// this the honest way.
+#[cfg(not(unix))]
+fn main() {
+    eprintln!(
+        "cdp_browser_fixture: this double needs inherited file descriptors and \
+         user namespaces, so it exists on Unix only."
+    );
+    std::process::exit(2);
+}
+
+#[cfg(unix)]
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mode = args
@@ -389,6 +413,7 @@ fn cast(
 }
 
 /// `pipe`, `file`, `tty` or `other` — what a descriptor actually is.
+#[cfg(unix)]
 fn kind_of(f: &std::fs::File) -> &'static str {
     match f.metadata() {
         Err(_) => "closed",
