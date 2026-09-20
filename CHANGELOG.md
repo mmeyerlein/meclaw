@@ -10,7 +10,39 @@ mount a `web` cell owns and the documented `error_code` strings
 listed under **Breaking** in its release, with the migration named. The Rust
 crates are internals and move without notice.
 
+## [0.40.1] — 2026-09-20
+
+A patch release: the workspace compiles on Windows again. Nothing that ships
+moved -- the release is a static musl build for Linux x86_64 -- and no topology
+needs anything done to it.
+
+### Fixed
+
+- **The browser fixture is Unix-only, and now says so to the compiler**
+  (GH #776). `cdp_browser_fixture` is a test double that speaks CDP over the
+  pair of file descriptors a browser inherits, so it needs Unix descriptors and
+  user namespaces. Its entry point was already Unix-only; its imports and its
+  helpers were not, and on a platform without `FromRawFd`, `is_fifo` and
+  `is_char_device` the workspace therefore did not build at all. Every helper
+  now carries the same condition as the entry point, and a non-Unix build gets
+  a `main` that says why the double cannot exist there.
+
 ## [0.40.0] — 2026-09-20
+
+A minor release: a browser is a cell. `browser@1.0.0` runs one Chromium-based
+browser per member over a pair of file descriptors, a context per identity and a
+page per card, and puts each page's picture on a `page:` topic of a display's own
+socket; pointers, wheels, keys and text come back on the same link. The browser
+itself is a prerequisite out of the machine's package system -- `params.chromium_path`
+is required and has no default, the cell adds no sandbox flag and refuses to start a
+browser whose own sandbox does not hold, and the ceiling it puts on the process is a
+cgroup cap asked of whoever owns the cgroup the packaged browser re-homed itself into.
+`web@2.1.0` reads a table of topic kinds where it carried one prefix, and
+`display@2.6.0` gains a twenty-seventh content component, `display-browser`: a page is
+content in an ordinary window, not a fifth kind of window, so it takes part in
+everything a window takes part in. The curator's own writing got a fix in the same
+wave (GH #765): a patch leaves only after the state row has landed, where before, 190
+of 401 measured state writes were refused and their drawing sent anyway.
 
 ### Added
 

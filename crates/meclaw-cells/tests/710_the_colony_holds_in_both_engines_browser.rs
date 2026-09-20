@@ -27,8 +27,11 @@
 //! carries the gate.
 //!
 //! **Where the evidence lands.** Screenshots and one report per run under
-//! `plans/welle-h-2026-09-17/beweis/browser/<engine>-<viewport>/`, so a red B-number can
-//! be looked at rather than only read about.
+//! `target/beweis/display-browser/<engine>-<viewport>/`, so a red B-number can be looked
+//! at rather than only read about. It used to land in the wave's own `plans/` folder,
+//! which meant every release gate rewrote the pictures a finished wave had signed off on
+//! and left the tree dirty -- and a dirty tree is a refused export (GH #775). Evidence a
+//! wave keeps is committed once, by hand; what a run produces belongs under `target/`.
 //!
 //! **Why SKIP and not RED.** The same tool guard as every other browser proof in this
 //! tree (R2b): no `playwright`, no browser bundle, no laboratory (`wkenv.sh`), no `node`
@@ -47,10 +50,11 @@ const DRIVER: &str = "workshop/tools/display-layout-browser.mjs";
 /// The laboratory WebKit runs in on this host. Sourced for BOTH engines, so a run has one
 /// shape: Chromium ignores every variable in it (OR-H5.3).
 const WKENV: &str = "workshop/tools/wkenv.sh";
-/// Where the wave keeps what its browsers saw. A WRITE, never a read: the guard above
-/// every run is on the DRIVER, so in a tree without `workshop/` nothing is ever written
-/// here either.
-const BEWEIS: &str = "plans/welle-h-2026-09-17/beweis/browser";
+/// Where a run puts what its browsers saw. A WRITE, never a read: the guard above every
+/// run is on the DRIVER, so in a tree without `workshop/` nothing is ever written here
+/// either. Under `target/`, because a test writing into a committed folder makes the tree
+/// dirty on every gate (GH #775).
+const BEWEIS: &str = "target/beweis/display-browser";
 
 /// The application whose windows stand on the stage for the whole file.
 const APP: &str = "/alex/apps/probe";
