@@ -21,11 +21,17 @@ use uuid::Uuid;
 ///
 /// Used by long-running cells (`proxy`, `timer`, `mcp`) in the
 /// `handle_event` path — see `LongRunningCell` in `meclaw-colony`.
-#[derive(Clone)]
+///
+/// Deliberately not `Clone` (GH #617): a cell only ever holds `&OriginSink`, and
+/// without `Clone` it cannot turn that into an owned sink and call
+/// `with_ingress` on it. No caller in the tree needed the clone.
 pub struct OriginSink {
     tx: mpsc::Sender<CellEmission>,
     sender_path: Path,
     default_ttl: u32,
+    /// GH #617 — `contract.ingress.carries_trace`; `false` unless
+    /// `with_ingress` was called.
+    carries_trace: bool,
 }
 
 impl OriginSink {
@@ -36,6 +42,7 @@ impl OriginSink {
             tx,
             sender_path,
             default_ttl,
+            carries_trace: false,
         }
     }
 
@@ -64,6 +71,96 @@ impl OriginSink {
             direct_reply: false,
         };
         self.tx.send(emission).await.map_err(Box::new)
+    }
+
+    /// Grant the ingress handle, for a cell that declares
+    /// `contract.ingress.carries_trace`. A builder step rather than a fourth `new`
+    /// parameter: every existing call site keeps meaning what it meant.
+    ///
+    /// Outside tests only the colony calls this, from the declaration
+    /// `contract.ingress.carries_trace`, when it builds the sink of a long-running
+    /// cell. It is `pub` because the colony lives in another crate. The budget does
+    /// not depend on it: the colony's outputs arm reads the same declaration from
+    /// the node contract and re-stamps the TTL of every undeclared source emission
+    /// (`colony.rs`, outputs arm).
+    #[must_use]
+    pub fn with_ingress(mut self) -> Self {
+        self.carries_trace = true;
+        self
+    }
+
+    /// The ingress handle, iff the cell declared it — `None` otherwise, and a cell
+    /// without a handle cannot ask (cf. `AttachmentReader::for_contract`).
+    pub fn ingress(&self) -> Option<IngressEmitter> {
+        self.carries_trace.then(|| IngressEmitter {
+            tx: self.tx.clone(),
+            sender_path: self.sender_path.clone(),
+        })
+    }
+}
+
+/// Why an ingress emission was refused. Hand-written rather than `thiserror`:
+/// `meclaw-core` carries neither the dependency nor a precedent for one.
+#[derive(Debug)]
+pub enum IngressEmitError {
+    /// A carried TTL of zero: a message with no hops left must not buy one.
+    NoBudget,
+    /// The colony's outputs channel is closed — the cell is on its way down.
+    Send(Box<mpsc::error::SendError<CellEmission>>),
+}
+
+impl std::fmt::Display for IngressEmitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoBudget => write!(f, "a carried ttl of 0 has no hop left to spend"),
+            Self::Send(_) => write!(f, "the colony is not accepting emissions (outputs closed)"),
+        }
+    }
+}
+
+impl std::error::Error for IngressEmitError {}
+
+/// A birth point for messages the cell did not originate: trace and budget come
+/// from the wire, so one conversation stays one trace across two message logs and
+/// a cycle dies on the budget it set out with. Handed out ONLY by `ingress()`.
+#[derive(Clone)]
+pub struct IngressEmitter {
+    tx: mpsc::Sender<CellEmission>,
+    sender_path: Path,
+}
+
+impl IngressEmitter {
+    /// Emit carrying `trace_id` and `ttl` instead of minting them.
+    /// `parent_message_id` stays `None` — nothing was consumed here, and the outputs
+    /// arm reads the declaration rather than the parent. `ttl == 0` is refused before
+    /// the emission: the boundary should have answered `ttl_exhausted` on the wire.
+    pub async fn emit(
+        &self,
+        out: CellOutput,
+        trace_id: Uuid,
+        ttl: u32,
+    ) -> Result<(), IngressEmitError> {
+        if ttl == 0 {
+            return Err(IngressEmitError::NoBudget);
+        }
+        let emission = CellEmission {
+            sender_path: self.sender_path.clone(),
+            // Nothing was consumed here; trace and budget are carried, not minted.
+            parent_message_id: None,
+            trace_id,
+            input_ttl: ttl,
+            input_reply_to: None,
+            // Headers stay edge authority: a projected context key travels under
+            // `hop` and is promoted by the entry edge, never stamped here.
+            input_headers: Headers::new(),
+            target: out.target,
+            content: out.content,
+            direct_reply: false,
+        };
+        self.tx
+            .send(emission)
+            .await
+            .map_err(|e| IngressEmitError::Send(Box::new(e)))
     }
 }
 

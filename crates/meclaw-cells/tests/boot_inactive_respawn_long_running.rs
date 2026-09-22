@@ -92,7 +92,9 @@ async fn assert_hook_builds_live_task(factory: Arc<dyn CellFactory>, params: Jso
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn proxy_boot_inactive_hook_builds_live_task() {
     assert_hook_builds_live_task(
-        Arc::new(ProxyCellFactory),
+        Arc::new(ProxyCellFactory::new(Arc::new(
+            meclaw_colony::SurfaceRegistry::new(),
+        ))),
         json!({ "bot_token": "T", "emit_to": "/x", "base_url": "http://127.0.0.1:1" }),
     )
     .await;

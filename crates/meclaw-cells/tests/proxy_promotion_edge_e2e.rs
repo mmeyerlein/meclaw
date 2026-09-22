@@ -677,7 +677,9 @@ async fn boot_bot_tree(td: &TempDir) -> BotRun {
     let factories: Vec<(String, Arc<dyn CellFactory>)> = vec![
         (
             "proxy".to_string(),
-            Arc::new(ProxyCellFactory) as Arc<dyn CellFactory>,
+            Arc::new(ProxyCellFactory::new(Arc::new(
+                meclaw_colony::SurfaceRegistry::new(),
+            ))) as Arc<dyn CellFactory>,
         ),
         (
             "reply_relay".to_string(),

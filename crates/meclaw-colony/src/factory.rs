@@ -74,6 +74,9 @@ pub struct ContractView {
     /// than from the `contract` block — see
     /// [`crate::bootstrap::compile_spawn_view`] for why.
     pub transfer_base_path: Option<std::sync::Arc<std::path::Path>>,
+    /// GH #617 — whether this cell may emit with a carried trace and a carried
+    /// budget. `false` by default, so a cell that says nothing is unchanged.
+    pub ingress_carries_trace: bool,
 }
 
 impl ContractView {

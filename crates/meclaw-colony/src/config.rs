@@ -77,6 +77,7 @@ impl From<ContractBlock> for ContractView {
             write_surface: c.write_surface,
             transfer: c.transfer,
             transfer_base_path: None,
+            ingress_carries_trace: c.ingress.carries_trace,
         }
     }
 }

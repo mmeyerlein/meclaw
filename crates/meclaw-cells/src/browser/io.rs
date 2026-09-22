@@ -15,9 +15,10 @@ use crate::browser::input::{self, Input, reshapes_the_page};
 use crate::browser::pages::{PageReport, PageState, Register, Viewer, Viewport};
 use crate::browser::params::BrowserParams;
 use crate::browser::service::{BrowserLinkOpener, head, viewport_of_join};
+use crate::mount_guard::MountGuard;
 use crate::sandbox::SandboxProfile;
 use crate::stdio_child::ChildReaper;
-use meclaw_colony::{Link, LinkFrame, LinkRefused, Registration, SurfaceEntry};
+use meclaw_colony::{Link, LinkFrame, LinkRefused, SurfaceEntry};
 use meclaw_core::Path;
 use meclaw_core::serde_json::{Value, json};
 use std::path::PathBuf;
@@ -1309,11 +1310,11 @@ pub async fn run_io(
         )
         .await
     {
-        Ok((_handoff, registration)) => Some(MountGuard {
-            surfaces: Arc::clone(&io.surfaces),
-            mount: io.params.mount.clone(),
+        Ok((_handoff, registration)) => Some(MountGuard::new(
+            &io.surfaces,
+            &io.params.mount,
             registration,
-        }),
+        )),
         Err(e) => {
             let _ = events_tx
                 .send(BrowserEvent::Failed(BrowserError::SpawnFailed(format!(
@@ -1633,35 +1634,6 @@ fn remove_profile(path: &std::path::Path) {
             error = %e,
             "browser: the profile directory could not be removed"
         );
-    }
-}
-
-/// Holds a mount for exactly as long as the I/O half that registered it.
-///
-/// The ordinary end is this half returning, and this covers every other one: a
-/// panic, the backstop, an abort. An entry that stayed behind would keep a live
-/// opener over a browser nobody is serving, and a page joining in that window
-/// would be admitted and then see nothing.
-struct MountGuard {
-    surfaces: Arc<meclaw_colony::SurfaceRegistry>,
-    mount: String,
-    registration: Registration,
-}
-
-impl Drop for MountGuard {
-    fn drop(&mut self) {
-        // A `Drop` cannot await and the registry is behind an `Arc`, so the
-        // removal is a task of its own — and only on a runtime thread, because
-        // a process without one has no mount table left to keep tidy either.
-        let Ok(handle) = tokio::runtime::Handle::try_current() else {
-            return;
-        };
-        let surfaces = Arc::clone(&self.surfaces);
-        let mount = std::mem::take(&mut self.mount);
-        let registration = self.registration;
-        handle.spawn(async move {
-            surfaces.unregister(&mount, &registration).await;
-        });
     }
 }
 

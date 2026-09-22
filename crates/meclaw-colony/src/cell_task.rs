@@ -568,8 +568,54 @@ pub async fn cell_task_stateful<C: crate::stateful_cell::StatefulCell>(
 /// `consumes`: pre-compiled required-`consumes` views, moved into
 /// `handler_loop` (which owns the mailbox) and enforced at the delivery
 /// boundary via `enforce_consumes_for_delivery` (Slice 2, Task 2.4).
+///
+/// A cell spawned here has no ingress handle (`OriginSink::ingress()` is
+/// `None`): the declaration reaches the sink only through
+/// [`crate::build_long_running_task`] (GH #617).
 #[allow(clippy::too_many_arguments)]
 pub async fn cell_task_long_running<L: crate::long_running_cell::LongRunningCell + 'static>(
+    own_path: meclaw_core::Path,
+    mailbox: mpsc::Receiver<meclaw_core::Message>,
+    outputs_tx: mpsc::Sender<meclaw_core::CellEmission>,
+    default_origin_ttl: u32,
+    cell: L,
+    db: crate::DbConn,
+    peace_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    colony_inbox_tx: Option<mpsc::Sender<crate::ColonyMsg>>,
+    stop_rx: Option<tokio::sync::oneshot::Receiver<()>>,
+    death_ack: Option<tokio::sync::oneshot::Sender<()>>,
+    blob_store: Option<std::sync::Arc<crate::DiskBlobStore>>,
+    consumes: Option<std::sync::Arc<meclaw_core::CompiledConsumes>>,
+    bounds: meclaw_core::TransferBounds,
+) {
+    cell_task_long_running_with_ingress(
+        own_path,
+        mailbox,
+        outputs_tx,
+        default_origin_ttl,
+        cell,
+        db,
+        peace_tx,
+        colony_inbox_tx,
+        stop_rx,
+        death_ack,
+        blob_store,
+        consumes,
+        bounds,
+        false,
+    )
+    .await
+}
+
+/// [`cell_task_long_running`] plus the cell's `contract.ingress.carries_trace`
+/// (GH #617), the one extra the LR funnel carries. A separate entry rather than
+/// a fourteenth parameter on the public fn: 48 call sites in tests spawn an LR cell
+/// by hand and keep meaning "no declaration", the same reason
+/// `OriginSink::new` stayed three-parameter.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn cell_task_long_running_with_ingress<
+    L: crate::long_running_cell::LongRunningCell + 'static,
+>(
     own_path: meclaw_core::Path,
     mailbox: mpsc::Receiver<meclaw_core::Message>,
     outputs_tx: mpsc::Sender<meclaw_core::CellEmission>,
@@ -583,6 +629,7 @@ pub async fn cell_task_long_running<L: crate::long_running_cell::LongRunningCell
     blob_store: Option<std::sync::Arc<crate::DiskBlobStore>>,
     consumes: Option<std::sync::Arc<meclaw_core::CompiledConsumes>>,
     bounds: meclaw_core::TransferBounds,
+    carries_trace: bool,
 ) {
     let (events_tx, events_rx) = mpsc::channel::<L::Event>(64);
     let (reconfig_tx, reconfig_rx) = mpsc::channel::<L::Reconfig>(8);
@@ -595,8 +642,15 @@ pub async fn cell_task_long_running<L: crate::long_running_cell::LongRunningCell
         &mut io_state,
         crate::io_liveness::IoLivenessMark::new(own_path.clone(), colony_inbox_tx.clone()),
     );
+    // GH #617: the grant rides on the sink, and `sink.ingress()` is `None`
+    // without it.
     let origin_sink =
         meclaw_core::OriginSink::new(outputs_tx.clone(), own_path.clone(), default_origin_ttl);
+    let origin_sink = if carries_trace {
+        origin_sink.with_ingress()
+    } else {
+        origin_sink
+    };
 
     let mut io_join = tokio::spawn(<L as crate::long_running_cell::LongRunningCell>::run_io(
         io_state,

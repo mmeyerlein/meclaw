@@ -23,7 +23,9 @@ async fn factory_resumes_cursor_after_spawn_drop_spawn() {
     });
     let (out_tx, _out_rx) = mpsc::channel::<CellEmission>(8);
     let (inbox_tx, _inbox_rx) = mpsc::channel(8);
-    let f = Arc::new(ProxyCellFactory);
+    let f = Arc::new(ProxyCellFactory::new(Arc::new(
+        meclaw_colony::SurfaceRegistry::new(),
+    )));
 
     // Spawn 1: Created -> load_offset = 0.
     let s1 = f

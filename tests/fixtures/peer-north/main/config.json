@@ -1,0 +1,39 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "graph": {
+      "edges": [
+        {
+          "from": "./writer",
+          "to": "./friend",
+          "modifier": {
+            "set_hop": {
+              "peer": "'south'",
+              "peer_url": "'__PEER_URL__'"
+            }
+          }
+        },
+        {
+          "from": "./friend",
+          "to": "./receipts",
+          "condition": "has(hop.route) && hop.route == 'receipt'"
+        },
+        {
+          "from": ".",
+          "to": "./writer"
+        }
+      ]
+    }
+  },
+  "description": {
+    "purpose": "GH #617: the sending half of a colony boundary -- a writer that puts a turn on a lane, a peer cell that projects it onto the declared lane and posts one frame, and a sink for the receipt it books.",
+    "use_when": "As the north tree of the two-colony proof. `__PEER_URL__` is filled in the TempDir copy with the address of the reverse proxy in front of the south colony, never with the south colony itself.",
+    "not_in_scope": "No model, no wall clock, no answer from the far side beyond its receipt.",
+    "examples": [
+      "a turn on route 'topic' with body {\"messages\": [], \"topic\": \"gardening\"} crosses and leaves a 'crossed' receipt under /receipts",
+      "the same turn with an extra body field is refused with 'lane_field_denied' and never leaves this colony"
+    ]
+  }
+}

@@ -28,7 +28,7 @@ pub use headers::Headers;
 pub use message::MESSAGE_DEFAULT_TTL;
 pub use message::Message;
 pub use message_builder::MessageBuilder;
-pub use origin_sink::OriginSink;
+pub use origin_sink::{IngressEmitError, IngressEmitter, OriginSink};
 pub use output::{CellEmission, CellOutput, OutputSink};
 pub use path::Path;
 pub use schema::{init_validator, validate_ubf_body};

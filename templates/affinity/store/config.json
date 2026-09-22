@@ -66,6 +66,7 @@
         "source_ref": "text",
         "entity_ref": "text",
         "field_path": "text",
+        "audience": "text",
         "value": "json",
         "status": "text",
         "decided_by": "text",

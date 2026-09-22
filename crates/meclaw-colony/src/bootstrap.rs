@@ -538,6 +538,8 @@ pub(crate) fn compile_spawn_view(
         transfer: block.transfer,
         // GH #555: the one field that comes from `params` — see the fn docs.
         transfer_base_path: parse_transfer_base_path(params)?.map(std::sync::Arc::from),
+        // GH #617: carried verbatim — a declaration is nothing to compile.
+        ingress_carries_trace: block.ingress.carries_trace,
     })
 }
 /// GH #424 — read one `ref` marker's `config.json` into a [`PlannedGrowth`].

@@ -31,7 +31,7 @@ Cell emission modes (detail in `meclaw-overview.md` section "Cell emission modes
 | `web_search` | search-provider client | stateless | atomic-emitting |
 | `file` | filesystem CRUD with security boundary | stateless | atomic-emitting |
 | `edit` | file-editing operations | stateless | atomic-emitting |
-| `proxy` | external-chat bridge (Telegram first), dual task | yes, long-running | atomic-emitting (user turn per external message) |
+| `proxy` | a bridge outwards: a chat platform or a peer colony, dual task | yes, long-running | atomic-emitting (user turn per external message) |
 | `timer` | periodic event emitter, second-accurate, dual task | yes, long-running | atomic-emitting (schedule body) |
 | `mcp` | MCP-provider bridge, dual task | yes, long-running | atomic-emitting |
 | `harness` | agent harness (Claude Code) as a supervised child process | yes, stateful | long-running |
@@ -700,9 +700,9 @@ Conventions:
 - Default `max_concurrency`: 8.
 - `error_code`s: reused from file, plus `pattern_not_found` and `unexpected_match_count` (GH #105).
 
-## `proxy`, a bridge to an external chat platform
+## `proxy`, a bridge outwards
 
-Long-running. Bridges to an external chat-platform provider. Since 0.1.12 there are two platform variants behind `params.platform` (optional, default `"telegram"`, so every config written before 0.1.12 keeps parsing to exactly the same result): `telegram` (Bot API over HTTP long poll) and `slack` (Socket Mode, WebSocket push). One instance bridges exactly one platform. It holds a cursor for update offsets in `cell.db`, so that restarts do not process messages twice.
+Long-running. Bridges to an external chat platform or to a peer colony. There are three platform variants behind `params.platform` (optional, default `"telegram"`, so every config written before 0.1.12 keeps parsing to exactly the same result): `telegram` (Bot API over HTTP long poll), `slack` (Socket Mode, WebSocket push, since 0.1.12) and `meclaw` (a peer colony, one POST to its mount). One instance bridges exactly one platform. The chat variants hold a cursor for update offsets in `cell.db`, so that restarts do not process messages twice; the `cell.db` of the `meclaw` variant stays empty.
 
 Concurrency setup: two Tokio tasks per instance (handler plus I/O), communicating over an internal mpsc (see `meclaw-overview.md`, section "Long-running cells: dual task"). From the topology's view the cell stays a single address with a single external mailbox, and the dual structure is internal and prescribed for this cell type.
 
@@ -754,6 +754,58 @@ The Slack variant (0.1.12) is a second platform of the same cell type and not a 
 
   Bot detection runs on `bot_id`, which Slack sets together with `bot_profile` on bot-authored messages, and not on `subtype`: `subtype: "bot_message"` is classic-app behaviour, unreliable on its own, and stays only a second line of defence. R3 reads `event.app_id`, the sending app, never `payload.api_app_id`, which names the receiving app, equals our own on every inbound event, and would discard all traffic.
 - Beta asymmetry towards Telegram: the Slack variant accepts no runtime param updates today. It builds exclusively from the birth params, and there is neither an overlay restore nor a `params` update path in the handler. Recorded as a deferred item ("β params overlay for the Slack variant").
+
+The `meclaw` variant is a third platform of the same cell type and not a new cell type. It is enabled via `params.platform: "meclaw"`, and what it talks to is not a chat platform but another colony. One instance is one contract class and not one counterpart: many peers share one cell, and who is addressed travels with the message.
+
+The `contract` block of an instance. Nothing in it is `required`: `arrived` carries a projected body that often has no `messages[]`, and `crossed` an empty one, so a required field would break one of the three shapes.
+
+```json
+"contract": {
+  "version": "1.0.0",
+  "settings": {
+    "identity_header": { "type": "string", "secret": false, "default": "", "description": "The header the reverse proxy fills with the verified sending colony; empty accepts nothing" },
+    "boundary": { "type": "string", "secret": false, "default": "", "description": "This side's own name; it rides every receipt" }
+  },
+  "emits": {
+    "body": { "messages": { "type": "array", "required": false } },
+    "hop": {
+      "route": { "type": "string", "required": false }, "peer": { "type": "string", "required": false },
+      "boundary": { "type": "string", "required": false }, "lane": { "type": "string", "required": false },
+      "fields": { "type": "array", "required": false }, "error_code": { "type": "string", "required": false },
+      "peer_event": { "type": "string", "values": ["crossed", "refused"], "required": false }
+    }
+  },
+  "consumes": {
+    "body": { "messages": { "type": "array", "required": false } },
+    "hop": {
+      "route": { "type": "string", "required": false }, "peer": { "type": "string", "required": false },
+      "peer_url": { "type": "string", "required": false }
+    }
+  },
+  "ingress": { "carries_trace": true },
+  "capabilities": ["network:proxy", "db:own"]
+}
+```
+
+- Instead of a long poll it holds a mount on the colony's one listener. `/<mount>/` takes exactly one POST whose body is a wire-version-1 frame, and the answer to that POST is the receipt. Who the sender is, the cell reads only from the header `identity_header` names; a frame that carries a sender field is `invalid_frame`. So is a frame whose projected body is no valid UBF body, for instance one left with none of the central slots `system`, `messages`, `attachments`: the mount accepts only what it can deliver, and a sender that leaves out the turn list reads that refusal instead of a `crossed` for a message that reaches nobody. Here it departs from `web`: with an empty `identity_header`, `web` stamps nothing and carries on, while this mount refuses every frame with `invalid_frame`. A peer mount with no header named would be an open door, and the reverse proxy in front is what sets the name.
+- Outbound travels over the entry edge, which stamps the lane as `hop.route`, the addressee as `hop.peer` and that side's mount behind its own proxy as `hop.peer_url` via `modifier.set_hop`; the edge does this, not the cell. None of the three ever crosses the boundary, and a message without `hop.peer_url` is refused with `peer_unreachable`. The `contract` block above is how an instance declares all this; without it the cell does not boot.
+- The contract lives in `params.lanes`, one list per direction; a lane names `route`, `fields`, `because` and optionally `context`. Both sides declare the same lane, neither reads the other's declaration, a field the lane does not name is refused and never stripped, and `system` in `fields` is a parse error.
+- Three emissions, each with its structural part in the `header` slot. `crossed` and `refused` carry `route: "receipt"` and the key `peer_event`; `arrived` carries the lane as `route`, the sender as `peer` and the projected body. Both sides book a receipt for every crossing: the sending side with the verdict from the answer to its POST, the receiving side with its own `crossed` next to `arrived`, under its own `boundary` and on the frame's trace. A receipt does not choose its own address: without an edge on `hop.route == "receipt"` out of the cell it reaches nobody.
+- The nine `error_code`s of this platform are a closed set and have nothing to do with the five Telegram codes above: `lane_undeclared`, `lane_field_denied`, `lane_body_unsupported`, `peer_unreachable`, `peer_timeout`, `peer_refused`, `protocol_mismatch`, `invalid_frame`, `ttl_exhausted`. The last three are deliberately the words `subcolony` and the stdio bridge already use. There is no code for "accepted, then nothing carried it onward", because the edge verdict is reached asynchronously in the colony task and never reaches the cell; it is an ordinary `no_route` dead letter in the receiving colony.
+- `params` are immutable for `meclaw`: no overlay, no update path, and a `params` slot in a message is an `invalid_input`. A boundary a message can rename is not a boundary. The `cell.db` of this variant stays empty: no cursor, no dedup, no allow-list.
+
+`params` of the `meclaw` variant:
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `platform` | string | required | Always `"meclaw"`; selects this variant |
+| `mount` | string | required | The name on the colony's one listener; the peer mount is `/<mount>/`. `[a-z0-9-]{1,64}`, none of the reserved names |
+| `identity_header` | string | `""` | The header the reverse proxy fills with the verified sending colony. Empty means this mount accepts nothing |
+| `boundary` | string | required | This side's own name; it rides every receipt. Never a URL |
+| `emit_to` | string | required | Where an arrived frame is emitted, as an absolute path |
+| `external_timeout_ms` | u64 | `5000` | Operation timeout (hard rule 12) around the outgoing POST |
+| `query_timeout_ms` | u64 | `5000` | Operation timeout (hard rule 12) around `cell.db` access via `DbConn` |
+| `lanes` | object | required | The contract in both directions: `accepts` and `emits`, one list of lanes each. An unknown key on any level is a parse error |
 
 ## `timer`, a periodic event emitter
 

@@ -1,4 +1,4 @@
-# `member@1.9.0`
+# `member@1.9.1`
 
 One person, as a level. **Four holders, three open containers and no cell of
 its own** — seven nodes and sixty-six edges.
@@ -618,6 +618,20 @@ Both are promoted on the channel's own ingress edge, and both are written
 `has(...) ? ... : ''` where they come off the hop — a modifier that fails to
 evaluate skips the whole edge.
 
+**A `channel` value may be composed, and a peer channel is where that starts to matter.**
+Every channel until now had one counterpart -- a Telegram chat, a phone line, one screen --
+so the node name was enough to tell two conversations apart. A channel that speaks to other
+colonies has many, and one value per channel would put every counterpart into one generation,
+one idle clock and one rate bucket. The ingress edge of such a channel therefore writes the
+class and the counterpart together, `'peer-friend:' + string(hop.peer)`, with `has(hop.peer)`
+in its `condition` for the reason the two keys above are written `has(...) ? ... : ''`: a
+modifier that cannot evaluate skips the edge, and a turn that vanishes is worse than a turn
+that is refused. Nothing downstream learns a new word. `session-keeper` reads the value as the
+opaque string it always was and opens one generation per counterpart, `firewall` keeps one
+bucket per counterpart, `memory-hive` writes the conversation down as its own room -- and the
+answer still finds its way back, because the way back hangs on `channel_node`, which stays the
+node.
+
 **Since 1.9.0 there is a third key beside them, and it is not an address at
 all: `context.engine`.** A channel whose model answers on its own timeline —
 one live provider that hears and speaks, instead of a recogniser, a model and a
@@ -717,7 +731,7 @@ never hears:
 | edge | condition | why |
 |---|---|---|
 | `./channels/display-<s> -> ./channels` | `event` or `receipt` | what the screen produced, stamped with `context.channel_node` and `context.channel`, which on a screen are the same word |
-| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@1.9.0` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
+| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@1.9.1` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
 | `./channels -> ./channels/display-<s>` | `error` | a channel's failure, re-stamped to the display's `in_notice` — since `builder@1.10.0`, drawn by the mutation that grows the screen |
 
 **A view comes down the way it went up.** Since `member@1.8.0` the edge that carries
@@ -951,7 +965,7 @@ The whole arrangement, as three mutations. The member first:
 
 ```json
 {"scope": "<org>/members", "diff": {
-  "add_nodes": [{"name": "alex", "template": "member@1.9.0"}]
+  "add_nodes": [{"name": "alex", "template": "member@1.9.1"}]
 }}
 ```
 

@@ -691,6 +691,46 @@ mod tests {
         assert_eq!(out.hop.get("tier"), Some(&Value::String("gold".into())));
     }
 
+    /// The `set_context` expression a peer lane keys its session with: one
+    /// `proxy` serves a whole contract class, so the channel value is composed
+    /// and one session exists per conversation partner (GH #617). `cel` 0.13
+    /// implements `+` on two strings but refuses mixed types, hence `string()`.
+    fn peer_channel_spec() -> ModifierSpec {
+        ModifierSpec {
+            set_context: BTreeMap::from([(
+                "channel".into(),
+                "'peer-friend:' + string(hop.peer)".into(),
+            )]),
+            ..ModifierSpec::default()
+        }
+    }
+
+    #[test]
+    fn modifier_set_context_concatenates_strings() {
+        let m = parse_modifier(&peer_channel_spec()).unwrap();
+        let mut h = Headers::new();
+        h.hop.insert("peer".into(), Value::String("bob".into()));
+        let out = apply_modifier(&m, &h).expect("apply");
+        assert_eq!(
+            out.context.get("channel"),
+            Some(&Value::String("peer-friend:bob".into())),
+            "the class and the counterpart compose one channel value"
+        );
+    }
+
+    /// The other half: without `hop.peer` the modifier FAILS, and a failing modifier skips
+    /// the whole edge (`edge_table.rs:193-208`) — the turn would vanish, which is why
+    /// the peer edge carries `has(hop.peer)` in its `condition`.
+    #[test]
+    fn modifier_set_context_without_the_counterpart_fails_the_edge() {
+        let m = parse_modifier(&peer_channel_spec()).unwrap();
+        let err = apply_modifier(&m, &Headers::new()).unwrap_err();
+        assert!(
+            err.contains("set_context.channel"),
+            "the failure names the key that could not be evaluated: {err}"
+        );
+    }
+
     #[test]
     fn modifier_delete_hop_removes_existing_key() {
         let spec = ModifierSpec {

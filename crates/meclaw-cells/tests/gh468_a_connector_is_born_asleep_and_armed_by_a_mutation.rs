@@ -172,7 +172,9 @@ async fn boot(td: &tempfile::TempDir) -> ColonyHandle {
     build_root(td.path());
     let factories: Vec<(String, Arc<dyn CellFactory>)> = vec![(
         "proxy".to_string(),
-        Arc::new(meclaw_cells::proxy::factory::ProxyCellFactory) as Arc<dyn CellFactory>,
+        Arc::new(meclaw_cells::proxy::factory::ProxyCellFactory::new(
+            Arc::new(meclaw_colony::SurfaceRegistry::new()),
+        )) as Arc<dyn CellFactory>,
     )];
     let h = ColonyHandle::new_with_factories_at(td, factories.clone());
     let mut registry = CellFactoryRegistry::new();

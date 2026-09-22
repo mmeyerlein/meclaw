@@ -19,7 +19,7 @@ the reasoning.
 | Template | Version | What it is |
 |---|---|---|
 | [`access`](access/) | 2.5.0 | The capability broker as one sealed hive of six cells and no model: an agent asks in natural language, a handle travels on the wire, and a credential leaves the vault beside it only sealed. |
-| [`affinity`](affinity/) | 3.3.0 | The curated record of the people and agents a colony knows, as whole AIeOS documents plus the four things that standard has no vocabulary for: relations, trust, disclosure and an append-only audit. |
+| [`affinity`](affinity/) | 3.4.0 | The curated record of the people and agents a colony knows, as whole AIeOS documents plus the four things that standard has no vocabulary for: relations, trust, disclosure and an append-only audit. A proposal also says whom it would be released to, and a directory audience waits for the member. |
 | [`archive-bridge`](archive-bridge/) | 1.1.0 | Turns an `llm`'s last answer into a store-native insert and swallows the store's reply echo, so an append-only archive costs one cell and no loop. |
 | [`argus`](argus/) | 1.1.0 | The colony's control loop: a charter of goals as rows, a deterministic measurement, a judge that simulates before it decides, and keep-or-revert after the window. |
 | [`assistant`](assistant/) | 2.8.0 | One generation of one person's agent as a composition level, holding the reasoning core, the tool surface and one conversation surface per channel that asks for its own, as four refs and no container. |
@@ -40,7 +40,7 @@ the reasoning.
 | [`firewall`](firewall/) | 2.3.1 | Deterministic screening on an ingress channel drawn as topology: every inbound turn ends on `pass` with the body byte-identical, or on `reject` naming the rule that fired. |
 | [`freeswitch`](freeswitch/) | 2.1.1 | A telephone as one channel of a person, in two halves inside one hive: a `voice` cell carries the media on its mount and a small state machine of a `code` cell keeps the calls. |
 | [`meclaw-os`](meclaw-os/) | 1.8.11 | The colony shell: the outermost of the four composition levels, four occupants, one empty container and the transit graph between them, and no cell of its own. |
-| [`member`](member/) | 1.9.0 | One person as a composition level, holding the memory, the curated record, the screen and the keys, plus three open containers for that person's assistants, channels and apps. An app of theirs may put a view up and take it down again. |
+| [`member`](member/) | 1.9.1 | One person as a composition level, holding the memory, the curated record, the screen and the keys, plus three open containers for that person's assistants, channels and apps. An app of theirs may put a view up and take it down again. |
 | [`memory-drain`](memory-drain/) | 2.0.6 | The adapter between a write batch and the central memory, for bulk import of foreign history, and nothing shipped wires it (ADR-0012). |
 | [`memory-hive`](memory-hive/) | 3.4.0 | A member's memory in fifteen cells: every turn becomes an append-only episode written without a model, and the read path answers only with rows the current round could have heard. |
 | [`operator`](operator/) | 1.2.0 | One front door into the OS and one place a submission lives: a sealed hive at the colony shell with one occupant per subject, reached by naming a lane and never a cell. |

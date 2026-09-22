@@ -1,0 +1,39 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json\n\ndoc = json.load(sys.stdin)\nbody = doc[\"body\"]\nhop = (doc[\"envelope\"].get(\"header\") or {}).get(\"hop\") or {}\nout = {\"header\": {\"route\": str(hop.get(\"route\") or \"\")}}\nout.update(body)\nsys.stdout.write(json.dumps(out))\n",
+    "external_timeout_ms": 10000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "required": true
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  }
+}

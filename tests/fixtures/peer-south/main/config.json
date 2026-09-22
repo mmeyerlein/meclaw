@@ -1,0 +1,34 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "graph": {
+      "edges": [
+        {
+          "from": "./friend",
+          "to": "./sink",
+          "condition": "has(hop.route) && hop.route == 'topic'"
+        },
+        {
+          "from": "./friend",
+          "to": "./receipts",
+          "condition": "has(hop.route) && hop.route == 'receipt'"
+        },
+        {
+          "from": ".",
+          "to": "./friend"
+        }
+      ]
+    }
+  },
+  "description": {
+    "purpose": "GH #617: the receiving half of a colony boundary -- a peer cell mounted on the colony's one listener that accepts one declared lane, a sink where an arrival lands, and a sink for the receipts it books.",
+    "use_when": "As the south tree of the two-colony proof, behind a reverse proxy that writes the sender into `X-Meclaw-Peer`.",
+    "not_in_scope": "No model, no wall clock, no answer back to the sender beyond the receipt on the wire.",
+    "examples": [
+      "a frame on lane 'topic' from behind the proxy arrives under /sink with hop.peer set to the header value",
+      "a frame on any other lane is refused with 'lane_undeclared' and booked under /receipts"
+    ]
+  }
+}

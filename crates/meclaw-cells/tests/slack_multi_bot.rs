@@ -51,7 +51,9 @@ async fn spawn_slack_cell(h: &ColonyHandle, td: &TempDir, bot: BotFixture<'_>, b
     } = bot;
     let cell_dir = td.path().join(name);
     std::fs::create_dir_all(&cell_dir).expect("cell dir");
-    let factory = Arc::new(ProxyCellFactory);
+    let factory = Arc::new(ProxyCellFactory::new(Arc::new(
+        meclaw_colony::SurfaceRegistry::new(),
+    )));
     let spawned = factory
         .spawn_cell(
             path.clone(),

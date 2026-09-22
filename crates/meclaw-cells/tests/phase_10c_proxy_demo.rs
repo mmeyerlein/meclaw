@@ -39,7 +39,9 @@ async fn phase_10c_demo_outbound_end_to_end() {
     let td = TempDir::new().unwrap();
     let cell_dir = td.path().join("proxy");
     std::fs::create_dir_all(&cell_dir).unwrap();
-    let factory = Arc::new(ProxyCellFactory);
+    let factory = Arc::new(ProxyCellFactory::new(Arc::new(
+        meclaw_colony::SurfaceRegistry::new(),
+    )));
     let spawned = factory
         .spawn_cell(
             Path::new("/proxy"),
@@ -144,7 +146,9 @@ async fn phase_10c_demo_inbound_end_to_end() {
     let td = TempDir::new().unwrap();
     let cell_dir = td.path().join("proxy");
     std::fs::create_dir_all(&cell_dir).unwrap();
-    let factory = Arc::new(ProxyCellFactory);
+    let factory = Arc::new(ProxyCellFactory::new(Arc::new(
+        meclaw_colony::SurfaceRegistry::new(),
+    )));
     let spawned = factory
         .spawn_cell(
             Path::new("/proxy"),

@@ -74,8 +74,8 @@ principle of GH #26: a tree is grown, not checked in.
 └── orgs                              (empty container)
     └── acme                       org@1.4.1         a namespace and a boundary
         └── members                  (empty container)
-            └── alex               member@1.9.0      one person
-                ├── affinity          → affinity@3.3.0      identity and meaning
+            └── alex               member@1.9.1      one person
+                ├── affinity          → affinity@3.4.0      identity and meaning
                 ├── firewall          → firewall@2.3.1      the screen
                 ├── memory-hive       → memory-hive@3.3.0   what was said to them
                 ├── channels          (empty container)
@@ -335,7 +335,7 @@ Four edges:
   ([#803](https://github.com/mmeyerlein/meclaw/issues/803)).
 
 **The eleven edges between `channels` and its siblings are not among them** — they belong to
-`member@1.9.0` and were drawn once, when step 3 ran: `./channels → ./firewall` turns the raw
+`member@1.9.1` and were drawn once, when step 3 ran: `./channels → ./firewall` turns the raw
 `turn` into `in_turn`, `./assistants → ./channels` carries a finished answer back to the channel
 that asked, `./apps → ./channels` carries an app's `view` — and, since 1.8.0, its `withdraw` —
 the same way, `./channels → .` lets a

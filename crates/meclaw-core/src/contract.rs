@@ -61,6 +61,12 @@ pub struct IngressBlock {
     /// NARROW the standard set, never widen it — anything else reaches
     /// `context` through an edge `set_context`.
     pub context: BTreeSet<String>,
+    /// GH #617 — this cell takes the `trace_id` and the `ttl` of a message it
+    /// did not originate FROM THE WIRE, instead of minting a fresh trace and
+    /// being stamped with the colony's budget. Absent ⇒ `false` ⇒ no handle at
+    /// spawn, no change at the outputs arm. Not the boolean `context` refuses
+    /// to be: `context` bounds a key SET, this grants one thing.
+    pub carries_trace: bool,
 }
 
 /// GH #260 — a cell's declaration that the writes the **substrate** answers on

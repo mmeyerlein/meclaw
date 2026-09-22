@@ -48,7 +48,12 @@ fn schema_owners_without_a_loader() -> Vec<(&'static str, Arc<dyn CellFactory>)>
             Arc::new(HarnessCellFactory) as Arc<dyn CellFactory>,
         ),
         ("mcp", Arc::new(McpCellFactory)),
-        ("proxy", Arc::new(ProxyCellFactory)),
+        (
+            "proxy",
+            Arc::new(ProxyCellFactory::new(Arc::new(
+                meclaw_colony::SurfaceRegistry::new(),
+            ))),
+        ),
         ("subcolony", Arc::new(SubcolonyCellFactory)),
         ("timer", Arc::new(TimerCellFactory)),
         ("vault", Arc::new(VaultCellFactory)),

@@ -4,7 +4,7 @@
 //! What is pinned here is what the template PROMISES, in the order the README
 //! promises it:
 //!
-//! 1. **The inventory and the vendored schema.** Five cells and one vendored
+//! 1. **The inventory and the vendored schema.** Six cells and one vendored
 //!    `aieos.schema.json`, pinned at 1.1.0 -- and the mandatory-path list the
 //!    `gate` script carries as a literal is pinned AGAINST that file, so a
 //!    schema swap that does not move the validator fails here instead of in a
@@ -798,6 +798,185 @@ async fn the_gate_refuses_a_mandatory_path_violation_and_writes_nothing() {
         audit[0]["reason_code"].as_str(),
         Some("aieos_metadata_instance_id"),
         "a refusal is the more interesting half of the log: {audit}"
+    );
+
+    h.shutdown().await;
+}
+
+/// R-26-8a, GH #617: a proposal says whom it would be released to, and one
+/// family of audiences is never accepted on the system's own word. R-AF-1 is
+/// unchanged for every other audience.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_directory_audience_is_never_auto_accepted() {
+    let Some(root) = shipped_affinity() else {
+        return;
+    };
+    let td = tempfile::TempDir::new().unwrap();
+    build_tree(&td, &root, QUIET_CRON);
+    let (h, mut rx, _push_rx) = boot(&td).await;
+
+    // 1. The directory audience, asked for with `auto_accept: true`.
+    let op = json!({"op": "propose", "source_ref": "mem:ep-1",
+                    "entity_ref": "entity:alex", "field_path": "interests.music",
+                    "value": "techno", "audience": "directory:example",
+                    "auto_accept": true});
+    h.send(to(
+        "/writer",
+        &meclaw_core::serde_json::to_string(&op).unwrap(),
+    ))
+    .await;
+    let payload = turn_json(&recv_route(&mut rx, "ack").await);
+    assert_eq!(payload["outcome"].as_str(), Some("accepted"), "{payload}");
+    assert_eq!(
+        payload["status"].as_str(),
+        Some("open"),
+        "a directory audience waits for the member, whatever the caller asked: {payload}"
+    );
+    let pid = payload["id"].as_str().expect("the proposal id").to_string();
+
+    let sel = json!({"operation": "select", "table": "proposals",
+                     "columns": ["id", "audience", "status", "decided_by"],
+                     "where": {"id": pid.clone()}, "limit": 5});
+    let rows = probe(&h, &mut rx, sel).await;
+    assert_eq!(rows.as_array().map(|a| a.len()), Some(1), "rows: {rows}");
+    assert_eq!(
+        rows[0]["audience"].as_str(),
+        Some("directory:example"),
+        "{rows}"
+    );
+    assert_eq!(rows[0]["status"].as_str(), Some("open"), "{rows}");
+    assert_eq!(
+        rows[0]["decided_by"].as_str(),
+        Some(""),
+        "nobody decided it: {rows}"
+    );
+
+    // 1b. The member decides it. The verdict is a NEW row (R-AF-4, supersede
+    //     by append), and that row has to keep the audience: an accepted row
+    //     without it reads like any R-AF-1 extension and loses the one fact
+    //     the proposal waited for.
+    let op = json!({"op": "decide_proposal", "id": pid.clone(), "status": "accepted",
+                    "source_ref": "mem:ep-1", "entity_ref": "entity:alex",
+                    "field_path": "interests.music", "value": "techno",
+                    "audience": "directory:example"});
+    h.send(to(
+        "/writer",
+        &meclaw_core::serde_json::to_string(&op).unwrap(),
+    ))
+    .await;
+    let payload = turn_json(&recv_route(&mut rx, "ack").await);
+    assert_eq!(payload["outcome"].as_str(), Some("accepted"), "{payload}");
+    let sel = json!({"operation": "select", "table": "proposals",
+                     "columns": ["audience", "status", "supersedes"],
+                     "where": {"id": payload["id"].clone()}, "limit": 5});
+    let rows = probe(&h, &mut rx, sel).await;
+    assert_eq!(rows.as_array().map(|a| a.len()), Some(1), "rows: {rows}");
+    assert_eq!(rows[0]["status"].as_str(), Some("accepted"), "{rows}");
+    assert_eq!(rows[0]["supersedes"].as_str(), Some(pid.as_str()), "{rows}");
+    assert_eq!(
+        rows[0]["audience"].as_str(),
+        Some("directory:example"),
+        "the verdict row keeps the audience the proposal waited for: {rows}"
+    );
+
+    // 2. The counter-proof: an ordinary audience is accepted as it arrives,
+    //    which is R-AF-1 and stays R-AF-1.
+    let op = json!({"op": "propose", "source_ref": "mem:ep-2",
+                    "entity_ref": "entity:alex", "field_path": "interests.food",
+                    "value": "ramen", "audience": "member:alex",
+                    "auto_accept": true});
+    h.send(to(
+        "/writer",
+        &meclaw_core::serde_json::to_string(&op).unwrap(),
+    ))
+    .await;
+    let payload = turn_json(&recv_route(&mut rx, "ack").await);
+    assert_eq!(payload["status"].as_str(), Some("accepted"), "{payload}");
+    let sel = json!({"operation": "select", "table": "proposals",
+                     "columns": ["audience", "status", "decided_by"],
+                     "where": {"id": payload["id"].clone()}, "limit": 5});
+    let rows = probe(&h, &mut rx, sel).await;
+    assert_eq!(rows[0]["audience"].as_str(), Some("member:alex"), "{rows}");
+    assert_eq!(rows[0]["status"].as_str(), Some("accepted"), "{rows}");
+    assert_eq!(
+        rows[0]["decided_by"].as_str(),
+        Some("member:alex"),
+        "the decider is the actor the EDGE named: {rows}"
+    );
+
+    h.shutdown().await;
+}
+
+/// GH #617: the address of a counterpart leaves the record the same way its
+/// tone does -- one `in_brief` call, one disclosure decision, one slot. Two
+/// keys travel and nothing else of `mx.peer` does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_peer_slot_carries_the_address_of_an_agent() {
+    let Some(root) = shipped_affinity() else {
+        return;
+    };
+    let td = tempfile::TempDir::new().unwrap();
+    build_tree(&td, &root, QUIET_CRON);
+    let (h, mut rx, _push_rx) = boot(&td).await;
+
+    // 1. An agent entity whose own `mx` holds an address -- plus a third key
+    //    beside it, which is how the closed read is proved.
+    let op = json!({"op": "upsert_entity", "kind": "agent",
+                    "display_name": "Bo Vale", "owner_member": "member:alex",
+                    "aieos": valid_aieos("bbbb-2222", "Bo"),
+                    "mx": {"peer": {"name": "south",
+                                    "url": "http://127.0.0.1:7999/peer/",
+                                    "note": "not an address"}}});
+    h.send(to(
+        "/writer",
+        &meclaw_core::serde_json::to_string(&op).unwrap(),
+    ))
+    .await;
+    let payload = turn_json(&recv_route(&mut rx, "ack").await);
+    assert_eq!(payload["outcome"].as_str(), Some("accepted"), "{payload}");
+    let eid = payload["entity_id"]
+        .as_str()
+        .expect("the entity id")
+        .to_string();
+
+    // 2. One disclosure row, for the asking audience, naming the address path.
+    let op = json!({"op": "set_disclosure", "entity_id": eid.clone(),
+                    "audience": "agent:aiden", "field_path": "mx.peer",
+                    "mode": "share"});
+    h.send(to(
+        "/writer",
+        &meclaw_core::serde_json::to_string(&op).unwrap(),
+    ))
+    .await;
+    let ack = turn_json(&recv_route(&mut rx, "ack").await);
+    assert_eq!(
+        ack["outcome"].as_str(),
+        Some("accepted"),
+        "the release is written: {ack}"
+    );
+
+    // 3. The brief, asking for the peer slot alone.
+    let ask = format!(r#"{{"audience":"agent:aiden","subject":"{eid}","slots":["peer"]}}"#);
+    h.send(to("/asker", &ask)).await;
+    let answer = recv_route(&mut rx, "answer").await;
+    let system = body_of(&answer)
+        .get("system")
+        .cloned()
+        .unwrap_or(Value::Null);
+    assert_eq!(
+        system["peer"]["address"],
+        json!({"name": "south", "url": "http://127.0.0.1:7999/peer/"}),
+        "the slot carries the two address keys and nothing else of `mx.peer`: {system}"
+    );
+    assert_eq!(
+        system["peer"]["subject"].as_str(),
+        Some(eid.as_str()),
+        "{system}"
+    );
+    assert_eq!(
+        system["peer"]["trust_level"].as_str(),
+        Some("stranger"),
+        "no trust row was written, so the level falls closed: {system}"
     );
 
     h.shutdown().await;

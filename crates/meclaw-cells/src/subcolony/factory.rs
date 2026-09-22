@@ -230,6 +230,8 @@ fn make_build(
             blob_cap.clone(),
             consumes_cap.clone(),
             bounds_cap.clone(),
+            // GH #617: only a `meclaw`-platform `proxy` carries a trace in.
+            false,
         );
         (tx, join, peace_rx, stop_tx, death_ack_rx, backstop_rx)
     })

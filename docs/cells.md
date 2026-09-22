@@ -73,7 +73,7 @@ A stateless client for an external search provider (Brave, Tavily, SerpAPI), one
 
 Runs shell commands, one-shot only, in a fresh shell per call. A persistent interactive session is deliberately not offered: stateful, fragile, hard to sandbox. Where `cwd` and `env` have to survive several commands, they are persisted and passed per call instead of kept in a living shell. Take it when a command and its stdout are the whole job; anything that has to rework the body is `code`.
 
-### [`proxy`](cell-types.md#proxy-a-bridge-to-an-external-chat-platform)
+### [`proxy`](cell-types.md#proxy-a-bridge-outwards)
 
 Long-running, bridging one external chat platform, Telegram or Slack, per instance. It holds the update cursor in its `cell.db`, so a restart does not replay messages already seen. Take it to put a chat in front of an agent: `telegram-connector` is that cell as a whole template, with no persona and no answer of its own.
 

@@ -117,7 +117,9 @@ async fn assert_respawn_renotifies_stop_wiring(factory: Arc<dyn CellFactory>, pa
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn proxy_respawn_renotifies_stop_wiring() {
     assert_respawn_renotifies_stop_wiring(
-        Arc::new(ProxyCellFactory),
+        Arc::new(ProxyCellFactory::new(Arc::new(
+            meclaw_colony::SurfaceRegistry::new(),
+        ))),
         json!({ "bot_token": "T", "emit_to": "/x", "base_url": "http://127.0.0.1:1" }),
     )
     .await;

@@ -392,6 +392,7 @@ The `contract` keys are organized by enforcement level. Not all of them are subs
 | `capabilities` | **discovery-only** *(specified, not built — see GH #254)*: hint for builder composer/audit tools, **no runtime check** until the hardening (see the `capabilities` note below). The key is unchecked and also unread: `ContractBlock` (`crates/meclaw-colony/src/config.rs`) has no such field, the key is dropped silently at config load, and no API exposes it. |
 | `write_surface` | **substrate-enforced, opt-in** (GH #260). `"internal"` bounds the writes the substrate answers before `handle()` to the cell's parent scope; an absent key means `"open"`, so no effect (see below). |
 | `transfer` | **substrate-enforced, opt-in** (GH #314). `"none"` exempts this cell's `cell.db` from the `transfer` body slot, export as well as import; an absent key means `"all"`, so no effect (see below). |
+| `ingress` | **substrate-enforced, opt-in** (GH #185, GH #617). `context` bounds the standard header keys this cell may mint when a message is born and is the setter root of the header locality check; `carries_trace: true` hands the cell the emission handle that carries the trace and the budget from the wire. An absent key means no entry point and no handle, so no effect (see below). |
 
 The `version` format is a non-empty string, freely choosable, with no semver requirement. The `settings` format is an object `{ "<key>": SettingSpec }` (§ `SettingSpec`), and an empty object is permitted. The `consumes` format is an object (§ `consumes`), and an empty object is permitted. Optional keys: `tools`, `multi_send_capable`.
 
@@ -489,7 +490,13 @@ A cell declares with `contract.ingress` that it is an entry point (GH #185). The
 "contract": { "ingress": { "context": ["chat_id"] } }
 ```
 
-The value is the list of context keys this cell may mint when a message is born, and no boolean. The list may only narrow the standard set (`INGRESS_CONTEXT_KEYS`), never widen it, and a key outside it is refused by name. A boolean would have granted the whole standard set to anything saying "I am an entry", which is the same all-or-nothing generosity as the inference this block replaces.
+`context` is the list of context keys this cell may mint when a message is born, and **that list** is no boolean. It may only narrow the standard set (`INGRESS_CONTEXT_KEYS`), never widen it, and a key outside it is refused by name. A boolean in its place would have granted the whole standard set to anything saying "I am an entry", which is the same all-or-nothing generosity as the inference this block replaces.
+
+```json
+"contract": { "ingress": { "carries_trace": true } }
+```
+
+`carries_trace` is the block's second field, and it is a boolean (GH #617). With `true` the cell receives an emission handle that takes the `trace_id` and the `ttl` of a message **from the wire** instead of minting a fresh trace and being stamped with the colony's budget. One conversation then stays one trace across two message logs, and a cycle across a colony boundary dies on the budget it set out with rather than buying a new one in every colony. A carried `ttl` of `0` is refused before the emission. The declaration covers the whole cell and not only the handle: the cell's own source emissions through the ordinary sink also keep the budget that sink carries (64 for `proxy`) instead of being stamped with `message_default_ttl`. That makes a difference only when the colony sets `message_default_ttl` away from its default of 64. Beyond that the field grants nothing: no context minting (that is what `context` is for), no header authority and no write on an envelope field. Without the declaration the handle does not exist, and the cell emits like any other source.
 
 Until GH #185 the header check read "has no incoming edge" as "is the graph's entry". That held while the check saw only `config.json` edges. Now that it sees the running graph, a genuine entry that also receives replies, the ordinary shape of a proxy, loses exactly that branch. The declaration makes the question locally answerable, and adding an unrelated edge no longer changes the answer.
 

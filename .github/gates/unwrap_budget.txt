@@ -28,6 +28,13 @@
 # rather than unwrapped -- both of those run in a loop where a panic takes a
 # person's screen with it.
 #
+# meclaw-cells 74 -> 75 (wave peer, GH #815): the `meclaw` platform of `proxy`
+# has its own build closure, and it carries the one `expect` on the `cell.db`
+# open the voice note above describes, for the same reason. It writes nothing to
+# that database (no DDL, no overlay), so it costs one, not two. `split_io` falls
+# back to an unmounted I/O half instead of unwrapping, and the peer client is
+# built outside the closure, so its failure is a spawn error.
+#
 # meclaw-testing 46 -> 45 (#653, 2026-09-11): back to what the tree measures.
 # The 46 was pinned for an `expect` on the bind in `surface_listener` (#654); the
 # fixture that shipped retries `free_port` instead and ends in an explicit
@@ -36,7 +43,7 @@
 
 meclaw 0
 meclaw-api 2
-meclaw-cells 74
+meclaw-cells 75
 meclaw-cli 0
 meclaw-colony 64
 meclaw-core 3

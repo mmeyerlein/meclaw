@@ -424,7 +424,7 @@ fn members_manifest(fence: &std::path::Path) -> Value {
                 json!({"transfer": {"base_path": fence.to_str().unwrap()}}),
             );
         }
-        nodes.push(json!({"name": name, "template": "member@1.9.0",
+        nodes.push(json!({"name": name, "template": "member@1.9.1",
                           "override_params": Value::Object(over)}));
         // The two members get the lane each of them needs and no more: one run
         // directory is named per export, and two members exporting into it at

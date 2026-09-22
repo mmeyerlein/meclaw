@@ -5,12 +5,48 @@ package. The format loosely follows [Keep a Changelog](https://keepachangelog.co
 versioning follows SemVer (0.x: minor/patch bumps for additive features).
 
 The public contract is the HTTP API, the template DSL, the template ports, the
-mount a `web` cell owns and the documented `error_code` strings
-([docs/stability.md](docs/stability.md)). Anything that breaks one of them is
+mount a surface cell owns (a `web` page, a `proxy` peer mount and its frame) and the
+documented `error_code` strings ([docs/stability.md](docs/stability.md)). Anything that breaks one of them is
 listed under **Breaking** in its release, with the migration named. The Rust
 crates are internals and move without notice.
 
 ## [Unreleased]
+
+## [0.42.0] — 2026-09-23
+
+A colony can now speak to another colony. The `proxy` cell gains a third platform, `meclaw`:
+a peer mount on the colony's one listener, one POST out, a lane contract declared on both
+sides, and a receipt for every crossing. Underneath, an ingress emission carries the trace and
+the budget it was handed, so one conversation stays one trace across two message logs.
+`affinity` learns that a directory is an audience the member decides. The peer mount and its
+frame join the public contract (see [docs/stability.md](docs/stability.md)). Proven by a test
+that runs two real colonies behind a reverse proxy.
+
+### Added
+
+- **A colony speaks to another colony over a declared lane** (GH #617, #814, #815, #818,
+  ADR-0028). The `proxy` cell gains a third platform, `meclaw`: one instance per contract class
+  mounts on the colony's one listener and dials the peer's mount with one POST carrying a
+  wire-v1 frame; the lane contract lives in `params` on both sides, each side judges its own
+  edge, a field the lane does not name is refused rather than stripped, `hop` never crosses,
+  every crossing leaves a receipt on both sides and every refusal one on the side that refused
+  and, once it went over the wire, on the sender as well. The sending colony's identity comes
+  from the header a reverse proxy in front sets, never from the frame, so a frame that carries
+  a sender field is `invalid_frame`, and so is one whose body would not be deliverable on the
+  far side. The client follows no redirects. Nine `error_code` strings, three of them the words
+  already in use; the canonical dead-letter list is untouched.
+- **An ingress emission carries the trace and the budget it was handed** (GH #617, #813). A cell
+  that declares `contract.ingress.carries_trace` may emit a message it did not originate with
+  the `trace_id` and `ttl` from the wire; one conversation stays one trace across two message
+  logs, and a crossing at zero is refused rather than made. A cell without the declaration has
+  no handle, and a source emission without one still gets the colony's default budget.
+- **`affinity@3.4.0`: a proposal names its audience, and a directory audience is never
+  auto-accepted** (GH #617, #816). `propose` carries `audience`, and the member's verdict keeps
+  it; when it begins with `directory:` the proposal stays `open` for the member to decide,
+  whatever the caller asked. The `peer` slot of a brief now carries the address an agent entity
+  holds under `mx.peer`. `member@1.9.1` pins the new version, and its README says that a
+  channel value may be composed from the class and the counterpart, which is how one peer
+  channel keeps one session per conversation partner (#817).
 
 ## [0.41.1] — 2026-09-22
 

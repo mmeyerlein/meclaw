@@ -21,6 +21,9 @@ pub enum ProxyPlatform {
     Telegram,
     /// Slack over Socket Mode (outbound WebSocket, app-level token).
     Slack,
+    /// A peer colony, reached as a mount on this colony's one listener and
+    /// dialled as one POST carrying a wire-v1 frame.
+    Meclaw,
 }
 
 impl ProxyPlatform {
@@ -30,6 +33,7 @@ impl ProxyPlatform {
         match self {
             ProxyPlatform::Telegram => "telegram",
             ProxyPlatform::Slack => "slack",
+            ProxyPlatform::Meclaw => "meclaw",
         }
     }
 }
@@ -45,11 +49,12 @@ pub fn parse_platform(params: &JsonValue) -> Result<ProxyPlatform, String> {
         None => Ok(ProxyPlatform::Telegram),
         Some(JsonValue::String(s)) if s == "telegram" => Ok(ProxyPlatform::Telegram),
         Some(JsonValue::String(s)) if s == "slack" => Ok(ProxyPlatform::Slack),
+        Some(JsonValue::String(s)) if s == "meclaw" => Ok(ProxyPlatform::Meclaw),
         Some(JsonValue::String(s)) => Err(format!(
-            "platform: unknown value {s:?} (accepted: \"telegram\", \"slack\")"
+            "platform: unknown value {s:?} (accepted: \"telegram\", \"slack\", \"meclaw\")"
         )),
         Some(other) => Err(format!(
-            "platform: must be a string, got {other} (accepted: \"telegram\", \"slack\")"
+            "platform: must be a string, got {other} (accepted: \"telegram\", \"slack\", \"meclaw\")"
         )),
     }
 }

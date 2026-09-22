@@ -384,7 +384,7 @@ fn the_assistant_opens_its_brain_rims_for_tool_and_schemas() {
 fn the_versions_moved_with_the_declarations() {
     if let Some(v) = declared_version("member") {
         assert_eq!(
-            v, "1.9.0",
+            v, "1.9.1",
             "the apps-rim declarations and the two restamp edges shipped as 1.6.2; GH \
              #598 took the receipt restamp edge back out again as 1.6.3; GH #607 made the \
              level 1.7.0 with the `sidecar` lane and the two edges that sort it; and since \
@@ -392,7 +392,8 @@ fn the_versions_moved_with_the_declarations() {
              an app can take a view down that it could only let fade before; and since \
              welle-live it is 1.9.0, because the level wires the channel whose model \
              answers on its own timeline (`in_delegation` up, `in_advise` back down) — the second \
-             digit each time, because the level does something it never promised before"
+             digit each time, because the level does something it never promised before; \
+             1.9.1 only pins `affinity@3.4.0`, which is the third digit"
         );
     }
     if let Some(v) = declared_version("assistant") {

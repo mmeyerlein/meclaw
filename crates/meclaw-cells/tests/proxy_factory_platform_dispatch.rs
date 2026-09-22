@@ -15,7 +15,9 @@ use meclaw_core::serde_json::json;
 use std::sync::Arc;
 
 fn factory() -> Arc<ProxyCellFactory> {
-    Arc::new(ProxyCellFactory)
+    Arc::new(ProxyCellFactory::new(Arc::new(
+        meclaw_colony::SurfaceRegistry::new(),
+    )))
 }
 
 /// T-REG-2 (regression pin): the historical minimal Telegram config — exactly

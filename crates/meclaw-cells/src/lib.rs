@@ -13,6 +13,7 @@ pub mod handed;
 pub mod harness;
 pub mod llm;
 pub mod mcp;
+pub(crate) mod mount_guard;
 pub mod orphan_journal;
 pub mod params_overlay;
 pub(crate) mod process;

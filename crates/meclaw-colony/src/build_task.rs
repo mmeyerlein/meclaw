@@ -174,6 +174,10 @@ pub fn build_long_running_task<L: crate::long_running_cell::LongRunningCell + 's
     blob_store: Option<std::sync::Arc<crate::DiskBlobStore>>,
     consumes: Option<std::sync::Arc<meclaw_core::CompiledConsumes>>,
     bounds: meclaw_core::TransferBounds,
+    // GH #617 — forwarded verbatim to `cell_task_long_running_with_ingress` for
+    // the same reason as `bounds`: the funnel carries declarations, the sink
+    // makes a handle of it.
+    carries_trace: bool,
 ) -> (
     JoinHandle<()>,
     oneshot::Receiver<()>,
@@ -190,7 +194,7 @@ pub fn build_long_running_task<L: crate::long_running_cell::LongRunningCell + 's
     // an LR death as `Normal`/`Panic`, never `Backstop`. Returned for shape
     // uniformity with the stateful helper.
     let (_backstop_tx, backstop_rx) = oneshot::channel();
-    let cell_join = tokio::spawn(crate::cell_task::cell_task_long_running(
+    let cell_join = tokio::spawn(crate::cell_task::cell_task_long_running_with_ingress(
         own_path,
         mailbox,
         outputs_tx,
@@ -204,6 +208,7 @@ pub fn build_long_running_task<L: crate::long_running_cell::LongRunningCell + 's
         blob_store,
         consumes,
         bounds,
+        carries_trace,
     ));
     (cell_join, peace_rx, stop_tx, death_ack_rx, backstop_rx)
 }
@@ -580,6 +585,7 @@ mod tests {
                 None, // blob_store
                 None,
                 Default::default(),
+                false, // carries_trace (GH #617)
             );
 
         // No early peace. Deterministic without a clock: nothing has been sent

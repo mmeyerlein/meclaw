@@ -3463,7 +3463,15 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                     );
                     continue;
                 }
-                let em = if em.parent_message_id.is_none() {
+                // GH #617: a declared ingress carries its budget in from the
+                // wire; the colony stamps a fresh one only where nothing was
+                // carried. The cell DECLARES, the colony evaluates — same shape
+                // as `modifier.restore_ttl` (GH #82) — off the per-node
+                // projection this arm consults twelve lines down anyway.
+                let carries = node_contracts
+                    .get(&em.sender_path)
+                    .is_some_and(|nc| nc.header_view.ingress_carries_trace);
+                let em = if em.parent_message_id.is_none() && !carries {
                     CellEmission { input_ttl: colony_config.message_default_ttl, ..em }
                 } else {
                     em

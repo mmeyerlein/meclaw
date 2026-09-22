@@ -9,12 +9,18 @@
 
 use crate::proxy::cell::ProxyCell;
 use crate::proxy::db::{load_offset, setup_proxy_schema};
+use crate::proxy::meclaw::cell::MeclawCell;
+use crate::proxy::meclaw::client::PeerClient;
+use crate::proxy::meclaw::mount::MeclawIo;
+use crate::proxy::meclaw::params::MeclawParams;
 use crate::proxy::params::ProxyParams;
 use crate::proxy::platform::ProxyPlatform;
 use crate::proxy::slack::params::SlackParams;
 use crate::proxy::telegram::TelegramClient;
 use meclaw_colony::persist::cell_db::open_or_create_cell_db_with_status;
-use meclaw_colony::{CellFactory, DbConn, RespawnFn, SpawnedCellKind, build_long_running_task};
+use meclaw_colony::{
+    CellFactory, DbConn, RespawnFn, SpawnedCellKind, SurfaceRegistry, build_long_running_task,
+};
 use meclaw_core::{CellEmission, JsonValue, Message, Path};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -41,11 +47,26 @@ type SpawnTuple = (
 /// `make_build` and behaves exactly as before.
 type BuildFn = Box<dyn Fn() -> SpawnTuple + Send + Sync>;
 
-/// The `proxy` cell factory. Production wiring (`built_in_factories` in
-/// `meclaw-cli`) is deferred until the first `examples/` topology using `proxy`,
-/// analogous to the phase-10-B limitation (PROGRESS.md l.371-390). The 10-C demo
-/// uses the factory directly via `ColonyHandle::register_spawned`.
-pub struct ProxyCellFactory;
+/// The `proxy` cell factory.
+///
+/// It carries the process's [`SurfaceRegistry`], because the `meclaw` platform
+/// holds a mount on the colony's one listener (ADR-0031); Telegram and Slack
+/// ignore it. A fixture hands it a table of its own.
+pub struct ProxyCellFactory {
+    surfaces: Arc<SurfaceRegistry>,
+}
+
+impl ProxyCellFactory {
+    /// A factory whose `meclaw` cells mount on `surfaces`.
+    pub fn new(surfaces: Arc<SurfaceRegistry>) -> Self {
+        Self { surfaces }
+    }
+
+    /// The table this factory's `meclaw` cells mount on.
+    pub fn surfaces(&self) -> Arc<SurfaceRegistry> {
+        Arc::clone(&self.surfaces)
+    }
+}
 
 impl CellFactory for ProxyCellFactory {
     /// This type's tables are fixed in its own Rust code, so a seed header --
@@ -78,6 +99,7 @@ impl CellFactory for ProxyCellFactory {
         match crate::proxy::platform::parse_platform(params)? {
             ProxyPlatform::Telegram => ProxyParams::parse(params).map(|_| ()),
             ProxyPlatform::Slack => SlackParams::parse(params).map(|_| ()),
+            ProxyPlatform::Meclaw => MeclawParams::parse(params).map(|_| ()),
         }
     }
 
@@ -121,6 +143,7 @@ impl CellFactory for ProxyCellFactory {
                 mailbox_capacity,
                 contract.consumes.clone(),
                 contract.transfer_bounds(),
+                contract.ingress_carries_trace,
             )?),
             ProxyPlatform::Slack => Box::new(make_build_slack(
                 params,
@@ -132,6 +155,20 @@ impl CellFactory for ProxyCellFactory {
                 mailbox_capacity,
                 contract.consumes.clone(),
                 contract.transfer_bounds(),
+                contract.ingress_carries_trace,
+            )?),
+            ProxyPlatform::Meclaw => Box::new(make_build_meclaw(
+                params,
+                path,
+                outputs_tx,
+                cell_dir,
+                colony_inbox_tx,
+                blob_store,
+                mailbox_capacity,
+                contract.consumes.clone(),
+                contract.transfer_bounds(),
+                contract.ingress_carries_trace,
+                Arc::clone(&self.surfaces),
             )?),
         };
 
@@ -203,6 +240,7 @@ impl CellFactory for ProxyCellFactory {
                     mailbox_capacity,
                     contract.consumes.clone(),
                     contract.transfer_bounds(),
+                    contract.ingress_carries_trace,
                 )
                 .ok()?,
             ),
@@ -217,6 +255,23 @@ impl CellFactory for ProxyCellFactory {
                     mailbox_capacity,
                     contract.consumes.clone(),
                     contract.transfer_bounds(),
+                    contract.ingress_carries_trace,
+                )
+                .ok()?,
+            ),
+            ProxyPlatform::Meclaw => Box::new(
+                make_build_meclaw(
+                    params,
+                    path,
+                    outputs_tx,
+                    cell_dir,
+                    colony_inbox_tx,
+                    blob_store,
+                    mailbox_capacity,
+                    contract.consumes.clone(),
+                    contract.transfer_bounds(),
+                    contract.ingress_carries_trace,
+                    Arc::clone(&self.surfaces),
                 )
                 .ok()?,
             ),
@@ -255,6 +310,8 @@ fn make_build(
     mailbox_capacity: usize,
     consumes: Option<std::sync::Arc<meclaw_core::CompiledConsumes>>,
     bounds: meclaw_core::TransferBounds,
+    // GH #617 — `contract.ingress.carries_trace`, handed to the LR funnel.
+    carries_trace: bool,
 ) -> Result<
     impl Fn() -> (
         mpsc::Sender<Message>,
@@ -289,6 +346,7 @@ fn make_build(
     // GH #260: the substrate half of the write boundary, captured like the
     // consumes views so restart and reconnect carry the same declaration.
     let bounds_cap = bounds;
+    let carries_cap = carries_trace;
 
     Ok(move || -> (
         mpsc::Sender<Message>,
@@ -348,6 +406,7 @@ fn make_build(
             blob_cap.clone(),
             consumes_cap.clone(),
             bounds_cap.clone(),
+            carries_cap,
         );
         (tx, join, peace_rx, stop_tx, death_ack_rx, backstop_rx)
     })
@@ -369,6 +428,8 @@ fn make_build_slack(
     mailbox_capacity: usize,
     consumes: Option<std::sync::Arc<meclaw_core::CompiledConsumes>>,
     bounds: meclaw_core::TransferBounds,
+    // GH #617 — `contract.ingress.carries_trace`, handed to the LR funnel.
+    carries_trace: bool,
 ) -> Result<impl Fn() -> SpawnTuple, String> {
     // Parsed once, outside the closure: a params error must surface as a spawn
     // failure, not as a panic on the respawn path.
@@ -384,6 +445,7 @@ fn make_build_slack(
     // GH #260: the substrate half of the write boundary, captured like the
     // consumes views so restart and reconnect carry the same declaration.
     let bounds_cap = bounds;
+    let carries_cap = carries_trace;
 
     Ok(move || -> SpawnTuple {
         // 1. Open cell.db (sync).
@@ -417,6 +479,73 @@ fn make_build_slack(
             blob_cap.clone(),
             consumes_cap.clone(),
             bounds_cap.clone(),
+            carries_cap,
+        );
+        (tx, join, peace_rx, stop_tx, death_ack_rx, backstop_rx)
+    })
+}
+
+/// Build the closure that constructs a fresh `meclaw`-variant `proxy` cell-task.
+///
+/// Mirrors `make_build_slack` position for position, with two differences: no
+/// DDL and no overlay restore, because the `cell.db` of this variant stays
+/// empty and every key is immutable (A9); and the mount table travels in, as
+/// for `web`, because the I/O half registers the mount at the top of each life.
+/// Everything between the `cell.db` open and `build_long_running_task` is sync
+/// and await-free (phase-5 respawn-corridor tripwire).
+#[allow(clippy::too_many_arguments)]
+fn make_build_meclaw(
+    params: JsonValue,
+    path: Path,
+    outputs_tx: mpsc::Sender<CellEmission>,
+    cell_dir: PathBuf,
+    colony_inbox_tx: mpsc::Sender<meclaw_colony::ColonyMsg>,
+    blob_store: Option<std::sync::Arc<meclaw_colony::DiskBlobStore>>,
+    mailbox_capacity: usize,
+    consumes: Option<std::sync::Arc<meclaw_core::CompiledConsumes>>,
+    bounds: meclaw_core::TransferBounds,
+    // GH #617: the arrival of a frame carries the frame's trace and budget.
+    carries_trace: bool,
+    surfaces: Arc<SurfaceRegistry>,
+) -> Result<impl Fn() -> SpawnTuple, String> {
+    // Parsed once, outside the closure: a params error is a spawn failure,
+    // never a panic on the respawn path. The client too, for the same reason
+    // (a TLS init failure); it is cheap to clone per life.
+    let parsed = MeclawParams::parse(&params)?;
+    let client = PeerClient::new()?;
+
+    let path_cap = path;
+    let outputs_cap = outputs_tx;
+    let cell_dir_cap = cell_dir;
+    let colony_inbox_cap = colony_inbox_tx;
+    let blob_cap = blob_store;
+    let mailbox_capacity_cap = mailbox_capacity;
+    let consumes_cap = consumes;
+    let bounds_cap = bounds;
+    let carries_cap = carries_trace;
+    let surfaces_cap = surfaces;
+
+    Ok(move || -> SpawnTuple {
+        // 1. Open cell.db (sync). Nothing is written to it: no schema, no cursor.
+        let (conn, _status) = open_or_create_cell_db_with_status(&cell_dir_cap.join("cell.db"))
+            .expect("open cell.db");
+        // 2. The cell and its mount half (sync).
+        let io = MeclawIo::new(&parsed, path_cap.as_str(), Arc::clone(&surfaces_cap));
+        let cell = MeclawCell::with_client(&parsed, client.clone()).with_io(io);
+        let db = DbConn::wrap(conn, Some(Duration::from_millis(parsed.query_timeout_ms)));
+        let (tx, rx) = mpsc::channel::<Message>(mailbox_capacity_cap);
+        let (join, peace_rx, stop_tx, death_ack_rx, backstop_rx) = build_long_running_task(
+            path_cap.clone(),
+            rx,
+            outputs_cap.clone(),
+            64,
+            cell,
+            db,
+            Some(colony_inbox_cap.clone()),
+            blob_cap.clone(),
+            consumes_cap.clone(),
+            bounds_cap.clone(),
+            carries_cap,
         );
         (tx, join, peace_rx, stop_tx, death_ack_rx, backstop_rx)
     })
@@ -429,7 +558,7 @@ mod tests {
 
     #[test]
     fn validate_params_delegates_to_parse() {
-        let f = Arc::new(ProxyCellFactory);
+        let f = Arc::new(ProxyCellFactory::new(Arc::new(SurfaceRegistry::new())));
         f.clone()
             .validate_params(&json!({"bot_token": "t", "emit_to": "/x"}))
             .unwrap();

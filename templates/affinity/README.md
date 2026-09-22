@@ -1,4 +1,4 @@
-# `affinity@3.3.0`
+# `affinity@3.4.0`
 
 The curated record of the people and agents a colony knows -- as one hive of existing
 cell types. No new cell type, no Rust, and no model: every judgement in here is a
@@ -185,10 +185,18 @@ fifth is the agent's own durable state:
 | slot | reads | lands in the recipient as |
 |---|---|---|
 | `identity` | the subject's AIeOS identity, motivations and summary | `system.identity`, one rendered leaf |
-| `peer` | how the subject speaks and what it likes | `system.peer`, one rendered leaf |
+| `peer` | how the subject speaks, what it likes, and where to reach it | `system.peer`, one rendered leaf |
 | `relationship` | the relation walk from the asker to the subject | `system.relationship`, one rendered leaf |
 | `channel` | the channel persona for `channel` | `system.channel`, one rendered leaf |
 | `brain` | the reserved `mx.brain` subtree of the subject's own record ([#488](https://github.com/mmeyerlein/meclaw/issues/488)) | one `system.<family>` per family, one leaf per raw text below it -- see § The agent's own identity lives here |
+
+**The `peer` slot also carries an address, and only when a row released it.** An entity's own
+`mx.peer` holds two strings -- `name`, what a colony calls itself at its boundary, and `url`,
+the mount a reverse proxy publishes for it -- and they come out under `address` when a
+`disclosure` row names the field path `mx.peer` for the asking audience. Nothing else of
+`mx.peer` travels, and without the row the slot carries what it always did. So one brief
+answers all three questions a colony has about a counterpart before it speaks to it: may we,
+how, and where.
 
 **A request with no `slots` field gets the four person slots and never `brain`.** That is a
 decision and not an omission: `brain` is asked for by a self-subscription and by nothing
@@ -526,7 +534,7 @@ so without a second declaration an `import` would write rows straight past the o
 sentence this hive is built on. `store/config.json` therefore also carries
 `"write_surface": "internal"` in its **`contract`** block. Both halves compute the same
 owning scope, so the store has exactly one boundary; an `export` is a read and neither
-half bounds it. The transfer lane of `affinity@3.3.0` is not an exception to that and does
+half bounds it. The transfer lane of `affinity@3.4.0` is not an exception to that and does
 not need to be: `./porter` stands **inside** the hive scope and writes through the store's
 own ops, so it is bounded by the same sentence as `./gate` is. `clock` carries the contract half as well: its `cell.db` is where the
 schedules live, and a planted schedule fires into `./push` with an `emit_to` of the
@@ -567,7 +575,7 @@ All of them arrive as one `tool_call` turn whose `text` is the JSON below.
 | `set_trust` | one `trust` row (append-only, newest wins) | `entity_id` or `audience` is empty (`trust_target_empty`), or the level is not stranger/known/trusted/intimate (`trust_level_unknown`) |
 | `set_disclosure` | one `disclosure` row (append-only, newest wins) with the `audience_set` it was released in -- default the addressee alone | `entity_id`, `audience` or `field_path` is empty (`disclosure_target_empty`), the mode is not share/summarize/redact (`disclosure_mode_unknown`), the set is empty (`audience_set_empty`) |
 | `subscribe` | deactivate the old row, insert the new one | in check order: `subject` is empty (`subscription_target_empty`), the body carries `cell_path` or `audience` at all (`identity_from_body`), the edge named no subscriber (`subscriber_not_on_edge`) or no actor (`actor_not_on_edge`) |
-| `propose` | one `proposals` row, **`status: accepted`** -- pass `auto_accept: false` for a row that waits | source/entity/field reference incomplete |
+| `propose` | one `proposals` row, **`status: accepted`** -- pass `auto_accept: false` for a row that waits, and an `audience` beginning with `directory:` always waits | source/entity/field reference incomplete |
 | `decide_proposal` | marks the judged row `superseded` and **appends** the verdict with `supersedes` | the id is empty (`proposal_id_empty`), the status is neither (`proposal_status_unknown`), or the new row would carry no content (`proposal_incomplete`) |
 
 **The proposal lane has no human gate** (R-AF-1). The system may and shall extend its
@@ -575,6 +583,13 @@ picture of a person on its own -- good models judge people well, and the safety 
 substrate rather than a queue somebody has to work through: nothing is ever deleted and
 every addition is traceable. A counselor working deliberately passes `auto_accept: false`;
 that is the exception, not the default.
+
+**One audience is the exception, and it is not the caller's to waive** ([#617](https://github.com/mmeyerlein/meclaw/issues/617)).
+A proposal carries the audience it would be released to, and an audience beginning with
+`directory:` stays `open` whatever `auto_accept` said. Extending the picture of a person is
+what R-AF-1 licenses; publishing it into a directory somebody else keeps is a different act,
+and the member makes it. The wish is overruled rather than refused, because a guard a body can
+switch off is not a guard and a body is written by a model.
 
 **A verdict appends** (R-AF-4). Deciding a proposal does not overwrite it: the judged row
 is marked `superseded` and the decision arrives as a new row pointing back at it. That is
@@ -780,7 +795,7 @@ the export carries it -- a fictional `Alex Kern` beside an imported record would
 person nobody imported. `in_import` is the other half: the way into a hive that is already
 running, which no seed can reach.
 
-`affinity` hangs directly under the member (`member/affinity`, a `ref` to `affinity@3.3.0`) and
+`affinity` hangs directly under the member (`member/affinity`, a `ref` to `affinity@3.4.0`) and
 its `in_export` is fanned by the member's own. The sink files the parts under
 `<export_dir>/affinity/seed/`, and a directory per hive is a requirement rather than tidiness:
 `memory-hive` and `affinity` both have a table called `entities`, and a flat sink would have
@@ -854,7 +869,8 @@ beside the old one.
   north star *no question may be answered wrongly* and person data meet, and a model that
   decides on its own what is stored about a family member is not worth it. What is
   decided is deterministic and it is decided here: a proposal is accepted as it arrives
-  (R-AF-1), and `auto_accept: false` is the one way to get a row that waits.
+  (R-AF-1), `auto_accept: false` asks for a row that waits, and an audience beginning with
+  `directory:` gets one whether it asked or not.
 - **No name resolution.** A `subject` is an entity_id. The store carries the canonical name
   binding (`display_name` -> `canonical_name`, normalising) and an FTS index over it, so a
   lookup lane is a small addition -- it is just not v1.

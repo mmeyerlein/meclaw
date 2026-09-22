@@ -3099,6 +3099,11 @@ pub struct HeaderNodeView {
     /// Empty ⇒ this node is not an ingress. Bounded by
     /// [`INGRESS_CONTEXT_KEYS`]; a claim outside it is refused.
     pub ingress_context: std::collections::BTreeSet<String>,
+    /// GH #617 — this node emits messages whose trace and budget came in from
+    /// outside. The outputs arm reads it through `NodeContract.header_view`; the two header
+    /// rules ignore it. It rides here because this is the projection the colony
+    /// already holds per node at runtime.
+    pub ingress_carries_trace: bool,
 }
 
 /// Project a parsed `contract` block into the [`HeaderNodeView`] the
@@ -3121,6 +3126,7 @@ pub fn header_view_from_contract(block: &crate::config::ContractBlock) -> Header
         required_context: required_keys(&consumes.context),
         required_hop: required_keys(&consumes.hop),
         ingress_context: block.ingress.context.clone(),
+        ingress_carries_trace: block.ingress.carries_trace,
     }
 }
 

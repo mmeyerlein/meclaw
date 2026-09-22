@@ -55,7 +55,7 @@
 //! commands went with the session, so a colony reading its own lanes can tell a
 //! caller who hung up from a client that stopped reading.
 
-use meclaw_colony::{HandedConnection, IoLivenessMark, Registration, SurfaceEntry};
+use meclaw_colony::{HandedConnection, IoLivenessMark, SurfaceEntry};
 use meclaw_core::Path;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -64,6 +64,7 @@ use std::time::Duration;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{Mutex, mpsc, watch};
 
+use crate::mount_guard::MountGuard;
 use crate::voice::cell::{VoiceEvent, VoiceReconfig};
 use crate::voice::contract::{AppendKind, DuplexProvider, SttProvider, TtsProvider};
 use crate::voice::service::{VoiceLinkOpener, mounted_router};
@@ -561,42 +562,6 @@ impl VoiceIo {
     }
 }
 
-/// Holds a mount for exactly as long as the I/O half that registered it.
-///
-/// The ordinary end is still the explicit `unregister` when the handler goes
-/// away, and this changes nothing about it. What it covers is every OTHER end:
-/// a panic in the handler half, the `message_timeout` backstop, an abort. None
-/// of them runs that arm, and the entry that stayed behind kept a live
-/// [`VoiceLinkOpener`] over shared state nobody serves — a page joining in that
-/// window was admitted and then heard nothing.
-struct MountGuard {
-    /// The table the mount stands in.
-    surfaces: Arc<meclaw_colony::SurfaceRegistry>,
-    /// The name this life registered.
-    mount: String,
-    /// The token this life registered under. A spent one removes nothing, which
-    /// is what makes a respawn's entry safe from the previous life's guard.
-    registration: Registration,
-}
-
-impl Drop for MountGuard {
-    fn drop(&mut self) {
-        // A `Drop` cannot await, and the registry is behind an `Arc`, so the
-        // removal is a task of its own. Only on a runtime thread: a guard
-        // dropped outside one has no executor to spawn onto, and a process
-        // without a runtime has no mount table left to keep tidy either.
-        let Ok(handle) = tokio::runtime::Handle::try_current() else {
-            return;
-        };
-        let surfaces = Arc::clone(&self.surfaces);
-        let mount = std::mem::take(&mut self.mount);
-        let registration = self.registration;
-        handle.spawn(async move {
-            surfaces.unregister(&mount, &registration).await;
-        });
-    }
-}
-
 /// The I/O loop: register the mount, serve what the listener hands over, and
 /// stay up for the cell's whole life.
 ///
@@ -666,14 +631,7 @@ pub async fn run_io(mut io: VoiceIo, mut reconfig_rx: mpsc::Receiver<VoiceReconf
         })),
     };
     let (mut handoff, registration) = match surfaces.register(&mount, entry).await {
-        Ok((rx, held)) => (
-            Some(rx),
-            Some(MountGuard {
-                surfaces: Arc::clone(&surfaces),
-                mount: mount.clone(),
-                registration: held,
-            }),
-        ),
+        Ok((rx, held)) => (Some(rx), Some(MountGuard::new(&surfaces, &mount, held))),
         Err(e) => {
             shared.emit(VoiceEvent::MountFailed(e.to_string())).await;
             (None, None)

@@ -47,7 +47,7 @@ use std::sync::Arc;
 /// Callers move or clone as needed.
 ///
 /// `surfaces` is the process's mount table (ADR-0031). The surface factories
-/// (`web`, `voice`, `browser`) are handed the same `Arc`, so a cell that mounts by name is
+/// (`web`, `voice`, `browser`, and `proxy` for its `meclaw` platform) are handed the same `Arc`, so a cell that mounts by name is
 /// reachable from the one listener and from `GET /colony/surfaces`; every other
 /// factory ignores it.
 ///
@@ -70,7 +70,10 @@ pub fn built_in_factories(surfaces: Arc<SurfaceRegistry>) -> CellFactoryRegistry
     // Befund 3: long-running factories — exist in `meclaw-cells` but were
     // unreachable from the binary until now (bootstrap / mutation rejected
     // `unknown_cell_type` for proxy/timer/mcp topologies).
-    reg.insert("proxy".to_string(), Arc::new(ProxyCellFactory));
+    reg.insert(
+        "proxy".to_string(),
+        Arc::new(ProxyCellFactory::new(Arc::clone(&surfaces))),
+    );
     reg.insert("timer".to_string(), Arc::new(TimerCellFactory));
     reg.insert("mcp".to_string(), Arc::new(McpCellFactory));
     reg.insert("harness".to_string(), Arc::new(HarnessCellFactory));

@@ -2288,6 +2288,26 @@ pulled per request against an ephemeral recipient key and never pushed (`cell-ty
 sealed delivery). On a v-lane the same ciphertext rides one hop instead of N; the plaintext still
 exists only in the RAM of the requesting task.
 
+### A lane across a colony boundary (GH #617)
+
+Two colonies speak over a **declared lane**: one `proxy` cell with `platform: "meclaw"` per
+side, whose `params.lanes` names what this side accepts and what it emits. A lane is a
+`hop.route` value, a field list, and a sentence saying what it is for. Each side draws its
+**own** edge: the sending colony routes through the out-edges of its peer cell to the receipt,
+the receiving one through its own to the destination.
+
+The mount sits on the colony's one listener like any other. Who is sending comes from the
+header a reverse proxy in front writes, never from the frame: a frame carrying a sender field
+is `invalid_frame`, and a mount whose `identity_header` is empty accepts nothing. A body field
+the lane does not name is **refused** rather than stripped; the addressee and its address
+travel in the sending side's `hop` and never cross. The trace and the budget do cross: one
+conversation stays one trace across two message logs, and the `ttl` falls by one at the
+boundary. Every crossing leaves a receipt on both sides on
+`hop.route: "receipt"`; a refusal leaves one on the side that refused, and on the sender too when
+the far side refused. Each carries `peer_event`, the boundary that wrote it, and, when it refused,
+the `error_code`. This is **not federation**: no discovery, no membership, no replication, and the
+register row *Cluster / Federation* keeps its scope.
+
 ### Apps at the rim of a member (ruling 2026-09-05)
 
 An app is a sub-form of the member: an ordinary sealed hive (`ports: []`) instantiated by an
@@ -2443,18 +2463,21 @@ validation, because the runaway guard for such a loop is its iteration bound. Th
 Envelope fields (`id`, `trace_id`, `parent_message_id`, `correlation_id`, `reply_to`, `ttl`,
 `target`, `created_at`) are set exclusively by colony during routing. Cells cannot write them: the
 content JSON a cell emits has no mechanism for envelope fields, and edge modifiers operate on
-headers, with the single sanctioned exception of `modifier.restore_ttl` (GH #82), a declaration that
-colony evaluates and applies.
+headers. There are two sanctioned exceptions, and both are declarations that colony evaluates and
+applies: `modifier.restore_ttl` (GH #82) and `contract.ingress.carries_trace` (GH #617), with which
+a cell at a colony boundary takes the `trace_id` and the `ttl` from the wire instead of having them
+minted. A boundary without a carried trace leaves a receipt nobody can correlate, and a cycle
+without a carried budget does not die.
 
 | Field | Who sets | When |
 |---|---|---|
 | `id` | Colony | on every new message (UUID v7) |
-| `trace_id` | Colony | newly on a source message, otherwise copied from the parent |
+| `trace_id` | Colony | newly on a source message, otherwise copied from the parent; taken from the wire rather than minted for a cell declaring `contract.ingress.carries_trace` |
 | `parent_message_id` | Colony | taken over from the consumed incoming message, `None` on source messages |
 | `correlation_id` | no originating producer today; a reserved envelope field for future req/resp pairing. Correlation currently runs via the context header convention (`turn_id`), not via `correlation_id` | none; the field is reserved, so the `?correlation_id=` filter on `/colony/trace` is inert today |
 | `target` | the trigger layer (a cell output determined by edges, the HTTP API by the endpoint) | on routing |
 | `reply_to` | Colony, automatically to the absolute path of the sender | on every routing decision |
-| `ttl` | Colony, newly stamped on source messages from `colony.json` `message_default_ttl` (seed: const `MESSAGE_DEFAULT_TTL`, 64); the HTTP ingress takes an explicit `ttl` request field per initial message as an override; decremented per hop | newly on a source message, decremented afterward |
+| `ttl` | Colony, newly stamped on source messages from `colony.json` `message_default_ttl` (seed: const `MESSAGE_DEFAULT_TTL`, 64); the HTTP ingress takes an explicit `ttl` request field per initial message as an override; a cell declaring `contract.ingress.carries_trace` brings its budget in from the wire and colony does not re-stamp it (a carried `0` is refused before the emission); decremented per hop | newly on a source message, decremented afterward |
 | `created_at` | Colony | on message creation |
 
 For messages fed in via the HTTP API (`POST /messages`), colony sets `reply_to` to a virtual API

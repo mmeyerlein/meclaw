@@ -1,0 +1,78 @@
+{
+  "cell": {
+    "type": "proxy"
+  },
+  "params": {
+    "platform": "meclaw",
+    "mount": "peer",
+    "identity_header": "X-Meclaw-Peer",
+    "boundary": "south",
+    "emit_to": "/",
+    "external_timeout_ms": 5000,
+    "lanes": {
+      "accepts": [
+        {
+          "route": "topic",
+          "fields": [
+            "topic"
+          ],
+          "because": "a subject this side may consider, never who said it"
+        }
+      ],
+      "emits": []
+    }
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": false
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "required": true
+        },
+        "peer": {
+          "type": "string",
+          "required": false
+        },
+        "boundary": {
+          "type": "string",
+          "required": false
+        },
+        "peer_event": {
+          "type": "string",
+          "required": false
+        },
+        "lane": {
+          "type": "string",
+          "required": false
+        },
+        "fields": {
+          "type": "array",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "ingress": {
+      "carries_trace": true
+    }
+  }
+}

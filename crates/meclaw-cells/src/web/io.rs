@@ -47,6 +47,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc, watch};
 
+use crate::mount_guard::MountGuard;
 use crate::web::assets::{Asset, AssetMap};
 use crate::web::cell::{WebEvent, WebReconfig};
 use crate::web::render::PageMap;
@@ -715,44 +716,6 @@ pub(crate) fn mounted_router(io: WebIo) -> Router {
     root.nest(&format!("/{mount}"), router(io))
 }
 
-/// Holds a mount for exactly as long as the I/O half that registered it.
-///
-/// It is the ONE place the name is given back. The ordinary end drops it by
-/// hand at the bottom of [`run_io`], so the order against the serving task is
-/// a decision rather than a scope; every OTHER end — a panic in the handler
-/// half, the `message_timeout` backstop, an abort — drops it too, and that is
-/// what the guard is for. An entry left standing would keep taking the
-/// listener's connections for a display nobody serves: a page loading into a
-/// socket that never answers, which is worse than a `404` from a name nothing
-/// holds. The voice cell's guard is the same object for the same reason.
-struct MountGuard {
-    /// The table the mount stands in.
-    surfaces: Arc<meclaw_colony::SurfaceRegistry>,
-    /// The name this life registered.
-    mount: String,
-    /// The token this life registered under. A spent one removes nothing, which
-    /// is what makes a respawn's entry safe from the previous life's guard.
-    registration: meclaw_colony::Registration,
-}
-
-impl Drop for MountGuard {
-    fn drop(&mut self) {
-        // A `Drop` cannot await, and the registry is behind an `Arc`, so the
-        // removal is a task of its own. Only on a runtime thread: a guard
-        // dropped outside one has no executor to spawn onto, and a process
-        // without a runtime has no mount table left to keep tidy either.
-        let Ok(handle) = tokio::runtime::Handle::try_current() else {
-            return;
-        };
-        let surfaces = Arc::clone(&self.surfaces);
-        let mount = std::mem::take(&mut self.mount);
-        let registration = self.registration;
-        handle.spawn(async move {
-            surfaces.unregister(&mount, &registration).await;
-        });
-    }
-}
-
 /// The I/O loop: register the mount, serve what the listener hands over, and
 /// stay up for the cell's whole life.
 ///
@@ -821,11 +784,7 @@ pub async fn run_io(
         };
         match surfaces.register(&mount, entry).await {
             Ok((rx, held)) => {
-                registration = Some(MountGuard {
-                    surfaces: Arc::clone(&surfaces),
-                    mount: mount.clone(),
-                    registration: held,
-                });
+                registration = Some(MountGuard::new(&surfaces, &mount, held));
                 Some(rx)
             }
             Err(e) => {
