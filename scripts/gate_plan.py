@@ -81,7 +81,8 @@ STATIONS (S strand, I integration, R release, C ci)
     shellcheck      shell/gate_infra; C always
     gate-selftest   gate_infra; C always (resolver, runner, strand kit, wave
                     retro, merge driver, form station, the source mark of the
-                    display scenarios and the quarantine grammar of nextest)
+                    display scenarios, the quarantine grammar of nextest and
+                    the roadmap anchor gate)
     display-lab     display_lab (workshop/tools/display-lab/** and its test);
                     I/R always; never in C -- workshop/ does not travel
     fmt             rust_src/rust_test/workspace
@@ -1116,7 +1117,8 @@ def plan(paths, mode, repo=None):
               "scripts.tests.test_git_merge_display_sync",
               "scripts.tests.test_precheck",
               "scripts.tests.test_display_sync",
-              "scripts.tests.test_nextest_quarantine"]])
+              "scripts.tests.test_nextest_quarantine",
+              "scripts.tests.test_roadmap_anchors"]])
 
     # `ir` as well as the class: the library is what every display measurement
     # of the next wave is read with, it costs five seconds, and a pass that

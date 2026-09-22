@@ -1,7 +1,7 @@
 //! GH #709 — one talky per channel: a turn of the channel `chat` reaches the talky that
 //! serves `chat`, and a spoken turn reaches the other one.
 //!
-//! `display-hive.md` § 8.2 and `meclaw-next/archive/03-os-structure.md` ("One talky per
+//! `display-hive.md` § 8.2 and the archived OS-structure note ("One talky per
 //! channel; one identity, one tonality, one personality per channel") both say the same
 //! thing, and until `assistant@2.7.0` the level had one talky for every channel a person
 //! is reached on. `./talky-chat` is the second, and it is deliberately the SAME ref onto

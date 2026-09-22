@@ -579,6 +579,35 @@ class DisposableColonyTest(unittest.TestCase):
         self.assertTrue(self.markers.is_live("http://10.0.0.1:7999", {7999}))
 
 
+class WeightLidTest(unittest.TestCase):
+    """GH #738: E17/E25 hold a page against the lid of the target they measure.
+
+    The first lid was set on a throwaway colony and every shipped instance
+    since display 2.4.0 weighed more than it; the marker now picks by target,
+    exactly as `is_live` picks whether `--actions` may write."""
+
+    def setUp(self):
+        self.markers = load_tool("markers.py")
+
+    def test_a_disposable_colony_keeps_the_wave_f_lid(self):
+        self.assertEqual(self.markers.weight_lids("http://127.0.0.1:7999", {7999}),
+                         (130_000, 38_000, "disposable"))
+
+    def test_a_shipped_instance_gets_the_instance_lid(self):
+        self.assertEqual(self.markers.weight_lids("http://127.0.0.1:7999", {7960}),
+                         (170_000, 52_000, "instance"))
+        self.assertEqual(self.markers.weight_lids("https://example.invalid/screen", {7999})[2],
+                         "instance")
+
+    def test_the_instance_lid_clears_every_page_the_issue_measured(self):
+        measured = ((135_209, 39_682), (161_635, 48_720), (163_173, 48_995), (143_599, 40_124))
+        for raw, gz in measured:
+            self.assertLess(raw, self.markers.INSTANCE_RAW_LID)
+            self.assertLess(gz, self.markers.INSTANCE_GZ_LID)
+        self.assertGreater(self.markers.INSTANCE_RAW_LID, self.markers.RAW_LID)
+        self.assertGreater(self.markers.INSTANCE_GZ_LID, self.markers.GZ_LID)
+
+
 class QueueTest(unittest.TestCase):
     """`runline.sh --queue` answers the question agents used to poll for.
 

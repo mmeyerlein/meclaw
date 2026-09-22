@@ -981,7 +981,8 @@ class Classify(unittest.TestCase):
             "scripts.tests.test_git_merge_display_sync",
             "scripts.tests.test_precheck",
             "scripts.tests.test_display_sync",
-            "scripts.tests.test_nextest_quarantine"]])
+            "scripts.tests.test_nextest_quarantine",
+            "scripts.tests.test_roadmap_anchors"]])
 
     def test_the_quarantine_config_is_gate_infrastructure(self):
         """`.config/nextest.toml` decides which test may be retried, and

@@ -24,15 +24,25 @@ a red build.
 Release detail is in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+When Now is empty, the tree is between two waves: what the last one built is in
+v0.41.1, under [§ Shipped](#shipped), and the open findings wait in the tracker
+for the next wave to give them a horizon. A horizon holds bullets only — a
+sentence like this one stands up here, above the first heading, where the gate
+does not read it.
+
+What orders the other three: Next collects the findings from running the thing.
+Later is ordered by a 50-question LongMemEval run against the memory hive,
+public since 0.9.0, which put the bottleneck in the synthesis rather than in the
+retrieval: in nineteen of twenty-one wrong answers the retrieval had already
+delivered the gold session. Alongside holds surfaces, docs, and the way a colony
+is operated; the template surface stays open there and needs no entry to stay
+that way, a template being a directory, a README and a `template.json`, with the
+worked examples listed in [`templates/README.md`](templates/README.md), where
+§ *The hive boundary* says what a hive template has to satisfy.
+
 ## Now
 
-Between waves. What the last one built is in v0.41.0, under
-[§ Shipped](#shipped). The open findings are in the tracker and get their
-horizon when the next wave is cut.
-
 ## Next
-
-Findings from running the thing.
 
 - Re-measuring the builder's acceptance quota, once the acceptance cases stop
   moving under it. The last run measured four cases, one of them ordering a
@@ -59,10 +69,6 @@ Findings from running the thing.
   switched off instead. *(register: policy-by-requester-origin)*
 
 ## Later
-
-The memory hive has been public since 0.9.0. A 50-question LongMemEval run
-orders this stream: the bottleneck is in the synthesis, because in nineteen of
-twenty-one wrong answers the retrieval had already delivered the gold session.
 
 - Re-running the answer half of that measurement, directed and stratified. It
   waits until the memory chain (collector, recall, curator, memory hive) stops
@@ -98,8 +104,6 @@ twenty-one wrong answers the retrieval had already delivered the gold session.
 
 ## Alongside
 
-Surfaces, docs, and the way a colony is operated.
-
 - Voice-to-graph. The channel exists: a `voice` cell takes speech in and puts
   turns into the tree. A spoken intent still arrives as a sentence somebody
   else has to act on, never as a node and an edge. What is missing is the
@@ -110,16 +114,20 @@ Surfaces, docs, and the way a colony is operated.
   Dictation through the ordinary text path stays designed and explicitly
   secondary. *(register: voice-to-graph)*
 
-The template surface stays open and needs no entry to stay that way: a template
-is a directory, a README and a `template.json`. The worked examples are listed
-in [`templates/README.md`](templates/README.md), where § *The hive boundary*
-says what a hive template has to satisfy.
-
 ## Shipped
 
 One line per release. Details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- v0.41.1: eight small defects, each measured before it was fixed. A browser refused
+  after it has already started is ended before the refusal is spoken
+  (`browser@1.0.1`); paging the message log by cursor is a range read on
+  `(created_at, id)` again, with the query plan pinned by a test; a roadmap
+  horizon holds bullets only; a gate receipt carries the stations its run
+  planned, so the release audit stops reading `not planned` as `skipped`; the
+  page-weight markers of the display lab pick their lid by the target they
+  measure; and three test rigs measure the promise instead of the host they run
+  on.
 - v0.41.0: a voice cell can hold one session in which a model hears the caller
   and answers in it. `voice@2.1.0` adds a duplex provider beside recognition and
   synthesis, with lanes of its own for what the assistant says, for the errand

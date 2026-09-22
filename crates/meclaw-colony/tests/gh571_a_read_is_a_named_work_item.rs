@@ -244,11 +244,24 @@ async fn a_trip_inside_a_read_names_the_endpoint() {
     let (relay_tx, relay_rx) = mpsc::channel::<Beat>(64);
     let (trip_tx, mut trip_rx) = mpsc::channel::<WatchdogTrip>(8);
     let (armed_tx, armed_rx) = oneshot::channel::<()>();
+    // Five periods of 50 ms: a 250 ms window, and a 2 500 ms budget for a
+    // declared work item (`WORK_ITEM_BUDGET_FACTOR` × the window). The window
+    // used to be 50 ms — five periods of 10 ms — which is BELOW the colony's own
+    // idle beat of 100 ms (`colony.rs`, `heartbeat_interval`): it only held
+    // while the loop was busy-beating, and one 49 ms scheduling gap on a shared
+    // CI runner tripped it before the read had been picked up, as
+    // `in_flight_work=true work_item=none` — a trip with nothing to name yet
+    // (GH #748, CI run 35408081594, shard 2/3; green on the same revision with
+    // four threads on a quiet host). The relay below makes the silence
+    // deterministic; the window only has to be wide enough for the real beats
+    // to reach the supervisor on a loaded host. 250 ms is two and a half idle
+    // beats and still an order of magnitude under the budget, so `starved()`
+    // reads `slow_work_item` and the fatality assertion below holds as before.
     let watchdog = tokio::spawn(meclaw_colony::watchdog::run_watchdog(
         relay_rx,
         trip_tx,
         5,
-        Duration::from_millis(10),
+        Duration::from_millis(50),
         armed_rx,
         // Log-only so a failure of this test is an assertion and not a process
         // that walks out; the fatality rule itself is asserted below.

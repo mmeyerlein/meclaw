@@ -12,6 +12,48 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.41.1] — 2026-09-22
+
+A patch release: eight small defects, each one measured before it was fixed. Three test rigs
+stopped measuring the host they ran on -- the screencast give-up arm has a floor of milliseconds
+where it used to take three and a half seconds alone, the attachment timeout rig holds both ends
+of its FIFO so no blocking task is left behind, and the quarantine entry that carried it went
+with the fix. A browser the cell refuses after it has already started is ended before the
+refusal is spoken, and the refusal says what happened to the process. Paging the message log by
+cursor is a range read again. And three gates learned to read what they were looking at: a
+roadmap horizon holds bullets only, a gate receipt carries the stations its run planned, and the
+page-weight markers of the display lab pick their lid by the target they measure.
+`browser@1.0.1` is the only version this release moves.
+
+### Fixed
+
+- **The browser cell ends a browser it refuses** (GH #772, `browser@1.0.1`). A refusal after
+  the spawn -- a browser whose renderers never left the cell's user namespace, or whose ceiling
+  could not be placed -- left the process running for as long as the cell stayed refused. The
+  cell now ends the process group before it parks, and the refusal names the pid, the cgroup
+  the browser sat in and how it ended.
+- **Paging the message log by cursor is a range read again** (GH #770). The keyset predicate
+  was written as an `OR`, which no planner could answer as a range: it read rows the page does
+  not contain and sorted them, so every page cost more than the one before it. The predicate is
+  a row value now, `message_log` carries an index on `(created_at, id)` -- picked up by an
+  existing database on its next open -- and the query plan is pinned by a test.
+- **The export audit reads a gate receipt against what the run planned** (GH #769). A gate
+  receipt carries the planned station list, and a station the diff did not ask for is no longer
+  read as a station that was skipped.
+- **A paragraph under a roadmap horizon is a finding** (GH #774). The anchor gate read only
+  bullets; a line under Now, Next, Later or Alongside that is not a bullet now fails the gate,
+  and the gate has a test file of its own. Twelve such lines stood in the roadmap when the gate
+  first looked.
+- **The page-weight markers of the display lab carry two lids** (GH #738). A throwaway
+  colony and a shipped instance weigh differently, and the marker now picks its lid by the
+  target it measures.
+- **Three test rigs measure a promise instead of a host** (GH #771, #804, #748). The
+  screencast give-up arm has a floor of milliseconds instead of seconds -- 0.54 s where it
+  used to take 3.36 s alone and run out of a two-minute window under load -- the attachment
+  timeout rig holds both ends of its FIFO so no blocking task is ever orphaned, and its
+  quarantine entry is gone with the fix. The named-work-item trip sits above the colony's own
+  idle beat.
+
 ## [0.41.0] — 2026-09-22
 
 A minor release: a `voice` cell can hold one session in which a model hears the

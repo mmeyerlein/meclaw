@@ -196,25 +196,34 @@ async fn a_join_on_a_page_nobody_holds_is_this_cells_own_refusal() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_viewer_that_stops_reading_is_given_up_and_the_other_is_not() {
-    let (mut browser, mut events, _td) = with_one_page(json!({})).await;
+    let (mut browser, mut events, _td) =
+        with_one_page(json!({"screencast": {"max_fps": 500}})).await;
     let mut reader = browser.join("card-1", &json!({})).await.expect("one");
     let sleeper = browser.join("card-1", &json!({})).await.expect("two");
     // The sleeper never reads: its queue fills, and the cell gives it up rather
     // than waiting for it.
     //
-    // Its own window, and four times the marker rather than the marker (wave
-    // G, g8, 2026-09-20). This loop is the one test of this cell whose FLOOR
-    // is seconds and not milliseconds: a link queue holds
-    // `meclaw_colony::surfaces::LINK_QUEUE` = 64 frames, and the cell hands
-    // out at most one acknowledgement per `ack_interval` = 50 ms, so filling
-    // the sleeper cannot take less than 64 × 50 ms = 3,2 s. Measured serially
-    // it takes 3,4 s — the floor — so the 30 s convention is a budget of 8,8×
-    // here and not a failure marker, and under the gate's four-way
-    // parallelism over 5 424 tests it ran out at exactly 30,096 s
-    // (`GATE-SUMMARY strand 8929a71 9/10 594s RED`). The window measures the
-    // sentence "the cell never waits for a viewer", and that sentence does
-    // not get truer in 30 s than in 120 s.
-    let deadline = std::time::Instant::now() + MARKER * 4;
+    // This loop is the one test of this cell whose floor used to be SECONDS.
+    // A link queue holds `meclaw_colony::surfaces::LINK_QUEUE` = 64 frames, and
+    // the pace of this loop is set by two things the TEST owns: the cell hands
+    // out one acknowledgement per page per `flush_acks`, which the loop calls
+    // only when `events.recv()` times out, and it acknowledges nothing before
+    // `ack_interval` = 1000 / max_fps ms has passed. With the default 20 fps
+    // and a 50 ms recv window that was one frame per ~50 ms, 64 × 50 ms = 3.2 s
+    // before anything could be observed (3.3 s measured serially), and under
+    // the gate's four-way parallelism the arm ran out of a 30 s marker once
+    // (`GATE-SUMMARY strand 8929a71 9/10 594s RED`, 30.096 s) and out of a
+    // 120 s one five times (GH #771). Widening the window twice moved the
+    // number; it did not measure anything. `max_fps: 500` makes every
+    // acknowledgement due after 2 ms and a 5 ms recv window flushes it at once,
+    // so a frame costs milliseconds and the floor is 64 × ~5 ms ≈ 0.3 s. The
+    // 30 s convention is a failure marker again, not a budget, and the sentence
+    // it measures — "the cell never waits for a viewer" — is what a marker is
+    // for. (Side effect, harmless here: with a 2 ms interval the busy window of
+    // `on_frame` is 4 ms, so the throttle never engages in this arm — which is
+    // also the one thing that could have turned its acknowledgements into
+    // two a second under load.)
+    let deadline = std::time::Instant::now() + MARKER;
     loop {
         if browser.register.pages["card-1"].viewers.len() == 1 {
             break;
@@ -223,7 +232,7 @@ async fn a_viewer_that_stops_reading_is_given_up_and_the_other_is_not() {
             std::time::Instant::now() < deadline,
             "(f) the cell waited for a viewer, which it must never do"
         );
-        match tokio::time::timeout(Duration::from_millis(50), events.recv()).await {
+        match tokio::time::timeout(Duration::from_millis(5), events.recv()).await {
             Ok(Some(event)) if event.method == "Page.screencastFrame" => {
                 browser.on_frame(&event).await;
             }

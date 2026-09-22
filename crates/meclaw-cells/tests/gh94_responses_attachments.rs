@@ -293,7 +293,8 @@ async fn missing_blob_is_a_named_cell_error() {
 }
 
 /// The operation timeout (A) fires as a regular error message — same FIFO rig
-/// as the GH-#87 suite: the blob content path is a pipe nobody writes to.
+/// as the GH-#87 suite: the blob content path is a pipe whose writer never
+/// writes, so the cell's read blocks until the timeout ends it.
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn hanging_blob_read_hits_the_operation_timeout_not_the_backstop() {
@@ -317,6 +318,32 @@ async fn hanging_blob_read_hits_the_operation_timeout_not_the_backstop() {
             .success()
     );
 
+    // Both ends of the FIFO, held on THIS thread for the rest of the test
+    // (GH #804). The cell's read is `tokio::fs::read` on a blocking thread, and
+    // an expired `tokio::time::timeout` drops the future, never that thread:
+    // whatever it is blocked in has to be released, or the runtime's drop at
+    // the end of this test waits for it forever. Releasing it from a thread
+    // started AFTER `handle()` was a bet on the order of three events — the
+    // cell's `open(2)`, the timeout, and `blob_dir` removing the path — and the
+    // bet lost twice under a full suite, both times as the last test of the run
+    // (240 s nextest timeout, no failed assertion, no panic). With a reader open
+    // the writer's open cannot block, and with a writer open the cell's
+    // `open(2)` cannot block either: it blocks in `read(2)` instead, until these
+    // two descriptors go when the test body returns — before the runtime is
+    // dropped, whichever way the race went. (`let _name`, not `let _`: the
+    // second would close the descriptor on the spot.)
+    use std::os::unix::fs::OpenOptionsExt;
+    let _read_end = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(&fifo)
+        .expect("a read end that never blocks");
+    let _write_end = std::fs::OpenOptions::new()
+        .write(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(&fifo)
+        .expect("a write end, which cannot block while a reader is open");
+
     let store = Arc::new(DiskBlobStore::new(blob_dir.path()).unwrap());
     let reader = AttachmentReader::for_contract(&declaring_contract(), Some(store));
     let mut params = params_for(&mock);
@@ -339,16 +366,6 @@ async fn hanging_blob_read_hits_the_operation_timeout_not_the_backstop() {
     )
     .await;
     let elapsed = started.elapsed();
-    // Release the cell's blocked open(2) — from a throwaway thread, because a
-    // writer-open on a FIFO blocks until a reader appears: if a regression ever
-    // stops the cell from reading the blob on this dialect (the pre-GH-#94
-    // reject did exactly that), an inline open would hang the suite instead of
-    // letting the assertions below fail loudly.
-    let fifo_release = fifo.clone();
-    std::thread::spawn(move || {
-        let _ = std::fs::OpenOptions::new().write(true).open(fifo_release);
-    });
-
     let em = recv_bounded(&mut rx).await;
     assert_eq!(em.content["header"]["finish_reason"], "error");
     assert_eq!(

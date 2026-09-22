@@ -1,7 +1,7 @@
 //! display-hive.md § 0.7: the pass is code, and the code in the cell is the code in the
 //! document. `compose.py` carries the twelve steps of `model/pass.py` verbatim between two
 //! marker lines; this test compares the section with the travelling copy byte for byte
-//! (the copy's own drift lock against meclaw-next is 710_…). A diff is a defect.
+//! (the copy's own drift lock against the description tree is 710_…). A diff is a defect.
 use std::fs;
 
 fn repo(rel: &str) -> std::path::PathBuf {

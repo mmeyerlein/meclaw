@@ -1,4 +1,4 @@
-# `browser@1.0.0`
+# `browser@1.0.1`
 
 A web page on a screen, as a cell. One browser per member, a browser context per
 identity, a page per card, and each page's picture streamed onto a topic of the
@@ -31,7 +31,10 @@ renderer. This cell adds nothing to it and takes nothing away: no sandbox flag,
 no `--no-sandbox` (it is refused in `extra_args`), and no switch to turn any of
 it off. After the spawn the cell **looks**, at the processes below the pid it
 remembers, and a browser whose children never left the cell's own user namespace
-gets no page at all.
+gets no page at all. A browser refused after it has started -- by that look,
+or because the cell's ceiling could not be placed on it -- is ended before the
+refusal is spoken, and the refusal says so: the pid, the cgroup it sat in, and
+how it ended.
 
 ## One browser, many windows
 

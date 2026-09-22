@@ -116,6 +116,7 @@ CREATE INDEX IF NOT EXISTS idx_msglog_parent  ON message_log(parent_message_id);
 CREATE INDEX IF NOT EXISTS idx_msglog_trace   ON message_log(trace_id);
 CREATE INDEX IF NOT EXISTS idx_msglog_to      ON message_log(to_path);
 CREATE INDEX IF NOT EXISTS idx_msglog_created ON message_log(created_at);
+CREATE INDEX IF NOT EXISTS idx_msglog_created_id ON message_log(created_at, id);
 CREATE TABLE IF NOT EXISTS mutation_log (
   id              TEXT PRIMARY KEY,
   scope           TEXT NOT NULL,
@@ -529,6 +530,48 @@ mod tests {
             )
             .unwrap();
         assert_eq!(cnt, 1, "idx_mutlog_created missing");
+    }
+
+    /// GH #770 — `message_log` gets the composite index its keyset cursor
+    /// orders by. `idx_msglog_created` alone answers `ORDER BY created_at DESC,
+    /// id DESC` with a temp b-tree for the `id` half, and the cursor predicate
+    /// — written as an OR — made the read cover rows the page does not hold.
+    /// The plan depends on which SQLite is linked, and so does the direction in
+    /// which the read runs past the page. The bundled one of `libsqlite3-sys
+    /// 0.37` chose a `MULTI-INDEX OR` over two searches of `idx_msglog_created`
+    /// plus `USE TEMP B-TREE FOR ORDER BY`: there the work grows with the rows
+    /// BELOW the cursor, because the union reads `created_at < ?` — everything
+    /// older — and sorts it, so the dearest page is the one right after the
+    /// first (measured 2026-09-22 against this bundled SQLite on a 7.3 GB log:
+    /// 0.78 s for the cursorless first page, 31.97 s for the second at 25 rows).
+    /// SQLite 3.45.1 chose a `SCAN message_log USING INDEX idx_msglog_created`
+    /// plus a temp b-tree for the right part of the order: there the superfluous
+    /// rows are the YOUNGER ones, because the scan walks from the newest entry
+    /// back down to the cursor. The defect is what the two plans share and what
+    /// no build changes: the sorter is handed rows that do not belong to the
+    /// page.
+    ///
+    /// Additive, like `idx_mutlog_created`: the schema version does not move,
+    /// and an existing database picks the index up on its next open, because
+    /// the DDL batch runs on every `setup_colony_db`. `idx_msglog_created`
+    /// stays for one reason and one only — dropping an index is not an additive
+    /// change. The other window queries do not need it: `(created_at, id)` is a
+    /// prefix superset of `(created_at)`, answers the same `since`/`until`
+    /// windows and the ledger counters, and makes the cursorless window query
+    /// measurably better. That leaves the narrower index a candidate for the
+    /// retention work on `message_log` (GH #141).
+    #[test]
+    fn setup_colony_db_creates_message_log_created_id_index() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        setup_colony_db(&conn).unwrap();
+        let cnt: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_msglog_created_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(cnt, 1, "idx_msglog_created_id missing");
     }
 
     /// The index EXISTING is half a promise; the ledger's own window query

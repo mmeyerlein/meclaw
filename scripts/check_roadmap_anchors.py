@@ -30,6 +30,13 @@ carries at least one of:
         docs/defer-register.md. Ids are lowercase words joined by hyphens and
         are never reused.
 
+A stream holds bullets and nothing else. A line under Now / Next / Later /
+Alongside that is neither a top-level `- ` bullet, nor the indented
+continuation of one, nor blank, is reported as `not a bullet under <Stream>`:
+a horizon is a projection of the tracker, and prose there points at nothing
+actionable -- it is a preamble, and preambles stand above the first heading
+(GH #774: a paragraph under Now passed this gate for five commits).
+
 `## Shipped` is exempt by construction: it is the graveyard, its lines name
 releases rather than open work, and its issue links are closed on purpose.
 
@@ -108,6 +115,55 @@ class Bullet:
     def label(self) -> str:
         first = self.text.strip().splitlines()[0]
         return first[:72] + ("..." if len(first) > 72 else "")
+
+
+class Stray:
+    """A line under a stream heading that is not part of any bullet (GH #774)."""
+
+    def __init__(self, stream: str, line_no: int, text: str) -> None:
+        self.stream = stream
+        self.line_no = line_no
+        self.text = text
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, Stray) and (self.stream, self.line_no, self.text) == (
+            other.stream, other.line_no, other.text)
+
+    def __repr__(self) -> str:
+        return f"Stray({self.stream!r}, {self.line_no}, {self.text!r})"
+
+
+def stray_lines(path: Path) -> list[Stray]:
+    """Lines under a stream heading that are neither a bullet nor part of one.
+
+    Reads the file the way `parse_roadmap` reads it, so the two never disagree
+    on what a bullet is: a top-level `- ` line opens one, an indented non-blank
+    line directly below continues it, a blank line ends it. Everything else
+    under a stream is a stray. `## Shipped` and the text above the first
+    heading are not streams and are not read."""
+    strays: list[Stray] = []
+    stream: str | None = None
+    in_bullet = False
+    for n, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        head = HEADING.match(raw)
+        if head:
+            name = head.group(1).strip().lower()
+            stream = name if name in STREAMS else None
+            in_bullet = False
+            continue
+        if stream is None:
+            continue
+        if raw.startswith("- "):
+            in_bullet = True
+            continue
+        if not raw.strip():
+            in_bullet = False
+            continue
+        if in_bullet and raw.startswith("  "):
+            continue
+        in_bullet = False
+        strays.append(Stray(stream, n, raw.strip()))
+    return strays
 
 
 def parse_roadmap(path: Path) -> list[Bullet]:
@@ -224,6 +280,7 @@ def main() -> int:
         return 1
 
     bullets = parse_roadmap(ROADMAP)
+    strays = stray_lines(ROADMAP)
     if not bullets:
         print(
             "roadmap anchors: no bullet found under any of "
@@ -241,6 +298,14 @@ def main() -> int:
     wanted_issues: dict[int, list[Bullet]] = {}
     wanted_registers: dict[str, list[Bullet]] = {}
     repos: set[str] = set()
+
+    for s in strays:
+        failures.append(
+            f"ROADMAP.md:{s.line_no}: not a bullet under {s.stream.capitalize()} -- "
+            f"'{s.text[:72]}'\n"
+            f"    A stream holds bullets only; prose that orders nothing is a preamble "
+            f"and belongs above the first heading. See docs/development-rules.md § 5b."
+        )
 
     for b in bullets:
         issues = ISSUE_LINK.findall(b.text)

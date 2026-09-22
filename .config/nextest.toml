@@ -124,23 +124,6 @@ retries = 2
 filter = 'binary_id(=meclaw-cells::gh643_audio_in_the_display_window_browser) & (test(=a_browser_holds_the_button_and_the_colony_answers) + test(=the_release_drains_before_it_lets_go) + test(=a_browser_rejoins_after_the_cell_closed_the_topic) + test(=the_ring_sends_what_it_kept_before_the_hold))'
 retries = 1
 
-[[profile.default.overrides]]
-# GH #804 -- the FIFO rig of the attachment operation-timeout test does not hang the
-# CELL, it hangs the test process on the way out, and only under full-suite load.
-# Two occurrences in the integration pass of wave Live, both as the very last test
-# scheduled in the run, both a 240 s nextest timeout with no failed assertion and no
-# panic:
-#   integration 6fa2a1a 23/25 1609s RED  (TIMEOUT 240.014s, 7767/7767)
-#   integration bbbfc55 23/25 1245s RED  (TIMEOUT 240.013s, 7767/7767)
-# Isolated it costs 0.16 s: three consecutive runs of exactly this test, one passed
-# each. The suspected shape is in the issue -- the test releases the cell's blocked
-# `open(2)` only AFTER `handle()` has returned, so a lost race leaves a blocking task
-# that nothing ever finishes. The retry is a leash until that is confirmed and fixed,
-# not a verdict: being scheduled last, a retry runs on a quiet host, which is exactly
-# the condition under which this test has never been seen to hang.
-filter = 'binary_id(=meclaw-cells::gh94_responses_attachments) & test(=hanging_blob_read_hits_the_operation_timeout_not_the_backstop)'
-retries = 1
-
 # ---------------------------------------------------------------------------
 # LOUD WHEN GREEN -- the two tests that may decide not to measure.
 # ---------------------------------------------------------------------------

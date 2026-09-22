@@ -380,8 +380,9 @@ class TestReceipt(GateShTestCase):
         doc = json.loads(receipt.read_text())
         self.assertEqual(
             {"mode", "rev", "base", "dirty", "lock_wait_secs", "archive",
-             "started", "finished", "stations", "verdict"},
+             "plan", "started", "finished", "stations", "verdict"},
             set(doc))
+        self.assertEqual(["ok", "bad", "after"], doc["plan"])
         self.assertEqual("strand", doc["mode"])
         self.assertEqual(rev, doc["rev"])
         self.assertEqual("GREEN", doc["verdict"])
@@ -391,6 +392,13 @@ class TestReceipt(GateShTestCase):
             self.assertEqual({"name", "scope", "secs", "verdict", "log"}, set(st))
             self.assertIsInstance(st["secs"], int)
         self.assertEqual(doc, self.last_receipt())
+
+    def test_the_receipt_plan_is_the_full_plan_even_under_only(self):
+        """GH #769: `--only` narrows what RUNS, never what was planned."""
+        run_gate(self.repo, "strand", "--only", "ok", plan=self.plan_file(PLAN_OK_BAD))
+        doc = self.last_receipt()
+        self.assertEqual(["ok", "bad", "after"], doc["plan"])
+        self.assertEqual(["ok"], [s["name"] for s in doc["stations"]])
 
     def test_finished_is_null_until_the_run_ends(self):
         # Read the receipt FROM INSIDE the run: `first` finishes, the runner

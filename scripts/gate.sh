@@ -119,6 +119,14 @@
 # builds there too. The main worktree keeps `./target`. The runner prints the
 # directory it settled on as its first line.
 #
+# Beside `stations`, the receipt carries `plan`: the station names the resolver
+# chose for this diff, written down BEFORE `--only` cut the run down to a few of
+# them. So the two lists together answer a question `stations` alone cannot: a
+# name in `plan` and not in `stations` was left out of this run, a name in
+# neither was never part of the diff's scope. A reader of the receipt --
+# `make_export.py` among them -- therefore never has to read "out of scope" as
+# "left out".
+#
 # THE CARGO LOCK IS HELD FOR THE WHOLE RUN, NOT PER STATION
 # =========================================================
 # One shared target/ means one build at a time. While a run took the lock only
@@ -454,6 +462,15 @@ while IFS=$'\t' read -r n s c cmd cwd; do
     fi
 done <<<"$plan_tsv"
 
+# The stations the RESOLVER planned for this diff, before `--only` narrows the
+# run (GH #769). They go into the receipt as `plan`, so a reader can tell a
+# station the diff never asked for from one that was skipped: `make_export.py`
+# read both as a gap, and an integration pass over a diff without a memory part
+# was red on R14 for a station it had never planned. It is the FULL list on
+# purpose -- a run narrowed by `--only` lists what it left out, so its receipt
+# never reads as complete.
+planned_names=$(printf '%s\n' ${st_names[@]+"${st_names[@]}"})
+
 # --only: an exact, order-preserving filter over the plan.
 if [ -n "$only" ]; then
     IFS=',' read -r -a wanted <<<"$only"
@@ -631,6 +648,7 @@ write_receipt() {
     MECLAW_R_MODE="$mode" MECLAW_R_REV="$rev" MECLAW_R_BASE="$base" \
     MECLAW_R_DIRTY="$dirty" MECLAW_R_STARTED="$started" \
     MECLAW_R_LOCK_WAIT="$lock_wait_secs" MECLAW_R_ARCHIVE="$log_dir" \
+    MECLAW_R_PLAN="$planned_names" \
     MECLAW_R_FINISHED="$finished" MECLAW_R_VERDICT="$1" \
     MECLAW_R_ROWS="$rows_file" MECLAW_R_OUT="$receipt" \
     python3 - <<'PY'
@@ -656,6 +674,10 @@ doc = {
     # receipt so the copy answers on its own where it came from, once the
     # worktree it was written in no longer exists.
     "archive": os.environ.get("MECLAW_R_ARCHIVE") or None,
+    # What the resolver planned for this diff, `--only` or not (GH #769): a
+    # station absent from `stations` but present here was skipped; one absent
+    # from both was never asked for.
+    "plan": [n for n in os.environ.get("MECLAW_R_PLAN", "").split("\n") if n],
     "started": os.environ["MECLAW_R_STARTED"],
     "finished": os.environ["MECLAW_R_FINISHED"] or None,
     "stations": rows,

@@ -2,8 +2,8 @@
 //! caller's turn.
 //!
 //! Rule 4 of R-25-9, and it is not a corner case: the two transcript streams
-//! of this model OVERLAP by about 400 ms, measured
-//! (`meclaw-next/25-gpt-live/messungen/README.md`). The model starts answering
+//! of this model OVERLAP by about 400 ms, measured in the recorded
+//! reference run of 21.09.2026 (S0). The model starts answering
 //! while the last words of the question are still being transcribed, so an
 //! assistant fragment whose `start_ms` lies before the caller's last `end_ms`
 //! is the normal shape of a conversation.

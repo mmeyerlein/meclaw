@@ -1,7 +1,7 @@
 //! Welle Live, L2b — a delegation carries the sentence it was asked in.
 //!
 //! `session.delegation.created` carries no task text at all (the wave measured
-//! that: `meclaw-next/25-gpt-live/messungen/README.md`). What the backend needs
+//! that in the recorded reference run of 21.09.2026, S0). What the backend needs
 //! is what the caller was saying, so the `delegation` lane carries the open
 //! turn's user text — or, where no turn is open, the last one that closed
 //! (contract § 1.4).

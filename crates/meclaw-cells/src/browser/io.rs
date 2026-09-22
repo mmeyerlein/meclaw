@@ -1337,6 +1337,7 @@ pub async fn run_io(
         Err(e) => return park(events_tx, commands, from_handler, e).await,
     };
     if let Err(e) = browser.ready().await {
+        let e = ended_before_the_refusal(browser, e).await;
         return park(events_tx, commands, from_handler, e).await;
     }
 
@@ -1491,6 +1492,40 @@ async fn send_all(events_tx: &mpsc::Sender<BrowserEvent>, reports: Vec<PageRepor
         }
     }
     true
+}
+
+/// GH #772: a refusal after the spawn ends the browser before the cell parks.
+///
+/// `ready()` can refuse a browser that is already running — renderers that
+/// never left this user namespace, a browser that forked nothing to look at, a
+/// ceiling that no service manager could be asked for — and `park()` then holds
+/// the refusal for as long as the handler lives. `browser` used to outlive that
+/// whole time as a local of `run_io`: none of its three drops ran, and a browser
+/// whose confinement had moved it into a cgroup of its own was beyond the cell's
+/// scope anyway. The process GROUP is not: the browser is its own group leader
+/// (`process_group: true` in `child_spec`), a cgroup move does not change a
+/// pgid, and `terminate` ends the group and waits. So this is one call — and
+/// the refusal then says what happened to the process, which cgroup it sat in
+/// and how it ended, instead of leaving an operator to find it running. Only
+/// `SpawnFailed` carries a sentence; the other variants keep their shape, because
+/// the `error_code` strings are contract.
+async fn ended_before_the_refusal(browser: Browser, e: BrowserError) -> BrowserError {
+    let pid = browser.reaper.pid();
+    let sat_in = pid.and_then(cdp::cgroup_of);
+    let exit = browser.reaper.terminate(Duration::from_millis(2_000)).await;
+    let ended = format!(
+        "the browser that had already started (pid {}, cgroup {}) was ended before this \
+         refusal: {}",
+        pid.map_or_else(|| "unknown".to_string(), |p| p.to_string()),
+        sat_in.map_or_else(|| "unknown".to_string(), |d| d.display().to_string()),
+        exit.detail()
+    );
+    match e {
+        BrowserError::SpawnFailed(detail) => {
+            BrowserError::SpawnFailed(format!("{detail}; {ended}"))
+        }
+        other => other,
+    }
 }
 
 /// Answer every verb with the same refusal, for a cell that has no browser.

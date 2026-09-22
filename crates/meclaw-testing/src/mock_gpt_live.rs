@@ -45,7 +45,7 @@ const SESSION_START_CAP: Duration = Duration::from_secs(10);
 
 /// The step of the `start_ms`/`end_ms` pair the fake hands back on an
 /// acknowledged append. The measured service answered with 200 ms windows
-/// (`meclaw-next/25-gpt-live/messungen/st-comm.json`: 9400/9600).
+/// (the recorded reference run of 21.09.2026, S0 `st-comm`: 9400/9600).
 const APPENDED_STEP_MS: u64 = 200;
 
 /// The writer half of the open socket. Reader task and script both send —

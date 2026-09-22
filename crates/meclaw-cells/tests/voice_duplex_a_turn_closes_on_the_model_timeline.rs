@@ -65,8 +65,8 @@ fn barge_ins(actions: &[TurnAction]) -> usize {
         .count()
 }
 
-/// The reference run, as `meclaw-next/25-gpt-live/messungen/README.md` recorded
-/// it: a 200 ms raster, segmented at the 400 ms threshold. Both transcript
+/// The recorded reference run of 21.09.2026 (S0), as it came off the wire:
+/// a 200 ms raster, segmented at the 400 ms threshold. Both transcript
 /// streams, interleaved the way they actually arrived.
 fn reference_run() -> Vec<TurnInput> {
     vec![

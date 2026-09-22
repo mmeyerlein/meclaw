@@ -218,6 +218,65 @@ pub fn handle_read_mutations_audit(
     crate::api_dto::ReadMutationsAuditReply { entries }
 }
 
+/// The columns every `message_log` read returns, in `MessageLogDto` order.
+const MESSAGE_LOG_COLUMNS: &str = "id, trace_id, parent_message_id, correlation_id, ttl,
+                 from_path, to_path, reply_to, headers, body_kind, body_payload, created_at";
+
+/// The inner select of `handle_read_messages`: indexed predicates only, newest
+/// first, capped at `scan_budget`. Returned with its parameters, so the count
+/// probe can re-bind exactly this prefix — and so a test can ask SQLite for the
+/// plan of the query the cell really runs (GH #770).
+fn message_log_inner_select(
+    filter: &crate::api_dto::MessageLogFilter,
+    scan_budget: usize,
+) -> (String, Vec<Box<dyn rusqlite::ToSql>>) {
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    let mut inner = format!("SELECT {MESSAGE_LOG_COLUMNS} FROM message_log WHERE 1=1");
+    if let Some(t) = filter.trace_id.as_ref() {
+        inner.push_str(" AND trace_id = ?");
+        params.push(Box::new(t.clone()));
+    }
+    if let Some(p) = filter.parent_message_id.as_ref() {
+        inner.push_str(" AND parent_message_id = ?");
+        params.push(Box::new(p.clone()));
+    }
+    if let Some(prefix) = filter.to_path_prefix.as_ref() {
+        let (lo, hi) = path_prefix_range(prefix);
+        inner.push_str(" AND to_path >= ?");
+        params.push(Box::new(lo));
+        if let Some(hi) = hi {
+            inner.push_str(" AND to_path < ?");
+            params.push(Box::new(hi));
+        }
+    }
+    if let Some(s) = filter.since {
+        inner.push_str(" AND created_at >= ?");
+        params.push(Box::new(s));
+    }
+    if let Some(u) = filter.until {
+        inner.push_str(" AND created_at <= ?");
+        params.push(Box::new(u));
+    }
+    if let Some(cursor) = filter.before.as_ref() {
+        // A row value, not an OR. `(a < ? OR (a = ? AND b < ?))` names the same
+        // rows, but SQLite plans it as a multi-index OR over
+        // `idx_msglog_created` with a temp b-tree for the order, and the union
+        // reads `created_at < ?` — every row older than the cursor — and sorts
+        // it. The work therefore grows with the rows BELOW the cursor, not with
+        // the depth of the page: the dearest page is the one right after the
+        // first (GH #770: 31.97 s for 25 rows on a 7.3 GB log, 0.78 s for the
+        // cursorless first page). `(a, b) < (?, ?)` is a range on
+        // `idx_msglog_created_id` and stops where the page stops; the test
+        // below holds SQLite to that plan.
+        inner.push_str(" AND (created_at, id) < (?, ?)");
+        params.push(Box::new(cursor.created_at));
+        params.push(Box::new(cursor.id.clone()));
+    }
+    inner.push_str(" ORDER BY created_at DESC, id DESC LIMIT ?");
+    params.push(Box::new(scan_budget as i64));
+    (inner, params)
+}
+
 /// P1 (message browser): paginated, filtered read over `colony.db::message_log`.
 ///
 /// Same shape as [`handle_read_trace`] — `spawn_blocking` plus a fresh
@@ -252,60 +311,24 @@ pub async fn handle_read_messages(
             // GH #98: read-only opens never run the setup functions — install
             // the busy budget directly.
             crate::persist::apply_busy_timeout(&conn)?;
-            const COLUMNS: &str = "id, trace_id, parent_message_id, correlation_id, ttl,
-                 from_path, to_path, reply_to, headers, body_kind, body_payload, created_at";
-            let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
-
             // Single-row lookup by PRIMARY KEY short-circuits every other filter.
             if let Some(id) = filter.id.as_ref() {
-                let sql = format!("SELECT {COLUMNS} FROM message_log WHERE id = ? LIMIT 1");
-                params.push(Box::new(id.clone()));
+                let sql =
+                    format!("SELECT {MESSAGE_LOG_COLUMNS} FROM message_log WHERE id = ? LIMIT 1");
+                let params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(id.clone())];
                 let rows = query_message_log(&conn, &sql, &params)?;
                 let scanned = rows.len();
                 return Ok((rows, scanned));
             }
 
             // --- inner select: indexed predicates only, capped at scan_budget ---
-            let mut inner = format!("SELECT {COLUMNS} FROM message_log WHERE 1=1");
-            if let Some(t) = filter.trace_id.as_ref() {
-                inner.push_str(" AND trace_id = ?");
-                params.push(Box::new(t.clone()));
-            }
-            if let Some(p) = filter.parent_message_id.as_ref() {
-                inner.push_str(" AND parent_message_id = ?");
-                params.push(Box::new(p.clone()));
-            }
-            if let Some(prefix) = filter.to_path_prefix.as_ref() {
-                let (lo, hi) = path_prefix_range(prefix);
-                inner.push_str(" AND to_path >= ?");
-                params.push(Box::new(lo));
-                if let Some(hi) = hi {
-                    inner.push_str(" AND to_path < ?");
-                    params.push(Box::new(hi));
-                }
-            }
-            if let Some(s) = filter.since {
-                inner.push_str(" AND created_at >= ?");
-                params.push(Box::new(s));
-            }
-            if let Some(u) = filter.until {
-                inner.push_str(" AND created_at <= ?");
-                params.push(Box::new(u));
-            }
-            if let Some(cursor) = filter.before.as_ref() {
-                inner.push_str(" AND (created_at < ? OR (created_at = ? AND id < ?))");
-                params.push(Box::new(cursor.created_at));
-                params.push(Box::new(cursor.created_at));
-                params.push(Box::new(cursor.id.clone()));
-            }
-            inner.push_str(" ORDER BY created_at DESC, id DESC LIMIT ?");
-            params.push(Box::new(scan_budget as i64));
+            let (inner, mut params) = message_log_inner_select(&filter, scan_budget);
             // Everything bound so far belongs to the inner select — the COUNT
             // probe below re-binds exactly this prefix.
             let inner_param_count = params.len();
 
             // --- outer select: residual predicates inside the scanned window ---
-            let mut outer = format!("SELECT {COLUMNS} FROM ({inner}) WHERE 1=1");
+            let mut outer = format!("SELECT {MESSAGE_LOG_COLUMNS} FROM ({inner}) WHERE 1=1");
             if let Some(c) = filter.correlation_id.as_ref() {
                 outer.push_str(" AND correlation_id = ?");
                 params.push(Box::new(c.clone()));
@@ -2474,6 +2497,48 @@ mod tests {
             "cursor row itself excluded, tie broken by id"
         );
         assert!(reply.next.is_none(), "partial page yields no cursor");
+    }
+
+    /// GH #770 — the cursor page is a range read on `(created_at, id)`: never a
+    /// scan, never a sort. The plan of the query the cell really builds, so a
+    /// rewrite that hands the planner an OR again is caught here and not on a
+    /// 7 GB log. Muster: `persist::schema::tests::the_ledger_mutation_window_…`.
+    #[test]
+    fn the_cursor_page_reads_the_created_id_index_instead_of_scanning() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::persist::schema::setup_colony_db(&conn).unwrap();
+        let filter = crate::api_dto::MessageLogFilter {
+            limit: 25,
+            scan_budget: 5000,
+            before: Some(crate::api_dto::MessageLogCursor {
+                created_at: 1_700_000_000_000,
+                id: "019ebb7e-0000-7000-8000-000000000001".into(),
+            }),
+            ..Default::default()
+        };
+        let (sql, params) = message_log_inner_select(&filter, 5000);
+        let plan: Vec<String> = conn
+            .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+            .unwrap()
+            .query_map(rusqlite::params_from_iter(params.iter()), |r| {
+                r.get::<_, String>(3)
+            })
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        let joined = plan.join(" | ");
+        assert!(
+            joined.contains("idx_msglog_created_id"),
+            "the cursor page must read the (created_at, id) index: {joined}"
+        );
+        assert!(
+            !joined.contains("SCAN message_log"),
+            "the cursor page must not scan the log: {joined}"
+        );
+        assert!(
+            !joined.contains("TEMP B-TREE"),
+            "the cursor page must not sort: {joined}"
+        );
     }
 
     /// P1 Task 3c: indexed predicate (`to_path` prefix) and residual predicate
