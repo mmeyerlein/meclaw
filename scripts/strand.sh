@@ -291,15 +291,39 @@ cmd_gate() {
         esac
     done
 
-    local root plans wdir name archive runlog gate rc summary
+    local root plans wdir name archive_root run_id archive runlog gate rc summary
     root=$(main_root) || exit 2
     plans="$root/plans"
     wdir=$(wave_dir "$plans" "$wave_in") || exit 2
     name="$strand_in"
     [ -n "$name" ] || name=$(strand_of_branch) \
         || die "cannot tell the strand from the branch -- pass --strand"
-    archive="$plans/$wdir/receipts/$name"
+
+    # ONE DIRECTORY PER RUN, and a `latest` pointer beside them.
+    #
+    # The archive was named by strand alone, so a second run wrote its
+    # summary, its run log, its receipt and every station log over the first
+    # one's -- and a strand gates twice as a matter of course: red, fix,
+    # green. That is the material the report and the review are made of, and
+    # it happened twice in one day on 2026-09-21 (GH #802). The run id starts
+    # with a UTC timestamp, so the directories sort chronologically by name,
+    # and it carries the commit that was gated, so a reader knows WHICH run
+    # without opening it.
+    archive_root="$plans/$wdir/receipts/$name"
+    run_id="$(date -u +%Y%m%dT%H%M%SZ)-$(git rev-parse --short=8 HEAD 2>/dev/null || echo nohead)"
+    # Two runs in the same second at the same commit are still two runs.
+    local suffix=1 base="$run_id"
+    while [ -e "$archive_root/$run_id" ]; do
+        suffix=$((suffix + 1))
+        run_id="$base-$suffix"
+    done
+    archive="$archive_root/$run_id"
     mkdir -p "$archive" || die "cannot create the archive $archive"
+    # `rm` first: `ln -sfn` onto an existing SYMLINK TO A DIRECTORY would
+    # otherwise put the new link inside the old target.
+    rm -f "$archive_root/latest" 2>/dev/null
+    ln -s "$run_id" "$archive_root/latest" 2>/dev/null \
+        || printf '%s\n' "$run_id" >"$archive_root/latest.txt"
     runlog="$archive/run.log"
 
     # The gate of THIS tree, not of the main one and not of the tree the kit
@@ -353,8 +377,27 @@ strand_paths() {
     [ -n "$name" ] || name=$(strand_of_branch) \
         || die "cannot tell the strand from the branch -- pass --strand"
     REPORT="$plans/$wdir/berichte/$name.md"
-    ARCHIVE="$plans/$wdir/receipts/$name"
+    ARCHIVE=$(latest_run "$plans/$wdir/receipts/$name")
     [ -f "$REPORT" ] || die "no report at $REPORT"
+}
+
+# The newest run of a strand, in three answers, most reliable first: the
+# `latest` pointer that `gate` writes; the last run directory by name (the run
+# id opens with a UTC timestamp, so lexical order IS chronological); and, for
+# an archive written before the per-run layout, the directory itself.
+latest_run() {
+    local root="$1" newest
+    if [ -d "$root/latest" ]; then
+        printf '%s\n' "$root/latest"
+        return 0
+    fi
+    if [ -f "$root/latest.txt" ] && [ -d "$root/$(cat "$root/latest.txt")" ]; then
+        printf '%s\n' "$root/$(cat "$root/latest.txt")"
+        return 0
+    fi
+    newest=$(find "$root" -mindepth 1 -maxdepth 1 -type d \
+                  -name '????????T??????Z-*' 2>/dev/null | sort | tail -1)
+    printf '%s\n' "${newest:-$root}"
 }
 
 cmd_report() {

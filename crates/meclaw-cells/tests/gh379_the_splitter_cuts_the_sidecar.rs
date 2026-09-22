@@ -19,8 +19,11 @@
 //!   1. pass-through, byte-identical, when there is no block to cut (and when
 //!      the round carries tool calls, which belong to the dispatcher whole);
 //!   2. a multi-send when there IS one -- the answer with the fence taken out,
-//!      plus one message per readable section on lane `sidecar`; a section that
-//!      is not an object is dropped and named in `hop.sidecar_dropped`;
+//!      plus one message per readable section on lane `sidecar`. A section body
+//!      is an OBJECT, handed on as written, or -- since GH #799 -- a bare
+//!      non-empty STRING, wrapped as `{"payload": "<string>"}`, which is the
+//!      form every offer asks for; anything else, an empty string included, is
+//!      dropped and named in `hop.sidecar_dropped`;
 //!   3. pass-through with `header.sidecar == "malformed"` when a block is there
 //!      but unreadable.
 //!
@@ -248,15 +251,20 @@ fn one_block_three_sections_leave_as_three_messages() {
     // name: `hop.section` is what the edges downstream distribute on, so a
     // section this tree has never heard of travels without a line of code here.
     //
-    // A key whose value is NOT an object is the one thing that cannot travel:
-    // the body slot it would ride in is an object slot, and inventing a wrapper
-    // would be this cell's guess rather than the model's statement. It is
-    // dropped BY NAME, so a close pass can tell "the model wrote past the form"
-    // from "the model wrote nothing".
+    // A key whose value is neither an OBJECT nor a non-empty STRING is the one
+    // thing that cannot travel: the body slot it would ride in is an object
+    // slot, and inventing a wrapper for a list or a number would be this cell's
+    // guess rather than the model's statement. It is dropped BY NAME, so a close
+    // pass can tell "the model wrote past the form" from "the model wrote
+    // nothing".
+    //
+    // `notes` used to be a bare string here. It is a LIST since GH #799: a bare
+    // string is the form talky's own offer asks for, so it travels now, wrapped
+    // (see `a_bare_string_section_travels_wrapped_in_a_payload` below).
     let block = format!(
         "{{\"memory\": {GOOD_BLOCK}, \
          \"display\": {{\"kind\": \"fact\", \"title\": \"Colour\", \"data\": \"blue\"}}, \
-         \"notes\": \"a section that is not an object\"}}"
+         \"notes\": [\"a section that is neither object nor string\"]}}"
     );
     let answer = format!("Blue is your colour.\n\n```sidecar\n{block}\n```");
     let out = split(completion("stop", serde_json::json!([text_turn(&answer)])));
@@ -431,6 +439,96 @@ fn a_naked_trailing_object_is_an_attempt_too() {
     assert_eq!(arr[0]["messages"][0]["text"], "Notiert.", "{out}");
     assert_eq!(arr[1]["header"]["route"], "sidecar", "{out}");
     assert_eq!(arr[1]["header"]["section"], "memory", "{out}");
+}
+
+#[test]
+fn a_bare_string_section_travels_wrapped_in_a_payload() {
+    // (b4) GH #799, owner ruling R-L11 of 2026-09-21: option 1, and it has to
+    // be proven that it works.
+    //
+    // The two halves of the block contract asked for two different things. The
+    // section heading is rendered out of the offered schema, and every section
+    // `templates/talky/schemas/config.json` offers is a `{"type": "string"}` --
+    // so a model that reads the heading writes `{"fact": "<sentence>"}`, and
+    // until now that section was dropped and the caller heard a holding
+    // sentence followed by silence. It is the second, independent way into the
+    // failure GH #797 fixed at the consumer.
+    //
+    // So a bare, non-empty string IS a section body now. It is wrapped --
+    // `{"payload": "<string>"}` -- and not repaired: the wrapper is the body
+    // slot the lane declares (`contract.emits.body.payload` is an object slot),
+    // and the string inside it is the one the model wrote, byte for byte. The
+    // receiver reads it back out by name (`crates/meclaw-cells/src/voice/
+    // cell.rs` `section_text`: the section's own key, then `text`, then the
+    // first string in sorted key order -- `payload` is that string here).
+    let block = "{\"fact\": \"The appointment is on Tuesday.\"}";
+    let answer = format!("\n\n```sidecar\n{block}\n```");
+    let out = split(completion("stop", serde_json::json!([text_turn(&answer)])));
+    let arr = out
+        .as_array()
+        .unwrap_or_else(|| panic!("a string section is a cut like any other: {out}"));
+    assert_eq!(arr.len(), 2, "the answer plus the one section: {out}");
+    assert!(
+        arr[0]["header"].get("sidecar_dropped").is_none(),
+        "and NOTHING was dropped -- this is the form the offer asks for: {out}"
+    );
+
+    let carried = section(&out, "fact");
+    assert_eq!(carried["header"]["route"], "sidecar", "{out}");
+    assert_eq!(carried["messages"], serde_json::json!([]), "{out}");
+    assert_eq!(
+        carried["payload"],
+        serde_json::json!({"payload": "The appointment is on Tuesday."}),
+        "wrapped, not repaired: the declared body slot is an object and the \
+         string inside it is the model's: {out}"
+    );
+}
+
+#[test]
+fn an_object_section_is_untouched_beside_a_string_one() {
+    // (b5) The other half of R-L11: the object form stays accepted, it is only
+    // no longer advertised. One block may carry both shapes, and each travels
+    // as what it is -- no wrapper around the object, no second reading of the
+    // string.
+    let block = "{\"fact\": \"The appointment is on Tuesday.\", \
+                 \"context\": {\"payload\": \"The caller is a regular.\"}}";
+    let answer = format!("\n\n```sidecar\n{block}\n```");
+    let out = split(completion("stop", serde_json::json!([text_turn(&answer)])));
+    assert_eq!(out.as_array().map(Vec::len), Some(3), "{out}");
+    assert_eq!(
+        section(&out, "fact")["payload"],
+        serde_json::json!({"payload": "The appointment is on Tuesday."}),
+        "{out}"
+    );
+    assert_eq!(
+        section(&out, "context")["payload"],
+        serde_json::json!({"payload": "The caller is a regular."}),
+        "an object is handed on exactly as the model wrote it: {out}"
+    );
+}
+
+#[test]
+fn an_empty_string_section_is_still_dropped() {
+    // (b6) R-L11 draws the line at WORDS, and it draws it where the receiver
+    // draws it: `words()` in the voice cell rejects a string whose `trim()` is
+    // empty, so a producer that let one through would buy the lane an
+    // `error bad_section` instead of an advice. An empty section is a model
+    // that wrote the key and nothing under it -- named on the record, like
+    // every other miss, never guessed at.
+    for body in ["\"\"", "\"   \""] {
+        let block = format!("{{\"fact\": {body}, \"context\": \"Weiss Bescheid.\"}}");
+        let answer = format!("Gut.\n\n```sidecar\n{block}\n```");
+        let out = split(completion("stop", serde_json::json!([text_turn(&answer)])));
+        let arr = out
+            .as_array()
+            .unwrap_or_else(|| panic!("the readable section still travels: {out}"));
+        assert_eq!(arr.len(), 2, "the answer plus `context`, not `fact`: {out}");
+        assert_eq!(
+            arr[0]["header"]["sidecar_dropped"], "fact",
+            "the wordless section is named rather than silent: {out}"
+        );
+        assert_eq!(arr[1]["header"]["section"], "context", "{out}");
+    }
 }
 
 #[test]

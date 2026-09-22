@@ -1,0 +1,89 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json\n\n# WHAT THIS AGENT ASKS ITS OWN MODEL FOR, declared beside the agent and not in a\n# collector one composite away.\n#\n# WHY IT LIVES HERE. Whoever is REACHED declares themselves -- the rule GH #552\n# wrote for tool schemas and GH #606 read one word wider for the sections of the\n# `sidecar` block. The splitter that cuts the block knows no section, and the\n# collector that composes the contract merges the `sidecar[]` offers of everyone\n# who answers its menu question. So a section costs an OFFER: no line in the\n# splitter, no line in the collector, and no lane in this composite's own\n# contract.\n#\n# THIS CELL DECLARES NO TOOL, on purpose. The tools of a `talky` are the\n# parent's -- `./collector`'s `params.tools` names them and the hives that\n# answer them declare them -- and a name typed here would be a name nothing in\n# this composite answers. `SCHEMAS` is empty and stays empty; what this cell has\n# to say is the other half of the same question.\nSCHEMAS = []\n\n# THE THREE SECTIONS OF THE ADVISE MODE.\n#\n# A duplex voice call turns this agent from the speaker into the ADVISER: the\n# voice model is the one talking to the caller, on its own timeline, and what\n# this agent produces is what that model should say, know and obey -- never a\n# reply of its own. The block is where that advice travels, one key per kind,\n# because the three are consumed differently: `fact` is paraphrased aloud,\n# `context` is never spoken by itself, and `correction` outlives the turn it\n# arrived on.\n#\n# OPTIONAL, ALL THREE, and the emptiness outside a duplex call is stated in the\n# words of the offers rather than switched by a second mechanism. A section is\n# offered once, at composition time, and the same block contract stands in the\n# brain for every turn the agent takes; a section marked required would be a\n# section the model is told to write on turns where it means nothing, which is\n# the failure the collector's own preamble was rewritten to avoid (GH #606).\n# `in advise mode only` is therefore part of every instruction: the mode is on\n# the turn (`system.instructions.mode`), the sections are in the contract, and\n# the model reads both.\nFACT = (\"in advise mode only: what the caller should HEAR next, as one or two\"\n        \" plain sentences the voice model will paraphrase. Facts only; no\"\n        \" greetings, no questions the model can ask itself.\")\n\nCONTEXT = (\"in advise mode only: what the voice model should KNOW silently --\"\n           \" memory recall, profile, application state. Never spoken on its\"\n           \" own.\")\n\n# SPARINGLY, and the reason is that nothing takes it back: a correction changes\n# how the voice model behaves for the rest of the call, and there is no event on\n# the model's timeline that would expire one.\nCORRECTION = (\"in advise mode only: a rule that changes the model's behaviour\"\n              \" for the REST of the call (a guardrail, a redirect). Sparingly:\"\n              \" it never expires.\")\n\n# Each section is ONE plain sentence or two, so each schema is a string and the\n# collector renders the example out of its description (`skeleton_of`). An\n# object here would ask a model mid-call to get a shape right on top of getting\n# the advice right.\ndef _section(name, instruction, shape):\n    return {\"section\": name, \"required\": False,\n            \"schema\": {\"type\": \"string\", \"description\": shape},\n            \"instruction\": instruction}\n\n\nSIDECAR = [\n    _section(\"fact\", FACT, \"one or two sentences the model paraphrases aloud\"),\n    _section(\"context\", CONTEXT, \"what the model should know and not say\"),\n    _section(\"correction\", CORRECTION, \"a rule for the rest of the call\"),\n]\n\ndoc = json.load(sys.stdin)\nbody = doc[\"body\"]\nasked = body.get(\"tools\")\n\n# A NAME IS NAMED BACK, never dropped. This cell serves no tool, so every name\n# it is handed is one it has nothing under, and a caller learns that from the\n# answer rather than from a silence. `*` asks for everything this cell declares,\n# which is nothing, and is not an unknown name.\n#\n# There is no `tools_missing` here, and that is the difference to a hive of\n# tools: the offer is not a response to a name. The answer travels on this lane\n# whatever arrived on it -- a menu answer being fanned in carries no `tools`\n# slot at all -- because a section is what this agent asks for, not what it was\n# asked about.\nnames = [str(n) for n in asked if isinstance(n, str)] if isinstance(asked, list) else []\nseen, unknown = set(), []\nfor n in names:\n    if n == \"*\" or n in seen:\n        continue\n    seen.add(n)\n    unknown.append(n)\n\nheader = {\"operation\": \"schemas\", \"schema_count\": 0,\n          \"unknown_count\": len(unknown)}\nif unknown:\n    header[\"error_code\"] = \"tool_unknown\"\nsys.stdout.write(json.dumps({\n    \"header\": header, \"schemas\": SCHEMAS, \"unknown\": unknown,\n    \"sidecar\": SIDECAR, \"messages\": []}))\n",
+    "external_timeout_ms": 10000,
+    "sandbox": {
+      "trust": "restricted",
+      "network": "deny",
+      "filesystem": {
+        "runtime": true
+      }
+    }
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "emits": {
+      "body": {
+        "schemas": {
+          "type": "array",
+          "required": true
+        },
+        "unknown": {
+          "type": "array",
+          "required": true
+        },
+        "sidecar": {
+          "type": "array",
+          "required": true
+        },
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "operation": {
+          "type": "string",
+          "values": [
+            "schemas"
+          ],
+          "required": true
+        },
+        "schema_count": {
+          "type": "number",
+          "required": true
+        },
+        "unknown_count": {
+          "type": "number",
+          "required": true
+        },
+        "error_code": {
+          "type": "string",
+          "values": [
+            "tool_unknown"
+          ],
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "tools": {
+          "type": "array",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "What this agent asks its OWN model for, handed to the collector inside the same composite: the three sections of the `sidecar` block that carry ADVICE to a voice model -- `fact`, `context` and `correction`. Whoever is reached declares themselves (GH #552), read one word wider for the block a splitter cuts (GH #606): the sections live beside the agent that consumes them rather than as a literal in a collector one composite away, and they cost no line in the splitter, none in the collector and no lane in this composite's contract. It declares NO tool: the tools of a `talky` are the parent's, named in `./collector`'s `params.tools` and declared by whoever answers them.",
+    "use_when": "Reached on this composite's own `in_menu` fan, beside `./collector`, and answered back into that collector as a second menu answerer. Never addressed by name, never part of a tool round: it answers no `tool_call` and carries no `tool_name`. The edge that carries its answer stamps `context.tool_answerer`, or the merge that keeps every answerer's submenu in one row per answerer would let this cell and a tools hive overwrite each other's half on every tick (GH #529).",
+    "not_in_scope": "No tool schema, ever -- see purpose. No judgement about WHEN the three sections apply: that is one sentence in each instruction (`in advise mode only`) and one slot on the turn (`system.instructions.mode`), and a cell that decided it would be deciding it once, at composition time, for every turn the agent takes. And no FENCE: the offer says what belongs under each key and never how many blocks an answer carries or what they open with -- that frame belongs to the collector that composes every section into one contract (GH #606).",
+    "emits_meaning": "schemas[]: always empty -- this cell declares no tool. unknown[]: every name it was handed, verbatim and deduplicated, because it serves none of them; `*` asks for everything it declares, which is nothing, and is not an unknown name. hop.error_code `tool_unknown` when that list is non-empty. sidecar[]: the three sections, `{section, required, schema, instruction}`, all three optional. It travels on EVERY answer of this cell, including one that was handed no `tools` slot at all: a section is not a response to a name. The asking collector merges the offers of all its answerers into one block contract.",
+    "consumes_meaning": "body.tools: the names the asking collector declares it uses, if the fan happens to carry them. Optional in every sense -- the answer is the same without it, because what this cell has to say is what it ASKS FOR and not what it was asked about.",
+    "examples": [
+      "{\"tools\":[]} -> no schemas, no unknown, sidecar[] with the three sections",
+      "{\"tools\":[\"*\"]} -> the same: `*` asks for everything this cell declares, which is nothing",
+      "{\"tools\":[\"web_search\"]} -> unknown [\"web_search\"], hop.error_code `tool_unknown` -- a tools hive answers that one",
+      "a menu answer fanned in, carrying no `tools` slot -> the same three offers, and no error"
+    ]
+  }
+}

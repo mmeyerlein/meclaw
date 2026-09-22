@@ -313,3 +313,236 @@ pub trait TtsProvider: Send + Sync + 'static {
         liveness: IoLivenessMark,
     ) -> BoxFuture<Result<(), TtsError>>;
 }
+
+// ───────────────────────────── the third seam: a duplex provider
+
+/// Which of the two voices a transcript fragment belongs to.
+///
+/// A duplex model transcribes BOTH sides of the conversation — it hears the
+/// caller and it knows what it said itself — so a fragment without a speaker
+/// would be half a sentence with no owner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Speaker {
+    /// The person on the other end.
+    User,
+    /// The model.
+    Assistant,
+}
+
+/// Which append channel a piece of guidance travels on.
+///
+/// The three are not three names for one thing. `Commentary` is what the
+/// caller should HEAR next (the model paraphrases it), `Thinking` is what the
+/// model should KNOW without saying it, and `Instructions` changes how it
+/// behaves for the rest of the session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppendKind {
+    /// Say this next, in your own words.
+    Commentary,
+    /// Know this; do not read it out.
+    Thinking,
+    /// Behave like this from now on.
+    Instructions,
+}
+
+/// The four channels one duplex session runs on.
+///
+/// Audio in one direction, audio in the other, the model's events, and the
+/// guidance the colony pushes at it. All four are bounded: backpressure is the
+/// design (ADR-0023 § Consequences), because a queue that grows is a queue that
+/// is already late.
+pub struct DuplexSession {
+    /// Client → model. **One client frame is one item, never merged**: the
+    /// wave measured that a buffer here is latency nobody asked for (R-L4).
+    pub audio_in: mpsc::Receiver<Vec<u8>>,
+    /// Model → client. One decoded chunk is one item, never merged.
+    pub audio_out: mpsc::Sender<Vec<u8>>,
+    /// Everything the model said about itself. A full channel blocks.
+    pub events: mpsc::Sender<DuplexEvent>,
+    /// What the colony tells the model between two turns.
+    pub control: mpsc::Receiver<DuplexControl>,
+}
+
+/// What a duplex session reports. One enum for every provider; a provider that
+/// cannot produce a variant simply never sends it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DuplexEvent {
+    /// The session is open and the model answers to this identity.
+    Started {
+        /// The provider's own session identity, for logs and for the close.
+        session_id: String,
+    },
+    /// A transcript fragment on the **model's** timeline.
+    ///
+    /// `start_ms`/`end_ms` are the model's clock, not the arrival time — the
+    /// two differ by the network, and a turn cut on arrival time is a turn cut
+    /// by the network (R-25-9).
+    Transcript {
+        /// Whose words these are.
+        speaker: Speaker,
+        /// The fragment itself; it EXTENDS what came before rather than
+        /// replacing it.
+        delta: String,
+        /// Where the fragment starts on the model's clock.
+        start_ms: u64,
+        /// Where it ends.
+        end_ms: u64,
+    },
+    /// The model handed a piece of work to the client side (R-25-4:
+    /// `delegation.type: client`, so the backend is this colony).
+    DelegationCreated {
+        /// The delegation's identity; a later append may name it.
+        delegation_id: String,
+        /// Where on the model's clock it was created.
+        offset_ms: u64,
+    },
+    /// One append was taken up, and where it landed on the model's clock.
+    Appended {
+        /// Which channel it travelled on.
+        kind: AppendKind,
+        /// The `event_id` the append carried, echoed back.
+        event_id: String,
+        /// Where the model placed it.
+        start_ms: u64,
+        /// Where it ends.
+        end_ms: u64,
+    },
+    /// The running meter. Sent about every 15 s by a hosted model.
+    Usage {
+        /// Session seconds spent so far.
+        seconds: f64,
+        /// How full the context window is, where the provider says.
+        usage_ratio: Option<f64>,
+    },
+    /// The model's ear is closed; audio sent now is not heard.
+    Muted,
+    /// The ear is open again.
+    Unmuted,
+    /// Something went wrong with one item and the session carries on. It is
+    /// reported, never swallowed, and it ends nothing.
+    Warning {
+        /// Human-readable cause. Never carries a credential.
+        detail: String,
+    },
+    /// The session is over and this is the final meter reading.
+    Closed {
+        /// Why it ended, in the provider's own words.
+        reason: String,
+        /// The session's total, as the provider counted it.
+        usage_seconds: f64,
+    },
+}
+
+/// What the colony tells a running duplex session.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DuplexControl {
+    /// Push one piece of guidance into the session.
+    Append {
+        /// Which channel it travels on.
+        kind: AppendKind,
+        /// The identity the `Appended` answer will carry.
+        event_id: String,
+        /// The delegation this answers, where it answers one.
+        delegation_id: Option<String>,
+        /// The text itself.
+        content: String,
+    },
+    /// Stop listening.
+    Mute,
+    /// Listen again.
+    Unmute,
+    /// End the session in an orderly way.
+    Close,
+}
+
+/// Duplex failures. Never carries a credential.
+#[derive(Debug)]
+pub enum DuplexError {
+    /// The provider socket could not be opened.
+    Connect(String),
+    /// The provider refused the credentials it was given.
+    Auth(String),
+    /// The provider spoke something this adapter does not understand.
+    Protocol(String),
+    /// An A-timeout (rule 12) elapsed around a bounded provider operation.
+    Timeout,
+    /// The provider closed the session on its side, mid-conversation.
+    Closed(String),
+    /// This provider is not usable at all (not built, not configured).
+    Unavailable(String),
+}
+
+impl std::fmt::Display for DuplexError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DuplexError::Connect(e) => write!(f, "duplex connect failed: {e}"),
+            DuplexError::Auth(e) => write!(f, "duplex rejected credentials: {e}"),
+            DuplexError::Protocol(e) => write!(f, "duplex protocol error: {e}"),
+            DuplexError::Timeout => write!(f, "duplex operation timed out"),
+            DuplexError::Closed(e) => write!(f, "duplex session closed: {e}"),
+            DuplexError::Unavailable(e) => write!(f, "duplex provider unavailable: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for DuplexError {}
+
+/// A duplex provider: audio in, audio out, and the model's events, on one
+/// session. One instance per cell, shared by every connection.
+///
+/// # Why this is a third trait and not a third cell type
+///
+/// ADR-0023 named its own way out: "a speech-to-speech provider behind the
+/// traits … is this ADR being built out". This is that clause taken up.
+/// Audio still terminates in the I/O half of the `voice` cell — no sample
+/// becomes a message, no model becomes an actor — and what changes is only
+/// that ONE socket now carries both directions instead of two sockets carrying
+/// one each.
+///
+/// # One format for both directions
+///
+/// A cascade has two formats, because the recogniser and the synthesiser are
+/// two vendors with two opinions. A duplex model has one: its `audio.format`
+/// applies to what it hears and to what it says. So there is a single
+/// [`Self::format`] here rather than an input and an output one, and
+/// `negotiate` answers for both directions at once.
+///
+/// # When the client goes away
+///
+/// `audio_in` closing IS the end of the call. The provider then sends its own
+/// close, waits for the far side's acknowledgement for at most
+/// `close_grace_ms`, emits [`DuplexEvent::Closed`] and returns `Ok(())`. An
+/// `Err` is a disturbance — a dead provider, a refused credential, a protocol
+/// this adapter does not speak — and never the ordinary end. There is no
+/// `Failed` event: the return value is the verdict, exactly as with
+/// [`SttProvider`].
+pub trait DuplexProvider: Send + Sync + 'static {
+    /// Provider name as it appears in `hello.duplex`, `GET /info` and in logs.
+    fn name(&self) -> &'static str;
+    /// The one format this provider runs at, in both directions.
+    fn format(&self) -> AudioFormat;
+    /// Every rate this provider serves, its own included. `GET /info` prints
+    /// it, so a client learns what it may ask for by reading.
+    fn rates(&self) -> Vec<u32> {
+        vec![self.format().sample_rate]
+    }
+    /// The format this provider will run a session at when the client says it
+    /// sends `sample_rate` — `None` is a refused connection and never a
+    /// conversion (R-V2).
+    fn negotiate(&self, sample_rate: u32) -> Option<AudioFormat> {
+        self.rates()
+            .contains(&sample_rate)
+            .then(|| AudioFormat::pcm16_mono(sample_rate))
+    }
+    /// Run one session for one connection. `format` is what
+    /// [`Self::negotiate`] agreed to. Call `liveness.mark_success()` after
+    /// every successful provider round trip. Returns when the session is over;
+    /// `Err` when it ended abnormally.
+    fn run_session(
+        &self,
+        format: AudioFormat,
+        session: DuplexSession,
+        liveness: IoLivenessMark,
+    ) -> BoxFuture<Result<(), DuplexError>>;
+}

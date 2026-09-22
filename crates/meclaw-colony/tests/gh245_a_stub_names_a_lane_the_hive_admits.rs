@@ -264,6 +264,11 @@ fn write_talky_topology(root: &std::path::Path) {
         // names it, and an endpoint nothing stands at is a DanglingEndpoint that
         // refuses the whole boot.
         "splitter",
+        // The declaration of talky's own sidecar sections (GH #783). Same shape
+        // as the splitter above: it carries no lane this test drives, but the
+        // shipped edge set names it, and an endpoint nothing stands at is a
+        // DanglingEndpoint that refuses the whole boot.
+        "schemas",
         "dispatcher",
         "summarizer",
         "errors",

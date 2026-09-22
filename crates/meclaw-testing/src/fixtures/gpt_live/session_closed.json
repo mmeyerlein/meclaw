@@ -1,0 +1,8 @@
+{
+  "type": "session.closed",
+  "event_id": "event_fixture_closed",
+  "reason": "close_requested",
+  "usage": {
+    "seconds": 39
+  }
+}

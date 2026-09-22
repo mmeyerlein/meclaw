@@ -1,0 +1,5 @@
+{
+  "type": "session.input_audio.unmuted",
+  "event_id": "event_fixture_unmuted",
+  "client_event_id": "u1"
+}

@@ -335,7 +335,20 @@ impl ColonyDb {
     /// Reads persisted `dead_letters` rows with an optional `since`/`error_code`
     /// filter + cap (phase-16 W6d / A6). The DB is the DLQ source of truth — the
     /// `/colony/dead_letters` read queries against it, no longer against an
-    /// in-memory `VecDeque`. The order is the insert order (`id` = rowid).
+    /// in-memory `VecDeque`.
+    ///
+    /// **The `since` parameter decides the order** (welle-live, ruling R-L10,
+    /// GH #794). In an event-driven design an event with no target is the normal
+    /// case and the DLQ is where those land, so the table is expected to grow
+    /// large and stay large. Two readers want opposite orders out of it:
+    ///
+    /// * **No `since` — newest first** (`id DESC`). This is the question "what
+    ///   is happening right now", and the cap has to answer it with the newest
+    ///   rows. Ascending plus `LIMIT` handed back the colony's first day forever
+    ///   and hid everything since.
+    /// * **With `since` — oldest first from the mark** (`id ASC`). This is a
+    ///   watcher walking the queue forward, remembering the last `created_at` it
+    ///   saw; for it the cap has to start at the mark and not at the far end.
     ///
     /// `since`: unix seconds, only rows with `created_at >= since`.
     /// `error_code`: exact match on the canonical `error_code` string.
@@ -361,7 +374,13 @@ impl ColonyDb {
             sql.push_str(" WHERE ");
             sql.push_str(&clauses.join(" AND "));
         }
-        sql.push_str(" ORDER BY id ASC LIMIT ?");
+        // `id` is the rowid, so it is the insert order either way; only the
+        // direction changes with the mark (R-L10).
+        if since.is_some() {
+            sql.push_str(" ORDER BY id ASC LIMIT ?");
+        } else {
+            sql.push_str(" ORDER BY id DESC LIMIT ?");
+        }
 
         let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
         if let Some(s) = since {
@@ -938,8 +957,10 @@ mod tests {
 
     /// W6d (A6) step a+b: an `InsertDeadLetter` op persists a DLQ row that
     /// survives a colony.db reopen (crash/shutdown survival) and is read back via
-    /// `read_dead_letters` in insertion order, with the `?since`/`?error_code`
-    /// filters honoured.
+    /// `read_dead_letters`, with the `?since`/`?error_code` filters honoured.
+    ///
+    /// The order is the mark's (welle-live, ruling R-L10, GH #794): a read
+    /// without `since` answers newest first, a read from a mark walks forward.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn dead_letters_persist_across_reopen_with_filters() {
         let td = tempfile::TempDir::new().unwrap();
@@ -965,12 +986,21 @@ mod tests {
         let all = db2.read_dead_letters(None, None, 1000).unwrap();
         assert_eq!(all.len(), 2, "both DLQ entries persisted across reopen");
         assert_eq!(
-            all[0].error_code, "ttl_expired",
-            "insertion order preserved"
+            all[0].error_code, "unresolved_path",
+            "no mark: newest first (R-L10)"
         );
-        assert_eq!(all[1].error_code, "unresolved_path");
+        assert_eq!(all[1].error_code, "ttl_expired");
         assert_eq!(all[0].sender_path, "/a");
-        assert_eq!(all[1].trace_id, "trace-200");
+        assert_eq!(all[0].trace_id, "trace-200");
+
+        // From a mark that predates both, the same two rows come back in the
+        // order they were written.
+        let walked = db2.read_dead_letters(Some(0), None, 1000).unwrap();
+        assert_eq!(
+            walked.iter().map(|r| r.created_at).collect::<Vec<_>>(),
+            vec![100, 200],
+            "with a mark: oldest first from it (R-L10)"
+        );
 
         // ?error_code filter.
         let only = db2

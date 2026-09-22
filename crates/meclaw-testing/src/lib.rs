@@ -11,6 +11,7 @@ mod message_builder;
 pub mod mock_cartesia;
 pub mod mock_deepgram;
 pub mod mock_elevenlabs;
+pub mod mock_gpt_live;
 pub mod mock_http;
 pub mod mock_openai_realtime;
 pub mod mock_openai_tts;

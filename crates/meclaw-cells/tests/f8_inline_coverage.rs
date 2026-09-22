@@ -394,9 +394,11 @@ fn a_block_that_is_not_json_covers_nothing() {
     // contract has always said.
     //
     // Delivered in the OLDER shape, and that is the only shape it can have
-    // (GH #607): a sidecar section that is not an object never leaves the
-    // splitter -- it is dropped there with `hop.sidecar_dropped` -- so the one
-    // way unreadable bytes still reach this ingress is as the text of a turn.
+    // (GH #607): a sidecar section whose body is a bare string leaves the
+    // splitter WRAPPED since GH #799, and one that can carry nothing at all
+    // never leaves it -- it is dropped there with `hop.sidecar_dropped` -- so
+    // the one way unreadable bytes still reach this ingress is as the text of
+    // a turn.
     let msgs = emit(legacy_inline("not json at all"));
     assert!(
         queue_op(&msgs).is_none(),

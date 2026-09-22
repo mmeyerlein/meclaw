@@ -22,7 +22,10 @@ use tokio::sync::oneshot;
 #[derive(Debug, Deserialize)]
 pub struct DeadLettersQuery {
     /// Optional: only entries with `created_at >= since` (Unix seconds).
-    /// Currently a no-op — dead letters carry no timestamp (phase-14 backlog).
+    /// It filters, and has done since phase-16 W2 (ruling A2) put `created_at`
+    /// on every entry — see the `DeadLetterDto` doc-comment. It also picks the
+    /// ORDER (welle-live, ruling R-L10): given, the read walks forward from the
+    /// mark; left out, it answers newest first.
     pub since: Option<i64>,
     /// Optional: exact match on the canonical `error_code` string.
     pub error_code: Option<String>,

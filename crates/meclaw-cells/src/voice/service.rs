@@ -90,6 +90,20 @@ pub(crate) fn audio_out(io: &VoiceIoShared) -> Option<AudioFormat> {
 /// `None` is a refusal, and it has exactly one cause: the recogniser does not
 /// serve that rate.
 pub(crate) fn negotiate(io: &VoiceIoShared, sample_rate: Option<u32>) -> Option<Negotiated> {
+    // The duplex provider FIRST, and every reader below does the same
+    // (OR-L23). A duplex session has ONE format: what the model hears is what
+    // the model says, so the two directions of the connection cannot come
+    // apart the way a cascade's can.
+    if let Some(d) = io.duplex.as_ref() {
+        let both = match sample_rate {
+            None => d.format(),
+            Some(rate) => d.negotiate(rate)?,
+        };
+        return Some(Negotiated {
+            audio_in: both,
+            audio_out: Some(both),
+        });
+    }
     let audio_in = match sample_rate {
         None => io.stt.input_format(),
         Some(rate) => io.stt.negotiate_input(rate)?,
@@ -129,6 +143,9 @@ pub(crate) fn negotiate(io: &VoiceIoShared, sample_rate: Option<u32>) -> Option<
 /// so `audio_out_rates` mirrors `audio_in_rates` there instead of being `null`
 /// beside an `audio_out` that is set.
 pub(crate) fn audio_out_rates(io: &VoiceIoShared) -> Option<Vec<u32>> {
+    if let Some(d) = io.duplex.as_ref() {
+        return Some(d.rates());
+    }
     match io.tts.as_ref() {
         None if io.stt.name() == "echo" => Some(io.stt.input_rates()),
         None => None,
@@ -144,6 +161,13 @@ pub(crate) fn audio_out_rates(io: &VoiceIoShared) -> Option<Vec<u32>> {
 /// value, and it is declared so a client (a phone edge above all) can read what
 /// it is about to be sent instead of measuring it.
 pub(crate) fn audio_out_frame_ms(io: &VoiceIoShared) -> u32 {
+    // A duplex session IS framed, whatever the inert cascade placeholder
+    // beside it says (OR-L23): the model streams its audio in chunks of its
+    // own choosing and a telephony edge aborts the call above about 100 ms, so
+    // the `params` value is what cuts them.
+    if io.duplex.is_some() {
+        return io.audio_out_frame_ms;
+    }
     if io.stt.name() == "echo" || io.tts.is_none() {
         return 0;
     }
@@ -151,11 +175,50 @@ pub(crate) fn audio_out_frame_ms(io: &VoiceIoShared) -> u32 {
 }
 
 /// The synthesis provider's name, as the declaration reports it.
+///
+/// In duplex mode both names are the duplex provider's: there is one provider
+/// and it does both directions, so telling a client that the voice is `echo`
+/// because of an inert placeholder would be a declaration nobody can act on.
 pub(crate) fn tts_name(io: &VoiceIoShared) -> Option<&'static str> {
+    if let Some(d) = io.duplex.as_ref() {
+        return Some(d.name());
+    }
     if io.stt.name() == "echo" {
         return None;
     }
     io.tts.as_ref().map(|t| t.name())
+}
+
+/// The recognition side's name, as the declaration reports it — the duplex
+/// provider's where there is one (see [`tts_name`]).
+pub(crate) fn stt_name(io: &VoiceIoShared) -> &'static str {
+    match io.duplex.as_ref() {
+        Some(d) => d.name(),
+        None => io.stt.name(),
+    }
+}
+
+/// The duplex provider's name, or `None` on a cascade cell. What `GET /info`
+/// and `hello.duplex` are built from.
+pub(crate) fn duplex_name(io: &VoiceIoShared) -> Option<&'static str> {
+    io.duplex.as_ref().map(|d| d.name())
+}
+
+/// Every inbound rate a client may negotiate — the duplex provider's where
+/// there is one.
+pub(crate) fn audio_in_rates(io: &VoiceIoShared) -> Vec<u32> {
+    match io.duplex.as_ref() {
+        Some(d) => d.rates(),
+        None => io.stt.input_rates(),
+    }
+}
+
+/// The format a client is sent to when it asks for nothing.
+pub(crate) fn audio_in(io: &VoiceIoShared) -> AudioFormat {
+    match io.duplex.as_ref() {
+        Some(d) => d.format(),
+        None => io.stt.input_format(),
+    }
 }
 
 /// `GET /` — the built-in browser test page (R-V9).
@@ -172,16 +235,20 @@ async fn info(State(io): State<Arc<VoiceIoShared>>) -> Response {
     let body = json!({
         "protocol": PROTOCOL,
         "mode": io.default_mode,
-        "audio_in": io.stt.input_format(),
+        "audio_in": audio_in(&io),
         "audio_out": audio_out(&io),
         // GH #619: what a client MAY ask for, so it learns the negotiable set
         // by reading rather than by being refused (R-V6). `audio_in`/
         // `audio_out` above are what it gets when it asks for nothing.
-        "audio_in_rates": io.stt.input_rates(),
+        "audio_in_rates": audio_in_rates(&io),
         "audio_out_rates": audio_out_rates(&io),
         "audio_out_frame_ms": audio_out_frame_ms(&io),
-        "stt": io.stt.name(),
+        "stt": stt_name(&io),
         "tts": tts_name(&io),
+        // Which engine is behind this mount, read without opening a session
+        // (R-V6). `null` is a cascade; a name is a duplex provider, and then
+        // `stt` and `tts` above both carry that same name.
+        "duplex": duplex_name(&io),
         "speak_plain": io.speak_plain,
         "release_grace_ms": io.release_grace_ms,
     });
@@ -303,9 +370,7 @@ pub(crate) fn admit(
     }
     let Some(negotiated) = negotiate(io, sample_rate) else {
         let asked = sample_rate.unwrap_or_default();
-        let rates = io
-            .stt
-            .input_rates()
+        let rates = audio_in_rates(io)
             .iter()
             .map(u32::to_string)
             .collect::<Vec<_>>()
@@ -315,7 +380,7 @@ pub(crate) fn admit(
             format!(
                 "sample_rate {asked} is not one the `{}` recogniser serves ({rates}); \
                  this cell never resamples\n",
-                io.stt.name()
+                stt_name(io)
             ),
         ));
     };

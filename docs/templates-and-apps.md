@@ -25,6 +25,11 @@ That copy is also the versioning rule. A reference is either `name` or
 `name@major.minor.patch`, and a bump reaches no colony that is already running, so an upgrade
 means instantiating the new version beside the old one and moving the edges.
 
+The `voice` template shows what that buys. Its params carry a `duplex` block, and the name in
+that block decides whether a conversation runs through a recogniser and a synthesis or through
+one model that hears and answers with a voice. Both shapes are the same class, so a colony
+changes engines by the upgrade above and not by a new cell type.
+
 ## What an app is
 
 An app is a sealed hive at the rim of a member, instantiated by an ordinary mutation into that

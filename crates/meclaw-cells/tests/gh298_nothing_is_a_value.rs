@@ -447,8 +447,10 @@ fn a_block_that_is_not_json_still_rejects_as_invalid() {
     // leave the turn in the queue for the batched extractor.
     //
     // In the OLDER shape, which is the only shape it can have (GH #607): a
-    // sidecar section that is not an object never leaves the splitter, so bytes
-    // nothing can parse still reach this ingress as the text of a turn.
+    // sidecar section whose body is a bare string leaves the splitter WRAPPED
+    // since GH #799 (`{"payload": "<string>"}`) and is refused by name here,
+    // and one that can carry nothing at all never leaves it -- so bytes nothing
+    // can parse still reach this ingress as the text of a turn.
     let msgs = emit(legacy_annotation("not json at all"));
     let refusals = rejects(&msgs);
     assert_eq!(refusals.len(), 1, "garbage is refused: {msgs:?}");

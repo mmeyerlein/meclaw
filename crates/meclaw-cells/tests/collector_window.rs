@@ -3188,9 +3188,12 @@ fn a_window_without_advice_carries_the_consult_slot_emptied() {
     let out = emit(reply_doc("collect", "bundle", 1, rows));
     assert_eq!(
         out[0]["system"],
-        serde_json::json!({"consult": {"open": [], "text": ""}}),
-        "no memory leg, so `consult` is the whole tree -- and it is the EMPTY \
-         one: a slot that is never sent empty is never revoked: {}",
+        serde_json::json!({"consult": {"open": [], "text": ""},
+                           "instructions": {"mode": {"text": ""}}}),
+        "no memory leg, so the two UNCONDITIONAL slots are the whole tree -- and \
+         both are the EMPTY ones: a slot that is never sent empty is never \
+         revoked. `instructions.mode` joined the pair with the duplex advise \
+         mode (welle-live) and is written on the same argument: {}",
         out[0]
     );
 }

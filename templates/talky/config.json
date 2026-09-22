@@ -27,6 +27,15 @@
           "because": "an advisor's answer, coming back from a second agent"
         },
         {
+          "route": "in_delegation",
+          "context": [
+            "channel",
+            "engine",
+            "delegation_id"
+          ],
+          "because": "an errand the voice model handed the backend of its own accord, in a duplex call (welle-live, R-25-4). It arrives straight from the channel and NOT through a firewall, because a firewall's exit stamps `in_turn` and this is no turn of the conversation: the model keeps talking to the caller while this is worked on. The caller MUST promote `context.delegation_id` -- it is the correlation the answer travels back under -- and `context.engine`, which is what puts this agent into advise mode; without the engine the brain would answer the caller in prose nobody speaks. The collector assembles it exactly like `in_advice`, under role `delegation`, and keeps it out of both memory writers"
+        },
+        {
           "route": "in_bundle",
           "because": "a memory bundle, coming back from whatever keeps this agent's memory"
         },
@@ -167,7 +176,25 @@
         {
           "from": ".",
           "to": "./collector",
-          "condition": "has(hop.route) && (hop.route == 'in_tool' || hop.route == 'in_advice' || hop.route == 'in_bundle' || hop.route == 'in_thread_call' || hop.route == 'in_prune' || hop.route == 'in_round_sweep' || hop.route == 'in_pack' || hop.route == 'in_menu')"
+          "condition": "has(hop.route) && (hop.route == 'in_tool' || hop.route == 'in_advice' || hop.route == 'in_delegation' || hop.route == 'in_bundle' || hop.route == 'in_thread_call' || hop.route == 'in_prune' || hop.route == 'in_round_sweep' || hop.route == 'in_pack' || hop.route == 'in_menu')"
+        },
+        {
+          "from": ".",
+          "to": "./schemas",
+          "condition": "has(hop.route) && hop.route == 'in_menu'"
+        },
+        {
+          "from": "./schemas",
+          "to": "./collector",
+          "condition": "has(hop.operation) && hop.operation == 'schemas'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_menu'"
+            },
+            "set_context": {
+              "tool_answerer": "'talky'"
+            }
+          }
         },
         {
           "from": "./session-keeper",
@@ -233,7 +260,12 @@
         {
           "from": "./splitter",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'sidecar'"
+          "condition": "has(hop.route) && hop.route == 'sidecar'",
+          "modifier": {
+            "delete_context": [
+              "tool_answerer"
+            ]
+          }
         },
         {
           "from": "./brain",
@@ -298,48 +330,93 @@
         {
           "from": "./collector",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'answer'"
+          "condition": "has(hop.route) && hop.route == 'answer'",
+          "modifier": {
+            "delete_context": [
+              "tool_answerer"
+            ]
+          }
         },
         {
           "from": "./collector",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'write'"
+          "condition": "has(hop.route) && hop.route == 'write'",
+          "modifier": {
+            "delete_context": [
+              "tool_answerer"
+            ]
+          }
         },
         {
           "from": "./collector",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'turn_write'"
+          "condition": "has(hop.route) && hop.route == 'turn_write'",
+          "modifier": {
+            "delete_context": [
+              "tool_answerer"
+            ]
+          }
         },
         {
           "from": "./collector",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'recall'"
+          "condition": "has(hop.route) && hop.route == 'recall'",
+          "modifier": {
+            "delete_context": [
+              "tool_answerer"
+            ]
+          }
         },
         {
           "from": "./collector",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'prune'"
+          "condition": "has(hop.route) && hop.route == 'prune'",
+          "modifier": {
+            "delete_context": [
+              "tool_answerer"
+            ]
+          }
         },
         {
           "from": "./collector",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'pack_ack'"
+          "condition": "has(hop.route) && hop.route == 'pack_ack'",
+          "modifier": {
+            "delete_context": [
+              "tool_answerer"
+            ]
+          }
         },
         {
           "from": "./collector",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'schemas'"
+          "condition": "has(hop.route) && hop.route == 'schemas'",
+          "modifier": {
+            "delete_context": [
+              "tool_answerer"
+            ]
+          }
         },
         {
           "from": "./dispatcher",
           "to": ".",
           "default": true,
-          "condition": "has(hop.route) && hop.route == 'tool'"
+          "condition": "has(hop.route) && hop.route == 'tool'",
+          "modifier": {
+            "delete_context": [
+              "tool_answerer"
+            ]
+          }
         },
         {
           "from": "./errors",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'error'"
+          "condition": "has(hop.route) && hop.route == 'error'",
+          "modifier": {
+            "delete_context": [
+              "tool_answerer"
+            ]
+          }
         },
         {
           "from": ".",
@@ -354,12 +431,22 @@
         {
           "from": "./session-keeper",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'export_done'"
+          "condition": "has(hop.route) && hop.route == 'export_done'",
+          "modifier": {
+            "delete_context": [
+              "tool_answerer"
+            ]
+          }
         },
         {
           "from": "./session-keeper",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'dump'"
+          "condition": "has(hop.route) && hop.route == 'dump'",
+          "modifier": {
+            "delete_context": [
+              "tool_answerer"
+            ]
+          }
         },
         {
           "from": ".",

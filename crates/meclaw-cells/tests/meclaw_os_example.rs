@@ -94,22 +94,26 @@ const REFERENCED_SUB_UNITS: [(&str, &str); 3] = [
 
 /// One cell from `door@1`, FOUR from `firewall@2` (the third is the transfer
 /// lane's `porter`, GH #471, the fourth the hold pile's `warden`,
-/// `firewall@2.2.0`, GH #450), eleven from `talky` (the tenth
+/// `firewall@2.2.0`, GH #450), twelve from `talky` (the tenth
 /// is the sidecar `splitter`, `talky@4.1.0`, GH #379; the summarizer's two left
 /// with `talky@4.3.0`, GH #447; the eleventh is the keeper's own `porter`,
-/// `session-keeper@2.1.0`, GH #471), one from `terminal@1`. The collector's
-/// `menu-clock` was a twelfth between `collector@3.3.0` (GH #464) and
+/// `session-keeper@2.1.0`, GH #471; the twelfth is `schemas`, which declares the
+/// sidecar sections that agent asks its own model for, GH #783), one from
+/// `terminal@1`. The collector's
+/// `menu-clock` was a thirteenth between `collector@3.3.0` (GH #464) and
 /// `collector@4.0.0` (GH #553), which asks the menu on the mutation receipt
 /// instead. MEASURED.
-const CELLS_AFTER_GROW: usize = 17;
+const CELLS_AFTER_GROW: usize = 18;
 
 /// Plus five from `cogny`: the brain, the cell that declares the core's own
 /// errand (`cogny@4.4.0`, GH #528), the two collector cells and the split. The
 /// lookup lane's brain was one until 4.4.0 and `./schemas` took its place in the
 /// count, which is a coincidence of arithmetic and not a swap: one is an `llm`,
 /// the other a `code` cell answering a menu question. The collector's menu clock
-/// was a sixth until GH #553. MEASURED.
-const CELLS_AFTER_COGNY: usize = 22;
+/// was a sixth until GH #553. MEASURED, and it moves with
+/// [`CELLS_AFTER_GROW`] -- `talky`'s twelfth cell (`schemas`, GH #783) is in
+/// this total too.
+const CELLS_AFTER_COGNY: usize = 23;
 
 fn read_json(p: &std::path::Path) -> Value {
     let raw = std::fs::read_to_string(p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
@@ -558,7 +562,7 @@ async fn the_seed_plus_grow_json_is_a_living_agent() {
     assert_eq!(
         after.len(),
         CELLS_AFTER_GROW,
-        "zero checked-in cells plus seventeen instantiated ones: {after:?}"
+        "zero checked-in cells plus eighteen instantiated ones: {after:?}"
     );
 
     // --- the liveness proof: one turn, all the way through.
@@ -634,7 +638,7 @@ async fn the_seed_plus_grow_json_is_a_living_agent() {
     assert_eq!(
         with_core.len(),
         CELLS_AFTER_COGNY + 1,
-        "sixteen plus the core's five, plus the test-only probe: {with_core:?}"
+        "eighteen plus the core's five, plus the test-only probe: {with_core:?}"
     );
 
     h.shutdown().await;

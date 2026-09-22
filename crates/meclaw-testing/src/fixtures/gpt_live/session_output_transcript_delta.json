@@ -1,0 +1,7 @@
+{
+  "type": "session.output_transcript.delta",
+  "event_id": "event_fixture_output_transcript",
+  "delta": " Hallo! Mir",
+  "start_ms": 3200,
+  "end_ms": 3400
+}

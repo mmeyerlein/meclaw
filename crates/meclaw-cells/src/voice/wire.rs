@@ -97,6 +97,16 @@ pub enum ServerFrame {
         /// built with; a `params` update is in force at the next `release` and
         /// reaches this declaration on the next respawn.
         release_grace_ms: u64,
+        /// Whether a duplex provider is behind this connection.
+        ///
+        /// Additive to `meclaw-voice/1` rather than a new protocol version: a
+        /// client that does not know the field reads the same frame it always
+        /// did. What it announces is which of two conversations this is — a
+        /// cascade, where the cell forms the turns, or a live session, where
+        /// the model does and `spoken` frames arrive beside `partial` ones.
+        /// With it `true`, `stt` and `tts` both carry the duplex provider's
+        /// name: there is one provider and it does both.
+        duplex: bool,
     },
     /// Interim transcript (mirror of the `partial` lane).
     Partial {
@@ -104,6 +114,22 @@ pub enum ServerFrame {
         text: String,
         /// `true` for a preflight transcript.
         eager: bool,
+    },
+    /// Interim ASSISTANT text of the open turn (mirror of the `spoken` lane).
+    ///
+    /// The counterpart of [`ServerFrame::Partial`], and it exists only where a
+    /// duplex model is behind the connection: a cascade knows the assistant
+    /// text before it is spoken, a live session learns it as the model says it.
+    /// Cumulative like `partial` — each one REPLACES the previous one for this
+    /// `turn_id` rather than extending it.
+    ///
+    /// The name was reserved in `docs/voice-wire-protocol.md` before there was
+    /// anything to put in it; this is that reservation taken up.
+    Spoken {
+        /// Everything the model has said in this turn so far.
+        text: String,
+        /// `"<session_id>#<n>"` — which turn it belongs to.
+        turn_id: String,
     },
     /// A turn (mirror of the `turn` lane). Empty `text` on an empty release.
     Turn {
@@ -205,6 +231,7 @@ mod tests {
             audio_out_frame_ms: 20,
             speak_plain: true,
             release_grace_ms: 1500,
+            duplex: false,
         };
         let json = serde_json::to_string(&hello).expect("hello serializes");
         assert!(json.contains(r#""type":"hello""#), "got {json}");
@@ -234,7 +261,24 @@ mod tests {
             json.contains(r#""release_grace_ms":1500"#),
             "how long a released boundary may take is a number the client reads,              not one it guesses: {json}"
         );
+        assert!(
+            json.contains(r#""duplex":false"#),
+            "which engine is behind the connection is declared, not inferred: {json}"
+        );
         assert_eq!(AudioFormat::pcm16_mono(16000).encoding, Encoding::PcmS16Le);
+    }
+
+    /// The assistant's interim text is its own frame, and it is cumulative --
+    /// the same contract `partial` has, so a client renders both the same way.
+    #[test]
+    fn a_spoken_frame_names_the_turn_it_is_filling() {
+        let frame = ServerFrame::Spoken {
+            text: "the sunlight hits the air".to_string(),
+            turn_id: "s1#2".to_string(),
+        };
+        let json = serde_json::to_string(&frame).expect("spoken serializes");
+        assert!(json.contains(r#""type":"spoken""#), "got {json}");
+        assert!(json.contains(r#""turn_id":"s1#2""#), "got {json}");
     }
 
     #[test]

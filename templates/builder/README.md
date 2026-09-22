@@ -1,4 +1,4 @@
-# `builder@1.11.0`
+# `builder@1.12.0`
 
 The intake that turns a structural wish into a **manifest** — an ordered list of
 mutation declarations, ready to be submitted by whoever asked for it.
@@ -238,7 +238,7 @@ repairs, and a refusal a human cannot read is one they cannot answer.
 
 Growing a child into a composition level was, until `1.2.0`, a paragraph a model
 rewrote from scratch on every build: an organisation gets **20** transit edges, a
-member **20**, an assistant **23**, a channel **3**, a screen **3**, an app
+member **20**, an assistant **24**, a channel **4**, a screen **3**, an app
 **3** — and they are the same edges every time, with the child's name
 substituted in. `examples/organism` writes all six out by hand, which is what
 made them measurable.
@@ -308,7 +308,7 @@ declaration*.
 
 An **assistant** level costs the two turn doors (`in_turn`, `in_bundle`, both
 guarded on `context.assistant`), `in_build_result`, the eight exits `answer`,
-`recall`, `extraction`, `write`, `turn_write`, `prune`, `error` and `build` —
+`recall`, `sidecar`, `write`, `turn_write`, `prune`, `error` and `build` —
 and, since [#476](https://github.com/mmeyerlein/meclaw/issues/476), the three
 **transfer** edges [#475](https://github.com/mmeyerlein/meclaw/issues/475)
 opened: `in_export` and `in_import` down under the same `context.assistant`
@@ -325,6 +325,19 @@ the container and the keeper pairs `in_export` with `export_done` and
 pairing runs the described hop through the real edge evaluator — an edge that
 additionally tested a second hop key reads as no drain at all and the mutation
 is refused.
+
+**Since `1.12.0` it costs one more: the `in_delegation` door**
+([#803](https://github.com/mmeyerlein/meclaw/issues/803)). Since `member@1.9.0` the level is
+wired for a channel whose model answers on its own timeline, and a `delegation` goes from `./channels`
+straight to `./assistants` — past the firewall, whose exit stamps `in_turn`. That edge ends at
+the **container**, and a container is not a pass-through: `Edge.to` is a static path, so the lane
+has to be carried one more hop, named for the child, exactly as `in_tool` and `in_menu` are. It
+is the permissive guard and not the strict one, because a delegation promotes the channel, the
+engine and the delegation id and says nothing about `context.assistant`. Measured on a built
+colony before it existed: the container carried seven lanes into its generation and not this one,
+every delegation died there as `hive_no_route`, and the one manifest that wired a duplex channel
+drew the hop by hand beside the table. A **channel** grew the mirror of it in the same place —
+see § *A channel is a node and a chat*.
 
 `grow_level` renders them from a table. What it does **not** decide is the
 template: which class a level is filled with is a catalogue question, and the
@@ -608,7 +621,7 @@ The half #517 deliberately left alone, and
 `templates/session-keeper/README.md` describes that key as the chat identity and
 the hand-drawn e9-era edge promoted `hop.chat_id` into it — the rows that exist
 carry a chat id in every `channel` column a colony ever wrote. It had to be the
-node name, because the set this recipe renders has three edges and the third is
+node name, because the set this recipe renders has four edges and the third is
 the answer's way back: `. -> ./<name>`, guarded on the key, because `Edge.to` is
 a static path and a container may hold several channels (the address rule, GH
 #454). A `channel` carrying a chat id routed no answer anywhere and the agent
@@ -619,7 +632,7 @@ So the return path moved onto a key of its own, and the ingress edge renders
 
 | key | value | what it is for |
 |---|---|---|
-| `context.channel_node` | `'<name>'` | the ADDRESS. The third edge guards on it; so does `./assistants -> ./channels` one storey up |
+| `context.channel_node` | `'<name>'` | the ADDRESS. The third and the fourth edge guard on it; so does `./assistants -> ./channels` one storey up |
 | `context.channel` | `has(hop.chat_id) ? hop.chat_id : ''` | the CHAT. One session generation, one rate bucket and one memory room per value |
 
 Written as one word, every chat of one connector shared **one** session
@@ -631,6 +644,19 @@ is the whole of the repair. `templates/member/README.md` § *The two channel key
 is where the rule is published, and
 `crates/meclaw-cells/tests/gh522_a_chat_is_a_generation_and_a_node_is_an_address.rs`
 holds the renderer and the addressing rule together.
+
+**Since `1.12.0` the set has a fourth edge, and it is addressed by the same key**
+([#803](https://github.com/mmeyerlein/meclaw/issues/803)). Since `member@1.9.0` the level sends
+the three advice sections an assistant may append beside its answer — `fact`, `context`, `correction` — back down
+to `./channels` as `in_advise`, addressed by `context.channel_node`, so the model holding a call
+can say them in its own words. That edge ends at the container and goes no further until the
+level carries it, which is the defect `in_delegation` had one container over. The new edge is the
+answer edge with a different lane name, for the reason a second spelling of one address is a
+second thing to keep in step. It is rendered for **every** channel, including one whose cell
+cannot take it: the edge set of a level is a property of the parent, never of what the child is
+filled with (§ *Why a table and not a derivation*), and it costs nothing where it cannot be used —
+a section is written only when the front model was told to write one, and it is told that only
+for a channel whose engine is `duplex`.
 
 ### Born asleep is a parameter, not a second door
 
@@ -703,9 +729,11 @@ reason is worth writing down so nobody re-derives the disappointment:
   its `accepts` and `emits` are both empty, and its two upward edges condition on
   `has(hop.error_code)` — on a failure key, not on a lane.
 - **Lane count is not edge count**, in either direction. `assistant` declares
-  twenty-five lanes and gets twenty-two edges: four of them are addressed at the path
-  directly (ruling W7-R5), `in_pack` and `pack_ack` are the opt-in identity door
-  and no part of the level, `display` folds `event`+`receipt` into **one**
+  twenty-eight lanes and gets twenty-four edges: four of them are addressed at the
+  path directly (ruling W7-R5), `in_pack` and `pack_ack` are the opt-in identity
+  door and no part of the level, `tool_result`
+  is spoken inside the level and crosses no container edge, `display` folds
+  `event`+`receipt` into **one**
   edge one level further out — and since [#562](https://github.com/mmeyerlein/meclaw/issues/562)
   the memory road costs FOUR edges for two lanes, because `recall` and
   `in_bundle` are v-lanes and a v-lane is drawn once per asker

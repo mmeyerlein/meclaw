@@ -13,7 +13,7 @@ and nothing to pay for.
 | [`hello`](hello/) | 2 | no | < 1 s | one `llm` and one edge, which is the whole model in one folder |
 | [`swarm`](swarm/) | 7 | no | < 1 s | the tool loop as a shape: fan-out, fan-in through a store, and a loopback edge into the `llm` |
 | [`meclaw-os`](meclaw-os/) | 0 → 17 | to boot | < 1 s | an empty seed plus one declaration that grows the whole agent from the template library |
-| [`organism`](organism/) | 0 → 92 | to boot | < 1 s | six declarations grow four levels of composition, 565 edges, 70 of them written by hand |
+| [`organism`](organism/) | 0 → 92 | to boot | < 1 s | six declarations grow four levels of composition, 567 edges, 72 of them written by hand |
 | [`never-forgets`](never-forgets/) | 3 → 16 | to boot | < 1 s | tell it in January, ask it in March, and the model names the time range it wants |
 | [`vault-pilot`](vault-pilot/) | 2 → 8 | to boot | < 1 s | a model that holds no key, because its credential arrives sealed from the broker's vault |
 | [`display-colony-view`](display-colony-view/) | 2 → 10 | yes | < 1 s | two owners on one screen, and neither can touch the other's view |

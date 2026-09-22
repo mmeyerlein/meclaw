@@ -63,7 +63,12 @@ def fixture_wave(case):
     root = pathlib.Path(tmp.name)
     wave = root / "plans" / WAVE
     (wave / "berichte").mkdir(parents=True)
-    (wave / "receipts" / "alpha").mkdir(parents=True)
+    # The archive in the shape `scripts/strand.sh gate` writes since
+    # 2026-09-21: one directory per run, `latest` pointing at the newest
+    # (GH #802). The flat shape of before is covered by `_quoting_wave`.
+    run_dir = wave / "receipts" / "alpha" / "20260101T101000Z-abc1234"
+    run_dir.mkdir(parents=True)
+    (wave / "receipts" / "alpha" / "latest").symlink_to(run_dir.name)
 
     (wave / "berichte" / "alpha.md").write_text(
         "---\n"
@@ -111,7 +116,7 @@ def fixture_wave(case):
         "GATE-SUMMARY strand ffff999 9/12 4444s RED\n"
         "und das war ein Fremdbefund.\n", encoding="utf-8")
 
-    with open(wave / "receipts" / "alpha" / "last-strand.json", "w") as fh:
+    with open(run_dir / "last-strand.json", "w") as fh:
         json.dump({
         "mode": "strand",
         "rev": "abc1234",
@@ -341,6 +346,96 @@ class GateDirectoryTests(unittest.TestCase):
         self.assertEqual([r["rev"] for r in runs], ["aaa1111"])
 
 
+
+class ArchiveLayoutTests(unittest.TestCase):
+    """Both shapes of `receipts/<strand>/` are the strand's archive (GH #802).
+
+    Until 2026-09-21 a gate run wrote its receipt, its run log and its station
+    logs FLAT into `plans/<wave>/receipts/<strand>/`, so the second run of a
+    strand wrote over the first. Since then `scripts/strand.sh gate` gives
+    every run a directory of its own, `<timestamp>-<sha>/`, with a `latest`
+    pointer beside it. The retro globbed `*.json` flat and saw nothing of a
+    run archived the new way.
+
+    What that costs is the red run. A report head quotes the LAST gate line,
+    the green one; the red first run of a strand often exists in the archive
+    alone -- so a retro that reads the flat layout only reports every wave as
+    green at the first try, which is the one number R-P3 exists to measure.
+    A wave in the middle of the change carries both layouts at once (the
+    strand that made it does), so both are read and each run counted once.
+    """
+
+    def _receipt(self, path, rev, secs, verdict="GREEN"):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({
+            "mode": "strand", "rev": rev, "verdict": verdict,
+            "lock_wait_secs": 0,
+            "started": "2026-01-01T10:00:00",
+            "finished": f"2026-01-01T10:{secs // 60:02d}:{secs % 60:02d}",
+            "stations": [{"name": "tests", "verdict": verdict}],
+        }), encoding="utf-8")
+
+    def _wave(self):
+        """One strand whose report quotes its GREEN run and nothing else."""
+        return wave_with(self, **{"alpha.md":
+            "---\n"
+            "strang: alpha\n"
+            "branch: welle-t/alpha\n"
+            "issues: [#1]\n"
+            "basis: 9999999\n"
+            'gate: "GATE-SUMMARY strand bbb2222 12/12 720s GREEN"\n'
+            "commits: [aaa1111, bbb2222]\n"
+            "---\n\n"
+            "## Gate\nDer rote erste Lauf steht nur im Archiv.\n"})
+
+    def _seen(self, wave):
+        return sorted((r["rev"][:7], r["secs"])
+                      for r in gates.runs_of(wave, "strand"))
+
+    def test_a_run_in_its_own_directory_is_a_run_of_the_strand(self):
+        """The red first run lies in `<timestamp>-<sha>/` and nowhere else."""
+        wave = self._wave()
+        self._receipt(wave / "receipts" / "alpha" / "20260101T100000Z-aaa1111"
+                      / "last-strand.json", "aaa1111", 480, verdict="RED")
+        self.assertEqual(self._seen(wave),
+                         [("aaa1111", 480), ("bbb2222", 720)])
+
+    def test_the_old_flat_run_and_the_new_archived_one_are_two_runs(self):
+        """What an archive looks like on the day the layout changed: the
+        first run flat, the second in its folder. Both are the strand's."""
+        wave = self._wave()
+        self._receipt(wave / "receipts" / "alpha" / "last-strand.json",
+                      "aaa1111", 480, verdict="RED")
+        self._receipt(wave / "receipts" / "alpha" / "20260101T100000Z-bbb2222"
+                      / "last-strand.json", "bbb2222", 720)
+        self.assertEqual(self._seen(wave),
+                         [("aaa1111", 480), ("bbb2222", 720)])
+
+    def test_the_latest_pointer_is_not_a_second_run(self):
+        """`latest` is a symlink onto one of the folders, so the glob walks
+        the same receipt a second time under a second name."""
+        wave = self._wave()
+        folder = wave / "receipts" / "alpha"
+        self._receipt(folder / "20260101T100000Z-aaa1111" / "last-strand.json",
+                      "aaa1111", 480, verdict="RED")
+        (folder / "latest").symlink_to("20260101T100000Z-aaa1111")
+        runs = gates.runs_of(wave, "strand")
+        self.assertEqual(self._seen(wave),
+                         [("aaa1111", 480), ("bbb2222", 720)])
+        self.assertEqual([r for r in runs if "latest" in r["source"]], [])
+
+    def test_the_two_receipts_of_one_run_are_one_run(self):
+        """A run folder holds `last-strand.json` AND `strand-<sha>.json`,
+        the same document under two names -- as the flat layout did."""
+        wave = self._wave()
+        run = wave / "receipts" / "alpha" / "20260101T100000Z-aaa1111"
+        self._receipt(run / "last-strand.json", "aaa1111", 480, verdict="RED")
+        self._receipt(run / "strand-aaa1111.json", "aaa1111", 480,
+                      verdict="RED")
+        self.assertEqual(self._seen(wave),
+                         [("aaa1111", 480), ("bbb2222", 720)])
+
+
 class LowerBoundTests(unittest.TestCase):
     """Q1 and Q3 count what is documented, and say so when that is less.
 
@@ -545,6 +640,8 @@ class MessartefaktTests(unittest.TestCase):
             "GATE-SUMMARY strand ffff999 9/12 4444s RED\n"
             "und einmal mehr\n"
             "GATE-SUMMARY strand eeee888 11/12 2222s RED\n"})
+        # Deliberately the FLAT archive of before 2026-09-21 (GH #802): every
+        # wave up to welle-live carries it, and the reader has to keep it.
         (wave / "receipts" / "alpha").mkdir(parents=True)
         (wave / "receipts" / "alpha" / "last-strand.json").write_text(json.dumps({
             "mode": "strand",

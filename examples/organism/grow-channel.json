@@ -44,6 +44,11 @@
         "from": ".",
         "to": "./telegram",
         "condition": "has(hop.route) && hop.route == 'answer' && has(context.channel_node) && context.channel_node == 'telegram'"
+      },
+      {
+        "from": ".",
+        "to": "./telegram",
+        "condition": "has(hop.route) && hop.route == 'in_advise' && has(context.channel_node) && context.channel_node == 'telegram'"
       }
     ]
   }

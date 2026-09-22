@@ -1,4 +1,4 @@
-# `voice@2.0.4`
+# `voice@2.2.0`
 
 A spoken conversation as one cell. One WebSocket surface, one pair of provider
 credentials, one wire up and one wire down. No persona, no memory, no answer of
@@ -36,15 +36,24 @@ instantiating mutation put it -- and not a scope with a door, so there is no
 | direction | what travels |
 |---|---|
 | in | the finished assistant turn. `context.call_id` picks the connection it is spoken into (`context.session_id` where that key is absent) |
+| in, `hop.route == 'in_advise'` | one section of advice appended to a RUNNING duplex session, without cutting anybody off: `hop.section` says whether it is a `fact` (said out loud), a `context` (thought) or a `correction` (the standing instruction rewritten). Duplex only -- a cascade session has no channel to append to and answers `wrong_engine` |
 | out, `hop.route == 'turn'` | one finished utterance as a user-origin text turn. `hop` carries `session_id` and `call_id`, `turn_id` (`<session_id>#<n>`), `platform` (`voice`) and `mode` |
 | out, `hop.route == 'partial'` | an interim transcript, same body shape, `hop` carries `eager` beside the rest. OFF by default -- `params.emit_partials` turns it on |
+| out, `hop.route == 'spoken'` | what the ASSISTANT is saying while it is still saying it, same body shape, `hop` carries `speaker: 'assistant'`. Duplex only, and on the same `params.emit_partials` -- the two halves of one stream are ordered together or not at all |
 | out, `hop.route == 'speak_end'` | one synthesis is over. Empty `messages[]`; `hop` carries `session_id`, `call_id`, `speak_id` and `reason` (`done`, `cancelled`, `failed`) beside `platform`. OFF by default -- `params.emit_speak_end` turns it on |
+| out, `hop.route == 'delegation'` | the duplex provider handed work to the client and named the handle: `hop` carries `delegation_id` and `offset_ms`, the body the user text of the open turn. Duplex only |
 | out, `hop.route == 'error'` | the cell's own failure: empty `messages[]`, `hop.error_code` plus `msg_type: 'voice_error'`, `session_id` and `call_id` where a session exists, detail in `meta` |
+
+**A duplex emission stamps `hop.engine: 'duplex'`; a cascade stamps nothing at
+all.** The absent key is the older behaviour, so a colony wired before the
+duplex provider existed sees exactly the hops it always saw, and an edge that
+has to tell the two engines apart reads `has(hop.engine)` rather than a word
+that would have to be invented for the cascade.
 
 **Unlike a chat connector this cell names its own lanes.** `telegram-connector`
 emits one wire and the level around it sorts the two shapes apart on
 `has(hop.error_code)`; here the lane is already on `hop.route` when the emission
-leaves, because there are four shapes and not two, and a level that had to
+leaves, because there are six shapes and not two, and a level that had to
 separate `partial` from `turn` by the presence of a key would be reading the
 absence of `turn_id` as a meaning. So the edges below carry no `set_hop` on the
 way up: the stamp the cell wrote is the stamp the container routes on.
@@ -52,6 +61,8 @@ way up: the stamp the cell wrote is the stamp the container routes on.
 ## Wiring it into a member
 
 **Adding a voice channel costs one node and two edges, and no template moves.**
+(A duplex instance adds one more edge, for the advice lane -- see *The
+providers* below.)
 The mutation is scoped to the **member**, not to the container: a node is
 addressed by its `name` plus the scope, the name carries the `/`, endpoints are
 scope-relative always, and scoping to `<member>/channels` would refuse `"to": "."`
@@ -59,11 +70,11 @@ with `edge_schema`.
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "channels/voice", "template": "voice@2.0.4",
+  "add_nodes": [{"name": "channels/voice", "template": "voice@2.2.0",
                  "override_params": {"mount": "voice"}}],
   "add_edges": [
     {"from": "./channels/voice", "to": "./channels",
-     "condition": "has(hop.route) && (hop.route == 'turn' || hop.route == 'partial' || hop.route == 'error')",
+     "condition": "has(hop.route) && (hop.route == 'turn' || hop.route == 'partial' || hop.route == 'spoken' || hop.route == 'error' || hop.route == 'delegation')",
      "modifier": {"set_context": {"channel_node": "'voice'",
                                   "channel": "'voice'",
                                   "assistant": "'<assistant>'",
@@ -77,12 +88,15 @@ with `edge_schema`.
 }}
 ```
 
-**One edge up, not three.** All three outbound lanes carry the same promotion and
-differ only in the stamp the cell already wrote, so splitting them into three
-edges would buy nothing and give three copies of one modifier a chance to drift
-apart. The container sorts them afterwards, on the same `hop.route` this edge
-leaves untouched: the `member` container ships `./channels -> ./firewall` for
-`turn` and `./channels -> .` for `error`. **`error` is promoted exactly like `turn`** -- a
+**One edge up, not five.** Every outbound lane carries the same promotion and
+they differ only in the stamp the cell already wrote, so splitting them into one
+edge each would buy nothing and give five copies of one modifier a chance to
+drift apart. The container sorts them afterwards, on the same `hop.route` this
+edge leaves untouched: the `member` container ships `./channels -> ./firewall`
+for `turn`, `./channels -> ./assistants` for `delegation` and `./channels -> .`
+for `error`. The two duplex lanes are in the condition even on a cascade
+instance, where nothing ever travels them: an edge that has to be widened before
+a `params.duplex` can be switched on is a second migration for a knob. **`error` is promoted exactly like `turn`** -- a
 failure that happened inside a session carries that session, and an edge that
 promoted the session only on the happy path would make every failure look like it
 came from nowhere.
@@ -200,7 +214,7 @@ install`). Until then the manifest that wants partials does both halves itself
 one key on the node:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.0.4",
+{"name": "channels/voice", "template": "voice@2.2.0",
  "override_params": {"emit_partials": true}}
 ```
 
@@ -234,7 +248,7 @@ at the switch pending — see [`freeswitch`](../freeswitch/) § *Hanging up*).
 **Both halves or neither**, exactly as for `partial`:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.0.4",
+{"name": "channels/voice", "template": "voice@2.2.0",
  "override_params": {"emit_speak_end": true}}
 ```
 
@@ -386,7 +400,7 @@ a new name takes effect on the next life of the cell — the registration happen
 once, when the I/O half starts.
 
 ```json
-{"name": "channels/voice", "template": "voice@2.0.4",
+{"name": "channels/voice", "template": "voice@2.2.0",
  "override_params": {"mount": "voice-b"}}
 ```
 
@@ -402,7 +416,9 @@ in front of the colony's listener that does the authentication and the TLS.
 ## The providers
 
 Two traits, hosted adapters behind each and one that costs nothing, and which
-one runs is `params.stt.provider` / `params.tts.provider`:
+one runs is `params.stt.provider` / `params.tts.provider`. Since 2.1.0 there is
+a third trait beside them that replaces both at once -- see *The third path*
+below -- and a cell runs either the pair or the single provider, never a mix:
 
 | | providers | the block carries |
 |---|---|---|
@@ -449,7 +465,7 @@ spelling that says "not set" -- `VoiceParams::parse` reads a null `tts` exactly
 as an absent one, which is legal precisely when the recogniser is `echo`:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.0.4",
+{"name": "channels/voice", "template": "voice@2.2.0",
  "override_params": {"stt": {"provider": "echo"}, "tts": null}}
 ```
 
@@ -462,7 +478,7 @@ routes -- a self-hosted realtime transcription endpoint, a self-hosted
 `/v1/audio/speech` -- stands in for the hosted one without touching the cell:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.0.4",
+{"name": "channels/voice", "template": "voice@2.2.0",
  "override_params": {
    "tts": {"provider": "openai",
            "base_url": "http://<local-host>:<port>",
@@ -498,6 +514,137 @@ The case this exists for is the telephone. A call IS 8 kHz; upsampling it to
 recogniser was handed interpolated samples for its trouble. The `freeswitch`
 template now streams 8 kHz and asks for 8 kHz in the same command line, out of
 one `fork_sample_rate`.
+
+### The third path: one provider that hears and speaks
+
+**`params.duplex` replaces the pair with a single socket.** A duplex provider
+takes audio and gives audio back on one connection, so there is no recogniser
+handing text to a synthesiser and no seam between them to tune. Two ship:
+
+| provider | what it is | the block carries |
+|---|---|---|
+| `gpt_live` | a hosted live model | `api_key`, `base_url`, `model`, `voice`, `sample_rate`, `instructions`, `greeting`, `turn_gap_ms`, `backchannel_max_ms`, `spoken_quiet_ms`, `spoken_cap_ms`, `close_grace_ms`, `tick_ms`, `keepalive_ms`, `delegation_grace_ms`, `delegation_fallback` |
+| `echo` | the loopback, which needs no credential and knows only `sample_rate` | -- |
+
+**`echo` is here for the reason `echo` is always here.** A trait with one
+implementation is a shape borrowed from that implementation (ADR-0023), and a
+loopback that hands every frame straight back proves the socket, the framing and
+the wiring without spending anything.
+
+**One format, both directions.** A duplex session negotiates ONE rate and one
+encoding for what it hears and what it says, and `16000` or `24000` are the two
+`gpt_live` serves -- `8000` is refused by the vendor, and this cell never
+resamples, here as everywhere else.
+
+**The block is exclusive with `stt` and `tts`.** A params document that names
+`duplex` and either of the other two is refused, so switching an instance over
+sets both to `null` in the same breath -- `override_params` merges and has no
+gesture that removes a key:
+
+```json
+{"name": "channels/voice", "template": "voice@2.2.0",
+ "override_params": {"duplex": {"provider": "gpt_live",
+                                "api_key": "${OPENAI_API_KEY}",
+                                "instructions": "<who the model is for this session>",
+                                "sample_rate": 24000},
+                     "stt": null, "tts": null}}
+```
+
+`instructions` is required and not empty: it is who the model is for this
+session, and it cannot be changed while the session runs. `greeting` is said
+once after the session opens, so the model speaks first; empty means it waits
+for the caller. Both live in the `duplex` block, which carries a credential and
+is therefore off the runtime params surface exactly like `stt` and `tts`:
+rotation means `.env` plus a restart, and tuning means a respawn.
+
+**A running session can still be told something, and that is the `in_advise`
+lane.** It is the one thing a duplex session offers that a cascade cannot: a
+fact, a piece of context or a correction appended to the session while it runs,
+without cutting the speaker off and without becoming a turn. It needs one edge
+down beside the answer edge:
+
+```json
+{"from": "./channels", "to": "./channels/voice",
+ "condition": "has(hop.route) && hop.route == 'in_advise' && has(context.channel_node) && context.channel_node == 'voice'"}
+```
+
+The lane arrives already stamped -- the level that sorts an assistant's sections
+is what names it -- so the edge carries no `set_hop` at all. The words of the
+section travel in `body.payload` -- the splitter upstream cuts a `sidecar` block
+by top-level key and puts the section's own VALUE there, not `{section: value}`
+-- and that slot is read first, because `hop.section` is what named it.
+`messages[-1].text` and `body.text` are read after it, for a sender that writes
+one of those instead. Where the payload is an object rather than a sentence, the
+words are found by name: the section's own key, then `text`, then the first
+string in sorted key order. A section that carries no words in any
+of the three is refused with `bad_section` rather than dropped -- an advice that
+disappears is indistinguishable, from the outside, from a model that ignored it.
+On a cascade instance the same message is refused with `wrong_engine`, which is
+the honest answer: there is no open channel to append to.
+
+**The session has a clock of its own, and it is a timeout timer.** Turns here
+are cut on the MODEL's timeline, so a caller who stops talking closes a turn
+only when time passes -- and on a line where nobody talks, no fragment arrives
+to say that it did. `tick_ms` (`1000`) is the interval that says it: the
+connection hands the turn machine the time on every tick, and the same tick
+carries the delegation deadline below. It replaces the provider's running meter,
+`session.usage.updated`, which was doing the job until 2.2.0 and does not hold
+it -- on a session that hears only silence the meter arrived at no point inside
+45 s over four measured runs, which is exactly the line it was relied on for.
+The meter is now read for `usage_ratio` and for nothing else. A watchdog timer
+is not polling; it is a timeout timer, and the event-driven rule is untouched.
+The promise above -- a turn closes between one and two gaps after the caller
+fell quiet -- holds while `tick_ms` is at most `turn_gap_ms`; a raster coarser
+than the gap it measures waits longer than the gap says. A `tick_ms` of zero is
+refused at the parse, because a clock with no period is a busy loop.
+
+**And the session asks its own socket whether it is still there.** Every
+`keepalive_ms` (`8000`) the adapter sends a WebSocket ping, and the pong that
+comes back carrying ITS payload -- and only that one -- resets
+`provider_idle_timeout_ms`. Without it that deadline could not tell a caller who
+paused from a wire that had died: session frames alone do not say which of the
+two a silence is, so thirty seconds of silence on the line read exactly like
+thirty seconds of dead socket, and the call was cut. A ping somebody sends US
+still counts for nothing -- a proxy pinging a dead upstream would otherwise hold
+a call open for as long as it likes -- and the asymmetry is the point: our own
+question, our own answer.
+
+Eight seconds, and not a round third of the shipped thirty. Pings leave at 8, 16
+and 24 s, and the keepalive arm sits below the idle arm, so a ping due exactly
+on the deadline loses. The third one therefore has to be the one that saves the
+call, and at 24 s it is back with six seconds to spare; at ten seconds it would
+have left AT the deadline, and only one lost pong would have been survivable.
+Eight is also inside the sixty seconds a proxy commonly allows an idle socket.
+Keep any value you set here a fraction of `provider_idle_timeout_ms` -- a
+keepalive as long as the deadline never resets it, and the spawn says so in a
+warning.
+
+**A delegation nobody answers is closed by the cell.** One left open longer than
+`delegation_grace_ms` (`12000`) gets a single `Commentary` append on its own
+`delegation_id` carrying `delegation_fallback` (`"Das kann ich gerade nicht
+nachsehen."`), and then it leaves the open list -- the sentence falls once, not
+once per tick. Measured, an unanswered delegation leaves the caller with one
+holding sentence and then 55 to 58 s of silence, and no timeout arrives from the
+provider's side inside a minute. The shipped grace is about twice the slowest
+answer the same measurements saw end to end, 6 000 ms to reach the cell plus
+779 ms for the model to acknowledge the append; six observations are not a
+distribution, so the number leaves room rather than shaving it. The first line
+against this case is still the prompt -- an assistant that answers every
+delegation, empty-handed if need be -- and the fallback is an instruction rather
+than a script, because a live model paraphrases what it is given.
+
+An answer that arrives AFTER the fallback is still appended. The delegation is
+closed on this side and gone from the open list, and the append that carries the
+late answer names a `delegation_id` the model has already seen closed; what the
+model does with it is not measured, and in the ordinary case it is simply a
+second thing said into the same conversation. So the caller may hear the
+fallback and then the answer, in that order, which is the trade the grace was
+chosen for.
+
+**When the provider is gone, so is the call.** A duplex session is not
+reconnected: the connection IS the session here as everywhere in this cell, and
+a provider that drops the socket ends the call rather than resuming it
+somewhere the caller cannot hear.
 
 ## The credentials
 
@@ -556,7 +703,7 @@ instantiating manifest's `override_params`, where it is substituted at
 instantiation exactly like the two api keys.
 
 ```json
-{"name": "channels/voice", "template": "voice@2.0.4",
+{"name": "channels/voice", "template": "voice@2.2.0",
  "override_params": {"tts": {"provider": "cartesia",
                              "api_key": "${CARTESIA_API_KEY}",
                              "voice": "${CARTESIA_VOICE}"}}}
@@ -571,7 +718,7 @@ exactly the same place, and the whole switch is one override -- the template doe
 not change, because `provider` was always a value rather than a shape:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.0.4",
+{"name": "channels/voice", "template": "voice@2.2.0",
  "override_params": {"tts": {"provider": "elevenlabs",
                              "api_key": "${ELEVENLABS_API_KEY}",
                              "voice": "${ELEVENLABS_VOICE}"}}}

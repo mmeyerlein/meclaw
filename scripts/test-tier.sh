@@ -52,7 +52,10 @@
 #     MECLAW_TIER_DRY=1           print the nextest argv instead of running it.
 #                                 The locking still happens: that is what the
 #                                 hook exists to make testable without paying
-#                                 for a compile.
+#                                 for a compile. The tree sync does NOT -- it
+#                                 touches sources, and a dry run that
+#                                 invalidated the whole build would be a
+#                                 footgun for the sake of a test.
 #
 # Exit 0 = tier green.
 #
@@ -64,6 +67,19 @@ set -uo pipefail
 
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$root" || exit 1
+
+# --- where cargo builds, and the guard that comes with sharing it -----------
+# Both this script and `scripts/gate.sh` start cargo, and every worktree of
+# this repository shares ONE target directory. The rule lived in the runner
+# alone until 2026-09-21, so a targeted test run from a LINKED worktree built a
+# private target/ there; what that cost is measured in
+# `docs/development-rules.md` section 7 (GH #802). Both scripts now read the
+# rule -- and the ghost-binary guard that goes with it -- from one file.
+# shellcheck source=scripts/cargo-target.sh
+. "$root/scripts/cargo-target.sh"
+meclaw_resolve_target_dir "$root"
+target_dir="$MECLAW_TARGET_DIR"
+echo "=== target: $target_dir"
 
 profile=${MECLAW_TIER_PROFILE:-default}
 
@@ -143,6 +159,27 @@ run_nextest() {
             return 2
         }
         flock 9
+    fi
+
+    # The ghost-binary guard, under the lock and before anything is built --
+    # the same order `scripts/gate.sh` keeps. Several worktrees share one
+    # target/, cargo decides freshness by mtime, and an artefact built in tree
+    # A comes back as fresh in tree B; `<target>/.gate-tree` says which tree
+    # filled the directory last, and a run that fills it without writing the
+    # stamp leaves the next one reading somebody else's answer.
+    #
+    # Three runs skip it, each for a reason of its own: inside the gate
+    # (MECLAW_CARGO_LOCK_HELD) the run has already synced and stamped for the
+    # whole chain, CI builds in a fresh checkout with an empty target/, and the
+    # dry hook builds nothing that could be a ghost.
+    if [ -z "${CI:-}" ] && [ -z "${MECLAW_CARGO_LOCK_HELD:-}" ] \
+       && [ -z "${MECLAW_TIER_DRY:-}" ]; then
+        local rev dirty note
+        rev=$(git rev-parse HEAD 2>/dev/null || echo "")
+        dirty=$(meclaw_dirty_files "$root")
+        note=$(meclaw_tree_sync "$root" "$target_dir" "$rev" "$dirty")
+        [ -n "$note" ] && echo "=== tree-sync: $note"
+        meclaw_write_stamp "$root" "$target_dir" "$rev" "$dirty"
     fi
 
     local rc=0

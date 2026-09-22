@@ -532,9 +532,11 @@ fn replace_instance_only(
 /// Substitute a mutation diff, splitting the placeholder classes by DESTINATION.
 ///
 /// Every part of the diff is fully substituted ([`substitute_full`]) except the
-/// two slots whose values are written verbatim into an instance's
-/// `config.json` -- `add_nodes[].override_params` and `swap_nodes[].with.params`.
-/// Those get the disk-facing pass ([`substitute_instance_only`]), so an
+/// three slots whose values are written verbatim into an instance's
+/// `config.json` -- `add_nodes[].override_params`, `swap_nodes[].with.params`
+/// and `replace_nodes[].with.params` (GH #796; the three ops that instantiate,
+/// and the three that reach `patch_and_substitute_config` with an override
+/// set). Those get the disk-facing pass ([`substitute_instance_only`]), so an
 /// environment placeholder handed in by a mutation ends up on disk as a token
 /// and not as a materialized secret (GH #20). The staging step re-applies the
 /// env pass in memory, so the spawned cell still sees the resolved value.
@@ -568,7 +570,12 @@ pub fn substitute_mutation_diff(
             ("add_templates", Some(entries)) => {
                 walk_entries(entries, env, ctx, &mut cache, &[], &["files"])?
             }
-            ("swap_nodes", Some(entries)) => walk_swaps(entries, env, ctx, &mut cache)?,
+            ("swap_nodes", Some(entries)) => walk_with_params(entries, env, ctx, &mut cache)?,
+            // GH #796: a lift's `with.params` reach `config.json` through the
+            // very same `override_params` contract (`stage_replace.rs` ->
+            // `override_entry`), so the slot is the swap's slot and the arm is
+            // the swap's arm. Without it the key fell through `_ => walk_full`.
+            ("replace_nodes", Some(entries)) => walk_with_params(entries, env, ctx, &mut cache)?,
             _ => walk_full(val, env, ctx, &mut cache)?,
         };
         out.insert(key.clone(), substituted);
@@ -615,10 +622,16 @@ fn walk_entries(
     Ok(JsonValue::Array(out))
 }
 
-/// `swap_nodes[]`: the config-destined slot sits one level deeper, in
-/// `with.params` (the with-side's `override_params` equivalent, see
-/// `mutation/stage.rs`).
-fn walk_swaps(
+/// The two operations whose config-destined slot sits one level deeper, in
+/// `with.params`: `swap_nodes[]` (the with-side's `override_params`
+/// equivalent, see `mutation/stage.rs`) and `replace_nodes[]` (a lift's
+/// params, mapped onto the same contract in `mutation/stage_replace.rs`).
+///
+/// One walk for both because it is one slot: both ops hand `with.params`
+/// verbatim to `patch_and_substitute_config`, which merges them into the
+/// instance's `config.json`. GH #796 measured what a second, missing arm
+/// costs -- a lift resolved the token and wrote the value out.
+fn walk_with_params(
     entries: &[JsonValue],
     env: &HashMap<String, String>,
     ctx: &HashMap<String, String>,
@@ -1001,6 +1014,177 @@ mod tests {
             "the with-side params are config-destined too"
         );
         assert_eq!(out["swap_nodes"][0]["with"]["name"], "new");
+    }
+
+    /// GH #796 (R-L6): `replace_nodes[].with.params` is a config-destined slot
+    /// like the other two. A lift hands them to `patch_and_substitute_config`
+    /// through the very same `override_params` contract
+    /// (`mutation/stage_replace.rs` → `override_entry`), so they are merged
+    /// into the instance's `config.json` on disk — and before this arm existed
+    /// they fell through `_ => walk_full` and were merged RESOLVED. Measured on
+    /// a throwaway stage on 2026-09-21: a manifest carrying the placeholder
+    /// twice left a 164-character literal in `params.duplex.api_key` of two
+    /// cells, while the cells of a colony instantiated from the template kept
+    /// the 19-character token.
+    #[test]
+    fn diff_keeps_replace_with_params_env_literal() {
+        let mut env = HashMap::new();
+        env.insert("SOME_KEY".into(), "sk-sentinel".into());
+        let diff = json!({
+            "replace_nodes": [{
+                "match": {"name": "voice"},
+                "with": {
+                    "template": "voice@2.1.0",
+                    "params": {"duplex": {"api_key": "${SOME_KEY}"}}
+                }
+            }]
+        });
+        let out = substitute_mutation_diff(&diff, &env, &HashMap::new()).unwrap();
+        assert_eq!(
+            out["replace_nodes"][0]["with"]["params"]["duplex"]["api_key"], "${SOME_KEY}",
+            "a lift's params are config-destined -- the token stays a token"
+        );
+        assert_eq!(
+            out["replace_nodes"][0]["with"]["template"], "voice@2.1.0",
+            "everything outside the config slot still resolves"
+        );
+        // The counter-proof: the runtime view binds what the disk view withheld
+        // -- the same late binding `stage.rs` applies over the staged config.
+        let runtime = substitute_env_only(&out, &env).unwrap();
+        assert_eq!(
+            runtime["replace_nodes"][0]["with"]["params"]["duplex"]["api_key"], "sk-sentinel",
+            "the lifted cell still spawns with the resolved value"
+        );
+    }
+
+    /// The instance class behaves in a lift's params as it does in the other
+    /// two slots: `${ctx.*}` IS the instance and resolves onto the disk view.
+    #[test]
+    fn diff_resolves_ctx_in_replace_with_params() {
+        let mut ctx = HashMap::new();
+        ctx.insert("user_id".into(), "u-7".into());
+        let diff = json!({
+            "replace_nodes": [{
+                "match": {"name": "voice"},
+                "with": {"template": "voice@2.1.0", "params": {"owner": "${ctx.user_id}"}}
+            }]
+        });
+        let out = substitute_mutation_diff(&diff, &HashMap::new(), &ctx).unwrap();
+        assert_eq!(out["replace_nodes"][0]["with"]["params"]["owner"], "u-7");
+    }
+
+    /// GH #796 (review, 2026-09-21): the diff vocabulary and the arms of
+    /// [`substitute_mutation_diff`] are walked TOGETHER or they drift apart.
+    ///
+    /// `validate::DIFF_OPERATIONS` says "adding an operation means adding its
+    /// key here" and nothing said what the door's substitution pass then owes
+    /// that key. #796 is what the silence costs: `replace_nodes` was added as
+    /// the ninth operation, `substitute_mutation_diff` had no arm for it, and
+    /// its params fell through `_ => walk_full` — resolved onto disk. A tenth
+    /// operation with a config-destined slot would fall exactly the same way,
+    /// in silence.
+    ///
+    /// So every operation states its side here: either it carries a slot whose
+    /// value is written verbatim into an instance's `config.json` — then the
+    /// environment token survives the pass — or it carries none, and then a
+    /// token in it resolves like everything else. A new key in
+    /// `DIFF_OPERATIONS` without a line here fails on the set comparison
+    /// BEFORE anybody has to notice the difference in production.
+    #[test]
+    fn every_diff_operation_states_its_config_destined_slot() {
+        use crate::mutation::validate::DIFF_OPERATIONS;
+        use std::collections::BTreeSet;
+
+        const TOKEN: &str = "${LATE_BOUND}";
+        const VALUE: &str = "the-environment-owns-this";
+        let mut env = HashMap::new();
+        env.insert("LATE_BOUND".to_string(), VALUE.to_string());
+
+        // (operation, a diff carrying the token where that operation's
+        // config-destined slot is — or anywhere at all, for one that has none,
+        // JSON pointer to it, what the pass must leave there).
+        let cases: Vec<(&str, JsonValue, &str, &str)> = vec![
+            // Config-destined: the token stays a token (GH #20, GH #796).
+            (
+                "add_nodes",
+                json!({"add_nodes": [{"name": "a", "template": "t@1.0.0",
+                                      "override_params": {"k": TOKEN}}]}),
+                "/add_nodes/0/override_params/k",
+                TOKEN,
+            ),
+            (
+                "swap_nodes",
+                json!({"swap_nodes": [{"match": {"name": "a"},
+                                       "with": {"template": "t@1.0.0", "params": {"k": TOKEN}}}]}),
+                "/swap_nodes/0/with/params/k",
+                TOKEN,
+            ),
+            (
+                "replace_nodes",
+                json!({"replace_nodes": [{"match": {"name": "a"},
+                                          "with": {"template": "t@1.0.0", "params": {"k": TOKEN}}}]}),
+                "/replace_nodes/0/with/params/k",
+                TOKEN,
+            ),
+            // Somebody else's bytes: no pass at all (GH #611), so the token
+            // stands here too — for the other reason.
+            (
+                "add_templates",
+                json!({"add_templates": [{"name": "t", "files": {"config.json": TOKEN}}]}),
+                "/add_templates/0/files/config.json",
+                TOKEN,
+            ),
+            // No config-destined slot: fully substituted, as every part of a
+            // diff was before the classes were split.
+            (
+                "remove_nodes",
+                json!({"remove_nodes": [{"name": TOKEN}]}),
+                "/remove_nodes/0/name",
+                VALUE,
+            ),
+            (
+                "move_nodes",
+                json!({"move_nodes": [{"name": TOKEN, "to": "/b"}]}),
+                "/move_nodes/0/name",
+                VALUE,
+            ),
+            (
+                "add_edges",
+                json!({"add_edges": [{"from": TOKEN, "to": "/b"}]}),
+                "/add_edges/0/from",
+                VALUE,
+            ),
+            (
+                "remove_edges",
+                json!({"remove_edges": [{"from": TOKEN, "to": "/b"}]}),
+                "/remove_edges/0/from",
+                VALUE,
+            ),
+            (
+                "seed_rows",
+                json!({"seed_rows": [{"path": "/a", "rows": [{"v": TOKEN}]}]}),
+                "/seed_rows/0/rows/0/v",
+                VALUE,
+            ),
+        ];
+
+        let stated: BTreeSet<&str> = cases.iter().map(|(op, ..)| *op).collect();
+        let declared: BTreeSet<&str> = DIFF_OPERATIONS.iter().copied().collect();
+        assert_eq!(
+            stated, declared,
+            "every operation of the diff vocabulary states here whether its values \
+             reach a config.json -- a new key needs its line in this table"
+        );
+
+        for (op, diff, pointer, expected) in &cases {
+            let out = substitute_mutation_diff(diff, &env, &HashMap::new())
+                .unwrap_or_else(|e| panic!("{op}: the door's pass refused the diff: {e:?}"));
+            assert_eq!(
+                out.pointer(pointer).and_then(|v| v.as_str()),
+                Some(*expected),
+                "{op}{pointer}: the substitution pass wrote the wrong class out"
+            );
+        }
     }
 
     #[test]

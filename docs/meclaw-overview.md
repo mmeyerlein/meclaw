@@ -1139,7 +1139,7 @@ description of the surface.
 
 | Path | Purpose | Filter / query parameters | Writing? | Phase |
 |---|---|---|---|---|
-| `/colony/dead_letters` | Dead-letter queue: unresolvable routes, expired TTLs, routing errors | `?since=<ts>` (filters via `WHERE created_at >= ?` on the dead-lettered message's `created_at`, see `handle_read_dead_letters` in `colony_dispatch.rs`), `?limit=<N>`, `?error_code=<code>` | both (read + drain) | 2 |
+| `/colony/dead_letters` | Dead-letter queue: unresolvable routes, expired TTLs, routing errors | `?since=<ts>` (filters via `WHERE created_at >= ?` on the dead-lettered message's `created_at`, see `handle_read_dead_letters` in `colony_dispatch.rs`, and picks the order too: given a mark it walks up from it, left out it answers newest first), `?limit=<N>`, `?error_code=<code>` | both (read + drain) | 2 |
 | `/colony/registry` | Read the cell registry (all registered cells with paths, IDs, types, status). `?path=` for a single cell. Inactive nodes included, with the `active` field. | `?path_prefix=<path>`, `?type=<celltype>`, `?path=<exact>`, `?active=true\|false`, `?tag=<token>` | no | 4 |
 | `/colony/templates` | Read the templates registry (for builder discovery) | `?type=<celltype>` (exact match on the template cell type; unknown values yield an empty list), `?name=<name>` | no | 5 |
 | `/colony/templates/rescan` | Trigger a re-read of the templates directory | none | yes | 5 |

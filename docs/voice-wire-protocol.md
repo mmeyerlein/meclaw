@@ -156,8 +156,9 @@ Every text frame is a JSON object with a `type` field.
 
 | `type` | Fields | When |
 |---|---|---|
-| `hello` | `protocol: "meclaw-voice/1"`, `session_id`, `call_id` (the same value under the name a channel addresses this connection by; since 1.4.0), `mode`, `audio_in {encoding, sample_rate, channels}`, `audio_out` (same shape, or `null` when no TTS provider is configured), `stt` (provider name), `tts` (provider name or `null`), `audio_out_frame_ms` (milliseconds of audio per outbound binary frame; `0` = the provider's own chunks, unframed), `speak_plain` (whether a written answer is turned into speech text before it is synthesised), `release_grace_ms` (how long a released `hold` boundary waits for the recognition provider's own end of turn before the cell cuts the turn; `0` = cut on the `release` frame) | Immediately after the upgrade, always the first frame on the connection. |
+| `hello` | `protocol: "meclaw-voice/1"`, `session_id`, `call_id` (the same value under the name a channel addresses this connection by; since 1.4.0), `mode`, `audio_in {encoding, sample_rate, channels}`, `audio_out` (same shape, or `null` when no TTS provider is configured), `stt` (provider name), `tts` (provider name or `null`), `audio_out_frame_ms` (milliseconds of audio per outbound binary frame; `0` = the provider's own chunks, unframed), `speak_plain` (whether a written answer is turned into speech text before it is synthesised), `release_grace_ms` (how long a released `hold` boundary waits for the recognition provider's own end of turn before the cell cuts the turn; `0` = cut on the `release` frame), `duplex` (whether a duplex provider is behind this connection; `true` means `stt` and `tts` carry the same name, and `spoken` frames arrive beside the `partial` ones) | Immediately after the upgrade, always the first frame on the connection. |
 | `partial` | `text`, `eager: bool` | Every interim transcript. `eager` marks a preflight transcript: the provider thinks the turn is probably over but is not certain. |
+| `spoken` | `text`, `turn_id` | What the model has said so far in the open turn. Cumulative like `partial`: each one replaces the previous. Behind a duplex provider only. |
 | `turn` | `text`, `turn_id` | Exactly one per turn boundary. |
 | `speak_start` | `speak_id` | Before the first audio frame of one synthesis. |
 | `speak_end` | `speak_id`, `reason: "done" \| "cancelled" \| "failed"`, `detail?` | After the last audio frame of that synthesis, or when it was cut short. |
@@ -198,8 +199,8 @@ The list is closed. Treat a code outside it as a bug, never as an extension.
 
 | `type` | Fields | Meaning |
 |---|---|---|
-| `hold` | (none) | Open the turn boundary. `hold` mode only; in `auto` it answers `wrong_mode`, twice in a row `already_holding`. A running synthesis is cancelled, because pressing the button is barge-in. |
-| `release` | (none) | Close the turn boundary: no more audio belongs to this turn. Exactly one `turn` frame follows, as soon as the recognition provider reports the end of the audio already sent, and at the latest after `release_grace_ms` (default 2500 ms; `0` answers on the frame itself). On an empty hold it carries `text: ""`. |
+| `hold` | (none) | Open the turn boundary. `hold` mode only; in `auto` it answers `wrong_mode`, twice in a row `already_holding`. A running synthesis is cancelled, because pressing the button is barge-in. Behind a duplex provider `hold` opens the model's ear instead (`unmute`) and cuts no turn. |
+| `release` | (none) | Close the turn boundary: no more audio belongs to this turn. Exactly one `turn` frame follows, as soon as the recognition provider reports the end of the audio already sent, and at the latest after `release_grace_ms` (default 2500 ms; `0` answers on the frame itself). On an empty hold it carries `text: ""`. Behind a duplex provider `release` closes the ear again (`mute`), and no `turn` frame follows, because the boundaries are the model's there. |
 | `cancel` | (none) | Drop the running synthesis and this session's queue. Answered with `speak_end … "cancelled"`. |
 | `mode` | `mode` | Switch this connection between `auto` and `hold`. Refused with `already_holding` while a `hold` is open; while one is draining it is accepted and closes that boundary first, so exactly one `turn` still comes out of it. |
 
@@ -354,13 +355,12 @@ an exception to it.
 
 ## Reserved, not built
 
-Two frame types are named here and left unimplemented, so that a later
-speech-to-speech session can be composed into the same protocol instead of
-beside it:
+One frame type is named here and left unimplemented, so that a later tool
+call can be composed into the same protocol instead of beside it:
 
-- `spoken`: the model's own transcript of what it said.
 - `tool_call`: a tool call the speech model made inside its session.
 
-The lanes of the same names are reserved for that composition. A client must
-ignore text frames whose `type` it does not know, and this version sends
-neither.
+The lane of the same name is reserved for that composition. A client must
+ignore text frames whose `type` it does not know, and this version does not
+send it. The second reserved name, `spoken`, is built with `voice@2.1.0` and
+stands above in the table of frames the cell sends.

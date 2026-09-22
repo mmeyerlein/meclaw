@@ -1,4 +1,4 @@
-# `freeswitch@2.0.6`
+# `freeswitch@2.1.1`
 
 A telephone as one **channel** of a person, in two halves inside one hive.
 
@@ -48,6 +48,7 @@ the trunk, and `mod_audio_stream` connects to the media half as a WebSocket
 | direction | what travels |
 |---|---|
 | in, `in_speak` | the finished assistant turn, to be spoken into the call. `context.call_id` picks the connection, exactly as it does for a `voice` channel standing on its own |
+| in, `in_advise` | one section of advice for a duplex session that is already running: `hop.section` is `fact` (say it), `context` (think it) or `correction` (rewrite the standing instruction). It goes to the media half alone, ends no synthesis and becomes no turn. Duplex only — a cascade instance answers `wrong_engine` |
 | in, `call_incoming` | somebody is ringing this member. `hop` carries `call_uuid`, `number` and — since 2.0.0 — `user_id`, the member the switch put the caller through as. This is THE turn of an inbound call — a call with no `user_id` and no `callers` entry gets no turn and its leg is put down, and since 1.1.0 a call that arrives while the line is busy gets what `params.second_call` says it gets (§ *What a second call gets*) |
 | in, `call_ringing` | the switch is ringing a number this channel dialled. It moves the row and raises no turn |
 | in, `call_answered` | somebody picked up. `hop` carries `call_uuid`. A turn for a call this channel PLACED; for an inbound call it moves the row and raises no turn, because `call_incoming` already said it |
@@ -55,6 +56,8 @@ the trunk, and `mod_audio_stream` connects to the media half as a WebSocket
 | in, `tool` / `schemas` | a call to `call`/`hangup`, and the menu tick. Both dock on `<freeswitch>/dial` |
 | out, `hop.route == 'turn'` | one thing that was said, or one thing that happened to the line. `hop` carries `session_id` and `call_id`, `turn_id` (`<session_id>#<n>`), `platform` (`phone`), `number`, `user_id`, and `call_state` (`incoming`, `answered`, `busy`, `no_answer`, `failed`) for a turn about the line rather than about words |
 | out, `hop.route == 'partial'` | an interim transcript, out of the media half. OFF by default — `emit_partials` on the `voice` cell turns it on |
+| out, `hop.route == 'spoken'` | what the assistant is saying, while it is still saying it. Duplex only, and on the same `emit_partials` as `partial` — the two are the two halves of one stream |
+| out, `hop.route == 'delegation'` | the duplex provider handed work to the client and named the handle; `hop` carries `delegation_id` and `offset_ms`. It leaves the hive because the work is not telephony, and the answer comes back on `in_advise` |
 | out, `hop.route == 'error'` | a caller with no entry in `callers` — whose leg is put down in the same breath — a request this hive cannot read, or the media half's own failure |
 | out, `tool_result` / `tool_schemas` | the receipt of a `call`/`hangup`, and the offer itself |
 | out, `call_accepted` / `call_queued` / `call_refused` / `call_abandoned` | what a second call got. One receipt per inbound call, empty `messages[]`, `hop` carries `call_id`, `policy`, `capacity` and `cause`. The installing manifest draws the edge that drains them |
@@ -194,7 +197,7 @@ tool v-lanes and their way back.
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "channels/freeswitch", "template": "freeswitch@2.0.6",
+  "add_nodes": [{"name": "channels/freeswitch", "template": "freeswitch@2.1.1",
                  "override_params": {
                    "signal": {"dial_prefix": "sofia/gateway/fs02/",
                               "voice_ws_url": "ws://<colony-host>:<listener-port>/phone/ws",
@@ -985,6 +988,27 @@ default, `voice` for the screen's half and `phone` for this one, and neither has
 to be overridden for both to register. A colony on `1.1.0` migrates with
 `swap_nodes` and nothing else.
 
+**`2.1.0` lets the media half run a duplex provider** ([#787](https://github.com/mmeyerlein/meclaw/issues/787)).
+Second place, because a caller can wire something it never could: this hive
+accepts `in_advise` at its rim and emits `spoken` and `delegation` beside the
+lanes it already had. The media half's pin moves with it, and the pin itself
+stands in `voice/config.json` — the one place a reader can resolve it, and the
+one place § 4a's sweep reads. What the pinned version brings is
+`params.duplex`: one provider that hears and speaks on one socket, instead of
+the recogniser/synthesiser pair.
+
+**The media path does not move.** FreeSWITCH still does the SIP and forks the
+audio over `mod_audio_stream` to the `phone` mount, `fork_sample_rate` is still
+`16000`, and the ringing and the answering are the dialplan's, exactly as
+before. Which model is behind the socket is a param of the media half, so
+switching a colony over is `override_params` on one node and nothing else.
+
+**`speak_end` is still the beat a hang-up waits for.** What changes is where it
+comes from: a live model announces no end of speech, so the media half raises
+the lane out of the QUIET after the model stopped speaking rather than out of
+the end of a synthesis. The signalling half counts up and down exactly as it
+did, and `cancelled` still becomes `uuid_break` at the switch.
+
 **`2.0.0` makes the switch the proxy** ([#616](https://github.com/mmeyerlein/meclaw/issues/616)).
 First place, because two things a caller wired against are different: the media
 half answers on a **mount** and no longer on a port of its own
@@ -1006,7 +1030,7 @@ caller types before they are put through, are the proxy's business — this colo
 holds no register of them and no PIN at all, and there is no tool that reads one
 back.
 
-Migrating a colony on `1.1.1`: `swap_nodes` onto `freeswitch@2.0.6`, then give
+Migrating a colony on `1.1.1`: `swap_nodes` onto `freeswitch@2.1.1`, then give
 `./signal` a `line_user_id` (without it the three new tools refuse by name and
 nothing else changes), and point `voice_ws_url` at the colony's listener and this
 hive's mount instead of at a port. The dialplan keeps working unchanged as long
@@ -1019,7 +1043,7 @@ exported, so for almost everybody this section is history. A colony that *did* g
 in two steps and keeps its call table:
 
 1. `swap_nodes` the node onto the new template
-   (`{"match": {"name": "channels/phone"}, "template": "freeswitch@2.0.6"}`),
+   (`{"match": {"name": "channels/phone"}, "template": "freeswitch@2.1.1"}`),
    which leaves the `store` where it is.
 2. Rewrite the edges of the installing manifest above: they name the node, and
    the node's name is what changed. The receipt edges go in at the same time.

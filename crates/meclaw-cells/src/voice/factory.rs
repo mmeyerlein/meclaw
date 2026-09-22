@@ -12,7 +12,7 @@
 use crate::voice::cell::VoiceCell;
 use crate::voice::io::VoiceIo;
 use crate::voice::params::{VoiceOverlay, VoiceParams};
-use crate::voice::providers::{build_stt, build_tts};
+use crate::voice::providers::{build_duplex, build_stt, build_tts};
 use meclaw_colony::persist::cell_db::open_or_create_cell_db_with_status;
 use meclaw_colony::{
     CellFactory, DbConn, RespawnFn, SpawnedCellKind, SurfaceRegistry, build_long_running_task,
@@ -192,6 +192,82 @@ pub(crate) fn provider_timeouts(p: &VoiceParams) -> crate::voice::contract::Prov
     }
 }
 
+/// The two deadlines the connection's `speak_end` heuristic runs on (OR-L19).
+///
+/// Named beside [`provider_timeouts`] and for the same reason: the build
+/// closure and its test have to be looking at one computation. A cascade cell
+/// never reads either — it learns the end of a synthesis from the synthesis —
+/// so the defaults stand there rather than an `Option` with no second
+/// behaviour behind it.
+pub(crate) fn spoken_deadlines(p: &VoiceParams) -> (u64, u64) {
+    match &p.duplex {
+        Some(crate::voice::params::DuplexParams::GptLive(g)) => {
+            (g.spoken_quiet_ms, g.spoken_cap_ms)
+        }
+        _ => (
+            crate::voice::params::DEFAULT_SPOKEN_QUIET_MS,
+            crate::voice::params::DEFAULT_SPOKEN_CAP_MS,
+        ),
+    }
+}
+
+/// How long the connection waits for the duplex provider's own verdict once the
+/// client is gone, in milliseconds (contract § 1.2, OR-L.L2b.1).
+///
+/// Beside [`spoken_deadlines`] and for the same reason: the build closure and
+/// its test have to be looking at one computation. A cascade cell never waits
+/// for a duplex verdict, and neither does the loopback, whose params block has
+/// no knob at all — both take the shipped number, which is also the one OpenAI
+/// documents for `session.closed`.
+pub(crate) fn duplex_close_grace_ms(p: &VoiceParams) -> u64 {
+    match &p.duplex {
+        Some(crate::voice::params::DuplexParams::GptLive(g)) => g.close_grace_ms,
+        _ => crate::voice::params::DEFAULT_CLOSE_GRACE_MS,
+    }
+}
+
+/// How often a duplex connection hands the turn machine the time, in
+/// milliseconds (`params.duplex.tick_ms`, R-L7).
+///
+/// Beside the two above, and the same shape: the loopback's params block has no
+/// knob at all and a cascade has no turn machine on this clock, so both take
+/// the shipped number. The tick itself lives in the connection, ABOVE the
+/// provider trait, so neither adapter implements it and both get it.
+pub(crate) fn duplex_tick_ms(p: &VoiceParams) -> u64 {
+    match &p.duplex {
+        Some(crate::voice::params::DuplexParams::GptLive(g)) => g.tick_ms,
+        _ => crate::voice::params::DEFAULT_DUPLEX_TICK_MS,
+    }
+}
+
+/// The one relation between a duplex knob and a cell-level one that nothing
+/// checks at the parse: `keepalive_ms` against `provider_idle_timeout_ms`
+/// (R-L7, GH #798).
+///
+/// The keepalive is what makes the idle deadline mean "the socket is dead"
+/// instead of "the caller stopped talking", and it can only mean that while the
+/// pings are quicker than the deadline. Set as long as the deadline or longer,
+/// the first ping arrives too late to reset anything and the call is cut on a
+/// timer nothing answers any more -- the knob is then not merely useless, it
+/// wears the name of a fix while the old bug runs.
+///
+/// A WARNING and not a refusal, deliberately. The two values live in different
+/// blocks and `provider_idle_timeout_ms` is mutable at runtime while `duplex`
+/// is not, so the pair can be broken by an update that never names the
+/// keepalive; refusing there would turn a tuning mistake into a cell that will
+/// not come back. Returned as a pair rather than logged here, so the arithmetic
+/// has a test and the log has one caller.
+pub(crate) fn keepalive_outlives_idle(p: &VoiceParams) -> Option<(u64, u64)> {
+    match &p.duplex {
+        Some(crate::voice::params::DuplexParams::GptLive(g))
+            if g.keepalive_ms >= p.provider_idle_timeout_ms =>
+        {
+            Some((g.keepalive_ms, p.provider_idle_timeout_ms))
+        }
+        _ => None,
+    }
+}
+
 /// Build the closure that constructs a fresh `voice` cell-task.
 ///
 /// Params are parsed once, outside the closure, so a params error is a spawn
@@ -226,6 +302,10 @@ fn make_build(
     let birth_stt = build_stt(&birth_parsed.stt, birth_timeouts)?;
     let birth_tts = match &birth_parsed.tts {
         Some(t) => Some(build_tts(t, birth_timeouts)?),
+        None => None,
+    };
+    let birth_duplex = match &birth_parsed.duplex {
+        Some(d) => Some(build_duplex(d, birth_timeouts)?),
         None => None,
     };
 
@@ -281,6 +361,21 @@ fn make_build(
         //    the fallback: this closure is the `RespawnFn` and has nowhere to
         //    report a failure, and the birth adapters are a working cell.
         let timeouts = provider_timeouts(&parsed);
+        // Said once per life, where both numbers are finally in one place. The
+        // parse sees the duplex block and the cell-level deadline in the same
+        // call, but refusing there would strand a cell over a value an update
+        // may move (see `keepalive_outlives_idle`).
+        if let Some((keepalive_ms, idle_ms)) = keepalive_outlives_idle(&parsed) {
+            tracing::warn!(
+                path = path_cap.as_str(),
+                keepalive_ms,
+                provider_idle_timeout_ms = idle_ms,
+                "voice: duplex.keepalive_ms is not shorter than \
+                 provider_idle_timeout_ms -- the first ping arrives too late to \
+                 reset the deadline, so a quiet line is cut as if the socket had \
+                 died. Set the keepalive to a fraction of the deadline."
+            );
+        }
         let stt = build_stt(&parsed.stt, timeouts).unwrap_or_else(|e| {
             tracing::error!(
                 path = path_cap.as_str(),
@@ -302,6 +397,26 @@ fn make_build(
             }),
             None => None,
         };
+        // The third direction, on the same rule as the other two. In duplex
+        // mode `parsed.stt` is `SttParams::Echo` and `parsed.tts` is `None`
+        // (the parser settles that), so the two above have already built the
+        // inert placeholder OR-L23 calls for: an `EchoStt` nothing reads,
+        // because `negotiate`, `GET /info`, `hello` and the connection all ask
+        // `duplex` first. An `Option` on `VoiceIo.stt` instead would move
+        // twenty hand-built fixtures in `voice_t4`/`voice_t5` for a field this
+        // mode never looks at.
+        let duplex = match &parsed.duplex {
+            Some(d) => build_duplex(d, timeouts).map(Some).unwrap_or_else(|e| {
+                tracing::error!(
+                    path = path_cap.as_str(),
+                    error = %e,
+                    "voice: could not rebuild the duplex adapter — this life \
+                     keeps the one it was born with"
+                );
+                birth_duplex.clone()
+            }),
+            None => None,
+        };
 
         // 4. Build both halves (sync). The events channel the substrate mints
         //    replaces the placeholder in `VoiceCell::run_io`.
@@ -320,6 +435,15 @@ fn make_build(
         // Read here, like the two timeouts: this life frames at the value it
         // was born with, and a moved one takes effect on the next respawn.
         io.audio_out_frame_ms = parsed.audio_out_frame_ms;
+        // The duplex half of this life, read here for the same reason the
+        // frame length is: the I/O half is built from the effective params of
+        // the life about to start.
+        io.duplex = duplex;
+        let (quiet_ms, cap_ms) = spoken_deadlines(&parsed);
+        io.spoken_quiet_ms = quiet_ms;
+        io.spoken_cap_ms = cap_ms;
+        io.close_grace_ms = duplex_close_grace_ms(&parsed);
+        io.duplex_tick_ms = duplex_tick_ms(&parsed);
         // The path the mount registers under. The mount table refuses a name
         // another path holds and lets the holder replace its own entry, which
         // is what a respawn is.
@@ -366,6 +490,99 @@ mod tests {
             "the cells register on the table the CLI reads"
         );
         let _ = VoiceCellFactory::default(); // a fixture needs no CLI
+    }
+
+    /// The warning the spawn says once per life, as arithmetic (R-L7, GH #798).
+    ///
+    /// The log line itself has no test path in this tree, so the decision it
+    /// rests on is the thing under test: a keepalive that is not shorter than
+    /// the idle deadline never resets it, and the shipped pair has to stay
+    /// clear of that.
+    #[test]
+    fn a_keepalive_at_or_past_the_idle_deadline_is_worth_a_word() {
+        let shipped = VoiceParams::parse(&json!({
+            "mount": "voice",
+            "duplex": {"provider": "gpt_live", "api_key": "k", "instructions": "be Egon"}
+        }))
+        .expect("a gpt_live block parses");
+        assert_eq!(
+            keepalive_outlives_idle(&shipped),
+            None,
+            "the shipped pair is quiet: the keepalive is a fraction of the deadline"
+        );
+
+        let broken = VoiceParams::parse(&json!({
+            "mount": "voice",
+            "provider_idle_timeout_ms": 30000,
+            "duplex": {
+                "provider": "gpt_live",
+                "api_key": "k",
+                "instructions": "be Egon",
+                "keepalive_ms": 30000
+            }
+        }))
+        .expect("an equal pair still parses -- it is a warning, not a refusal");
+        assert_eq!(
+            keepalive_outlives_idle(&broken),
+            Some((30_000, 30_000)),
+            "equal is already too late: the ping that would reset the deadline \
+             comes due in the same poll the deadline wins"
+        );
+
+        let cascade = VoiceParams::parse(&json!({
+            "mount": "voice",
+            "stt": {"provider": "echo"}
+        }))
+        .expect("a cascade parses");
+        assert_eq!(
+            keepalive_outlives_idle(&cascade),
+            None,
+            "a cascade has no keepalive to be wrong about"
+        );
+    }
+
+    /// The close grace is the operator's number, not a constant in the
+    /// connection (OR-L.L2b.1).
+    ///
+    /// The wait it sizes is what carries the final `Closed { usage_seconds }`
+    /// to the handler, and after OR-L22 that log line is the only place a
+    /// session's cost is ever reported. A document that raises the provider's
+    /// own `close_grace_ms` above the shipped 15 s and finds the connection
+    /// still giving up at 15 s loses exactly that number, silently.
+    #[test]
+    fn the_close_grace_comes_from_the_duplex_block() {
+        let raised = VoiceParams::parse(&json!({
+            "mount": "voice",
+            "duplex": {
+                "provider": "gpt_live",
+                "api_key": "k",
+                "instructions": "be Egon",
+                "close_grace_ms": 30000
+            }
+        }))
+        .expect("a gpt_live block parses");
+        assert_eq!(duplex_close_grace_ms(&raised), 30_000);
+
+        let shipped = VoiceParams::parse(&json!({
+            "mount": "voice",
+            "duplex": {"provider": "gpt_live", "api_key": "k", "instructions": "be Egon"}
+        }))
+        .expect("a gpt_live block parses");
+        assert_eq!(
+            duplex_close_grace_ms(&shipped),
+            crate::voice::params::DEFAULT_CLOSE_GRACE_MS
+        );
+
+        let cascade = VoiceParams::parse(&json!({
+            "mount": "voice",
+            "stt": {"provider": "echo"}
+        }))
+        .expect("a cascade parses");
+        assert_eq!(
+            duplex_close_grace_ms(&cascade),
+            crate::voice::params::DEFAULT_CLOSE_GRACE_MS,
+            "a cascade never waits for a duplex verdict; it takes the shipped number"
+        );
     }
 
     /// MUST 2: the deadlines the adapters are held to come from the effective

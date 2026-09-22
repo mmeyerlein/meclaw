@@ -197,8 +197,12 @@ MODES = ("strand", "integration", "release", "ci")
 # The scenario class. This is the ONLY copy: `scripts/test-tier.sh` no longer
 # spells it out, it asks for it with `gate_plan.py --print scenario`. Change it
 # here and the tiers and the per-diff selection move together.
+# The `*_live` binaries are here for a second reason beside cost: they open a
+# billed session against a third party, so they never ride a diff.
+# `scripts/tests/test_gate_plan.py` locks the suffix rule against the tree.
 SCENARIO = ('binary(/_demo$/) + binary(/_demo_/) + binary(/e2e/) '
             '+ binary(/^workshop_scenario$/) + binary(/^slack_live$/) '
+            '+ binary(/^gpt_live_live$/) '
             '+ binary(/^harness_real_cli_smoke$/) + binary(/^audit_14_/)')
 
 # Run artefacts of the two suites. They are committed, they change on every

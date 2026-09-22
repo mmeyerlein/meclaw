@@ -31,7 +31,8 @@
       "model": "sonic-3.6",
       "language": "de",
       "sample_rate": 24000
-    }
+    },
+    "duplex": null
   },
   "contract": {
     "version": "2.0.0",
@@ -111,6 +112,12 @@
         },
         "description": "The speech-to-text lane: 'provider' picks the adapter and the remaining keys belong to it. Carries the credential, so the whole block is immutable on the runtime params surface -- rotation means .env plus a restart. 'echo' is the provider that needs no credential and no tts block at all. The deepgram block also takes 'keyterms', a list of words the recogniser should expect (for example ['Sam', 'meclaw']): names and product terms a general model has no reason to know, each one boosted on its own, and a multi-word entry stays one term. Empty by default, and an empty list changes nothing about the request."
       },
+      "duplex": {
+        "type": "object",
+        "secret": true,
+        "default": null,
+        "description": "The duplex lane: ONE provider that hears and speaks on one socket, instead of the stt/tts pair. Exclusive with them -- a document that names this block and either of the other two is refused, and an instantiation that switches an instance over sets \"stt\": null and \"tts\": null beside it, because override_params merges and cannot remove a key. 'provider' picks the adapter: 'gpt_live' (a hosted live model) or 'echo' (the loopback, which needs no credential and knows only 'sample_rate'). The gpt_live block takes 'api_key' (bound to OPENAI_API_KEY in the environment), 'base_url', 'model', 'voice', 'sample_rate' (16000 or 24000 -- 8000 is refused by the vendor and the cell never resamples), 'instructions' (required and not empty: it is who the model is for this session, and it cannot be changed while the session runs), 'greeting' (said once after the session opens, so the model speaks first; empty means it waits for the caller), 'turn_gap_ms' and 'backchannel_max_ms' (how turns are cut on the MODEL's timeline, and how long an interjection may be before it stops being a backchannel), 'spoken_quiet_ms' and 'spoken_cap_ms' (how long the model may be silent before a spoken section counts as over -- a live model announces no end of speech, and whoever waits for the sentence to finish before hanging up needs one), 'close_grace_ms', 'tick_ms' (how often the cell's own clock feeds the turn machine -- a duplex turn is cut on the MODEL's timeline, so on a line where nobody speaks nothing arrives to say that time passed, and `session.usage.updated` does not fill that gap: measured, it never arrived inside 45 s on a session that heard only silence; the promise that a turn closes between one and two gaps after the caller fell quiet holds while this is at most 'turn_gap_ms', and a zero is refused), 'keepalive_ms' (how often the session asks its own socket whether it is still there: the adapter sends a WebSocket ping and only the pong carrying ITS payload resets 'provider_idle_timeout_ms', so the idle deadline means a dead socket and not a caller who paused -- a ping somebody else sends still counts for nothing, because a proxy pinging a dead upstream would otherwise hold a call open for as long as it likes; keep it a FRACTION of 'provider_idle_timeout_ms' -- the shipped 8000 puts the third ping at 24 s inside the shipped 30 000 ms deadline, so two pongs may go missing before a call is given up, while a keepalive as long as the deadline never resets it at all and the spawn says so in a warning; a zero is refused), and the two that sit on that same tick, 'delegation_grace_ms' and 'delegation_fallback' (a delegation this colony has not answered within the grace is closed by the cell with ONE commentary append on its own delegation_id carrying the fallback sentence -- measured, an unanswered delegation leaves the caller with one holding sentence and then 55 to 58 s of silence, and no timeout arrives from the provider inside a minute; the sentence is an instruction and not a script, because a live model paraphrases what it is given). Carries the credential, so the whole block is immutable on the runtime params surface, exactly like stt and tts: rotation means .env plus a restart, and tuning means a respawn. NULL here -- the shipped instance is a cascade."
+      },
       "tts": {
         "type": "object",
         "secret": true,
@@ -143,8 +150,10 @@
           "values": [
             "turn",
             "partial",
+            "spoken",
             "speak_end",
-            "error"
+            "error",
+            "delegation"
           ],
           "required": false
         },
@@ -195,6 +204,42 @@
           "type": "boolean",
           "required": false
         },
+        "engine": {
+          "type": "string",
+          "values": [
+            "duplex"
+          ],
+          "required": false,
+          "description": "Which half of this cell produced the emission. A duplex session stamps `duplex` on every lane it emits; the cascade stamps NOTHING, so the key is absent rather than `cascade` -- an edge that has to tell the two apart reads `has(hop.engine)`, and a colony wired before the duplex provider existed keeps seeing exactly the hops it always saw."
+        },
+        "speaker": {
+          "type": "string",
+          "values": [
+            "assistant"
+          ],
+          "required": false,
+          "description": "Who is speaking in a `spoken` emission. Only on that lane, and only ever the assistant: the caller's side of the same stream is the `partial` lane, which is older and keeps its name."
+        },
+        "happened_at": {
+          "type": "number",
+          "required": false,
+          "description": "When the last fragment of this turn arrived, in milliseconds of the SESSION's own clock. A duplex provider cuts its turns on the model's timeline and reports every fragment against that clock, so a turn carries the time the model measured rather than the time this cell was scheduled."
+        },
+        "usage_ratio": {
+          "type": "number",
+          "required": false,
+          "description": "How full the duplex provider says its context window is, as the last value it reported. It rides on `turn` because there is no session lane: a live session tells nobody but the log how long it has been running, and the one number a topology can act on belongs with the traffic it is about."
+        },
+        "delegation_id": {
+          "type": "string",
+          "required": false,
+          "description": "Which delegation this emission belongs to. Only on the `delegation` lane: the provider says it has handed work to the client and names the handle, and whatever answers has to send the answer back under the same name."
+        },
+        "offset_ms": {
+          "type": "number",
+          "required": false,
+          "description": "How far into the session the delegation was created, in milliseconds of the session's own clock. Only on the `delegation` lane, and it is what lets a receipt be placed in the conversation the caller heard."
+        },
         "error_code": {
           "type": "string",
           "required": false
@@ -212,7 +257,19 @@
           "required": true
         }
       },
+      "hop": {
+        "section": {
+          "type": "string",
+          "required": false,
+          "description": "Which KIND of advice an `in_advise` carries, and therefore which channel of the duplex provider it is appended to. Three names and no more: a `fact` is said out loud, a `context` is thought, a `correction` rewrites the standing instruction. No `values` list stands here because a consumed key declares a type and a requirement and nothing else -- the cell is what refuses, with `bad_section` for a name outside the three and for a section that arrived without words in it and `wrong_engine` where the session is a cascade and has no channel to append to at all."
+        }
+      },
       "context": {
+        "delegation_id": {
+          "type": "string",
+          "required": false,
+          "description": "Which delegation an `in_advise` is the answer to, where it is the answer to one. Optional on purpose: advice may also arrive unasked -- a fact somebody wanted said now -- and the provider takes it either way."
+        },
         "call_id": {
           "type": "string",
           "required": false,
@@ -234,8 +291,8 @@
     "purpose": "One spoken conversation as one cell. Audio arrives over a WebSocket and leaves the cell as ordinary text turns; a finished assistant turn arriving from the topology is spoken back into the same connection. A connection IS the session, so the cell mints the id at birth and every emission carries it twice: as session_id, and as call_id -- the name a channel addresses it by.",
     "use_when": "Wherever a topology needs a voice surface in front of something ELSE. One instance per mount. Wire the cell itself -- there is no hive and no lane inside it to hit: the emission lane is on hop.route, 'turn' for a finished utterance, 'partial' for an interim one and 'error' for the cell's own failure.",
     "not_in_scope": "No telephony, no SIP, no room: the client brings the audio and takes it back. No resampling either -- the rate a provider declares is the rate on the wire, and a client that sends something else is refused rather than converted. No persona, no memory, no answer of its own: this is the surface, and whatever stands behind it answers.",
-    "emits_meaning": "Three emission shapes, hence no required hop key. (a) 'turn' -- one user-origin text turn per finished utterance, hop carries route, session_id, call_id, turn_id ('<session_id>#<n>'), platform and mode. (b) 'partial' -- the same body shape for an interim transcript, hop carries route, session_id, call_id, platform, mode and eager; params.emit_partials ships FALSE, so this shape only appears where a manifest ordered it and drew the edge that drains it. (c) 'error' -- empty messages[], hop carries route 'error', error_code, msg_type 'voice_error' and, where a session exists, session_id and call_id, with the detail in meta. Declaring session_id or platform required would break shape (c) against the substrate emits validation.",
-    "consumes_meaning": "messages[]: the last assistant turn is spoken into the connection. context.call_id selects which connection -- promoted onto context by the outbound edge of the level that holds this cell, out of the hop this cell stamped on the way up. context.session_id is read where call_id is absent, so a colony wired before 1.4.0 keeps working; its owner is unchanged, and the second key exists because a member's session-keeper writes the first one for its own generation. A message naming neither is refused as missing_session.",
+    "emits_meaning": "Three emission shapes, hence no required hop key. (a) 'turn' -- one user-origin text turn per finished utterance, hop carries route, session_id, call_id, turn_id ('<session_id>#<n>'), platform and mode. (b) 'partial' -- the same body shape for an interim transcript, hop carries route, session_id, call_id, platform, mode and eager; params.emit_partials ships FALSE, so this shape only appears where a manifest ordered it and drew the edge that drains it. (c) 'error' -- empty messages[], hop carries route 'error', error_code, msg_type 'voice_error' and, where a session exists, session_id and call_id, with the detail in meta. Declaring session_id or platform required would break shape (c) against the substrate emits validation. Since 2.1.0 a DUPLEX session adds three lanes to the same three shapes and stamps hop.engine 'duplex' on every one of them, which is how an edge tells the two engines apart -- a cascade stamps no engine at all. 'spoken' is shape (b) for the assistant's side of the stream, with hop.speaker 'assistant', and rides on the same emit_partials. 'delegation' is shape (a) with delegation_id and offset_ms: the provider says it has handed work to the client, and the body carries the user text of the open turn so that whatever answers knows what was asked. 'turn' gains happened_at and usage_ratio there, because a duplex turn is cut on the MODEL's clock and the only number a topology can act on -- how full the context window is -- has no lane of its own.",
+    "consumes_meaning": "messages[]: the last assistant turn is spoken into the connection. context.call_id selects which connection -- promoted onto context by the outbound edge of the level that holds this cell, out of the hop this cell stamped on the way up. context.session_id is read where call_id is absent, so a colony wired before 1.4.0 keeps working; its owner is unchanged, and the second key exists because a member's session-keeper writes the first one for its own generation. A message naming neither is refused as missing_session. Since 2.1.0 there is a second inbound lane, in_advise, and it exists only for a duplex session: hop.section says whether the text is a fact, a context or a correction, context.delegation_id names the delegation it answers where it answers one, and the text is body.payload, which IS the section value the sidecar splitter writes there, read before the last message and body.text -- those two stay for a sender that writes one of them instead. Where the payload is an object the sentence is found by name: the section\u0027s own key, then text, then the first string in sorted key order. A section that carries no words in any of the three is refused as bad_section rather than dropped. It is not a turn and it is not spoken as one -- it is appended to the running session, so nothing is cut and nobody is interrupted.",
     "examples": [
       "A finished utterance -> emit body { messages: [{ origin: 'user', type: 'text', text: 'what time is it' }] }, hop { route: 'turn', session_id: '0190...', call_id: '0190...', turn_id: '0190...#1', platform: 'voice', mode: 'auto' }",
       "An assistant turn arriving with context.call_id -> synthesised into that connection; the client hears speak frames and a speak_end"

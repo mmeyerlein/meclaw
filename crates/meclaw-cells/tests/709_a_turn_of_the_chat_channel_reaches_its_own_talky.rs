@@ -280,8 +280,8 @@ fn every_edge_around_the_one_talky_has_a_twin_around_the_other() {
     }
     assert_eq!(
         hp.graph.edges.len(),
-        61,
-        "thirty-eight edges and twenty-three twins. The number is asserted so that an \
+        63,
+        "thirty-nine edges and twenty-four twins. The number is asserted so that an \
          edge added on one side and forgotten on the other is loud"
     );
 }

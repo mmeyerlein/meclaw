@@ -10,6 +10,277 @@ mount a `web` cell owns and the documented `error_code` strings
 listed under **Breaking** in its release, with the migration named. The Rust
 crates are internals and move without notice.
 
+## [Unreleased]
+
+## [0.41.0] — 2026-09-22
+
+A minor release: a `voice` cell can hold one session in which a model hears the
+caller and answers in it. `voice@2.1.0` adds `DuplexProvider` beside recognition
+and synthesis -- one session carrying audio in both directions, `gpt_live` over
+one WebSocket or `echo` for the wire without a model -- and three lanes that
+exist only there: `spoken` for the assistant side, `delegation` for the errand
+the model hands the backend mid-call, and `in_advise` for a fact, a piece of
+context or a correction brought into a running conversation. `voice@2.2.0` gives
+that session a clock of its own, because the provider's running meter arrived at
+no point inside 45 s on a line that heard only silence, keeps the socket alive
+with a ping whose own pong resets the idle deadline, and closes a delegation
+nobody answered with a single sentence. The road around the cell is drawn to
+match: `freeswitch@2.1.0` puts a live model behind the media half, `member@1.9.0`
+carries a delegation across to the assistants and the three advice sections back
+down, `assistant@2.8.0` takes that errand in as a lane, `collector@4.2.0`
+assembles for a brain that advises the model on the line rather than answering
+the caller, and `talky@5.2.0` accepts the lane while `talky@5.2.1` lets a sidecar
+section be the sentence itself. Beside that, the dead-letter read answers newest
+first, a grown child hears the two lanes its level had just learned
+(`builder@1.12.0`), and `scripts/test-tier.sh` builds where `scripts/gate.sh`
+builds.
+
+### Added
+
+- **A duplex provider is the third seam of the `voice` cell** (`voice@2.1.0`,
+  GH #779, GH #789, ADR-0023). `DuplexProvider` holds one session that carries
+  audio in both directions and reports what was said beside it, so a model can
+  hear the caller itself and answer with a voice where a recogniser, an
+  assistant and a synthesis did the same work in three steps. Two
+  implementations ship, `gpt_live` over one WebSocket and `echo` for the wire
+  without a model. A `duplex` block excludes `stt` and `tts`, and a cell
+  without one is unchanged.
+
+  Audio still terminates in the I/O half. One client frame becomes one frame to
+  the provider, unbuffered and unpaced, and no sample becomes a message. There
+  is no cell type of its own, no webhook, no second door and no reconnect: a
+  session is the conversation, so a failed provider ends the call with
+  `duplex_failed` on the `error` lane and `1011` on the socket.
+
+  Three lanes are new and exist only here. `spoken` mirrors `partial` for the
+  assistant side and takes up a name the wire protocol had reserved;
+  `delegation` leaves when the model hands work to the backend; `in_advise`
+  brings a fact, a piece of context or a correction into a running
+  conversation, chosen by `hop.section`. The `error_code` list of the cell
+  grows by `duplex_failed`, `duplex_warning`, `bad_section` and `wrong_engine`,
+  and the `hello` frame grows by `duplex`. Turns are cut on the model's
+  timeline rather than by the cell, `speak_end` comes out of quiet rather than
+  out of the end of a synthesis, and an interjection under
+  `backchannel_max_ms` is a backchannel instead of a barge-in.
+
+  Every duplex emission stamps `hop.engine: 'duplex'`; a cascade stamps
+  nothing, so a colony wired before this version sees exactly the hops it
+  always saw. One format serves both directions, `16000` or `24000`, and the
+  cell still never resamples.
+
+- **A duplex session keeps a clock of its own, and a delegation nobody answers
+  is closed by the cell** (`voice@2.2.0`, GH #798, GH #793). Turns in a duplex
+  session are cut on the model's timeline, so a caller who stops talking closes
+  a turn only when time passes -- and on a line where nobody talks, no fragment
+  arrives to say that it did. The provider's running meter
+  (`session.usage.updated`) carried that time until now, and it does not hold:
+  on a session that hears only silence the meter arrived at no point inside 45 s
+  over four measured runs, which is exactly the line it was relied on for. The
+  new `tick_ms` (`1000`) is the interval that carries it, and the meter is read
+  for `usage_ratio` and nothing else. A watchdog timer is not polling; it is a
+  timeout timer, and the event-driven rule is untouched by it. The idle deadline
+  `provider_idle_timeout_ms` counts against the last session frame of any kind,
+  audio included, as it always did -- only the comment claiming it rested on the
+  meter was wrong.
+
+  What that deadline could not tell apart until now is a caller who paused from
+  a wire that had died: session frames alone do not say which of the two a
+  silence is, and thirty seconds of it on the line ended the call. The session
+  now asks its own socket: every `keepalive_ms` (`8000`) the adapter sends a
+  WebSocket ping, and only the pong carrying its own payload resets the
+  deadline. Eight seconds is a third ping at 24 s, so two pongs may go missing
+  before a call is given up. A ping somebody else sends still counts for nothing, so a proxy
+  pinging a dead upstream cannot hold a call open.
+
+  On the same tick sits a deadline for delegations. One left open longer than
+  `delegation_grace_ms` (`12000`) is closed with a single `Commentary` append on
+  its own `delegation_id` carrying `delegation_fallback` (`"Das kann ich gerade
+  nicht nachsehen."`), and then leaves the open list, so the sentence falls once
+  rather than once per tick. Measured, an unanswered delegation left the caller
+  with one holding sentence and then 55 to 58 s of silence, with no timeout from
+  the provider's side inside a minute. The prompt is still the first line -- an
+  assistant answers every delegation, empty-handed if need be -- and the
+  fallback is an instruction rather than a script, because a live model
+  paraphrases what it is given.
+
+- **The telephone refs the `voice` template that keeps that clock**
+  (`freeswitch@2.1.1`, GH #798, GH #793). Only the ref pin moves, to
+  `voice@2.2.0`: no cell, no lane and no declaration of the hive changes.
+
+- **The telephone can put a live model behind its media half**
+  (`freeswitch@2.1.0`, GH #787). The hive refs `voice@2.1.0`, accepts
+  `in_advise` at its rim on an edge to the media half alone, and emits `spoken`
+  and `delegation` beside the lanes it had. The medium does not move: the
+  switch still does the SIP and forks the audio to the `phone` mount,
+  `fork_sample_rate` is still `16000`, and the ringing and the answering are
+  the dialplan's. `speak_end` is still the beat a hang-up waits for; behind a
+  live model it comes out of the quiet after the model stopped speaking, since
+  such a model announces no end of speech.
+
+- **A member wires the channel whose model answers on its own timeline**
+  (`member@1.9.0`, GH #787). Two edges, sixty-four to sixty-six:
+  `./channels -> ./assistants` carries a `delegation` straight across as
+  `in_delegation` -- round the firewall, whose exit stamps `in_turn` and would
+  make a turn out of a handover -- and `./assistants -> ./channels` carries the
+  three advice sections (`fact`, `context`, `correction`) back down as
+  `in_advise`, guarded on `context.channel_node`. The `sidecar` edge into
+  `./apps` is untouched, so an app that offered one of those sections still
+  gets it. One existing edge is widened: the one into the firewall promotes
+  `context.engine` out of `hop.engine` beside `context.channel`, and a channel
+  that stamps nothing leaves the key empty. Nothing is taken away and the rim
+  lists do not move, so a parent wired at `1.8.0` is still wired correctly.
+  Both new edges stop at a container, which is where this level's authority
+  ends: the last leg into the generation and into the channel is drawn by the
+  mutation that grew the child, and `builder@1.12.0` renders it (GH #803).
+
+- **A generation takes the errand its voice model hands out mid-call**
+  (`assistant@2.8.0`, GH #784). One new accepted lane, `in_delegation`. In a
+  duplex call the model on the line keeps talking to the caller and hands the
+  backend an errand of its own accord, so what arrives here is no turn of the
+  conversation: the member's channel hands it in directly rather than through
+  the firewall, whose exit stamps `in_turn`. `context.delegation_id` is the
+  correlation the answer travels back under, and `context.engine` is what puts
+  the surface into advise mode. The lane is drawn twice, once around each
+  keeper -- `./talky-chat` when `context.channel_node` is `chat`, `./talky`
+  otherwise -- because every rim edge of one keeper has a twin around the
+  other. Derived from the accepts list of `talky@5.2.0`, which both keeper refs
+  now name. One new lane and its two edges are the second digit
+  (`docs/development-rules.md` § 4/4a).
+
+  The `./cogny` ref moves on to `cogny@5.0.2` (GH #794) without a second bump:
+  `2.8.0` has not shipped, and an unreleased entry is amended in place rather
+  than superseded.
+
+- **The collector assembles for a brain that answers nobody**
+  (`collector@4.2.0`, GH #784). In a duplex call the model on the line speaks to
+  the caller itself and the brain behind it advises that model, so three pieces
+  move. `system.instructions.mode` carries the charter of that role: it reads
+  `advise` when `context.engine` is `duplex` and is empty otherwise, and it is
+  written on every assembly rather than only when it applies, because `system.*`
+  is upserted per slot path in the brain -- a slot that is only ever set would
+  keep advising for a lifetime after a single duplex call. It hangs off
+  `context.engine` rather than off the channel, since one `apps/voice` carries
+  half-duplex and duplex turns alike.
+
+  `in_delegation` is the third turn-opening lane: role `delegation`,
+  `consult_id` from `context.delegation_id`, a fresh `turn_id`, `iter = 0`, and a
+  frame on the wire that says what the line is. It never reaches `SAID`, so it
+  becomes neither an episode nor a row in the daily batch -- the errand belongs
+  to the model on the line, and a memory fed from it would hand the caller its
+  own words back as a recollection (the defect of GH #282).
+
+  And an `in_turn` carrying `messages[user, assistant]` is written as a pair:
+  two rows under one `turn_id`, before the window read of the same bundle, the
+  answer's id derived from the question's (`<id>-a`). `turns.id` is the time
+  order of that table, and two random ids drawn in the same microsecond would
+  swap the pair inside the window as often as not.
+
+- **The keeper takes that errand in as a lane of its own** (`talky@5.2.0`,
+  GH #784). `in_delegation` joins the accepts list, with the `context` fields it
+  needs declared required, and joins the collecting edge `. -> ./collector`,
+  because a door and the lane behind it are one statement and the sub-unit that
+  assembles a delegation sits at the end of that edge. Nothing else moves; the
+  purpose text now also names the `schemas` cell the keeper gained in the same
+  wave.
+
+### Changed
+
+- **The dead-letter read answers newest first** (GH #794). `GET
+  /colony/dead_letters` without `?since=` now orders by `id DESC`, so a capped
+  read shows what is happening now instead of the colony's first day forever;
+  given a mark it still walks forward from it, which is the order a watcher
+  wants. Nothing about what enters the queue changes -- in an event-driven
+  design an event with no target is the normal case and the queue is where it
+  belongs, so the queue is meant to grow large and only reading it had to.
+
+### Fixed
+
+- **`scripts/test-tier.sh` builds where `scripts/gate.sh` builds** (GH #802).
+  Every worktree shares one cargo target directory, but only the gate knew the
+  rule, so a targeted test run in a linked worktree built a private `target/`
+  there — four worktrees of one wave took a build volume from 161 G to 29 G,
+  and each of them left the shared ghost-binary stamp naming somebody else.
+  The rule, the tree sync and the stamp now live once in
+  `scripts/cargo-target.sh` and both scripts read them from there. In the same
+  family: `scripts/strand.sh gate` archived by strand name alone, so a second
+  run of a strand overwrote the first one's summary, run log and station logs;
+  every run now gets a directory of its own with a `latest` pointer beside it.
+  `scripts/wave_retro.py` reads both archive shapes, so the retro of a wave
+  that straddles the change still counts its red runs.
+
+- **Three claims in the present tense described a tree that had moved**
+  (GH #794). `docs/development-rules.md` named `assistant@2.5.1` docking `tool`
+  and `schemas` at two brains where the tree has `2.8.0` and three; the
+  `grow_level` recipe and `templates/builder/README.md` counted twenty and
+  twenty-five lanes where the assistant declares twenty-one at the rim and
+  twenty-eight in all. Counted against the tree rather than copied from the
+  report that found them. (`in_delegation` was written up here as a lane the
+  table deliberately skips; GH #803 found that reading wrong and the entry
+  above is what replaced it.)
+
+- **A grown child never heard the two lanes its level had just learned**
+  (`builder@1.12.0`, `meclaw-os@1.8.11`, GH #803). `member@1.9.0` re-stamps a
+  channel's `delegation` onto `./assistants` and an assistant's advice sections
+  onto `./channels`, and both of those edges end at a CONTAINER. A container is
+  not a pass-through here -- `Edge.to` is a static path, so a lane addressed
+  inward costs one more edge, named for the child -- and `grow_level` drew
+  neither. Measured on a built colony: the container carried seven lanes into
+  its generation and not `in_delegation`, so every delegation and every advice
+  section died there as `hive_no_route`, and the one manifest that wired a
+  duplex channel drew both hops by hand beside the table. The recipe now
+  renders them: `. -> ./<generation>` on `in_delegation` under the permissive
+  `context.assistant` guard `in_tool` and `in_menu` already use, and
+  `. -> ./<channel>` on `in_advise` under the `context.channel_node` guard the
+  answer edge already uses. An assistant level costs twenty-four edges and a
+  channel four; a screen still costs three, because nothing advises a display.
+  A generation or a channel grown before this version is missing its last leg
+  and needs the one edge drawn.
+
+- **`cogny@5.0.2`** (GH #794): the collector pin follows the sub-unit to
+  `collector@4.2.0`. A reference resolves exactly, so a pin left behind is a
+  template that stops instantiating; what the collector grew in between is the
+  `in_delegation` lane and the `advise` assembly mode, neither of which this
+  core's rim declares, so the core behaves exactly as `5.0.1` did.
+
+- **The `since` parameter of the dead-letter read was documented as a no-op**
+  in three places (GH #794), although it has filtered since phase-16 W2
+  (ruling A2) put `created_at` on every entry.
+
+- **`replace_nodes` no longer writes an environment placeholder out resolved**
+  (GH #796): a lift's `with.params` reach the lifted cell's `config.json`, so
+  they now take the same disk-facing substitution pass as
+  `add_nodes[].override_params` and `swap_nodes[].with.params` -- `${VAR}`
+  stays a token on disk and binds at every read, as it always did for the other
+  two operations.
+
+- **A sidecar section may be the sentence itself** (`talky@5.2.1`,
+  `collector@4.2.0`, GH #799). The splitter cut the block by top-level key and
+  dropped every section whose body was not an object, and the offers those
+  sections are written from describe each one as a string -- so a model that
+  followed the section heading wrote `{"fact": "Der Termin ist Dienstag."}` and
+  the advice never left the composite. In a duplex call that is a caller who
+  hears a holding sentence and then silence, the same silence GH #797 closed at
+  the other end of the seam.
+
+  A bare, non-empty string is a section body now. It travels wrapped --
+  `{"payload": "<string>"}` -- because the body slot the lane declares is an
+  object slot, and the string inside it is the one the model wrote, byte for
+  byte: the cell still repairs nothing. An object travels exactly as before, so
+  a producer writing the nested form is unaffected. What still cannot travel is
+  named rather than guessed at: a list, a number, an empty or blank string
+  leaves as `hop.sidecar_dropped` on the answer half. The blank string is
+  refused at the producer because the consumer refuses it too -- a section
+  without words ends as a named refusal, never as an advice.
+
+  The contract asks for one form, and it is the section's own. The frame the
+  collector writes in front of the block printed `{"fact": {...}}` for every
+  section, whatever shape the offer declared, so a model reading it was told to
+  write an object where the offer asks for a sentence. It prints the form each
+  offer actually takes now -- braces where the body is an object, quotes where
+  it is a string -- which is the same repair read from the other end of the
+  seam. `assistant@2.8.0` re-points its two refs at `talky@5.2.1` and keeps its
+  number: an unreleased version is extended, never superseded.
+
 ## [0.40.1] — 2026-09-20
 
 A patch release: the workspace compiles on Windows again. Nothing that ships

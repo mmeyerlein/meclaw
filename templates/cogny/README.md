@@ -1,4 +1,4 @@
-# `cogny@5.0.1`
+# `cogny@5.0.2`
 
 The agent core as one template. Four units under one hive:
 [`collector`](../collector/) and [`dispatcher`](../dispatcher/) -- each carrying its
@@ -90,19 +90,27 @@ The two sub-units are **references**, not copies. Each of the two directories ho
 `config.json` and nothing else:
 
 ```json
-{"cell": {"type": "ref", "template": "collector@4.1.1"},
+{"cell": {"type": "ref", "template": "collector@4.2.0"},
  "override_params": {"assemble": {"context_window": 128000,
                                   "curate_soft": 0.5,
                                   "curate_hard": 0.75,
                                   "tools": ["*"]}}}
 ```
 
-**`5.0.1` moves that pin and nothing else** ([#606](https://github.com/mmeyerlein/meclaw/issues/606)).
+**`5.0.1` moved that pin and nothing else** ([#606](https://github.com/mmeyerlein/meclaw/issues/606)).
 The `collector` composes the block contract it asks a brain for out of the sections its
 answerers OFFER, instead of carrying one as a literal. This core is unaffected in substance: it
 has no `splitter`, so it asks for no block, offers none and ignores any that is offered to it --
-a section describing a fence nobody would cut. A reference resolves EXACTLY, so the pin has to
-move with the sub-unit or this template stops instantiating; that is the whole of `5.0.1`.
+a section describing a fence nobody would cut.
+
+**`5.0.2` moves it again, and nothing else**
+([#784](https://github.com/mmeyerlein/meclaw/issues/784), [#794](https://github.com/mmeyerlein/meclaw/issues/794)).
+The version the ref block above names is the one that ships; what the collector grew since
+`4.1.0` is the `in_delegation` lane and the `advise` assembly mode of a duplex call -- a voice
+model that talks to the caller itself and is advised from behind.
+This core's rim declares neither, so again nothing it does changes. A reference resolves
+EXACTLY, so the pin has to move with the sub-unit or this template stops instantiating; that
+is the whole of both numbers, and it is why each of them is a third digit.
 
 
 Since `4.1.0` the collector reference carries an `override_params` block, and that is where
@@ -568,7 +576,7 @@ Now the knob is set where it belongs, and the sub-unit stays a reference to the 
 `collector`:
 
 ```json
-{"op": "instantiate", "template": "cogny@5.0.1", "at": "/cores/deep",
+{"op": "instantiate", "template": "cogny@5.0.2", "at": "/cores/deep",
  "override_params": {"collector/assemble": {"context_window": 200000,
                                             "recoverability": "lookup:repeatable,write:env"}}}
 ```

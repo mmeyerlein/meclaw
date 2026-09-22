@@ -522,6 +522,9 @@ fn label(event: &VoiceEvent) -> &'static str {
         VoiceEvent::BadAudioFrame { .. } => "BadAudioFrame",
         VoiceEvent::ReleaseGraceExpired { .. } => "ReleaseGraceExpired",
         VoiceEvent::ClientTooSlow { .. } => "ClientTooSlow",
+        VoiceEvent::Live { .. } => "Live",
+        VoiceEvent::LiveTick { .. } => "LiveTick",
+        VoiceEvent::DuplexFailed { .. } => "DuplexFailed",
     }
 }
 

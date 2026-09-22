@@ -449,7 +449,7 @@ fn a_named_grow_level_missing_its_per_level_parameter_is_refused_not_downgraded(
 #[test]
 fn the_grow_sentence_takes_the_fast_lane_and_a_half_sentence_does_not() {
     let full = run_classify(json!({
-        "request": "grow an assistant named scribe from assistant@2.7.0 under \
+        "request": "grow an assistant named scribe from assistant@2.8.0 under \
                     /os/orgs/acme/members/alex",
         "ctx": {"model": "m", "model_fast": "f", "model_surface": "s"}}));
     assert_eq!(full["header"]["route"], json!("recipe"));
@@ -523,7 +523,7 @@ fn the_composer_budget_in_the_readme_is_the_one_the_cell_declares() {
 /// for byte — the same discipline the six levels above run under.
 fn credentialled_wish() -> Value {
     json!({"scope": "/os/orgs/acme/members/alex", "level": "assistant",
-           "name": "scribe", "template": "assistant@2.7.0",
+           "name": "scribe", "template": "assistant@2.8.0",
            "ctx": {"model": "${MODEL_CORE}", "model_fast": "${MODEL_CORE_FAST}",
                    "model_surface": "${MODEL_SURFACE}"},
            "override_params": {"cogny/brain": {"temperature": 0.2}},

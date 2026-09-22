@@ -1,0 +1,11 @@
+{
+  "type": "error",
+  "event_id": "event_fixture_error",
+  "error": {
+    "type": "invalid_request_error",
+    "code": "immutable_field_update",
+    "message": "The delegation type cannot change after session startup.",
+    "param": "session.delegation.type",
+    "client_event_id": "event_update"
+  }
+}

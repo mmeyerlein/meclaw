@@ -100,7 +100,7 @@ retries = 2
 
 [[profile.default.overrides]]
 # GH #763 -- the CDP driver of the display audio tests trips under parallel browser
-# load and passes on repetition; five occurrences, every one of them isolated-green:
+# load and passes on repetition; seven occurrences, every one of them isolated-green:
 #   strand c466abe 10/11 521s RED -> 11/11 329s GREEN, isolated 3/3
 #     (plans/kleinkram-2026-09-13/berichte/k1-report.md:69-74)
 #   hand-run 5/5 green with five browser colonies on 4 threads
@@ -111,10 +111,34 @@ retries = 2
 #     (plans/welle-h3-2026-09-18/berichte/taps-report.md:464,492-503)
 #   integration 0f95bae 20/22 1385s RED -> 043eb66 22/22 1170s GREEN
 #     (plans/welle-h3-2026-09-18/receipt.md:80,89-90)
-# Only the two measured tests, not the binary: the other three of this file have never
-# been seen flaky and stay strict. One retry, not two -- a second trip in the same run
-# is a driver that is broken, not a host that is busy.
-filter = 'binary_id(=meclaw-cells::gh643_audio_in_the_display_window_browser) & (test(=a_browser_holds_the_button_and_the_colony_answers) + test(=the_release_drains_before_it_lets_go))'
+#   strand 9c9571d 12/13 1398s RED -> same rev 13/13 2076s GREEN, nothing edited
+#     (plans/welle-live-2026-09-20/berichte/hygiene-794.md:288-312)
+#   L4a run 2 red on the same driver error -> run 3 green, nothing edited
+#     (plans/welle-live-2026-09-20/berichte/L4a.md:143-152)
+# The last two entries name two further tests of this file, so the list grows from two
+# to four (wave Live integration pass): a docs-only diff and a template diff each tripped
+# a test neither of them can reach, with the same CDP message as the first two. The fifth,
+# `a_short_press_opens_the_dock_and_a_long_one_speaks`, has never been seen flaky and stays
+# strict -- the binary is still not quarantined as a whole. One retry, not two -- a second
+# trip in the same run is a driver that is broken, not a host that is busy.
+filter = 'binary_id(=meclaw-cells::gh643_audio_in_the_display_window_browser) & (test(=a_browser_holds_the_button_and_the_colony_answers) + test(=the_release_drains_before_it_lets_go) + test(=a_browser_rejoins_after_the_cell_closed_the_topic) + test(=the_ring_sends_what_it_kept_before_the_hold))'
+retries = 1
+
+[[profile.default.overrides]]
+# GH #804 -- the FIFO rig of the attachment operation-timeout test does not hang the
+# CELL, it hangs the test process on the way out, and only under full-suite load.
+# Two occurrences in the integration pass of wave Live, both as the very last test
+# scheduled in the run, both a 240 s nextest timeout with no failed assertion and no
+# panic:
+#   integration 6fa2a1a 23/25 1609s RED  (TIMEOUT 240.014s, 7767/7767)
+#   integration bbbfc55 23/25 1245s RED  (TIMEOUT 240.013s, 7767/7767)
+# Isolated it costs 0.16 s: three consecutive runs of exactly this test, one passed
+# each. The suspected shape is in the issue -- the test releases the cell's blocked
+# `open(2)` only AFTER `handle()` has returned, so a lost race leaves a blocking task
+# that nothing ever finishes. The retry is a leash until that is confirmed and fixed,
+# not a verdict: being scheduled last, a retry runs on a quiet host, which is exactly
+# the condition under which this test has never been seen to hang.
+filter = 'binary_id(=meclaw-cells::gh94_responses_attachments) & test(=hanging_blob_read_hits_the_operation_timeout_not_the_backstop)'
 retries = 1
 
 # ---------------------------------------------------------------------------

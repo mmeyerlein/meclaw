@@ -6,7 +6,7 @@
         "add_nodes": [
           {
             "name": "os",
-            "template": "meclaw-os@1.8.10"
+            "template": "meclaw-os@1.8.11"
           }
         ],
         "add_edges": []
@@ -131,7 +131,7 @@
         "add_nodes": [
           {
             "name": "alex",
-            "template": "member@1.8.0"
+            "template": "member@1.9.0"
           }
         ],
         "add_edges": [
@@ -249,7 +249,7 @@
         "add_nodes": [
           {
             "name": "scribe",
-            "template": "assistant@2.7.0",
+            "template": "assistant@2.8.0",
             "override_params": {
               "cogny/brain": {
                 "temperature": 0.2
@@ -348,6 +348,11 @@
             "from": ".",
             "to": "./scribe",
             "condition": "has(hop.route) && hop.route == 'in_menu' && (!has(context.assistant) || context.assistant == 'scribe')"
+          },
+          {
+            "from": ".",
+            "to": "./scribe",
+            "condition": "has(hop.route) && hop.route == 'in_delegation' && (!has(context.assistant) || context.assistant == 'scribe')"
           },
           {
             "from": "./scribe",
@@ -463,6 +468,11 @@
             "from": ".",
             "to": "./telegram",
             "condition": "has(hop.route) && hop.route == 'answer' && has(context.channel_node) && context.channel_node == 'telegram'"
+          },
+          {
+            "from": ".",
+            "to": "./telegram",
+            "condition": "has(hop.route) && hop.route == 'in_advise' && has(context.channel_node) && context.channel_node == 'telegram'"
           }
         ]
       }

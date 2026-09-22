@@ -457,7 +457,11 @@ const TEMPLATE_REFERENCES_IN_THE_FIVE: usize = 11;
 /// its `menu-clock` timer -- the tool menu is asked for on the mutation receipt
 /// now -- and three of the instantiated composites carry a collector (two
 /// `talky`s and one `cogny`). RE-MEASURED with [`print_the_measurement`].
-const TEMPLATE_BORN_ROWS: usize = 44;
+///
+/// Moved 44 -> 46 with GH #783: `talky` grew a `schemas` cell, which declares
+/// the sidecar sections that agent asks its own model for, and two of the five
+/// declarations instantiate a `talky`.
+const TEMPLATE_BORN_ROWS: usize = 46;
 
 /// Distinct `registry.template` values across those rows. Fewer than the
 /// eleven references above, because three scopes instantiate the same
@@ -654,7 +658,14 @@ const REFERENCED_SUB_UNITS: [&str; 3] = ["collector", "dispatcher", "session-kee
 /// are measured where they live —
 /// `gh553_the_shipped_examples_follow_the_receipt.rs`. RE-MEASURED with
 /// [`print_the_measurement`].
-const EDGES: usize = 194;
+///
+/// Moved 194 -> 198 with GH #783: `talky` grew the `in_menu` fan to its own
+/// `./schemas` cell and the edge that carries that cell's answer into the
+/// collector -- two internal edges -- and two of the five declarations grow a
+/// talky, so that is 2 x 2. The `delete_context` the same strand put on the
+/// twelve exit edges is a modifier and costs no edge. RE-MEASURED with
+/// [`print_the_measurement`].
+const EDGES: usize = 198;
 
 /// Cells that were on disk before the first declaration — the three seeds' own
 /// cells (`hard-shell`'s `probe`, `never-forgets`'s `replay`,

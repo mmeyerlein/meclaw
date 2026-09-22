@@ -1358,5 +1358,31 @@ class Cli(unittest.TestCase):
         self.assertEqual(r.stdout.split(), list(gp.IGNORED))
 
 
+class LiveBinariesAreScenarioTest(unittest.TestCase):
+    """A `*_live.rs` test talks to a paid third party -- it never rides a diff.
+
+    `slack_live` was named in the scenario class by hand, and the next live
+    file (`gpt_live_live`, wave Live) would have been selected by any diff that
+    touched its crate: a `cargo test` that opens a billed session because a
+    comment moved. The rule is the suffix, so this reads the tree rather than a
+    second list.
+    """
+
+    def live_binaries(self):
+        return sorted(
+            path.stem
+            for path in (REPO / "crates").glob("*/tests/*_live.rs")
+        )
+
+    def test_there_is_at_least_one(self):
+        """Without this the test below passes by measuring nothing."""
+        self.assertTrue(self.live_binaries(), "no *_live.rs in crates/*/tests/")
+
+    def test_every_live_binary_is_in_the_scenario_class(self):
+        for name in self.live_binaries():
+            with self.subTest(binary=name):
+                self.assertIn("binary(/^%s$/)" % name, gp.SCENARIO)
+
+
 if __name__ == "__main__":
     unittest.main()

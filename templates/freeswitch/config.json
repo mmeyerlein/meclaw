@@ -11,6 +11,10 @@
           "because": "the finished turn of an assistant, to be spoken into the call it belongs to. It enters at this hive's own rim and is handed to the media half; `context.call_id` picks the connection, exactly as it does for a voice channel standing on its own (`context.session_id` is read where that key is absent, for a colony wired before 1.1.0). It reaches the signalling half in the same breath, because a `hangup` that arrives while this sentence is still being spoken has to wait for it"
         },
         {
+          "route": "in_advise",
+          "because": "one section of advice for a duplex session that is already running: a fact to be said, a context to be thought, a correction of the standing instruction. It enters at this hive's own rim and goes straight to the media half, because appending to an open session is a property of the media and the signalling half has nothing to add to it. It is deliberately NOT handed to `./signal` the way `in_speak` is: advice ends no synthesis, so there is no sentence for a pending `hangup` to wait for. A cascade instance refuses the lane by name (`wrong_engine`), which is the honest answer where there is no open channel to append to"
+        },
+        {
           "route": "call_incoming",
           "because": "somebody is ringing this member. It arrives from the dialplan through the front door (`POST /messages` addressed at this hive) and carries the caller's number, the call's UUID and -- since 2.0.0 -- `user_id`, the member the switch put the caller through as, which is trusted where it is there. It is the one lane that makes this a channel rather than a tool: a call that comes in becomes a turn of a conversation -- THE one turn of that call, since 1.0.1 (GH #614). A call with no `user_id` and no `callers` entry raises no turn and the leg is put down instead of being left parked in silence. Since 1.1.0 whether it becomes a turn AT ALL depends on what else is on the line: `params.second_call` decides, and a call that was refused or that is still waiting in the queue leaves a receipt instead of a turn (GH #620)"
         },
@@ -51,6 +55,14 @@
           "because": "an interim transcript, while somebody is still speaking. It comes out of the media half and is OFF by default -- whoever listens orders it (`emit_partials`)"
         },
         {
+          "route": "spoken",
+          "because": "what the assistant is saying, while it is still saying it. The duplex half of the media cell produces it and it rides on the same `emit_partials` as `partial` -- the two are the two halves of one stream, and a channel that ordered one and not the other would get half a conversation. A cascade instance never emits it at all"
+        },
+        {
+          "route": "delegation",
+          "because": "the duplex provider handed work to the client and named the handle. It leaves this hive because the work is not telephony: whatever stands behind the member does it, and the answer comes back on `in_advise`. `hop` carries `delegation_id` and `offset_ms`, the body the user text of the open turn"
+        },
+        {
           "route": "error",
           "because": "the failure of a leg of this channel: a caller nobody allowlisted -- whose leg this hive puts down in the same breath (GH #614), so the dialplan has its extension back instead of an answered call nobody speaks into -- a request this hive cannot read, or the media half's own error. It leaves rather than being logged, because a channel that kept its faults to itself is a telephone that stopped ringing for a reason nobody can find"
         },
@@ -89,13 +101,18 @@
         },
         {
           "from": ".",
+          "to": "./voice",
+          "condition": "has(hop.route) && hop.route == 'in_advise'"
+        },
+        {
+          "from": ".",
           "to": "./signal",
           "condition": "has(hop.route) && hop.route == 'in_speak'"
         },
         {
           "from": "./voice",
           "to": ".",
-          "condition": "has(hop.route) && (hop.route == 'turn' || hop.route == 'partial' || hop.route == 'error')",
+          "condition": "has(hop.route) && (hop.route == 'turn' || hop.route == 'partial' || hop.route == 'spoken' || hop.route == 'error' || hop.route == 'delegation')",
           "modifier": {
             "delete_context": [
               "phone_origin",

@@ -63,7 +63,7 @@ use std::path::{Path, PathBuf};
 use meclaw_core::serde_json::{Value, from_str};
 
 /// Context the templates pass between hives on purpose. Never cleared at a rim.
-const SHARED: [&str; 22] = [
+const SHARED: [&str; 24] = [
     "actor",
     "asker",
     "audience_now",
@@ -73,6 +73,16 @@ const SHARED: [&str; 22] = [
     "build_caller",
     "channel",
     "chat_id",
+    // The two keys a DUPLEX voice call travels on (welle-live). `engine` says
+    // what is talking on the other end -- the collector reads it on every
+    // assembly to decide whether the brain answers or ADVISES -- and
+    // `delegation_id` is the correlation an errand the voice model handed the
+    // backend comes home under. Both are set by the member's own edges off
+    // `./channels` and both are read one level further in, past a store round
+    // trip that re-establishes neither, so they belong beside `channel` rather
+    // than to any one hive.
+    "delegation_id",
+    "engine",
     "happened_at",
     "iter",
     "memory_call_id",

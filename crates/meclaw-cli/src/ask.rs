@@ -374,7 +374,9 @@ async fn read_trace(
         .with_context(|| format!("GET {url} answered {status} with a body that is not JSON"))
 }
 
-/// `GET /colony/dead_letters` — the whole (bounded, in-memory) queue.
+/// `GET /colony/dead_letters` — the newest thousand rows of the persisted
+/// `dead_letters` table. No mark is sent, so the answer is newest first
+/// (GH #794), which is where a turn posted a moment ago sits.
 async fn read_dead_letters(client: &reqwest::Client, base: &str) -> anyhow::Result<Value> {
     let url = format!("{base}/colony/dead_letters");
     let resp = client

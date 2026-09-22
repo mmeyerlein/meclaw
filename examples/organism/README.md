@@ -2,7 +2,7 @@
 
 An empty folder, the template library, and **six declarations**. Out of that: a colony
 shell, an organisation, a person, one generation of that person's agent, and a Telegram
-channel that person is reached on — **92 cells and 565 edges**, of which **70 edges were
+channel that person is reached on — **92 cells and 567 edges**, of which **72 edges were
 written by hand**.
 
 `meclaw-os` is the example that grows *one agent* from templates. This one grows the whole
@@ -48,12 +48,12 @@ organism/
 │   ├── colony.json            byte-identical to seed/colony.json
 │   └── main/
 │       ├── config.json        byte-identical to seed/main/config.json
-│       └── os/config.json     type: "ref", template: "meclaw-os@1.8.10"
+│       └── os/config.json     type: "ref", template: "meclaw-os@1.8.11"
 ├── grow-os.json               1. the shell.        1 node,  0 edges
-├── grow-org.json              2. an organisation.  1 node, 18 edges
-├── grow-member.json           3. a person.         1 node, 18 edges
-├── grow-assistant.json        4. one generation.   1 node, 14 edges
-├── grow-channel.json          5. a Telegram channel. 1 node, 3 edges, born asleep
+├── grow-org.json              2. an organisation.  1 node, 20 edges
+├── grow-member.json           3. a person.         1 node, 20 edges
+├── grow-assistant.json        4. one generation.   1 node, 24 edges
+├── grow-channel.json          5. a Telegram channel. 1 node,  4 edges, born asleep
 ├── grow-credentials.json      6. the credential v-lanes. 0 nodes, 4 edges, 2 grants
 ├── grow-door.json             beyond the six: the front door. 2 nodes, 4 edges
 ├── grow-screen.json           beyond the six: a screen and an app. 2 declarations,
@@ -68,23 +68,23 @@ principle of GH #26: a tree is grown, not checked in.
 ## What grows
 
 ```
-/os                                 meclaw-os@1.8.10   the shell
+/os                                 meclaw-os@1.8.11   the shell
 ├── access                            → access@2.5.0        the capability broker
 ├── argus                             → argus@1.1.0         the control loop
 └── orgs                              (empty container)
     └── acme                       org@1.4.1         a namespace and a boundary
         └── members                  (empty container)
-            └── alex               member@1.8.0      one person
+            └── alex               member@1.9.0      one person
                 ├── affinity          → affinity@3.3.0      identity and meaning
                 ├── firewall          → firewall@2.3.1      the screen
                 ├── memory-hive       → memory-hive@3.3.0   what was said to them
                 ├── channels          (empty container)
                 │   └── telegram      telegram-connector@2.0.1   how alex is reached
                 └── assistants        (empty container)
-                    └── scribe    assistant@2.7.0   one generation of an agent
-                        ├── talky       → talky@5.1.0       the conversation surface
-                        ├── talky-chat  → talky@5.1.0       the same, for the channel chat
-                        ├── cogny       → cogny@5.0.0       the reasoning core
+                    └── scribe    assistant@2.8.0   one generation of an agent
+                        ├── talky       → talky@5.2.1       the conversation surface
+                        ├── talky-chat  → talky@5.2.1       the same, for the channel chat
+                        ├── cogny       → cogny@5.0.2       the reasoning core
                         └── tools       → tools@1.4.2       the tool surface
 ```
 
@@ -116,7 +116,7 @@ is a separate act.
 
 ```json
 {"scope": "/",
- "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.8.10"}],
+ "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.8.11"}],
           "add_edges": []}}
 ```
 
@@ -197,15 +197,18 @@ its holders' exports is gone, and every holder's store writes its own seed set
 
 ### 4. `grow-assistant.json` — one generation
 
-Twenty-three edges: ten down and thirteen up, and four of the twenty-three are **v-lanes**.
+Twenty-four edges: eleven down and thirteen up, and four of the twenty-four are **v-lanes**.
 
 Down are `in_turn` TWICE — the screened turn coming back off the member's firewall, guarded on
 `context.assistant`, and the one a view event on this generation's own screen takes, guarded on
 `hop.owner` instead because an event carries no assistant (GH #543) —, `mutation_committed` (the
 mutation door's receipt, GH #553), `in_build_result` (the builder's answer), `in_tool` and
 `in_menu` (the memory's two answers on their way back, GH #552), the two transfer lanes
-`in_export` and `in_import` (since GH #475), and `in_bundle` TWICE — one edge per asker inside
-the generation. Up are `answer`, `sidecar` (since
+`in_export` and `in_import` (since GH #475), `in_bundle` TWICE — one edge per asker inside
+the generation — and, since `member@1.9.0` wired the level for a channel whose model answers on
+its own timeline, `in_delegation`: the handover a duplex channel sends straight past the
+firewall, carried the last hop here because a container is not a pass-through
+([#803](https://github.com/mmeyerlein/meclaw/issues/803)). Up are `answer`, `sidecar` (since
 [#607](https://github.com/mmeyerlein/meclaw/issues/607) — one message per section of the
 block the answer ends with, carried out undivided because this level reads no section),
 `write`, `turn_write`, `prune`, `error`, `build`,
@@ -225,7 +228,7 @@ WITHOUT a connect point below `./assistants`, so it stays a mandatory hop — it
 `audience_now`, `channel` and `recall_as_of`, and an author who tried to draw a v-lane straight
 from a brain to the memory is refused with `v_lane_mandatory_hop` rather than debugging a
 `missing_audience` in the log.
-`assistant@2.7.0` emits a tenth lane, `pack_ack` (GH #458), and this walkthrough draws no edge
+`assistant@2.8.0` emits a tenth lane, `pack_ack` (GH #458), and this walkthrough draws no edge
 for it: nothing here pushes an identity into the generation, so nothing here produces the
 receipt. A colony that wires the push wires the receipt with it, and the member already declares
 the exit. Since GH #561 both halves are **v-lanes** and neither ends at this level: the push
@@ -277,7 +280,7 @@ model of its own with `override_params` on `<assistant>/talky/brain` if the two 
 channel belongs to the person, not to a generation, so this step is declared at the *member's*
 `channels` container and the node is `telegram`. The name is no label: it is the value
 `context.channel_node` carries, and it is what the answer is routed back by. Nothing stands beside it — the
-conversation surface travels inside `assistant@2.7.0` as `talky` -- and, since
+conversation surface travels inside `assistant@2.8.0` as `talky` -- and, since
 2.7.0, a second one called `talky-chat` stands beside it for the channel `chat`, which this
 walkthrough does not grow.
 
@@ -299,7 +302,7 @@ the audience gate refuses every one of them, and the agent answers *"there is
 nothing in my memory about that"*. A wish that does not name the person renders
 nothing at all and comes back as `wish_incomplete` with the question.
 
-Three edges, and there is no fourth:
+Four edges:
 
 - **up, the turn** — `./telegram → .` on `!has(hop.error_code)`, re-stamped to
   `turn` and carrying the round with it: `context.channel_node` (the node the answer comes
@@ -320,15 +323,28 @@ Three edges, and there is no fourth:
   the chat: `Edge.to` is a static path and a container may hold several channels, so the way
   back has to say which child it is for ([#522](https://github.com/mmeyerlein/meclaw/issues/522)).
   The `chat_id` the first edge promoted is what the reply has to go to.
+- **down, the advice** — `. → ./telegram` on
+  `hop.route == 'in_advise' && context.channel_node == 'telegram'`, the same address as the
+  answer because it is the same question. Since `member@1.9.0` an assistant may append three
+  sections beside its answer — `fact`, `context`, `correction` — and the level sends them back to
+  the channel that is holding the conversation, for a model on the wire to say in its own words.
+  A Telegram connector never receives one: a section is written only when the front model was
+  told to write one, and it is told that only for a channel whose engine is `duplex`. The edge is
+  rendered all the same, because the edge set of a level is a property of the PARENT and not of
+  what the child is filled with — and without it the section dies at the container
+  ([#803](https://github.com/mmeyerlein/meclaw/issues/803)).
 
-**The nine edges between `channels` and its siblings are not among them** — they belong to
-`member@1.8.0` and were drawn once, when step 3 ran: `./channels → ./firewall` turns the raw
+**The eleven edges between `channels` and its siblings are not among them** — they belong to
+`member@1.9.0` and were drawn once, when step 3 ran: `./channels → ./firewall` turns the raw
 `turn` into `in_turn`, `./assistants → ./channels` carries a finished answer back to the channel
 that asked, `./apps → ./channels` carries an app's `view` — and, since 1.8.0, its `withdraw` —
 the same way, `./channels → .` lets a
-connector's own failure leave the level, and five more place a screen's `event` and `receipt` —
+connector's own failure leave the level, five more place a screen's `event` and `receipt` —
 two into `./assistants`, two into `./apps`, and one out on `error` for an owner this level cannot
-place. A second channel does not move that number, which is #303's ruling read one level up.
+place — and two arrived with 1.8.0's successor for a channel whose model answers on its own
+timeline: `./channels → ./assistants` carries a `delegation` straight across as
+`in_delegation`, and `./assistants → ./channels` carries three advice sections back down as
+`in_advise`. A second channel does not move that number, which is #303's ruling read one level up.
 
 #### The address rule, v1
 
@@ -374,8 +390,8 @@ its provider credential out of it, **sealed**, on an ordinary broker invocation.
 
 They are **v-lanes** (GH #559). Three levels lie between a brain and the broker —
 `./assistants`, the generation, `talky` — and the innermost is sealed, so the edge
-lands on a cell inside a sealed hive and is legal anyway: `talky@5.1.0` and
-`cogny@5.0.0` name `./brain` as this lane's connect point in their own contract
+lands on a cell inside a sealed hive and is legal anyway: `talky@5.2.1` and
+`cogny@5.0.2` name `./brain` as this lane's connect point in their own contract
 (`"at": ["./brain"]`), which is the one opening a template pronounces about
 itself. The two levels in between declare nothing about the lane and are
 therefore transparent. Take the `at` away and the mutation is refused by name,
@@ -412,7 +428,7 @@ Both are one instantiation with their own parameters, and neither re-runs anythi
 {"scope": "/os/orgs/acme/members/alex/assistants",
  "ctx": {"model": "${MODEL_CORE}", "model_fast": "${MODEL_CORE_FAST}",
          "model_surface": "${MODEL_SURFACE}"},
- "diff": {"add_nodes": [{"name": "aide", "template": "assistant@2.7.0",
+ "diff": {"add_nodes": [{"name": "aide", "template": "assistant@2.8.0",
                          "override_params": {"cogny/brain": {"temperature": 0.9}}}],
           "add_edges": []}}
 ```
@@ -426,7 +442,7 @@ a path — so there is no single edge that means "send it wherever the context s
 rule rather than an accident. The channel does not learn about it: it stamps a name, and the
 container decides who that name belongs to.
 
-**What a second channel costs: one node in `channels` plus its three edges**, and the assistant
+**What a second channel costs: one node in `channels` plus its four edges**, and the assistant
 learns nothing at all. A turn from any channel arrives on the same `in_turn` door and the answer
 leaves on the same `answer` lane, with `context.channel_node` telling the member where to send
 it back.
@@ -494,7 +510,8 @@ third declaration it used to carry — the route from the member's `assistants` 
 generation — moved into the assistant level, which is the only place that knows the generation's
 name.
 
-**A screen is a channel**, so it costs what a channel costs — three edges — though two of
+**A screen is a channel**, and it costs three edges — one fewer than a chat channel since
+`member@1.9.0`, because nothing advises a display — though two of
 them point down where a connector's point up: `event` and `receipt` up into the container, a
 `view` down, and since `builder@1.10.0` the container's `error` down as well. The screen has no
 failure of its own to send up (a refused write is a `receipt`, and its code travels in the
@@ -543,8 +560,8 @@ static-`Edge.to` cost a second assistant has
 |---|---:|
 | cells checked in | **0** |
 | cells after the six declarations | **92** |
-| edges after the six declarations | **565** |
-| edges written by hand in the six files | **70** |
+| edges after the six declarations | **567** |
+| edges written by hand in the six files | **72** |
 | edges that came with a template | **495** |
 | `add_nodes` entries | **5** |
 | distinct templates stamped in the registry | **16** |
@@ -626,7 +643,7 @@ nothing until an operator turns on exactly what they mean.
 shall stand.
 
 ```json
-{"cell": {"type": "ref", "template": "meclaw-os@1.8.10"}}
+{"cell": {"type": "ref", "template": "meclaw-os@1.8.11"}}
 ```
 
 That is a **declaration, not a cell**. The FIRST `meclaw --root ./examples/organism/seed-ref`
@@ -638,8 +655,8 @@ bookkept — a second boot finds nothing to grow, and a node you later remove wi
 cannot be re-declared into existence by a restart.
 
 **What it is not.** `seed-ref/` does not replace the six declarations, and it cannot. A `ref`
-marker declares a **node** and never an **edge** — and 70 of this example's 565 edges are
-hand-written: 66 transit lanes hanging off `orgs`, `members`, `assistants` and `channels`, hives
+marker declares a **node** and never an **edge** — and 72 of this example's 567 edges are
+hand-written: 68 transit lanes hanging off `orgs`, `members`, `assistants` and `channels`, hives
 the templates themselves materialise, plus the four credential v-lanes of step 6. Until the growth has happened those addresses do not exist, so
 there is nowhere to write them down. `seed-ref/` therefore grows exactly the first level, and it
 is the honest form of "a tree that boots itself".

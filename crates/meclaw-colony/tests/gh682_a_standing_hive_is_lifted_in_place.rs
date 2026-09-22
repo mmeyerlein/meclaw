@@ -1342,6 +1342,346 @@ async fn a_leaf_is_lifted_as_its_own_changed_node() {
     assert!(!td.path().join(".staging/m-ghost").exists());
 }
 
+/// GH #796 (R-L6) -- a lift does not materialize what the environment owns.
+/// `with.params` are merged into the lifted cell's `config.json`, so the
+/// environment class has to survive the door's pass
+/// (`substitute_mutation_diff`) exactly as it does for
+/// `add_nodes[].override_params`: the token on disk, the value only in the
+/// runtime view the spawn reads (`gh20_secret_late_binding.rs`). Measured on a
+/// throwaway stage on 2026-09-21: before `replace_nodes` had its own arm, a
+/// manifest carrying a placeholder twice left a 164-character literal in
+/// `params.duplex.api_key` of two cells, while cells instantiated from their
+/// template kept the 19-character token.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_lift_stages_the_token_and_spawns_with_the_value() {
+    let td = TempDir::new().unwrap();
+    write_alex_topology(td.path());
+    write_screen_templates(td.path());
+    write_note_templates(td.path());
+    let colony = start_colony(&td).await;
+    let grown = submit_diff(
+        &colony.h,
+        "/alex",
+        json!({"add_nodes": [{"name": "note", "template": "note@1.0.0"}]}),
+    )
+    .await;
+    assert!(
+        matches!(grown, MutationOutcome::Committed { .. }),
+        "growing note@1.0.0 must commit; got {grown:?}"
+    );
+    colony.h.shutdown().await;
+
+    let env: HashMap<String, String> =
+        [("LATE_BOUND_TARGET".to_string(), "/alex/capture".to_string())].into();
+    let raw = json!({"replace_nodes": [{"match": {"name": "note"},
+                                        "with": {"template": "note@1.1.0",
+                                                 "params": {"echo_to": "${LATE_BOUND_TARGET}"}}}]});
+    // Exactly what the door does before staging (`colony.rs` -> handle_mutation).
+    let diff =
+        meclaw_colony::mutation::substitute::substitute_mutation_diff(&raw, &env, &HashMap::new())
+            .expect("the door's substitution pass");
+
+    let plan = stage_replace_nodes(
+        td.path(),
+        "m-late",
+        "/alex",
+        &diff,
+        &library(td.path(), &[("note", "1.0.0"), ("note", "1.1.0")]),
+        &env,
+        &HashMap::new(),
+        &factory_registry(),
+        &meclaw_colony::WorkPulse::silent(),
+    )
+    .expect("staging the leaf lift");
+    let fresh = &plan[0].changed[0].fresh;
+    let staged = read_config(&fresh.root_staging_path.join("config.json"));
+    assert_eq!(
+        staged["params"]["echo_to"], "${LATE_BOUND_TARGET}",
+        "the disk view of a lift keeps the token the environment owns"
+    );
+    assert_eq!(
+        fresh.cells[0].params["echo_to"], "/alex/capture",
+        "the runtime view binds it, so the lifted cell spawns resolved"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GH #796 (R-L6) — a lift writes no environment value to disk, in the shape
+// the defect was measured in: a HIVE lift with ADDRESSED `with.params`
+// (`{"": …, "<child>": …}`), the two files it renders (the child's
+// `config.json` and the hive's own `config.json.replace`), and a sweep of the
+// whole `.staging` tree for the resolved values.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The value `${LIFT_NOTE}` stands for — a hive-level param (the `""` address
+/// of the addressed form), free text, never a path.
+const LIFT_NOTE_VALUE: &str = "the-note-the-environment-owns-do-not-materialize";
+/// The value `${ECHO_TARGET}` stands for — a child-level param, a real path so
+/// the staged cell can actually be built from it.
+const ECHO_TARGET_VALUE: &str = "/alex/capture";
+
+/// The environment both fixtures below are written against.
+fn late_binding_env() -> HashMap<String, String> {
+    [
+        ("LIFT_NOTE".to_string(), LIFT_NOTE_VALUE.to_string()),
+        ("ECHO_TARGET".to_string(), ECHO_TARGET_VALUE.to_string()),
+    ]
+    .into()
+}
+
+/// The hive contract of the lifted `screen`, with the `because` of `in_view`
+/// left to the environment. `lanes` is what the version declares.
+fn contract_with_late_bound_note(lanes: &[&str]) -> JsonValue {
+    let accepts: Vec<JsonValue> = lanes
+        .iter()
+        .enumerate()
+        .map(|(i, route)| {
+            json!({"route": route,
+                   "because": if i == 0 { "${LIFT_NOTE}" } else { "a second lane" }})
+        })
+        .collect();
+    json!({"accepts": accepts})
+}
+
+/// A colony over `td` whose env comes from a pinned file (`colony-env`) rather
+/// than `<root>/.env`, so the fixture owns both halves of the late binding.
+async fn start_colony_with_env(td: &TempDir) -> Colony {
+    let env_file = td.path().join("colony-env");
+    std::fs::write(
+        &env_file,
+        format!("LIFT_NOTE={LIFT_NOTE_VALUE}\nECHO_TARGET={ECHO_TARGET_VALUE}\n"),
+    )
+    .unwrap();
+    let h = ColonyHandle::new_with_factories_and_env_at(td, factory_list(), Some(env_file));
+    rescan_templates(&h, td.path().join("templates")).await;
+    let (capture_tx, capture_rx) = mpsc::channel(32);
+    h.spawn(Path::new("/alex/capture"), move || {
+        CaptureCell::new(capture_tx.clone())
+    })
+    .await;
+    bootstrap_from_filesystem(td.path(), &factory_registry(), &h.runtime())
+        .await
+        .expect("the persona topology must boot");
+    Colony { h, capture_rx }
+}
+
+/// The standing tree both GH #796 tests lift: `screen@1.0.0` grown as
+/// `/alex/display` with ADDRESSED overrides — one at the hive itself (`""`),
+/// one at the child `keep` — and both values handed in as environment tokens.
+/// The colony is shut down afterwards; what is left is a tree on disk.
+///
+/// This grow is the OTHER half of the proof: `add_nodes` has had its arm since
+/// GH #20, so the tokens are what stands on disk. A lift that resolves them
+/// would therefore not just leak a value, it would also find every such child
+/// *changed* — see [`a_child_the_environment_parameterises_is_kept_over_a_lift`].
+async fn grow_screen_with_late_bound_params(td: &TempDir) {
+    write_alex_topology(td.path());
+    write_screen_templates(td.path());
+    let colony = start_colony_with_env(td).await;
+    let grown = submit_diff(
+        &colony.h,
+        "/alex",
+        json!({"add_nodes": [{
+            "name": "display",
+            "template": "screen@1.0.0",
+            "override_params": {
+                "": {"contract": contract_with_late_bound_note(&["in_view"])},
+                "keep": {"echo_to": "${ECHO_TARGET}"}
+            }
+        }]}),
+    )
+    .await;
+    assert!(
+        matches!(grown, MutationOutcome::Committed { .. }),
+        "growing screen@1.0.0 with addressed late-bound params must commit; got {grown:?}"
+    );
+    colony.h.shutdown().await;
+}
+
+/// Stage the lift of that tree to `screen@1.1.0`, re-supplying the very same
+/// addressed params — through the door's substitution pass first, which is
+/// where GH #796 sat.
+fn stage_late_bound_lift(td: &TempDir, mutation_id: &str) -> Vec<StagedReplace> {
+    let raw = json!({"replace_nodes": [{
+        "match": {"name": "display"},
+        "with": {
+            "template": "screen@1.1.0",
+            "params": {
+                "": {"contract": contract_with_late_bound_note(&["in_view", "in_notice"])},
+                "keep": {"echo_to": "${ECHO_TARGET}"},
+                "bump": {"echo_to": "${ECHO_TARGET}"}
+            }
+        }
+    }]});
+    let env = late_binding_env();
+    // Exactly what the door does before staging (`colony.rs` -> handle_mutation).
+    let diff =
+        meclaw_colony::mutation::substitute::substitute_mutation_diff(&raw, &env, &HashMap::new())
+            .expect("the door's substitution pass");
+    stage_replace_nodes(
+        td.path(),
+        mutation_id,
+        "/alex",
+        &diff,
+        &screen_registry(td.path()),
+        &env,
+        &HashMap::new(),
+        &factory_registry(),
+        &meclaw_colony::WorkPulse::silent(),
+    )
+    .expect("staging the hive lift")
+}
+
+/// Every file below `<root>/.staging`, read as text, must be free of the
+/// values the environment owns — the negative proof GH #20 asks for
+/// (`gh20_secret_late_binding.rs::assert_no_sentinel_under`), here over the
+/// surface a lift writes.
+fn assert_no_late_bound_value_under(dir: &std::path::Path) {
+    let mut stack = vec![dir.to_path_buf()];
+    let mut checked = 0usize;
+    while let Some(p) = stack.pop() {
+        for entry in std::fs::read_dir(&p).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let text = String::from_utf8_lossy(&std::fs::read(&path).unwrap()).into_owned();
+            for value in [LIFT_NOTE_VALUE, ECHO_TARGET_VALUE] {
+                assert!(
+                    !text.contains(value),
+                    "a value the environment owns was materialized into {}: {text}",
+                    path.display()
+                );
+            }
+            checked += 1;
+        }
+    }
+    assert!(checked > 0, "sweep found no files under {}", dir.display());
+}
+
+/// GH #796 (R-L6) — the hive lift in the shape the defect was measured in.
+///
+/// The manifest that produced it lifted a standing hive with `with.params` in
+/// the ADDRESSED form and handed two cells their params as `${VAR}`; what was
+/// left behind were two `config.json` files carrying a 164-character literal
+/// where the colony instantiated from the same template kept the 19-character
+/// token (measured on a throwaway stage, 2026-09-21). A lift renders two kinds
+/// of file, and both were in it: a child's `config.json` and the hive's own
+/// renewed declaration, staged as `config.json.replace`
+/// (`mutation/stage_replace.rs` → `stage_declaration`, which runs the `""`
+/// entry of the addressed block through the same instantiation pass).
+///
+/// So this pins the whole surface: the tokens that the grow left standing, the
+/// tokens in both rendered files, the runtime view that still binds the value
+/// — and a sweep of everything under `.staging` for either resolved value.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_hive_lift_stages_addressed_tokens_and_materializes_nothing() {
+    let td = TempDir::new().unwrap();
+    grow_screen_with_late_bound_params(&td).await;
+
+    // The standing tree, before any lift: `add_nodes` kept both classes apart
+    // (GH #20), so the tokens are what a lift finds on disk.
+    let display = td.path().join("main/alex/display");
+    let standing_hive = read_config(&display.join("config.json"));
+    assert_eq!(
+        standing_hive["params"]["contract"]["accepts"][0]["because"], "${LIFT_NOTE}",
+        "the grow left the hive's late-bound param a token"
+    );
+    let standing_keep = read_config(&display.join("keep/config.json"));
+    assert_eq!(
+        standing_keep["params"]["echo_to"], "${ECHO_TARGET}",
+        "the grow left the child's late-bound param a token"
+    );
+
+    let plan = stage_late_bound_lift(&td, "m-late-hive");
+    let lift = &plan[0];
+
+    // The hive's renewed declaration — the file a lift alone writes.
+    let decl = lift
+        .declaration
+        .as_ref()
+        .expect("a lifted hive renews its declaration");
+    assert_eq!(
+        decl.staging_path,
+        td.path()
+            .join(".staging/m-late-hive/display/config.json.replace")
+    );
+    let renewed = read_config(&decl.staging_path);
+    assert_eq!(
+        renewed["params"]["contract"]["accepts"][0]["because"], "${LIFT_NOTE}",
+        "the renewed declaration keeps the token the environment owns"
+    );
+
+    // The changed child — the other kind of file, rendered through the same
+    // `override_params` contract.
+    let changed: Vec<&str> = lift.changed.iter().map(|c| c.aside.from.as_str()).collect();
+    assert_eq!(
+        changed,
+        vec!["/alex/display/bump"],
+        "only the version-diff child changes"
+    );
+    let bump = &lift.changed[0];
+    let staged_bump = read_config(&bump.fresh.root_staging_path.join("config.json"));
+    assert_eq!(
+        staged_bump["params"]["echo_to"], "${ECHO_TARGET}",
+        "the disk view of a lifted child keeps the token"
+    );
+    // ... and the runtime view binds it, so the cell still spawns resolved.
+    assert_eq!(
+        bump.fresh.cells[0].params["echo_to"], ECHO_TARGET_VALUE,
+        "the runtime view of the same params is the resolved one"
+    );
+
+    // Nothing anywhere below `.staging` carries either value.
+    assert_no_late_bound_value_under(&td.path().join(".staging"));
+}
+
+/// GH #796 (R-L6), the side of the fix that is not about secrets: a child
+/// whose param the environment owns stays **kept** over a lift.
+///
+/// The partition compares the standing `config.json` against the template
+/// child rendered with this lift's overrides layered on
+/// (`mutation/subtree.rs` → `classify_subtree_nodes_in`). Before the arm
+/// existed the two sides spoke different languages — the standing file its
+/// token, the rendered side the resolved value — so EVERY child carrying an
+/// environment param came out `changed`: a new `cell.id`, a new `cell.db`, the
+/// old directory parked aside, the cell restarted. With the arm both sides are
+/// the token again and such a child is kept, untouched, exactly like one with
+/// no params at all. `keep` here is byte-identical across the two versions and
+/// carries `${ECHO_TARGET}`; `bump` is the version diff and changes for that
+/// reason, not for this one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_child_the_environment_parameterises_is_kept_over_a_lift() {
+    let td = TempDir::new().unwrap();
+    grow_screen_with_late_bound_params(&td).await;
+    let display = td.path().join("main/alex/display");
+    let keep_before = std::fs::read(display.join("keep/config.json")).unwrap();
+
+    let plan = stage_late_bound_lift(&td, "m-late-kept");
+    let lift = &plan[0];
+
+    let kept: Vec<&str> = lift.kept.iter().map(|k| k.absolute_path.as_str()).collect();
+    assert_eq!(
+        kept,
+        vec!["/alex/display/keep"],
+        "a child whose param is a token is kept over the lift; changed: {:?}",
+        lift.changed
+            .iter()
+            .map(|c| c.aside.from.as_str())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        !td.path().join(".staging/m-late-kept/display/keep").exists(),
+        "a kept child is not staged (F1)"
+    );
+    assert_eq!(
+        std::fs::read(display.join("keep/config.json")).unwrap(),
+        keep_before,
+        "and nothing of it is rewritten"
+    );
+}
+
 /// A child at the given contract version that ALSO declares `owner` as an
 /// `operator_set` param (ADR-0032) with an empty shipped default.
 fn owned_child(version: &str) -> String {

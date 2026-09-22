@@ -1,12 +1,13 @@
-# `talky@5.1.0`
+# `talky@5.2.1`
 
 A whole conversational agent as one template. Three referenced units under one hive:
 [`session-keeper`](../session-keeper/), [`collector`](../collector/) and
 [`dispatcher`](../dispatcher/) -- each carrying its template's own name -- plus an
-`llm` brain, the sidecar splitter and one error collector. No new cell type, no Rust.
+`llm` brain, the sidecar splitter, the declaration of this agent's own sidecar sections
+and one error collector. No new cell type, no Rust.
 
 **The first production rollout wired this by hand.** Keeper in the ingress, collector at the seam,
-dispatcher for the fan-out, the close batch out to the write port -- thirty-two edges,
+dispatcher for the fan-out, the close batch out to the write port -- thirty-four edges,
 each of them a decision that had already been made in a README. That is the definition of a
 composite: a recurring unit that should be instantiated, not re-derived. Here it is one
 `add_nodes` plus the four port edges the parent has to draw anyway.
@@ -44,6 +45,7 @@ composite: a recurring unit that should be instantiated, not re-derived. Here it
 | `collector/{assemble,window}` | `code`, `store` | `collector` **(sealed)** |
 | `dispatcher` | `code` | `dispatcher` (a single-cell template) |
 | `brain` | `llm` | this template |
+| `schemas` | `code` | this template |
 | `splitter` | `code` | this template |
 | `errors` | `code` | this template |
 
@@ -60,13 +62,13 @@ The three sub-units are **references**, not copies. Each of the three directorie
 one `config.json` and nothing else:
 
 ```json
-{"cell": {"type": "ref", "template": "collector@4.1.1"}}
+{"cell": {"type": "ref", "template": "collector@4.2.0"}}
 ```
 
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`talky@5.1.0` above it in its provenance chain.
+`talky@5.2.1` above it in its provenance chain.
 
 **The library has to carry the three.** A reference resolves against the colony's template
 registry, so `collector`, `session-keeper` and `dispatcher` have to sit in
@@ -109,6 +111,7 @@ The rest, each optional and each still at the same address:
 | `recall` | out | a memory read this turn needs |
 | `in_tool` | in | one tool result coming back |
 | `in_advice` | in | an advisor's answer coming back |
+| `in_delegation` | in | an errand the voice model handed the backend of its own accord, in a duplex call. It comes STRAIGHT from the channel, not through a firewall -- a firewall's exit stamps `in_turn`, and this is no turn of the conversation. Promote `context.delegation_id` (the correlation the answer travels back under) and `context.engine`. Since 5.2.0 |
 | `in_bundle` | in | a memory bundle coming back |
 | `in_thread_call` | in | a `thread_recall` tool call handed back into the composite (since 3.0.1) |
 | `in_sweep` | in | an operator-forced session sweep |
@@ -468,10 +471,11 @@ downstream as well.
 
 ## The internal wiring, edge by edge
 
-Fourteen edges of round in this hive's `params.graph` -- plus the eighteen that ARE the
-boundary (six door edges from `.`, twelve leaving towards it, and those are the lanes
-above; the sixth door is the mutation receipt, GH #553). The two halves are the whole of this file, counted from it. Every one of the
-fourteen names a sub-unit **by its path**: two of the six nodes below are sealed hives, so
+Fifteen edges of round in this hive's `params.graph` -- plus the nineteen that ARE the
+boundary (seven door edges from `.`, twelve leaving towards it, and those are the lanes
+above; the sixth door is the mutation receipt, GH #553, and the seventh is the `in_menu`
+fan that reaches `./schemas` beside the collector, GH #783). The two halves are the whole of this file, counted from it. Every one of the
+fifteen names a sub-unit **by its path**: two of the seven nodes below are sealed hives, so
 the address is the hive and the lane in the third column is what the door behind it
 reads; what those two draw INSIDE themselves is theirs and is not counted here. Read it
 as the round it is:
@@ -483,6 +487,7 @@ session-keeper --(close, session_id + channel + audience_set -> context)->  coll
 collector ==(brain, int(hop.iter) < 12, restore_ttl)==>  brain      <- THE SEAM
 collector --(pack)--------------> brain      <- THE DOOR IN THE WALL, GH #458
 collector --(menu)--------------> brain      <- the answered tool menu, GH #464
+schemas --(operation == schemas)-> collector  in_menu   <- this agent's own sidecar offer, GH #783
 brain --(stop | tool_calls)------> splitter      <- the sidecar cut, GH #379
 splitter --(stop | tool_calls)---> dispatcher
 splitter --(sidecar)------------->  .        <- one per section, out of the sidecar port
@@ -499,13 +504,13 @@ collector --(write)---------->  .            <- the close batch, out of the writ
 collector --(pack_ack)-------->  .            <- the pack receipt, GH #458
 collector --(schemas)--------->  .            <- what tools this agent declares, GH #464
 
-[sealed]  session-keeper  collector   [plain]  brain  splitter  dispatcher  errors
+[sealed]  session-keeper  collector   [plain]  brain  schemas  splitter  dispatcher  errors
 ```
 
 **The sixteen are not drawn here, and that is the point.** A sealed sub-unit takes its
 lane at its own `{"from": "."}` door edges and distributes behind them -- `session-keeper`
 alone brings eleven edges, `collector` five -- and none of that is
-visible to, or wireable by, the hive above. What the fifteen edges above state is the
+visible to, or wireable by, the hive above. What the edges above state is the
 whole of talky's own topology.
 
 **The one `==` in the fan-out block is the default edge.** `dispatcher --(tool)--> [your
@@ -642,7 +647,7 @@ tools this agent uses -- shipped as `["web_search", "web_fetch"]`, `["*"]` for e
 tools hive has -- and the schemas behind those names are asked for:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "talky@5.1.0",
+{"add_nodes": [{"name": "scribe", "template": "talky@5.2.1",
                 "override_params": {"collector/assemble": {"tools": ["web_search", "bash"]}}}]}
 ```
 
@@ -702,7 +707,7 @@ behaves exactly as it did.
 `hop.menu_unknown` moved with it: it is computed against the MERGED menu, so a name one
 answerer has nothing under is not a finding when another answerer delivers it.
 
-**This composite still asks exactly one answerer, and that is deliberate.** Standalone, a
+**Outside itself this composite still asks exactly one answerer, and that is deliberate.** Standalone, a
 talky has a tools hive beside it and nothing else that could serve a tool name, so its
 shipped declaration is its two search tools. The declared list grows **one level up**: in
 [`../assistant/README.md`](../assistant/README.md) the level adds `consult_cogny` to it and
@@ -715,6 +720,42 @@ The full account of the mechanism lives in
 [`templates/collector/README.md`](../collector/README.md) § *The menu is asked for*, and the
 answering side in [`templates/tools/README.md`](../tools/README.md) § *Asking for the
 declarations*.
+
+### The sections this agent offers its own model (`./schemas`, GH #783)
+
+A tool declaration and a sidecar section are two answers to the same question -- what does
+this agent get to ask its model for -- and since GH #606 the collector merges both halves
+off the same lane. So the sections this composite asks for are declared the way a tool is:
+by a cell, beside the agent that consumes them. `./schemas` is that cell, and it declares
+**no tool at all** -- the tools of a talky are the parent's, and what this cell has to say
+is the other half of the question.
+
+**Three sections, all optional**, and they exist for the occasion on which this agent is
+not the one speaking. On a duplex voice call a voice model talks to the caller on its own
+timeline and this agent ADVISES it, so what leaves the brain is not a reply:
+
+| section | what it is | how it is consumed |
+|---|---|---|
+| `fact` | what the caller should HEAR next, as one or two plain sentences | the voice model paraphrases it aloud |
+| `context` | what the voice model should KNOW silently -- recall, profile, application state | never spoken on its own |
+| `correction` | a rule for the REST of the call: a guardrail, a redirect | it changes the model's behaviour until the call ends |
+
+**Outside that mode the three stay empty, and the offers say so themselves.** Every one of
+the instructions carries `in advise mode only`; the mode itself is a slot of
+`system.instructions` and the model reads both. A section is offered ONCE, at composition
+time, and the same block contract stands in the brain for every turn the agent takes --
+switching one on and off per turn would need a second mechanism nothing in the block could
+read, and a section marked required while it is empty on most turns is a contract a model
+learns to break. `correction` is the one to spend sparingly: nothing on the model's
+timeline expires one.
+
+**It rides the `in_menu` fan, and it answers as an answerer of its own.** The composite's
+door edge for that lane reaches `./schemas` beside `./collector`, and the edge back stamps
+`context.tool_answerer` with `talky`: without a name of its own this cell and the tools
+hive would delete each other's row from the collector's menu table on every tick, which is
+the defect GH #529 was built for. It follows that the offer travels on an ANSWER -- a tree
+that wires no menu answerer at all asks nothing, hears nothing, and its brain carries the
+block contract it carried before.
 
 ### The advisor lanes (GH #28, R-CG-3)
 
@@ -897,10 +938,24 @@ top-level key it emits a message on route `sidecar` with `hop.section` set to th
 the body `{"messages": [], "section": "<key>", "payload": <the section object>}`. It looks
 no section up, validates none against a schema and routes none anywhere: **the edges
 downstream distribute on `hop.section`**, so a section this composite has never heard of
-travels without a line of code changing here. A top-level key whose value is not an object
-is dropped by name -- `hop.sidecar_dropped` on the answer half lists them, comma-separated
--- because there is no body to carry a bare string in and guessing one would be this
-cell's invention.
+travels without a line of code changing here.
+
+**A section body is an object or a sentence** (`5.2.1`,
+[#799](https://github.com/mmeyerlein/meclaw/issues/799)). The two halves of the block
+contract asked a model for two different things: the section heading is rendered out of the
+schema whoever offered it wrote, and every section `./schemas` offers is a
+`{"type": "string"}` -- so `{"fact": "Der Termin ist Dienstag."}` is what a model writing
+from the heading produces, and until `5.2.1` that section was dropped. It is the second way
+into the silence [#797](https://github.com/mmeyerlein/meclaw/issues/797) closed at the other
+end of the same seam: the caller hears a holding sentence and then nothing. So a bare,
+non-empty string is a section body now. It travels **wrapped** -- `{"payload": "<string>"}`
+-- and not repaired: the wrapper is the body slot the lane declares, and the string inside it
+is the one the model wrote, byte for byte. An object still travels exactly as it was written;
+**the object form is accepted and no longer advertised.** A top-level key whose value is
+neither -- a list, a number, an empty or blank string -- is dropped by name, and
+`hop.sidecar_dropped` on the answer half lists them, comma-separated. The blank string is
+refused HERE because the receiver refuses it THERE: a section with no words ends as a named
+refusal at the far end, not as an advice.
 
 **The legacy fence still reads.** A ```` ```memory ```` block is the single-section form
 this cell shipped first, and it becomes the section `memory` with the whole block as its
@@ -1154,7 +1209,7 @@ curl -s -X POST http://127.0.0.1:PORT/colony/mutations -H 'Content-Type: applica
         "add_edges":[ ... the four ports plus the tool lanes, in the SAME mutation ... ]}}'
 ```
 
-The composite comes up with all eleven cells (plus three hive markers); the `timer`
+The composite comes up with all twelve cells (plus three hive markers); the `timer`
 spawns as soon as the crossing edge makes the subtree active, and the `store`/`llm` cells report
 `active=true` + `NotYetSpawned`, which is the correct hot/cold form for a stateful cell.
 Two things to have ready before the mutation:
@@ -1302,8 +1357,8 @@ of the same round.
   output forms, run through the shipped `params.script_inline` itself: a cut, a
   byte-identical pass-through (no block, and a tool-call round), the flagged
   pass-through a block nobody can read earns, and -- since GH #605 -- one block with three
-  sections leaving as three messages, the one section that is not an object dropped by
-  name. `talky_composite.rs`'s
+  sections leaving as three messages, the one section that can carry nothing dropped by
+  name, and -- since GH #799 -- the bare-string section arriving wrapped. `talky_composite.rs`'s
   `an_annotated_answer_splits_into_the_reply_and_the_sidecar` is the same thing end to
   end -- the prose reaches the reply exit fence-free and the section leaves on `sidecar`,
   for ONE provider call.

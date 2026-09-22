@@ -1,0 +1,10 @@
+{
+  "type": "session.delegation.created",
+  "event_id": "event_fixture_delegation",
+  "offset_ms": 11600,
+  "delegation": {
+    "id": "item_fixture_delegation",
+    "type": "delegation",
+    "target": "client"
+  }
+}

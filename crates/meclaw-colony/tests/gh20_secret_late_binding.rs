@@ -14,6 +14,14 @@
 //! `add_nodes`, the `swap_nodes` with-side, `adopt`, and the subtree/rebirth
 //! staging), plus the boot surface (`plan_bootstrap_with_env`) that binds late.
 //!
+//! One instantiation path does NOT come through here: a lift (`replace_nodes`)
+//! stages through `stage_replace_nodes`, whose fixtures live with the lift.
+//! Its half of this rule — the token in the lifted child's `config.json` and in
+//! the hive's renewed `config.json.replace`, the value only in the runtime view
+//! — is held by `gh682_a_standing_hive_is_lifted_in_place.rs`
+//! (`a_lift_stages_the_token_and_spawns_with_the_value`,
+//! `a_hive_lift_stages_addressed_tokens_and_materializes_nothing`), GH #796.
+//!
 //! `SENTINEL` is the value an unfixed instantiation would leave on disk. Every
 //! test that writes a tree ends with `assert_no_sentinel_under`, a literal
 //! grep over every file of the instance tree -- the negative proof the issue

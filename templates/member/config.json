@@ -195,7 +195,23 @@
               "route": "'in_turn'"
             },
             "set_context": {
-              "channel": "has(context.channel) ? context.channel : ''"
+              "channel": "has(context.channel) ? context.channel : ''",
+              "engine": "has(hop.engine) ? hop.engine : ''"
+            }
+          }
+        },
+        {
+          "from": "./channels",
+          "to": "./assistants",
+          "condition": "has(hop.route) && hop.route == 'delegation'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_delegation'"
+            },
+            "set_context": {
+              "channel": "has(context.channel) ? context.channel : ''",
+              "engine": "has(hop.engine) ? hop.engine : ''",
+              "delegation_id": "has(hop.delegation_id) ? hop.delegation_id : ''"
             }
           }
         },
@@ -308,6 +324,16 @@
           "from": "./assistants",
           "to": "./apps",
           "condition": "has(hop.route) && hop.route == 'sidecar' && has(hop.section) && hop.section != 'memory'"
+        },
+        {
+          "from": "./assistants",
+          "to": "./channels",
+          "condition": "has(hop.route) && hop.route == 'sidecar' && has(hop.section) && (hop.section == 'fact' || hop.section == 'context' || hop.section == 'correction') && has(context.channel_node) && context.channel_node != ''",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_advise'"
+            }
+          }
         },
         {
           "from": "./assistants",

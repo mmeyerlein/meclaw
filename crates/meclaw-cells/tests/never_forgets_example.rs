@@ -72,14 +72,16 @@ const GROWN_FROM: [(&str, &str); 3] = [
 ];
 
 /// Three checked-in cells (the import lane plus the memory's two -- the hive
-/// marker is a scope, not a cell) and thirteen grown ones: one from `door@1`,
-/// eleven from `talky` (the tenth is the sidecar splitter, talky@4.1.0, GH #379;
+/// marker is a scope, not a cell) and fourteen grown ones: one from `door@1`,
+/// twelve from `talky` (the tenth is the sidecar splitter, talky@4.1.0, GH #379;
 /// the summarizer's two left with talky@4.3.0, GH #447; the eleventh is the
-/// keeper's own `porter`, session-keeper@2.1.0, GH #471), one from `terminal@1`.
-/// The collector's `menu-clock` was the twelfth from `talky` between
+/// keeper's own `porter`, session-keeper@2.1.0, GH #471; the twelfth is
+/// `schemas`, which declares the sidecar sections that agent asks its own model
+/// for, GH #783), one from `terminal@1`.
+/// The collector's `menu-clock` was the thirteenth from `talky` between
 /// collector@3.3.0 (GH #464) and collector@4.0.0 (GH #553), which asks the menu
 /// on the mutation receipt instead. MEASURED.
-const CELLS_AFTER_GROW: usize = 16;
+const CELLS_AFTER_GROW: usize = 17;
 
 /// GH #277: `talky` REFERENCES its three sub-units instead of carrying copies
 /// of them, so the library the colony scans has to hold them next to it. They

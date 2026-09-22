@@ -87,6 +87,9 @@ def make_repo(root):
         shutil.copy(src, repo / "scripts" / src.name)
         (repo / "scripts" / src.name).chmod(0o755)
     shutil.copy(GATE_PLAN, repo / "scripts" / "gate_plan.py")
+    # `scripts/gate.sh` SOURCES this one (GH #802) -- without it the runner in
+    # the throw-away repo does not start at all.
+    shutil.copy(REPO / "scripts" / "cargo-target.sh", repo / "scripts" / "cargo-target.sh")
     plans = repo / "plans"
     (plans / WAVE_DIR / "berichte").mkdir(parents=True, exist_ok=True)
     (plans / "README.md").write_text(PLANS_README)
@@ -245,7 +248,7 @@ class TestWaveDetection(StrandShTestCase):
         self.assertEqual(0, res.returncode, res.stdout + res.stderr)
         self.assertTrue(
             (self.repo / "plans" / WAVE_DIR / "receipts" / "kit"
-             / "summary.txt").is_file(),
+             / "latest" / "summary.txt").is_file(),
             "the gate archive did not land in the branch's wave")
         self.assertFalse(
             (self.repo / "plans" / OTHER_WAVE_DIR / "receipts").exists(),
@@ -283,8 +286,16 @@ class TestGate(StrandShTestCase):
         path.write_text(text)
         return path
 
-    def archive(self, name="kit"):
+    def archive_root(self, name="kit"):
         return self.repo / "plans" / WAVE_DIR / "receipts" / name
+
+    def archive(self, name="kit"):
+        """The newest run of the strand -- what `latest` points at."""
+        return self.archive_root(name) / "latest"
+
+    def runs(self, name="kit"):
+        return sorted(d for d in self.archive_root(name).iterdir()
+                      if d.is_dir() and not d.is_symlink())
 
     def run_in_tree(self, plan, *args):
         return run_strand(self.repo, "gate", *args, cwd=self.tree,
@@ -309,6 +320,41 @@ class TestGate(StrandShTestCase):
         self.assertTrue((arc / "run.log").is_file(), "no run log in %s" % arc)
         summary = (arc / "summary.txt").read_text().strip()
         self.assertTrue(SUMMARY_LINE.match(summary), summary)
+
+    def test_a_second_run_does_not_overwrite_the_first(self):
+        """Every run keeps its own directory.
+
+        The archive was named by strand alone, so a strand that gated twice --
+        red, fix, green, or simply a re-run -- wrote `summary.txt`, `run.log`,
+        the receipt and every station log of the second run over those of the
+        first. That is the material the report is made of; it happened twice in
+        one day on 2026-09-21 (GH #802).
+        """
+        first = self.run_in_tree(self.plan_file(PLAN_RED, name="red.tsv"))
+        self.assertEqual(1, first.returncode, first.stdout + first.stderr)
+        second = self.run_in_tree(self.plan_file(PLAN_GREEN, name="green.tsv"))
+        self.assertEqual(0, second.returncode, second.stdout + second.stderr)
+
+        runs = self.runs()
+        self.assertEqual(2, len(runs), "one run overwrote the other: %s" % runs)
+        verdicts = sorted((r / "summary.txt").read_text().strip().split()[-1]
+                          for r in runs)
+        self.assertEqual(["GREEN", "RED"], verdicts)
+        for run in runs:
+            self.assertTrue((run / "run.log").is_file(), run)
+            self.assertTrue((run / "logs").is_dir(), run)
+
+    def test_latest_points_at_the_newest_run(self):
+        self.run_in_tree(self.plan_file(PLAN_RED, name="red.tsv"))
+        self.run_in_tree(self.plan_file(PLAN_GREEN, name="green.tsv"))
+        self.assertIn("GREEN", (self.archive() / "summary.txt").read_text())
+        self.assertEqual(self.runs()[-1].resolve(), self.archive().resolve())
+
+    def test_a_run_never_lands_in_a_directory_that_is_already_written(self):
+        """Two runs in the same second at the same commit are still two runs."""
+        for _ in range(3):
+            self.run_in_tree(self.plan_file(PLAN_GREEN))
+        self.assertEqual(3, len(self.runs()))
 
     def test_gate_runs_the_runner_of_the_tree_it_stands_in(self):
         """A strand gates the sources it stands in, whichever kit it called.
@@ -376,6 +422,27 @@ class TestReportAndClose(StrandShTestCase):
         self.assertIn("GATE-SUMMARY", head["gate"])
         self.assertIn("GREEN", head["gate"])
         self.assertEqual("[%s]" % sha, head["commits"])
+
+    def test_report_takes_the_gate_line_of_the_newest_run(self):
+        self.commit()
+        self.assertEqual(1, self.gate(PLAN_RED).returncode)
+        self.assertEqual(0, self.gate(PLAN_GREEN).returncode)
+        res = run_strand(self.repo, "report", cwd=self.tree)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertIn("GREEN", header_block(self.report("kit"))["gate"])
+
+    def test_report_still_reads_an_archive_written_before_the_per_run_layout(self):
+        """Flat archives of earlier strands are read where they lie."""
+        self.commit()
+        self.assertEqual(0, self.gate(PLAN_GREEN).returncode)
+        root = self.repo / "plans" / WAVE_DIR / "receipts" / "kit"
+        run = [d for d in root.iterdir() if d.is_dir() and not d.is_symlink()][0]
+        (root / "summary.txt").write_text((run / "summary.txt").read_text())
+        (root / "latest").unlink()
+        shutil.rmtree(run)
+        res = run_strand(self.repo, "report", cwd=self.tree)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertIn("GREEN", header_block(self.report("kit"))["gate"])
 
     def test_report_refuses_a_red_gate(self):
         self.commit()

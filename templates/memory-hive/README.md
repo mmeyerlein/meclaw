@@ -1130,7 +1130,7 @@ nothing, and two members of one colony shared one memory configuration. Now a mu
 member's recall and leaves the other alone:
 
 ```json
-{"add_nodes": [{"name": "alex", "template": "member@1.8.0",
+{"add_nodes": [{"name": "alex", "template": "member@1.9.0",
                 "override_params": {"memory-hive/recall": {"tier1_topk": 40,
                                                            "sem_max_distance": 0.35}}}]}
 ```

@@ -114,6 +114,7 @@ fn word(n: usize) -> &'static str {
         (4, "four"),
         (5, "five"),
         (6, "six"),
+        (7, "seven"),
         (8, "eight"),
         (9, "nine"),
         (10, "ten"),
@@ -125,6 +126,7 @@ fn word(n: usize) -> &'static str {
         (16, "sixteen"),
         (17, "seventeen"),
         (18, "eighteen"),
+        (19, "nineteen"),
         (24, "twenty-four"),
         (26, "twenty-six"),
         (27, "twenty-seven"),
@@ -132,6 +134,7 @@ fn word(n: usize) -> &'static str {
         (30, "thirty"),
         (31, "thirty-one"),
         (32, "thirty-two"),
+        (34, "thirty-four"),
     ]
     .into_iter()
     .collect();

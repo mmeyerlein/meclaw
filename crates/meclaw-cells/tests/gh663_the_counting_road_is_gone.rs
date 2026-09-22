@@ -136,7 +136,7 @@ fn every_wish_goes_straight_to_the_renderer() {
         out[0]["header"]["route"].clone()
     };
     assert_eq!(
-        route_of("member", "member@1.8.0", "alex", ORG),
+        route_of("member", "member@1.9.0", "alex", ORG),
         json!("recipe"),
         "a member wish is a wish like any other now: nothing about it has to be \
          read off the tree first"

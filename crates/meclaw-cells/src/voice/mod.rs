@@ -23,12 +23,14 @@
 //! the speech-to-text provider wants and the rate the text-to-speech provider
 //! emits are both declared in the `hello` frame, and the client adapts.
 
+pub mod b64;
 pub mod cell;
 pub mod connection;
 pub mod contract;
 pub mod factory;
 pub mod io;
 pub mod link;
+pub mod live_turns;
 pub mod params;
 pub mod providers;
 pub mod service;
@@ -37,9 +39,10 @@ pub mod testpage;
 pub mod turns;
 pub mod wire;
 
-pub use cell::{VoiceEvent, VoiceReconfig};
+pub use cell::{LiveSessionState, VoiceEvent, VoiceReconfig};
 pub use contract::{
-    AudioFormat, BoxFuture, Encoding, ProviderTimeouts, SttError, SttEvent, SttProvider, TtsError,
+    AppendKind, AudioFormat, BoxFuture, DuplexControl, DuplexError, DuplexEvent, DuplexProvider,
+    DuplexSession, Encoding, ProviderTimeouts, Speaker, SttError, SttEvent, SttProvider, TtsError,
     TtsProvider,
 };
 pub use factory::VoiceCellFactory;

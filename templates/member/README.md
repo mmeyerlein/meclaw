@@ -1,7 +1,7 @@
-# `member@1.8.0`
+# `member@1.9.0`
 
 One person, as a level. **Four holders, three open containers and no cell of
-its own** — seven nodes and sixty-four edges.
+its own** — seven nodes and sixty-six edges.
 
 | holder | what it holds |
 |---|---|
@@ -241,7 +241,33 @@ places, and since 1.3.0 the second one is the interesting half:
   one that used to read `./assistants -> ./firewall`: same condition, same
   `set_hop`, same `channel` promotion. Only its sender changed, and that is the
   whole mechanical content of #454 at this level — **the raw wire no longer
-  crosses the generation.**
+  crosses the generation.** Since 1.9.0 it promotes one key more, `engine`, out
+  of `hop.engine`: the firewall deletes its own `fw_*` keys on the way out and
+  nothing else, so the key reaches the generation on the same message.
+
+**The delegation, which is not a turn.** `./channels -> ./assistants` carries
+`delegation` straight across, re-stamped to `in_delegation`, with `channel`,
+`engine` and `delegation_id` promoted onto context (1.9.0). It is the one lane
+out of a channel that does NOT go through the firewall, and the reason is the
+firewall's exit rather than the firewall itself: that exit stamps `in_turn`, and
+a handover that arrived as a turn would be answered as one. What screening it
+needs it already had, as the turn the delegation came out of.
+
+**The advice, going back down.** `./assistants -> ./channels` carries the three
+`sidecar` sections a front model may append for a channel — `fact`, `context`,
+`correction` — re-stamped to `in_advise`, guarded on `context.channel_node`
+(1.9.0). The `sidecar` edge into `./apps` is unchanged and still fires on the
+same message: an app that offered one of those sections keeps getting it, and
+the channel gets it too.
+
+**Both of those edges end at a CONTAINER, and a container is not a
+pass-through.** `Edge.to` is a static path here as everywhere, so each lane needs
+one more edge — `./assistants -> ./assistants/<generation>` on `in_delegation`,
+`./channels -> ./channels/<channel>` on `in_advise` — drawn by the mutation that
+grew the child, because only that mutation knows its name. Since `builder@1.12.0`
+the recipe renders both from its table ([#803](https://github.com/mmeyerlein/meclaw/issues/803));
+a generation or a channel grown before it is missing its last leg, and every
+delegation and every advice section stops at the container as `hive_no_route`.
 
 The screened turn comes back on `pass`, re-stamped to `in_turn` again, and
 `./assistants` routes it to the generation it was addressed to by an edge the
@@ -592,14 +618,42 @@ Both are promoted on the channel's own ingress edge, and both are written
 `has(...) ? ... : ''` where they come off the hop — a modifier that fails to
 evaluate skips the whole edge.
 
+**Since 1.9.0 there is a third key beside them, and it is not an address at
+all: `context.engine`.** A channel whose model answers on its own timeline —
+one live provider that hears and speaks, instead of a recogniser, a model and a
+synthesiser in a row — stamps `hop.engine` on what it sends up, and this level
+promotes it onto context on the edge into the firewall and on the delegation
+edge. It is promoted rather than read once for the reason `channel` is: a hop
+survives one delivery, and whatever finally answers stands several hops away.
+What reads it is the assistant's own collector, which asks a live session for
+ADVICE and a written channel for a reply — the same question, answered in two
+shapes. A channel that stamps nothing leaves the key empty, and empty is the
+value every reader treats as the ordinary kind, so no colony has to be rewired
+for a key it does not use.
+
 **For a chat channel: two lanes up, one lane down, and no more.** (A screen is a
-channel too and carries more — see *The display channel* below.)
+channel too and carries more — see *The display channel* below; a channel with a
+live model carries two more again, and they are the last two rows here.)
 
 | direction | lane | who ships the edge |
 |---|---|---|
-| up, from the channel | `turn` — a raw inbound message | the channel's mutation draws `./channels/<name> -> ./channels`; **this level** ships `./channels -> ./firewall`, which re-stamps it to `in_turn` |
+| up, from the channel | `turn` — a raw inbound message | the channel's mutation draws `./channels/<name> -> ./channels`; **this level** ships `./channels -> ./firewall`, which re-stamps it to `in_turn` and promotes `context.engine` |
 | up, from the channel | `error` — the connector's own failure | the channel's mutation draws it; **this level** ships `./channels -> .` |
 | down, to the channel | `answer` — what an assistant said | **this level** ships `./assistants -> ./channels`; the channel's mutation draws `./channels -> ./channels/<name>`, guarded on `context.channel_node == '<name>'` |
+| up, from the channel | `delegation` — a live model handed work back (1.9.0) | the channel's mutation draws it up with the rest; **this level** ships `./channels -> ./assistants` DIRECTLY, re-stamped to `in_delegation`; the generation's mutation draws the last leg into the child, guarded on its own name |
+| down, to the channel | `sidecar`, sections `fact`, `context`, `correction` (1.9.0) | **this level** ships `./assistants -> ./channels`, re-stamped to `in_advise`; the channel's mutation draws the last leg, guarded on its own node name |
+
+**The delegation edge goes round the firewall on purpose.** The firewall's exit
+stamps `in_turn`, so a handover that went through it would arrive as a turn —
+and a generation ANSWERS a turn, which is exactly what a delegation is not. It is
+not a screening hole either: the audio it belongs to was screened as the turn it
+came out of, and the body carries the caller's own words rather than anything
+new.
+
+**The advice edge fans out rather than switching.** The `sidecar` edge into
+`./apps` is untouched, so a section an installed app offered still reaches that
+app; the new edge carries the same three sections to the channel as well. One
+producer, two consumers, and neither has to know about the other.
 
 A connector emits **one wire**: an emission carrying `hop.error_code` is its own
 failure, one without it is an inbound turn. Normalising the two onto `turn` and
@@ -615,7 +669,7 @@ mutation. The outbound edge must promote whatever the connector needs to reply �
 consumer per bot token: a second poller on the same token gets 409 and the two
 steal each other's updates.
 
-**Adding a channel costs one node and three edges, and no template moves.**
+**Adding a channel costs one node and four edges since `member@1.9.0`, and no template moves.**
 
 ```json
 {"scope": "<member>", "diff": {
@@ -633,7 +687,9 @@ steal each other's updates.
      "condition": "has(hop.error_code)",
      "modifier": {"set_hop": {"route": "'error'"}}},
     {"from": "./channels", "to": "./channels/telegram",
-     "condition": "has(hop.route) && hop.route == 'answer' && has(context.channel_node) && context.channel_node == 'telegram'"}
+     "condition": "has(hop.route) && hop.route == 'answer' && has(context.channel_node) && context.channel_node == 'telegram'"},
+    {"from": "./channels", "to": "./channels/telegram",
+     "condition": "has(hop.route) && hop.route == 'in_advise' && has(context.channel_node) && context.channel_node == 'telegram'"}
   ]
 }}
 ```
@@ -652,7 +708,8 @@ of their agents may hold views on it at the same time. A screen owned by a
 generation would go dark on a swap and could not be shared at all.
 
 Since GH #459 the cell that stands there is real: [`display@2.6.0`](../display/).
-**Three** edges instantiate one — as many as a chat channel costs, though two of
+**Three** edges instantiate one — one fewer than a chat channel since
+`member@1.9.0`, because nothing advises a display, though two of
 them point down where a chat channel's point up — and the second says the only
 thing a chat channel's edges do not, the third the one thing a chat channel
 never hears:
@@ -660,7 +717,7 @@ never hears:
 | edge | condition | why |
 |---|---|---|
 | `./channels/display-<s> -> ./channels` | `event` or `receipt` | what the screen produced, stamped with `context.channel_node` and `context.channel`, which on a screen are the same word |
-| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@1.8.0` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
+| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@1.9.0` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
 | `./channels -> ./channels/display-<s>` | `error` | a channel's failure, re-stamped to the display's `in_notice` — since `builder@1.10.0`, drawn by the mutation that grows the screen |
 
 **A view comes down the way it went up.** Since `member@1.8.0` the edge that carries
@@ -894,7 +951,7 @@ The whole arrangement, as three mutations. The member first:
 
 ```json
 {"scope": "<org>/members", "diff": {
-  "add_nodes": [{"name": "alex", "template": "member@1.8.0"}]
+  "add_nodes": [{"name": "alex", "template": "member@1.9.0"}]
 }}
 ```
 
@@ -903,7 +960,7 @@ lanes (`../assistant/README.md` § *Instantiating* writes them out):
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@2.7.0"}],
+  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@2.8.0"}],
   "add_edges": [
     {"from": "./assistants", "to": "./assistants/scribe",
      "condition": "has(hop.route) && hop.route == 'in_turn' && has(context.assistant) && context.assistant == 'scribe'"},
@@ -1306,8 +1363,8 @@ paragraph, and the `org` and `meclaw-os` contracts with it.
 Both transit lists are prose in the containers' own `description`, not a
 `params.contract`, and the reason is mechanical rather than stylistic.
 `addressed_lane_doors` skips a hive only while **nothing addresses its path**
-(`hive_path_is_wired`). This member addresses `./assistants` on twenty-one of its
-edges and `./channels` on eleven, so both containers are wired the moment the
+(`hive_path_is_wired`). This member addresses `./assistants` on thirty-three of its
+edges and `./channels` on twelve, so both containers are wired the moment the
 member is instantiated — and from then on every lane they declared would owe a
 `door_exists`: a message arriving at the container path must reach a cell
 *inside* it. An empty container has no inside. The violation would be collected
@@ -1359,6 +1416,20 @@ at it.
   has to fill it.
 
 ## Versioning
+
+`1.9.0` takes the **second** digit, and by the plain rule: a caller can wire
+something it never could. Two edges arrive and none leaves, so sixty-four become
+**sixty-six**. `./channels -> ./assistants` carries a `delegation` straight to
+the generation as `in_delegation`, round the firewall, whose exit would have
+made a turn of it; `./assistants -> ./channels` carries the three advice
+sections back down as `in_advise`. One existing edge is widened rather than
+moved: the one into the firewall promotes `context.engine` beside
+`context.channel`.
+
+Nothing is taken away, so a parent wired at `1.8.0` is still wired correctly —
+the rim lists do not move at all, because both new edges have both ends inside
+this level. What a colony on `1.8.0` does not have is a channel whose model
+answers on its own timeline, and the two lanes that such a channel needs.
 
 `1.7.0` takes the **second** digit, and by the plain rule: this level does
 something it never promised before. `sidecar` is a new lane

@@ -1,0 +1,10 @@
+{
+  "type": "session.usage.updated",
+  "event_id": "event_fixture_usage",
+  "usage": {
+    "seconds": 14
+  },
+  "context_window": {
+    "usage_ratio": 0.42
+  }
+}

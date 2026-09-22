@@ -413,3 +413,35 @@ PIN-operator-param-unset-en	docs/meclaw-overview.en.md	an instantiating diff ent
 # into the registry, where it would answer to no reference at all.
 PIN-scan-unreadable-version-de	docs/meclaw-overview.md	wird mit seinem Grund übersprungen statt registriert	pinned	a_version_no_reference_can_name_is_skipped_with_its_reason
 PIN-scan-unreadable-version-en	docs/meclaw-overview.en.md	that entry is skipped with its reason instead	pinned	a_version_no_reference_can_name_is_skipped_with_its_reason
+#
+# Added 2026-09-21 (wave live, GH #789). The duplex provider is the third seam
+# of the `voice` cell, and the sentences below are the ones a reader could act
+# on: which blocks exclude each other, what `hello` declares, what happens to a
+# frame, where a turn is cut, what an aside becomes, and what is left when the
+# provider is gone. Every row names a lock out of the wave's contract
+# (`plans/welle-live-2026-09-20/vertraege.md` section 6); `error not_built` is a
+# stub of that wave and is deliberately in no list here.
+PIN-voice-duplex-exclusive-de	docs/cell-types.md	Ein `duplex`-Block schließt `stt` und `tts` aus	pinned	a_duplex_block_beside_a_recogniser_is_refused
+PIN-voice-duplex-exclusive-en	docs/cell-types.en.md	A `duplex` block excludes `stt` and `tts`	pinned	a_duplex_block_beside_a_recogniser_is_refused
+PIN-voice-duplex-hello-de	docs/cell-types.md	in diesem Modus nennen `stt` und `tts` denselben Provider-Namen	pinned	a_duplex_cell_answers_as_a_duplex_cell
+PIN-voice-duplex-hello-en	docs/cell-types.en.md	in that mode `stt` and `tts` both name the same provider	pinned	a_duplex_cell_answers_as_a_duplex_cell
+PIN-voice-duplex-one-to-one-de	docs/cell-types.md	ein Client-Frame wird ein Frame an den Provider, ungepuffert und ohne Pacing	pinned	fifty_frames_come_back_as_fifty_frames
+PIN-voice-duplex-one-to-one-en	docs/cell-types.en.md	one client frame becomes one frame to the provider, unbuffered and unpaced	pinned	fifty_frames_come_back_as_fifty_frames
+PIN-voice-duplex-provider-gone-de	docs/cell-types.md	Ist der Provider weg, ist der Anruf vorbei.	pinned	a_provider_that_gives_up_ends_the_call_once
+PIN-voice-duplex-provider-gone-en	docs/cell-types.en.md	When the provider is gone, so is the call.	pinned	a_provider_that_gives_up_ends_the_call_once
+PIN-voice-duplex-section-fact-de	docs/cell-types.md	`fact` wird ein Kommentar, den das Modell in eigenen Worten spricht	pinned	a_fact_is_commentary_the_client_is_told_about
+PIN-voice-duplex-section-fact-en	docs/cell-types.en.md	`fact` becomes a comment the model speaks in its own words	pinned	a_fact_is_commentary_the_client_is_told_about
+PIN-voice-duplex-wrong-engine-de	docs/cell-types.md	dieselbe Message an eine Kaskaden-Sitzung ist `wrong_engine`	pinned	a_cascade_refuses_an_advise_by_name
+PIN-voice-duplex-wrong-engine-en	docs/cell-types.en.md	the same message to a cascade session is `wrong_engine`	pinned	a_cascade_refuses_an_advise_by_name
+PIN-voice-duplex-turn-timeline-de	docs/cell-types.md	gemessen `end_ms` gegen `start_ms` und nie gegen die Ankunftszeit	pinned	a_tick_closes_a_turn_nobody_ended
+PIN-voice-duplex-turn-timeline-en	docs/cell-types.en.md	measured `end_ms` against `start_ms` and never against arrival time	pinned	a_tick_closes_a_turn_nobody_ended
+PIN-voice-duplex-backchannel-de	docs/cell-types.md	hängt als Backchannel am laufenden Turn, solange er unter `backchannel_max_ms` bleibt	pinned	a_hum_inside_an_answer_joins_the_open_turn
+PIN-voice-duplex-backchannel-en	docs/cell-types.en.md	hangs on the running turn as a backchannel as long as it stays under `backchannel_max_ms`	pinned	a_hum_inside_an_answer_joins_the_open_turn
+PIN-voice-duplex-speak-end-quiet-de	docs/cell-types.md	er endet, wenn `spoken_quiet_ms` ohne ein Assistenten-Fragment vergehen oder `spoken_cap_ms` erreicht ist	pinned	the_quiet_after_the_last_fragment_ends_the_section
+PIN-voice-duplex-speak-end-quiet-en	docs/cell-types.en.md	it ends when `spoken_quiet_ms` pass without an assistant fragment or `spoken_cap_ms` is reached	pinned	the_quiet_after_the_last_fragment_ends_the_section
+PIN-voice-duplex-greeting-once-de	docs/cell-types.md	geht sie einmal nach dem Start der Sitzung raus, über den Kommentar-Kanal und ohne Delegation	pinned	voice_duplex_gpt_live_sends_the_greeting_once
+PIN-voice-duplex-greeting-once-en	docs/cell-types.en.md	it goes out once after the session started, over the commentary channel and without a delegation	pinned	voice_duplex_gpt_live_sends_the_greeting_once
+PIN-voice-duplex-immutable-de	docs/cell-types.md	`duplex` steht daneben und ist aus demselben Grund unveränderlich	pinned	an_update_may_not_move_the_engine
+PIN-voice-duplex-immutable-en	docs/cell-types.en.md	`duplex` stands beside them and is immutable for the same reason	pinned	an_update_may_not_move_the_engine
+PIN-voice-duplex-spoken-frame-de	docs/voice-wire-protocol.md	Kumulativ wie `partial`: jedes ersetzt das vorige. Nur hinter einem Duplex-Provider.	pinned	a_spoken_frame_names_the_turn_it_is_filling
+PIN-voice-duplex-spoken-frame-en	docs/voice-wire-protocol.en.md	Cumulative like `partial`: each one replaces the previous. Behind a duplex provider only.	pinned	a_spoken_frame_names_the_turn_it_is_filling

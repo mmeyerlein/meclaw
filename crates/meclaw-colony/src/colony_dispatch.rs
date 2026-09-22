@@ -84,6 +84,8 @@ pub fn handle_read_registry(
 /// is now durable in `colony.db` (the single source of truth), no longer an
 /// in-memory `VecDeque`. `since`/`error_code`/`limit` filter at the SQL layer
 /// (`?since=` on `created_at`, `?error_code=` exact, `?limit=` clamped 1..=1000).
+/// `since` also picks the ORDER the SQL layer answers in (welle-live, ruling
+/// R-L10): given, oldest first from the mark; left out, newest first.
 /// The reply is the 6-field `DeadLetterDto` projection (the `message_json`
 /// envelope column is for the drain's reconstruction, not the HTTP read).
 ///

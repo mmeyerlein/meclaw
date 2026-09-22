@@ -84,6 +84,7 @@ use tokio::sync::mpsc;
 
 const ASSEMBLE_CONFIG: &str = "../../templates/collector/assemble/config.json";
 const SCHEMAS_CONFIG: &str = "../../templates/memory-hive/schemas/config.json";
+const TALKY_SCHEMAS_CONFIG: &str = "../../templates/talky/schemas/config.json";
 const INLINE_CONTRACT: &str = "../../templates/memory-hive/inline-contract.md";
 const TEMPLATES: &str = "../../templates";
 
@@ -319,6 +320,40 @@ fn menu_merge(over: &[(&str, &str)], schemas: Value, offers: Value) -> Value {
         .expect("the menu lane writes one message")
 }
 
+/// The sections the SHIPPED `talky` offers, obtained by running its declaring
+/// cell. All three are STRING sections -- one or two sentences of advice, never
+/// a shape a model has to get right mid-call -- which is the other form the
+/// preamble has to be able to print (GH #799).
+fn talky_offers() -> Value {
+    let raw = std::fs::read_to_string(TALKY_SCHEMAS_CONFIG)
+        .unwrap_or_else(|e| panic!("talky ships no declaring cell ({TALKY_SCHEMAS_CONFIG}): {e}"));
+    let cfg: Value = meclaw_core::serde_json::from_str(&raw).expect("schemas config json");
+    let script = cfg["params"]["script_inline"]
+        .as_str()
+        .expect("script_inline");
+    let out = run_script_on_stdin(
+        script,
+        &json!({"body": {"tools": ["*"], "messages": []}}).to_string(),
+    );
+    assert!(
+        out.status.success(),
+        "talky's declaring cell exited non-zero: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let answer: Value = meclaw_core::serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+        panic!(
+            "the answer is not json ({e}): {}",
+            String::from_utf8_lossy(&out.stdout)
+        )
+    });
+    let offers = answer["sidecar"].clone();
+    assert!(
+        offers.as_array().is_some_and(|o| !o.is_empty()),
+        "talky offers no section at all: {answer}"
+    );
+    offers
+}
+
 /// The offer as the memory hive answers it, in the shape the lane carries.
 fn memory_offers() -> Value {
     json!([memory_offer()])
@@ -542,6 +577,50 @@ fn the_preamble_shows_the_whole_object_and_guards_the_required_section() {
     );
 }
 
+/// **The shape line prints the form each section actually takes** (GH #799).
+///
+/// The frame's job is the OUTER object -- the braces and the keys -- while every
+/// heading below shows the inner shape, so each slot in the line is a FORM and
+/// never a second copy of the example: `{...}` where the body is an object,
+/// `"..."` where it is a string. It said `{...}` for every section until #799,
+/// and that is an advertisement rather than a rounding error: `talky` offers its
+/// three advise sections as STRINGS, the model read the frame, wrote
+/// `{"fact": {"payload": "..."}}` or gave up on the string it meant, and the
+/// splitter dropped what did not fit. The splitter takes both forms since #799;
+/// the contract has to ask for ONE, and the one it asks for is the section's own.
+///
+/// Asserted against the two shipped declaring cells side by side -- the memory
+/// hive's object section and talky's three string sections -- because a frame
+/// that printed the right form for offers nobody ships is a frame nobody measured.
+#[test]
+fn the_shape_line_shows_the_form_each_section_actually_takes() {
+    let mut offers = memory_offers();
+    offers
+        .as_array_mut()
+        .expect("an array of offers")
+        .extend(talky_offers().as_array().expect("an array").iter().cloned());
+    let msg = menu_merge(&[("sidecar", "1")], a_tool(), offers);
+    let written = msg["system"]["instructions"]["sidecar"]["text"]
+        .as_str()
+        .unwrap_or_default();
+    let preamble = written
+        .split("\n\n## ")
+        .next()
+        .expect("the preamble stands before the first section");
+    assert!(
+        !preamble.contains(r#""fact": {...}"#),
+        "the frame advertises an OBJECT for a section whose schema is a string -- \
+         a model that copies it writes a body the section never meant, and before \
+         GH #799 the splitter dropped the string it wrote instead: {preamble}"
+    );
+    assert!(
+        preamble
+            .contains(r#"{"memory": {...}, "context": "...", "correction": "...", "fact": "..."}"#),
+        "an object section is shown with braces and a string section with quotes, \
+         required first and alphabetical inside each half: {preamble}"
+    );
+}
+
 /// Claim 3. The shipped default is silent, and the reason is the splitter.
 #[test]
 fn the_shipped_default_asks_for_nothing() {
@@ -566,10 +645,22 @@ fn the_shipped_default_asks_for_nothing() {
     // A turn assembly writes none of this either way. The contract travels with
     // the MENU since GH #606, so an assembly that carried one would be a second
     // writer on the same path, racing the merge every round.
+    //
+    // The family is not empty on a turn since welle-live — `instructions.mode`
+    // says whether this round ANSWERS or advises a voice model, and it is written
+    // on every assembly — so the claim is stated on the PATH it was always about:
+    // `sidecar` has one writer and the menu lane is it.
     let turn = seam(&[("sidecar", "1")]);
     assert!(
-        turn["system"].get("instructions").is_none(),
-        "the turn assembly writes no instructions at all — one path, one writer: {turn}"
+        turn["system"]["instructions"].get("sidecar").is_none(),
+        "the turn assembly writes no block contract — one path, one writer: {turn}"
+    );
+    assert_eq!(
+        turn["system"]["instructions"]
+            .as_object()
+            .map(|o| o.keys().cloned().collect::<Vec<_>>()),
+        Some(vec!["mode".to_string()]),
+        "and nothing else of the family travels with a turn either: {turn}"
     );
 }
 

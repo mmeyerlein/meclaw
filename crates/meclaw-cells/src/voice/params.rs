@@ -84,6 +84,128 @@ const MAX_RELEASE_GRACE_MS: u64 = 10_000;
 /// rather than sent at a phone.
 const MAX_AUDIO_OUT_FRAME_MS: u64 = 1000;
 
+/// How long the model's timeline may stay quiet before a user turn is closed,
+/// in milliseconds (R-25-9). Measured on the reference run: the overlap of the
+/// two transcript streams is about 400 ms, and the shortest real pause between
+/// two sentences of one thought was a full second
+/// (`crates/meclaw-testing/src/fixtures/gpt_live/reference_run.json`).
+pub const DEFAULT_TURN_GAP_MS: u64 = 1000;
+
+/// How long a caller may speak INSIDE the model's turn before it stops being a
+/// backchannel and becomes a barge-in, in milliseconds (R-25-9, OR-L18).
+/// "mhm" and "uh-huh" are under it; a sentence is over it.
+pub const DEFAULT_BACKCHANNEL_MAX_MS: u64 = 1500;
+
+/// How long the model may stay silent after an append before the connection
+/// calls that synthesis over, in milliseconds (OR-L19).
+///
+/// A duplex model sends no end-of-speech event at all, and the telephony hive
+/// counts an `in_speak` up and a `speak_end` down — without a counterpart a
+/// hang-up would wait for ever. So the connection watches for assistant
+/// fragments to stop. Calibrated by S0 § b5.
+pub const DEFAULT_SPOKEN_QUIET_MS: u64 = 1500;
+
+/// The ceiling on the same heuristic, in milliseconds (OR-L19): a model that
+/// keeps talking does not hold a `speak_end` open for the rest of the call.
+pub const DEFAULT_SPOKEN_CAP_MS: u64 = 8000;
+
+/// How long to wait for the provider's own `session.closed` after asking it to
+/// close, in milliseconds. 15 s is what the vendor documents.
+pub const DEFAULT_CLOSE_GRACE_MS: u64 = 15000;
+
+/// How often a duplex connection hands the turn machine the time, in
+/// milliseconds (R-L7, GH #798).
+///
+/// A turn here is cut on the MODEL's timeline, so a caller who stops talking
+/// closes a turn only when time passes — and on a line where nobody talks, no
+/// fragment arrives to say that it did. Until this param the provider's running
+/// meter carried it (`session.usage.updated`, OR-L8), and that was measured and
+/// does not hold: on a session fed nothing but silence the meter arrived at no
+/// point inside 45 s over four runs (GH #798, 2026-09-21), which is exactly the
+/// case it was relied on for.
+///
+/// One second, for two reasons that meet here. It is [`DEFAULT_TURN_GAP_MS`],
+/// so the raster never outweighs the silence it measures: a turn closes between
+/// one and two gaps after the caller fell quiet, against the meter's one to
+/// sixteen seconds (the meter's own period is 15 000 ms, nineteen intervals of
+/// 14 999–15 005 ms in S0's `a-pacing.json`). And a finer raster would buy
+/// precision the gap does not have — 1 000 ms is itself a number measured on
+/// one model in one language.
+pub const DEFAULT_DUPLEX_TICK_MS: u64 = 1000;
+
+/// How often a duplex session asks its own socket whether it is still there,
+/// in milliseconds (R-L7, GH #798).
+///
+/// [`DEFAULT_DUPLEX_TICK_MS`] is the clock of the CONVERSATION; this is the
+/// clock of the SOCKET. Session frames alone do not say which of the two a
+/// silence is, so without a question of its own `provider_idle_timeout_ms`
+/// cannot tell a caller who paused from a wire that died — and it cut the call
+/// at thirty seconds of silence, which is what was reported from the telephone.
+/// The adapter therefore sends a WebSocket ping every so often, and the pong
+/// that comes back on ITS payload is what resets the deadline.
+///
+/// Eight seconds, derived from the deadline it serves rather than rounded to
+/// it. Pings go out at 8, 16 and 24 s; the keepalive arm sits BELOW the idle
+/// arm in the biased `select!` of `run_session`, so a ping that comes due
+/// exactly on the deadline loses the photo finish. Two pongs may therefore go
+/// missing before the call is given up, because the third ping still leaves at
+/// 24 s and its answer is back well inside `provider_idle_timeout_ms` (30 000
+/// ms in the shipped template): six seconds of room for the round trip and for
+/// `MissedTickBehavior::Delay` drift. At ten seconds the third ping would have
+/// left AT the deadline and only ONE lost pong would have been survivable —
+/// which is why this is eight and not a third of thirty. Eight seconds is also
+/// well inside the sixty a proxy or load balancer commonly allows an idle
+/// socket, so the same ping keeps the intermediaries from tearing down a line
+/// nobody is speaking on. It costs under eight control frames a minute, against
+/// the three thousand audio appends the same minute carries.
+///
+/// The lock is `the_shipped_keepalive_survives_two_lost_pongs` below: three
+/// keepalive periods have to fit strictly inside the shipped idle deadline.
+pub const DEFAULT_KEEPALIVE_MS: u64 = 8000;
+
+/// How long a delegation may stay unanswered before the cell closes it itself,
+/// in milliseconds (R-L9, GH #793).
+///
+/// Derived from the wave's own runs rather than from one value:
+///
+/// * `session.delegation.created` to `in_advise` arriving at the cell:
+///   **3 000 ms** (proof B-2 run 1), **3 000 / 6 000 ms** (B-2 runs 2 and 3).
+/// * the last hop on top of that, an append to the model's `appended` echo:
+///   **584 / 697 / 779 ms** (S0 `b-advise-1..3`, `ms_append_bis_ack`).
+/// * what it costs when nobody answers: one holding sentence of 1,0–2,8 s and
+///   then **55–58 s** of silence, with no provider-side timeout inside the
+///   longest observation of 59,4 s (S0 `a-pacing.json`, four delegations).
+///
+/// So the slowest honest answer measured end to end is about 6,8 s, and twelve
+/// seconds is roughly twice that. Doubled rather than shaved because six
+/// observations are not a distribution, and because a deadline that fires early
+/// does not merely arrive late — it appends a fallback the real answer then
+/// talks over (OR-L53). Twelve seconds is still a fifth of the silence it
+/// replaces, and the caller has already heard a holding sentence by then.
+pub const DEFAULT_DELEGATION_GRACE_MS: u64 = 12000;
+
+/// What the cell says on a delegation it had to close itself (R-L9).
+///
+/// German, because the colony this was measured on speaks German, and an
+/// INSTRUCTION rather than a script: an append is taken up in the model's own
+/// words and its own time (R-25-4, OR-L25), so what the caller hears is this
+/// sentence paraphrased in the voice already on the line.
+pub const DEFAULT_DELEGATION_FALLBACK: &str = "Das kann ich gerade nicht nachsehen.";
+
+/// The rate a duplex session runs at unless a param says otherwise.
+///
+/// 16 kHz because that is what the telephony edge already forks and plays
+/// (`STREAM_SAMPLE_RATE=16000` since e22), and because it is one of the two the
+/// model takes — 8 kHz is refused by the vendor, measured (OR-L16). The cell
+/// resamples in neither direction (R-V2), so this number is what reaches the
+/// wire.
+pub const DEFAULT_DUPLEX_SAMPLE_RATE: u32 = 16000;
+
+/// The two rates a duplex session may run at. 8 kHz is answered by the vendor
+/// with `expected one of 16000 or 24000` (measured), so it is refused here,
+/// where the message can name both.
+const DUPLEX_SAMPLE_RATES: [u32; 2] = [16000, 24000];
+
 /// Every key a `voice` cell's params may name. Anything else is a typo, and a
 /// typo that is silently ignored is a setting an operator believes in.
 const KNOWN_PARAMS_KEYS: &[&str] = &[
@@ -99,6 +221,7 @@ const KNOWN_PARAMS_KEYS: &[&str] = &[
     "release_grace_ms",
     "stt",
     "tts",
+    "duplex",
 ];
 
 /// Everything a `voice` cell needs to serve one WebSocket endpoint.
@@ -173,6 +296,17 @@ pub struct VoiceParams {
     /// The text-to-speech provider and its settings. `None` is only allowed
     /// with [`SttParams::Echo`], which speaks nothing back but the audio it got.
     pub tts: Option<TtsParams>,
+    /// The duplex provider and its settings, where this cell runs one.
+    ///
+    /// **Exclusive with `stt` and `tts`**: a cell is either a cascade (two
+    /// vendors, two sockets, a turn machine in the middle) or a duplex session
+    /// (one model, one socket, the turns formed off its own clock). Both at
+    /// once would be two models listening to one microphone.
+    ///
+    /// With this set, [`Self::stt`] carries [`SttParams::Echo`] and
+    /// [`Self::tts`] is `None` — an inert placeholder rather than a second
+    /// recogniser (OR-L23). Every reader of the pair asks `duplex` first.
+    pub duplex: Option<DuplexParams>,
 }
 
 /// Which speech-to-text provider, and what it needs.
@@ -198,6 +332,154 @@ pub enum TtsParams {
     Openai(OpenAiTtsParams),
     /// ElevenLabs over WebSocket.
     Elevenlabs(ElevenLabsParams),
+}
+
+/// Which duplex provider, and what it needs.
+///
+/// `#[allow(clippy::large_enum_variant)]`, the same trade-off
+/// `meclaw_colony::factory::SpawnedCellKind` and `ColonyMsg` already take: the
+/// hosted adapter carries a credential, an instruction text, a fallback
+/// sentence and eight numbers, the loopback carries a rate, and the three
+/// params of R-L7/R-L9 pushed the difference past the threshold. Boxing would
+/// only move the allocation — one of these is parsed per spawn and held once
+/// per cell, never sent and never in a hot path — while touching every match
+/// arm that reads the block.
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(tag = "provider", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DuplexParams {
+    /// OpenAI's live speech-to-speech session over one WebSocket.
+    GptLive(GptLiveParams),
+    /// The loopback: audio in, the same audio out, every event shape answered.
+    /// Calibrates the wire before anyone blames a model.
+    Echo(EchoDuplexParams),
+}
+
+/// Settings of the `gpt_live` duplex adapter.
+///
+/// Every default lives with the adapter (R-V4/R-V14): the model name, the
+/// endpoint and the voice are that adapter's own knowledge, so this file asks
+/// it rather than keeping a second copy that drifts.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GptLiveParams {
+    /// API credential, `${OPENAI_API_KEY}` in a config. Bearer header only.
+    pub api_key: Secret,
+    /// Host of the session socket; default
+    /// [`crate::voice::providers::gpt_live::DEFAULT_BASE_URL`]. Written
+    /// `http(s)` or `ws(s)`; the path is the adapter's own (R-V10).
+    #[serde(default = "GptLiveParams::default_base_url")]
+    pub base_url: String,
+    /// The model; default
+    /// [`crate::voice::providers::gpt_live::DEFAULT_MODEL`].
+    #[serde(default = "GptLiveParams::default_model")]
+    pub model: String,
+    /// The voice it speaks with; default
+    /// [`crate::voice::providers::gpt_live::DEFAULT_VOICE`].
+    #[serde(default = "GptLiveParams::default_voice")]
+    pub voice: String,
+    /// The rate BOTH directions run at; 16000 or 24000 (OR-L16).
+    #[serde(default = "GptLiveParams::default_sample_rate")]
+    pub sample_rate: u32,
+    /// The front-end instructions the session is opened with. Immutable for
+    /// the life of the session, and refused empty: a live model with nothing
+    /// said to it answers as whoever it was trained to be.
+    pub instructions: String,
+    /// Said once, right after the session opened, so the model speaks first.
+    ///
+    /// Empty ships nothing and the model waits for the caller. It is an
+    /// INSTRUCTION rather than a script — a live model paraphrases what it is
+    /// given and does not read it out (OR-L25).
+    #[serde(default)]
+    pub greeting: String,
+    /// How long the model's timeline may stay quiet before a user turn closes,
+    /// in milliseconds; default [`DEFAULT_TURN_GAP_MS`].
+    #[serde(default = "GptLiveParams::default_turn_gap_ms")]
+    pub turn_gap_ms: u64,
+    /// How long an interjection may be and still be a backchannel, in
+    /// milliseconds; default [`DEFAULT_BACKCHANNEL_MAX_MS`].
+    #[serde(default = "GptLiveParams::default_backchannel_max_ms")]
+    pub backchannel_max_ms: u64,
+    /// How long the model may be silent before a synthesis counts as over, in
+    /// milliseconds; default [`DEFAULT_SPOKEN_QUIET_MS`].
+    #[serde(default = "GptLiveParams::default_spoken_quiet_ms")]
+    pub spoken_quiet_ms: u64,
+    /// The ceiling on that heuristic, in milliseconds; default
+    /// [`DEFAULT_SPOKEN_CAP_MS`].
+    #[serde(default = "GptLiveParams::default_spoken_cap_ms")]
+    pub spoken_cap_ms: u64,
+    /// How long to wait for the provider's own close, in milliseconds;
+    /// default [`DEFAULT_CLOSE_GRACE_MS`].
+    #[serde(default = "GptLiveParams::default_close_grace_ms")]
+    pub close_grace_ms: u64,
+    /// How often the connection hands the turn machine the time, in
+    /// milliseconds; default [`DEFAULT_DUPLEX_TICK_MS`] (R-L7).
+    #[serde(default = "GptLiveParams::default_tick_ms")]
+    pub tick_ms: u64,
+    /// How long a delegation may stay unanswered before the cell closes it,
+    /// in milliseconds; default [`DEFAULT_DELEGATION_GRACE_MS`] (R-L9).
+    #[serde(default = "GptLiveParams::default_delegation_grace_ms")]
+    pub delegation_grace_ms: u64,
+    /// What the cell says on a delegation it closed itself; default
+    /// [`DEFAULT_DELEGATION_FALLBACK`] (R-L9).
+    #[serde(default = "GptLiveParams::default_delegation_fallback")]
+    pub delegation_fallback: String,
+    /// How often the adapter pings its own socket, in milliseconds; default
+    /// [`DEFAULT_KEEPALIVE_MS`] (R-L7, GH #798).
+    #[serde(default = "GptLiveParams::default_keepalive_ms")]
+    pub keepalive_ms: u64,
+}
+
+impl GptLiveParams {
+    fn default_base_url() -> String {
+        crate::voice::providers::gpt_live::DEFAULT_BASE_URL.to_string()
+    }
+    fn default_model() -> String {
+        crate::voice::providers::gpt_live::DEFAULT_MODEL.to_string()
+    }
+    fn default_voice() -> String {
+        crate::voice::providers::gpt_live::DEFAULT_VOICE.to_string()
+    }
+    fn default_sample_rate() -> u32 {
+        DEFAULT_DUPLEX_SAMPLE_RATE
+    }
+    fn default_turn_gap_ms() -> u64 {
+        DEFAULT_TURN_GAP_MS
+    }
+    fn default_backchannel_max_ms() -> u64 {
+        DEFAULT_BACKCHANNEL_MAX_MS
+    }
+    fn default_spoken_quiet_ms() -> u64 {
+        DEFAULT_SPOKEN_QUIET_MS
+    }
+    fn default_spoken_cap_ms() -> u64 {
+        DEFAULT_SPOKEN_CAP_MS
+    }
+    fn default_close_grace_ms() -> u64 {
+        DEFAULT_CLOSE_GRACE_MS
+    }
+    fn default_tick_ms() -> u64 {
+        DEFAULT_DUPLEX_TICK_MS
+    }
+    fn default_delegation_grace_ms() -> u64 {
+        DEFAULT_DELEGATION_GRACE_MS
+    }
+    fn default_delegation_fallback() -> String {
+        DEFAULT_DELEGATION_FALLBACK.to_string()
+    }
+    fn default_keepalive_ms() -> u64 {
+        DEFAULT_KEEPALIVE_MS
+    }
+}
+
+/// Settings of the `echo` duplex adapter: the rate, and deliberately nothing
+/// else. A knob here would be a knob on the calibration itself.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EchoDuplexParams {
+    /// The rate the loopback declares; default [`DEFAULT_DUPLEX_SAMPLE_RATE`].
+    #[serde(default = "GptLiveParams::default_sample_rate")]
+    pub sample_rate: u32,
 }
 
 /// Settings of the Deepgram Flux speech-to-text adapter.
@@ -530,24 +812,88 @@ impl VoiceParams {
         let speak_plain = read_bool(obj, "speak_plain", DEFAULT_SPEAK_PLAIN)?;
         let release_grace_ms = read_release_grace_ms(obj, "release_grace_ms")?;
 
-        let stt_raw = obj
-            .get("stt")
-            .ok_or("stt: required (an object with a `provider` key)")?;
-        let stt: SttParams = meclaw_core::serde_json::from_value(stt_raw.clone())
-            .map_err(|e| format!("stt: {e}"))?;
+        // The duplex block first, because it decides what the two cascade keys
+        // mean. Exclusive rather than merged: two models on one microphone is
+        // not a configuration, it is two configurations.
+        let duplex = match obj.get("duplex").filter(|v| !v.is_null()) {
+            Some(raw) => {
+                let names_cascade = ["stt", "tts"]
+                    .into_iter()
+                    .any(|k| obj.get(k).is_some_and(|v| !v.is_null()));
+                if names_cascade {
+                    return Err(
+                        "duplex: exclusive with stt and tts (a duplex session IS the \
+                         recogniser and the voice; drop the two blocks, or set them null \
+                         where override_params cannot remove them)"
+                            .to_string(),
+                    );
+                }
+                let parsed = meclaw_core::serde_json::from_value::<DuplexParams>(raw.clone())
+                    .map_err(|e| format!("duplex: {e}"))?;
+                // Two periods, and serde takes a `0` for both of them. Neither
+                // is a value: a clock with no period is a busy loop -- the
+                // connection's `.max(1)` would turn it into a thousand wakeups
+                // a second -- and a keepalive with no period is the same on a
+                // socket. Refused at the parse, where a spawn still fails
+                // loudly, rather than at the second it would be noticed.
+                if let DuplexParams::GptLive(g) = &parsed {
+                    if g.tick_ms == 0 {
+                        return Err(
+                            "duplex.tick_ms: must be a positive integer (the session's clock \
+                             has a period). A turn closes between one and two `turn_gap_ms` \
+                             after the caller fell quiet only while this is at most \
+                             `turn_gap_ms`"
+                                .to_string(),
+                        );
+                    }
+                    if g.keepalive_ms == 0 {
+                        return Err(
+                            "duplex.keepalive_ms: must be a positive integer (how often the \
+                             session pings its own socket). Keep it well below \
+                             `provider_idle_timeout_ms`, or a single unanswered ping ends \
+                             the call"
+                                .to_string(),
+                        );
+                    }
+                }
+                Some(parsed)
+            }
+            None => None,
+        };
+
+        let stt: SttParams = match (&duplex, obj.get("stt").filter(|v| !v.is_null())) {
+            // The inert placeholder (OR-L23). A duplex cell has no recogniser,
+            // but `VoiceIo` still carries one -- `voice_t4`/`voice_t5` build the
+            // I/O half by hand and an `Option` there would move twenty call
+            // sites for a field nobody in this mode reads. So the cascade pair
+            // is echo-and-nothing, and every reader asks `duplex` first.
+            (Some(_), _) => SttParams::Echo,
+            (None, Some(raw)) => {
+                meclaw_core::serde_json::from_value(raw.clone()).map_err(|e| format!("stt: {e}"))?
+            }
+            // A `null` counts as absent here as it does everywhere else in this
+            // parser, and absent WITHOUT a duplex block is a cell with no ear.
+            (None, None) => {
+                return Err("stt: required (an object with a `provider` key)".to_string());
+            }
+        };
 
         // An explicit `null` counts as absent. `override_params` is a flat
         // merge and cannot REMOVE a key, so a template that ships a Cartesia
         // block has no other way to say "this instance is echo, and needs no
         // credential" — and refusing the null would make the shipped echo
         // instance impossible to configure at all.
-        let tts = match obj.get("tts").filter(|v| !v.is_null()) {
+        let tts = match obj
+            .get("tts")
+            .filter(|v| !v.is_null())
+            .filter(|_| duplex.is_none())
+        {
             Some(raw) => Some(
                 meclaw_core::serde_json::from_value::<TtsParams>(raw.clone())
                     .map_err(|e| format!("tts: {e}"))?,
             ),
             None => {
-                if !matches!(stt, SttParams::Echo) {
+                if duplex.is_none() && !matches!(stt, SttParams::Echo) {
                     return Err(
                         "tts: required unless `stt.provider` is \"echo\" (a voice cell that \
                          transcribes but cannot speak would answer every `in_speak` with an error)"
@@ -577,6 +923,7 @@ impl VoiceParams {
             release_grace_ms,
             stt,
             tts,
+            duplex,
         };
         parsed.check_secrets()?;
         parsed.check_provider_values()?;
@@ -647,6 +994,33 @@ impl VoiceParams {
                 ));
             }
         }
+        // The duplex block. Both refusals are here rather than at the socket
+        // for the reason `turn_detection` is: a session opened with empty
+        // instructions is not a slower call, it is a model answering as
+        // somebody else, and a rate the vendor refuses is a call that never
+        // carries a sample.
+        if let Some(DuplexParams::GptLive(p)) = &self.duplex {
+            if p.instructions.trim().is_empty() {
+                return Err("duplex.instructions: must not be empty".to_string());
+            }
+            if !DUPLEX_SAMPLE_RATES.contains(&p.sample_rate) {
+                return Err(format!(
+                    "duplex.sample_rate: must be one of {} or {}, got {}",
+                    DUPLEX_SAMPLE_RATES[0], DUPLEX_SAMPLE_RATES[1], p.sample_rate
+                ));
+            }
+        }
+        if let Some(DuplexParams::Echo(p)) = &self.duplex
+            && !crate::voice::providers::duplex_echo::ECHO_DUPLEX_RATES.contains(&p.sample_rate)
+        {
+            return Err(format!(
+                "duplex.sample_rate: the echo loopback serves {}, got {}",
+                crate::voice::providers::duplex_echo::ECHO_DUPLEX_RATES
+                    .map(|r| r.to_string())
+                    .join(", "),
+                p.sample_rate
+            ));
+        }
         Ok(())
     }
 
@@ -666,7 +1040,15 @@ impl VoiceParams {
             Some(TtsParams::Openai(p)) => Some(("tts.api_key", &p.api_key)),
             Some(TtsParams::Elevenlabs(p)) => Some(("tts.api_key", &p.api_key)),
         };
-        for (key, secret) in [stt_secret, tts_secret].into_iter().flatten() {
+        let duplex_secret = match &self.duplex {
+            Some(DuplexParams::GptLive(p)) => Some(("duplex.api_key", &p.api_key)),
+            // The loopback needs no credential -- that is what it is for.
+            Some(DuplexParams::Echo(_)) | None => None,
+        };
+        for (key, secret) in [stt_secret, tts_secret, duplex_secret]
+            .into_iter()
+            .flatten()
+        {
             if secret.expose().is_empty() {
                 return Err(format!("{key}: must not be empty"));
             }
@@ -773,9 +1155,9 @@ fn read_positive_u64(
 /// credential would be exactly the wrong trade: what is needed here is the
 /// document that came in, not a re-rendering of the values inside it.
 ///
-/// Immutability of `stt` and `tts` is expressed by leaving them out of
-/// [`OverlayParams::KNOWN_KEYS`]: an update naming either is refused as
-/// `Unknown`. That is the same mechanic the `web` cell uses for its empty
+/// Immutability of `stt`, `tts` and `duplex` is expressed by leaving them out
+/// of [`OverlayParams::KNOWN_KEYS`]: an update naming one of the three is
+/// refused as `Unknown`. That is the same mechanic the `web` cell uses for its empty
 /// `IMMUTABLE_KEYS`, and it puts the credential and format identity of a voice
 /// endpoint where `bot_token` sits for a proxy — settled at birth.
 ///
@@ -856,10 +1238,18 @@ pub struct VoiceOverlay {
     /// The `tts` sub-object as it came in, absent with the echo provider.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tts: Option<JsonValue>,
+    /// The `duplex` sub-object as it came in, absent on a cascade cell.
+    ///
+    /// Not in [`OverlayParams::KNOWN_KEYS`], exactly like `stt` and `tts`: it
+    /// carries a credential AND the format identity of the session, and both
+    /// are settled at birth. Tuning a live model means a respawn.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duplex: Option<JsonValue>,
 }
 
 impl OverlayParams for VoiceOverlay {
-    /// Every key an update may name. `stt` and `tts` are deliberately absent.
+    /// Every key an update may name. `stt`, `tts` and `duplex` are deliberately
+    /// absent.
     const KNOWN_KEYS: &'static [&'static str] = &[
         "mount",
         "default_mode",
@@ -897,6 +1287,7 @@ impl OverlayParams for VoiceOverlay {
             release_grace_ms: p.release_grace_ms,
             stt: obj.get("stt").cloned().unwrap_or(JsonValue::Null),
             tts: obj.get("tts").cloned(),
+            duplex: obj.get("duplex").filter(|v| !v.is_null()).cloned(),
         })
     }
 }
@@ -1063,6 +1454,48 @@ mod tests {
         deaf.as_object_mut().unwrap().remove("tts");
         let err = VoiceParams::parse(&deaf).unwrap_err();
         assert!(err.starts_with("tts:"), "the refusal names the key: {err}");
+
+        // A duplex cell needs neither, and must not be told it does: it IS the
+        // recogniser and the voice.
+        let live = json!({
+            "mount": "voice",
+            "duplex": {"provider": "gpt_live", "api_key": "k", "instructions": "x"}
+        });
+        let p = VoiceParams::parse(&live).expect("a duplex cell speaks for itself");
+        assert!(p.tts.is_none() && p.duplex.is_some());
+    }
+
+    /// The shipped keepalive has to be short enough that the promise made about
+    /// it in prose is true: two pongs may go missing before a call is given up
+    /// (R-L7, GH #798).
+    ///
+    /// The arithmetic, because the sentence is only as good as it: pings go out
+    /// at one, two and three times `keepalive_ms`, and the keepalive arm sits
+    /// BELOW the idle arm in the biased `select!` of `run_session`, so a ping
+    /// that comes due exactly on the deadline loses the photo finish. The third
+    /// ping is therefore the one that has to save the call, and it saves it
+    /// only if it goes out — and its pong comes back — strictly inside
+    /// `provider_idle_timeout_ms`. That is what this locks: three keepalive
+    /// periods have to fit inside the shipped idle deadline with room left for
+    /// the round trip and for `MissedTickBehavior::Delay` drift.
+    #[test]
+    fn the_shipped_keepalive_survives_two_lost_pongs() {
+        let live = json!({
+            "mount": "voice",
+            "duplex": {"provider": "gpt_live", "api_key": "k", "instructions": "x"}
+        });
+        let p = VoiceParams::parse(&live).expect("a duplex cell speaks for itself");
+        let Some(DuplexParams::GptLive(g)) = &p.duplex else {
+            panic!("expected the gpt_live provider");
+        };
+        assert_eq!(g.keepalive_ms, DEFAULT_KEEPALIVE_MS);
+        assert!(
+            3 * g.keepalive_ms < p.provider_idle_timeout_ms,
+            "two pongs may go missing only if the THIRD ping still goes out \
+             inside the idle deadline: 3 x {} ms against {} ms",
+            g.keepalive_ms,
+            p.provider_idle_timeout_ms
+        );
     }
 
     /// R-V21: `"tts": null` is how a flat override says "no text-to-speech".
@@ -1122,6 +1555,10 @@ mod tests {
             VoiceParams::parse(&inner).is_err(),
             "a typo inside a provider block is a setting nobody applies"
         );
+
+        // The third block runs on the same rule.
+        let live = json!({"mount": "voice", "duplex": {"provider": "whisper.live"}});
+        assert!(VoiceParams::parse(&live).is_err());
     }
 
     /// R-V5: a voice id that never got substituted is refused by name.
@@ -1412,13 +1849,15 @@ mod tests {
     fn overlay_refuses_stt_update() {
         use crate::params_overlay::{ParamUpdateError, apply_update};
         let current = <VoiceOverlay as OverlayParams>::parse(&minimal()).expect("parses");
-        let mut update = meclaw_core::serde_json::Map::new();
-        update.insert("stt".into(), json!({"provider": "echo"}));
-        let err = apply_update(&current, &update).expect_err("the provider is settled at birth");
-        assert!(
-            matches!(err, ParamUpdateError::Unknown(ref k) if k == "stt"),
-            "got {err:?}"
-        );
+        for key in ["stt", "duplex"] {
+            let mut update = meclaw_core::serde_json::Map::new();
+            update.insert(key.into(), json!({"provider": "echo"}));
+            let err = apply_update(&current, &update).expect_err("the engine is settled at birth");
+            assert!(
+                matches!(err, ParamUpdateError::Unknown(ref k) if k == key),
+                "got {err:?}"
+            );
+        }
     }
 
     #[test]

@@ -1,0 +1,22 @@
+{
+  "type": "session.started",
+  "event_id": "event_fixture_started",
+  "session": {
+    "id": "sess_fixture",
+    "object": "live.session",
+    "model": "gpt-live-1",
+    "instructions": "Be concise. Speak German.",
+    "audio": {
+      "format": {
+        "type": "audio/pcm",
+        "rate": 16000
+      },
+      "output": {
+        "voice": "marin"
+      }
+    },
+    "delegation": {
+      "type": "client"
+    }
+  }
+}

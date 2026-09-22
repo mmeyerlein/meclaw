@@ -7,8 +7,10 @@
 //! This file carries the two channel vocabularies of the dual task. The logic
 //! that speaks them arrives with step 4 of strand t1.
 
-use crate::voice::contract::SttEvent;
+use crate::voice::connection::APPEND_MAX_CHARS;
+use crate::voice::contract::{AppendKind, DuplexEvent, Speaker, SttEvent};
 use crate::voice::io::{VoiceIo, run_io};
+use crate::voice::live_turns::{self, TurnAction, TurnInput, TurnState};
 use crate::voice::params::{VoiceOverlay, VoiceParams};
 use crate::voice::turns::{self, Action, Input, SessionState};
 use crate::voice::wire::{ClientFrame, Mode, ServerFrame, SpeakEndReason, WireErrorCode};
@@ -104,6 +106,59 @@ pub enum VoiceEvent {
         /// dispatch queue still held, plus the one that no longer fitted.
         dropped: usize,
     },
+    /// A duplex session said something (contract § 1.1).
+    ///
+    /// The duplex counterpart of [`Self::Stt`], and one variant rather than
+    /// ten: the provider enum already carries the vocabulary, and a second
+    /// copy of it here would be a second place to forget a case.
+    Live {
+        /// The session the provider event belongs to.
+        session_id: String,
+        /// What the model reported.
+        event: DuplexEvent,
+    },
+    /// Time passed on a duplex session and nobody said anything (R-L7).
+    ///
+    /// The clock of a duplex session, minted by the CONNECTION — it is the half
+    /// that holds a `select!` and therefore the only half that can wake up on
+    /// its own. It carries two deadlines: rule 1 of R-25-9, which closes a user
+    /// turn `turn_gap_ms` after the caller fell quiet, and the delegation grace
+    /// of R-L9.
+    ///
+    /// **A watchdog timer is not polling** (owner ruling, 2026-09-21): a
+    /// watchdog timer is not classic polling, it is a timeout timer.
+    /// Nothing is asked here and no state is read; a deadline goes off, and the
+    /// event-driven rule (`docs/development-rules.md`, EDA+ES) forbids asking
+    /// something repeatedly whether it has changed, not owning a clock. Real
+    /// time semantics stay legitimate, and a turn boundary IS real time.
+    ///
+    /// Until R-L7 this rode on `DuplexEvent::Usage`, the provider's running
+    /// meter (OR-L8). Measured, that does not hold: a session fed nothing but
+    /// silence saw no meter at all inside 45 s over four runs (GH #798) — which
+    /// is exactly the quiet line the tick exists for.
+    LiveTick {
+        /// The session whose clock this is.
+        session_id: String,
+        /// Where that clock stands, in milliseconds since the session opened.
+        ///
+        /// The connection's own elapsed time, which is the model's timeline to
+        /// within the lag between the two: S0's `a-pacing.json` has the local
+        /// clock 626 ms ahead of the model's `offset_ms` after 64 s, and both
+        /// deadlines this feeds are measured in seconds.
+        now_ms: u64,
+    },
+    /// The duplex provider of this connection gave up, and with it the call.
+    ///
+    /// **There is no reconnect** (OR-L20): the session IS the conversation, and
+    /// a fresh socket would be a fresh conversation with no memory of this one.
+    /// So this reaches the error lane as `duplex_failed` and the client reads a
+    /// close.
+    DuplexFailed {
+        /// The session whose provider is gone.
+        session_id: String,
+        /// Human-readable cause. Never carries a credential.
+        detail: String,
+    },
     /// A binary frame of wrong length arrived. The I/O half **dropped the
     /// frame and kept the connection** (R-V6'): a client that mis-frames one
     /// buffer has a bug, not bad intent, and closing the socket would end a
@@ -161,6 +216,26 @@ pub enum VoiceReconfig {
         /// The generation to report back.
         token: u64,
     },
+    /// Push one piece of guidance into a session's duplex model.
+    ///
+    /// The duplex counterpart of [`Self::Speak`]. A synthesis is text that will
+    /// be read out; an append is guidance the model takes up in its own words
+    /// (R-25-4). The `speak_id` is what makes the second kind audible as a
+    /// section the client is told about — see [`crate::voice::io::ToConnection::Advise`].
+    Advise {
+        /// The session to advise.
+        session_id: String,
+        /// Which append channel it travels on.
+        kind: AppendKind,
+        /// The identity the provider's `appended` answer will carry.
+        event_id: String,
+        /// The delegation this answers, where it answers one.
+        delegation_id: Option<String>,
+        /// The text itself.
+        content: String,
+        /// Set where this append opens a spoken section (OR-L19).
+        speak_id: Option<String>,
+    },
     /// Close this session's connection with a code.
     Close {
         /// The session to close.
@@ -168,6 +243,78 @@ pub enum VoiceReconfig {
         /// The WebSocket close code, e.g. [`crate::voice::wire::CLOSE_SESSION_REPLACED`].
         code: u16,
     },
+}
+
+/// What the handler remembers about one live duplex session.
+///
+/// The counterpart of [`SessionState`], and deliberately not the same type:
+/// a cascade session has a hold, a boundary phase, a release grace and a speak
+/// queue, and a duplex session has none of the four. What it has instead is a
+/// turn machine that runs off the model's clock, the delegations the model
+/// opened, and the last meter reading — which rides out on the `turn` lane
+/// rather than on a `session` lane of its own (OR-L22).
+#[derive(Debug)]
+pub struct LiveSessionState {
+    /// Turn formation on the model's timeline (R-25-9).
+    pub turns: TurnState,
+    /// Delegations the model opened and this colony has not answered, with
+    /// the moment each one opened on the model's clock (R-L9).
+    ///
+    /// A list rather than a map: a call carries none or one of these, two on a
+    /// bad day, and the order they opened in is the order the deadline should
+    /// take them in.
+    pub open_delegations: Vec<OpenDelegation>,
+    /// How full the model's context window was, last it said.
+    pub last_usage_ratio: Option<f64>,
+    /// The `event_id` of the append whose spoken section is open, if one is.
+    pub speak_open: Option<String>,
+    /// The mode this connection started in, for the hop of its emissions.
+    ///
+    /// Carried here because a duplex session has no [`SessionState`] and
+    /// [`VoiceCell::mode_of`] reads that table. A `mode` frame on a live socket
+    /// does NOT move it: the connection acts on such a frame itself (the
+    /// model's ear), and it reaches no turn machine, so the handler never hears
+    /// about it (OR-L.L2b.4).
+    pub mode: Mode,
+    /// How many turns this session has closed — the index the OPEN turn will
+    /// carry, and with it the `turn_id` a `spoken` frame belongs to.
+    ///
+    /// [`TurnState`] counts the same thing and keeps it private; this is the
+    /// handler's own copy, moved by the one action that closes a turn.
+    pub closed_turns: u64,
+}
+
+/// One delegation the model opened and nobody has answered yet (R-L9).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenDelegation {
+    /// What the provider calls it — the id an answering append has to carry.
+    pub id: String,
+    /// Where it opened on the model's clock, in milliseconds.
+    ///
+    /// `session.delegation.created` carries this as `offset_ms`, which is the
+    /// same timeline [`VoiceEvent::LiveTick`] measures against: S0's
+    /// `a-pacing.json` has the connection's own clock 626 ms ahead of it after
+    /// 64 s, and the grace this feeds is measured in seconds.
+    pub opened_at_ms: u64,
+}
+
+impl LiveSessionState {
+    /// A session that has heard nothing yet.
+    pub fn new(mode: Mode) -> Self {
+        Self {
+            turns: TurnState::new(),
+            open_delegations: Vec::new(),
+            last_usage_ratio: None,
+            speak_open: None,
+            mode,
+            closed_turns: 0,
+        }
+    }
+
+    /// `"<session_id>#<n>"` of the turn that is open now.
+    pub fn open_turn_id(&self, session_id: &str) -> String {
+        format!("{session_id}#{}", self.closed_turns)
+    }
 }
 
 /// The handler half of a `voice` cell.
@@ -185,7 +332,32 @@ pub struct VoiceCell {
     io: Option<VoiceIo>,
     /// Live sessions, keyed by `session_id`. Owned by this task alone: no lock,
     /// because nothing is shared.
+    ///
+    /// **Empty in duplex mode**: there the sessions live in
+    /// [`Self::live_sessions`], because the two have nothing in common but the
+    /// key. The handler knows which of the two it is from its params
+    /// ([`Self::duplex`]), which cannot change at runtime.
     sessions: HashMap<String, SessionState>,
+    /// Live duplex sessions, keyed by `session_id`. See [`Self::sessions`].
+    live_sessions: HashMap<String, LiveSessionState>,
+    /// Whether this cell runs a duplex provider (`params.duplex`).
+    ///
+    /// Settled at birth: the block is not in
+    /// [`crate::voice::params::VoiceOverlay::KNOWN_KEYS`], so a cell cannot
+    /// change engines under a live call.
+    duplex: bool,
+    /// How long the model's timeline may stay quiet before a user turn closes,
+    /// in milliseconds; only read in duplex mode (R-25-9).
+    duplex_turn_gap_ms: u64,
+    /// How long an interjection may be and still be a backchannel, in
+    /// milliseconds; only read in duplex mode (R-25-9, OR-L18).
+    duplex_backchannel_max_ms: u64,
+    /// How long a delegation may stay unanswered before this cell closes it
+    /// itself, in milliseconds; only read in duplex mode (R-L9, GH #793).
+    duplex_delegation_grace_ms: u64,
+    /// What it says when it does. An instruction, not a script: the model
+    /// takes an append up in its own words (R-25-4).
+    duplex_delegation_fallback: String,
     /// The name the I/O half registered on the colony's one listener — the
     /// cell's only door.
     ///
@@ -235,6 +407,8 @@ pub struct VoiceCell {
     stt_raw: Value,
     /// The `tts` params sub-object verbatim, for the overlay merge base.
     tts_raw: Option<Value>,
+    /// The `duplex` params sub-object verbatim, for the overlay merge base.
+    duplex_raw: Option<Value>,
     /// The command seam to the I/O half.
     ///
     /// The cell mints this pair itself rather than using the substrate's
@@ -265,6 +439,12 @@ impl VoiceCell {
             path,
             io: Some(io),
             sessions: HashMap::new(),
+            live_sessions: HashMap::new(),
+            duplex: params.duplex.is_some(),
+            duplex_turn_gap_ms: duplex_gap_ms(params),
+            duplex_backchannel_max_ms: duplex_backchannel_ms(params),
+            duplex_delegation_grace_ms: duplex_delegation_grace_ms(params),
+            duplex_delegation_fallback: duplex_delegation_fallback(params),
             mount: params.mount.clone(),
             default_mode: params.default_mode,
             barge_in: params.barge_in,
@@ -278,6 +458,7 @@ impl VoiceCell {
             grace_seq: 0,
             stt_raw: raw.get("stt").cloned().unwrap_or(Value::Null),
             tts_raw: raw.get("tts").cloned(),
+            duplex_raw: raw.get("duplex").filter(|v| !v.is_null()).cloned(),
         }
     }
 
@@ -297,6 +478,7 @@ impl VoiceCell {
             release_grace_ms: self.release_grace_ms,
             stt: self.stt_raw.clone(),
             tts: self.tts_raw.clone(),
+            duplex: self.duplex_raw.clone(),
         }
     }
 
@@ -461,6 +643,628 @@ impl VoiceCell {
             .await;
     }
 
+    /// Stamp `hop.engine` on an emission of a duplex cell.
+    ///
+    /// Every duplex emission carries it and a cascade emission carries nothing
+    /// — the KEY is absent rather than set to a second name (contract § 1.4).
+    /// That is what lets a member's firewall edge pass the engine through with
+    /// `has(hop.engine) ? hop.engine : ''` and a colony wired against an older
+    /// `voice` go on working untouched.
+    fn stamp_engine(&self, header: &mut Map<String, Value>) {
+        if self.duplex {
+            header.insert("engine".into(), json!("duplex"));
+        }
+    }
+
+    /// Send one server frame to a session's client.
+    async fn to_client(&self, session_id: &str, frame: ServerFrame) {
+        let _ = self
+            .to_io
+            .send(VoiceReconfig::ToClient {
+                session_id: session_id.to_string(),
+                frame,
+            })
+            .await;
+    }
+
+    /// The body of a duplex emission (contract § 1.4).
+    ///
+    /// The same shape as [`transcript_body`], with two differences the lanes of
+    /// a live session need: the `messages[]` are given rather than built from
+    /// one string — a `turn` carries the caller's words AND the model's — and
+    /// the hop is stamped with the engine.
+    fn live_body(&self, route: &str, session_id: &str, extra: Value, messages: Value) -> Value {
+        let mut header = Map::new();
+        header.insert("route".into(), json!(route));
+        header.insert("session_id".into(), json!(session_id));
+        header.insert("call_id".into(), json!(session_id));
+        header.insert("platform".into(), json!("voice"));
+        header.insert(
+            "mode".into(),
+            json!(match self.live_mode(session_id) {
+                Mode::Auto => "auto",
+                Mode::Hold => "hold",
+            }),
+        );
+        if let Some(obj) = extra.as_object() {
+            for (k, v) in obj {
+                header.insert(k.clone(), v.clone());
+            }
+        }
+        self.stamp_engine(&mut header);
+        json!({
+            "header": Value::Object(header),
+            "messages": messages,
+        })
+    }
+
+    /// The mode a duplex session is in, for the hop of its emissions.
+    fn live_mode(&self, session_id: &str) -> Mode {
+        self.live_sessions
+            .get(session_id)
+            .map(|s| s.mode)
+            .unwrap_or(self.default_mode)
+    }
+
+    /// Everything one duplex provider event means for this cell.
+    ///
+    /// One arm per variant of [`DuplexEvent`], because the provider enum is the
+    /// vocabulary and a second copy of it would be a second place to forget a
+    /// case. The transcript fragments are the only ones that reach a state
+    /// machine; the rest are a reading, a report or a line in the log.
+    async fn on_live_event(&mut self, session_id: &str, event: DuplexEvent, sink: &OriginSink) {
+        let gap = self.duplex_turn_gap_ms;
+        let backchannel = self.duplex_backchannel_max_ms;
+        match event {
+            DuplexEvent::Started {
+                session_id: provider_session,
+            } => {
+                tracing::debug!(
+                    path = self.path.as_str(),
+                    %session_id, %provider_session,
+                    "voice: the duplex session is open"
+                );
+            }
+            DuplexEvent::Transcript {
+                speaker,
+                delta,
+                start_ms,
+                end_ms,
+            } => {
+                let Some(state) = self.live_sessions.get_mut(session_id) else {
+                    return;
+                };
+                let actions = live_turns::step(
+                    &mut state.turns,
+                    TurnInput::Fragment {
+                        speaker,
+                        text: delta,
+                        start_ms,
+                        end_ms,
+                    },
+                    gap,
+                    backchannel,
+                );
+                self.run_live_actions(session_id, actions, sink).await;
+            }
+            DuplexEvent::DelegationCreated {
+                delegation_id,
+                offset_ms,
+            } => {
+                let Some(state) = self.live_sessions.get_mut(session_id) else {
+                    return;
+                };
+                // The delegation event carries no task text at all: what the
+                // backend needs is the sentence the caller was in the middle of
+                // (contract § 1.4).
+                let text = live_turns::open_user_text(&state.turns).unwrap_or_default();
+                let turn_id = state.open_turn_id(session_id);
+                state.open_delegations.push(OpenDelegation {
+                    id: delegation_id.clone(),
+                    opened_at_ms: offset_ms,
+                });
+                let usage_ratio = state.last_usage_ratio;
+                let mut extra = json!({
+                    "turn_id": turn_id,
+                    "delegation_id": delegation_id,
+                    "offset_ms": offset_ms,
+                });
+                if let Some(ratio) = usage_ratio
+                    && let Some(obj) = extra.as_object_mut()
+                {
+                    obj.insert("usage_ratio".into(), json!(ratio));
+                }
+                let content = self.live_body(
+                    "delegation",
+                    session_id,
+                    extra,
+                    json!([{"origin": "user", "type": "text", "text": text}]),
+                );
+                self.emit(sink, content).await;
+            }
+            DuplexEvent::Usage {
+                seconds,
+                usage_ratio,
+            } => {
+                let Some(state) = self.live_sessions.get_mut(session_id) else {
+                    return;
+                };
+                if usage_ratio.is_some() {
+                    state.last_usage_ratio = usage_ratio;
+                }
+                // A READING, and nothing else (R-L7). It was the heartbeat of
+                // the turn machine until 2026-09-21 (OR-L8), on the strength of
+                // a documented 15 s period — and the period is real (nineteen
+                // intervals of 14 999-15 005 ms in S0's `a-pacing.json`) while
+                // the ARRIVAL is not: a session fed nothing but silence saw no
+                // meter at all inside 45 s over four runs (GH #798), which is
+                // exactly the quiet line a heartbeat was wanted for. The clock
+                // is now the connection's own, `VoiceEvent::LiveTick`.
+                //
+                // What the meter still buys: `usage_ratio`, which rides out on
+                // the `turn` lane because there is no session lane (OR-L22),
+                // and the log line at the end of the call.
+                tracing::trace!(
+                    path = self.path.as_str(),
+                    %session_id, seconds,
+                    "voice: the model reported its meter"
+                );
+            }
+            DuplexEvent::Appended {
+                kind,
+                event_id,
+                start_ms,
+                end_ms,
+            } => {
+                tracing::debug!(
+                    path = self.path.as_str(),
+                    %session_id, ?kind, %event_id, start_ms, end_ms,
+                    "voice: the model took an append up"
+                );
+            }
+            DuplexEvent::Muted | DuplexEvent::Unmuted => {
+                tracing::debug!(
+                    path = self.path.as_str(),
+                    %session_id,
+                    "voice: the model's ear changed state"
+                );
+            }
+            // One item went wrong and the session carries on. Reported, never
+            // swallowed: a colony that reads its own error lane learns that the
+            // model dropped something without anybody watching a log.
+            DuplexEvent::Warning { detail } => {
+                self.emit_error(sink, "duplex_warning", &detail, Some(session_id), None)
+                    .await;
+            }
+            DuplexEvent::Closed {
+                reason,
+                usage_seconds,
+            } => {
+                let actions = match self.live_sessions.get_mut(session_id) {
+                    Some(state) => {
+                        live_turns::step(&mut state.turns, TurnInput::Close, gap, backchannel)
+                    }
+                    None => Vec::new(),
+                };
+                self.run_live_actions(session_id, actions, sink).await;
+                // There is no `session` lane (OR-L22): what a call cost is a
+                // line in this cell's log and, for the telephone, the
+                // `call_ended` the hive writes.
+                tracing::info!(
+                    path = self.path.as_str(),
+                    %session_id, %reason, usage_seconds,
+                    "voice: the duplex session is over"
+                );
+            }
+        }
+    }
+
+    /// One tick of the session's own clock (R-L7, R-L9).
+    ///
+    /// **A watchdog timer is not polling** (owner ruling, 2026-09-21): a
+    /// watchdog timer is not classic polling, it is a timeout timer.
+    /// Nothing is asked here and nothing is read that could have answered by
+    /// message; two deadlines go off, or they do not. The rule this does not
+    /// touch (`docs/development-rules.md`, EDA+ES) forbids asking something
+    /// repeatedly whether it has changed, and leaves real time semantics alone
+    /// — a turn boundary and a grace period are real time.
+    ///
+    /// Two things ride on it, in this order: rule 1 of R-25-9, which closes a
+    /// user turn `turn_gap_ms` after the caller fell quiet, and the delegation
+    /// grace of R-L9. The turn goes first because the delegation's fallback is
+    /// an append into the same conversation, and a turn that was already over
+    /// should leave before something new is said into it.
+    async fn on_live_tick(&mut self, session_id: &str, now_ms: u64, sink: &OriginSink) {
+        let gap = self.duplex_turn_gap_ms;
+        let backchannel = self.duplex_backchannel_max_ms;
+        let Some(state) = self.live_sessions.get_mut(session_id) else {
+            return;
+        };
+        let actions = live_turns::step(
+            &mut state.turns,
+            TurnInput::Tick { now_ms },
+            gap,
+            backchannel,
+        );
+        // Taken out of the list HERE, before a single append is sent, and by
+        // the same pass that decided they were stale. A delegation that left
+        // the list cannot be found by the next tick, which is what makes the
+        // fallback fall once instead of once per tick (#793).
+        let grace = self.duplex_delegation_grace_ms;
+        let mut stale = Vec::new();
+        state.open_delegations.retain(|open| {
+            if now_ms.saturating_sub(open.opened_at_ms) > grace {
+                stale.push(open.id.clone());
+                false
+            } else {
+                true
+            }
+        });
+        self.run_live_actions(session_id, actions, sink).await;
+        for delegation_id in stale {
+            // The same shape a `fact` travels in — `Commentary`, spoken,
+            // carrying the delegation's own id — because that is the shape
+            // measured being taken up and said out loud (S0 b4: appended after
+            // 584-779 ms, paraphrased in all three runs; proof B-2, six of six).
+            // What this buys the caller is the difference between a holding
+            // sentence followed by 55-58 s of silence and an answer.
+            tracing::info!(
+                path = self.path.as_str(),
+                %session_id, %delegation_id, grace_ms = grace,
+                "voice: no answer for this delegation in time — closing it with the fallback"
+            );
+            let fallback = self.duplex_delegation_fallback.clone();
+            self.push_advise(
+                session_id,
+                AppendKind::Commentary,
+                Some(delegation_id),
+                &fallback,
+                true,
+            )
+            .await;
+        }
+    }
+
+    /// Turn the turn machine's verdict into frames and emissions.
+    ///
+    /// The order is the order the actions came in, for the reason
+    /// [`Self::run_actions`] gives: a `partial` that reached the client before
+    /// the lane would be a different conversation on each side.
+    async fn run_live_actions(
+        &mut self,
+        session_id: &str,
+        actions: Vec<TurnAction>,
+        sink: &OriginSink,
+    ) {
+        for action in actions {
+            match action {
+                TurnAction::Emit(turn) => {
+                    let turn_id = format!("{session_id}#{}", turn.index);
+                    if let Some(state) = self.live_sessions.get_mut(session_id) {
+                        state.closed_turns = turn.index.saturating_add(1);
+                    }
+                    self.to_client(
+                        session_id,
+                        ServerFrame::Turn {
+                            text: turn.user.clone(),
+                            turn_id: turn_id.clone(),
+                        },
+                    )
+                    .await;
+                    let usage_ratio = self
+                        .live_sessions
+                        .get(session_id)
+                        .and_then(|s| s.last_usage_ratio);
+                    let mut extra = json!({
+                        "turn_id": turn_id,
+                        "happened_at": turn.happened_at_ms,
+                    });
+                    if let Some(ratio) = usage_ratio
+                        && let Some(obj) = extra.as_object_mut()
+                    {
+                        obj.insert("usage_ratio".into(), json!(ratio));
+                    }
+                    // Both voices in one episode: the caller's words and, where
+                    // the model answered inside the same turn, its own.
+                    let mut messages =
+                        vec![json!({"origin": "user", "type": "text", "text": turn.user})];
+                    if let Some(assistant) = turn.assistant {
+                        messages.push(
+                            json!({"origin": "assistant", "type": "text", "text": assistant}),
+                        );
+                    }
+                    let content = self.live_body("turn", session_id, extra, Value::Array(messages));
+                    self.emit(sink, content).await;
+                }
+                TurnAction::Partial { speaker, text } => {
+                    // The client frame always travels; the LANE is the ordered
+                    // one (`emit_partials`), exactly as in the cascade.
+                    let turn_id = self
+                        .live_sessions
+                        .get(session_id)
+                        .map(|s| s.open_turn_id(session_id))
+                        .unwrap_or_else(|| format!("{session_id}#0"));
+                    let (route, frame, origin) = match speaker {
+                        Speaker::User => (
+                            "partial",
+                            ServerFrame::Partial {
+                                text: text.clone(),
+                                eager: false,
+                            },
+                            "user",
+                        ),
+                        Speaker::Assistant => (
+                            "spoken",
+                            ServerFrame::Spoken {
+                                text: text.clone(),
+                                turn_id: turn_id.clone(),
+                            },
+                            "assistant",
+                        ),
+                    };
+                    self.to_client(session_id, frame).await;
+                    if !self.emit_partials {
+                        continue;
+                    }
+                    let mut extra = json!({"eager": false, "turn_id": turn_id});
+                    if speaker == Speaker::Assistant
+                        && let Some(obj) = extra.as_object_mut()
+                    {
+                        obj.insert("speaker".into(), json!("assistant"));
+                    }
+                    let content = self.live_body(
+                        route,
+                        session_id,
+                        extra,
+                        json!([{"origin": origin, "type": "text", "text": text}]),
+                    );
+                    self.emit(sink, content).await;
+                }
+                // The caller talked over the model for longer than a
+                // backchannel (OR-L18). The section that was being spoken is
+                // cancelled, which is what the telephony hive turns into a
+                // `uuid_break` — the barge-in path of today, with a new
+                // trigger (contract § 2).
+                TurnAction::BargeIn => {
+                    if self.barge_in {
+                        let _ = self
+                            .to_io
+                            .send(VoiceReconfig::CancelSpeak {
+                                session_id: session_id.to_string(),
+                            })
+                            .await;
+                    }
+                }
+            }
+        }
+    }
+
+    /// The `in_advise` lane (contract § 1.5).
+    ///
+    /// Guidance, not speech: the model takes a section up in its own words and
+    /// its own time (R-25-4). Which of the three append channels it travels on
+    /// is the caller's `hop.section`, and the three are not three names for one
+    /// thing — `fact` is what the caller should HEAR next, `context` is what
+    /// the model should know without saying it, `correction` changes how it
+    /// behaves for the rest of the session.
+    async fn advise(&mut self, msg: &Message, body: &Value, reply_target: Path, sink: &OutputSink) {
+        let section = msg.headers.hop.get("section").and_then(|v| v.as_str());
+        let (kind, spoken) = match section {
+            Some("fact") => (AppendKind::Commentary, true),
+            Some("context") => (AppendKind::Thinking, false),
+            Some("correction") => (AppendKind::Instructions, false),
+            other => {
+                let detail = format!(
+                    "hop.section must be one of fact, context, correction; got {}",
+                    other.unwrap_or("nothing")
+                );
+                self.refuse(sink, reply_target, "bad_section", &detail, None)
+                    .await;
+                return;
+            }
+        };
+        let addressed = |key: &str| {
+            msg.headers
+                .context
+                .get(key)
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        };
+        let Some(session_id) = addressed("call_id").or_else(|| addressed("session_id")) else {
+            self.refuse(
+                sink,
+                reply_target,
+                "missing_session",
+                "context.call_id required, or context.session_id where a colony still \
+                 addresses this cell by the older key",
+                None,
+            )
+            .await;
+            return;
+        };
+        // A cascade session has no append channel at all: there is a recogniser
+        // and a voice behind it, and neither takes guidance up.
+        if !self.duplex {
+            self.refuse(
+                sink,
+                reply_target,
+                "wrong_engine",
+                "in_advise needs a duplex session; this cell runs a cascade",
+                Some(&session_id),
+            )
+            .await;
+            return;
+        }
+        if !self.live_sessions.contains_key(&session_id) {
+            self.refuse(
+                sink,
+                reply_target,
+                "unknown_session",
+                "no live connection holds this session",
+                Some(&session_id),
+            )
+            .await;
+            return;
+        }
+        // WHERE THE WORDS ARE. Three slots, and the FIRST is the one the
+        // producer actually writes: measured against the twin on 2026-09-21
+        // (GH #797), thirteen delegations were answered and not one was spoken,
+        // because `templates/talky/splitter/config.json` cuts the `sidecar`
+        // block by top-level key and emits one message per section with an
+        // EMPTY `messages[]` and the section's VALUE under `payload`:
+        //
+        //     out.append({"header": {"route": "sidecar", "section": key},
+        //                 "messages": [], "section": key, "payload": payload})
+        //
+        // where `payload` is `sections[key]` — so `payload` IS the section, not
+        // `{section: value}`. The body #797 measured,
+        // `{"payload": {"fact": "…"}, "section": "fact"}`, is a model that
+        // nested twice; `section_text` reads that one too, by name.
+        // Payload first, because `hop.section` NAMED this slot and the two
+        // others are the generic turn beside it; a sender that writes only an
+        // assistant turn or a bare `text` writes no payload at all, so nothing
+        // that worked before this reads differently. A slot that carries no
+        // words is passed over rather than taken as the answer.
+        let section_name = section_name_of(kind);
+        let text = [
+            body.get("payload")
+                .and_then(|p| section_text(p, section_name)),
+            body.get("messages")
+                .and_then(|m| m.as_array())
+                .and_then(|arr| arr.last())
+                .and_then(|t| t.get("text"))
+                .and_then(|v| v.as_str()),
+            body.get("text").and_then(|v| v.as_str()),
+        ]
+        .into_iter()
+        .flatten()
+        .find(|candidate| !candidate.trim().is_empty())
+        .unwrap_or_default()
+        .to_string();
+        if text.trim().is_empty() {
+            // NOT a `debug!` line. This was one, and that is why an advise that
+            // vanished read from outside like a model ignoring an append: at the
+            // default level the last link of the delegation cycle went silent.
+            // The refusal goes out on the `error` lane (contract § 1.4 lists the
+            // code), which is where this cell can put it and NOT, today, where
+            // the sender stands: L7b measured the lane running
+            // `M/channels/voice -> M/channels -> M` and on to the display and
+            // `/os`, with no edge back to the assistant that wrote the section.
+            // What the refusal buys is therefore the message log and the screen
+            // — a dropped advise leaves a record instead of nothing at all.
+            let detail = format!(
+                "section {section_name} arrived with no words; the text of an advise is \
+                 payload (the section itself), messages[-1].text or text"
+            );
+            self.refuse(
+                sink,
+                reply_target,
+                "bad_section",
+                &detail,
+                Some(&session_id),
+            )
+            .await;
+            return;
+        }
+        let delegation_id = msg
+            .headers
+            .context
+            .get("delegation_id")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        // A delegation this colony has now answered is no longer open. Without
+        // this the list would only ever grow, for the whole length of a call.
+        if let Some(id) = delegation_id.as_ref()
+            && let Some(state) = self.live_sessions.get_mut(&session_id)
+        {
+            state.open_delegations.retain(|open| open.id != *id);
+        }
+        self.push_advise(&session_id, kind, delegation_id, &text, spoken)
+            .await;
+    }
+
+    /// An `in_speak` on a duplex session (OR-L6).
+    ///
+    /// It is an APPEND, not a synthesis: the model paraphrases what it is given
+    /// rather than reading it out, and what the caller hears is the model's own
+    /// voice mid-conversation instead of a second one talking over it.
+    async fn speak_duplex(
+        &mut self,
+        session_id: &str,
+        text: String,
+        reply_target: Path,
+        sink: &OutputSink,
+    ) {
+        if !self.live_sessions.contains_key(session_id) {
+            self.refuse(
+                sink,
+                reply_target,
+                "unknown_session",
+                "no live connection holds this session",
+                Some(session_id),
+            )
+            .await;
+            return;
+        }
+        // Markdown becomes speech text here for the reason it does in the
+        // cascade: what reaches the provider is what will be heard.
+        let text = if self.speak_plain {
+            crate::voice::speech_text::to_speech(&text)
+        } else {
+            text
+        };
+        if text.trim().is_empty() {
+            tracing::debug!(
+                path = self.path.as_str(),
+                %session_id,
+                "voice: nothing to speak — the answer has no words in it"
+            );
+            return;
+        }
+        self.push_advise(session_id, AppendKind::Commentary, None, &text, true)
+            .await;
+    }
+
+    /// Hand one piece of guidance to the connection, split where the provider's
+    /// ceiling demands it.
+    ///
+    /// Every part gets an `event_id` of its own, because the model answers each
+    /// append separately. Only the FIRST carries the `speak_id`, and that
+    /// `speak_id` IS its `event_id`: the connection recognises the model's own
+    /// `appended` answer by that equality and starts the quiet clock of the
+    /// spoken section on it (contract § 1.3).
+    async fn push_advise(
+        &mut self,
+        session_id: &str,
+        kind: AppendKind,
+        delegation_id: Option<String>,
+        text: &str,
+        spoken: bool,
+    ) {
+        for (i, part) in split_append(text).into_iter().enumerate() {
+            let event_id = Uuid::now_v7().to_string();
+            let speak_id = (spoken && i == 0).then(|| event_id.clone());
+            if let Some(id) = speak_id.as_ref()
+                && let Some(state) = self.live_sessions.get_mut(session_id)
+            {
+                state.speak_open = Some(id.clone());
+            }
+            let _ = self
+                .to_io
+                .send(VoiceReconfig::Advise {
+                    session_id: session_id.to_string(),
+                    kind,
+                    event_id,
+                    delegation_id: delegation_id.clone(),
+                    content: part,
+                    speak_id,
+                })
+                .await;
+        }
+    }
+
     /// Announce the end of one synthesis on the `speak_end` lane.
     ///
     /// One emission per `Speak` this cell accepted, whatever ended it — the
@@ -481,15 +1285,16 @@ impl VoiceCell {
         speak_id: &str,
         reason: SpeakEndReason,
     ) {
+        let mut header = Map::new();
+        header.insert("route".into(), json!("speak_end"));
+        header.insert("session_id".into(), json!(session_id));
+        header.insert("call_id".into(), json!(session_id));
+        header.insert("speak_id".into(), json!(speak_id));
+        header.insert("reason".into(), json!(reason));
+        header.insert("platform".into(), json!("voice"));
+        self.stamp_engine(&mut header);
         let content = json!({
-            "header": {
-                "route": "speak_end",
-                "session_id": session_id,
-                "call_id": session_id,
-                "speak_id": speak_id,
-                "reason": reason,
-                "platform": "voice",
-            },
+            "header": Value::Object(header),
             "messages": [],
         });
         self.emit(sink, content).await;
@@ -519,6 +1324,7 @@ impl VoiceCell {
                 header.insert(k.clone(), v.clone());
             }
         }
+        self.stamp_engine(&mut header);
         let content = json!({
             "header": Value::Object(header),
             "messages": [],
@@ -629,6 +1435,7 @@ impl VoiceCell {
             header.insert("session_id".into(), json!(s));
             header.insert("call_id".into(), json!(s));
         }
+        self.stamp_engine(&mut header);
         let content = json!({
             "header": Value::Object(header),
             "messages": [],
@@ -636,6 +1443,168 @@ impl VoiceCell {
         });
         let _ = sink.push(CellOutput { target, content }).await;
     }
+}
+
+/// The name of a section, from the channel it was routed to. The match at the
+/// top of `advise()` already left the function for every other name, so this
+/// never invents one that was not on the wire.
+fn section_name_of(kind: AppendKind) -> &'static str {
+    match kind {
+        AppendKind::Commentary => "fact",
+        AppendKind::Thinking => "context",
+        AppendKind::Instructions => "correction",
+    }
+}
+
+/// A string that carries words, or nothing.
+fn words(value: &Value) -> Option<&str> {
+    match value {
+        Value::String(s) if !s.trim().is_empty() => Some(s.as_str()),
+        _ => None,
+    }
+}
+
+/// The words of one section, as the splitter hands it over (GH #797).
+///
+/// `payload` IS the section value the model wrote — `sections[key]` in
+/// `templates/talky/splitter/config.json` — so a string here is the advice,
+/// which is the shape talky's own offer asks for
+/// (`templates/talky/schemas/config.json`: every section is a
+/// `{"type": "string"}`). An OBJECT is a model that nested, which the block
+/// contract INVITED until GH #799: its preamble showed `{"fact": {...}}` for
+/// every section while the heading under it showed `{"fact": "<sentence>"}`.
+/// The frame prints the form of each offer now
+/// (`templates/collector/assemble/config.json`, `shape_slot`), so the nest is
+/// no longer asked for — and it is still read here, because a model that
+/// nested once is not a caller to punish. Since GH #799 the object is also
+/// what the splitter itself hands over for a bare string — `{"payload": "…"}`,
+/// the wrapper that lets the string ride the object slot the lane declares —
+/// and the `payload` name below is what finds the sentence in it.
+///
+/// Inside an object the sentence is found by NAME and not by position: the
+/// section's own key first (that is the double nest GH #797 measured), then
+/// `text`, then `payload` — the wrapper the splitter itself writes around a
+/// bare string, which is the form 17 of 22 sections arrived in when the twin
+/// was measured on 2026-09-21. It is named rather than left to the guess
+/// below, because it is not a shape a model invented: this cell's own producer
+/// writes it, and a lane that carries three quarters of its traffic on a
+/// fallback has no lock on the shape at all.
+///
+/// With none of the three names there, the first string in SORTED key order.
+/// Sorting is written out rather than left to the map: `serde_json` is
+/// a `BTreeMap` today only because nothing in the tree turns on
+/// `preserve_order`, and a promise that a dependency can flip without touching
+/// this cell is not a promise. One guess at the end, and it costs the caller
+/// nothing against a dropped advise.
+fn section_text<'a>(payload: &'a Value, section: &str) -> Option<&'a str> {
+    match payload {
+        Value::String(_) => words(payload),
+        Value::Object(map) => map
+            .get(section)
+            .and_then(|v| section_text(v, section))
+            .or_else(|| map.get("text").and_then(words))
+            .or_else(|| map.get("payload").and_then(words))
+            .or_else(|| {
+                let mut keys: Vec<&String> = map.keys().collect();
+                keys.sort();
+                keys.into_iter().find_map(|k| map.get(k).and_then(words))
+            }),
+        _ => None,
+    }
+}
+
+/// How long the model's timeline may stay quiet before a user turn closes, for
+/// this cell. The cascade default where there is no duplex block: the number is
+/// never read there, and a second `Option` in the handler would be a branch
+/// with no second behaviour behind it.
+fn duplex_gap_ms(params: &VoiceParams) -> u64 {
+    match &params.duplex {
+        Some(crate::voice::params::DuplexParams::GptLive(p)) => p.turn_gap_ms,
+        _ => crate::voice::params::DEFAULT_TURN_GAP_MS,
+    }
+}
+
+/// The same for the backchannel ceiling (OR-L18).
+fn duplex_backchannel_ms(params: &VoiceParams) -> u64 {
+    match &params.duplex {
+        Some(crate::voice::params::DuplexParams::GptLive(p)) => p.backchannel_max_ms,
+        _ => crate::voice::params::DEFAULT_BACKCHANNEL_MAX_MS,
+    }
+}
+
+/// The same for the delegation deadline (R-L9).
+fn duplex_delegation_grace_ms(params: &VoiceParams) -> u64 {
+    match &params.duplex {
+        Some(crate::voice::params::DuplexParams::GptLive(p)) => p.delegation_grace_ms,
+        _ => crate::voice::params::DEFAULT_DELEGATION_GRACE_MS,
+    }
+}
+
+/// And for the sentence that closes one (R-L9).
+fn duplex_delegation_fallback(params: &VoiceParams) -> String {
+    match &params.duplex {
+        Some(crate::voice::params::DuplexParams::GptLive(p)) => p.delegation_fallback.clone(),
+        _ => crate::voice::params::DEFAULT_DELEGATION_FALLBACK.to_string(),
+    }
+}
+
+/// Cut one piece of guidance into appends the provider will take.
+///
+/// One append may carry about 500 tokens (contract § 1.5,
+/// [`APPEND_MAX_CHARS`]), and a longer one is split at PARAGRAPH boundaries:
+/// a section cut mid-sentence would be read out as two thoughts. A single
+/// paragraph that is itself too long is cut at the last space before the
+/// ceiling — the one place a word boundary has to do, because the alternative
+/// is an append the model refuses whole.
+fn split_append(text: &str) -> Vec<String> {
+    let text = text.trim();
+    if text.chars().count() <= APPEND_MAX_CHARS {
+        return vec![text.to_string()];
+    }
+    let mut parts: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for paragraph in text.split("\n\n").map(str::trim).filter(|p| !p.is_empty()) {
+        for piece in split_paragraph(paragraph) {
+            let joined = current.chars().count() + 2 + piece.chars().count();
+            if current.is_empty() {
+                current = piece;
+            } else if joined <= APPEND_MAX_CHARS {
+                current.push_str("\n\n");
+                current.push_str(&piece);
+            } else {
+                parts.push(std::mem::take(&mut current));
+                current = piece;
+            }
+        }
+    }
+    if !current.is_empty() {
+        parts.push(current);
+    }
+    parts
+}
+
+/// One paragraph, cut at word boundaries where it exceeds the ceiling alone.
+fn split_paragraph(paragraph: &str) -> Vec<String> {
+    if paragraph.chars().count() <= APPEND_MAX_CHARS {
+        return vec![paragraph.to_string()];
+    }
+    let mut out = Vec::new();
+    let mut rest = paragraph;
+    while rest.chars().count() > APPEND_MAX_CHARS {
+        // The byte index just past the last character that still fits.
+        let limit = rest
+            .char_indices()
+            .nth(APPEND_MAX_CHARS)
+            .map_or(rest.len(), |(i, _)| i);
+        let cut = rest[..limit].rfind(char::is_whitespace).unwrap_or(limit);
+        let (head, tail) = rest.split_at(cut);
+        out.push(head.trim().to_string());
+        rest = tail.trim_start();
+    }
+    if !rest.is_empty() {
+        out.push(rest.to_string());
+    }
+    out
 }
 
 /// The body of a `partial` or a `turn` emission.
@@ -756,6 +1725,15 @@ impl LongRunningCell for VoiceCell {
                 return;
             }
 
+            // The advise lane, before the text is read: its text may come out
+            // of `body.text` rather than out of an assistant turn, and its
+            // section decides which of the three append channels it takes
+            // (contract § 1.5).
+            if msg.headers.hop.get("route").and_then(|v| v.as_str()) == Some("in_advise") {
+                self.advise(&msg, body, reply_target, sink).await;
+                return;
+            }
+
             let text = body
                 .get("messages")
                 .and_then(|m| m.as_array())
@@ -809,6 +1787,17 @@ impl LongRunningCell for VoiceCell {
                 .await;
                 return;
             };
+
+            // An `in_speak` on a duplex cell is an APPEND, not a synthesis
+            // (OR-L6): the model paraphrases what it is given rather than
+            // reading it out. The sessions it addresses live in
+            // `live_sessions`, so the cascade lookup below would answer
+            // `unknown_session` for a call that is perfectly live.
+            if self.duplex {
+                self.speak_duplex(&session_id, text, reply_target, sink)
+                    .await;
+                return;
+            }
 
             if !self.sessions.contains_key(&session_id) {
                 self.refuse(
@@ -895,6 +1884,14 @@ impl LongRunningCell for VoiceCell {
                     );
                 }
                 VoiceEvent::Connected { session_id, mode } => {
+                    // Two kinds of session, one event. Which one it is comes
+                    // from the params rather than from the event, because the
+                    // engine cannot change under a live cell.
+                    if self.duplex {
+                        self.live_sessions
+                            .insert(session_id, LiveSessionState::new(mode));
+                        return;
+                    }
                     // A generation this cell has never handed out, so a timer
                     // armed by the connection this one replaces cannot cut the
                     // boundary of the connection that replaced it.
@@ -910,6 +1907,7 @@ impl LongRunningCell for VoiceCell {
                 }
                 VoiceEvent::Disconnected { session_id } => {
                     self.sessions.remove(&session_id);
+                    self.live_sessions.remove(&session_id);
                 }
                 VoiceEvent::Control { session_id, frame } => {
                     self.drive(&session_id, Input::Control(frame), sink).await;
@@ -947,6 +1945,18 @@ impl LongRunningCell for VoiceCell {
                         self.emit_speak_end_lane(sink, &session_id, &speak_id, reason)
                             .await;
                     }
+                    // A duplex session has no cascade turn machine to tell —
+                    // the section that ended was an append, not a synthesis in
+                    // a queue — so the state it keeps is the one bit the
+                    // handler owns: whether a section is still open.
+                    if self.duplex {
+                        if let Some(state) = self.live_sessions.get_mut(&session_id)
+                            && state.speak_open.as_deref() == Some(speak_id.as_str())
+                        {
+                            state.speak_open = None;
+                        }
+                        return;
+                    }
                     self.drive(&session_id, Input::SpeakEnded { speak_id, reason }, sink)
                         .await;
                 }
@@ -975,6 +1985,20 @@ impl LongRunningCell for VoiceCell {
                         Some(json!({"dropped_frames": dropped})),
                     )
                     .await;
+                }
+                VoiceEvent::LiveTick { session_id, now_ms } => {
+                    self.on_live_tick(&session_id, now_ms, sink).await;
+                }
+                VoiceEvent::Live { session_id, event } => {
+                    self.on_live_event(&session_id, event, sink).await;
+                }
+                VoiceEvent::DuplexFailed { session_id, detail } => {
+                    // The one duplex path that IS built here: a provider that
+                    // is gone ends the call, and a call that ends without a
+                    // word on the error lane is a call nobody can explain
+                    // (OR-L20 — there is no reconnect to wait for).
+                    self.emit_error(sink, "duplex_failed", &detail, Some(&session_id), None)
+                        .await;
                 }
                 VoiceEvent::BadAudioFrame {
                     session_id,

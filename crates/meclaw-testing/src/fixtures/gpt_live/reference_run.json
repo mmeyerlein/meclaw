@@ -1,0 +1,337 @@
+{
+  "session_id": "sess_fixture",
+  "scene": "barge-in: the caller speaks over the assistant's first answer",
+  "note": "Transcript fragments of one recorded GPT-Live session, in arrival order. Both streams are interleaved exactly as they arrived; the timestamps are session-timeline values, not arrival times.",
+  "events": [
+    {
+      "type": "session.input_transcript.delta",
+      "delta": " Hallo",
+      "start_ms": 800,
+      "end_ms": 1000
+    },
+    {
+      "type": "session.input_transcript.delta",
+      "delta": " Egon",
+      "start_ms": 1200,
+      "end_ms": 1400
+    },
+    {
+      "type": "session.input_transcript.delta",
+      "delta": ". Wie",
+      "start_ms": 1800,
+      "end_ms": 2000
+    },
+    {
+      "type": "session.input_transcript.delta",
+      "delta": " geht",
+      "start_ms": 2000,
+      "end_ms": 2200
+    },
+    {
+      "type": "session.input_transcript.delta",
+      "delta": " es",
+      "start_ms": 2200,
+      "end_ms": 2400
+    },
+    {
+      "type": "session.input_transcript.delta",
+      "delta": " dir",
+      "start_ms": 2400,
+      "end_ms": 2600
+    },
+    {
+      "type": "session.input_transcript.delta",
+      "delta": " denn",
+      "start_ms": 2600,
+      "end_ms": 2800
+    },
+    {
+      "type": "session.input_transcript.delta",
+      "delta": " heute",
+      "start_ms": 3000,
+      "end_ms": 3200
+    },
+    {
+      "type": "session.output_transcript.delta",
+      "delta": " Hallo!",
+      "start_ms": 3200,
+      "end_ms": 3400
+    },
+    {
+      "type": "session.input_transcript.delta",
+      "delta": " so",
+      "start_ms": 3400,
+      "end_ms": 3600
+    },
+    {
+      "type": "session.output_transcript.delta",
+      "delta": " Mir",
+      "start_ms": 3400,
+      "end_ms": 3600
+    },
+    {
+      "type": "session.output_transcript.delta",
+      "delta": " geht's",
+      "start_ms": 3600,
+      "end_ms": 3800
+    },
+    {
+      "type": "session.output_transcript.delta",
+      "delta": " gut,",
+      "start_ms": 3800,
+      "end_ms": 4000
+    },
+    {
+      "type": "session.output_transcript.delta",
+      "delta": " danke.",
+      "start_ms": 4400,
+      "end_ms": 4600
+    },
+    {
+      "type": "session.input_transcript.delta",
+      "delta": " Sag",
+      "start_ms": 5400,
+      "end_ms": 5600
+    },
+    {
+      "type": "session.input_transcript.delta",
+      "delta": " mal",
+      "start_ms": 5800,
+      "end_ms": 6000
+    },
+    {
+      "type": "session.input_transcript.delta",
+      "delta": ", kannst du",
+      "start_ms": 7000,
+      "end_ms": 7200
+    },
+    {
+      "type": "session.input_transcript.delta",
+      "delta": " mir",
+      "start_ms": 7200,
+      "end_ms": 7400
+    },
+    {
+      "type": "session.input_transcript.delta",
+      "delta": " erklären",
+      "start_ms": 8000,
+      "end_ms": 8200
+    },
+    {
+      "type": "session.input_transcript.delta",
+      "delta": ", warum",
+      "start_ms": 8600,
+      "end_ms": 8800
+    },
+    {
+      "type": "session.input_transcript.delta",
+      "delta": " der",
+      "start_ms": 8800,
+      "end_ms": 9000
+    },
+    {
+      "type": "session.input_transcript.delta",
+      "delta": " Himmel",
+      "start_ms": 9200,
+      "end_ms": 9400
+    },
+    {
+      "type": "session.input_transcript.delta",
+      "delta": " eigentlich",
+      "start_ms": 9800,
+      "end_ms": 10000
+    },
+    {
+      "type": "session.input_transcript.delta",
+      "delta": " blau",
+      "start_ms": 10200,
+      "end_ms": 10400
+    },
+    {
+      "type": "session.output_transcript.delta",
+      "delta": " Klar!",
+      "start_ms": 10400,
+      "end_ms": 10600
+    },
+    {
+      "type": "session.input_transcript.delta",
+      "delta": " ist",
+      "start_ms": 10600,
+      "end_ms": 10800
+    },
+    {
+      "type": "session.output_transcript.delta",
+      "delta": " Das",
+      "start_ms": 10600,
+      "end_ms": 10800
+    },
+    {
+      "type": "session.output_transcript.delta",
+      "delta": " Sonnenlicht",
+      "start_ms": 10800,
+      "end_ms": 11000
+    },
+    {
+      "type": "session.output_transcript.delta",
+      "delta": " trifft",
+      "start_ms": 11200,
+      "end_ms": 11400
+    },
+    {
+      "type": "session.output_transcript.delta",
+      "delta": " auf die",
+      "start_ms": 11600,
+      "end_ms": 11800
+    },
+    {
+      "type": "session.output_transcript.delta",
+      "delta": " Luftm",
+      "start_ms": 11800,
+      "end_ms": 12000
+    },
+    {
+      "type": "session.output_transcript.delta",
+      "delta": "olekü",
+      "start_ms": 12000,
+      "end_ms": 12200
+    },
+    {
+      "type": "session.output_transcript.delta",
+      "delta": "le",
+      "start_ms": 12200,
+      "end_ms": 12400
+    },
+    {
+      "type": "session.output_transcript.delta",
+      "delta": " und",
+      "start_ms": 12800,
+      "end_ms": 13000
+    },
+    {
+      "type": "session.output_transcript.delta",
+      "delta": " das",
+      "start_ms": 13000,
+      "end_ms": 13200
+    },
+    {
+      "type": "session.output_transcript.delta",
+      "delta": " blaue",
+      "start_ms": 13200,
+      "end_ms": 13400
+    },
+    {
+      "type": "session.output_transcript.delta",
+      "delta": " Licht",
+      "start_ms": 13600,
+      "end_ms": 13800
+    },
+    {
+      "type": "session.output_transcript.delta",
+      "delta": " wird",
+      "start_ms": 13800,
+      "end_ms": 14000
+    },
+    {
+      "type": "session.output_transcript.delta",
+      "delta": " dabei",
+      "start_ms": 14000,
+      "end_ms": 14200
+    },
+    {
+      "type": "session.output_transcript.delta",
+      "delta": " stärker",
+      "start_ms": 14200,
+      "end_ms": 14400
+    },
+    {
+      "type": "session.output_transcript.delta",
+      "delta": " in",
+      "start_ms": 14600,
+      "end_ms": 14800
+    },
+    {
+      "type": "session.output_transcript.delta",
+      "delta": " alle",
+      "start_ms": 14800,
+      "end_ms": 15000
+    },
+    {
+      "type": "session.output_transcript.delta",
+      "delta": " Richtungen",
+      "start_ms": 15000,
+      "end_ms": 15200
+    },
+    {
+      "type": "session.output_transcript.delta",
+      "delta": " gestre",
+      "start_ms": 15400,
+      "end_ms": 15600
+    },
+    {
+      "type": "session.output_transcript.delta",
+      "delta": "ut.",
+      "start_ms": 15600,
+      "end_ms": 15800
+    },
+    {
+      "type": "session.output_transcript.delta",
+      "delta": " Deshalb",
+      "start_ms": 16400,
+      "end_ms": 16600
+    },
+    {
+      "type": "session.output_transcript.delta",
+      "delta": " sehen wir",
+      "start_ms": 17000,
+      "end_ms": 17200
+    },
+    {
+      "type": "session.output_transcript.delta",
+      "delta": " den",
+      "start_ms": 17200,
+      "end_ms": 17400
+    },
+    {
+      "type": "session.output_transcript.delta",
+      "delta": " Himmel",
+      "start_ms": 17400,
+      "end_ms": 17600
+    },
+    {
+      "type": "session.output_transcript.delta",
+      "delta": " meist",
+      "start_ms": 17600,
+      "end_ms": 17800
+    },
+    {
+      "type": "session.output_transcript.delta",
+      "delta": " blau,",
+      "start_ms": 18000,
+      "end_ms": 18200
+    },
+    {
+      "type": "session.output_transcript.delta",
+      "delta": " besonders",
+      "start_ms": 18600,
+      "end_ms": 18800
+    },
+    {
+      "type": "session.output_transcript.delta",
+      "delta": " an klar",
+      "start_ms": 19200,
+      "end_ms": 19400
+    },
+    {
+      "type": "session.output_transcript.delta",
+      "delta": "en",
+      "start_ms": 19400,
+      "end_ms": 19600
+    },
+    {
+      "type": "session.output_transcript.delta",
+      "delta": " Tagen.",
+      "start_ms": 19600,
+      "end_ms": 19800
+    }
+  ]
+}

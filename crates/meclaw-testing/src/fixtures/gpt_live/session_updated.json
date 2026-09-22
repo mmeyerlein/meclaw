@@ -1,0 +1,21 @@
+{
+  "type": "session.updated",
+  "event_id": "event_fixture_updated",
+  "session": {
+    "id": "sess_fixture",
+    "object": "live.session",
+    "model": "gpt-live-1",
+    "audio": {
+      "format": {
+        "type": "audio/pcm",
+        "rate": 16000
+      },
+      "output": {
+        "voice": "marin"
+      }
+    },
+    "delegation": {
+      "type": "client"
+    }
+  }
+}

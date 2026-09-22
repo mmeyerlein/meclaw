@@ -698,12 +698,16 @@ pub enum ColonyMsg {
         /// Reply channel; dropped on Shutdown-drain.
         ack: oneshot::Sender<crate::api_dto::ReadTemplatesReply>,
     },
-    /// Phase 12-B step-7.2: pure-Read of the in-memory dead-letter queue
-    /// (does NOT drain — use `DrainDeadLetters` for the DELETE-path).
-    /// HTTP `GET /colony/dead_letters` in Task 8 uses this.
+    /// Phase 12-B step-7.2: pure-Read of the dead-letter queue (does NOT
+    /// drain — use `DrainDeadLetters` for the DELETE-path). Since phase-16 W6d
+    /// (ruling A6) the queue it reads is the persistent `dead_letters` table,
+    /// not an in-memory `VecDeque`. HTTP `GET /colony/dead_letters` uses this.
     ReadDeadLetters {
-        /// Optional since-timestamp filter. **Currently no-op** — see
-        /// `DeadLetterDto` doc-comment for the Phase-14 backlog item.
+        /// Optional since-timestamp filter (Unix seconds, `created_at >=`). It
+        /// filters since phase-16 W2 (ruling A2) — see the `DeadLetterDto`
+        /// doc-comment — and it also picks the ORDER of the answer
+        /// (welle-live, ruling R-L10): given, oldest first from the mark;
+        /// left out, newest first.
         since: Option<i64>,
         /// Optional exact-match on canonical error_code string.
         error_code: Option<String>,
@@ -4695,10 +4699,14 @@ pub(crate) async fn handle_mutation(
         }
     };
 
-    // Step 1: substitute. GH #20 -- class-split: the two slots that are written
-    // into an instance `config.json` (`add_nodes[].override_params`,
-    // `swap_nodes[].with.params`) keep their environment placeholders literally;
-    // the rest of the diff is fully substituted as before.
+    // Step 1: substitute. GH #20 -- class-split: the THREE slots that are
+    // written into an instance `config.json` (`add_nodes[].override_params`,
+    // `swap_nodes[].with.params` and, since GH #796, `replace_nodes[].with
+    // .params`) keep their environment placeholders literally; the rest of the
+    // diff is fully substituted as before. The slot list lives once, in the
+    // rustdoc of `substitute::substitute_mutation_diff`, and every operation of
+    // `validate::DIFF_OPERATIONS` states its side of it in
+    // `every_diff_operation_states_its_config_destined_slot`.
     let diff_subst =
         match crate::mutation::substitute::substitute_mutation_diff(&diff_raw, &env, &ctx) {
             Ok(d) => d,

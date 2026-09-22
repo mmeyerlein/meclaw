@@ -26,7 +26,7 @@ Release detail is in [CHANGELOG.md](CHANGELOG.md) and the
 
 ## Now
 
-Between waves. What the last one built is in v0.40.0 and v0.40.1, under
+Between waves. What the last one built is in v0.41.0, under
 [§ Shipped](#shipped). The open findings are in the tracker and get their
 horizon when the next wave is cut.
 
@@ -120,6 +120,15 @@ says what a hive template has to satisfy.
 One line per release. Details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- v0.41.0: a voice cell can hold one session in which a model hears the caller
+  and answers in it. `voice@2.1.0` adds a duplex provider beside recognition and
+  synthesis, with lanes of its own for what the assistant says, for the errand
+  the model hands the backend mid-call, and for a fact brought into a running
+  conversation; `voice@2.2.0` gives that session its own clock, its own
+  keepalive and a deadline for an unanswered errand. The road around it is
+  drawn to match, from the telephone through the member and the assistant to
+  the collector and the keeper, and a sidecar section may now be the sentence
+  itself. Beside that, the dead-letter read answers newest first.
 - v0.40.1: the workspace compiles on Windows again. Nothing that ships moved,
   and no topology needs anything done to it.
 - v0.40.0: a browser is a cell. `browser@1.0.0` runs one Chromium-based browser

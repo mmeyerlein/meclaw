@@ -1,0 +1,8 @@
+{
+  "type": "info",
+  "event_id": "event_fixture_info",
+  "info": {
+    "code": "session_notice",
+    "message": "The session is running."
+  }
+}

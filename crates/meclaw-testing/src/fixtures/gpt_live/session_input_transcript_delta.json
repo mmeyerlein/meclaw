@@ -1,0 +1,7 @@
+{
+  "type": "session.input_transcript.delta",
+  "event_id": "event_fixture_input_transcript",
+  "delta": " Hallo Egon",
+  "start_ms": 800,
+  "end_ms": 1000
+}

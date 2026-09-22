@@ -119,6 +119,12 @@ def from_markdown(wave_dir: Path) -> list[dict]:
     return runs
 
 
+#: The name `scripts/strand.sh` gives the pointer at the newest run folder.
+#: It is a symlink onto one of the folders beside it, so a glob that walks
+#: directories reads the same receipt a second time under a second name.
+POINTER = "latest"
+
+
 def from_receipts(folder: Path, pattern: str = "*.json") -> list[dict]:
     """Every gate run whose receipt JSON lies in one folder.
 
@@ -128,6 +134,8 @@ def from_receipts(folder: Path, pattern: str = "*.json") -> list[dict]:
     """
     runs = []
     for path in sorted(folder.glob(pattern)):
+        if POINTER in path.relative_to(folder).parts[:-1]:
+            continue
         try:
             doc = json.loads(path.read_text(errors="replace"))
         except ValueError:
@@ -149,7 +157,7 @@ def from_receipts(folder: Path, pattern: str = "*.json") -> list[dict]:
             "verdict": doc.get("verdict", ""),
             "foreign": [],
             "lock_wait_secs": int(doc.get("lock_wait_secs") or 0),
-            "source": path.name,
+            "source": str(path.relative_to(folder)),
         })
     return runs
 
@@ -222,12 +230,21 @@ def _archived(wave_dir: Path, strand: dict, mode: str,
     free pass, though -- a strand that worked in the main tree inherited 33
     one-second receipts of throw-away repos there, so a receipt whose rev is
     a commit of no strand is dropped like a quoted foreign line.
+
+    TWO LAYOUTS, because the archive changed shape on 2026-09-21 (GH #802):
+    a run used to write its receipt FLAT into the strand's folder, where the
+    next run wrote over it; since then it gets a `<timestamp>-<sha>/` of its
+    own with a `latest` pointer beside it. A wave straddles the change -- the
+    strand that made it holds both shapes in one folder -- and a reader of the
+    flat shape alone loses exactly the RED first run, because a report head
+    quotes the last gate line, the green one. Both are read; `runs_for_strand`
+    keys them by `_run_key`, so a receipt found twice is one run.
     """
     folder = wave_dir / "receipts" / strand["name"]
     if not folder.is_dir():
         return []
     runs = []
-    for run in from_receipts(folder):
+    for run in from_receipts(folder) + from_receipts(folder, pattern="*/*.json"):
         if run["mode"] == mode and _belongs(run["rev"], commits):
             runs.append(run)
     return runs

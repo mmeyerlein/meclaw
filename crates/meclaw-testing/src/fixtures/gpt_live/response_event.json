@@ -1,0 +1,14 @@
+{
+  "type": "response.event",
+  "event_id": "event_fixture_response",
+  "delegation_id": "item_fixture_delegation",
+  "event": {
+    "type": "response.output_text.delta",
+    "sequence_number": 4,
+    "item_id": "msg_fixture",
+    "output_index": 0,
+    "content_index": 0,
+    "delta": "The forecast is",
+    "logprobs": []
+  }
+}

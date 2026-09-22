@@ -1,8 +1,10 @@
 //! GET /ui/dead_letters — Phase 12-D T24.
 //!
-//! Pure read of the in-memory dead-letter queue via
-//! `ColonyMsg::ReadDeadLetters`. Rendered as an HTML table with `error_code` +
-//! paths. No drain button (mutation forms are forbidden by the anti-scope).
+//! Pure read of the persisted `dead_letters` table via
+//! `ColonyMsg::ReadDeadLetters`, asked without a mark -- so the answer is
+//! newest first, which is what a page of the latest hundred is for (GH #794).
+//! Rendered as an HTML table with `error_code` + paths. No drain button
+//! (mutation forms are forbidden by the anti-scope).
 
 use crate::ColonyHandle;
 use crate::handlers::clamp_limit;

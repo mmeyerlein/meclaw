@@ -1,4 +1,4 @@
-# `collector@4.1.1`
+# `collector@4.2.0`
 
 Context assembly as a hive of existing cell types -- no new cell type, no Rust. Two cells:
 `assemble` (a `code` cell, the state machine) and `window` (a `store` cell, the state). The
@@ -94,6 +94,7 @@ message context.
 |---|---|---|
 | `in_turn` | the inbound surface (proxy, intake) | writes the turn, opens the assembly, asks memory |
 | `in_advice` | an async tool's return lane (an advisor core), carrying `context.consult_id` | the SAME chain as `in_turn`, filed under role `advice`: an event that arrives after its turn ended and opens a fresh round |
+| `in_delegation` | the duplex `voice` cell, carrying `context.delegation_id` | the SECOND event lane (`collector@4.2.0`), filed under role `delegation`: in a duplex call the model speaks to the caller itself and hands the backend an errand of its own accord while it keeps talking. Assembled exactly like `in_advice` -- it belongs to a turn on the MODEL's clock, so it opens a fresh round with the whole budget -- and, like it, never drained into a memory |
 | `in_bundle` | the memory hive's recall port | becomes the memory leg of this turn. ONE meaning since `4.0.0` -- it carried a second, the tool result of a `memory_recall` call, told apart by a `memory_call_id` the request carried out ([#552](https://github.com/mmeyerlein/meclaw/issues/552)) |
 | `in_calls` | the tool dispatcher | the assistant `tool_call` turn of the round; `hop.async_calls` names the ids this fan-in must **not** wait for |
 | `in_tool` | a tool cell | one tool result: **every** `tool_result` turn of its `messages[]`, each filed under the call id it answers. See "What a tool result may carry" below |
@@ -223,7 +224,7 @@ for how to retune one, and for what `override_params` can and cannot do).
 | `tool_chars` | `4000` | per-item character cap on tool **result** texts before they enter the seam. |
 | `round_bytes` | `16000` | byte cap over the whole tool round, counted from the newest iteration backwards. What does not fit falls as a whole **iteration**. |
 | `memory_chars` | `8000` | character cap on the memory bundle **where the bundle travels**: the synthetic `memory_recall` tool result of the AMBIENT leg. ONE cap over the whole result text, so under `memory_form: both` it bounds the readable block and the machine-readable form *together* rather than each of them separately. `hop.memory_capped` is measured on that result. The tool leg has a cap of its own, on `memory-hive/tool` (#552). |
-| `max_iter` | `8` | how often a turn may re-enter the brain with a tool round. At the cap the seam leaves on `answer` instead, with `hop.partial=1` and a named partial answer as its last turn (`collector@3.5.0`, GH #570). The count belongs to ONE round, and a turn opens one: since [#541](https://github.com/mmeyerlein/meclaw/issues/541) the two turn-opening lanes (`in_turn`, `in_advice`) start at zero whatever `iter` the arrival carried. `in_advice` is the answer lane of another hive's round and carries ITS count -- a core that spent nine iterations used to hand the surface a turn that was over before it began, and the seam left on `answer` with the raw assembled round where the answer belonged, no brain call at all. |
+| `max_iter` | `8` | how often a turn may re-enter the brain with a tool round. At the cap the seam leaves on `answer` instead, with `hop.partial=1` and a named partial answer as its last turn (`collector@3.5.0`, GH #570). The count belongs to ONE round, and a turn opens one: since [#541](https://github.com/mmeyerlein/meclaw/issues/541) the turn-opening lanes (`in_turn`, `in_advice`, and since `collector@4.2.0` `in_delegation`) start at zero whatever `iter` the arrival carried. `in_advice` is the answer lane of another hive's round and carries ITS count -- a core that spent nine iterations used to hand the surface a turn that was over before it began, and the seam left on `answer` with the raw assembled round where the answer belonged, no brain call at all. |
 | `round_idle_ms` | `120000` | idle window of one tool round (two minutes). A round whose last progress is older **and** whose fan-in is incomplete is closed at the next occasion with synthetic error results and fires with `hop.round_stale=1`. |
 | `memory_tier` | `""` | empty = no memory leg at all, and the assembly waits for the window leg alone. `"0"` / `"1"` / `"2"` request that recall tier once per turn, and **the ambient leg arrives as a synthetic `memory_recall` result** at the end of the round -- never as durable system state (`collector@2.1.0`, GH #278). |
 | `memory_form` | `"readable"` | which form of the bundle reaches the brain **in that tool result**: `readable` (the rendered block a model reads), `json` (the machine-readable bundle), `both` (the two joined by a newline, under one call id and one cap). Applies to the AMBIENT leg alone since `4.0.0` -- a model's own `memory_recall` call is rendered by `memory-hive/tool`, which has a `form` of its own ([#552](https://github.com/mmeyerlein/meclaw/issues/552)). Whatever the form, `system.memory` carries only the revocation -- the empty leaf on the fixed path `recall` plus the `$replace` marker on the node above it (see the `brain` lane, `collector@2.0.4`) -- and both halves are sent unconditionally, no longer chosen by this knob: an instance retuned from `readable` to `json` would otherwise carry its last leaf, or its last keys, for the rest of its life. |
@@ -352,7 +353,7 @@ caller that may use it, and no caller can offer a model anything nobody typed.
 own template says it uses -- and the schemas behind those names are **asked for**:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "collector@4.1.1",
+{"add_nodes": [{"name": "scribe", "template": "collector@4.2.0",
                 "override_params": {"assemble": {"tools": ["web_search", "web_fetch"]}}}]}
 ```
 
@@ -589,6 +590,16 @@ sections in the abstract, so the names make it a rule about THESE and the clause
 optional one says the failing case out loud. Both lines are generated from the offers, not
 typed: this cell knows the names at composition time and nothing else about them.
 
+**Each key in the shape line carries the FORM of its own body** (GH #799). `{...}` where the
+section is an object, `"..."` where it is a sentence, `[...]` where it is a list -- read off
+the same `skeleton_of` the headings below are rendered with, so an offer that declares its
+shape through `oneOf` or an enum is printed as whatever a model is actually shown. Until #799
+every key printed `{...}` whatever the offer said, and that is an advertisement rather than a
+rounding error: `talky` offers its three advise sections as strings, so a model that copied
+the frame wrapped its sentence in an object the section never meant, and the splitter one hop
+down dropped what did not fit. A placeholder rather than the whole skeleton, because a
+description here would print every section twice and the frame has a length to keep.
+
 Under it stands one section per offer: a heading `## <section> (required|optional)`, the
 instruction whoever offered it wrote, and a compact example. **Required first, alphabetical
 inside each half** -- required first because the preamble's obligation is about them and a
@@ -654,6 +665,34 @@ ask for a block at all and nothing is written. `menu_answerers` beside it says w
 **`./assemble`'s cell contract moved again** (`contract.version` 2.1.0): `sidecar` joins
 `consumes.body` as the offers of one answer, `sidecar_sections` joins the emitted hop keys,
 and where there was one setting there are two -- `sidecar` and `sidecar_max_chars`.
+
+### The advise mode (`system.instructions.mode`, since `collector@4.2.0`)
+
+A collector in front of a **duplex** voice session assembles for a brain that is not
+answering anybody. The model on the wire speaks to the caller itself; the brain behind this
+cell **advises** it, and everything it produces belongs in the ```sidecar block -- the prose
+outside it is spoken by nobody. That is a different job from answering, and the round has to
+say which one it is.
+
+So the seam carries one more slot of the collector's own, beside `system.consult`:
+
+| `context.engine` | `system.instructions.mode.text` |
+|---|---|
+| `duplex` | the advise charter: what the three sections are for, that a delegation is ALWAYS answered with a `fact`, that a `fact` adds to what was said rather than repeating it, and that the model greets the caller by itself |
+| anything else, or absent | `""` |
+
+**On `context.engine`, never on the channel.** A channel node says where a turn came *in*;
+the same `apps/voice` carries a turn of the half-duplex pipeline and a turn of a duplex
+session, so the channel name says nothing about what is talking on the other end. The engine
+is promoted into the context by the edge that carries the turn in.
+
+**Written on every assembly, empty included** -- the rule `system.consult` is built on. An
+`llm` cell upserts `system.*` per slot path, so a path that is not sent is a path that is
+not touched: a slot that were only ever *set* would keep advising a brain for the rest of
+its life after one duplex call. The family is `instructions` and the write carries no
+`$replace`, so the charter (`instructions.reply`, the `in_pack` lane) and the block contract
+(`instructions.sidecar`, the menu lane) are untouched; `instructions` stands in `SYS_KEEP`,
+so the curator cannot cut it at any budget.
 
 ### The curator (wave 11)
 
@@ -1288,7 +1327,7 @@ the repeat recognisable at all.
 
 **Not everything in the window is a turn of the conversation.** What leaves on `turn_write`
 -- and on `write`, from the same helper -- is what somebody said: a row whose `role` is
-`user` or `assistant` **and** whose `interim` column is `0` (GH #282). Three classes stay
+`user` or `assistant` **and** whose `interim` column is `0` (GH #282). Four classes stay
 behind, one clause each:
 
 - an **interim** answer (`interim = 1`) -- the sentence of the advisor split that buys time
@@ -1299,7 +1338,11 @@ behind, one clause each:
   the agent is about to speak about it in its own voice, so it belongs in the window, but
   nobody in this conversation said it and it is itself a rendering of what the memory
   already holds, so draining it feeds the memory its own answers;
-- **any other role** -- anything this cell writes into `turns` that is not one of the two
+- a **delegation** row (`role = "delegation"`) -- the errand the voice model handed the
+  backend on `in_delegation` (`collector@4.2.0`): it reads like a sentence of the caller's
+  and is none. The errand is the MODEL's, quoted out of what it heard, so a memory that
+  drained it would hand it back to the caller as her own word;
+- **any other role** -- anything this cell writes into `turns` that is not one of the three
   above: context for the model, never an episode.
 
 The same decision names the **attribution**: `origin` on both routes is read from an
@@ -1335,6 +1378,37 @@ keeps whatever else it feeds -- an archive, the summarizer -- at its own cadence
 
 Uncapped by design, like the close lane: the knobs above bound a *context window*, and
 this is the durable record leaving. A byte cap here would silently renumber the day.
+
+### A duplex turn arrives whole (R-25-9, since `collector@4.2.0`)
+
+Every surface until now delivered half a turn at a time: the question on `in_turn`, and the
+answer on `in_answer` once the brain had written one. A duplex voice session does not work
+that way -- the model decides by itself when it speaks, so a turn is cut on **its** clock (a
+user block plus the agent fragments that follow it) and both sides arrive in ONE message,
+`messages[] = [user, assistant]`.
+
+The turn-opening bundle therefore writes **two** rows under one `turn_id` when the arrival
+carries an assistant text, in front of the window read of the same bundle:
+
+```
+in_turn [user, assistant] -> insert turns(user)       c-open-turn
+                          -> insert turns(assistant)  c-open-pair   <- only when there is one
+                          -> select round (open?)     c-open-round
+                          -> select turns (window)    c-open-win
+                          -> select turns (day)       c-open-day    <- the episode scan
+```
+
+The answer row's id is **derived** from the question's (`<id>-a`) rather than drawn beside
+it: `turns.id` *is* this table's time order, the window reads it descending, and two rows
+minted in the same microsecond would otherwise stand in the order two random hex strings
+happen to compare in. An empty assistant text writes no row, and a turn with only a question
+is written exactly as it always was -- every chat surface and the half-duplex voice pipeline
+still answer on `in_answer`.
+
+`turn_write` needs no rule of its own for this (R-25-10): the per-turn scan rides in the
+reply to that same bundle and hands out every unwritten turn of the session, so the pair
+leaves as two episodes in one emission -- the memory hive's writer takes one turn per
+message, which is why it is two and not one.
 
 ### `window` here is a context window, not a recall window
 
@@ -1404,6 +1478,9 @@ in_calls  -> insert round(assistant)     phase round-w
              (the assistant row is written fired=1 when NOTHING else was asked)
 in_advice -> insert turns(advice)        phase turn-w       <- the return lane, into
              (+ recall request)                                the turn chain above
+in_delegation
+          -> insert turns(delegation)    phase turn-open    <- the voice model's own
+             (+ recall request)                                errand, same chain
 in_tool   -> insert round(tool)          phase round-w      <- the WHOLE messages[]:
                                                                one result may answer
                                                                several calls (#252)
@@ -1637,7 +1714,20 @@ It is revoked with the ids, by the same empty rendering, for the same reason.
   NAMED end of a capped round (GH #570): the last text of the answer is the digest and not
   the raw payload, the last `messages[]` entry is an assistant text turn, `hop.partial` is
   `"1"` -- and, the counter-pin, the byte cap raises `round_capped` with `partial == "0"`
-  and appends nothing.
+  and appends nothing. Since `4.2.0` also the second unconditional `system` slot: the tree
+  of a window without advice carries `instructions.mode` emptied beside `consult`.
+- `crates/meclaw-cells/tests/voice_duplex_the_collector_switches_to_advise_on_the_engine.rs`
+  -- the advise mode: `context.engine == 'duplex'` writes the charter, everything else
+  writes the slot EMPTY, the channel node alone switches nothing, another engine name is not
+  this one, and the charter of the `in_pack` lane keeps its own path beside it.
+- `crates/meclaw-cells/tests/voice_duplex_a_delegation_never_reaches_the_memory.rs` -- the
+  second event lane: the row and its correlation, the fresh round with the whole budget, the
+  frame on the wire, and BOTH writers refusing it -- no episode on the per-turn lane and no
+  entry in the day's batch.
+- `crates/meclaw-cells/tests/voice_duplex_a_turn_pair_is_one_episode.rs` -- the duplex turn:
+  two rows under one `turn_id`, the answer row sorting behind the question and standing in
+  front of the window read, both halves handed to `turn_write` in one emission -- and the
+  counter-pins, a question-only turn and an empty answer half writing exactly one row.
 - `crates/meclaw-cells/tests/gh278_the_ambient_recall_is_a_tool_result.rs` -- the channel
   itself, since 2.1.0: the ambient bundle leaves the seam as the last `tool_call` /
   `tool_result` pair of `messages[]`, the call id is derived and therefore stable across a

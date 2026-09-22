@@ -55,6 +55,7 @@ TOOLS = {
     "turn.py": "python3",
     "tap.mjs": "node",
     "markers.py": "python3",
+    "duplex_proof.mjs": "node",
 }
 
 # `callers/` holds TEMPLATES, not bound callers: a caller names one colony's
@@ -96,9 +97,17 @@ class InventoryTest(unittest.TestCase):
                                 "%s has a shebang and mode %o" % (name, path.stat().st_mode & 0o777))
 
     def test_readme_is_there_and_short(self):
+        """A page, not a manual: a row in the table and a line in the examples.
+
+        The deckel is per TOOL, not a round number -- it moved from 60 to 64
+        when wave Live added the seventh tool, and a tool that needs more than
+        its row and its call belongs in its own head, where the contract test
+        already reads it.
+        """
         readme = LAB / "README.md"
         self.assertTrue(readme.is_file(), "no README.md in %s" % LAB)
-        self.assertLessEqual(len(readme.read_text(encoding="utf-8").splitlines()), 60)
+        self.assertLessEqual(len(readme.read_text(encoding="utf-8").splitlines()),
+                             42 + 3 * len(TOOLS))
 
     def test_every_tool_has_a_caller_template(self):
         missing = [name for name in TOOLS if not (CALLERS / name).is_file()]

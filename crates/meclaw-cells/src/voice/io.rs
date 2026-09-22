@@ -65,7 +65,7 @@ use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{Mutex, mpsc, watch};
 
 use crate::voice::cell::{VoiceEvent, VoiceReconfig};
-use crate::voice::contract::{SttProvider, TtsProvider};
+use crate::voice::contract::{AppendKind, DuplexProvider, SttProvider, TtsProvider};
 use crate::voice::service::{VoiceLinkOpener, mounted_router};
 use crate::voice::wire::{CLOSE_SESSION_REPLACED, Mode, ServerFrame, SpeakEndReason};
 
@@ -90,6 +90,26 @@ pub enum ToConnection {
     },
     /// Stop the running synthesis, if there is one.
     CancelSpeak,
+    /// Push one piece of guidance into this connection's duplex session.
+    ///
+    /// The duplex counterpart of [`Self::Speak`], and the difference is the
+    /// whole point of a live model: a synthesis is TEXT that will be read out,
+    /// an append is guidance the model takes up in its own words and its own
+    /// time (R-25-4, contract § 1.5).
+    Advise {
+        /// Which append channel it travels on.
+        kind: AppendKind,
+        /// The identity the provider's `appended` answer will carry.
+        event_id: String,
+        /// The delegation this answers, where it answers one.
+        delegation_id: Option<String>,
+        /// The text itself.
+        content: String,
+        /// Set where this append opens a spoken section the client is told
+        /// about — a `speak_start` now, a `speak_end` when the model goes
+        /// quiet (OR-L19). `None` for guidance that is never heard as such.
+        speak_id: Option<String>,
+    },
 }
 
 /// One live connection, as the registry holds it.
@@ -122,6 +142,39 @@ pub struct VoiceIoShared {
     pub stt: Arc<dyn SttProvider>,
     /// The synthesis provider, if one is configured.
     pub tts: Option<Arc<dyn TtsProvider>>,
+    /// The duplex provider, where this cell runs one.
+    ///
+    /// `Some` and the cascade pair above is an inert placeholder (OR-L23):
+    /// every reader — `negotiate`, `GET /info`, `hello`, `run_connection` —
+    /// asks this field FIRST and only falls back to `stt`/`tts`.
+    pub duplex: Option<Arc<dyn DuplexProvider>>,
+    /// How long the model may be silent after an append before the connection
+    /// calls that spoken section over, in milliseconds (OR-L19).
+    ///
+    /// Read by the CONNECTION rather than by the handler, because the
+    /// connection is the half with a clock: a duplex model sends no end of
+    /// speech at all, and the telephony hive downstream counts a `speak_end`
+    /// down for every `in_speak` it counted up.
+    pub spoken_quiet_ms: u64,
+    /// The ceiling on the same heuristic, in milliseconds (OR-L19).
+    pub spoken_cap_ms: u64,
+    /// How long the connection waits for the duplex provider's own verdict once
+    /// the client is gone, in milliseconds (`params.duplex.close_grace_ms`).
+    ///
+    /// Read by the CONNECTION for the same reason the two deadlines above are:
+    /// it is the half that holds the run. The wait is what carries the final
+    /// `Closed { usage_seconds }` to the handler, and after OR-L22 that log line
+    /// is the only place a session's cost is ever reported — so an operator who
+    /// raises the number must raise this wait with it, not run into a constant.
+    pub close_grace_ms: u64,
+    /// How often a duplex connection hands the turn machine the time, in
+    /// milliseconds (`params.duplex.tick_ms`, R-L7).
+    ///
+    /// Here for the reason the three above are here: the connection is the half
+    /// with a clock. A turn is cut on the model's timeline, and on a line where
+    /// nobody speaks no fragment arrives to say that time passed — so the
+    /// connection says it.
+    pub duplex_tick_ms: u64,
     /// The mode a connection gets when its query string does not say.
     pub default_mode: Mode,
     /// A-timeout (hard rule 12) around a provider's first answer.
@@ -381,6 +434,24 @@ pub struct VoiceIo {
     pub stt: Arc<dyn SttProvider>,
     /// The text-to-speech adapter, or `None` with the echo provider.
     pub tts: Option<Arc<dyn TtsProvider>>,
+    /// The duplex adapter, where this cell runs one.
+    ///
+    /// A field rather than an argument of [`VoiceIo::new`], for the reason
+    /// `audio_out_frame_ms` is one: every caller that does not care wants the
+    /// cascade, and the one that does — the factory — names it in one line.
+    /// See [`VoiceIoShared::duplex`] for what it displaces.
+    pub duplex: Option<Arc<dyn DuplexProvider>>,
+    /// How long the model may be silent after an append before the connection
+    /// calls that spoken section over, in milliseconds (OR-L19).
+    pub spoken_quiet_ms: u64,
+    /// The ceiling on the same heuristic, in milliseconds (OR-L19).
+    pub spoken_cap_ms: u64,
+    /// How long the connection waits for the duplex provider's verdict, in
+    /// milliseconds. See [`VoiceIoShared::close_grace_ms`].
+    pub close_grace_ms: u64,
+    /// The duplex tick, in milliseconds. See
+    /// [`VoiceIoShared::duplex_tick_ms`].
+    pub duplex_tick_ms: u64,
     /// The mode a connection starts in without a `?mode=`.
     pub default_mode: Mode,
     /// Operation-timeout around every provider I/O (hard rule 12, A).
@@ -468,6 +539,14 @@ impl VoiceIo {
             default_mode,
             external_timeout,
             idle_timeout,
+            // A half built by hand is a cascade: the factory is the only caller
+            // that knows about a duplex block, and it sets the four below
+            // right after. `VoiceIo::new` itself is unchanged (OR-L23).
+            duplex: None,
+            spoken_quiet_ms: crate::voice::params::DEFAULT_SPOKEN_QUIET_MS,
+            spoken_cap_ms: crate::voice::params::DEFAULT_SPOKEN_CAP_MS,
+            close_grace_ms: crate::voice::params::DEFAULT_CLOSE_GRACE_MS,
+            duplex_tick_ms: crate::voice::params::DEFAULT_DUPLEX_TICK_MS,
             audio_out_frame_ms: crate::voice::params::DEFAULT_AUDIO_OUT_FRAME_MS,
             speak_plain: crate::voice::params::DEFAULT_SPEAK_PLAIN,
             release_grace_ms: crate::voice::params::DEFAULT_RELEASE_GRACE_MS,
@@ -545,6 +624,11 @@ pub async fn run_io(mut io: VoiceIo, mut reconfig_rx: mpsc::Receiver<VoiceReconf
     let shared = Arc::new(VoiceIoShared {
         stt: io.stt,
         tts: io.tts,
+        duplex: io.duplex,
+        spoken_quiet_ms: io.spoken_quiet_ms,
+        spoken_cap_ms: io.spoken_cap_ms,
+        close_grace_ms: io.close_grace_ms,
+        duplex_tick_ms: io.duplex_tick_ms,
         default_mode: io.default_mode,
         external_timeout: io.external_timeout,
         idle_timeout: io.idle_timeout,
@@ -700,6 +784,30 @@ async fn serve_until_the_handler_goes(
             }) => {
                 shared
                     .send_to(&session_id, ToConnection::Speak { speak_id, text })
+                    .await;
+            }
+            Some(VoiceReconfig::Advise {
+                session_id,
+                kind,
+                event_id,
+                delegation_id,
+                content,
+                speak_id,
+            }) => {
+                // The same one hop as every other command: `send_to` hands it
+                // to the connection's `deliver` task and never waits on the
+                // client itself (GH #593).
+                shared
+                    .send_to(
+                        &session_id,
+                        ToConnection::Advise {
+                            kind,
+                            event_id,
+                            delegation_id,
+                            content,
+                            speak_id,
+                        },
+                    )
                     .await;
             }
             Some(VoiceReconfig::CancelSpeak { session_id }) => {
@@ -1380,6 +1488,11 @@ mod tests {
         let shared = Arc::new(VoiceIoShared {
             stt: Arc::new(EchoStt::new()),
             tts: None,
+            duplex: None,
+            spoken_quiet_ms: crate::voice::params::DEFAULT_SPOKEN_QUIET_MS,
+            spoken_cap_ms: crate::voice::params::DEFAULT_SPOKEN_CAP_MS,
+            close_grace_ms: crate::voice::params::DEFAULT_CLOSE_GRACE_MS,
+            duplex_tick_ms: crate::voice::params::DEFAULT_DUPLEX_TICK_MS,
             default_mode: Mode::Auto,
             external_timeout: MARKER,
             idle_timeout: MARKER,
@@ -1451,5 +1564,103 @@ mod tests {
             extra.push(format!("{ev:?}"));
         }
         assert!(extra.is_empty(), "one client, one verdict: {extra:?}");
+    }
+
+    /// **An append reaches the connection it was addressed to** (OR-L40).
+    ///
+    /// The one duplex thing this half does, and it is five lines in the command
+    /// loop — which is exactly why they live here rather than in the strand
+    /// that builds the duplex path: two strands sharing `io.rs` is two strands
+    /// sharing a merge conflict, and there is nothing to share.
+    ///
+    /// What is measured is the mapping and the hop, not the model: a
+    /// `VoiceReconfig::Advise` goes in on the handler's seam and a
+    /// `ToConnection::Advise` with the same five fields comes out at the
+    /// connection, through the same `deliver` task every other command takes
+    /// (GH #593).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_advise_reaches_the_connection_it_names() {
+        const MARKER: Duration = Duration::from_secs(30);
+        let (events_tx, _events_rx) = mpsc::channel::<VoiceEvent>(32);
+        let shared = Arc::new(VoiceIoShared {
+            stt: Arc::new(EchoStt::new()),
+            tts: None,
+            duplex: None,
+            spoken_quiet_ms: crate::voice::params::DEFAULT_SPOKEN_QUIET_MS,
+            spoken_cap_ms: crate::voice::params::DEFAULT_SPOKEN_CAP_MS,
+            close_grace_ms: crate::voice::params::DEFAULT_CLOSE_GRACE_MS,
+            duplex_tick_ms: crate::voice::params::DEFAULT_DUPLEX_TICK_MS,
+            default_mode: Mode::Auto,
+            external_timeout: MARKER,
+            idle_timeout: MARKER,
+            audio_out_frame_ms: 20,
+            speak_plain: false,
+            release_grace_ms: 1500,
+            events_tx,
+            liveness: meclaw_colony::io_liveness::IoLivenessMark::disabled(),
+            sessions: Mutex::new(Registry::default()),
+            shutdown: None,
+        });
+
+        let (conn_id, to_conn, mut to_conn_rx) = new_connection_slot();
+        let dispatch = spawn_delivery(Arc::clone(&shared), "call-1".to_string(), conn_id, to_conn);
+        assert!(
+            shared.claim("call-1", conn_id, dispatch).await.is_none(),
+            "the session was free"
+        );
+
+        let (reconfig_tx, mut reconfig_rx) = mpsc::channel::<VoiceReconfig>(8);
+        reconfig_tx
+            .send(VoiceReconfig::Advise {
+                session_id: "call-1".to_string(),
+                kind: AppendKind::Commentary,
+                event_id: "e1".to_string(),
+                delegation_id: Some("d7".to_string()),
+                content: "it is eighteen degrees out".to_string(),
+                speak_id: Some("s9".to_string()),
+            })
+            .await
+            .expect("the handler seam is open");
+
+        let mut from_handler = None;
+        let mut handoff = None;
+        let mut connections = tokio::task::JoinSet::new();
+        let serve = serve_until_the_handler_goes(
+            &shared,
+            &mut reconfig_rx,
+            &mut from_handler,
+            &mut handoff,
+            "voice",
+            &mut connections,
+        );
+        tokio::pin!(serve);
+        let got = tokio::select! {
+            () = &mut serve => panic!("the command loop must not end while the handler is there"),
+            got = to_conn_rx.recv() => got,
+        };
+        match got.expect("the connection is still there") {
+            ToConnection::Advise {
+                kind,
+                event_id,
+                delegation_id,
+                content,
+                speak_id,
+            } => {
+                assert_eq!(kind, AppendKind::Commentary);
+                assert_eq!(event_id, "e1");
+                assert_eq!(
+                    delegation_id.as_deref(),
+                    Some("d7"),
+                    "an append that answers a delegation says which one"
+                );
+                assert_eq!(content, "it is eighteen degrees out");
+                assert_eq!(
+                    speak_id.as_deref(),
+                    Some("s9"),
+                    "and the section the client will be told about"
+                );
+            }
+            other => panic!("expected the append, got {other:?}"),
+        }
     }
 }

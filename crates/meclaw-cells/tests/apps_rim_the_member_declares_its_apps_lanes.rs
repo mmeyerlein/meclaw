@@ -384,23 +384,28 @@ fn the_assistant_opens_its_brain_rims_for_tool_and_schemas() {
 fn the_versions_moved_with_the_declarations() {
     if let Some(v) = declared_version("member") {
         assert_eq!(
-            v, "1.8.0",
+            v, "1.9.0",
             "the apps-rim declarations and the two restamp edges shipped as 1.6.2; GH \
              #598 took the receipt restamp edge back out again as 1.6.3; GH #607 made the \
              level 1.7.0 with the `sidecar` lane and the two edges that sort it; and since \
              GH #709 it is 1.8.0, because the app rim carries `withdraw` beside `view` and \
-             an app can take a view down that it could only let fade before — the second \
+             an app can take a view down that it could only let fade before; and since \
+             welle-live it is 1.9.0, because the level wires the channel whose model \
+             answers on its own timeline (`in_delegation` up, `in_advise` back down) — the second \
              digit each time, because the level does something it never promised before"
         );
     }
     if let Some(v) = declared_version("assistant") {
         assert_eq!(
-            v, "2.7.0",
+            v, "2.8.0",
             "the connect points on `tool`/`schemas` and the new `tool_result` lane shipped \
-             as assistant@2.5.1; GH #607 added `sidecar` and made it 2.6.0; and since GH \
-             #709 it is 2.7.0, because the level holds one talky per channel that asks for \
-             its own and `<assistant>/talky-chat` is an address a caller can wire — a lane \
-             or an address added, none taken away"
+             as assistant@2.5.1; GH #607 added `sidecar` and made it 2.6.0; GH #709 made it \
+             2.7.0, because the level holds one talky per channel that asks for its own and \
+             `<assistant>/talky-chat` is an address a caller can wire; and since welle-live \
+             it is 2.8.0, because a duplex voice call reaches the surface on a lane of its \
+             own, `in_delegation` — a lane or an address added, none taken away; GH #799 \
+             re-points its two refs at `talky@5.2.1` and the number does NOT move, because \
+             2.8.0 has not shipped and an unreleased version is extended, never superseded"
         );
     }
 }

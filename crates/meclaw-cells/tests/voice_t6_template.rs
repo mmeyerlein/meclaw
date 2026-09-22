@@ -1,4 +1,4 @@
-//! `voice@2.0.4` — the template, its declared surface, and the binding manifest
+//! `voice@2.2.0` — the template, its declared surface, and the binding manifest
 //! its README hands a reader.
 //!
 //! Three things can drift apart here and each of them costs a reader a wrong
@@ -126,7 +126,7 @@ fn the_template_declares_a_long_running_voice_cell() {
         "a cell holding a socket is not bounded by a message timeout"
     );
     assert_eq!(tpl["name"], json!("voice"));
-    assert_eq!(tpl["version"], json!("2.0.4"));
+    assert_eq!(tpl["version"], json!("2.2.0"));
     // ADR-0031: the shipped instance is reached under a mount name, and the
     // name is a declared setting like every other knob.
     assert_eq!(cfg["params"]["mount"], json!("voice"));
@@ -175,6 +175,62 @@ fn every_param_is_a_declared_setting_and_the_reverse() {
              declaration promises a default the template does not ship"
         );
     }
+}
+
+/// The duplex block is declared and ships NULL.
+///
+/// Two halves. The shipped instance is a cascade, so the block is `null` and
+/// the template's environment surface does not grow a third credential — the
+/// `${OPENAI_API_KEY}` in the description below is prose about a knob, not a
+/// substitution (`scripts/check_tree_rules.py` reads it that way too). And the
+/// setting is nevertheless DECLARED, because `override_params` may only name a
+/// key the template carries (GH #294, ruling Q6): an instantiation that
+/// switches an instance onto a live model has to be able to write it.
+#[test]
+fn the_duplex_setting_is_declared_and_ships_null() {
+    let Some((cfg, _, _)) = shipped() else {
+        return;
+    };
+    assert_eq!(
+        cfg["params"]["duplex"],
+        json!(null),
+        "the shipped instance is a cascade"
+    );
+    let spec = &cfg["contract"]["settings"]["duplex"];
+    assert_eq!(spec["default"], json!(null));
+    assert_eq!(
+        spec["secret"],
+        json!(true),
+        "the block carries a credential and is marked as such"
+    );
+    let text = spec["description"]
+        .as_str()
+        .expect("a description")
+        .to_lowercase();
+    for word in ["exclusive", "gpt_live", "echo", "instructions", "immutable"] {
+        assert!(
+            text.contains(word),
+            "a builder reads the contract of the block here, and `{word}` is \
+             part of it: {text}"
+        );
+    }
+    assert!(
+        !text.contains("${"),
+        "a `${{VAR}}` in a description is substituted like any other -- the \
+         README manifest is refused with env_var_missing for a variable no \
+         cascade instance needs (measured, welle-live L1): {text}"
+    );
+    // The block parses as what it is declared to be, with the two cascade keys
+    // nulled the way an override_params merge has to write them.
+    let mut switched = substituted(&cfg["params"]);
+    switched["duplex"] = json!({
+        "provider": "gpt_live", "api_key": "k", "instructions": "be somebody"
+    });
+    switched["stt"] = json!(null);
+    switched["tts"] = json!(null);
+    let p = VoiceParams::parse(&switched)
+        .expect("the shipped template can be switched onto a live model by override");
+    assert!(p.duplex.is_some() && p.tts.is_none());
 }
 
 /// The two credentials are the only environment tokens. Everything else is a
@@ -328,16 +384,32 @@ fn the_call_key_is_declared_and_the_session_key_is_still_read() {
     }
     assert_eq!(
         contract["emits"]["hop"]["route"]["values"],
-        json!(["turn", "partial", "speak_end", "error"]),
-        "the four lanes this cell names for itself"
+        json!([
+            "turn",
+            "partial",
+            "spoken",
+            "speak_end",
+            "error",
+            "delegation"
+        ]),
+        "the six lanes this cell names for itself -- `spoken` and `delegation` \
+         are the duplex provider's two, added in 2.1.0, and they are on the \
+         SAME enum because a lane is a lane whichever engine produced it"
     );
 }
 
 // ═════════════════════════════ 2. the manifest a reader copies
 
 /// The README's binding manifest grows the node the catalogue names and draws
-/// exactly the two edges the container needs: one up carrying all three lanes
-/// with the session promoted, one down guarded on the node name.
+/// exactly the two edges the container needs: one up carrying every outbound
+/// lane with the session promoted, one down guarded on the node name.
+///
+/// Since 2.1.0 that is FIVE lanes and not three -- `spoken` and `delegation`
+/// joined them with the duplex provider -- and they stand in the condition of a
+/// manifest a cascade reader copies on purpose: an edge that has to be widened
+/// before `params.duplex` can be switched on is a second migration for a knob.
+/// `speak_end` is still not among them, because that lane ships OFF and the
+/// telephone is who orders it.
 #[test]
 fn the_readme_manifest_binds_the_three_lanes_and_the_way_back() {
     let Some((cfg, _, readme)) = shipped() else {
@@ -350,7 +422,7 @@ fn the_readme_manifest_binds_the_three_lanes_and_the_way_back() {
         .expect("add_nodes is a list");
     assert_eq!(nodes.len(), 1, "one channel is one node");
     assert_eq!(nodes[0]["name"], json!("channels/voice"));
-    assert_eq!(nodes[0]["template"], json!("voice@2.0.4"));
+    assert_eq!(nodes[0]["template"], json!("voice@2.2.0"));
 
     let edges = manifest["diff"]["add_edges"]
         .as_array()
@@ -358,14 +430,14 @@ fn the_readme_manifest_binds_the_three_lanes_and_the_way_back() {
     assert_eq!(
         edges.len(),
         2,
-        "one edge up for the three lanes, one edge down for the answer"
+        "one edge up for every outbound lane, one edge down for the answer"
     );
 
     let up = &edges[0];
     assert_eq!(up["from"], json!("./channels/voice"));
     assert_eq!(up["to"], json!("./channels"));
     let cond = up["condition"].as_str().expect("the up edge is guarded");
-    for lane in ["turn", "partial", "error"] {
+    for lane in ["turn", "partial", "spoken", "error", "delegation"] {
         assert!(
             cond.contains(&format!("hop.route == '{lane}'")),
             "the up edge does not carry `{lane}`: {cond}"
@@ -716,7 +788,7 @@ async fn the_readme_manifest_grows_the_channel_it_describes() {
     ack_rx
         .await
         .expect("rescan acked")
-        .expect("the library must register voice@2.0.4");
+        .expect("the library must register voice@2.2.0");
 
     let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
     h.inbox_tx

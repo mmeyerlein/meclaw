@@ -1,0 +1,7 @@
+{
+  "type": "session.thinking.appended",
+  "event_id": "event_fixture_thinking_appended",
+  "client_event_id": "t1",
+  "start_ms": 9400,
+  "end_ms": 9600
+}

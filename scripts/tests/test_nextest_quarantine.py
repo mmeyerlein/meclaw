@@ -64,9 +64,16 @@ class TheFilterGrammar(unittest.TestCase):
             with self.subTest(filter=entry["filter"]):
                 self.assertIn("binary_id(=", entry["filter"])
 
-    def test_the_two_measured_display_audio_tests_are_the_whole_entry(self):
-        """GH #763 quarantines the two tests that were measured flaky, not the
-        binary: the other three tests of that file have never been seen flaky."""
+    def test_the_measured_display_audio_tests_are_the_whole_entry(self):
+        """GH #763 quarantines the tests that were MEASURED flaky, not the binary.
+
+        Four of the five tests of that file have now tripped with the same CDP
+        message and passed on repetition with nothing edited; each occurrence is
+        cited in the entry's comment. The fifth,
+        `a_short_press_opens_the_dock_and_a_long_one_speaks`, has never been seen
+        flaky and stays strict -- that is what keeps the entry from quietly
+        becoming a leash on the whole binary, which is the shape this file exists
+        to prevent. A sixth name belongs here only with a measurement beside it."""
         entries = [e for e in self.overrides()
                    if "gh643_audio_in_the_display_window_browser" in e["filter"]]
         self.assertEqual(len(entries), 1)
@@ -76,7 +83,10 @@ class TheFilterGrammar(unittest.TestCase):
         self.assertEqual(
             sorted(TEST_TERM.findall(expr)),
             ["=a_browser_holds_the_button_and_the_colony_answers",
-             "=the_release_drains_before_it_lets_go"])
+             "=a_browser_rejoins_after_the_cell_closed_the_topic",
+             "=the_release_drains_before_it_lets_go",
+             "=the_ring_sends_what_it_kept_before_the_hold"])
+        self.assertNotIn("a_short_press_opens_the_dock_and_a_long_one_speaks", expr)
         self.assertEqual(entries[0]["retries"], 1)
 
 

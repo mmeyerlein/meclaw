@@ -1,7 +1,7 @@
-# `assistant@2.7.0`
+# `assistant@2.8.0`
 
 One generation of one person's agent.
-**Four refs at three templates, no container at all,** and sixty-one edges.
+**Four refs at three templates, no container at all,** and sixty-three edges.
 
 | what | it is | why it is at THIS level |
 |---|---|---|
@@ -59,8 +59,8 @@ named `surface` after the ROLE it plays. The tree said one thing and the address
 said another, and every reader had to learn the translation before they could
 follow an edge.
 
-The node is `./talky`. **Twenty-seven of this level's sixty-one edges carry the
-name**, and since 2.7.0 twenty-three more carry `./talky-chat`, and two stamped tokens
+The node is `./talky`. **Twenty-eight of this level's sixty-three edges carry the
+name**, and since 2.7.0 twenty-four more carry `./talky-chat`, and two stamped tokens
 are renamed with it, because a discriminator that outlives the node it is named after
 is a word that has to be read historically:
 
@@ -162,7 +162,7 @@ And since 2.0.0, a **channel, no**:
 
 ```
 assistant/
-  config.json            the level: twenty lanes, five drain pairings, sixty-one edges
+  config.json            the level: twenty-one lanes, five drain pairings, sixty-three edges
   talky/config.json      a ref to talky, at the version its because names
   talky-chat/config.json the same ref, for the channel chat
   cogny/config.json      a ref to cogny, at the version its because names
@@ -182,7 +182,7 @@ to reason about.
 
 ## Lanes
 
-Twenty, all at the assistant's own path — plus **seven that name
+Twenty-one, all at the assistant's own path — plus **seven that name
 a connect point**, three more than before 2.5.1. Five of the seven never reach this rim at
 all: `in_pack` and `pack_ack`
 ([#561](https://github.com/mmeyerlein/meclaw/issues/561)), `recall` and
@@ -233,7 +233,7 @@ door `. -> <generation>` every growth recipe draws.
 | `answer` | **what this generation said**, on its way back to the channel that asked. New in 2.0.0. The assistant does not know which channel it came from and must not: `context.channel_node` rode in on the turn and rides back out on the answer, and the member's own edge into `./channels` is what turns that name into an address (`context.channel`, the chat, rides along beside it — GH #522) |
 | `write` | a closed session as one write batch |
 | `turn_write` | one finished turn per message, after every stored turn and every stored answer — never a batch (GH #298, ruling Q11) |
-| `sidecar` | **one section** of the block the answer carried, one message per section, since 2.6.0 ([#607](https://github.com/mmeyerlein/meclaw/issues/607)). It is `extraction` grown a dimension: the same fence, opened with ```` ```sidecar ```` rather than ```` ```memory ````, holding ONE object with one key per section, cut up by the splitter inside `./talky` and stamped with `hop.section`. This level neither reads a section nor knows which ones exist — the sections a turn may carry are the OFFERS its answerers made, and an answerer may sit outside this generation entirely — so the lane leaves undivided and the MEMBER sorts it. It REPLACES `extraction`, which `talky@5.1.0` no longer has; the member still carries an `extraction` edge for a generation grown against an older surface |
+| `sidecar` | **one section** of the block the answer carried, one message per section, since 2.6.0 ([#607](https://github.com/mmeyerlein/meclaw/issues/607)). It is `extraction` grown a dimension: the same fence, opened with ```` ```sidecar ```` rather than ```` ```memory ````, holding ONE object with one key per section, cut up by the splitter inside `./talky` and stamped with `hop.section`. This level neither reads a section nor knows which ones exist — the sections a turn may carry are the OFFERS its answerers made, and an answerer may sit outside this generation entirely — so the lane leaves undivided and the MEMBER sorts it. It REPLACES `extraction`, which `talky@5.2.1` no longer has; the member still carries an `extraction` edge for a generation grown against an older surface |
 | `recall` | a memory read this turn needs. **One lane, two askers** since [#532](https://github.com/mmeyerlein/meclaw/issues/532): the surface and the reasoning core, each stamping `context.recall_caller` with its own name on the way out |
 | `prune` | the report of a window prune: one message per cut session, or a single zero report |
 | `error` | a normalised failure from anything inside this generation — the surface or the reasoning core. A **channel's** failure is no longer among them: since #454 the connector stands in the member's `channels` container and its failures leave beside this lane, one level up |
@@ -560,14 +560,15 @@ replaces a param and not the elements of a list.
 
 #303 counted **14** edges between the channel level and its siblings on the live
 tree — the reasoning core, four tool cells, the drain, the sink, and the
-assistant itself. This template draws **27** around `./talky` today, and #454
+assistant itself. This template draws **28** around `./talky` today, and #454
 moved none of them, only the node they are drawn around; what has moved the number
 since is a LANE each time, never a channel and never a tool:
 
 ```
-9  . -> ./talky             the entry lanes that reach the surface, the memory's
-                            two answers among them since #552 and the mutation
-                            receipt since #553
+10 . -> ./talky             the entry lanes that reach the surface, the memory's
+                            two answers among them since #552, the mutation
+                            receipt since #553 and the voice model's own
+                            delegation since 2.8.0
 10 ./talky -> .             the exits it produces, the memory road's two among
                             them since #552, the keeper's own completion
                             word since #555, and `sidecar` where `extraction`
@@ -582,7 +583,7 @@ The `./talky -> ./cogny` pair is **not** two errands. It was, up to 2.1.0 —
 `consult_cogny` and `ask_memory` — and #530 retired the second name while #529 put a
 `schemas` ask in its place, so the count stood still while both of its halves changed.
 
-Since 2.7.0 twenty-three of those twenty-seven are drawn a second time around
+Since 2.7.0 twenty-four of those twenty-eight are drawn a second time around
 `./talky-chat`: the table above reads identically with the other name in it, minus the
 four TRANSFER edges — `in_export` and `in_import` in, `export_done` and `dump` out. Those
 four stay on `./talky` alone, and why is in *One talky per channel* below.
@@ -594,7 +595,7 @@ Eleven more edges do not touch either keeper at all — `./cogny -> ./tools` twi
 three times (`error`, and since #552 the memory road's `tool` and `schemas`),
 `. -> ./cogny` twice (the two answers coming back, on one edge guarded by
 `context.tool_caller`, and the mutation receipt since #553), `./tools -> .` on
-`build`, and `. -> ./tools` on `in_build_result` — which makes **sixty-one**
+`build`, and `. -> ./tools` on `in_build_result` — which makes **sixty-three**
 for the level. The one that moved last is `./talky -> .`: it carried `extraction`
 until 2.6.0 and carries `sidecar` now, which is why the exits row above still
 counts ten.
@@ -655,7 +656,7 @@ comes afterwards.**
  "ctx": {"model": "<the reasoning core's model>",
          "model_surface": "<the conversation surface's model>"},
  "diff": {
-  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@2.7.0",
+  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@2.8.0",
                  "override_params": {"cogny/brain": {"temperature": 0.2}}}],
   "add_edges": [
     {"from": "./assistants", "to": "./assistants/scribe",

@@ -29,6 +29,9 @@ GATE_SH = REPO / "scripts" / "gate.sh"
 # The runner asks the resolver which run artefacts do not make a tree dirty
 # (`--print ignored`), so the throw-away repo needs a copy of it.
 GATE_PLAN = REPO / "scripts" / "gate_plan.py"
+# ... and the shared snippet both the runner and the tier script source for the
+# target directory and the ghost-binary guard (GH #802).
+TARGET_LIB = REPO / "scripts" / "cargo-target.sh"
 
 # name<TAB>scope<TAB>cargo<TAB>shell-quoted argv<TAB>cwd
 PLAN_OK_BAD = (
@@ -103,6 +106,7 @@ def make_repo(root):
     shutil.copy(GATE_SH, repo / "scripts" / "gate.sh")
     (repo / "scripts" / "gate.sh").chmod(0o755)
     shutil.copy(GATE_PLAN, repo / "scripts" / "gate_plan.py")
+    shutil.copy(TARGET_LIB, repo / "scripts" / "cargo-target.sh")
     (repo / "README.md").write_text("first\n")
     _git(repo, "init", "-q")
     _git(repo, "add", "-A")
@@ -1063,6 +1067,142 @@ class TestTierLockHandoff(GateShTestCase):
         # lock": run outside the gate, the script serialises as it always did.
         with self.assertRaises(subprocess.TimeoutExpired):
             self.run_tier(held=False, timeout_s=5)
+
+
+class TestTierTargetDirectory(GateShTestCase):
+    """`scripts/test-tier.sh` builds where `scripts/gate.sh` builds.
+
+    Both start cargo, and every worktree of this repository shares ONE target
+    directory. The tier script used to leave the choice to whatever
+    CARGO_TARGET_DIR the shell carried -- which in a linked worktree is
+    nothing, so a single targeted test built a PRIVATE target/ there. What that
+    cost is measured in `docs/development-rules.md` section 7 (GH #802).
+
+    No case here compiles anything: the dry hook prints the nextest argv, and
+    the one case that has to see a REAL run plants a fake `cargo` on PATH.
+    """
+
+    def tier_sh(self, tree):
+        """Plant the script in the tree it is to run in.
+
+        Not in the main repo and then called from elsewhere: the script derives
+        its root from its OWN location, which is the whole point in a worktree.
+        """
+        dst = pathlib.Path(tree) / "scripts" / "test-tier.sh"
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(REPO / "scripts" / "test-tier.sh", dst)
+        dst.chmod(0o755)
+        return dst
+
+    def add_worktree(self):
+        wt = pathlib.Path(self._tmp.name) / "wt"
+        _git(self.repo, "worktree", "add", "-q", "-b", "side", str(wt))
+        return wt
+
+    def fake_cargo(self):
+        """A `cargo` on PATH that records the target directory it was handed.
+
+        The tier script's own contract is what is under test, not cargo's: a
+        stub proves the environment the real cargo would have seen without
+        paying for a compile.
+        """
+        bindir = pathlib.Path(self._tmp.name) / "fakebin"
+        bindir.mkdir(exist_ok=True)
+        seen = pathlib.Path(self._tmp.name) / "cargo-target-dir.txt"
+        (bindir / "cargo").write_text(
+            "#!/bin/sh\nprintf '%%s\\n' \"${CARGO_TARGET_DIR-unset}\" > \"%s\"\n"
+            % seen)
+        (bindir / "cargo").chmod(0o755)
+        return bindir, seen
+
+    def run_tier(self, cwd, *args, dry=True, extra_env=None, path_prefix=None):
+        env = dict(os.environ)
+        env.pop("CI", None)
+        env.pop("CARGO_TARGET_DIR", None)
+        # The script takes the cargo lock itself when it runs outside the gate,
+        # and that is the path under test -- but never the host's real lock,
+        # which a build on this machine may be holding for an hour.
+        env["MECLAW_GATE_LOCK"] = str(pathlib.Path(self._tmp.name) / "tier.lock")
+        env.pop("MECLAW_CARGO_LOCK_HELD", None)
+        if dry:
+            env["MECLAW_TIER_DRY"] = "1"
+        else:
+            env.pop("MECLAW_TIER_DRY", None)
+        if path_prefix:
+            env["PATH"] = "%s:%s" % (path_prefix, env["PATH"])
+        if extra_env:
+            env.update(extra_env)
+        return subprocess.run([str(self.tier_sh(cwd))] + list(args), cwd=str(cwd),
+                              env=env, capture_output=True, text=True, timeout=120)
+
+    def test_a_linked_worktree_builds_into_the_main_target(self):
+        wt = self.add_worktree()
+        res = self.run_tier(wt, "t0")
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertIn("=== target: %s/target" % self.repo, res.stdout)
+
+    def test_the_main_worktree_keeps_its_own_target(self):
+        res = self.run_tier(self.repo, "t0")
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertIn("=== target: %s/target" % self.repo, res.stdout)
+
+    def test_an_explicit_cargo_target_dir_wins(self):
+        wt = self.add_worktree()
+        chosen = pathlib.Path(self._tmp.name) / "elsewhere"
+        res = self.run_tier(wt, "t0", extra_env={"CARGO_TARGET_DIR": str(chosen)})
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertIn("=== target: %s" % chosen, res.stdout)
+
+    def test_the_real_run_hands_cargo_the_main_target_and_builds_no_other(self):
+        wt = self.add_worktree()
+        bindir, seen = self.fake_cargo()
+        res = self.run_tier(wt, "t0", dry=False, path_prefix=str(bindir))
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertEqual("%s/target" % self.repo, seen.read_text().strip())
+        self.assertFalse((wt / "target").exists(),
+                         "the worktree built its own target/")
+
+    def test_the_real_run_stamps_the_shared_target_with_its_own_tree(self):
+        """The guard is only as good as its weakest writer.
+
+        A tier run that fills the shared target/ without writing the stamp
+        leaves the next gate run believing the directory was filled by whoever
+        gated last -- and cargo hands that run the tier's artefacts as fresh.
+        """
+        wt = self.add_worktree()
+        bindir, _ = self.fake_cargo()
+        res = self.run_tier(wt, "t0", dry=False, path_prefix=str(bindir))
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        stamp = (self.repo / "target" / ".gate-tree")
+        self.assertTrue(stamp.is_file(), res.stdout + res.stderr)
+        lines = stamp.read_text().splitlines()
+        self.assertEqual(str(wt), lines[0])
+        self.assertEqual(_git(wt, "rev-parse", "HEAD").stdout.strip(), lines[1])
+
+    def test_the_real_run_touches_the_sources_when_another_tree_filled_target(self):
+        """A foreign stamp is a full touch -- the same answer the gate gives."""
+        crate = self.repo / "crates" / "thing" / "src"
+        crate.mkdir(parents=True)
+        (crate / "lib.rs").write_text("// nothing\n")
+        (self.repo / "crates" / "thing" / "Cargo.toml").write_text("[package]\n")
+        _git(self.repo, "add", "-A")
+        _git(self.repo, "commit", "-q", "-m", "a crate")
+        wt = self.add_worktree()
+        (self.repo / "target").mkdir(parents=True, exist_ok=True)
+        (self.repo / "target" / ".gate-tree").write_text(
+            "/somewhere/else\n%s\n\n" % _git(self.repo, "rev-parse", "HEAD").stdout.strip())
+        stale = 1000000000
+        source = wt / "crates" / "thing" / "src" / "lib.rs"
+        os.utime(source, (stale, stale))
+        bindir, _ = self.fake_cargo()
+        res = self.run_tier(wt, "t0", dry=False, path_prefix=str(bindir))
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertIn("tree-sync: full touch: foreign tree", res.stdout)
+        # The NOTE says what the run decided; the mtime says what it did. A
+        # touch that only prints leaves cargo handing back the foreign tree's
+        # artefacts as fresh, which is the whole failure this guards against
+        # (review M2).
+        self.assertGreater(source.stat().st_mtime, stale)
 
 
 class TestOptionValues(GateShTestCase):

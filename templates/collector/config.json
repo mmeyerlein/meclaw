@@ -31,6 +31,10 @@
           "because": "an advisor's answer"
         },
         {
+          "route": "in_delegation",
+          "because": "a delegation the voice model made of its own accord (welle-live, R-25-4): in a duplex call the model speaks to the caller itself and hands the backend an errand while it keeps talking -- tools, memory, the reasoning core. It is the SECOND event lane and is assembled exactly like `in_advice`: it belongs to a turn on the MODEL's clock, so it can re-enter no round of ours and opens a fresh one with the whole iteration budget. `context.delegation_id` is the correlation and rides in the row's `consult_id`, the seat an advice's consult sits in, because it is the same thing -- the half of a bilateral exchange the model can pass back. The row's role is `delegation` and it is NOT in `SAID`: it reads like a sentence of the caller's and is none, the errand is the model's own, quoted out of what it heard, so `drainable_turns` keeps it out of both writers and a memory never hands it back to the caller as her own word (the defect GH #282 measured on `advice` rows). On the wire it wears a frame that says all of it -- what it is, which id the answer travels under, what was last heard -- because the wire role stays `user`, the one inbound role every provider accepts mid-conversation"
+        },
+        {
           "route": "in_close",
           "because": "a closed session"
         },
