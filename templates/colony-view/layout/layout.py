@@ -78,6 +78,7 @@ form.
 import hashlib
 import json
 import sys
+import time
 
 # The browser half. Each constant is a verbatim copy of the file named in the
 # markers around it -- one raw triple-quoted literal, nothing escaped -- so a
@@ -1654,8 +1655,32 @@ CLIENT_CSS = r"""/* colony-view's own look.
 # has to start with it, which the display checks and refuses as
 # `component_prefix`.
 VIEW_ID = "colony-view"
-# v1 of the display knows one region and this is it.
+# v1 of the display knows one region and this is it. Since display 2.3.0 the field
+# decides nothing any more (both regions are drawn as one canvas), but `in_view`
+# still carries it, so it stays.
 REGION = "main"
+
+# The window around the picture (GH #808). Until 1.1.3 the shell WAS the root of the
+# view, and the display's curator reads its hints off the first window component of
+# a tree (`unwrap_window`): it found none, read `title`, `viewbox` and `cells` as
+# hints, and scored the picture 0.5 x 0.5 = 0.25 against a bar of 0.3 -- never
+# present, no tile in the dock, nothing a finger could open. These are the words the
+# curator reads (display README, "What an application writes").
+CONTEXT = "system"          # the colony's own picture
+TOPIC = "colony"
+RELEVANCE = "0.6"           # text: the display's template language reads a bare 0 as empty
+LAYER = "canvas"
+# The pane's DOM id. NOT `colony-view`: the shell below already carries that id (its
+# hook is mounted on it), and one id on two elements is a page LiveView cannot patch.
+PANE_ID = "colony-view-window"
+# Keys, so the object ids do not depend on the position of a sibling. The display
+# takes the `tile` child OUT of the window (it goes to the dock), which would shift an
+# unkeyed shell from index 1 to index 0 between two readers of the same tree.
+WINDOW_KEY = "colony-view.window"
+SHELL_KEY = "shell"
+TILE_KEY = "tile"
+TILE_GLYPH = "\u2b21"      # a hexagon: the hive
+TILE_LINE_MAX = 24
 
 # The layout constants. The client reads them back off the markup rather than
 # keeping a second copy, so a frame computed during a drag is the frame the next
@@ -2531,15 +2556,19 @@ def child_id(wrapper, key):
     """The object id the display will mint for a keyed child of this view.
 
     A view's tree is handed to the display's `add_tree` at the WRAPPER, and the
-    root of that tree is this cell's shell -- so the shell is `<wrapper>/0` and
+    root of that tree is this cell's window -- so the window is
+    `<wrapper>/<WINDOW_KEY>`, the shell inside it `<window>/<SHELL_KEY>`, and
     everything this cell calls a child of the shell is one level below that.
+    Since 1.1.3 both levels are KEYED: the display lifts the `tile` child out of
+    the window before it walks the rest, so an index would name the shell `1` for
+    one reader and `0` for another.
     Until 1.0.1 this function said `<wrapper>/<index>` and skipped the shell's
     level entirely, so every `data-oid` in the picture named an object that does
     not exist: a drag wrote nowhere, and nothing on this screen could be moved
     at all. `gh544_the_flow_reaches_the_screen` mints the ids with the display's
     own `add_tree` and compares, so the two cannot drift apart again.
     """
-    return (wrapper + "/0/" + key) if wrapper else ""
+    return ("%s/%s/%s/%s" % (wrapper, WINDOW_KEY, SHELL_KEY, key)) if wrapper else ""
 
 
 def picture(graph):
@@ -2700,6 +2729,62 @@ def content(graph, owner):
     }
 
 
+def tile_node(cells):
+    """The one line this view says about itself in the dock: the cell count.
+
+    Keyed `tile`, which is how the display finds it and lifts it out of the window
+    into the dock (display README, the tile). A tile says what a person would want
+    to know without opening the window, and for a colony that is how big it is.
+    """
+    line = "colony"[:TILE_LINE_MAX]
+    return {"component": "display-tile", "key": TILE_KEY,
+            "props": {"glyph": TILE_GLYPH, "line": line, "value": str(cells),
+                      "unit": "cells"}}
+
+
+def window(graph, owner, snapshot_ms):
+    """The view: a `display-pane` the curator reads, with the tile and the shell inside.
+
+    `touched` is the moment of the snapshot, as text. The display counts a window
+    as touched when `touched` is greater than the last value it saw (display-hive.md
+    § 4.8 c) -- so every snapshot, and with it every committed mutation, lifts the
+    picture onto the canvas for the linger time. That is the point of the number:
+    the colony changed, and the screen shows it.
+
+    `pinned` keeps the tile in the dock when the relevance falls (display 2.3.0):
+    the colony is a thing that stands in the room, not a message that is over.
+    """
+    shell = content(graph, owner)
+    shell["key"] = SHELL_KEY
+    return {
+        "component": "display-pane",
+        "key": WINDOW_KEY,
+        "props": {
+            "pane_id": PANE_ID,
+            "title": str(graph.get("scope") or "/"),
+            "kicker": "colony",
+            "context": CONTEXT,
+            "relevance": RELEVANCE,
+            "pinned": True,
+            "topic": TOPIC,
+            "layer": LAYER,
+            "touched": str(int(snapshot_ms)),
+        },
+        "children": [tile_node(shell["props"]["cells"]), shell],
+    }
+
+
+def now_ms():
+    """The moment of the snapshot, in epoch milliseconds.
+
+    Taken here, at the layout, because the snapshot does not carry one: the
+    colony's graph reply has `scope`, `nodes` and `edges` and nothing else, and the
+    probe hands on exactly those three (`probe.py`, pass 2). The layout runs once
+    per snapshot, so its clock IS the snapshot's moment to within a subprocess.
+    """
+    return int(time.time() * 1000)
+
+
 def main():
     doc = json.load(sys.stdin)
     body = doc.get("body") or {}
@@ -2724,7 +2809,7 @@ def main():
         "view_id": VIEW_ID,
         "region": REGION,
         "kind": "component",
-        "content": content(graph, str(envelope.get("target") or "")),
+        "content": window(graph, str(envelope.get("target") or ""), now_ms()),
         "components": components(),
     }]
 

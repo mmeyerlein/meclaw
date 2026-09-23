@@ -110,12 +110,13 @@ fn the_app_rim_carries_the_withdrawal_beside_the_view() {
 
     let meta = read_json(&root.join("template.json"));
     assert_eq!(
-        meta["version"], "1.9.1",
+        meta["version"], "1.9.2",
         "a lane an app can use and could not before is the second digit \
          (docs/development-rules.md § 4). The number is the LEVEL's, not this \
          lane's: it moved on again with member@1.9.0, which wired the channel \
          whose model answers on its own timeline, and 1.9.1 only pins \
-         `affinity@3.4.0`, the third digit. What this file guards is the \
+         `affinity@3.4.0`, the third digit, as 1.9.2 only names \
+         `display@2.7.0`. What this file guards is the \
          edge below, and that edge has not moved since 1.8.0"
     );
 }

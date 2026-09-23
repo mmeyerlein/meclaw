@@ -35,52 +35,59 @@ It is NOT the owner of identity either. The owner of a view is
 never a field in the body. A body may repeat it, and a body that repeats it
 WRONG is refused rather than believed: that is the whole of `not_owner`.
 
-# The four passes, and why they are cut here
+# The lanes, and the memory between them
 
 The discriminator is the ENVELOPE HEADER, never the shape of the body. A body
 is written by whoever sent it; a header is written by the edge that carried it,
 and the edges of this hive are the only thing that knows where a message has
-already been. Guessing a pass from the body is how a reply gets mistaken for a
+already been. Guessing a lane from the body is how a reply gets mistaken for a
 request, which is how a loop starts.
 
-Pass 1 (`hop.route` is `in_view`, `in_withdraw` or `event`): a REQUEST. The two
-write lanes are validated and turned into ONE store bundle -- a `select` of the
-whole table, then a `delete` of this owner's row for this `view_id`, then (on
-`in_view` only) an `insert` of the new one. The select comes FIRST on purpose:
-it is the before-state, and it is the only chance to see it, because the delete
-is about to remove the row it would have described. The request itself rides
-along as a JSON string on `hop.display_request`, which the hive's own edge
-promotes into `context` -- `hop` survives exactly one edge and pass 2 is one
-edge further on than that.
+Since display@2.7.0 the cell runs `resident` (GH #809): the harness compiles
+this script once and executes it again for every message into ONE globals dict
+(`crates/meclaw-cells/src/code/harness.py`), so what `ram()` holds survives
+from one message to the next -- the curator's state, a mirror of the app rows,
+and the object tree this cell last sent. RAM is a cache and never the truth:
+the truth lies in the store (the app rows plus ONE small rest row) and at
+`web` (the tree), and a killed child draws the same screen out of the two
+again. No header carries the screen any more; `display_request` is a small mark.
 
-Delete-then-insert IS the primary key. A `store` schema declaration carries
-column types and nothing else -- no PRIMARY KEY, no UNIQUE, no index -- so
-`(owner, view_id)` is an identity this cell keeps by hand, in one bundle, in
-that order.
+A request (`in_view`, `in_withdraw`, `in_notice`): validated, then ONE store
+bundle -- a `delete` of this owner's row for this `view_id` and, on a write,
+an `insert` of the new one -- and in the same turn the pass of § 4 over the
+state in memory, ONE `patch` of what changed on the display, and the rest row
+when its content moved. Delete-then-insert IS the primary key. A `store`
+schema declaration carries column types and nothing else -- no PRIMARY KEY, no
+UNIQUE, no index -- so `(owner, view_id)` is an identity this cell keeps by
+hand, in one bundle, in that order.
 
-The third lane is a browser event the `web` cell could not absorb locally. The
-object id it carries is parsed back into the `(owner, view_id)` that produced
-it, and the event leaves the hive with both attached, so a member can route it
-to the one agent that put the view up. If the id does not parse, the event goes
-out ANYWAY without them: a dead letter somebody can read beats a silent drop.
+A browser event the `web` cell could not absorb locally: `tap` and `hold` are
+the screen's own events and run a pass. Anything else has its object id parsed
+back into the `(owner, view_id)` that produced it and leaves the hive with both
+attached, so a member can route it to the one agent that put the view up. If
+the id does not parse, the event goes out ANYWAY without them: a dead letter
+somebody can read beats a silent drop. The clock's strike (`in_tick`) and the
+judge's verdict (`in_verdict`) run a pass each; nothing is read for them.
 
-Pass 2 (`context.display_origin == 'views'`): the store answered. The
-after-state is computed IN MEMORY from the before-state -- minus the row that
-was deleted, plus the row that was inserted -- because a second select would be
-a second round trip for a set this cell already knows. Nothing is dropped
-here: when a view leaves the state is the PASS's decision (step 4, step 12),
-and a leaving window still needs its content to be drawn one last time. This
-pass also carries the state row of the pass before and the ONE event of § 4.1;
-the order a person sees is settled one pass later, out of the state.
+The replies (`context.display_origin`, stamped by the hive's own edges):
+`views` -- the store acknowledged a write (a refused leg is a receipt to the
+app that wrote) or answered the boot select; `read` -- the display's tree,
+asked exactly twice in a life: at the boot and after a refused patch; `patch`
+-- nothing, unless a leg was refused, and then the mirror is dirty and ONE
+read repairs it. No acknowledgement is answered with a message of its own,
+which is what stops the loop (GH #161).
 
-Pass 3 (`context.display_origin == 'read'`): the display answered the query.
-The question that answer settles is "is this page MINE", and there are two ways
-it is not: no page at `/` at all (`query` is refused), or a page whose root is
-somebody else's. BOTH are the bootstrap case. Reading only the refusal is the
-GH #402 defect: `display/web` refs the `web` template, which SEEDS a demo page
-at `/`, so the query succeeds, the vocabulary is never defined, and every
-`object.create` comes back `unknown_component` while the deletes land. The
-bootstrap adopts the page and DELETES NOTHING -- those objects are not this
+The boot. The first message after a start has neither rows nor a tree, so it
+computes nothing: its event is queued, ONE select reads the rows (and the rest
+row), ONE read the tree, and then every queued event runs as its own pass and
+ONE patch draws them. A write that arrives inside that window still goes to
+the store at once. The tree answer settles "is this page MINE", and there are
+two ways it is not: no page at `/` at all (`query` is refused), or a page whose
+root is somebody else's. BOTH are the bootstrap case. Reading only the refusal
+is the GH #402 defect: `display/web` refs the `web` template, which SEEDS a
+demo page at `/`, so the query succeeds, the vocabulary is never defined, and
+every `object.create` comes back `unknown_component` while the deletes land.
+The bootstrap adopts the page and DELETES NOTHING -- those objects are not this
 cell's to remove.
 
 An `object.update` whose props the display already holds is not sent at all
@@ -89,11 +96,6 @@ and a browser's own `object:set` is served by that same actor: a full rewrite
 of an unchanged tree holds it for the length of the rewrite, and anything a
 person did in that window is written late while the rewrite's diffs re-render
 it where it was.
-
-Pass 4 (`context.display_origin == 'patch'`): emit NOTHING. This pass is the
-whole reason the cell needs a discriminator. Without it every acknowledgement
-falls through to "ask again" -- one request becomes two, two become four, and
-the routing loop wedges on a full mailbox inside twenty seconds (GH #161).
 """
 import copy
 import hashlib
@@ -4773,11 +4775,12 @@ SCENE_CLIENT_JS = (
     "  // by the clock: KEEP_MS is above the longest pass measured on a loaded twin\n"
     "  // (1.6-3.4 s, § 4a of the same report) and far below the time a person would\n"
     "  // spend looking at a window that is wrong.\n"
-    "  // GH #765 (way A) did NOT make this redundant, and that was measured rather than\n"
-    "  // argued: way A stops a REFUSED pass from drawing, and the flash that is left\n"
-    "  // comes from a pass that LANDED. In a six-run series without this hold, one of\n"
-    "  // the twenty-two taps that reached the screen was answered first by the pass of\n"
-    "  // the clock's own STROKE -- the order the screen placed itself, coming due --\n"
+    "  // A serial curator does NOT make this redundant (GH #765 in 2.6.0, the resident\n"
+    "  // curator of GH #809 in 2.7.0), and that was measured rather than argued: the\n"
+    "  // flash comes from a pass that ran BEFORE the finger. In a six-run series without\n"
+    "  // this hold (2.6.0), one of the twenty-two taps that reached the screen was\n"
+    "  // answered first by the pass of the clock's own STROKE -- the order the screen\n"
+    "  // placed itself, coming due --\n"
     "  // which started 66 ms before the finger and wrote its row with `rows_affected 1`,\n"
     "  // so its drawing was the truth of that instant, and it rendered the state before\n"
     "  // the tap for 90 ms until the tap's own patch arrived. No order of the writes\n"
@@ -5850,8 +5853,14 @@ VOCAB = hashlib.sha256(
 
 
 def now_ms():
-    """Epoch milliseconds. `updated_at` is an int and never a formatted date."""
-    return int(time.time() * 1000)
+    """Epoch milliseconds. `updated_at` is an int and never a formatted date.
+
+    `_TEST_NOW` is the scenario driver's clock (`compose/scenarios/curator_driver.py`,
+    OR-D10): it sets the name in the resident globals dict before a message. In a colony
+    nobody can reach that dict, so the wall clock is all there is.
+    """
+    held = globals().get("_TEST_NOW")
+    return int(held) if held is not None else int(time.time() * 1000)
 
 
 def tool_call(args, tid):
@@ -6207,25 +6216,20 @@ def pass_request(body, envelope, withdraw):
     if code:
         vid = body.get("view_id")
         return refuse(code, detail, vid if isinstance(vid, str) else "", owner)
-    return write_row(owner, row, withdraw)
+    return accept_row(owner, row, withdraw)
 
 
 def write_row(owner, row, withdraw=False):
     """ONE store bundle that puts `row` up under `(owner, view_id)`, or takes it down.
 
-    The same bundle for a view and for a notice: select the before-state,
-    delete what stood under the name, insert the row -- and the request rides
-    the hop so pass 2 knows what it is looking at.
+    The same bundle for a view and for a notice: delete what stood under the name, then
+    insert the row. No select any more (GH #809): the cell holds the rows in memory
+    (`ram()["rows"]`), so the before-state is already known. The mark on the hop is
+    small and says only whose write this was -- enough for a refused leg to become a
+    receipt to that app, and nothing the screen is drawn from.
     """
     view_id = row["view_id"]
     legs = [
-        # Leg 0 is the before-state, and it has to be read before leg 1 removes
-        # the row it describes. A bundle is not a transaction, but its legs do
-        # run in call order.
-        tool_call(
-            {"operation": "select", "table": TABLE, "columns": COLUMNS},
-            "d-select",
-        ),
         tool_call(
             {
                 "operation": "delete",
@@ -6235,20 +6239,44 @@ def write_row(owner, row, withdraw=False):
             "d-delete",
         ),
     ]
-    request = {"withdraw": withdraw, "owner": owner, "view_id": view_id}
     if not withdraw:
         legs.append(
             tool_call({"operation": "insert", "table": TABLE, "row": row}, "d-insert")
         )
-        request["row"] = row
-
+    mark = {"write": {"owner": owner, "view_id": view_id, "withdraw": bool(withdraw)}}
     return [
         emission(
             "views",
             {"messages": legs},
-            display_request=json.dumps(request, sort_keys=True),
+            display_request=json.dumps(mark, sort_keys=True),
         )
     ]
+
+
+def accept_row(owner, row, withdraw):
+    """A write the door took: the store bundle now, the row in memory, the pass of it.
+
+    The store bundle leaves in this turn whatever phase the cell is in -- even while it
+    is still booting, a write is the app's and belongs in the store at once (plan D1a
+    § 2.2). `define` is the app's vocabulary, and it only travels when it CHANGED: a
+    `component.define` re-renders every route in the display, so an app that ticks once
+    a second and re-sends the same definitions would re-render the whole screen once a
+    second for no difference at all.
+    """
+    r = ram()
+    oid = object_id(owner, row["view_id"])
+    prior = r["rows"].get(oid)
+    ops = write_row(owner, row, withdraw)
+    if withdraw:
+        r["rows"].pop(oid, None)
+        return pass_or_queue({"kind": "app_withdraw", "oid": oid}, now_ms(), ops)
+    r["rows"][oid] = row
+    define = []
+    if prior is None or canon(prior.get("components")) != row["components"]:
+        parsed = json.loads(row["components"])
+        define = parsed if isinstance(parsed, list) else []
+    event = {"kind": "app_write", "oid": oid, "view": hints_of_row(row)}
+    return pass_or_queue(event, int(row["updated_at"]), ops, define)
 
 
 # A channel's failure, translated. The codes are the substrate's public error_code
@@ -6310,7 +6338,7 @@ def pass_notice(body, envelope, hop):
     if code:
         vid = body.get("view_id")
         return refuse(code, detail, vid if isinstance(vid, str) else "", owner)
-    return write_row(owner, row)
+    return accept_row(owner, row, False)
 
 
 def parse_object_id(oid):
@@ -6360,20 +6388,6 @@ def event_object_id(event):
     return None
 
 
-def absorb(mark):
-    """A read pass without a write, carrying one mark: the tick's own shape.
-
-    Not a store bundle (OR-F6): nothing is written, the table is only read
-    again, and the mark rides on the request the way `struck` does. That is
-    what makes an absorbed gesture cost one round trip and no row.
-    """
-    legs = [tool_call({"operation": "select", "table": TABLE, "columns": COLUMNS}, "d-select")]
-    request = {"tick": True}
-    request.update(mark)
-    return [emission("views", {"messages": legs},
-                     display_request=json.dumps(request, sort_keys=True))]
-
-
 def pass_tap(event):
     """A finger on a tile (\u00a7 5.6). The value carries the id of its window."""
     value = event.get("value")
@@ -6384,7 +6398,7 @@ def pass_tap(event):
         # defect with it.
         sys.stderr.write("%s: the value carries no object id\n" % TAP_EVENT)
         return []
-    return absorb({"tap": wrapper_of(oid)})
+    return pass_or_queue({"kind": "tap", "for": wrapper_of(oid)}, now_ms(), [])
 
 
 def pass_hold(event):
@@ -6396,7 +6410,7 @@ def pass_hold(event):
     window that is, is the SCREEN's knowledge: the curator picks the one with
     `topic: chat` (\u00a7 8.5). A `topic` a client sends with the hold is not read (S-088).
     """
-    return absorb({"hold": True})
+    return pass_or_queue({"kind": "hold"}, now_ms(), [])
 
 
 def pass_event(body):
@@ -6441,7 +6455,7 @@ def pass_event(body):
 
 
 # ---------------------------------------------------------------------------
-# Pass 2: the store answered
+# The store's rows and the display's tree, as this cell reads them
 
 
 def bundle_failed(body, hop):
@@ -6471,214 +6485,6 @@ def read_rows(body):
     if not isinstance(doc, list):
         return None
     return [r for r in doc if isinstance(r, dict)]
-
-
-def rows_affected_of(body, hop, operation):
-    """How many rows the leg of `operation` moved, or None when nothing says so.
-
-    A bundle of several legs answers per leg in `results[]`, a single-op reply carries
-    the same number on the hop (`crates/meclaw-cells/src/store/output.rs`). The state
-    write is one leg, so it is normally the hop -- but the body is asked first, because
-    a reply that does carry `results[]` is the more precise of the two.
-    """
-    for entry in body.get("results") or []:
-        if isinstance(entry, dict) and str(entry.get("operation") or "") == operation:
-            return int_or_none(entry.get("rows_affected"))
-    if str(hop.get("operation") or "") == operation:
-        return int_or_none(hop.get("rows_affected"))
-    return None
-
-
-def int_or_none(value):
-    """`value` as an int, or None when it is not one. `0` is a value, not a miss."""
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def patch_ops(request):
-    """The drawing the pass handed to its own state write, now that the row has landed.
-
-    GH #765, way A (the owner's ruling, 19.09.): a patch says what the screen IS, so it
-    may not leave before the store has agreed. The calls are the ones the pass computed --
-    nothing is recomputed here, because the reply carries no state to compute from.
-    """
-    calls = request.get("patch")
-    if not isinstance(calls, list) or not calls:
-        return []
-    return [emission("patch",
-                     {"messages": [tool_call(c, "d-%d" % i) for i, c in enumerate(calls)]})]
-
-
-def row_landed(body, hop):
-    """Did the store SAY the state row is this pass's now? Read, never assumed.
-
-    Both spellings of `state_write_ops` are recognised on their own leg and nothing else
-    is: the compare-and-set `update` of every later pass, and the `insert` of the birth
-    bundle, which has no version to compare against and therefore cannot be refused. A
-    reply that names neither leg -- truncated, cut short, shaped in a way this cell does
-    not know -- has said nothing about the row, and under GH #765 (way A) "nothing said"
-    is "not landed": a patch says what the screen IS, so it may not leave on an answer
-    nobody could read. The pass runs again instead, which is what a refusal does anyway
-    and costs the one round trip way A already pays.
-
-    The polarity is the whole of way A, so it is written positively here. The first cut
-    of the strand asked `rows_affected_of(...) != 0`, and `rows_affected_of` answers
-    `None` when neither `results[]` nor the hop names the leg -- `None != 0` is true, so
-    every unreadable reply drew. `bundle_failed` does not catch those: it reads
-    `error_code`, and an answer with no countable row carries none.
-
-    Exactly one row: the write names one identity (`owner`, `view_id`) and its version, so
-    the store's own count is 1 or it is a refusal. A reply of 2 means the table holds two
-    state rows, which is the very thing the birth bundle exists to prevent -- and then the
-    pass repeats until `STATE_RETRY_MAX` and tells the application, instead of drawing a
-    screen out of a table nobody can read back.
-    """
-    for operation in ("update", "insert"):
-        moved = rows_affected_of(body, hop, operation)
-        if moved is not None:
-            return moved == 1
-    return False
-
-
-def state_write_again(request, body, hop):
-    """The answer to a state write: the pass's drawing, or this very pass once more.
-
-    Two halves, and they are the whole of what a reply to the state row means.
-
-    The row LANDED (GH #765, way A): the state this pass computed is now the screen's, so
-    its patch goes out -- and not one message earlier. Before way A the patch travelled
-    with the write, so a pass whose write was refused had already drawn a state that never
-    became the screen's; 190 of 401 writes measured on the twin were refused
-    (`plans/welle-h3-2026-09-18/berichte/taps-report.md` § 21), and the flicker the owner
-    saw was those drawings being taken back by the next pass. The price is one round trip
-    of latency per event, and it is the trade way A makes on purpose.
-
-    The row did NOT land (GH #744): the compare-and-set of `state_write_ops` refuses a
-    write whose row has moved on since the pass read it -- or the reply never said the row
-    landed at all (`row_landed`), which counts the same way and for the same reason. That
-    refusal is not an error: it means another event's pass landed in between, and the
-    answer is to run THIS pass again on the row the store now holds -- and to draw NOTHING, because what this pass rendered
-    was never the screen. The mark it started from rides the request, so no memory in the
-    cell is needed -- and a repeat is an `absorb`, so it writes nothing of its own (OR-F6).
-
-    The count is capped (`STATE_RETRY_MAX`), and the cap is a guard against a loop rather
-    than a budget for contention -- the comment on the constant has the measurement. When
-    it is reached the event IS lost, so the refusal names the view it belonged to: an
-    application whose write was dropped has to be able to hear it, and a receipt with an
-    empty `owner` fails every owner guard by construction and dead-letters where nobody
-    reads it (fourteen of them were measured on the twin). A mark with no owner -- a tap,
-    a hold, a verdict, a stroke -- still leaves the two keys empty, because there is
-    nobody to tell.
-    """
-    why = bundle_failed(body, hop)
-    if not why and row_landed(body, hop):
-        return patch_ops(request)
-    mark = request.get("retry")
-    if not isinstance(mark, dict):
-        return []
-    if why:
-        # A refused leg is not a collision: repeating it would repeat the refusal three
-        # times over. The state row stands as the pass before left it, and that is worth
-        # saying once.
-        sys.stderr.write("compose: the state write failed: %s\n" % (why,))
-        return refuse("store_failed", "the state write failed: %s" % (why,), "", "")
-    tries = int_or_none(mark.get(STATE_RETRIES)) or 0
-    if tries >= STATE_RETRY_MAX:
-        event = event_of_request(dict(mark, tick=True)) or {}
-        detail = ("the state row moved under %d repeats of one pass; its event (%s) was "
-                  "not applied" % (STATE_RETRY_MAX, event.get("kind") or "?"))
-        sys.stderr.write("compose: %s\n" % (detail,))
-        return refuse("store_failed", detail,
-                      str(mark.get("view_id") or ""), str(mark.get("owner") or ""))
-    again = dict(mark)
-    again[STATE_RETRIES] = tries + 1
-    return absorb(again)
-
-
-def pass_views(body, ctx, hop):
-    """The store's answer: the rows, the state row, and the ONE event of this pass."""
-    try:
-        request = json.loads(str(ctx.get("display_request") or ""))
-    except (TypeError, ValueError):
-        request = None
-    if not isinstance(request, dict):
-        return []
-    # The reply to the state write starts no new pass (OR-H2): a pass out of it would be
-    # an endless round, and the row it wrote is the one this cell just computed. What it
-    # does carry is the drawing of that very pass (GH #765, way A) -- or, when the write
-    # was refused, the repeat of GH #744 and no drawing at all.
-    if request.get("state"):
-        return state_write_again(request, body, hop)
-
-    owner = str(request.get("owner") or "")
-    view_id = str(request.get("view_id") or "")
-    row = request.get("row") if isinstance(request.get("row"), dict) else None
-
-    why = bundle_failed(body, hop)
-    if why:
-        return refuse("store_failed", why, view_id, owner)
-
-    before = read_rows(body)
-    if before is None:
-        return refuse(
-            "store_failed", "the store's reply carried no rows for leg 0", view_id, owner
-        )
-
-    held = None
-    prior = None
-    after = []
-    for old in before:
-        if is_state_row(old):
-            held = old
-            continue
-        if str(old.get("owner") or "") == owner and str(old.get("view_id") or "") == view_id:
-            prior = old
-            continue
-        after.append(old)
-    if row is not None:
-        after.append(row)
-
-    now = now_ms()
-    # No `ttl_ms` filter here any more: the pass decides when a view leaves the state
-    # (step 4, step 12), and a leaving window still needs its content to be drawn one
-    # last time. The store holds the row until the app withdraws it.
-    # A deterministic order for the plan, and nothing more: what a person SEES is the
-    # pass's word (`canvas_order`, `dock_order`), so the `ord` a sender asked for is not
-    # read here any more (§ 2 Seat: "Not the first-appearance order of views (`ord`)").
-    after.sort(
-        key=lambda r: (
-            REGION_INDEX.get(str(r.get("region") or REGIONS[0]), 0),
-            str(r.get("owner") or ""),
-            str(r.get("view_id") or ""),
-        )
-    )
-
-    # The vocabulary only travels when it CHANGED. A `component.define`
-    # re-renders every route in the display, so an app that ticks once a second
-    # and re-sends the same definitions would re-render the whole screen once a
-    # second for no difference at all.
-    define = []
-    if row is not None:
-        if prior is None or canon(prior.get("components")) != row["components"]:
-            parsed = json.loads(row["components"])
-            define = parsed if isinstance(parsed, list) else []
-
-    # The mark travels on: pass 3 writes the state row under a condition, and a write
-    # that does not land has to be able to run THIS pass again (GH #744). It is the
-    # request itself, because that is exactly what `absorb` needs back.
-    plan = {"views": after, "define": define, "now": now, "state": held,
-            "event": event_of_request(request), "mark": request}
-    if request.get("struck"):
-        plan["struck"] = str(request["struck"])
-    return [
-        emission(
-            "read",
-            {"messages": [tool_call({"op": "query", "route": PAGE_ROUTE}, "d-query")]},
-            display_views=json.dumps(plan, sort_keys=True),
-        )
-    ]
 
 
 def read_objects(body):
@@ -6874,34 +6680,224 @@ def as_unit(value, default):
 
 
 # ---------------------------------------------------------------------------
-# The state row (display-hive.md § 3.1, OR-H2)
+# The memory of the cell (GH #809)
 #
-# ONE screen state per member, and it lies in the store `views`, as one row beside the
-# app rows -- not on the display's objects. What the display holds is a RENDERING of
-# that state; a rendering is never the memory, because then every output would carry a
-# memory of its own (§ 3.1).
+# `resident` runs this module again for EVERY message into one globals dict, so every
+# assignment on module level is made again each time -- the memory must not be one. It
+# lives under one name that nothing on module level assigns (`_RAM`), reached only through
+# `ram()`, and a version guard: a dict of another shape is dropped rather than read.
+#
+# RAM is a cache (docs/cell-types.md § code): what it holds is rebuilt from the store's
+# rows, the rest row and the tree `web` holds whenever the child is new -- after a start,
+# a kill, a timeout, a replaced node. That rebuild is the boot below, and it costs ONE
+# select and ONE read.
+
+RAM_V = 1
+# How long a repair read may stay unanswered before the next event asks again. Its answer
+# comes back in milliseconds (a 540 kB tree read in 8 ms, wave Display integration pass);
+# one that has not come after five seconds died on the way -- its chain ran out of ttl or
+# the child was killed under it -- and without a second question the cell would wait in
+# `repair` for good and draw nothing ever again.
+REPAIR_RETRY_MS = 5000
+
+
+def ram():
+    """The cell's memory across messages. `resident` re-executes this module per message into
+    ONE globals dict (crates/meclaw-cells/src/code/harness.py), so the dict survives only when
+    nothing on module level re-assigns it. Killed child = fresh dict = phase "cold".
+
+    `phase`: cold | booting-rows | booting-tree | live | repair. `pending`: the events that
+    arrived before the boot finished, `(at, event)` in order. `state`: the curator's state.
+    `rows`: `{oid: row}`, exactly the store rows of the applications. `have`: the tree this
+    cell last sent (`read_objects` form), None while unknown. `rest`: the rest row's content
+    as last written. `said`: what the pass before said out loud. `dials`: the knobs the state
+    was last given. `define`: application vocabulary not yet sent to the display. `seen`: the
+    windows whose queued writes left before the running boot select (a retry after a failed
+    one), so the select already reads them. `due`: the clock's order this cell last gave,
+    None until it gave one. `asked`: when the repair read left (REPAIR_RETRY_MS).
+    `repaired`: the patch a repair drew is still unanswered -- its refusal is not a mirror
+    fault, and one read cannot cure it.
+    """
+    held = globals().get("_RAM")
+    if isinstance(held, dict) and held.get("v") == RAM_V:
+        return held
+    held = {"v": RAM_V, "phase": "cold", "pending": [], "state": None, "rows": {},
+            "have": None, "rest": None, "said": [], "dials": None, "define": [], "seen": [], "due": None,
+            "asked": None, "repaired": False}
+    globals()["_RAM"] = held
+    return held
+
+
+def select_rows(mark):
+    """ONE bundle that reads the whole table: the boot, and nothing else asks for it."""
+    legs = [tool_call({"operation": "select", "table": TABLE, "columns": COLUMNS}, "d-select")]
+    return emission("views", {"messages": legs}, display_request=json.dumps(mark, sort_keys=True))
+
+
+def read_tree(mark):
+    """ONE query of the display's tree: at the boot and after a refused patch (OR-D7)."""
+    return emission("read", {"messages": [tool_call({"op": "query", "route": PAGE_ROUTE},
+                                                    "d-query")]},
+                    display_request=json.dumps(mark, sort_keys=True))
+
+
+def pass_or_queue(event, now, ops, define=None):
+    """The ONE event of § 4.1 reached the cell: run its pass, or keep it for the boot.
+
+    `ops` is what has to leave in this turn anyway (a write's store bundle). A cold cell
+    has no rows and no tree, so the first event queues and starts the boot (§ 2.2); while
+    it boots, events queue behind it. A live cell -- or one repairing its mirror -- runs
+    the pass now and renders; a pass the model does not run (§ 4.1: nothing else triggers
+    one) renders nothing.
+    """
+    r = ram()
+    r["define"] += list(define or [])
+    if r["phase"] == "cold":
+        # The select goes out BEFORE this write's bundle: the store serves one sender in
+        # order, so it reads the rows as they stood before the restart, and the queued
+        # write is then a real pass over the real prior state. Were it after the write, the
+        # boot would read the NEW row and lose what the curator remembered of that window
+        # (since, dismissed_at, verdict, kept hints): measured 0/112 equal screens for a
+        # killed cell woken by the same write, 58/112 with a new `touched` (REBUILD-WRITE).
+        # Writes queued before a select that failed are in the store already; only those
+        # the boot leaves out of the replay (`seen`).
+        r["seen"] = sorted(set(str(ev.get("oid") or "") for _, ev in r["pending"]
+                               if ev.get("kind") in ("app_write", "app_withdraw")))
+        r["pending"].append((now, event))
+        r["phase"] = "booting-rows"
+        return [select_rows({"boot": "rows"})] + ops
+    if r["phase"] in ("booting-rows", "booting-tree"):
+        r["pending"].append((now, event))
+        return ops
+    if r["phase"] == "repair" and now - int(r.get("asked") or 0) >= REPAIR_RETRY_MS:
+        r["asked"] = now
+        ops = ops + [read_tree({"repair": True})]
+    said = advance(event, now)
+    if said is None:
+        return ops
+    return with_rest(ops + said + render(now, str(event.get("struck") or "")), now)
+
+
+def advance(event, now):
+    """One pass of § 4 over the state in memory. None when the model did not run it.
+
+    What the pass says out loud (refusals, errors) and the question to the judge leave
+    per pass: a boot runs several passes in one turn, and each one is its own event.
+    The dials are the member's params and come with every message; when they differ from
+    the ones the state was given, the RAW values face the door of § 4.7 again, which
+    normalises them in the next pass and says once what it would not take.
+    """
+    r = ram()
+    dials = [copy.deepcopy(KNOB_SETTINGS), copy.deepcopy(KNOB_SCREENS)]
+    if r["dials"] != dials:
+        if r["dials"] is not None:
+            settings = dict(DEFAULT_SETTINGS)
+            settings.update(KNOB_SETTINGS)
+            r["state"]["settings"] = settings
+            r["state"]["screens"] = copy.deepcopy(KNOB_SCREENS)
+        r["dials"] = dials
+    state = run_pass(r["state"], event, now)             # § 4, verbatim
+    r["state"] = state
+    if not state["pass"].get("runs"):
+        return None
+    spoken = spoken_of(state)
+    out = refusals_of(state, spoken, r["said"])
+    r["said"] = spoken
+    if state["judge"]["called"]:
+        out += judge_ops_from_state(state, now)
+    return out
+
+
+def sorted_rows(rows):
+    """The app rows in one deterministic order. What a person SEES is the pass's word
+    (`canvas_order`, `dock_order`), so this order decides nothing on the screen."""
+    return sorted(rows.values(), key=lambda x: (
+        REGION_INDEX.get(str(x.get("region") or REGIONS[0]), 0),
+        str(x.get("owner") or ""), str(x.get("view_id") or "")))
+
+
+def draw(r, now, struck):
+    """The tree the state in memory says the screen is: `(want, pages, due ops)`.
+
+    The order the clock holds is the one this cell last gave (`due`), not the one the
+    mirror names: a refused patch leaves the display on an older order while the clock
+    already took the newer one, and during a repair there is no mirror at all. Read off
+    the mirror, the repair took an order back twice and left the refused pass's order
+    standing -- a stroke for nothing (REPAIR "the clock through a repair"). Only a fresh
+    cell, which gave no order yet, reads it off the tree.
+    """
+    state = r["state"]
+    have = r["have"] if r["have"] is not None else {}
+    default = str(state["settings"].get("default_screen") or "")
+    want = objects_from_state(state, sorted_rows(r["rows"]), now, default, have)
+    clock = have if r.get("due") is None else {ROOT_ID: {"props": {"due": r["due"]}}}
+    ops = due_ops_from_strokes(state, want, clock, now, struck)
+    r["due"] = str(want[ROOT_ID]["props"].get("due") or "")
+    pages = mirror_screens(state, want, now)
+    return want, pages, ops
+
+
+def row_components(rows):
+    """The vocabulary of every app row (OR-D8): what a fresh display has to learn."""
+    out = []
+    for row in sorted_rows(rows):
+        try:
+            parsed = json.loads(str(row.get("components") or "[]"))
+        except (TypeError, ValueError):
+            continue
+        out += [c for c in parsed if isinstance(c, dict)] if isinstance(parsed, list) else []
+    return out
+
+
+def snapshot(want):
+    """What the display holds once a patch of `want` has landed, in `read_objects` form.
+
+    The mirror the next pass diffs against: a pass whose drawing did not change sends
+    nothing, and a pass that changed one window sends that window (GH #412).
+    """
+    return {oid: {"props": copy.deepcopy(spec["props"]), "parent": spec["parent"],
+                  "ord": spec["ord"], "component": spec["component"]}
+            for oid, spec in want.items()}
+
+
+def render(now, struck="", bootstrap=False, everything=False):
+    """ONE patch of what changed since the last one, and the timer's order.
+
+    Only a live cell draws: while the mirror is being repaired (OR-D7) the passes run on
+    and the patch waits for the tree. `define` is the app vocabulary still owed to the
+    display -- all of it on a bootstrap and after a repair (OR-D8), otherwise what changed.
+    """
+    r = ram()
+    have = r["have"] if r["have"] is not None else {}
+    want, pages, ops = draw(r, now, struck)
+    define = row_components(r["rows"]) if (bootstrap or everything) else list(r["define"])
+    calls = patches(want, have, define, bootstrap) + page_ops(want, have, pages, bootstrap)
+    if calls and r["phase"] == "live":
+        ops.append(emission("patch", {"messages": [tool_call(c, "d-%d" % i)
+                                                   for i, c in enumerate(calls)]}))
+        r["have"] = snapshot(want)
+        r["define"] = []
+    return ops
+
+
+# ---------------------------------------------------------------------------
+# The rest row (OR-D3, OR-D4, OR-D22)
+#
+# The store holds what the apps said; the curator's own memory of them is what cannot be
+# read back out of those rows: when a window was touched, put away, led; what the judge
+# said and when it was last asked; what the screen already said out loud. That is ONE
+# small row beside the app rows, written only when its content changes. Everything else
+# of the state -- presence, rungs, levels, the dock, `unseen`, the chat's last turn --
+# every pass computes anew.
 
 STATE_OWNER = "display"
+# The row of display@2.5.0-2.6.x. Not written any more and never deleted: a boot ignores
+# it (`is_state_row`), and a fresh store never has one.
 STATE_VIEW_ID = "screen-state"
 STATE_KIND = "state"
-# Everything of the state that survives a pass; `pass` is what THIS pass saw and dies
-# with it. `settings` and `screens` are in the row because the door normalises them IN
-# the state (§ 4.7): a value it replaced is refused "once, in the pass that replaces
-# it", and a pass that started from the raw dials again would refuse it in every pass.
-STATE_KEYS = ("settings", "screens", "views", "bar", "weights", "chat", "unseen",
-              "strokes", "dock_order", "judge")
-# What the dials SAID when the row was written. When they say something else, the raw
-# values enter the state again and the door speaks again -- which is how a member who
-# changes a setting learns that the screen would not take it.
-STATE_DIALS = "dials"
-# What the pass before SAID out loud. § 4.7 keeps `display_type missing` and an unknown
-# `default_screen` in the state of every pass (`state["pass"]["errors"]`), and that stays
-# true -- but a receipt is a MESSAGE, and one misconfigured profile would otherwise send
-# one per pass, for ever, to nobody (a screen refusal has no owner). So the emission is
-# once per value: what stood here last pass is not said again.
-STATE_SAID = "said"
-
-_LAST_STATE = None
+REST_OWNER = STATE_OWNER
+REST_VIEW_ID = "screen-rest"
+REST_CURATOR = ("since", "dismissed_at", "led_until", "verdict_cleared", "topic_dupe")
 
 
 def is_state_row(row):
@@ -6911,56 +6907,150 @@ def is_state_row(row):
             and str(row.get("view_id") or "") == STATE_VIEW_ID)
 
 
-def state_from_row(held_row, settings, screens):
-    """The `state` of the reference model out of the state row of the pass before.
+def is_rest_row(row):
+    return (isinstance(row, dict)
+            and str(row.get("owner") or "") == REST_OWNER
+            and str(row.get("view_id") or "") == REST_VIEW_ID)
 
-    A view enters the state only through the event `app_write` of its own pass (§ 4.8 a),
-    so a store row this row does not know yet is not made up here: the store holds what
-    an app wrote, the state holds what the curator computed about it.
+
+# What a view of the model holds beside its hints: the curator's own values and the
+# bookkeeping of the door. Everything else is a hint an application wrote.
+NOT_HINTS = ("children", "curator", "verdict", "owner", "ttl_ms", "written_at", "withdrawn")
+
+
+def kept_of(view, row):
+    """The hints the model still holds that the view's last row no longer says.
+
+    § 4.6 merges a write per key (Decision 16.09. 5: a key left out stands), while the
+    store holds the last write whole. A write that leaves a hint out therefore leaves the
+    model with more than any row says, and a rebuild out of the rows alone would lose it
+    -- measured: 44 of 114 scenarios rebuilt a different screen without it (OR-D.D1.4).
+    An application that always sends its whole view keeps this empty.
     """
-    held = {}
-    if isinstance(held_row, dict):
-        try:
-            held = json.loads(str(held_row.get("content") or "{}"))
-        except (TypeError, ValueError):
-            held = {}
-    if not isinstance(held, dict):
-        held = {}
-    state = empty_state(settings, screens)
-    same_dials = held.get(STATE_DIALS) == {"settings": settings, "screens": screens}
-    for key in STATE_KEYS:
-        if key not in held:
-            continue
-        if key in ("settings", "screens") and not same_dials:
-            continue                      # the dials changed: the raw values face the door
-        state[key] = copy.deepcopy(held[key])
-    return state
+    said = hints_of_row(row)
+    kept = {k: v for k, v in view.items() if k not in NOT_HINTS and k not in said}
+    kids = view.get("children") or {}
+    gone = {k: v for k, v in kids.items() if k not in (said.get("children") or {})}
+    return kept, gone
 
 
-def state_row_content(state, settings, screens, said):
-    out = {key: state[key] for key in STATE_KEYS}
-    out[STATE_DIALS] = {"settings": settings, "screens": screens}
-    out[STATE_SAID] = said
-    return json.dumps(out, sort_keys=True)
+def rest_content(state, said, rows=None):
+    """The rest row's content: the curator memory no app row carries.
+
+    Two cuts against the plan's first form, both so that a stroke alone writes nothing
+    (#809 acceptance: the row is written on app writes, and only when it changes):
+    `judge.called` is left out (OR-D22) -- `step1_judge_call` sets it anew in every pass,
+    True only in the pass that asks, so the first stroke after every question would
+    rewrite the row -- and `said` keeps only the ERRORS, the words § 4.7 repeats in every
+    pass. A refusal is said once, in the pass that replaces the value, so it would flip
+    the list on the very next stroke; after a restart the raw dials face the door again
+    and say it once more, which is the same thing a changed dial does (OR-D.D1.3).
+    """
+    views = {}
+    for oid, v in state["views"].items():
+        c = v["curator"]
+        views[oid] = {"since": c.get("since"), "dismissed_at": c.get("dismissed_at") or 0,
+                      "led_until": c.get("led_until") or 0,
+                      "verdict_cleared": bool(c.get("verdict_cleared")),
+                      "topic_dupe": bool(c.get("topic_dupe")),
+                      "verdict": v.get("verdict"), "withdrawn": bool(v.get("withdrawn"))}
+        row = (rows or {}).get(oid)
+        if row is not None:
+            kept, kids = kept_of(v, row)
+            if kept:
+                views[oid]["kept"] = kept
+            if kids:
+                views[oid]["kept_children"] = kids
+    judge = {k: v for k, v in state["judge"].items() if k != "called"}
+    errors = [list(row) for row in said or [] if row and row[0] == "error"]
+    return json.dumps({"v": 1, "judge": judge, "bar": state["bar"],
+                       "weights": state["weights"], "said": errors, "views": views},
+                      sort_keys=True)
 
 
-def state_row(state, now, settings, screens, said):
-    return {"owner": STATE_OWNER, "view_id": STATE_VIEW_ID, "region": REGIONS[0], "ord": 0,
-            "kind": STATE_KIND,
-            "content": state_row_content(state, settings, screens, said),
-            "components": "[]", "ttl_ms": 0, "updated_at": now}
+def restore_rest(state, text):
+    """Put the rest row's memory back into a state rebuilt from the app rows.
 
-
-def said_before(held_row):
-    """What the pass before said out loud, as comparable rows."""
-    if not isinstance(held_row, dict):
-        return []
+    A window the rows did not bring back is not made up here: the rows are the truth
+    about what exists, the rest row only about what the curator knew of it.
+    """
+    if not text:
+        return
     try:
-        held = json.loads(str(held_row.get("content") or "{}"))
+        doc = json.loads(text)
     except (TypeError, ValueError):
-        return []
-    spoken = held.get(STATE_SAID) if isinstance(held, dict) else None
-    return [list(row) for row in spoken] if isinstance(spoken, list) else []
+        doc = None
+    if not isinstance(doc, dict):
+        sys.stderr.write("compose: the rest row is unreadable and was ignored\n")
+        return
+    for oid, held in (doc.get("views") or {}).items():
+        view = state["views"].get(oid)
+        if view is None or not isinstance(held, dict):
+            continue
+        for key in REST_CURATOR:
+            if key in held:
+                view["curator"][key] = held[key]
+        if isinstance(held.get("verdict"), dict):
+            view["verdict"] = copy.deepcopy(held["verdict"])
+        if "withdrawn" in held:
+            view["withdrawn"] = bool(held["withdrawn"])
+        for key, value in (held.get("kept") or {}).items():
+            if key not in NOT_HINTS:
+                view[key] = copy.deepcopy(value)
+        if held.get("kept_children"):
+            view["children"] = dict(view.get("children") or {})
+            view["children"].update(copy.deepcopy(held["kept_children"]))
+    if isinstance(doc.get("judge"), dict):
+        judge = copy.deepcopy(doc["judge"])
+        judge["called"] = False
+        state["judge"] = judge
+    if "bar" in doc:
+        state["bar"] = doc["bar"]
+    if isinstance(doc.get("weights"), dict):
+        state["weights"] = copy.deepcopy(doc["weights"])
+    said = doc.get("said")
+    ram()["said"] = [list(row) for row in said] if isinstance(said, list) else []
+
+
+def rest_legs(content, now):
+    row = {"owner": REST_OWNER, "view_id": REST_VIEW_ID, "region": REGIONS[0], "ord": 0,
+           "kind": STATE_KIND, "content": content, "components": "[]", "ttl_ms": 0,
+           "updated_at": now}
+    return [tool_call({"operation": "delete", "table": TABLE,
+                       "where": {"owner": REST_OWNER, "view_id": REST_VIEW_ID}}, "r-delete"),
+            tool_call({"operation": "insert", "table": TABLE, "row": row}, "r-insert")]
+
+
+def with_rest(ops, now):
+    """`ops`, plus the rest row when its content changed (OR-D4).
+
+    Two more legs IN the store bundle of the app write that caused them -- one bundle, one
+    round trip -- or, when this turn wrote nothing (a tap, a verdict, a stroke), a bundle
+    of their own.
+    """
+    r = ram()
+    if r["state"] is None:
+        return ops
+    content = rest_content(r["state"], r["said"], r["rows"])
+    if content == r["rest"]:
+        return ops
+    r["rest"] = content
+    legs = rest_legs(content, now)
+    for em in ops:
+        head = em.get("header") or {}
+        if head.get("route") != "views":
+            continue
+        try:
+            mark = json.loads(str(head.get("display_request") or ""))
+        except (TypeError, ValueError):
+            continue
+        if isinstance(mark, dict) and "write" in mark:
+            em["messages"] = list(em.get("messages") or []) + legs
+            mark["rest"] = True
+            head["display_request"] = json.dumps(mark, sort_keys=True)
+            return ops
+    return ops + [emission("views", {"messages": legs},
+                           display_request=json.dumps({"rest": True}, sort_keys=True))]
 
 
 def spoken_of(state):
@@ -6971,127 +7061,188 @@ def spoken_of(state):
                for entry in state["pass"].get("errors") or []])
 
 
-# How often one pass may be run again after a lost compare-and-set, and the key the
-# count rides under.
-#
-# The number is a guard against a pathological writer, NOT a budget for ordinary
-# contention -- and it took a measurement to see the difference. A repeat always makes
-# progress: every round has exactly ONE winner, so the field of contenders shrinks by one
-# each time and a set of N passes that started together needs at most N-1 repeats for its
-# last member. The bound is therefore the FAN-OUT of the hive -- every application that
-# writes in one breath -- and not a constant somebody picks.
-#
-# Three was picked from the taps of one hand
-# (`plans/welle-h3-2026-09-18/messungen/B-klickserie.md` § 3) and is far too small for a
-# screen full of applications. Measured on the twin over 39 minutes of the acceptance
-# runs, 401 state writes read back with the store's `rows_affected` beside each one
-# (`plans/welle-h3-2026-09-18/berichte/taps-report.md` § 21): seven applications wrote in
-# the same breath, 190 of the 401 writes were refused and repeated, and FOURTEEN passes
-# ran out of repeats and lost their event -- `app_write` on the chat and on the cards, in
-# exactly the windows where the screen flickered.
-#
-# Sixteen is more than twice the measured fan-out and still a hard stop: a writer that
-# keeps a pass from landing sixteen times in a row is not a screen full of applications
-# any more, it is a loop, and this cell says so instead of joining it.
-STATE_RETRY_MAX = 16
-STATE_RETRIES = "retries"
+# ---------------------------------------------------------------------------
+# The replies: the store, the display
 
 
-def state_write_ops(state, now, settings, screens, said, held=None, mark=None, patch=None):
-    """The second store bundle of a read pass: the state row, written under a condition.
+def failed_legs(body, hop):
+    """`[(tool_call_id, why)]` of every refused leg; the id is "" for a whole refusal."""
+    if hop.get("error_code"):
+        return [("", str(hop["error_code"]))]
+    return [(str(e.get("tool_call_id") or ""),
+             "%s on %s" % (e["error_code"], e.get("operation") or "?"))
+            for e in body.get("results") or []
+            if isinstance(e, dict) and e.get("error_code")]
 
-    Since GH #765 (way A) it carries the pass's whole drawing as well: `patch` is the list
-    of `object.*` calls the pass computed, and it travels on the request so the REPLY can
-    send it once the store has said the row landed. There is nowhere else to keep it -- the
-    cell has no memory between two messages -- and recomputing it on the reply would mean a
-    second pass over a state nobody read back.
 
-    A compare-and-set, and not the blind `delete` + `insert` this used to be (GH #744).
-    Every event starts a read pass of its own and this cell has no memory between two
-    messages (`crates/meclaw-cells/src/code/harness.rs`: warm == cold), so its whole
-    memory is this one row -- and between the `select` that read it and the write that
-    replaces it lies a full message round trip. Anything that starts its own pass inside
-    that window computes on the row this pass read and then overwrites what this pass
-    concluded.
-
-    Measured on the twin (`plans/welle-h3-2026-09-18/messungen/B-klickserie.md` § 3): two
-    tap passes 36 ms apart both took the OPEN branch, so ten taps on one tile ended with
-    the window open where § 5.8/S-024 says an even count ends put away; and three
-    `app_write` passes 18-46 ms after a tap pass carried the state from before the tap.
-
-    So the write names the version it read (`where updated_at = <the one the pass got>`)
-    and the store answers how many rows that moved. Zero means somebody wrote in between,
-    and `pass_views` runs this pass again on what the store now holds -- for which the
-    pass's own mark rides along (`retry`), because there is nowhere else to keep it.
-
-    The first creation has no version to compare against, and it stays the two-leg bundle
-    it always was: `delete` on `(owner, view_id)` then `insert`. The table declares no
-    PRIMARY KEY and no UNIQUE -- a store schema carries column types and nothing else
-    (`templates/display/views/config.json`, `not_in_scope`) -- so that pair IS the identity,
-    and it is held by writing it in one message, in that order. A bare `insert` would let
-    two passes that both found no row leave TWO state rows behind, and the second of them
-    would never again satisfy any `where updated_at`: the screen has no broom for its own
-    table. At a colony's boot, several apps writing at once is the normal case, not the
-    rare one (`B-klickserie.md` § 3 measured three passes 18-46 ms apart).
-    """
-    prev = held.get("updated_at") if isinstance(held, dict) else None
+def pass_views(body, ctx, hop):
+    """The store answered: the boot's rows, or the acknowledgement of a write."""
     try:
-        prev = int(prev)
+        request = json.loads(str(ctx.get("display_request") or ""))
     except (TypeError, ValueError):
-        prev = None
-    # The row is the VERSION, so the stamp has to move even when two passes land inside
-    # one millisecond -- otherwise two different rows could carry the same `updated_at`
-    # and a third pass's condition would hold against the wrong one.
-    stamp = now if prev is None or now > prev else prev + 1
-    row = state_row(state, stamp, settings, screens, said)
-    request = {"state": True}
-    if isinstance(mark, dict):
-        request["retry"] = mark
-    if patch:
-        request["patch"] = list(patch)
-    if prev is None:
-        legs = [tool_call({"operation": "delete", "table": TABLE,
-                           "where": {"owner": STATE_OWNER, "view_id": STATE_VIEW_ID}},
-                          "s-delete"),
-                tool_call({"operation": "insert", "table": TABLE, "row": row}, "s-insert")]
-    else:
-        # Every column but the identity: an update that wrote only `content` would leave
-        # a row half from this pass and half from the one before it.
-        legs = [tool_call({"operation": "update", "table": TABLE,
-                           "set": {key: value for key, value in row.items()
-                                   if key not in ("owner", "view_id")},
-                           "where": {"owner": STATE_OWNER, "view_id": STATE_VIEW_ID,
-                                     "updated_at": prev}}, "s-update")]
-    return [emission("views", {"messages": legs},
-                     display_request=json.dumps(request, sort_keys=True))]
+        request = None
+    if not isinstance(request, dict):
+        return []
+    if request.get("boot") == "rows":
+        return boot_rows(body, hop)
+    out = []
+    failed = failed_legs(body, hop)
+    write = request.get("write")
+    if isinstance(write, dict):
+        # The row is in memory already; a refused store write is a receipt to the app
+        # and nothing else. After a restart that view is missing -- the store is the
+        # truth, and the app has heard it (plan D1a § 2.3).
+        mine = [why for tid, why in failed if not tid.startswith("r-")]
+        if mine:
+            out += refuse("store_failed", mine[0], str(write.get("view_id") or ""),
+                          str(write.get("owner") or ""))
+    if request.get("rest"):
+        theirs = [why for tid, why in failed if tid.startswith("r-") or tid == ""]
+        if theirs:
+            sys.stderr.write("compose: the rest row was not written: %s\n" % theirs[0])
+            ram()["rest"] = None            # the next change writes it again
+    return out
 
 
-def state_row_of(em):
-    """For the driver and the tests: the state row a state write bundle puts up.
+def boot_rows(body, hop):
+    """The boot's select answered: the rows, the rest row, and the state rebuilt from both.
 
-    Both spellings, because the first creation inserts and every later pass updates
-    (GH #744): the update sets every column but the identity, so the row it leaves is
-    the two identity values plus what it set.
+    The state is rebuilt the way `reconcile` catches a state up with the store (OR-H0.9):
+    every row replayed as the `app_write` it was, at the moment the store wrote it; then the
+    rest row puts back what no row says. The select left before the queued writes, so every
+    row it read is the state before the restart and is replayed; the queued passes run next
+    over that state, and the rows in memory take the queued writes' word. Only a window
+    whose queued write left BEFORE this select (a retry after a failed one, `seen`) is left
+    out of the replay: the store already holds the queued row, and replaying it would make
+    its own pass a repeat.
     """
-    for leg in em.get("messages") or []:
-        try:
-            args = json.loads(str(leg.get("text") or "{}"))
-        except (TypeError, ValueError):
+    r = ram()
+    if r["phase"] != "booting-rows":
+        return []
+    why = bundle_failed(body, hop)
+    got = None if why else read_rows(body)
+    if got is None:
+        sys.stderr.write("compose: the boot select failed: %s\n" % (why or "no rows"))
+        r["phase"] = "cold"                 # the next message asks again; pending stays
+        return []
+    now = now_ms()
+    queued = set(str(ev.get("oid") or "") for _, ev in r["pending"]
+                 if ev.get("kind") in ("app_write", "app_withdraw"))
+    seen = set(r.get("seen") or [])
+    rows, rest = {}, None
+    for row in got:
+        if is_rest_row(row):
+            rest = str(row.get("content") or "")
             continue
-        if not isinstance(args, dict):
+        if is_state_row(row):
             continue
-        if args.get("operation") == "insert":
-            return args.get("row")
-        if args.get("operation") == "update":
-            row = {"owner": STATE_OWNER, "view_id": STATE_VIEW_ID}
-            row.update(args.get("set") or {})
-            return row
-    return None
+        oid = object_id(row.get("owner"), row.get("view_id"))
+        if oid not in seen:
+            rows[oid] = row
+    state = empty_state(KNOB_SETTINGS, KNOB_SCREENS)
+    state = reconcile(state, sorted_rows(rows), {"kind": "stroke"}, now)
+    restore_rest(state, rest)
+    for oid in queued:
+        if oid in r["rows"]:
+            rows[oid] = r["rows"][oid]
+        else:
+            rows.pop(oid, None)
+    r["rows"] = rows
+    r["seen"] = []
+    r["state"] = state
+    r["rest"] = rest
+    r["dials"] = [copy.deepcopy(KNOB_SETTINGS), copy.deepcopy(KNOB_SCREENS)]
+    r["phase"] = "booting-tree"
+    return [read_tree({"boot": "tree"})]
 
 
-def last_state():
-    """The state the last `pass_read` computed. For the driver and the tests only."""
-    return _LAST_STATE
+def boot_tree(body):
+    """The boot's read answered: the mirror, then every queued event, then ONE patch.
+
+    First a stroke when the rows brought windows back, so presence, rungs and the dock
+    stand as the clock says before any queued tap asks whether its window is open; it
+    runs at the earliest queued moment so no pass runs earlier than the one before it
+    (OR-D.D1.2). Then each queued event is its
+    own pass at its own moment (§ 4.1: one event, one pass).
+    """
+    r = ram()
+    have = read_objects(body)
+    bootstrap = have is None or ROOT_ID not in have
+    r["have"] = {} if bootstrap else have
+    r["phase"] = "live"
+    pending, r["pending"] = r["pending"], []
+    now = now_ms()
+    start = min([at for at, _ in pending] + [now])
+    # Only a rebuilt state needs the stroke: with no row to bring back there is nothing
+    # it could set, and the first queued event is then the first pass, which is where
+    # § 4.7 says a refused dial is said (OR-D.D1.2).
+    ops = (advance({"kind": "stroke"}, start) or []) if r["state"]["views"] else []
+    last, struck = start, ""
+    for at, event in pending:
+        ops += advance(event, at) or []
+        last = max(last, at)
+        if event.get("kind") == "stroke" and event.get("struck"):
+            struck = str(event["struck"])
+    return with_rest(ops + render(last, struck, bootstrap), last)
+
+
+def pass_read(body):
+    """The display's tree: the boot's, or the repair's after a refused patch (OR-D7)."""
+    r = ram()
+    if r["phase"] == "booting-tree":
+        return boot_tree(body)
+    if r["phase"] != "repair":
+        return []
+    have = read_objects(body)
+    bootstrap = have is None or ROOT_ID not in have
+    r["have"] = {} if bootstrap else have
+    r["phase"] = "live"
+    now = now_ms()
+    ops = render(now, "", bootstrap, everything=True)
+    r["repaired"] = any((em.get("header") or {}).get("route") == "patch" for em in ops)
+    return with_rest(ops, now)
+
+
+def pass_patched(body, hop):
+    """The display's acknowledgement: nothing -- unless it refused a leg (OR-D7).
+
+    Then the mirror no longer says what the display holds, and a diff against it would be
+    a guess: `have` is dropped and ONE read asks. Until it answers, passes run on and draw
+    nothing; the answer draws the difference once.
+    """
+    why = bundle_failed(body, hop)
+    if not why and (int_or_zero(hop.get("bundle_errors")) > 0):
+        why = "%s legs refused" % hop.get("bundle_errors")
+    r = ram()
+    # The display answers patches in the order they left, and none leaves during a
+    # repair: the first answer after the repair read is the answer to the patch that
+    # repair drew.
+    repaired, r["repaired"] = r.get("repaired"), False
+    if not why:
+        return []
+    sys.stderr.write("compose: the display refused a patch: %s\n" % (why,))
+    if r["phase"] != "live":
+        return []
+    if repaired:
+        # Drawn against the tree the display itself just reported and refused all the
+        # same: the leg is refused on every try (an app nesting glass in glass), not a
+        # mirror that lies. Another read would draw the same leg again -- measured: six
+        # repairs in one chain until its ttl ran out, the last read dead with it, the cell
+        # in `repair` for good (`710_the_colony_holds_in_both_engines_browser`, 6/6 red).
+        # The mirror keeps what was drawn; the refused leg stays refused.
+        sys.stderr.write("compose: refused again after a repair; the leg stays refused\n")
+        return []
+    r["have"] = None
+    r["phase"] = "repair"
+    r["asked"] = now_ms()
+    return [read_tree({"repair": True})]
+
+
+def int_or_zero(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
 
 
 # ---------------------------------------------------------------------------
@@ -7213,32 +7364,7 @@ def window_node(props, children=None):
 
 
 # ---------------------------------------------------------------------------
-# The events of the model out of what reaches the cell (§ 4.1, closed list)
-
-
-def event_of_request(request):
-    """The ONE event of this pass. § 4.1: nothing else triggers a pass.
-
-    The write and the withdrawal carry the row, a tap its window id, the hold nothing
-    (S-088: a `topic` a client sends with it is not read), a verdict its payload, a
-    stroke its order id.
-    """
-    if request.get("state"):
-        return None
-    if request.get("withdraw"):
-        return {"kind": "app_withdraw",
-                "oid": object_id(request.get("owner"), request.get("view_id"))}
-    row = request.get("row")
-    if isinstance(row, dict):
-        return {"kind": "app_write", "oid": object_id(row.get("owner"), row.get("view_id")),
-                "view": hints_of_row(row)}
-    if request.get("tap"):
-        return {"kind": "tap", "for": wrapper_of(request["tap"])}
-    if request.get("hold"):
-        return {"kind": "hold"}
-    if isinstance(request.get("verdict"), dict):
-        return dict({"kind": "verdict"}, **request["verdict"])
-    return {"kind": "stroke"}
+# The patch and the tree it builds, for the driver and the tests
 
 
 def calls_of(em):
@@ -7902,17 +8028,15 @@ def iso_z(ms):
 
 
 def pass_tick(hop):
-    """A pass without a write: read the table, then let pass 2 and 3 run as usual.
+    """The clock struck: a pass, and nothing read for it.
 
-    The strike's own `schedule_id` rides along as `struck`, so pass 3 does not
+    The strike's own `schedule_id` rides the event as `struck`, so the render does not
     ask the timer to remove an order it has already fired.
     """
-    legs = [tool_call({"operation": "select", "table": TABLE, "columns": COLUMNS}, "d-select")]
-    request = {"tick": True}
+    event = {"kind": "stroke"}
     if hop.get("schedule_id"):
-        request["struck"] = str(hop["schedule_id"])
-    return [emission("views", {"messages": legs},
-                     display_request=json.dumps(request, sort_keys=True))]
+        event["struck"] = str(hop["schedule_id"])
+    return pass_or_queue(event, now_ms(), [])
 
 
 def due_ops_from_strokes(state, want, have, now, struck=""):
@@ -7971,50 +8095,42 @@ def _written_at(value, fallback):
 
 
 def reconcile(state, rows, event, now):
-    """Catch the state up with the store before this pass's own event runs (OR-H0.9).
+    """Catch a state up with the store's rows (OR-H0.9): the boot's rebuild, and only that.
 
-    The reference model assumes that passes run one after the other: every write is an
-    event, and every event runs on the state the event before it left. The CELL cannot
-    promise that by itself -- a write and its read pass are four messages apart, so a
-    second write that lands before the first pass's state row is in the store gets handed
-    the SAME state row the first one got. Measured on the minimal colony: the ambient app
-    sends three views in one tick, the second read pass computes its state out of the
-    first pass's input, and the first view is gone -- for ever, because no later event
-    ever writes it again.
+    Since display 2.7.0 (GH #809) the state lives in the resident cell's memory and every
+    write is its own pass on it, so no pass has to catch up any more -- the race this was
+    built for (two writes handed the same state row of display 2.5/2.6) is gone with the
+    row. What is left is the rebuild of a fresh cell: `boot_rows` hands it an EMPTY state,
+    every app row the boot select read, and a stroke as the event. Every row is replayed as
+    the `app_write` it was (§ 4.8 a/b/c), at the moment the store wrote it, so `ttl_ms` and
+    `since` land where they landed before the restart; a row whose `ttl_ms` has run out is
+    skipped, replaying it would only delete it again. The rest row then puts back what no
+    row says (`restore_rest`).
 
-    So the adapter makes the promise the model assumes. The store's rows are the truth
-    about what the apps have said; before the pass's own event, every row the state does
-    not know yet, or knows older than the store does, is replayed as the `app_write` it
-    was (§ 4.8 a/b/c), at the moment the store wrote it -- so `ttl_ms` and `since` land
-    where they would have landed. A view the state holds whose row is gone is marked
-    `withdrawn` instead -- that is all a withdrawal IS in the model (`step2_door` sets one
-    flag and returns), and doing it as a flag rather than as a replayed pass leaves the
-    LEAVING pass of § 4.35 to this pass, so the sheet still gets its one frame to fade the
-    window out.
-
-    The pass's OWN row is left out of both: its event is the next thing to run, and
-    running it twice would make the second one a repeated write and swallow its touch.
+    Nothing is marked `withdrawn` here: the state is empty, so there is no window the rows
+    could have left behind. A window whose row left the store while the cell was down comes
+    back neither from the rows nor from the rest row, and the boot takes it off the display
+    without a `leaving` frame (OR-D.D1.12, BOOT "a row gone while the cell was down"). The
+    `own` and `written_at` checks keep the function a general catch-up for a caller that
+    hands it a state and an app event; the boot passes neither.
 
     One thing a replay cannot give back: `age`. The pass it repairs is the pass in which
     the window was `fresh`, and that pass is over -- the window arrives `settled` and
-    misses its fly-in. Making it `fresh` again would mean writing into the `new` list
-    inside the pass section, which is byte-identical with the reference model and not
-    ours to reach into; and `since` would then be this pass's moment instead of the one
+    misses its fly-in (OR-D19). Making it `fresh` again would mean writing into the `new`
+    list inside the pass section, which is byte-identical with the reference model and
+    not ours to reach into; and `since` would then be the boot's moment instead of the one
     the store recorded, which is what `ttl_ms` and the decay are measured from.
 
-    The judge's bookkeeping is put back afterwards. A replayed write is a repair of a
-    pass that never ran, and that pass never asked the judge; advancing `last_call` here
-    would swallow the ONE question this pass is allowed to ask for the whole batch
-    (§ 4.3 discards a call inside the interval, and this is exactly that case).
+    The judge's bookkeeping is put back afterwards: a replayed write is a pass that ran
+    before the restart, and it does not ask the judge a second time. What the judge said
+    and when it was last asked comes back from the rest row.
     """
     kind = str(event.get("kind") or "")
     own = str(event.get("oid") or "") if kind in ("app_write", "app_withdraw") else ""
     seen = dict(state["views"])
     replays = []
-    live = set()
     for row in rows:
         oid = object_id(row.get("owner"), row.get("view_id"))
-        live.add(oid)
         if oid == own:
             continue
         at = _written_at(row.get("updated_at"), now)
@@ -8029,75 +8145,13 @@ def reconcile(state, rows, event, now):
             continue        # already expired: replaying it would only delete it again
         replays.append((at, oid, {"kind": "app_write", "oid": oid,
                                   "view": hints_of_row(row)}))
-    gone = [oid for oid, view in sorted(seen.items())
-            if oid not in live and oid != own and not view.get("withdrawn")]
-    if not replays and not gone:
+    if not replays:
         return state
     judge = copy.deepcopy(state["judge"])
     for at, _oid, replay in sorted(replays, key=lambda r: (r[0], r[1])):
         state = run_pass(state, replay, at)
     state["judge"] = judge
-    for oid in gone:
-        if oid in state["views"]:
-            state["views"][oid]["withdrawn"] = True
     return state
-
-
-def pass_read(body, ctx):
-    """The display's answer: the pass of § 4, then ONE bundle that renders its state."""
-    global _LAST_STATE
-    try:
-        plan = json.loads(str(ctx.get("display_views") or ""))
-    except (TypeError, ValueError):
-        plan = None
-    if not isinstance(plan, dict):
-        return []
-    rows = [r for r in (plan.get("views") or []) if isinstance(r, dict) and not is_state_row(r)]
-    have = read_objects(body)
-    bootstrap = have is None or ROOT_ID not in have
-    have = {} if bootstrap else have
-    try:
-        now = int(plan.get("now") or now_ms())
-    except (TypeError, ValueError):
-        now = now_ms()
-    event = plan.get("event") if isinstance(plan.get("event"), dict) else {"kind": "stroke"}
-
-    held = plan.get("state")
-    state = state_from_row(held, KNOB_SETTINGS, KNOB_SCREENS)
-    state = reconcile(state, rows, event, now)               # OR-H0.9: one pass at a time
-    state = run_pass(state, event, now)                      # § 4, verbatim
-    _LAST_STATE = state
-    if not state["pass"].get("runs"):
-        # § 4.1: nothing else triggers a pass. Nothing was computed, so nothing is
-        # written -- a delete+insert of an unchanged row is a store round for nothing.
-        return []
-    spoken = spoken_of(state)
-
-    default = str(state["settings"].get("default_screen") or "")
-    mark = plan.get("mark") if isinstance(plan.get("mark"), dict) else None
-    want = objects_from_state(state, rows, now, default, have)
-    ops = due_ops_from_strokes(state, want, have, now, str(plan.get("struck") or ""))
-    # The judge is asked ONCE per event (§ 4.3), and a repeat of a pass is the same event
-    # (GH #744). The pass whose write the store refused had already sent its question --
-    # only its state write was turned away -- and the verdict it gets back arrives as its
-    # own event, on whatever state stands by then. Asking again would be two questions and
-    # two answers for one thing that happened. The state still records the call, because
-    # it HAS been made.
-    if state["judge"]["called"] and not (int_or_none((mark or {}).get(STATE_RETRIES)) or 0):
-        ops += judge_ops_from_state(state, now)
-    pages = mirror_screens(state, want, now)
-    define = plan.get("define")
-    calls = patches(want, have, define if isinstance(define, list) else [], bootstrap)
-    calls += page_ops(want, have, pages, bootstrap)
-    # The patch does NOT leave here any more (GH #765, way A, the owner's ruling of
-    # 19.09.): it rides the state write and is drawn from the REPLY, once the store has
-    # said the row landed (`patch_ops`). Everything else this pass has to say goes now --
-    # the judge's question is about the EVENT and not about the drawing (and a repeat does
-    # not ask it a second time, just above), and a refusal belongs to the application that
-    # wrote, not to the browsers.
-    return (ops + refusals_of(state, spoken, said_before(held))
-            + state_write_ops(state, now, KNOB_SETTINGS, KNOB_SCREENS, spoken, held, mark,
-                              calls))
 
 
 # ---------------------------------------------------------------------------
@@ -8144,7 +8198,7 @@ def parse_model_json(text):
 
 
 def pass_verdict(body, hop):
-    """The judge answered: a pass without a write that carries the verdict into pass 3.
+    """The judge answered: a pass without a write, over the state in memory.
 
     The payload is translated into the ONE event of \u00a7 4.1 here, at the edge, so the pass
     reads a verdict and never a model's answer: `windows` becomes a map by id, and the
@@ -8173,10 +8227,7 @@ def pass_verdict(body, hop):
                "weights": answer.get("weights") if isinstance(answer.get("weights"), dict) else {}}
     if isinstance(answer.get("bar"), (int, float)) and not isinstance(answer.get("bar"), bool):
         verdict["bar"] = answer["bar"]
-    legs = [tool_call({"operation": "select", "table": TABLE, "columns": COLUMNS}, "d-select")]
-    return [emission("views", {"messages": legs},
-                     display_request=json.dumps({"tick": True, "verdict": verdict},
-                                                sort_keys=True))]
+    return pass_or_queue(dict({"kind": "verdict"}, **verdict), now_ms(), [])
 
 
 def as_int(value, default):
@@ -8251,13 +8302,13 @@ def main():
     if route == "in_verdict":
         return pass_verdict(body, hop)
 
-    # Pass 4 FIRST, because it is the terminating one and the cheapest to get
-    # wrong. `display_origin` is stamped by the hive's own edges and travels
-    # back on the reply; nothing in the body could tell these apart.
+    # The replies FIRST, because answering an acknowledgement with a request is
+    # how a loop starts (GH #161). `display_origin` is stamped by the hive's own
+    # edges and travels back on the reply; nothing in the body could tell these apart.
     if origin == "patch":
-        return []
+        return pass_patched(body, hop)
     if origin == "read":
-        return pass_read(body, ctx)
+        return pass_read(body)
     if origin == "views":
         return pass_views(body, ctx, hop)
 

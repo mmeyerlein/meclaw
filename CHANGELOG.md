@@ -12,6 +12,48 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.43.0] — 2026-09-23
+
+The display's curator keeps its state in memory. Until now every pass carried the whole
+screen plan in a header and wrote the state back as one row of the store, which is what made
+the message log of a running colony grow by the gigabyte. The compose cell now runs
+`resident`, the store keeps what the applications said, and a restart rebuilds the same
+screen out of the rows and the tree the display holds. And the colony view stands in the dock
+and opens on a tap.
+
+### Changed
+
+- **`display@2.7.0`: the curator keeps its state, the store keeps objects, no header carries
+  the screen plan** (GH #809). The compose cell runs `resident` and holds the curator's state,
+  the rows it knows and the tree it last sent in memory; the `views` store holds the
+  application rows and one small row of history, written when it changes and never per pass;
+  one pass sends `web` at most one `patch` and no `read`; a start or a refused patch reads the
+  tree once; `display_views` is gone from every header. Measured on the live colony before:
+  2.3 MB of header per pass, 1-2 GB of log per hour; after, with the same traffic, 25.6 MB of
+  log per hour and no header field of the display's own above 200 B. The scenario driver prints a fourth line,
+  `REBUILD n/n`: it kills the curator after every scenario and compares the rebuilt state one
+  stroke later.
+- **The shipped pins follow** (`builder@1.12.1`, `member@1.9.2`, `meclaw-os@1.8.12`). The
+  builder's recipes grow a member's screen as `display@2.7.0` and its colony view as
+  `colony-view@1.1.3`; the member level names `display@2.7.0` in its description; the shell
+  pins `builder@1.12.1`. Only pins and text move, which is why all three are third-digit bumps.
+
+### Fixed
+
+- **The colony view stands in the dock and opens on a tap** (`colony-view@1.1.3`, GH #808).
+  The layout now sends its picture as a `display-pane` window with `context: system`,
+  `relevance`, `pinned`, `topic: colony`, a dock tile carrying the cell count and `touched`
+  set to the snapshot's moment, so the display's curator scores it above the bar, a tap opens
+  it and every committed mutation lifts it onto the canvas; before, the shell was the root of
+  the view, the curator found no window and read the picture at 0.25 below a bar of 0.3.
+
+### Security
+
+- **`rustls` 0.23.40 → 0.23.45** (lock only; RUSTSEC-2026-0285). The TLS client accepted
+  TLS 1.3 handshake messages sent at the wrong encryption level when they followed a
+  key-changing message in the same record; the handshake stayed authenticated. Every outgoing
+  HTTPS call of the colony goes through it.
+
 ## [0.42.0] — 2026-09-23
 
 A colony can now speak to another colony. The `proxy` cell gains a third platform, `meclaw`:

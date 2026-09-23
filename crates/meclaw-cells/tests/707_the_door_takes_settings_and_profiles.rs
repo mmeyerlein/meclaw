@@ -1,8 +1,9 @@
 //! display-hive.md § 4.6/§ 4.7: settings and profiles pass the SAME door as a view, and the
 //! door says out loud what it would not take. A value it replaces is refused ONCE -- in the
 //! pass that replaces it, because the replacement is written into the state and the next
-//! pass reads it back from the state row. `display_type missing` and a `default_screen` that
-//! names no output are errors and are reported in EVERY pass: nothing replaces them.
+//! pass reads it back from the state in memory. `display_type missing` and a
+//! `default_screen` that names no output are errors and are reported in EVERY pass: nothing
+//! replaces them.
 //!
 //! Scenarios: S-078 (settings), S-079 (profile dials), S-039 (errors), Q-11 (a television
 //! has no inputs, whatever its profile says).
@@ -71,7 +72,7 @@ fn a_setting_the_door_replaces_is_refused_once() {
     );
     assert_eq!(screen.screen_state()["bar"], 0.3);
 
-    // The second pass reads the replaced values back off the state row: nothing left to
+    // The second pass reads the replaced values back off the state in memory: nothing left to
     // refuse, and the decay of § 4.15 runs over 120000 ms.
     screen.pass(json!({"kind": "stroke"}), 130_000);
     assert!(
@@ -155,9 +156,9 @@ fn a_profile_without_a_kind_is_an_error_in_every_pass() {
         details(&screen)
     );
     // § 4.7 keeps the error in the STATE of every pass -- nothing replaces it, so the
-    // door finds it again -- and the state row says so.
+    // door finds it again -- and the pass says so.
     assert_eq!(
-        screen.screen_state()["said"],
+        screen.said(),
         json!([["error", "screen", "odd", "display_type missing"]]),
         "the error stands in the state of this pass"
     );
@@ -172,7 +173,7 @@ fn a_profile_without_a_kind_is_an_error_in_every_pass() {
         receipts(&screen)
     );
     assert_eq!(
-        screen.screen_state()["said"],
+        screen.said(),
         json!([["error", "screen", "odd", "display_type missing"]]),
         "and it is still true in the state"
     );
@@ -325,13 +326,18 @@ fn a_hint_that_is_not_on_the_wire_is_refused_and_the_screen_lives() {
         emissions.iter().all(|e| e["header"]["route"] != "receipt"),
         "the wire of § 3.3 is taken: {emissions:?}"
     );
+    // A fresh cell also asks the store for its rows (its boot, GH #809); the write is the
+    // bundle marked as this app's.
     assert_eq!(
         emissions
             .iter()
-            .filter(|e| e["header"]["route"] == "views")
+            .filter(|e| e["header"]["route"] == "views"
+                && e["header"]["display_request"]
+                    .as_str()
+                    .is_some_and(|m| m.contains("\"write\"")))
             .count(),
         1,
-        "and it reaches the store"
+        "and it reaches the store: {emissions:?}"
     );
 }
 
@@ -359,7 +365,7 @@ fn an_absorbed_gesture_is_no_refusal_to_anybody() {
         receipts(&screen)
     );
     assert_eq!(
-        screen.screen_state()["said"],
+        screen.said(),
         json!([["refused", "hold", "absorbed", "no chat view"]]),
         "and the pass wrote it down all the same"
     );
@@ -371,7 +377,7 @@ fn an_absorbed_gesture_is_no_refusal_to_anybody() {
         receipts(&screen)
     );
     assert_eq!(
-        screen.screen_state()["said"],
+        screen.said(),
         json!([["refused", "view.alex.gone", "tap", "no tile"]])
     );
 

@@ -1,18 +1,18 @@
 //! OR-H0.9: the reference model assumes that passes run one after the other, and the cell
 //! makes that promise for it.
 //!
-//! A write and its read pass are four messages apart. When a second write lands before the
-//! first pass's state row is back in the store, the second read pass is handed the SAME
-//! state row the first one got -- and computes a state in which the first view was never
-//! written. Measured on the minimal colony (H5): the ambient app sends three views in one
-//! tick and the first two are gone, for ever, because no later event ever writes them
-//! again.
+//! Until display 2.7.0 a write and its read pass were four messages apart, and a second
+//! write that landed before the first pass's state row was back in the store was handed
+//! the SAME state row -- measured on the minimal colony (H5): the ambient app sent three
+//! views in one tick and the first two were gone for ever. The cure was `reconcile`: the
+//! store's rows are the truth about what the apps have said, and every row the state does
+//! not know is replayed as the `app_write` it was, at the moment the store wrote it.
 //!
-//! So `pass_read` reconciles first: the store's rows are the truth about what the apps have
-//! said, and every row the state does not know yet is replayed as the `app_write` it was,
-//! at the moment the store wrote it. Every view whose row is gone is marked `withdrawn`,
-//! which leaves the leaving pass of § 4.35 to this pass -- the sheet keeps its one frame to
-//! fade the window out.
+//! Since GH #809 the curator runs `resident` and every event is a pass over the ONE state
+//! in its memory, so that race is gone: three writes in one breath are three passes in
+//! order. `reconcile` still does the same work, now at the BOOT: a new cell reads the
+//! store once and replays every row it finds. This file holds both halves -- the order of
+//! a living cell, and the replay of a new one.
 
 mod support;
 
@@ -62,24 +62,24 @@ fn two_writes_in_one_breath_lose_no_window() {
         eprintln!("SKIP: the template library is not in this tree");
         return;
     }
+    // THE OLD RACE, as it arrives now: the second write lands while the store's answer to
+    // the first is still in the air. The replies are held back, so both writes are taken
+    // before either bundle is acknowledged -- and neither pass waits for the store.
     let mut screen = Screen::new(params("off"));
     screen.write(ambient("clock", 1000), 1000);
-    assert!(screen.holds(&window_of("clock")), "the clock is drawn");
-
-    // THE RACE. The second write lands before the first pass's state row reached the
-    // store, so this pass is handed the state row of the pass BEFORE the clock -- here,
-    // none at all. Without the reconciliation the clock is simply gone from here on.
-    screen.state = Value::Null;
+    screen.hold(true);
     screen.write(ambient("weather", 1100), 1100);
+    screen.hold(false);
+    screen.flush();
 
     let held = screen.screen_state();
     assert!(
         held["views"][window_id("ambient", "clock")].is_object(),
-        "the clock is back in the state row: {held}"
+        "the clock stands in the state: {held}"
     );
     assert!(
         held["views"][window_id("ambient", "weather")].is_object(),
-        "and so is the weather: {held}"
+        "and so does the weather: {held}"
     );
     assert!(
         screen.holds(&window_of("clock")) && screen.holds(&window_of("weather")),
@@ -89,9 +89,37 @@ fn two_writes_in_one_breath_lose_no_window() {
         screen.holds(&tile_of("clock")) && screen.holds(&tile_of("weather")),
         "and both tiles"
     );
-    // The replay is a repair of the pass that never ran, and it runs at the moment the
-    // store recorded -- so `since` is the write's own moment, and `ttl_ms` would count
-    // from there too.
+}
+
+#[test]
+fn a_new_cell_replays_every_row_the_store_holds() {
+    if !library_ships() {
+        eprintln!("SKIP: the template library is not in this tree");
+        return;
+    }
+    // Two rows stand in the store before the cell's first message -- written while it was
+    // down. The boot reads them ONCE and replays each as the `app_write` it was, at the
+    // moment the store wrote it: `since` is the write's own moment, not the boot's.
+    let mut screen = Screen::new(params("off"));
+    screen.put(ambient("clock", 1000));
+    screen.put(ambient("weather", 1100));
+    screen.pass(json!({"kind": "stroke"}), 2000);
+
+    let routes: Vec<&str> = screen
+        .hops()
+        .iter()
+        .map(|h| h["route"].as_str().unwrap_or(""))
+        .collect();
+    assert_eq!(
+        routes.iter().filter(|r| **r == "read").count(),
+        1,
+        "one read of the tree: {routes:?}"
+    );
+    assert_eq!(
+        routes.first(),
+        Some(&"views"),
+        "the store is read first: {routes:?}"
+    );
     assert_eq!(
         screen.curator(&window_id("ambient", "clock"), "since"),
         json!(1000)
@@ -100,28 +128,30 @@ fn two_writes_in_one_breath_lose_no_window() {
         screen.curator(&window_id("ambient", "weather"), "since"),
         json!(1100)
     );
-    // What a replay cannot give back is the fly-in: the pass it repairs is the pass in
-    // which the clock was `fresh`, and that pass is over.
+    assert!(
+        screen.holds(&window_of("clock")) && screen.holds(&window_of("weather")),
+        "both windows are drawn"
+    );
+    // What a replay cannot give back is the fly-in: the pass in which a window was
+    // `fresh` is over (OR-D19).
     assert_eq!(age(&screen, "clock"), "settled");
-    assert_eq!(age(&screen, "weather"), "fresh");
+    assert_eq!(age(&screen, "weather"), "settled");
 }
 
 #[test]
-fn a_view_whose_row_is_gone_leaves_before_it_goes() {
+fn a_withdrawn_view_leaves_before_it_goes() {
     if !library_ships() {
         eprintln!("SKIP: the template library is not in this tree");
         return;
     }
-    // The mirror case: the state holds a view the store no longer has -- a withdrawal
-    // whose own read pass was lost the same way. It is marked `withdrawn` rather than
-    // replayed as a pass of its own, so § 4.35 still gives the sheet one frame to fade the
-    // window out instead of taking it away between two renders.
+    // A withdrawal is marked `withdrawn` rather than taken out at once, so § 4.35 still
+    // gives the sheet one frame to fade the window out instead of taking it away between
+    // two renders.
     let mut screen = Screen::new(params("off"));
     screen.write(ambient("clock", 1000), 1000);
     screen.write(ambient("weather", 1100), 1100);
-    screen.withdraw("ambient", "clock");
+    screen.take_down("ambient", "clock", 2000);
 
-    screen.pass(json!({"kind": "stroke"}), 2000);
     assert_eq!(age(&screen, "clock"), "leaving", "one last frame (§ 4.35)");
     assert!(
         screen.holds(&window_of("clock")),
@@ -146,17 +176,14 @@ fn a_verdict_that_comes_back_between_two_writes_loses_no_window() {
         eprintln!("SKIP: the template library is not in this tree");
         return;
     }
-    // A verdict travels the same road and takes the same time, so it can be handed a stale
-    // state row too -- and a verdict that dropped a window would drop it for ever, because
-    // the judge decides what is OPEN and never what exists (§ 4.11, Leitlinie).
+    // A verdict travels the same road and takes the same time as a write, and a verdict
+    // that dropped a window would drop it for ever, because the judge decides what is OPEN
+    // and never what exists (§ 4.11, Leitlinie). It was asked two writes ago and answers
+    // after the third: its pass runs on the state that holds all three.
     let mut screen = Screen::new(params("on"));
     screen.write(ambient("clock", 1000), 1000);
     screen.write(ambient("weather", 1100), 1100);
-    let before = screen.state.clone();
     screen.write(ambient("timer", 1200), 1200);
-
-    // The verdict was asked one pass ago and answers now, carrying the state row of then.
-    screen.state = before;
     screen.pass(
         json!({"kind": "verdict", "bar": 0.4, "weights": {"ambient": 0.8},
                "windows": {window_id("ambient", "clock"): {"judged_hidden": true}}}),

@@ -22,7 +22,7 @@
 //! one `workshop/tools/display-lab/tap.mjs:126` has always waited for.
 //!
 //! That is what this lock holds: one window open, one tap through the driver, level 0 on
-//! the state row the pass wrote. Marker G6 of the proof line reads exactly this over
+//! the window the pass drew. Marker G6 of the proof line reads exactly this over
 //! three exits, and it was red through five runs for this reason and not because of the
 //! screen (the same gesture from a browser that waits puts the window away every time).
 //!
@@ -35,7 +35,7 @@ mod display_colony;
 
 use std::process::Command;
 
-use display_colony::{Boot, PROBE, boot, have_python, library_ships, repo};
+use display_colony::{Boot, PROBE, attr, boot, have_python, library_ships, repo};
 use meclaw_core::serde_json::json;
 
 const DRIVER: &str = "workshop/tools/display-page-browser.mjs";
@@ -79,8 +79,8 @@ async fn the_drivers_tap_puts_the_window_away() {
         )
         .await;
     colony
-        .wait_state("the window stands open before the tap", |s| {
-            s["views"][&oid]["curator"]["level"] == 1
+        .wait_tree("the window stands open before the tap", |t| {
+            attr(t, &oid, "level") == json!("1")
         })
         .await;
 
@@ -120,13 +120,12 @@ async fn the_drivers_tap_puts_the_window_away() {
         "1",
         "a tile for the window stood on the monitor: {line}"
     );
-    // The screen's own answer FIRST, and read off the state row the pass WROTE -- never
-    // off `display_views`, which carries the state BEFORE the pass (trap F1 of the
-    // measuring library). This is the half that was red: `tapped=1` above and a window
-    // that never moved.
+    // The screen's own answer FIRST, and read where it lands: the level the pass drew at
+    // `web` (GH #809 -- the curator's state is memory, the patches are the screen). This
+    // is the half that was red: `tapped=1` above and a window that never moved.
     colony
-        .wait_state("the tap of the driver puts the window away (§ 5.2)", |s| {
-            s["views"][&oid]["curator"]["level"] == 0
+        .wait_tree("the tap of the driver puts the window away (§ 5.2)", |t| {
+            attr(t, &oid, "level") == json!("0")
         })
         .await;
 

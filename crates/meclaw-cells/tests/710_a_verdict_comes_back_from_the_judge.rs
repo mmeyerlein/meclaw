@@ -21,7 +21,7 @@ mod display_colony;
 
 use std::time::Duration;
 
-use display_colony::{Boot, boot, curator, have_python, library_ships};
+use display_colony::{Boot, attr, boot, have_python, library_ships, present, tile};
 use meclaw_core::serde_json::json;
 
 const APP: &str = "/alex/apps/note";
@@ -76,27 +76,32 @@ async fn a_verdict_comes_back_from_the_judge() {
                    "topic": "dim:1", "touched": "1"}),
         )
         .await;
-    let judged = colony
-        .wait_state("the verdict comes back and reaches the next pass", |s| {
-            s["bar"] == json!(0.8)
-        })
+    // Read at the receivers (GH #809): the verdict is in the rest row the store took, and
+    // the pass it caused drew the dim window closed at `web`.
+    colony
+        .wait_until(
+            "the verdict comes back and reaches the next pass",
+            async || {
+                colony.rest().await["bar"] == json!(0.8)
+                    && tile(&colony.tree().await, &dim)["open"] == json!("")
+            },
+        )
         .await;
+    let rest = colony.rest().await;
+    let judged = colony.tree().await;
 
     // -- S-033, S-074: the bar and the weights are the judge's, not the floor's -------
+    // The floor of this colony is the shipped `focus_default` (0.3), so a rest row that
+    // says 0.8 got it from the answer.
     assert_eq!(
-        judged["weights"]["work"],
+        rest["weights"]["work"],
         json!(0.9),
-        "the weights of the verdict stand on the state (§ 4.5): {judged}"
+        "the weights of the verdict stand in what outlives the cell (§ 4.5): {rest}"
     );
-    assert_eq!(judged["weights"]["ambient"], json!(0.1));
+    assert_eq!(rest["weights"]["ambient"], json!(0.1));
     assert!(
-        !judged["judge"]["verdict"].is_null(),
-        "and the state remembers that a verdict stands"
-    );
-    assert_eq!(
-        judged["dials"]["settings"]["focus_default"],
-        json!(0.3),
-        "the floor did not move -- 0.8 came from the answer, not from the dial"
+        !rest["judge"]["verdict"].is_null(),
+        "and the curator remembers that a verdict stands: {rest}"
     );
 
     // -- Q-15: what the judge was asked is the situation, and it really left ----------
@@ -119,16 +124,20 @@ async fn a_verdict_comes_back_from_the_judge() {
 
     // -- Q-09, § 4.14: the verdict closes the window it named -------------------------
     assert_eq!(
-        judged["views"][&dim]["verdict"]["judged_hidden"],
+        rest["views"][&dim]["verdict"]["judged_hidden"],
         json!(true),
-        "the window carries the word the judge said about it (§ 3): {judged}"
+        "the window carries the word the judge said about it (§ 3): {rest}"
     );
     assert_eq!(
-        curator(&judged, &dim, "score"),
-        json!(0.0),
+        attr(&judged, &dim, "score"),
+        json!("0"),
         "a window the verdict hides scores nothing (§ 4.14)"
     );
-    assert_eq!(curator(&judged, &dim, "open"), json!(false));
+    assert_eq!(
+        tile(&judged, &dim)["open"],
+        json!(""),
+        "and its tile says it is not open"
+    );
 
     // -- § 4.3: the brake holds over real time ---------------------------------------
     // A second real event, taken well inside `judge_min_interval_ms`: the window arrives,
@@ -153,18 +162,18 @@ async fn a_verdict_comes_back_from_the_judge() {
     // `w x relevance x decay` = 0.9 x 0.9 x 1 = 0.81, which clears the bar of 0.8. The
     // pass that computed it asked nobody: the verdict of the pass before it still stands.
     assert_eq!(
-        curator(&standing, &note, "score"),
-        json!(0.81),
+        attr(&standing, &note, "score"),
+        json!("0.81"),
         "the verdict's weight is a factor of the score: {standing}"
     );
     assert_eq!(
-        curator(&standing, &note, "open"),
-        json!(true),
+        tile(&standing, &note)["open"],
+        json!("1"),
         "and 0.81 clears the bar of 0.8 (§ 4.16)"
     );
     assert_eq!(
-        curator(&standing, &dim, "open"),
-        json!(false),
+        tile(&standing, &dim)["open"],
+        json!(""),
         "while the closed one stays closed: a verdict stands until the next (§ 4.5)"
     );
 
@@ -196,12 +205,10 @@ async fn a_verdict_comes_back_from_the_judge() {
 /// A verdict is a pass too, and one that comes back between two writes loses no window.
 ///
 /// What this case prevents is the lost window: the answer travels the same road as a write
-/// and takes the same time, so the pass that takes it can be handed a state row that
-/// predates the write beside it -- and a window that state row never saw would be gone for
-/// ever, although the judge decides what is OPEN and never what exists (§ 4.11).
-/// `reconcile()` (§ 3.1, OR-H0.9, H1-F4) catches the state up with the store's rows before
-/// the pass's own event runs, and carries this case;
-/// `707_the_state_is_reconciled_with_the_store.rs` pins the rule itself.
+/// and takes the same time, and a window the pass of the answer did not know would be gone
+/// for ever, although the judge decides what is OPEN and never what exists (§ 4.11). Since
+/// GH #809 every event runs on the ONE state in the cell's memory, one after the other, so
+/// the answer's pass sees every write that came before it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_verdict_between_two_writes_loses_no_window() {
     if !library_ships() || !have_python() {
@@ -209,7 +216,7 @@ async fn a_verdict_between_two_writes_loses_no_window() {
         return;
     }
     // A bar no dial of this colony carries (`focus_default` is 0.3), so "the verdict is in
-    // this state row" is a measurable answer. The verdict names no window at all: what is
+    // the rest row" is a measurable answer. The verdict names no window at all: what is
     // asserted below is existence, and about that the judge has no word.
     let colony = boot(Boot {
         judge: true,
@@ -245,25 +252,22 @@ async fn a_verdict_between_two_writes_loses_no_window() {
         .await;
 
     // The verdict came back, and it took neither window with it.
-    let held = colony
-        .wait_state(
-            "the verdict reaches a pass and both windows are still in the state",
-            |s| {
-                s["bar"] == json!(0.25)
-                    && s["views"].get(&first).is_some()
-                    && s["views"].get(&second).is_some()
-            },
-        )
+    colony
+        .wait_until("the verdict reaches a pass", async || {
+            colony.rest().await["bar"] == json!(0.25)
+        })
         .await;
+    colony.settle(QUIET).await;
+    let rest = colony.rest().await;
     assert_eq!(
-        held["weights"]["work"],
+        rest["weights"]["work"],
         json!(0.9),
-        "the weights are the verdict's, so this state row really took the answer: {held}"
+        "the weights are the verdict's, so a pass really took the answer: {rest}"
     );
+    let held = colony.tree().await;
     for oid in [&first, &second] {
-        assert_eq!(
-            curator(&held, oid, "present"),
-            json!(true),
+        assert!(
+            present(&held, oid),
             "{oid} is still on the screen after the verdict: {held}"
         );
     }

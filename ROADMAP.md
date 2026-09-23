@@ -25,7 +25,7 @@ Release detail is in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
 When Now is empty, the tree is between two waves: what the last one built is in
-v0.42.0, under [§ Shipped](#shipped), and the open findings wait in the tracker
+v0.43.0, under [§ Shipped](#shipped), and the open findings wait in the tracker
 for the next wave to give them a horizon. A horizon holds bullets only — a
 sentence like this one stands up here, above the first heading, where the gate
 does not read it.
@@ -41,16 +41,6 @@ worked examples listed in [`templates/README.md`](templates/README.md), where
 § *The hive boundary* says what a hive template has to satisfy.
 
 ## Now
-
-- A lane that crosses a colony boundary. An edge exists only inside one colony, and nothing
-  declares what may leave one or enter one. Two colonies that each hold one person's memory
-  need to exchange abstracted things, a topic, a pattern, a proposal, without either side
-  seeing the other's observations about a person. It is not a cluster: the boundary is a
-  platform of the `proxy` cell that declares its lanes on each side the way a hive declares a
-  door, each side judges its own edge against its own declaration, a field the lane does not
-  name is refused rather than dropped, the sending colony is the request a reverse proxy
-  authenticated rather than anything in the frame, and every crossing and refusal leaves a
-  receipt on both sides. [#617](https://github.com/mmeyerlein/meclaw/issues/617)
 
 ## Next
 
@@ -119,6 +109,11 @@ worked examples listed in [`templates/README.md`](templates/README.md), where
 One line per release. Details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- v0.43.0: the display's curator keeps its state in memory. `display@2.7.0` runs compose
+  `resident`, the store keeps the applications' rows and one small row of history, one pass
+  sends one `patch` and no `read`, and no header carries the screen plan any more (measured on
+  a live colony: 775 to 25.6 MB of log per hour); the colony view stands in the dock and opens
+  on a tap (`colony-view@1.1.3`).
 - v0.42.0: a colony speaks to another colony over a declared lane. The `proxy` cell gains the
   platform `meclaw` (a peer mount on the one listener, one POST out, the lane contract on both
   sides, a field the lane does not name refused rather than stripped, receipts on both sides);

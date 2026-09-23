@@ -463,7 +463,7 @@ fn member_manifest() -> Value {
     json!({"manifest": [{
         "scope": "/members",
         "diff": {
-            "add_nodes": [{"name": MEMBER, "template": "member@1.9.1",
+            "add_nodes": [{"name": MEMBER, "template": "member@1.9.2",
                            "override_params": {
                                "access/vault": {"unlock_env": UNLOCK_ENV},
                                "memory-hive/clock": quiet_night(),

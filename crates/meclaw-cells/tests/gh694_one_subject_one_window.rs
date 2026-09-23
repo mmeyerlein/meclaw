@@ -217,17 +217,9 @@ fn a_prose_window_carries_its_topic() {
         "components": "[]", "ttl_ms": 0, "updated_at": 1,
     });
     let mut screen = Screen::new(json!({}));
-    screen.put(prose);
-    // The event is written out rather than derived: a prose row has no window node, and
-    // its whole `content` IS the hints (`hints_of_row`), which the component-shaped
-    // helper cannot see.
-    let mut hints = content.clone();
-    hints["children"] = json!({});
-    hints["ttl_ms"] = json!(0);
-    screen.pass(
-        json!({"kind": "app_write", "oid": window_id("alex", "p"), "view": hints}),
-        1000,
-    );
+    // Through the door, as the app sends it: a prose row has no window node, its whole
+    // `content` IS the hints (`hints_of_row`).
+    screen.write(prose, 1000);
     let oid = window_id("alex", "p");
     let props = screen.props(&oid).expect("the prose window");
     assert_eq!(props["topic"], "weather:berlin", "{props}");

@@ -14,7 +14,7 @@
   },
   "description": {
     "purpose": "The screen's own clock. It carries no schedule of its own: the compose cell orders exactly one one-shot schedule, named `due`, for the earliest moment at which -- if nothing else happens -- a window's score crosses a rung, a leaving window's frame is over, a `relevant_until` or a `ttl_ms` runs out. Each pass replaces the previous order; a screen with nothing due orders nothing.",
-    "use_when": "Always, as part of `display@2.6.0`. It is not a poll (GH #553): every strike has a name and a time, and a screen on which nothing can change stays silent.",
+    "use_when": "Always, as part of `display@2.7.0`. It is not a poll (GH #553): every strike has a name and a time, and a screen on which nothing can change stays silent.",
     "not_in_scope": "No cron, no recurring schedule, no content: the strike carries an empty body, and what it MEANS is the `in_tick` lane the hive's edge stamps on it."
   }
 }

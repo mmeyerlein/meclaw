@@ -48,7 +48,7 @@ organism/
 │   ├── colony.json            byte-identical to seed/colony.json
 │   └── main/
 │       ├── config.json        byte-identical to seed/main/config.json
-│       └── os/config.json     type: "ref", template: "meclaw-os@1.8.11"
+│       └── os/config.json     type: "ref", template: "meclaw-os@1.8.12"
 ├── grow-os.json               1. the shell.        1 node,  0 edges
 ├── grow-org.json              2. an organisation.  1 node, 20 edges
 ├── grow-member.json           3. a person.         1 node, 20 edges
@@ -68,13 +68,13 @@ principle of GH #26: a tree is grown, not checked in.
 ## What grows
 
 ```
-/os                                 meclaw-os@1.8.11   the shell
+/os                                 meclaw-os@1.8.12   the shell
 ├── access                            → access@2.5.0        the capability broker
 ├── argus                             → argus@1.1.0         the control loop
 └── orgs                              (empty container)
     └── acme                       org@1.4.1         a namespace and a boundary
         └── members                  (empty container)
-            └── alex               member@1.9.1      one person
+            └── alex               member@1.9.2      one person
                 ├── affinity          → affinity@3.4.0      identity and meaning
                 ├── firewall          → firewall@2.3.1      the screen
                 ├── memory-hive       → memory-hive@3.3.0   what was said to them
@@ -116,7 +116,7 @@ is a separate act.
 
 ```json
 {"scope": "/",
- "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.8.11"}],
+ "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.8.12"}],
           "add_edges": []}}
 ```
 
@@ -335,7 +335,7 @@ Four edges:
   ([#803](https://github.com/mmeyerlein/meclaw/issues/803)).
 
 **The eleven edges between `channels` and its siblings are not among them** — they belong to
-`member@1.9.1` and were drawn once, when step 3 ran: `./channels → ./firewall` turns the raw
+`member@1.9.2` and were drawn once, when step 3 ran: `./channels → ./firewall` turns the raw
 `turn` into `in_turn`, `./assistants → ./channels` carries a finished answer back to the channel
 that asked, `./apps → ./channels` carries an app's `view` — and, since 1.8.0, its `withdraw` —
 the same way, `./channels → .` lets a
@@ -492,10 +492,10 @@ declarations**.
 ```json
 {"manifest": [
   {"scope": "/os/orgs/acme/members/alex/channels",
-   "diff": {"add_nodes": [{"name": "display", "template": "display@2.6.0",
+   "diff": {"add_nodes": [{"name": "display", "template": "display@2.7.0",
                            "override_params": {"web": {"mount": "alex-display"}}}], "…": "…"}},
   {"scope": "/os/orgs/acme/members/alex/apps",
-   "diff": {"add_nodes": [{"name": "colony-view", "template": "colony-view@1.1.2"}], "…": "…"}}]}
+   "diff": {"add_nodes": [{"name": "colony-view", "template": "colony-view@1.1.3"}], "…": "…"}}]}
 ```
 
 **Since [#543](https://github.com/mmeyerlein/meclaw/issues/543) nobody writes this file by
@@ -643,7 +643,7 @@ nothing until an operator turns on exactly what they mean.
 shall stand.
 
 ```json
-{"cell": {"type": "ref", "template": "meclaw-os@1.8.11"}}
+{"cell": {"type": "ref", "template": "meclaw-os@1.8.12"}}
 ```
 
 That is a **declaration, not a cell**. The FIRST `meclaw --root ./examples/organism/seed-ref`

@@ -13,22 +13,14 @@
 //! says `html`. Skips when `python3` is absent or the templates do not ship,
 //! like every other interpreter guard in this tree (R2b).
 
+mod support;
+
 use meclaw_cells::web::render::render_pieces_plain;
 use meclaw_core::serde_json::{Value, json};
+use support::{COMPOSE, Screen, library_ships, repo};
 
-fn repo(rel: &str) -> std::path::PathBuf {
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join(rel)
-}
-
-const COMPOSE: &str = "templates/display/compose/compose.py";
 const CONFIG: &str = "templates/display/compose/config.json";
 const SHEET: &str = "templates/display/compose/display-dna.css";
-
-fn library_ships() -> bool {
-    repo("templates/display/template.json").is_file()
-}
 
 fn read(rel: &str) -> String {
     std::fs::read_to_string(repo(rel)).unwrap_or_else(|e| panic!("{rel}: {e}"))
@@ -180,24 +172,23 @@ fn a_set_base_declares_exactly_two_relative_faces() {
     );
 }
 
-/// The param path, as behaviour: the shipped script is run the way a `code`
-/// cell runs it, with `params.font_base` on the document, on a bootstrap pass.
-/// With a base set, the root the bootstrap creates carries two `@font-face`
-/// under that base; with the param absent it carries none.
+/// The param path, as behaviour: the curator runs the way a `resident` code
+/// cell runs it (`support::Screen`), with `params.font_base` on every message,
+/// and the clock's first stroke boots it on an empty display. With a base set,
+/// the root its first patch creates carries two `@font-face` under that base;
+/// with the param absent it carries none.
 #[test]
 fn the_base_reaches_the_root_from_params() {
-    if !library_ships() {
+    if !library_ships() || !have_python() {
         return;
     }
-    let Some(with) = bootstrap_root(Some("fonts/")) else {
-        return;
-    };
+    let with = bootstrap_root(json!({"font_base": "fonts/"}));
     let faces = with["props"]["faces"].as_str().expect("faces is a string");
     assert_eq!(faces.matches("@font-face").count(), 2, "{faces}");
     assert_eq!(faces.matches("url(\"fonts/").count(), 2, "{faces}");
     assert!(faces.contains("fonts/inter.woff2") && faces.contains("fonts/fraunces.woff2"));
 
-    let without = bootstrap_root(None).expect("python3 answered once already");
+    let without = bootstrap_root(json!({}));
     assert_eq!(
         without["props"]["faces"], "",
         "no param, no face: {}",
@@ -205,79 +196,22 @@ fn the_base_reaches_the_root_from_params() {
     );
 }
 
-/// The `object.create` of the root out of one bootstrap read pass, driven over
-/// stdin with the given `params.font_base` (or no `params` at all). `None`
-/// when there is no `python3` on this host.
-fn bootstrap_root(font_base: Option<&str>) -> Option<Value> {
-    use std::io::Write;
-    let mut doc = json!({
-        "body": {"messages": []},
-        "envelope": {"header": {
-            "hop": {"operation": "query"},
-            "context": {
-                "display_origin": "read",
-                // The plan of one pass since 2.5.0: the rows, the state row of the pass
-                // before (none on a bootstrap), the moment and the one event of § 4.1.
-                "display_views": json!({
-                    "views": [], "state": null, "define": [], "now": 1000,
-                    "event": {"kind": "stroke"},
-                }).to_string(),
-            },
-        }},
-    });
-    if let Some(base) = font_base {
-        doc["params"] = json!({"font_base": base});
-    }
-    let mut child = std::process::Command::new("python3")
-        .arg(repo(COMPOSE))
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .ok()?;
-    child
-        .stdin
-        .take()
-        .expect("stdin")
-        .write_all(doc.to_string().as_bytes())
-        .expect("the document reaches the script");
-    let out = child.wait_with_output().expect("the script ends");
-    assert!(
-        out.status.success(),
-        "compose.py failed:\n{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let answer: Value =
-        meclaw_core::serde_json::from_slice(&out.stdout).expect("the answer is JSON");
-    // A read pass answers with SEVERAL emissions since 2.5.0: the store bundle that
-    // writes the state row back (OR-H2), and beside it the judge's question or a timer
-    // order. Since GH #765 (way A) the patch is not among them: the calls the pass
-    // computed ride the state write's own request and are drawn from its reply, once the
-    // store has said the row landed.
-    let emissions: Vec<Value> = match answer {
-        Value::Array(list) => list,
-        one => vec![one],
-    };
-    let drawn = emissions
-        .iter()
-        .find_map(|em| {
-            if em["header"]["route"] != "views" {
-                return None;
-            }
-            let request: Value =
-                meclaw_core::serde_json::from_str(em["header"]["display_request"].as_str()?)
-                    .expect("a request is JSON");
-            if request["state"] != json!(true) {
-                return None;
-            }
-            Some(request["patch"].as_array().cloned().unwrap_or_default())
-        })
-        .expect("a bootstrap answers with a state write that carries its drawing");
-    let root = drawn
+fn have_python() -> bool {
+    std::process::Command::new("python3")
+        .arg("--version")
+        .output()
+        .is_ok()
+}
+
+/// The `object.create` of the root out of the one patch a booting cell sends to an
+/// empty display, under the given `params`.
+fn bootstrap_root(params: Value) -> Value {
+    let mut screen = Screen::new(params);
+    screen
+        .pass(json!({"kind": "stroke"}), 1000)
         .into_iter()
         .find(|call| call["op"] == "object.create" && call["id"] == "display.root")
-        .expect("the bootstrap creates the root");
-    Some(root)
+        .expect("the bootstrap creates the root")
 }
 
 /// The global constraint of the wave, as a test: no `@font-face` in the shipped

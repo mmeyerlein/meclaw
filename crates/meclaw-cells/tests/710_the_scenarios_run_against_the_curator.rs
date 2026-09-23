@@ -2,11 +2,12 @@
 //!
 //! The driver is Python and runs `compose.py`; this test runs the driver, so that the
 //! pins stand in the nextest filter and every diff under `templates/display` pulls them
-//! (`docs/development-rules.md` § 10). Three numbers have to be full: `MODEL` is the
+//! (`docs/development-rules.md` § 10). Ten numbers have to be full: `MODEL` is the
 //! document against itself (`run_model.py` against `pass.py`), `PURE` the scenarios
 //! against the verbatim copy of the pass inside the cell, `CURATOR` the scenarios
 //! through the cell's real entry -- two of them are colony-only and the driver says so
-//! itself, which is why the third denominator is the smaller one.
+//! itself, which is why the third denominator is the smaller one -- and seven lines
+//! about the memory of the resident cell (GH #809, see the test).
 //!
 //! Both tests SKIP rather than fail where their material is legitimately absent: the
 //! first when the library does not travel (R2b, the guard every tool-bound test in this
@@ -66,7 +67,25 @@ fn the_scenarios_run_against_the_curator() {
         out.status.success(),
         "the driver failed:\n{stdout}\n{stderr}"
     );
-    for stage in ["MODEL ", "PURE ", "CURATOR "] {
+    // GH #809: the curator runs `resident`, so besides the three numbers the driver
+    // measures what the memory promises -- a killed cell rebuilds the same screen after a
+    // stroke (`REBUILD`) and after an app's write (`REBUILD-WRITE`), boots with one
+    // select and one read (`BOOT`), repairs a refused patch (`REPAIR`), keeps the mirror
+    // of what `web` holds (`SNAPSHOT`), sends one patch per pass with small headers
+    // (`HOPS`) and writes nothing while nothing is written (`IDLE`). A line that is
+    // missing is as red as a line that is not full.
+    for stage in [
+        "MODEL ",
+        "PURE ",
+        "CURATOR ",
+        "REBUILD ",
+        "REBUILD-WRITE ",
+        "BOOT ",
+        "REPAIR ",
+        "SNAPSHOT ",
+        "HOPS ",
+        "IDLE ",
+    ] {
         let (passed, total) = line(&stdout, stage);
         assert!(total > 0, "{stage}ran nothing:\n{stdout}");
         assert_eq!(passed, total, "{stage}is not full:\n{stdout}");

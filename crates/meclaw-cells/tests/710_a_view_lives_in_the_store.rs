@@ -1,11 +1,13 @@
-//! The store seam: the ONE state row really lies in the table, beside the app rows.
+//! The store seam: the apps' rows and the curator's ONE rest row really lie in the table.
 //!
-//! display-hive.md § 3.1 (OR-H2) says the screen state lies in the store `views` and that
-//! the curator reads and writes it in a pass. A subprocess test can show the bundle the
-//! curator EMITS (`707_the_state_lies_in_the_store.rs` does). What it cannot show is that a
-//! real `store` cell survives it: that the delete and the insert of one row leave the app's
-//! rows where they were, that the row comes back out of the table into the pass that
-//! follows, and that the row a door refused never got there in the first place.
+//! display-hive.md § 3 says the screen's truth lies in the store `views` and at `web`, and
+//! since GH #809 (display 2.7.0) the curator keeps its state in memory: what it writes to
+//! the store are the apps' rows as they said them and ONE rest row (`display` /
+//! `screen-rest`) with what no row and no object can say (OR-D3). A driver test can show
+//! the bundles the curator EMITS (`809_the_state_lies_in_the_cell.rs` does). What it cannot
+//! show is that a real `store` cell survives them: that the delete and the insert of one
+//! row leave the other rows where they were, and that the row a door refused never got
+//! there in the first place.
 //!
 //! Anchors out of the 105 (befund 04 § B.2, seam "store"): **S-012** and **S-038** (a
 //! second write replaces, it does not stand beside), **S-058** (what is in the store and
@@ -13,48 +15,24 @@
 //! reaches the store), **S-014**, **S-037** and **S-075** (an expiry takes a window off the
 //! screen and leaves the row -- the app's withdrawal is what takes the row).
 //!
-//! And since GH #765 (way A) the seam carries one more promise, which only a real colony
-//! can show: the browsers are told what the STORE agreed to. The calls a pass computed
-//! ride its own state write and leave from the reply to it, so in the colony's own message
-//! log no patch ever stands ahead of the write it belongs to. A subprocess test sees the
-//! two emissions of one pass; it cannot see that they are two messages apart in time.
+//! The table is read where the store took it: every bundle the curator sent to `views`,
+//! folded in log order (`store_rows`). And since GH #809 the seam carries one more promise:
+//! the store is asked for its rows ONCE, at the boot -- a write is a delete and an insert,
+//! never a read.
 
 #[path = "support/display_colony.rs"]
 mod display_colony;
 
 use std::time::Duration;
 
-use display_colony::{Boot, body_of, boot, curator, have_python, hop_of, library_ships};
+use display_colony::{Boot, attr, boot, calls_of, have_python, library_ships, present, request_of};
 use meclaw_core::serde_json::{Value, json};
 
 const APP: &str = "/alex/apps/note";
 
 const QUIET: Duration = Duration::from_millis(300);
 
-/// Did the store say this reply's state write moved its one row?
-///
-/// The same reading the curator does (`compose.py`, `row_landed`): a bundle answers per
-/// leg in `results[]`, a single-op reply carries the count on the hop.
-fn landed(row: &meclaw_colony::api_dto::MessageLogDto) -> bool {
-    let body = body_of(row);
-    let hop = hop_of(row);
-    for operation in ["update", "insert"] {
-        let leg = body["results"].as_array().and_then(|entries| {
-            entries
-                .iter()
-                .find(|e| e["operation"].as_str() == Some(operation))
-        });
-        if let Some(entry) = leg {
-            return entry["rows_affected"].as_i64() == Some(1);
-        }
-        if hop["operation"].as_str() == Some(operation) {
-            return hop["rows_affected"].as_i64() == Some(1);
-        }
-    }
-    false
-}
-
-/// The rows of one owner in the table the store handed back.
+/// The rows of one owner in the table.
 fn rows_of<'a>(rows: &'a [Value], owner: &str) -> Vec<&'a Value> {
     rows.iter().filter(|r| r["owner"] == owner).collect()
 }
@@ -74,7 +52,7 @@ async fn a_view_lives_in_the_store() {
     .await;
     let note = colony.oid(APP, "note");
 
-    // -- OR-H2, § 3.1: the state row is a row of the table ---------------------------
+    // -- OR-D3, § 3: the rest row is a row of the table ------------------------------
     let first = colony
         .put(
             APP,
@@ -83,11 +61,13 @@ async fn a_view_lives_in_the_store() {
                    "topic": "note:1", "touched": "1"}),
         )
         .await;
-    let since = curator(&first, &note, "since");
-    assert!(since.is_number(), "the first pass set the touch: {first}");
+    let since = attr(&first, &note, "since");
+    assert!(
+        since.as_str().is_some_and(|s| s.parse::<i64>().is_ok()),
+        "the first pass set the touch: {first}"
+    );
 
-    // A second write, so the store is asked again -- and leg 0 of that bundle is the
-    // table itself, read back through a real store cell.
+    // A second write under the same name.
     colony
         .put(
             APP,
@@ -98,17 +78,17 @@ async fn a_view_lives_in_the_store() {
         .await;
     colony.settle(QUIET).await;
     let rows = colony.store_rows().await;
-    let state_rows: Vec<&Value> = rows_of(&rows, "display");
+    let own: Vec<&Value> = rows_of(&rows, "display");
     assert_eq!(
-        state_rows.len(),
+        own.len(),
         1,
-        "exactly ONE screen state stands in the table (§ 3.1): {rows:?}"
+        "exactly ONE row of the curator's own stands in the table (OR-D3): {rows:?}"
     );
     assert_eq!(
-        state_rows[0]["view_id"], "screen-state",
-        "and it is the row the curator writes, under its own name"
+        own[0]["view_id"], "screen-rest",
+        "and it is the rest row -- no screen state lies in the store any more (GH #809)"
     );
-    assert_eq!(state_rows[0]["kind"], "state");
+    assert_eq!(own[0]["kind"], "state");
 
     // -- S-012, S-038: a second write REPLACES, it does not stand beside -------------
     assert_eq!(
@@ -116,13 +96,13 @@ async fn a_view_lives_in_the_store() {
         1,
         "two writes under one (owner, view_id) are one row: {rows:?}"
     );
-    let held: Value =
-        meclaw_core::serde_json::from_str(state_rows[0]["content"].as_str().expect("content"))
-            .expect("the state row's content is JSON");
+    let rest: Value =
+        meclaw_core::serde_json::from_str(own[0]["content"].as_str().expect("content"))
+            .expect("the rest row's content is JSON");
     assert_eq!(
-        held["views"][&note]["curator"]["since"], since,
-        "and the row that came back out of the table carries the touch the FIRST pass \
-         computed -- it was read, not guessed again: {held}"
+        rest["views"][&note]["since"].to_string(),
+        since.as_str().unwrap_or(""),
+        "and the rest row keeps the touch the FIRST pass computed -- the second write said          the same `touched`, so it moved nothing: {rest}"
     );
 
     // -- S-039, § 4.6: a word the door refuses never reaches the store ---------------
@@ -161,14 +141,11 @@ async fn a_view_lives_in_the_store() {
             1000,
         )
         .await;
-    let expired = colony
-        .wait_state("the ttl takes the flash off the screen", |s| {
-            s["views"]
-                .get(&flash)
-                .is_none_or(|v| v["curator"]["present"] != json!(true))
+    colony
+        .wait_tree("the ttl takes the flash off the screen", |t| {
+            !present(t, &flash)
         })
         .await;
-    let _ = expired;
     let rows = colony.store_rows().await;
     assert!(
         rows.iter().any(|r| r["view_id"] == "flash"),
@@ -176,20 +153,8 @@ async fn a_view_lives_in_the_store() {
          off the screen (§ 4.34): {rows:?}"
     );
 
-    // -- The withdrawal: one leaving round, then the row is gone ---------------------
+    // -- The withdrawal takes the row out of the table -------------------------------
     colony.withdraw(APP, "flash").await;
-    colony.settle(QUIET).await;
-    // One more write, so the store is asked again: leg 0 of THAT bundle is the table as it
-    // stands after the withdrawal. (A withdrawal's own leg 0 reads the table before its
-    // own delete -- that is what it is for.)
-    colony
-        .put(
-            APP,
-            "note",
-            json!({"title": "Note", "context": "work", "relevance": "0.9",
-                   "topic": "note:1", "touched": "2"}),
-        )
-        .await;
     colony.settle(QUIET).await;
     let rows = colony.store_rows().await;
     assert!(
@@ -199,7 +164,7 @@ async fn a_view_lives_in_the_store() {
     assert_eq!(
         rows_of(&rows, "display").len(),
         1,
-        "and the state row is still the one row it was: {rows:?}"
+        "and the rest row is still the one row it was: {rows:?}"
     );
     assert!(
         rows.iter().any(|r| r["view_id"] == "note"),
@@ -207,71 +172,56 @@ async fn a_view_lives_in_the_store() {
     );
 
     // -- S-058: what is in the store and what is on the screen are two questions ------
-    let last = colony.state().await.expect("a state row stands");
+    let last = colony.tree().await;
     assert!(
-        curator(&last, &note, "present") == json!(true),
+        present(&last, &note),
         "the note still stands on the screen: {last}"
     );
-    assert!(
-        last["views"].get(&flash).is_none()
-            || last["views"][&flash]["curator"]["present"] != json!(true),
-        "and the withdrawn one does not"
-    );
+    assert!(!present(&last, &flash), "and the withdrawn one does not");
 
-    // -- GH #765 (way A): no patch stands ahead of the write it belongs to ------------
+    // -- GH #809: the store is read once, and a write is a delete and an insert -------
     // Everything above happened through real cells, so the colony's log is the whole
-    // history of this screen. Read forwards, the count of patches the `web` cell got can
-    // never be larger than the count of state writes the store has ANSWERED by then --
-    // that is what "the client hears the store, not the pass" means when it is a message
-    // order rather than a sentence. Before way A the two travelled in one emission, so a
-    // refused write had drawn before its refusal was even read.
-    let rows = colony.log(None).await;
-    let (mut answered, mut drawn, mut seen) = (0usize, 0usize, 0usize);
-    for row in &rows {
-        let headers: Value =
-            meclaw_core::serde_json::from_str(&row.headers_json).unwrap_or_else(|_| json!({}));
-        let request: Value = meclaw_core::serde_json::from_str(
-            headers["context"]["display_request"].as_str().unwrap_or(""),
-        )
-        .unwrap_or_else(|_| json!({}));
-        // The request is PARSED, not searched for a substring: `display_request` is JSON
-        // text inside a header, and a `"state"` anywhere in a nested body would count.
-        // And only a LANDED write counts, because the promise below is about the write
-        // this patch belongs to -- a refusal is an answer too, and it draws nothing.
-        if row.to_path.ends_with("/compose") && request["state"] == json!(true) && landed(row) {
-            answered += 1;
-        }
-        if hop_of(row)["route"] == "patch" {
-            drawn += 1;
-            seen += 1;
+    // history of this screen. Before GH #809 every pass selected the whole table and
+    // carried its plan in the header; now the rows live in the cell's memory, so the one
+    // select is the boot's and every write bundle is its app row plus, when it changed,
+    // the rest row -- nothing is read back.
+    let mut selects = 0usize;
+    let mut writes = 0usize;
+    for row in colony.to_child("views").await {
+        let Some(calls) = calls_of(&row) else {
+            continue;
+        };
+        let ops: Vec<&str> = calls
+            .iter()
+            .map(|c| c["operation"].as_str().unwrap_or(""))
+            .collect();
+        selects += ops.iter().filter(|op| **op == "select").count();
+        let mark = request_of(&row);
+        if mark["write"].is_object() {
+            writes += 1;
             assert!(
-                drawn <= answered,
-                "patch {drawn} reached the display before the store had answered {drawn} \
-                 state writes (only {answered} so far): a drawing left before the row it \
-                 renders had landed"
+                ops.iter().all(|op| *op == "delete" || *op == "insert"),
+                "a write is a delete and an insert, and nothing is read back: {ops:?}"
             );
-            // GH #765 (way A) moved the patch onto the reply to the state write, and that
-            // reply carries `display_request` -- with the pass's whole call list under
-            // `request["patch"]`. Unless the edge drops it, the drawing rides to the
-            // browsers and back again: measured on the twin, the same time-lapse line
-            // grew from 17 432 B of `display_request` to 1 749 944 B, and the largest
-            // single header from 1 184 B to 100 559 B, because an `object.update` on
-            // `display.root` carries the whole client script.
-            assert!(
-                headers["context"]["display_request"].is_null(),
-                "the patch carries the pass's own request to the browsers: the drawing \
-                 travels a second time for nobody ({} B)",
-                headers["context"]["display_request"]
-                    .as_str()
-                    .unwrap_or("")
-                    .len()
+            assert_eq!(
+                ops.first(),
+                Some(&"delete"),
+                "and it starts by taking down what stood under the name: {ops:?}"
             );
         }
+        assert!(
+            !row.headers_json.contains("display_views"),
+            "no header carries a plan any more: {}",
+            row.headers_json
+        );
     }
+    assert_eq!(
+        selects, 1,
+        "the store was asked for its rows once, at the boot"
+    );
     assert!(
-        seen > 0 && answered > 0,
-        "the run drew nothing and wrote nothing -- the order above proves nothing: \
-         {seen} patches, {answered} answered writes"
+        writes >= 4,
+        "the run wrote -- the rule above was measured: {writes}"
     );
 
     colony.shutdown().await;

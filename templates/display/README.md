@@ -1,4 +1,4 @@
-# `display@2.6.0`
+# `display@2.7.0`
 
 > **Normative source:** this README is the public rendering of the display-hive description (`meclaw-next/23-display/display-hive.md`, internal), with its reference model and its scenarios, which travel with this template in `compose/scenarios/`. Where the two differ, that document rules and this README is redrawn from it (`docs/development-rules.md` § 10).
 
@@ -12,7 +12,7 @@ itself, `receipt` a write that was refused. The hive is the address, and the cel
 it are its own business.
 
 ```
-in_view / in_withdraw / in_notice  ->  compose  <->  views    the one state
+in_view / in_withdraw / in_notice  ->  compose  <->  views    rows + rest row
                                          | \
                                          |  +->  judge, clock    relevance, time
                                          v
@@ -36,38 +36,58 @@ The guiding sentence: show as little as possible, but everything that is relevan
 
 ## The state
 
-There is one screen state per member. It lies in the store `views` as a single row, owned
-by `display` under the `view_id` `screen-state` with the kind `state`, and the curator
-reads and writes it in a pass. Every value in it is systemwide; no value depends on an
-output. The finger writes nothing directly. A tap and a hold reach the curator as events,
-and the curator writes what they mean.
+There is one screen state per member, and the curator holds it in memory: the cell
+`compose` runs `resident`. What it holds is a cache over three sources of truth. The object
+rows of the store `views` are what the applications said. One small row in the same store,
+owned by `display` under the `view_id` `screen-rest`, keeps the history the rows cannot
+give back. The object tree the cell `web` holds is what the browsers see. Every value in
+the state is systemwide; no value depends on an output. The finger writes nothing
+directly. A tap and a hold reach the curator as events, and the curator writes what they
+mean.
 
-The write names the version it read: `update ... where updated_at = <the stamp the pass
-got>`, and the first creation is an `insert`. A read pass and its write are a full message
-round trip apart, so two events that arrive inside it are handed the same row; without the
-condition the second write would erase what the first pass concluded, and a tap would be
-lost. When the store reports that no row moved, the same pass runs again on the row that
-now stands, at most sixteen times -- twice the fan-out measured on a screen whose seven
-applications wrote in one breath.
+A curator that starts, or was killed, rebuilds its state from the rows. Each row is
+replayed as a new view at its row's `updated_at`, and a row whose `ttl_ms` has run out
+is skipped. It lays the small row over them, reads the tree once, and from then on sends at
+most one `patch` per pass and no `read`. Only a patch `web` refuses makes it read the tree
+once more and patch the difference. A refusal of the patch that repair itself drew is not a
+mirror fault and reads nothing, and a repair `read` whose answer never comes is asked again
+at the next event at least five seconds later.
 
-The curator takes one message at a time (`params.max_concurrency` is 1). Events that
-arrive together are therefore read, computed and answered in the order they arrived, and
-never four at once. It does not close the round trip above: a pass is two messages with a
-store between them, so two events inside one trip still read the same row and the
-condition on the write is still what keeps the first of them -- measured on a test colony,
-the refused writes under a burst of ten taps are the same with one worker as with four.
+The small row carries the judge's verdict and the moment of its last call, the bar, the
+weights, and the errors the screen has already said (the state repeats them in every pass,
+so a restart does not say them twice; a refusal is not kept and is said once more after a
+restart, as for a changed dial). Per window it carries `since`, `dismissed_at`,
+`led_until`, `verdict_cleared`, `topic_dupe`, its verdict, whether it was withdrawn, and
+the hints the state still holds that the view's last row no longer says (`kept`,
+`kept_children`): the door merges a write per key, so a key left out stands, while the
+store keeps the last write whole. It is written when its content changes and never
+per pass. A stroke changes it only where the state really changes: a view dropped after
+its leaving pass, withdrawn or with its `ttl_ms` run out, leaves the row, and a topic
+duplicate falls when its standing window loses presence. A view that merely decayed stays
+in the state and in the row, and only the touches write `since`. Everything else -- rungs,
+score, decay, `age`, levels, ranks, `unseen`, the strokes, the dock order, whether this
+pass called the judge, the tree last sent -- every pass computes anew and nobody writes.
 
-**The browsers hear the store, not the pass.** The calls a pass computed for the display
-travel on its own state write and are sent from the reply to it: a write that landed draws
-them, a write the condition refused draws nothing and runs its pass again. A patch says
-what the screen IS, and before this a refused pass had already said it -- the drawing was
-then taken back by the next pass that landed, which is what a flicker is. The price is one
-message round trip of latency per event.
+The store holds each application's last write per view, until the application writes
+again or withdraws; what earlier writes left standing in the state is kept in the small
+row. A view is one row,
+written as delete + insert under `(owner, view_id)`. The curator never deletes a row: an
+expired view stays a row and stops being a window, and a withdrawn view is the
+application's own delete. Where the scenarios say a view "leaves the store", the view
+leaves the set of views the curator knows, while its row stays.
 
-What this does not reach is a pass that LANDED: an event that arrives while another pass
-is in the air is answered first by that pass, whose state is the truth of that instant and
-is older than the finger. The client keeps its own drawing until a patch carries a state
-computed after the touch (§ 5.7), and that is still what covers this case.
+After a restart the state differs from the state before in exactly one point: the `age`
+of a window that appeared or left in the last pass before the kill. One second later, at
+the next stroke, both are equal; everything else comes back from the rows, the small row
+and the clock. `REBUILD n/n` of the scenario driver pins it: the driver kills the curator
+after every scenario and compares the rebuilt state with the old one after the next
+stroke.
+
+The curator takes one message at a time, so events that arrive together are computed and
+answered in the order they arrived. A browser hears the pass: one `patch` per pass, from
+the tree the curator last sent. A pass that was already running when the finger landed
+still answers first, with the state from before the touch, and the client keeps its own
+drawing until a patch carries a state computed after the touch.
 
 Time points are epoch milliseconds, durations are milliseconds. A hint that is a number
 travels as text, because the template language reads `0` as empty.
@@ -117,7 +137,7 @@ tile's rank and `unseen`. What each of them means is `compose/scenarios/pass.py`
 
 ## The pass
 
-One run of the curator over the whole state: read, compute, write. It runs on six events
+One run of the curator over the whole state it holds. It runs on six events
 and on nothing else. An application writes a view, an application withdraws one, a verdict
 arrives, a tap, a hold, a stroke of the screen's clock. Twelve steps:
 
@@ -343,6 +363,8 @@ touch.
 | `hidden` means gone from the page | this README | `hidden` is the lowest rung: no window, and the tile stands while the app is present |
 | The canvas ordered by first appearance | this README | the canvas is ordered by what the windows mean |
 | No clock time on chat lines | an earlier ruling | every line carries its source and its clock time; a TILE still carries none |
+| The state is one row in the store, read and written by every pass under a compare-and-set | display 2.5.0 to 2.6.0 | the state is memory; the store holds the application rows and one small rest row |
+| A patch leaves only after the state row has landed | display 2.6.0 | the patch leaves with the pass; the curator is serial and nothing is refused, so nothing it draws is taken back |
 
 ## Versions
 
@@ -371,3 +393,8 @@ touch.
   refused is never drawn. And a window may hold a page: a picture a browser cell
   renders and streams, joined while the window stands and given back when it is
   put away.
+- `2.7.0` The curator keeps its state in memory, and no header carries the
+  screen plan any more. One pass sends `web` at most one patch and no read, and
+  the store holds the application rows and one small rest row, written only
+  when it changes. A restart rebuilds the same screen out of the rows, the rest
+  row and the tree, equal from the next stroke on.

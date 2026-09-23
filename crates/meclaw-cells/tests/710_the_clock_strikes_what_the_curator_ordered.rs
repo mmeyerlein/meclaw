@@ -19,20 +19,13 @@ mod display_colony;
 
 use std::time::Duration;
 
-use display_colony::{Boot, boot, curator, have_python, library_ships};
-use meclaw_core::serde_json::{Value, json};
+use display_colony::{Boot, attr, boot, have_python, library_ships, present};
+use meclaw_core::serde_json::json;
 
 const APP: &str = "/alex/apps/note";
 
 /// A settle window, never a semantic discriminator.
 const QUIET: Duration = Duration::from_millis(300);
-
-/// Whether the state still holds `oid` as a present window (§ 4.11).
-fn present(state: &Value, oid: &str) -> bool {
-    state["views"]
-        .get(oid)
-        .is_some_and(|v| v["curator"]["present"] == json!(true))
-}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_clock_strikes_what_the_curator_ordered() {
@@ -50,6 +43,7 @@ async fn the_clock_strikes_what_the_curator_ordered() {
     let flash = colony.oid(APP, "flash");
 
     // ONE write, and then the test stops writing. Everything that follows is the clock's.
+    // Read where it lands (GH #809): the window as the patches to `web` drew it.
     let fresh = colony
         .put(
             APP,
@@ -59,7 +53,7 @@ async fn the_clock_strikes_what_the_curator_ordered() {
         )
         .await;
     assert_eq!(
-        curator(&fresh, &note, "age"),
+        attr(&fresh, &note, "age"),
         json!("fresh"),
         "a window's first pass is its fresh one (§ 4.35)"
     );
@@ -68,13 +62,13 @@ async fn the_clock_strikes_what_the_curator_ordered() {
     // Nothing is written in between: what makes the second pass is the stroke the first
     // one ordered, and `age` is what only a SECOND pass can say.
     let settled = colony
-        .wait_state("the fresh second strikes and the note settles", |s| {
-            curator(s, &note, "age") == json!("settled")
+        .wait_tree("the fresh second strikes and the note settles", |t| {
+            attr(t, &note, "age") == json!("settled")
         })
         .await;
     assert_eq!(
-        curator(&settled, &note, "since"),
-        curator(&fresh, &note, "since"),
+        attr(&settled, &note, "since"),
+        attr(&fresh, &note, "since"),
         "the stroke is no touch: `since` stands (§ 4.8)"
     );
     let writes = colony.writes_taken().await;
@@ -89,27 +83,27 @@ async fn the_clock_strikes_what_the_curator_ordered() {
         "the moment the curator ordered came back as a pass (§ 4.34)"
     );
 
-    // -- S-045, S-072: `strokes_ordered` -- what is ordered is the earliest stroke ---
-    let strokes: Vec<i64> = settled["strokes"]
-        .as_array()
-        .expect("the state carries its strokes")
-        .iter()
-        .filter_map(Value::as_i64)
-        .collect();
+    // -- S-045, S-072: what is ordered is the moment the root names ------------------
+    // The order of the strokes themselves is the model's (`strokes_ordered`, S-045/S-072
+    // in the CURATOR run); at this seam the root carries the order the clock holds.
+    let due = settled["display.root"]["props"]["due"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
     assert!(
-        !strokes.is_empty(),
-        "a present window has moments ahead of it"
+        !due.is_empty(),
+        "a present window has a moment ahead of it, and the root names it"
     );
-    let mut sorted = strokes.clone();
-    sorted.sort_unstable();
-    assert_eq!(strokes, sorted, "the strokes are ordered (§ 4.34)");
-
     let orders = colony.orders().await;
     let ordered: Vec<&String> = orders
         .iter()
         .filter(|(op, _)| op == "add")
         .map(|(_, id)| id)
         .collect();
+    assert!(
+        ordered.contains(&&due),
+        "the moment the root names is one the clock was given: {due} not in {ordered:?}"
+    );
     for id in &strikes {
         assert!(
             ordered.contains(&id),
@@ -128,7 +122,9 @@ async fn the_clock_strikes_what_the_curator_ordered() {
 
     // -- S-037, S-075: the expiry is the PASS's doing, not a write's -----------------
     // One window with a `ttl_ms`, and again no second write: what takes it off the screen
-    // is the moment the curator ordered for it.
+    // is the moment the curator ordered for it. That it was the expiry and not the fade
+    // (its decay had not run out) is the model's to say -- S-037/S-075 in the CURATOR
+    // run; the curator's decay is memory since GH #809 and no message carries it.
     colony
         .put_ttl(
             APP,
@@ -138,18 +134,24 @@ async fn the_clock_strikes_what_the_curator_ordered() {
             2000,
         )
         .await;
-    let gone = colony
-        .wait_state("the ttl takes the flash off the screen", |s| {
-            !present(s, &flash)
+    // § 4.35: a window leaves over two frames, so the objects go one stroke later -- and
+    // that stroke, too, is one the curator ordered and nobody asked for.
+    colony
+        .wait_tree("the ttl takes the flash off the page", |t| {
+            !present(t, &flash)
         })
         .await;
-    // And it was the EXPIRY that took it, not the fade: its decay had not run out.
-    let decay = gone["views"][&flash]["curator"]["decay"]
-        .as_f64()
-        .unwrap_or(0.0);
+    let deleted: Vec<String> = colony
+        .patches()
+        .await
+        .iter()
+        .flatten()
+        .filter(|c| c["op"] == "object.delete")
+        .filter_map(|c| c["id"].as_str().map(str::to_string))
+        .collect();
     assert!(
-        decay > 0.0,
-        "the flash left while it was still bright -- its time was up (§ 4.34): {gone}"
+        deleted.iter().any(|id| id.contains(&flash)),
+        "a patch took the window off the page: {deleted:?}"
     );
     let writes = colony.writes_taken().await;
     assert_eq!(
@@ -157,39 +159,13 @@ async fn the_clock_strikes_what_the_curator_ordered() {
         2,
         "still nobody wrote and nobody withdrew: {writes:?}"
     );
-    // § 4.35: a window leaves over two frames, so the objects go one stroke later -- and
-    // that stroke, too, is one the curator ordered and nobody asked for.
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
-    loop {
-        let deleted: Vec<String> = colony
-            .patches()
-            .await
-            .iter()
-            .flatten()
-            .filter(|c| c["op"] == "object.delete")
-            .filter_map(|c| c["id"].as_str().map(str::to_string))
-            .collect();
-        if deleted.iter().any(|id| id.contains(&flash)) {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the window never left the page: {deleted:?}"
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
 
     // -- The whole fall, struck step by step: linger, then fade, then gone -----------
-    let quiet = colony
-        .wait_state("the note fades out after linger + fade", |s| {
-            !present(s, &note)
+    colony
+        .wait_tree("the note fades out after linger + fade", |t| {
+            !present(t, &note)
         })
         .await;
-    assert_eq!(
-        curator(&quiet, &note, "decay"),
-        json!(0.0),
-        "a window whose decay reached 0 is no longer present (§ 4.15)"
-    );
     let writes = colony.writes_taken().await;
     assert_eq!(writes.len(), 2, "and still only the two writes: {writes:?}");
     colony.settle(QUIET).await;

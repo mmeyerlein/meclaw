@@ -1,18 +1,18 @@
 //! The two browser gestures the screen answers itself (display-hive.md § 5.6).
 //!
 //! Which window stands open is display hygiene: it is nobody's turn and nobody's
-//! message. A tap on a tile and a hold on the OS mark therefore become a read pass
-//! without a write -- the shape of a clock strike -- with the mark on the request, and
-//! the mark rides the plan into the curator as the ONE event of § 4.1. A button inside
-//! an application's own tree is the application's business and leaves on the `event`
-//! lane as it always did.
+//! message. A tap on a tile and a hold on the OS mark therefore do not leave the hive:
+//! each one is the ONE event of a pass of § 4.1, run by the cell over the state it keeps
+//! in memory -- the shape of a clock strike. A button inside an application's own tree is
+//! the application's business and leaves on the `event` lane as it always did.
 //!
 //! The two names are `tap` and `hold` and nothing else (§ 2, struck words): a tap names
 //! the window it hit, a hold names NOTHING -- which window a hold opens is the screen's
 //! own knowledge (§ 5.4, § 8.5), so a `topic` a client sends with it is not read (S-088).
 //!
-//! The script runs the way a `code` cell runs it: as a subprocess, with the pass's
-//! document on stdin.
+//! The script runs the way a `resident` code cell runs it: one living cell over every
+//! message (`support::Screen`, the curator driver, GH #809). The stateless cases -- an
+//! event the screen hands on, a tap it cannot read -- run one subprocess per document.
 
 mod support;
 
@@ -24,48 +24,42 @@ use support::{
     COMPOSE, Screen, component_view, library_ships, pane, pane_id, raw, repo, window_id,
 };
 
-/// One `event` pass, straight off the browser.
-fn event_pass(name: &str, value: Value) -> Vec<Value> {
-    raw(&json!({
-        "params": {},
+/// A browser event as `web` hands it to the cell.
+fn gesture(name: &str, value: Value) -> Value {
+    json!({
         "body": {"event": {"name": name, "value": value}},
         "envelope": {"header": {"hop": {"route": "event"}}},
-    }))
+    })
 }
 
-/// One `views` pass: the store answered the read the absorbed gesture asked for.
-fn views_pass(request: &Value, rows: &Value) -> Vec<Value> {
-    raw(&json!({
-        "params": {},
-        "body": {"messages": [{
-            "origin": "tool", "type": "tool_result", "id": "d-select",
-            "text": rows.to_string(),
-        }]},
-        "envelope": {"header": {
-            "hop": {"operation": "select"},
-            "context": {"display_origin": "views", "display_request": request.to_string()},
-        }},
-    }))
+/// One `event` pass on a cell that keeps nothing: for what the screen hands on.
+fn event_pass(name: &str, value: Value) -> Vec<Value> {
+    let mut doc = gesture(name, value);
+    doc["params"] = json!({});
+    raw(&doc)
 }
 
-/// The request one emission carries, parsed.
-fn request_of(emission: &Value) -> Value {
-    meclaw_core::serde_json::from_str(
-        emission["header"]["display_request"]
-            .as_str()
-            .expect("a request"),
-    )
-    .expect("the request is JSON")
+/// A screen with one window of `topic: chat` that is present with a tile and NOT open:
+/// relevance 0.5 against the default bar of 0.3 is a score of 0.25.
+fn chat_screen() -> Screen {
+    let mut screen = Screen::new(json!({}));
+    screen.write(
+        component_view(
+            "chat",
+            "main",
+            pane(
+                "chat",
+                json!({"context": "work", "relevance": "0.5", "topic": "chat"}),
+            ),
+        ),
+        1000,
+    );
+    screen
 }
 
-/// The plan one emission carries, parsed.
-fn plan_of(emission: &Value) -> Value {
-    meclaw_core::serde_json::from_str(
-        emission["header"]["display_views"]
-            .as_str()
-            .expect("a plan"),
-    )
-    .expect("the plan is JSON")
+/// The event the last pass ran on, as the curator recorded it (`state.pass.event`).
+fn ran_on(screen: &Screen) -> Value {
+    screen.screen_state()["pass"]["event"].clone()
 }
 
 /// One `event` pass, keeping what the script said on stderr.
@@ -132,8 +126,8 @@ fn template_of(all: &[Value], name: &str) -> String {
         .to_string()
 }
 
-/// A tap and a hold do not leave the hive: they become a read pass with the mark on it.
-/// Everything else still leaves as an `event`.
+/// A tap and a hold do not leave the hive: each one runs a pass in the cell. Everything
+/// else still leaves as an `event`.
 #[test]
 fn a_tap_and_a_hold_are_absorbed_and_a_button_is_not() {
     if !library_ships() {
@@ -142,72 +136,113 @@ fn a_tap_and_a_hold_are_absorbed_and_a_button_is_not() {
     }
     let node = pane_id("chat", "chat");
     let window = window_id("alex", "chat");
-    let tap = event_pass("tap", json!({"for": node}));
-    assert_eq!(tap.len(), 1, "one emission and no more: {tap:?}");
-    assert_eq!(tap[0]["header"]["route"], "views", "{tap:?}");
-    let request = request_of(&tap[0]);
-    assert_eq!(request["tick"], true, "it is the tick's pass: {request}");
+    let mut screen = chat_screen();
     assert_eq!(
-        request["tap"],
-        window.as_str(),
-        "and it names the WINDOW, not the node the finger landed on (§ 2 Id): {request}"
+        screen.curator(&window, "open"),
+        json!(false),
+        "not yet open"
+    );
+
+    screen.send(gesture("tap", json!({"for": node})), 2000);
+    assert!(
+        screen.lane("event").is_empty(),
+        "a tap does not leave the hive: {:?}",
+        screen.last
+    );
+    assert_eq!(
+        screen.curator(&window, "open"),
+        json!(true),
+        "it opened the WINDOW, not the node the finger landed on (§ 2 Id)"
+    );
+    assert!(
+        !screen.patch().is_empty(),
+        "and the pass drew what it did in the same turn"
     );
 
     // The hold carries nothing at all (§ 5.4): which window it opens is the screen's
     // knowledge, not the client's.
-    let hold = event_pass("hold", json!({}));
-    assert_eq!(hold.len(), 1, "one emission and no more: {hold:?}");
-    assert_eq!(hold[0]["header"]["route"], "views", "{hold:?}");
-    let bare = request_of(&hold[0]);
-    assert_eq!(bare["hold"], true, "{bare}");
-    assert_eq!(bare["tick"], true, "{bare}");
-
-    // S-088: a client that sends a topic with the hold anyway is not read. Compared
-    // against the bare request, so a topic that leaked through in ANY shape shows.
-    let chatty = request_of(&event_pass("hold", json!({"topic": "chat"}))[0]);
+    let mut bare = chat_screen();
+    bare.send(gesture("hold", json!({})), 3000);
+    assert!(
+        bare.lane("event").is_empty(),
+        "a hold does not leave the hive: {:?}",
+        bare.last
+    );
     assert_eq!(
-        chatty, bare,
-        "a topic sent with the hold is not read (S-088): {chatty}"
+        bare.curator(&window, "since"),
+        json!(3000),
+        "it touched the window of `topic: chat` (§ 5.4, § 8.5)"
     );
 
+    // S-088: a client that sends a topic with the hold anyway is not read. Compared
+    // against the bare hold, so a topic that leaked through in ANY shape shows.
+    let mut chatty = chat_screen();
+    chatty.send(gesture("hold", json!({"topic": "chat"})), 3000);
+    assert_eq!(
+        chatty.screen_state(),
+        bare.screen_state(),
+        "a topic sent with the hold is not read (S-088)"
+    );
+    assert_eq!(chatty.held, bare.held, "and draws nothing else (S-088)");
+
     // A button on an application's own tree is not the screen's business and leaves as
-    // it always did.
-    let button = event_pass("action", json!({"for": node}));
-    assert_eq!(button[0]["header"]["route"], "event", "{button:?}");
+    // it always did -- without a pass of its own.
+    screen.send(gesture("action", json!({"for": node})), 4000);
+    let button = screen.lane("event");
+    assert_eq!(button.len(), 1, "{:?}", screen.last);
     assert_eq!(button[0]["owner"], "alex", "with its addressee: {button:?}");
+    assert!(
+        screen.hops().is_empty(),
+        "and the cell neither wrote nor drew for it: {:?}",
+        screen.hops()
+    );
 }
 
-/// The mark rides the whole way: the views pass turns it into the ONE event of § 4.1,
-/// and that is what the read pass reads.
+/// The gesture is the ONE event of § 4.1 of the pass it runs (`state.pass.event`), and a
+/// strike of the clock is the stroke.
 #[test]
-fn the_mark_becomes_the_one_event_of_the_pass() {
+fn the_gesture_becomes_the_one_event_of_the_pass() {
     if !library_ships() {
         eprintln!("SKIP: the template library is not in this tree");
         return;
     }
-    let out = views_pass(
-        &json!({"tick": true, "tap": pane_id("chat", "chat")}),
-        &json!([]),
+    let window = window_id("alex", "chat");
+    let mut screen = chat_screen();
+
+    screen.send(
+        gesture("tap", json!({"for": pane_id("chat", "chat")})),
+        2000,
     );
-    assert_eq!(out[0]["header"]["route"], "read", "{out:?}");
-    let plan = plan_of(&out[0]);
+    assert_eq!(ran_on(&screen), "tap", "{}", screen.screen_state());
     assert_eq!(
-        plan["event"],
-        json!({"kind": "tap", "for": window_id("alex", "chat")}),
-        "a tap names its window: {plan}"
+        screen.screen_state()["pass"]["touched"],
+        json!({window.as_str(): "d"}),
+        "a tap names its window, and only that one is touched: {}",
+        screen.screen_state()
     );
 
-    let out = views_pass(&json!({"tick": true, "hold": true}), &json!([]));
-    let plan = plan_of(&out[0]);
+    screen.send(gesture("hold", json!({})), 3000);
     assert_eq!(
-        plan["event"],
-        json!({"kind": "hold"}),
-        "a hold names nothing: {plan}"
+        ran_on(&screen),
+        "hold",
+        "a hold names nothing: {}",
+        screen.screen_state()
     );
 
-    // And a pass that nothing marked is a stroke -- the clock's own minute (§ 4.1).
-    let plan = plan_of(&views_pass(&json!({"tick": true}), &json!([]))[0]);
-    assert_eq!(plan["event"], json!({"kind": "stroke"}), "{plan}");
+    // And a pass that nothing marked is a stroke -- the clock's own strike (§ 4.1).
+    let strike = json!({
+        "body": {"messages": []},
+        "envelope": {"header": {"hop": {"route": "in_tick", "schedule_name": "due"},
+                                "context": {}}},
+    });
+    screen.send(strike, 4000);
+    assert_eq!(ran_on(&screen), "stroke", "{}", screen.screen_state());
+    assert_eq!(
+        screen.screen_state()["pass"]["touched"],
+        json!({}),
+        "and it touches nothing: {}",
+        screen.screen_state()
+    );
 }
 
 /// An absorbed gesture never asks the judge, even with the judge switched on: the hand
@@ -266,10 +301,10 @@ fn an_absorbed_gesture_never_asks_the_judge() {
 /// names (`TAP_EVENT`, `HOLD_EVENT`): the tile's template interpolates the first, so
 /// renaming it can never leave the tile shouting at a door that no longer opens.
 ///
-/// Read out of the rendered markup and put straight into an `event` pass -- a spelling
-/// mismatch would send the tap out of the hive as an ordinary application event instead
-/// of absorbing it, silently. The mark's half is read out of the shipped client script,
-/// where the hold is pushed with an EMPTY payload (§ 5.4, S-088).
+/// Read out of the rendered markup and put straight into the cell as a browser event -- a
+/// spelling mismatch would send the tap out of the hive as an ordinary application event
+/// instead of running a pass, silently. The mark's half is read out of the shipped client
+/// script, where the hold is pushed with an EMPTY payload (§ 5.4, S-088).
 #[test]
 fn the_client_sends_the_names_the_absorber_listens_for() {
     if !library_ships() {
@@ -285,10 +320,13 @@ fn the_client_sends_the_names_the_absorber_listens_for() {
         script.contains("pushEvent(\"hold\", {})"),
         "the mark pushes the hold under its own name and with nothing in it"
     );
-    let hold = event_pass("hold", json!({}));
-    assert_eq!(
-        hold[0]["header"]["route"], "views",
-        "and the screen answers it itself: {hold:?}"
+    let mut screen = chat_screen();
+    screen.send(gesture("hold", json!({})), 2000);
+    assert!(
+        screen.lane("event").is_empty() && ran_on(&screen) == "hold",
+        "and the screen answers it itself: {:?} {}",
+        screen.last,
+        screen.screen_state()
     );
 
     let tile = template_of(&probe(), "display-tile");
@@ -305,10 +343,12 @@ fn the_client_sends_the_names_the_absorber_listens_for() {
         tile.contains("phx-value-for=\"{{oid}}\""),
         "and the click carries the window's id: {tile}"
     );
-    let out = event_pass(name, json!({"for": pane_id("chat", "chat")}));
-    assert_eq!(
-        out[0]["header"]["route"], "views",
-        "the screen answers its own tile's event: {out:?}"
+    screen.send(gesture(name, json!({"for": pane_id("chat", "chat")})), 3000);
+    assert!(
+        screen.lane("event").is_empty() && ran_on(&screen) == "tap",
+        "the screen answers its own tile's event: {:?} {}",
+        screen.last,
+        screen.screen_state()
     );
 }
 

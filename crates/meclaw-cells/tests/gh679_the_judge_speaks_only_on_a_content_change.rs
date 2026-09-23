@@ -21,7 +21,7 @@
 mod support;
 
 use meclaw_core::serde_json::{Value, json};
-use support::{Screen, component_view, library_ships, pane, raw, repo};
+use support::{Screen, component_view, library_ships, pane, repo};
 
 const README: &str = "templates/display/README.md";
 
@@ -103,6 +103,11 @@ fn an_unchanged_write_asks_nothing_and_a_changed_one_asks() {
 /// The lane `in_verdict`: what the judge answered becomes the ONE event of § 4.1
 /// at the edge, and never reaches the pass as a model's answer.
 ///
+/// Since display 2.7.0 the cell holds the state in memory (GH #809), so the
+/// verdict is a pass of its own right there, over the windows the cell knows:
+/// no store round trip carries it any more. What is read is what it left
+/// behind -- the state the pass wrote, the patch to the display.
+///
 /// Fenced JSON is tolerated (the memory hive's lesson). An error, and an answer
 /// that is not JSON, change nothing at all: the floor has already drawn.
 #[test]
@@ -111,61 +116,70 @@ fn the_verdict_lane_turns_an_answer_into_the_one_event() {
         eprintln!("SKIP: the template library is not in this tree");
         return;
     }
+    let mut screen = Screen::new(params("on"));
+    screen.write(weather("Sunny"), 100_000);
+    screen.write(
+        component_view(
+            "b",
+            "main",
+            pane(
+                "b",
+                json!({"title": "Cloud", "context": "weather", "relevance": "0.7",
+                       "topic": "weather:potsdam"}),
+            ),
+        ),
+        110_000,
+    );
+    assert!(question(&screen).is_some(), "the judge was asked");
+
     let text = format!(
         "```json\n{}\n```",
         json!({"bar": 0.8, "weights": {"weather": 0},
                "windows": [{"id": "view.alex.a", "judged_hidden": true},
                            {"id": "view.alex.b", "judged_relevance": 0.95}]})
     );
-    let answer = raw(&json!({
-        "params": params("on"),
-        "body": {"messages": [{"origin": "assistant", "type": "text", "text": text}]},
-        "envelope": {"header": {
-            "hop": {"route": "in_verdict", "finish_reason": "stop", "model": "x"},
-            // The context of the read pass that asked travels with the reply.
-            "context": {"display_origin": "read", "display_views": "{}"},
-        }},
-    }));
-    assert_eq!(answer.len(), 1, "one emission: {answer:?}");
-    assert_eq!(answer[0]["header"]["route"], "views");
-    let request: Value = meclaw_core::serde_json::from_str(
-        answer[0]["header"]["display_request"]
-            .as_str()
-            .expect("request"),
-    )
-    .expect("json");
-    assert_eq!(request["tick"], true);
-    // `windows` becomes a map by id, and the two per-window words keep the names
-    // § 3 gives them -- so § 4.5 reads a verdict and not a wire format.
+    let drawn = screen.send(
+        json!({
+            "body": {"messages": [{"origin": "assistant", "type": "text", "text": text}]},
+            "envelope": {"header": {
+                "hop": {"route": "in_verdict", "finish_reason": "stop", "model": "x"},
+                // The context of the turn that asked travels back on the reply. The
+                // lane decides, not that origin: taken for the display's answer to a
+                // read, it would reach a running cell as a stray reply and do nothing.
+                "context": {"display_origin": "read"},
+            }},
+        }),
+        111_000,
+    );
+    // `windows` became a map by id, and the two per-window words kept the names
+    // § 3 gives them -- so § 4.5 read a verdict and not a wire format.
+    let state = screen.screen_state();
+    assert_eq!(state["bar"], 0.8);
+    assert_eq!(state["weights"]["weather"].as_f64(), Some(0.0));
     assert_eq!(
-        request["verdict"],
-        json!({"bar": 0.8, "weights": {"weather": 0},
-               "windows": {"view.alex.a": {"judged_hidden": true},
-                           "view.alex.b": {"judged_relevance": 0.95}}})
+        state["judge"]["verdict"]["at"], 111_000,
+        "applied on arrival"
+    );
+    assert_eq!(
+        state["views"]["view.alex.a"]["verdict"]["judged_hidden"],
+        true
+    );
+    assert_eq!(
+        state["views"]["view.alex.b"]["verdict"]["judged_relevance"],
+        0.95
+    );
+    assert_eq!(screen.curator("view.alex.a", "rung"), "hidden");
+    assert!(
+        !drawn.is_empty(),
+        "and the display got the verdict's picture in the same turn"
+    );
+    assert!(
+        screen.hops().iter().all(|h| h["route"] != "read"),
+        "a verdict reads nothing"
     );
 
-    // The store's reply hands it on as the event of § 4.1.
-    let after = raw(&json!({
-        "params": params("on"),
-        "body": {"messages": [{
-            "origin": "tool", "type": "tool_result", "id": "d-select",
-            "text": "[]",
-        }]},
-        "envelope": {"header": {
-            "hop": {},
-            "context": {"display_origin": "views", "display_request": request.to_string()},
-        }},
-    }));
-    let plan: Value = meclaw_core::serde_json::from_str(
-        after[0]["header"]["display_views"].as_str().expect("plan"),
-    )
-    .expect("json");
-    assert_eq!(plan["event"]["kind"], "verdict");
-    for key in ["bar", "weights", "windows"] {
-        assert_eq!(plan["event"][key], request["verdict"][key], "{key}");
-    }
-
     // An error and a non-JSON answer leave the state where it stands.
+    let before = screen.screen_state();
     for (hop, body) in [
         (
             json!({"route": "in_verdict", "finish_reason": "error", "error_code": "timeout"}),
@@ -176,12 +190,18 @@ fn the_verdict_lane_turns_an_answer_into_the_one_event() {
             json!({"messages": [{"origin": "assistant", "type": "text", "text": "I think so"}]}),
         ),
     ] {
-        let nothing = raw(&json!({
-            "params": params("on"),
-            "body": body,
-            "envelope": {"header": {"hop": hop}},
-        }));
+        let nothing = screen.send(
+            json!({"body": body, "envelope": {"header": {"hop": hop}}}),
+            112_000,
+        );
         assert!(nothing.is_empty(), "the floor stands: {nothing:?}");
+        assert!(
+            screen.hops().is_empty(),
+            "nothing leaves: {:?}",
+            screen.hops()
+        );
+        assert!(screen.last.is_empty(), "nothing is said: {:?}", screen.last);
+        assert_eq!(screen.screen_state(), before, "the state is untouched");
     }
 }
 

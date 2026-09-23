@@ -328,7 +328,7 @@ fn the_template_says_it_carries_a_microphone() {
     }
     let template = read_json(&repo("templates/display/template.json"));
     assert_eq!(
-        template["version"], "2.6.0",
+        template["version"], "2.7.0",
         "the screen shipped the microphone at 1.2.0 — a new component is a \
          minor version — moved to 2.0.0 when its own port went with \
          `web@2.0.0`, to 2.0.1 for what the button says while it waits \
@@ -356,7 +356,10 @@ fn the_template_says_it_carries_a_microphone() {
          curator that runs one message at a time (GH #765), a repair, and to \
          2.6.0 because a patch now leaves only after the state row landed \
          (GH #765, way A): what a browser is told is what the store agreed to, \
-         which changes when every screen draws and is therefore the SECOND digit"
+         which changes when every screen draws and is therefore the SECOND digit, \
+         and to 2.7.0 because the curator keeps its state in memory and the store \
+         only the app rows and one rest row (GH #809): a promise withdrawn and a new \
+         one given, the SECOND digit again"
     );
     let purpose = template["description"]["purpose"]
         .as_str()
@@ -371,7 +374,7 @@ fn the_template_says_it_carries_a_microphone() {
     // own.
     let readme = std::fs::read_to_string(repo("templates/display/README.md")).expect("README");
     assert!(
-        readme.starts_with("# `display@2.6.0`"),
+        readme.starts_with("# `display@2.7.0`"),
         "the README heads with the version it describes"
     );
     assert!(

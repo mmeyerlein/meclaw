@@ -104,9 +104,9 @@ const LINES: [Line; 6] = [
 ///
 /// Written through the app stand-in and through the door, never into the state by hand:
 /// what the browser then sees is what the curator placed, which is the whole point of the
-/// colony half. Each `put`/`app_put` waits for ITS window to reach the state row -- a wait,
-/// not a pause: a pass reconciles its state with the store's rows before its own event runs
-/// (§ 3.1, OR-H0.9), so a write in the air beside another loses no window.
+/// colony half. Each `put`/`app_put` waits for ITS window to stand in the tree the patches
+/// built at `web` -- a wait, not a pause: every write is its own pass on the one state in
+/// the curator's memory (GH #809), so a write in the air beside another loses no window.
 async fn fill_the_stage(colony: &Colony, round: u64) {
     let at = 1_700_000_000_000u64 + round * 100_000;
     // Sixteen and not nine: § 6.3 and § 6.2 ask what happens when MORE windows stand

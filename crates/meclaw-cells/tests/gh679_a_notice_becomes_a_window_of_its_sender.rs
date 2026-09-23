@@ -20,8 +20,11 @@
 //! it declares about itself reaches the curator. A `system_error` notice at 0.9
 //! outranks a silent note -- the defect this file used to pin is built.
 //!
-//! The script runs as a subprocess the way a `code` cell runs it, through the
-//! shared harness (`support`). Skips when the templates do not ship (R2b).
+//! An accepted notice goes through `support::Screen` -- one living curator, the
+//! way a `resident` code cell runs it since display 2.7.0 (GH #809) -- and is
+//! read where it lands: the write bundle on the store lane and the row in the
+//! store. A refused one is a single document with no state behind it and goes
+//! through `support::raw`. Skips when the templates do not ship (R2b).
 
 mod support;
 
@@ -30,49 +33,80 @@ use support::{Screen, library_ships, raw, repo, window_id};
 
 const SENDER: &str = "/os/orgs/acme/members/alex/channels";
 
-/// The `object.*` or store calls of ONE emission -- `support::calls` picks the
-/// patch bundle, and the notice lane answers on `views` and `receipt`.
-fn legs_of(emission: &Value) -> Vec<Value> {
-    emission["messages"]
-        .as_array()
-        .expect("a bundle has messages")
-        .iter()
-        .map(|turn| {
-            assert_eq!(turn["type"], "tool_call");
-            meclaw_core::serde_json::from_str(turn["text"].as_str().expect("a call"))
-                .expect("a call is JSON")
-        })
-        .collect()
-}
-
-/// A notice on `in_notice` from `SENDER`, with `hop` on top of the route.
-fn notice(body: Value, hop: Value) -> Vec<Value> {
-    let mut hop = hop;
-    hop["route"] = json!("in_notice");
-    raw(&json!({
-        "params": {},
-        "body": body,
-        "envelope": {"reply_to": SENDER, "header": {"hop": hop}},
+/// A screen with one output, so the knobs say nothing of their own.
+fn screen() -> Screen {
+    Screen::new(json!({
+        "screens": {"monitor": {"display_type": "monitor", "inputs": ["pointer"]}},
+        "default_screen": "monitor",
     }))
 }
 
-/// The row the one `views` emission inserts, and the emission itself.
-fn inserted(emissions: &[Value]) -> (Value, Value) {
-    assert_eq!(emissions.len(), 1, "one store bundle: {emissions:?}");
-    let e = &emissions[0];
-    assert_eq!(e["header"]["route"], "views", "{e}");
-    let legs = legs_of(e);
-    assert_eq!(
-        legs.iter()
-            .map(|l| l["operation"].clone())
-            .collect::<Vec<_>>(),
-        json!(["select", "delete", "insert"])
-            .as_array()
-            .unwrap()
-            .clone(),
-        "the same bundle a view write builds"
+/// The lane `in_notice` from `SENDER`, with `hop` on top of the route.
+fn notice_doc(body: Value, hop: Value) -> Value {
+    let mut hop = hop;
+    hop["route"] = json!("in_notice");
+    json!({
+        "body": body,
+        "envelope": {"reply_to": SENDER, "header": {"hop": hop, "context": {}}},
+    })
+}
+
+/// A notice the door refuses: one document, no curator behind it.
+fn notice(body: Value, hop: Value) -> Vec<Value> {
+    let mut doc = notice_doc(body, hop);
+    doc["params"] = json!({});
+    raw(&doc)
+}
+
+/// A notice the living curator takes: the row its write bundle inserts, and the
+/// small mark that bundle carries on its hop.
+fn accepted(screen: &mut Screen, body: Value, hop: Value, now: u64) -> (Value, Value) {
+    screen.send(notice_doc(body, hop), now);
+    assert!(
+        screen.lane("receipt").is_empty(),
+        "an accepted notice has nothing to say back: {:?}",
+        screen.lane("receipt")
     );
-    (legs[2]["row"].clone(), e.clone())
+    inserted(screen)
+}
+
+/// The row the one write bundle of the last message inserts, and its mark.
+///
+/// Since display 2.7.0 the bundle is `delete` + `insert` and nothing before it:
+/// the cell holds the rows in memory, so no `select` asks what stood there
+/// (GH #809). Two more legs may follow -- the curator's rest row, when its
+/// content changed -- and they are the curator's, not the sender's.
+fn inserted(screen: &Screen) -> (Value, Value) {
+    let writes: Vec<&Value> = screen
+        .hops()
+        .iter()
+        .filter(|h| h["route"] == "views" && !h["request"]["write"].is_null())
+        .collect();
+    assert_eq!(writes.len(), 1, "one write bundle: {:?}", screen.hops());
+    let hop = writes[0];
+    let ops: Vec<&str> = hop["ops"]
+        .as_array()
+        .expect("the ops of the bundle")
+        .iter()
+        .map(|o| o.as_str().unwrap_or(""))
+        .collect();
+    assert_eq!(
+        ops[..2],
+        ["delete", "insert"],
+        "the same bundle a view write builds: {ops:?}"
+    );
+    assert!(!ops.contains(&"select"), "nothing is read back: {ops:?}");
+    let calls = hop["calls"].as_array().expect("the calls of the bundle");
+    assert_eq!(calls[0]["where"]["owner"], SENDER, "the sender's name goes");
+    let row = calls[1]["row"].clone();
+    assert!(
+        screen
+            .table()
+            .iter()
+            .any(|r| r["owner"] == row["owner"] && r["view_id"] == row["view_id"]),
+        "and the row landed in the store"
+    );
+    (row, hop["request"].clone())
 }
 
 fn content_of(row: &Value) -> Value {
@@ -88,11 +122,13 @@ fn a_notice_becomes_a_window_of_its_sender() {
     if !library_ships() {
         return;
     }
-    let out = notice(
+    let mut screen = screen();
+    let (row, request) = accepted(
+        &mut screen,
         json!({"class": "note", "text": "the kettle is on"}),
         json!({}),
+        1000,
     );
-    let (row, e) = inserted(&out);
     assert_eq!(row["kind"], "prose");
     assert_eq!(row["owner"], SENDER);
     assert_eq!(row["region"], "main");
@@ -120,19 +156,18 @@ fn a_notice_becomes_a_window_of_its_sender() {
         "an application's notice stands in its owner's context"
     );
     // The same text twice is the same view: the second write replaces it.
-    let again = notice(
+    let (again, _) = accepted(
+        &mut screen,
         json!({"class": "note", "text": "the kettle is on"}),
         json!({}),
+        2000,
     );
-    assert_eq!(inserted(&again).0["view_id"], view_id);
-    let request: Value = meclaw_core::serde_json::from_str(
-        e["header"]["display_request"]
-            .as_str()
-            .expect("the request rides the hop"),
-    )
-    .expect("json");
-    assert_eq!(request["owner"], SENDER);
-    assert_eq!(request["view_id"], view_id);
+    assert_eq!(again["view_id"], view_id);
+    // The mark on the hop says whose write it was -- enough for a refused leg to
+    // become a receipt to the sender, and nothing the screen is drawn from.
+    assert_eq!(request["write"]["owner"], SENDER);
+    assert_eq!(request["write"]["view_id"], view_id);
+    assert_eq!(request["write"]["withdraw"], false);
 }
 
 /// A channel's failure carries only its `error_code`: the class is
@@ -144,11 +179,13 @@ fn a_channel_failure_is_translated_and_never_shows_its_detail() {
     if !library_ships() {
         return;
     }
-    let out = notice(
+    let mut screen = screen();
+    let (row, _) = accepted(
+        &mut screen,
         json!({"messages": [], "meta": {"detail": "socket closed 1011"}}),
         json!({"error_code": "stt_failed", "kind": "voice"}),
+        1000,
     );
-    let (row, _) = inserted(&out);
     let content = content_of(&row);
     assert_eq!(content["class"], "system_error");
     assert_eq!(content["title"], "system error");
@@ -163,12 +200,22 @@ fn a_channel_failure_is_translated_and_never_shows_its_detail() {
         "the class word is spelt with hyphens in a view id: {}",
         row["view_id"]
     );
-    let whole = Value::Array(out.clone()).to_string();
+    // Nowhere: not in what the cell said, not in what it sent the store or the
+    // display, not in the store.
+    let whole = json!([screen.last, screen.hops(), screen.table()]).to_string();
     assert!(!whole.contains("1011"), "the detail leaked: {whole}");
-    assert!(!whole.contains("socket"), "the detail leaked: {whole}");
+    assert!(
+        !whole.contains("socket closed"),
+        "the detail leaked: {whole}"
+    );
 
-    let unknown = notice(json!({"messages": []}), json!({"error_code": "xyz_failed"}));
-    let content = content_of(&inserted(&unknown).0);
+    let (unknown, _) = accepted(
+        &mut screen,
+        json!({"messages": []}),
+        json!({"error_code": "xyz_failed"}),
+        2000,
+    );
+    let content = content_of(&unknown);
     assert_eq!(content["body"], "A part of the colony failed: xyz_failed");
     assert_eq!(content["class"], "system_error");
 }
@@ -210,33 +257,13 @@ fn prose_row(content: Value) -> Value {
     })
 }
 
-/// The hints of a prose row, the way `hints_of_row` in `compose.py` reads them:
-/// a prose row is FLAT, so its content IS the hints and there is no window node
-/// to unwrap. Spelt out here rather than taken from `support::hints_of`, which
-/// unwraps a window node and would hand the pass an empty view for a row that
-/// has none -- and an empty view is exactly the defect the test below pins as
-/// fixed.
-fn prose_hints(row: &Value) -> Value {
-    let mut hints: Value =
-        meclaw_core::serde_json::from_str(row["content"].as_str().expect("content is text"))
-            .expect("content is JSON");
-    hints["ttl_ms"] = row["ttl_ms"].clone();
-    hints
-}
-
-/// One write pass over that row, on a bare screen with one output.
+/// That row written through the door at 5000, on a bare screen with one output.
+/// The cell reads the hints off the row the way `hints_of_row` does: a prose row
+/// is FLAT, so its content IS the hints and there is no window node to unwrap --
+/// an empty view is exactly the defect the test below pins as fixed.
 fn drawn(content: Value) -> Screen {
-    let mut screen = Screen::new(json!({
-        "screens": {"monitor": {"display_type": "monitor", "inputs": ["pointer"]}},
-        "default_screen": "monitor",
-    }));
-    let row = prose_row(content);
-    let hints = prose_hints(&row);
-    screen.put(row);
-    screen.pass(
-        json!({"kind": "app_write", "oid": window_id("alex", "p"), "view": hints}),
-        5000,
-    );
+    let mut screen = screen();
+    screen.write(prose_row(content), 5000);
     screen
 }
 
@@ -314,8 +341,8 @@ fn a_prose_view_wears_the_passs_rendering_values() {
         assert!(template.contains(stays), "`{stays}` draws it: {template}");
     }
 
-    // And the curator's own memory stands in the ONE state row, not on the
-    // object: the rendering above is a rendering of it (§ 3.1).
+    // And the curator's own memory stands in the cell, not on the object: the
+    // rendering above is a rendering of it (§ 3.1).
     assert_eq!(screen.curator(&oid, "rung"), "relevant");
     assert_eq!(screen.curator(&oid, "open"), true);
     assert_eq!(screen.curator(&oid, "present"), true);

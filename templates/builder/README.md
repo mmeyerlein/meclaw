@@ -1,4 +1,4 @@
-# `builder@1.12.0`
+# `builder@1.12.1`
 
 The intake that turns a structural wish into a **manifest** — an ordered list of
 mutation declarations, ready to be submitted by whoever asked for it.
@@ -379,10 +379,10 @@ devices:
   {"scope": "/os/orgs/acme/members",
    "diff": {"add_nodes": [{"name": "alex", "template": "…"}], "…": "…"}},
   {"scope": "/os/orgs/acme/members/alex/channels",
-   "diff": {"add_nodes": [{"name": "display", "template": "display@2.6.0",
+   "diff": {"add_nodes": [{"name": "display", "template": "display@2.7.0",
                            "override_params": {"web": {"mount": "alex-display"}}}], "…": "…"}},
   {"scope": "/os/orgs/acme/members/alex/apps",
-   "diff": {"add_nodes": [{"name": "colony-view", "template": "colony-view@1.1.2"}], "…": "…"}}]}
+   "diff": {"add_nodes": [{"name": "colony-view", "template": "colony-view@1.1.3"}], "…": "…"}}]}
 ```
 
 **There is no way to ask for a member without them.** A person in this substrate

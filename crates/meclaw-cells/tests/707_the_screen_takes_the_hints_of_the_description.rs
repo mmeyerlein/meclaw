@@ -86,17 +86,18 @@ fn the_rendering_values_are_declared_and_the_struck_words_are_gone() {
 
 #[test]
 fn the_curator_keeps_no_memory_on_the_objects() {
-    // Since 2.5.0 the state lies in the store (§ 3.1, OR-H2). There is no `CURATOR_KEYS`
-    // beside the hints any more: a value the display holds is a RENDERING, and a rendering
-    // that is also the memory makes every output carry a memory of its own.
+    // There is no `CURATOR_KEYS` beside the hints any more (since 2.5.0): a value the
+    // display holds is a RENDERING, and a rendering that is also the memory makes every
+    // output carry a memory of its own. Since 2.7.0 the memory is the cell's own (GH #809),
+    // and what no app row can give back after a restart stands in ONE rest row of the store.
     let src = fs::read_to_string(repo("templates/display/compose/compose.py")).unwrap();
     assert!(
         !src.contains("CURATOR_KEYS = ("),
         "the display objects are no longer the curator's memory"
     );
     assert!(
-        src.contains("STATE_VIEW_ID = \"screen-state\""),
-        "the state row is"
+        src.contains("REST_VIEW_ID = \"screen-rest\""),
+        "the rest row is"
     );
 }
 

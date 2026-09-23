@@ -1,13 +1,16 @@
-//! What every display lock needs: the script as a subprocess, one pass at a time, and the
-//! two things a pass carries over -- the state row of display-hive.md § 3.1 and the object
-//! tree the display holds. Written ONCE here instead of twenty-two times (OR-H6).
+//! What every display lock needs: a living curator, one message at a time, and what it
+//! leaves behind -- the rows of the `views` store (the apps' rows and the rest row of
+//! display-hive.md § 3) and the object tree the display holds. Written ONCE here instead of
+//! twenty-two times (OR-H6).
 //!
-//! `compose.py` runs the way a `code` cell runs it: a subprocess, the pass's document on
-//! stdin, the emissions as JSON on stdout.
+//! `compose.py` runs the way a `resident` code cell runs it (GH #809): `Screen` speaks
+//! line JSON to `curator_driver.py --serve`, which compiles the script once and executes
+//! it into ONE globals dict per message, so the state lives in the cell's memory between
+//! messages. `raw` still runs one stateless document through a fresh subprocess.
 #![allow(dead_code)]
 
-use std::io::Write;
-use std::process::{Command, Stdio};
+use std::io::{BufRead, BufReader, Write};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use meclaw_core::serde_json::{Value, json};
 
@@ -52,42 +55,6 @@ pub fn raw(doc: &Value) -> Vec<Value> {
         one @ Value::Object(_) => vec![one],
         other => panic!("emissions are objects: {other}"),
     }
-}
-
-/// The `object.*` calls the pass handed to its own state write, or none.
-///
-/// GH #765 (way A): a pass draws nothing of its own any more -- the calls ride the state
-/// write's request and are emitted from the reply, once the store has said the row landed.
-/// A `Screen` applies every state write unconditionally, so for a `Screen` the write always
-/// lands and this is the drawing the browsers get.
-pub fn drawn(emissions: &[Value]) -> Vec<Value> {
-    // The promise the predecessors of this helper each carried once ("exactly one patch",
-    // "at most one patch"), now in the one place every caller passes through: under way A
-    // a pass emits NO patch of its own. A pass that drew here again would hand the
-    // browsers a state the store has not agreed to, and the list below would still look
-    // right.
-    assert!(
-        emissions.iter().all(|e| e["header"]["route"] != "patch"),
-        "a pass drew on its own: since GH #765 (way A) the calls ride its state write and \
-         leave from the reply, so a pass has no patch to send: {emissions:?}"
-    );
-    for em in emissions {
-        if em["header"]["route"] != "views" {
-            continue;
-        }
-        let request: Value = match em["header"]["display_request"].as_str() {
-            Some(text) => meclaw_core::serde_json::from_str(text).expect("a request is JSON"),
-            None => continue,
-        };
-        if request["state"] != json!(true) {
-            continue;
-        }
-        return match request["patch"].as_array() {
-            Some(calls) => calls.clone(),
-            None => Vec::new(),
-        };
-    }
-    Vec::new()
 }
 
 /// One `display-pane` tree with `props`, keyed so its object id is stable.
@@ -183,116 +150,227 @@ pub fn apply(held: &mut Value, calls: &[Value]) {
     }
 }
 
-/// One screen over several passes: the store's rows, the ONE state row (§ 3.1) and the
-/// object tree the display holds -- exactly what the store and the display carry between
-/// two passes of the cell.
-pub struct Screen {
-    pub rows: Vec<Value>,
-    pub params: Value,
-    pub state: Value,
-    pub held: Value,
-    pub last: Vec<Value>,
-}
+/// The curator driver: `compose.py` the way a `resident` code cell runs it (GH #809).
+pub const DRIVER: &str = "templates/display/compose/scenarios/curator_driver.py";
 
-/// The request a pass started from, the way `pass_views` hands it on in the plan
-/// (`mark`, GH #744): what a repeat of this very pass would be emitted with. Derived
-/// from the event here, because a `Screen` is handed the event and not the request.
-fn mark_of(event: &Value) -> Value {
-    match event["kind"].as_str().unwrap_or("") {
-        "tap" => json!({"tick": true, "tap": event["for"]}),
-        "hold" => json!({"tick": true, "hold": true}),
-        "app_write" => json!({"withdraw": false, "oid": event["oid"]}),
-        "app_withdraw" => json!({"withdraw": true, "oid": event["oid"]}),
-        _ => json!({"tick": true}),
-    }
+/// One display hive over many messages: `compose.py` resident, the `views` store and the
+/// `web` cell's tree, all three played by `curator_driver.py --serve` (OR-D9).
+///
+/// Since display 2.7.0 the curator keeps the screen state in MEMORY between messages
+/// (GH #809): no state row, no plan in any header, one patch per pass. A test can no
+/// longer hand one pass its prior state -- it talks to ONE living cell, the way the hive
+/// does, and reads what came out at the seams: the patch calls (`pass`), the store rows
+/// (`table`), the outer lanes (`lane`), the internal hops (`hops`). The model state
+/// (`screen_state`) comes from the driver, which reads the cell's memory; nothing a
+/// colony writes carries it any more.
+pub struct Screen {
+    /// The member's params, handed to the cell with every message. A test may change
+    /// them between two passes; the next message carries the new ones.
+    pub params: Value,
+    /// The tree the display holds (`web`), as a list of `{id, parent, ord, component, props}`.
+    pub held: Value,
+    /// The `views` store as it stands: the apps' rows and the curator's rest row.
+    pub rows: Vec<Value>,
+    /// The curator's state in memory (the model state of § 3), `Null` before its boot.
+    pub state: Value,
+    /// The outer emissions of the last message (`event`, `receipt`, `due`, `judge`).
+    pub last: Vec<Value>,
+    said: Value,
+    hops: Vec<Value>,
+    sent: Value,
+    child: Child,
+    input: Option<ChildStdin>,
+    out: BufReader<ChildStdout>,
 }
 
 impl Screen {
     pub fn new(params: Value) -> Self {
+        let mut child = Command::new("python3")
+            .arg(repo(DRIVER))
+            .arg("--serve")
+            .arg("--params")
+            .arg(params.to_string())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("python3 runs the curator driver");
+        let input = child.stdin.take().expect("stdin");
+        let out = BufReader::new(child.stdout.take().expect("stdout"));
         Screen {
-            rows: Vec::new(),
+            sent: params.clone(),
             params,
-            state: Value::Null,
             held: json!([]),
+            rows: Vec::new(),
+            state: Value::Null,
             last: Vec::new(),
+            said: json!([]),
+            hops: Vec::new(),
+            child,
+            input: Some(input),
+            out,
         }
     }
 
-    /// The rows of the store, replacing what stood under the same `(owner, view_id)`.
-    pub fn put(&mut self, row: Value) {
-        self.rows
-            .retain(|r| !(r["owner"] == row["owner"] && r["view_id"] == row["view_id"]));
-        self.rows.push(row);
-    }
-
-    pub fn withdraw(&mut self, owner: &str, view_id: &str) {
-        self.rows
-            .retain(|r| !(r["owner"] == owner && r["view_id"] == view_id));
-    }
-
-    /// One read pass with the event the views pass would have built. `event` is the one
-    /// event of § 4.1, e.g. `json!({"kind": "stroke"})`.
-    pub fn pass(&mut self, event: Value, now: u64) -> Vec<Value> {
-        let objects = if self.held.as_array().map(|l| l.is_empty()).unwrap_or(true) {
-            json!([])
-        } else {
-            self.held.clone()
-        };
-        let plan = json!({
-            "views": self.rows, "state": self.state, "define": [], "now": now,
-            "event": event, "mark": mark_of(&event),
-        });
-        let doc = json!({
-            "params": self.params,
-            "body": {"messages": [{
-                "origin": "tool", "type": "tool_result", "id": "d-query",
-                "text": json!({"objects": objects}).to_string(),
-            }]},
-            "envelope": {"header": {
-                "hop": {"operation": "query"},
-                "context": {"display_origin": "read", "display_views": plan.to_string()},
-            }},
-        });
-        let emissions = raw(&doc);
-        // GH #765 (way A): the patch rides the state write and is drawn from its reply.
-        // This screen is the store that took the write, so the drawing is the one the
-        // request carries -- and a pass whose write a real store refused draws nothing,
-        // which is the case `744_two_taps_in_one_round_trip.rs` walks through by hand.
-        let patch = drawn(&emissions);
-        apply(&mut self.held, &patch);
-        // The state row of this pass: the store would hold it, so this screen does.
-        for em in &emissions {
-            let request = em["header"]["display_request"].as_str().unwrap_or("");
-            if em["header"]["route"] == "views" && request.contains("\"state\"") {
-                for leg in em["messages"].as_array().unwrap_or(&Vec::new()) {
-                    let call: Value =
-                        meclaw_core::serde_json::from_str(leg["text"].as_str().unwrap_or("{}"))
-                            .expect("a call is JSON");
-                    put_state(&mut self.state, &call);
-                }
-            }
+    /// One line to the driver, its one answer back; the mirrors follow the answer.
+    fn ask(&mut self, req: Value) -> Value {
+        if self.params != self.sent {
+            self.sent = self.params.clone();
+            let params = self.params.clone();
+            self.line(json!({"op": "params", "params": params}));
         }
-        self.last = emissions;
-        patch
+        self.line(req)
     }
 
-    /// A write of one app, as one pass: the row goes into the store, the event says so.
-    pub fn write(&mut self, row: Value, now: u64) -> Vec<Value> {
-        let oid = window_id(
-            row["owner"].as_str().unwrap_or(""),
-            row["view_id"].as_str().unwrap_or(""),
+    fn line(&mut self, req: Value) -> Value {
+        let input = self.input.as_mut().expect("the driver is running");
+        writeln!(input, "{req}").expect("the driver takes a line");
+        input.flush().expect("the line reaches the driver");
+        let mut text = String::new();
+        self.out.read_line(&mut text).expect("the driver answers");
+        assert!(!text.is_empty(), "the curator driver ended on {req}");
+        let answer: Value =
+            meclaw_core::serde_json::from_str(&text).expect("the driver answers JSON");
+        assert!(
+            answer["error"].is_null(),
+            "the cell failed on {req}: {}\n{}",
+            answer["error"],
+            answer["stderr"].as_str().unwrap_or("")
         );
-        let hints = hints_of(&row);
-        self.put(row);
-        self.pass(json!({"kind": "app_write", "oid": oid, "view": hints}), now)
+        self.held = answer["objects"].clone();
+        self.rows = answer["table"].as_array().cloned().unwrap_or_default();
+        self.state = answer["state"].clone();
+        self.said = answer["said"].clone();
+        self.hops = answer["hops"].as_array().cloned().unwrap_or_default();
+        self.last = answer["out"].as_array().cloned().unwrap_or_default();
+        answer
     }
 
-    /// The emissions of the last pass on one lane.
+    /// A row in the store WITHOUT a pass: what the apps wrote while the cell was down.
+    /// The cell reads the store only at its boot, so this is a prior state -- before the
+    /// first message, or before a `kill`.
+    pub fn put(&mut self, row: Value) {
+        self.ask(json!({"op": "table_put", "row": row}));
+    }
+
+    /// Take a row out of the store WITHOUT a pass (see `put`).
+    pub fn withdraw(&mut self, owner: &str, view_id: &str) {
+        self.ask(json!({"op": "table_del", "owner": owner, "view_id": view_id}));
+    }
+
+    /// One event of § 4.1 (`json!({"kind": "stroke"})`, a tap, a verdict …) as the message
+    /// that carries it. The patch calls this message sent to the display come back.
+    pub fn pass(&mut self, event: Value, now: u64) -> Vec<Value> {
+        self.ask(json!({"op": "event", "event": event, "now": now}));
+        self.patch()
+    }
+
+    /// Any document, as the hive would hand it to the cell (a notice, a raw event).
+    pub fn send(&mut self, doc: Value, now: u64) -> Vec<Value> {
+        self.ask(json!({"op": "now", "ms": now}));
+        self.ask(json!({"op": "send", "doc": doc}));
+        self.patch()
+    }
+
+    /// A write of one app, through the door: the row as `in_view` from its owner.
+    pub fn write(&mut self, row: Value, now: u64) -> Vec<Value> {
+        let content: Value =
+            meclaw_core::serde_json::from_str(row["content"].as_str().unwrap_or("{}"))
+                .expect("the row's content is JSON");
+        let components: Value =
+            meclaw_core::serde_json::from_str(row["components"].as_str().unwrap_or("[]"))
+                .expect("the row's components are JSON");
+        let doc = json!({
+            "body": {
+                "messages": [], "view_id": row["view_id"], "region": row["region"],
+                "ord": row["ord"], "kind": row["kind"], "content": content,
+                "components": components, "ttl_ms": row["ttl_ms"],
+            },
+            "envelope": {
+                "reply_to": row["owner"],
+                "header": {"hop": {"route": "in_view"}, "context": {}},
+            },
+        });
+        self.send(doc, now)
+    }
+
+    /// An app takes its view down, through the door.
+    pub fn take_down(&mut self, owner: &str, view_id: &str, now: u64) -> Vec<Value> {
+        let doc = json!({
+            "body": {"messages": [], "view_id": view_id},
+            "envelope": {
+                "reply_to": owner,
+                "header": {"hop": {"route": "in_withdraw"}, "context": {}},
+            },
+        });
+        self.send(doc, now)
+    }
+
+    /// The child dies; the store and the tree stay (a restart of the cell).
+    pub fn kill(&mut self) {
+        self.ask(json!({"op": "kill"}));
+    }
+
+    /// A fresh `web`: no objects, no pages.
+    pub fn web_reset(&mut self) {
+        self.ask(json!({"op": "web_reset"}));
+    }
+
+    /// An object in the display's tree WITHOUT a patch: what `web` held before the cell
+    /// woke. Seen by the next boot's `read` -- before the first message, or before `kill`.
+    pub fn web_put(&mut self, object: Value) {
+        self.ask(json!({"op": "web_put", "object": object}));
+    }
+
+    /// Props of an object `web` holds, changed WITHOUT a patch (a tree an older version of
+    /// the cell left behind). Seen by the next boot's `read`.
+    pub fn web_update(&mut self, id: &str, props: Value) {
+        self.ask(json!({"op": "web_update", "id": id, "props": props}));
+    }
+
+    /// `web` refuses the next patch whole (its first leg fails, no leg is applied).
+    pub fn refuse_next_patch(&mut self) {
+        self.ask(json!({"op": "refuse_next_patch"}));
+    }
+
+    /// Hold the replies of the store and of `web` back (`true`) until `flush`: the answers
+    /// still in the air while the next message arrives.
+    pub fn hold(&mut self, on: bool) {
+        self.ask(json!({"op": "hold", "on": on}));
+    }
+
+    /// Deliver the replies held back; the patch calls they caused come back.
+    pub fn flush(&mut self) -> Vec<Value> {
+        self.ask(json!({"op": "flush"}));
+        self.patch()
+    }
+
+    /// The patch calls of the last message, in order (every `patch` hop to `web`).
+    pub fn patch(&self) -> Vec<Value> {
+        self.hops
+            .iter()
+            .filter(|h| h["route"] == "patch")
+            .flat_map(|h| h["calls"].as_array().cloned().unwrap_or_default())
+            .collect()
+    }
+
+    /// The outer emissions of the last message on one lane.
     pub fn lane(&self, route: &str) -> Vec<&Value> {
         self.last
             .iter()
             .filter(|e| e["header"]["route"] == route)
             .collect()
+    }
+
+    /// The internal hops of the last message: `{route, request, header, ops, calls}` for
+    /// every emission to the store (`views`), the tree (`read`) and the display (`patch`).
+    pub fn hops(&self) -> &[Value] {
+        &self.hops
+    }
+
+    /// The `views` store as it stands.
+    pub fn table(&self) -> Vec<Value> {
+        self.rows.clone()
     }
 
     /// The props of one object of the tree the display holds.
@@ -309,36 +387,35 @@ impl Screen {
         self.props(id).is_some()
     }
 
-    /// The state row's content, parsed: the screen state of § 3.
+    /// The screen state of § 3: the curator's memory, as the driver reads it.
     pub fn screen_state(&self) -> Value {
-        let text = self.state["content"].as_str().unwrap_or("{}");
-        meclaw_core::serde_json::from_str(text).expect("the state row's content is JSON")
+        if self.state.is_null() {
+            return json!({});
+        }
+        self.state.clone()
     }
 
-    /// One curator value of one window, out of the state row.
+    /// What the last pass said out loud (§ 4.7): every refusal and every error of it, as
+    /// `["refused" | "error", ...]` rows -- the list the cell itself keeps in memory to decide
+    /// what to say once (`ram()["said"]`, filled by `spoken_of` in compose.py), read out of
+    /// the driver and not computed again here. Until display 2.7.0 it stood as `said` in
+    /// the state row.
+    pub fn said(&self) -> Value {
+        self.said.clone()
+    }
+
+    /// One curator value of one window.
     pub fn curator(&self, oid: &str, key: &str) -> Value {
         self.screen_state()["views"][oid]["curator"][key].clone()
     }
 }
 
-/// One leg of a state write, applied to the row this screen holds.
-///
-/// Two spellings since GH #744: the first creation is an `insert` of the whole row,
-/// every later pass an `update` under a condition on the version it read. The update
-/// sets every column but the identity, so merging its `set` into the row this screen
-/// holds is what the store does.
-pub fn put_state(state: &mut Value, call: &Value) {
-    match call["operation"].as_str().unwrap_or("") {
-        "insert" => *state = call["row"].clone(),
-        "update" => {
-            if state.is_null() {
-                *state = json!({"owner": "display", "view_id": "screen-state"});
-            }
-            for (key, value) in call["set"].as_object().expect("an update sets columns") {
-                state[key.clone()] = value.clone();
-            }
-        }
-        _ => {}
+impl Drop for Screen {
+    /// Close the driver's stdin (it ends at EOF) and reap it. Only this child, never a
+    /// signal to anything else.
+    fn drop(&mut self) {
+        drop(self.input.take());
+        let _ = self.child.wait();
     }
 }
 

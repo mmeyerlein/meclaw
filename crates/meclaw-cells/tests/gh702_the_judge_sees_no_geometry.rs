@@ -219,7 +219,7 @@ fn a_profile_carries_its_own_dials() {
 /// a member who names an output the screen cannot type has to be able to read that. The
 /// MESSAGE is said once per value, because a screen refusal has no owner and one
 /// misconfigured profile would otherwise dead-letter one receipt per pass, for ever; what
-/// § 4.7 keeps in every pass is the error itself, and the state row carries it.
+/// § 4.7 keeps in every pass is the error itself, and every pass carries it.
 #[test]
 fn a_profile_without_a_type_is_an_error_and_not_a_silent_television() {
     if !library_ships() {
@@ -243,7 +243,7 @@ fn a_profile_without_a_type_is_an_error_and_not_a_silent_television() {
         .collect();
     assert_eq!(codes, vec!["profile_error"], "{codes:?}");
     assert_eq!(
-        screen.screen_state()["said"],
+        screen.said(),
         json!([["error", "screen", "kueche", "display_type missing"]]),
         "the error stands in the state of this pass"
     );
@@ -255,7 +255,7 @@ fn a_profile_without_a_type_is_an_error_and_not_a_silent_television() {
         "the same error is not said twice"
     );
     assert_eq!(
-        screen.screen_state()["said"],
+        screen.said(),
         json!([["error", "screen", "kueche", "display_type missing"]]),
         "and it is still an error of this pass"
     );

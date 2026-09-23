@@ -1,9 +1,14 @@
 //! GH #455 -- what the screen promises, driven through the SHIPPED bytes.
 //!
-//! Every script here is read out of `params.script_inline` and run through the
-//! runner the `code` cell declares, which is the same command the substrate
-//! builds. A test that ran the `.py` beside it would prove the source and not
-//! the product; `gh455_the_two_templates_ship` is what pins that the two agree.
+//! Every door test here reads its script out of `params.script_inline` and runs
+//! it through the runner the `code` cell declares, which is the same command the
+//! substrate builds. A test that ran the `.py` beside it would prove the source and
+//! not the product; `gh455_the_two_templates_ship` is what pins that the two agree.
+//! What needs the curator's memory across messages -- two owners on one screen, a
+//! withdrawal, the patch a real display takes -- talks to ONE living cell the way
+//! a `resident` code cell runs it (`support::Screen`, GH #809), with the store and
+//! the display beside it, and reads what came out at the seams: the store bundle,
+//! the store's rows, the patch.
 //!
 //! The six promises, in the order they are made:
 //!
@@ -15,7 +20,7 @@
 //! (d) an application's view carries its components, every name prefixed with
 //!     the view's own id -- driven with the bytes `colony-view` really emits;
 //! (e) both views reach a REAL display, over HTTP, on a page a browser gets;
-//! (f) a view whose `ttl_ms` has elapsed still travels to the pass -- the store holds
+//! (f) a view whose `ttl_ms` has elapsed stays in the store -- the store holds
 //!     what an app wrote -- and the PASS is what takes it off the screen.
 //!
 //! Free of a provider by construction: neither template holds a model.
@@ -27,6 +32,7 @@ use meclaw_colony::{CellFactory, ContractView, SpawnedCellKind};
 use meclaw_core::serde_json::{Value, json};
 use meclaw_core::{Body, CellEmission, MessageBuilder, Path};
 use meclaw_testing::{surface_listener, wait_for_mount};
+use support::Screen;
 
 /// The name this fixture's display answers to. The port in every URL below is
 /// the LISTENER's: a `web` cell has none since `web@2.0.0`.
@@ -151,7 +157,7 @@ fn prose_body(view_id: &str, title: &str, text: &str) -> Value {
     })
 }
 
-/// One row of the `views` table, as the store hands it back.
+/// One row of the `views` table, as an app's write leaves it in the store.
 ///
 /// `at` is `updated_at`, which since GH #609 is the EXPIRY clock and nothing
 /// else: it no longer has any bearing on where the row stands on the page.
@@ -170,28 +176,11 @@ fn row(owner: &str, view_id: &str, at: i64, ttl: i64, title: &str, text: &str) -
     })
 }
 
-/// A store bundle reply: leg 0's rows in the first turn, `results[]` beside it.
-fn store_reply(rows: Vec<Value>, legs: &[&str]) -> Value {
-    let mut turns = vec![json!({
-        "origin": "tool", "type": "tool_result", "id": "d-select",
-        "text": meclaw_core::serde_json::to_string(&rows).unwrap(),
-    })];
-    let mut results = vec![json!({"tool_call_id": "d-select", "operation": "select"})];
-    for leg in legs {
-        turns.push(json!({
-            "origin": "tool", "type": "tool_result", "id": format!("d-{leg}"),
-            "text": "{\"rows_affected\":1}",
-        }));
-        results.push(json!({"tool_call_id": format!("d-{leg}"), "operation": leg}));
-    }
-    json!({"messages": turns, "results": results})
-}
-
-/// The context the hive's own edge stamps on the store's reply.
-fn views_context(request: &Value) -> Value {
+/// A message through the screen's door on `route`, sent by `owner`.
+fn door(body: Value, route: &str, owner: &str) -> Value {
     json!({
-        "display_origin": "views",
-        "display_request": meclaw_core::serde_json::to_string(request).unwrap(),
+        "body": body,
+        "envelope": {"reply_to": owner, "header": {"hop": {"route": route}, "context": {}}},
     })
 }
 
@@ -200,58 +189,68 @@ fn only(mut out: Vec<Value>) -> Value {
     out.remove(0)
 }
 
-/// The `object.*` calls the pass handed to its own state write (GH #765, way A).
-///
-/// A pass draws nothing of its own any more: the calls ride the state write's request and
-/// are emitted from the reply, once the store has said the row landed. What a pass would
-/// draw is therefore read off that request.
-fn drawn_of(emissions: &[Value]) -> Vec<Value> {
-    for em in emissions {
-        if em["header"]["route"] != "views" {
-            continue;
-        }
-        let request: Value = match em["header"]["display_request"].as_str() {
-            Some(text) => meclaw_core::serde_json::from_str(text).expect("a request is JSON"),
-            None => continue,
-        };
-        if request["state"] != json!(true) {
-            continue;
-        }
-        return request["patch"].as_array().cloned().unwrap_or_default();
-    }
-    Vec::new()
+/// The id a window of `owner` stands under, in the state and in the tree (§ 2 Id).
+fn oid(owner: &str, view_id: &str) -> String {
+    format!("view.{}.{view_id}", owner.replace('/', "~"))
 }
 
-/// Drive pass 1 and read the request it put on the hop.
-fn request_of(emission: &Value) -> Value {
-    meclaw_core::serde_json::from_str(
-        emission["header"]["display_request"]
-            .as_str()
-            .expect("pass 1 carries the request on the hop"),
-    )
-    .expect("the request is JSON")
-}
-
-/// Drive pass 2 and read the plan it put on the hop.
-fn plan_of(emission: &Value) -> Value {
-    meclaw_core::serde_json::from_str(
-        emission["header"]["display_views"]
-            .as_str()
-            .expect("pass 2 carries the plan on the hop"),
-    )
-    .expect("the plan is JSON")
-}
-
-/// The `op` argument of every leg of a patch bundle, in call order.
-fn calls_of(emission: &Value) -> Vec<Value> {
-    emission["messages"]
-        .as_array()
-        .expect("messages")
+/// The store bundle of the last message that carried an app's write: the `views` hop
+/// whose mark is `{"write": {owner, view_id, withdraw}}`.
+fn write_hop(screen: &Screen) -> Value {
+    screen
+        .hops()
         .iter()
-        .map(|t| {
-            meclaw_core::serde_json::from_str(t["text"].as_str().expect("text")).expect("args")
-        })
+        .find(|h| h["route"] == "views" && h["request"]["write"].is_object())
+        .cloned()
+        .unwrap_or_else(|| panic!("the write left as a store bundle: {:#?}", screen.hops()))
+}
+
+/// The legs of a store bundle that touch an APP's row. The curator's rest row
+/// (`display`/`screen-rest`, OR-D3) rides the same bundle when its content changed,
+/// and is not the app's write.
+fn app_legs(hop: &Value) -> Vec<Value> {
+    hop["calls"]
+        .as_array()
+        .expect("a hop lists its calls")
+        .iter()
+        .filter(|c| c["where"]["view_id"] != "screen-rest" && c["row"]["view_id"] != "screen-rest")
+        .cloned()
         .collect()
+}
+
+fn operations(legs: &[Value]) -> Vec<&str> {
+    legs.iter()
+        .map(|c| c["operation"].as_str().unwrap_or_default())
+        .collect()
+}
+
+/// The emission that writes an accepted view to the store, if the cell sent one.
+/// A cold cell sends its boot select beside it (§ 2.2); that is not the write.
+fn write_of(out: &[Value]) -> Option<&Value> {
+    out.iter().find(|em| {
+        em["header"]["route"] == "views"
+            && em["header"]["display_request"]
+                .as_str()
+                .is_some_and(|mark| mark.contains("\"write\""))
+    })
+}
+
+/// The windows the display holds on the unprefixed tree, in the order a page shows
+/// siblings: `ord`, then the id (`web`'s own `ORDER BY ord, id`).
+fn window_order(screen: &Screen) -> Vec<String> {
+    let mut windows: Vec<(i64, String)> = screen
+        .held
+        .as_array()
+        .expect("the display holds a list")
+        .iter()
+        .filter_map(|o| {
+            let id = o["id"].as_str()?;
+            (id.starts_with("view.") && !id.contains('/'))
+                .then(|| (o["ord"].as_i64().unwrap_or(0), id.to_string()))
+        })
+        .collect();
+    windows.sort();
+    windows.into_iter().map(|(_, id)| id).collect()
 }
 
 /// One output, named and complete: since § 4.7 `display_type` and `default_screen` are
@@ -278,89 +277,6 @@ fn component_row(owner: &str, view_id: &str, title: &str, text: &str) -> Value {
         "kind": "component", "content": tree.to_string(), "components": "[]",
         "ttl_ms": 0, "updated_at": 2_000,
     })
-}
-
-/// The store and the display between two passes of the shipped cell: the rows the store
-/// keeps, the ONE state row of § 3.1, and the object tree the display holds.
-///
-/// A view enters the state only through the `app_write` event of ITS OWN pass (§ 4.8 a),
-/// so two owners are two rounds -- which is what a screen with two applications on it
-/// really is.
-struct Screen {
-    rows: Vec<Value>,
-    state: Value,
-    held: Value,
-}
-
-impl Screen {
-    fn new() -> Self {
-        Screen {
-            rows: Vec::new(),
-            state: Value::Null,
-            held: json!([]),
-        }
-    }
-
-    /// Pass 2 (the store answered) and pass 3 (the display answered) of one write, run
-    /// through the SHIPPED bytes. Returns the calls of the patch.
-    fn write(&mut self, root: &std::path::Path, row: Value) -> Vec<Value> {
-        let request = json!({"withdraw": false, "owner": row["owner"], "view_id": row["view_id"],
-                             "row": row});
-        let mut before = self.rows.clone();
-        if !self.state.is_null() {
-            before.push(self.state.clone());
-        }
-        let read = only(run_shipped(
-            root,
-            "compose",
-            stdin_doc(
-                store_reply(before, &["delete", "insert"]),
-                json!({"operation": "bundle", "bundle_errors": 0}),
-                views_context(&request),
-                None,
-            ),
-        ));
-        let plan = plan_of(&read);
-        self.rows = plan["views"]
-            .as_array()
-            .expect("the plan carries the rows")
-            .clone();
-
-        let mut doc = stdin_doc(
-            json!({"messages": [{"origin": "tool", "type": "tool_result", "id": "d-query",
-                                 "text": json!({"objects": self.held}).to_string()}]}),
-            json!({"operation": "query"}),
-            json!({"display_origin": "read",
-                   "display_views": read["header"]["display_views"]}),
-            None,
-        );
-        doc["params"] = params();
-        let out = run_shipped(root, "compose", doc);
-        for em in &out {
-            let request = em["header"]["display_request"].as_str().unwrap_or("");
-            if em["header"]["route"] == "views" && request.contains("\"state\"") {
-                for leg in em["messages"].as_array().unwrap_or(&Vec::new()) {
-                    let call: Value =
-                        meclaw_core::serde_json::from_str(leg["text"].as_str().unwrap_or("{}"))
-                            .expect("a call is JSON");
-                    // Insert on the first creation, a conditional update after it
-                    // (GH #744) -- the store merges, so this screen does too.
-                    support::put_state(&mut self.state, &call);
-                }
-            }
-        }
-        let calls = drawn_of(&out);
-        support::apply(&mut self.held, &calls);
-        calls
-    }
-
-    fn props(&self, id: &str) -> Option<Value> {
-        self.held
-            .as_array()?
-            .iter()
-            .find(|o| o["id"] == id)
-            .map(|o| o["props"].clone())
-    }
 }
 
 // ────────────────────────────────────────────────────── (a) the owner rule
@@ -414,247 +330,234 @@ fn a_message_without_a_sender_has_no_owner_and_writes_nothing() {
 
 #[test]
 fn an_accepted_view_is_written_under_the_envelopes_path() {
-    let Some(root) = display() else { return };
-    if !have_python() {
+    if display().is_none() || !have_python() {
         return;
     }
-    let out = only(run_shipped(
-        &root,
-        "compose",
-        stdin_doc(
-            prose_body("note", "Mine", "hello"),
-            json!({"route": "in_view"}),
-            json!({}),
-            Some(ALICE),
-        ),
-    ));
-    assert_eq!(out["header"]["route"], "views");
+    let mut screen = Screen::new(params());
+    screen.send(
+        door(prose_body("note", "Mine", "hello"), "in_view", ALICE),
+        1_000,
+    );
+    assert!(
+        screen.lane("receipt").is_empty(),
+        "the door took the view: {:#?}",
+        screen.last
+    );
 
-    // Delete-then-insert IS the primary key: a store schema cannot declare one.
-    let ops: Vec<String> = calls_of(&out)
-        .iter()
-        .map(|c| c["operation"].as_str().unwrap_or_default().to_string())
-        .collect();
-    assert_eq!(ops, vec!["select", "delete", "insert"]);
+    // Delete-then-insert IS the primary key: a store schema cannot declare one. And it
+    // is ONE bundle with nothing read in it: the cell holds the rows in memory (GH #809).
+    let hop = write_hop(&screen);
+    let legs = app_legs(&hop);
+    assert_eq!(operations(&legs), vec!["delete", "insert"]);
+    assert!(
+        !hop["ops"]
+            .as_array()
+            .expect("ops")
+            .contains(&json!("select")),
+        "a write reads nothing back: {hop:#?}"
+    );
 
-    let inserted = &calls_of(&out)[2]["row"];
+    let inserted = &legs[1]["row"];
     assert_eq!(inserted["owner"], ALICE);
     assert_eq!(inserted["view_id"], "note");
-    let deleted = &calls_of(&out)[1]["where"];
+    let deleted = &legs[0]["where"];
     assert_eq!(
         deleted["owner"], ALICE,
         "the delete is scoped to the sender"
     );
-    assert_eq!(request_of(&out)["owner"], ALICE);
+    assert_eq!(hop["request"]["write"]["owner"], ALICE);
+    assert!(
+        screen
+            .table()
+            .iter()
+            .any(|r| r["owner"] == ALICE && r["view_id"] == "note"),
+        "the row stands in the store: {:#?}",
+        screen.table()
+    );
+
+    // The next write of the same view is a pass of a LIVE cell: its one store bundle and
+    // its one patch, and no select anywhere -- only a boot asks the store for its rows.
+    screen.send(
+        door(prose_body("note", "Mine", "again"), "in_view", ALICE),
+        2_000,
+    );
+    let ops: Vec<&Value> = screen
+        .hops()
+        .iter()
+        .filter(|h| h["route"] == "views")
+        .flat_map(|h| h["ops"].as_array().expect("ops"))
+        .collect();
+    assert!(
+        !ops.contains(&&json!("select")),
+        "no select after the boot: {:#?}",
+        screen.hops()
+    );
+    assert_eq!(
+        operations(&app_legs(&write_hop(&screen))),
+        vec!["delete", "insert"]
+    );
 }
 
 // ───────────────────────── (b) two owners, one deterministic order, (f) ttl
 
-/// Both owners reach the plan, and the plan's order carries no clock.
+/// Both owners reach the screen, and their order carries no clock.
 ///
 /// Until GH #609 this asserted `newest first`, and the older row here is the
 /// one that would have to come SECOND under that reading. It comes second
-/// under this one too — but on `(owner, view_id)`, with `updated_at` playing no
-/// part: `alice` sorts before `bob`, and swapping the two timestamps would not
-/// change the answer. Where a person actually sees them is settled one pass
-/// later, off the seats the display holds
-/// (`gh609_a_standing_view_keeps_its_place`).
+/// under this one too -- but on `(owner, view_id)`, with `updated_at` playing no
+/// part: `alice` sorts before `bob`, and swapping the two timestamps does not
+/// change the answer. The two rows stand in the store before the cell wakes; its
+/// boot reads them once and replays each as the write it was, at its own moment,
+/// so the write times are the ONLY thing the two runs differ in.
 #[test]
 fn two_owners_hold_two_views_in_an_order_that_reads_no_clock() {
-    let Some(root) = display() else { return };
-    if !have_python() {
+    if display().is_none() || !have_python() {
         return;
     }
-
-    let mine = row(ALICE, "note", 2_000, 0, "Mine", "the newer one");
-    let theirs = row(BOB, "board", 1_000, 0, "Theirs", "the older one");
-    let request = json!({"withdraw": false, "owner": ALICE, "view_id": "note",
-                         "row": mine});
-
-    let out = only(run_shipped(
-        &root,
-        "compose",
-        stdin_doc(
-            // The before-state carries only the OTHER owner's row: this write
-            // is the first one Alice ever made.
-            store_reply(vec![theirs.clone()], &["delete", "insert"]),
-            json!({"operation": "bundle", "bundle_errors": 0}),
-            views_context(&request),
-            None,
-        ),
-    ));
-
-    assert_eq!(out["header"]["route"], "read");
-    let plan = plan_of(&out);
-    let views = plan["views"].as_array().expect("views");
-    assert_eq!(views.len(), 2, "both owners are on the screen: {views:#?}");
-    assert_eq!(
-        views[0]["owner"], ALICE,
-        "the band is equal, so identity decides"
-    );
-    assert_eq!(views[1]["owner"], BOB);
-
-    // The same two rows with their timestamps exchanged: an order that read the
-    // clock would swap them, and this one does not move at all.
-    let older_mine = row(ALICE, "note", 1_000, 0, "Mine", "the newer one");
-    let newer_theirs = row(BOB, "board", 2_000, 0, "Theirs", "the older one");
-    let request = json!({"withdraw": false, "owner": ALICE, "view_id": "note",
-                         "row": older_mine});
-    let out = only(run_shipped(
-        &root,
-        "compose",
-        stdin_doc(
-            store_reply(vec![newer_theirs], &["delete", "insert"]),
-            json!({"operation": "bundle", "bundle_errors": 0}),
-            views_context(&request),
-            None,
-        ),
-    ));
-    let views = plan_of(&out);
-    let views = views["views"].as_array().expect("views");
-    assert_eq!(
-        views[0]["owner"], ALICE,
-        "exchanging the two write times changes nothing: the last write is not \
-         a sort key any more (GH #609)"
-    );
+    let mine = oid(ALICE, "note");
+    let theirs = oid(BOB, "board");
+    for (alice_at, bob_at) in [(2_000, 1_000), (1_000, 2_000)] {
+        let mut screen = Screen::new(params());
+        screen.put(row(ALICE, "note", alice_at, 0, "Mine", "the newer one"));
+        screen.put(row(BOB, "board", bob_at, 0, "Theirs", "the older one"));
+        screen.pass(json!({"kind": "stroke"}), 3_000);
+        assert_eq!(
+            window_order(&screen),
+            vec![mine.clone(), theirs.clone()],
+            "both owners are on the screen, and with Alice written at {alice_at} and Bob \
+             at {bob_at} identity decides: the last write is not a sort key any more \
+             (GH #609)"
+        );
+    }
 }
 
-/// An elapsed view still travels -- and the PASS is what takes it off the screen.
+/// An elapsed view stays in the store -- and the PASS is what takes it off the screen.
 ///
-/// Until the contract of § 4.34 pass 2 dropped a row whose `ttl_ms` had run out, so a
-/// window could never be drawn one last time on its way out. The filter is gone: the
-/// store holds what an application wrote until the application withdraws it, and the
-/// pass decides when the view leaves the state (step 4, step 12).
+/// Until the contract of § 4.34 the cell dropped a row whose `ttl_ms` had run out before
+/// the pass saw it, so a window could never be drawn one last time on its way out. The
+/// filter is gone: the store holds what an application wrote until the application
+/// withdraws it, and the pass decides when the view leaves the state (step 4, step 12).
 #[test]
-fn an_elapsed_view_leaves_in_the_pass_and_not_in_the_plan() {
-    let Some(root) = display() else { return };
-    if !have_python() {
+fn an_elapsed_view_stays_in_the_store_and_leaves_in_the_pass() {
+    if display().is_none() || !have_python() {
         return;
     }
-
-    let stale = row(BOB, "flash", 1_000, 1_000, "Gone", "…");
-    let fresh = row(ALICE, "note", 2_000, 0, "Here", "…");
-    let request = json!({"withdraw": false, "owner": ALICE, "view_id": "note",
-                         "row": fresh});
-
-    let out = only(run_shipped(
-        &root,
-        "compose",
-        stdin_doc(
-            store_reply(vec![stale.clone()], &["delete", "insert"]),
-            json!({"operation": "bundle", "bundle_errors": 0}),
-            views_context(&request),
-            None,
-        ),
-    ));
-    let plan = plan_of(&out);
-    let views = plan["views"].as_array().expect("views");
-    assert_eq!(
-        views.len(),
-        2,
-        "pass 2 hands on what the store holds, elapsed or not: {views:#?}"
-    );
-
-    // And what a row DOES on the screen is the pass's alone. A view enters the state
-    // through the `app_write` event of its own pass (§ 4.8 a) -- so the elapsed row,
-    // which travels in every plan until its app withdraws it, is laid out by nobody:
-    // this pass is Alice's, and the state it computes knows one window.
-    let mut screen = Screen::new();
-    screen.rows = vec![stale];
+    let mut screen = Screen::new(params());
+    screen.put(row(BOB, "flash", 1_000, 1_000, "Gone", "…"));
     screen.write(
-        &root,
         component_row(ALICE, "note", "Here", "the one window"),
+        2_000,
     );
-    let mine = format!("view.{}.note/c.note", ALICE.replace('/', "~"));
-    let theirs = format!("view.{}.flash", BOB.replace('/', "~"));
+
     assert!(
-        screen.props(&mine).is_some(),
-        "the written view is drawn: {:?}",
+        screen
+            .table()
+            .iter()
+            .any(|r| r["owner"] == BOB && r["view_id"] == "flash"),
+        "the store still holds what Bob wrote, elapsed or not: {:#?}",
+        screen.table()
+    );
+    let mine = format!("{}/c.note", oid(ALICE, "note"));
+    let theirs = oid(BOB, "flash");
+    assert!(
+        screen.holds(&mine),
+        "the written view is drawn: {}",
         screen.held
     );
     assert!(
-        screen.props(&theirs).is_none(),
-        "and the elapsed one is on no screen: {:?}",
+        !screen.holds(&theirs),
+        "and the elapsed one is on no screen: {}",
         screen.held
+    );
+    assert!(
+        screen.screen_state()["views"].get(&theirs).is_none(),
+        "the pass took it out of the state"
     );
 }
 
+/// A store that refuses a leg of an app's write answers the cell with the write's own
+/// mark on the reply; the cell turns that into a receipt to the app, and draws nothing
+/// from it. One reply document, no memory needed: the door's own bytes suffice.
 #[test]
 fn a_failed_write_leg_is_a_receipt_and_not_a_picture() {
     let Some(root) = display() else { return };
     if !have_python() {
         return;
     }
-    let mut reply = store_reply(vec![], &["delete", "insert"]);
-    reply["results"][2]["error_code"] = json!("constraint_violation");
-    let request = json!({"withdraw": false, "owner": ALICE, "view_id": "note",
-                         "row": row(ALICE, "note", 2_000, 0, "x", "y")});
-
+    let mark = json!({"write": {"owner": ALICE, "view_id": "note", "withdraw": false}});
+    let reply = json!({
+        "messages": [
+            {"origin": "tool", "type": "tool_result", "id": "d-delete",
+             "text": "{\"rows_affected\":1}"},
+            {"origin": "tool", "type": "tool_result", "id": "d-insert",
+             "text": "constraint violated"},
+        ],
+        "results": [
+            {"tool_call_id": "d-delete", "operation": "delete", "rows_affected": 1},
+            {"tool_call_id": "d-insert", "operation": "insert", "rows_affected": 0,
+             "error_code": "constraint_violation"},
+        ],
+    });
     let out = only(run_shipped(
         &root,
         "compose",
         stdin_doc(
             reply,
-            json!({"operation": "bundle", "bundle_errors": 1}),
-            views_context(&request),
+            json!({"operation": "bundle", "rows_affected": 1, "bundle_errors": 1}),
+            json!({"display_origin": "views", "display_request": mark.to_string()}),
             None,
         ),
     ));
     assert_eq!(out["header"]["route"], "receipt");
     assert_eq!(out["receipt"]["error_code"], "store_failed");
+    assert_eq!(
+        out["receipt"]["owner"], ALICE,
+        "the receipt goes to the writer"
+    );
+    assert_eq!(out["receipt"]["view_id"], "note");
 }
 
 // ──────────────────────────────────────────────────────── (c) the withdrawal
 
 #[test]
 fn a_withdrawal_removes_only_the_callers_own_view() {
-    let Some(root) = display() else { return };
-    if !have_python() {
+    if display().is_none() || !have_python() {
         return;
     }
+    // Bob holds a view with the SAME view_id, which is exactly the collision an
+    // owner-blind delete would have taken with it.
+    let mut screen = Screen::new(params());
+    screen.write(component_row(BOB, "note", "Theirs", "still there"), 1_000);
+    screen.write(component_row(ALICE, "note", "Mine", "going away"), 2_000);
+    screen.take_down(ALICE, "note", 3_000);
 
-    let out = only(run_shipped(
-        &root,
-        "compose",
-        stdin_doc(
-            json!({"messages": [], "view_id": "note"}),
-            json!({"route": "in_withdraw"}),
-            json!({}),
-            Some(ALICE),
-        ),
-    ));
-    let calls = calls_of(&out);
-    let ops: Vec<&str> = calls
-        .iter()
-        .map(|c| c["operation"].as_str().unwrap_or_default())
-        .collect();
+    let hop = write_hop(&screen);
+    assert_eq!(hop["request"]["write"]["withdraw"], json!(true));
+    let legs = app_legs(&hop);
     assert_eq!(
-        ops,
-        vec!["select", "delete"],
+        operations(&legs),
+        vec!["delete"],
         "a withdrawal inserts nothing"
     );
-    assert_eq!(calls[1]["where"]["owner"], ALICE);
-    assert_eq!(calls[1]["where"]["view_id"], "note");
+    assert_eq!(legs[0]["where"]["owner"], ALICE);
+    assert_eq!(legs[0]["where"]["view_id"], "note");
 
-    // And the picture that follows keeps everybody else's row. Bob holds a
-    // view with the SAME view_id, which is exactly the collision an owner-blind
-    // delete would have taken with it.
-    let theirs = row(BOB, "note", 1_000, 0, "Theirs", "still there");
-    let mine = row(ALICE, "note", 2_000, 0, "Mine", "going away");
-    let after = only(run_shipped(
-        &root,
-        "compose",
-        stdin_doc(
-            store_reply(vec![theirs, mine], &["delete"]),
-            json!({"operation": "bundle", "bundle_errors": 0}),
-            views_context(&request_of(&out)),
-            None,
-        ),
-    ));
-    let plan = plan_of(&after);
-    let views = plan["views"].as_array().expect("views");
-    assert_eq!(views.len(), 1, "only the caller's own row left: {views:#?}");
-    assert_eq!(views[0]["owner"], BOB);
+    // And the screen that follows keeps everybody else's row.
+    let left: Vec<&Value> = screen
+        .rows
+        .iter()
+        .filter(|r| r["view_id"] == "note")
+        .collect();
+    assert_eq!(left.len(), 1, "only the caller's own row left: {left:#?}");
+    assert_eq!(left[0]["owner"], BOB);
+    let state = screen.screen_state();
+    assert_eq!(state["views"][oid(ALICE, "note")]["withdrawn"], json!(true));
+    assert_eq!(state["views"][oid(BOB, "note")]["withdrawn"], json!(false));
+    assert!(
+        screen.holds(&oid(BOB, "note")),
+        "Bob's window stands: {}",
+        screen.held
+    );
 }
 
 // ──────────────────────────────────── the round terminates, which is the point
@@ -730,16 +633,17 @@ fn the_app_view_declares_components_and_every_name_carries_its_prefix() {
         );
     }
 
-    // And the screen accepts it: same body, through the door, with an owner.
+    // And the screen accepts it: same body, through the door, with an owner. What
+    // leaves is the store bundle of the write, and no receipt.
     let mut body = view.clone();
     body.as_object_mut().unwrap().remove("header");
-    let out = only(run_shipped(
+    let out = run_shipped(
         &screen,
         "compose",
         stdin_doc(body, json!({"route": "in_view"}), json!({}), Some(ALICE)),
-    ));
-    assert_eq!(
-        out["header"]["route"], "views",
+    );
+    assert!(
+        write_of(&out).is_some() && !out.iter().any(|em| em["header"]["route"] == "receipt"),
         "the screen took the app's view: {out:#?}"
     );
 }
@@ -862,13 +766,13 @@ fn distinct_keys_across_different_parents_are_fine() {
             ],
         },
     });
-    let out = only(run_shipped(
+    let out = run_shipped(
         &root,
         "compose",
         stdin_doc(body, json!({"route": "in_view"}), json!({}), Some(ALICE)),
-    ));
-    assert_eq!(
-        out["header"]["route"], "views",
+    );
+    assert!(
+        write_of(&out).is_some() && !out.iter().any(|em| em["header"]["route"] == "receipt"),
         "the same key under two parents is two ids: {out:#?}"
     );
 }
@@ -972,36 +876,48 @@ async fn apply(live: &mut Live, calls: &[Value]) -> Value {
         .content
 }
 
-/// The whole point of the re-cut, end to end: two owners' views come out of the shipped
-/// compose cell, a real `web` cell takes the bundles, and the page a browser would get
-/// carries both of them.
+/// The whole point of the re-cut, end to end: two owners' views come out of ONE living
+/// compose cell, a real `web` cell takes the patches it sent, and the page a browser
+/// would get carries both of them.
 ///
-/// Two owners are two ROUNDS here, and that is the contract and not the harness: a view
+/// Two owners are two WRITES here, and that is the contract and not the harness: a view
 /// enters the screen state through the `app_write` event of its own pass (§ 4.8 a), so a
-/// screen with two applications on it has seen two writes.
+/// screen with two applications on it has seen two writes -- and each of them sent the
+/// display exactly one patch.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn both_views_reach_a_real_display() {
-    let Some(root) = display() else { return };
-    if !have_python() {
+    if display().is_none() || !have_python() {
         return;
     }
 
-    let mut screen = Screen::new();
-    let first = screen.write(
-        &root,
-        component_row(BOB, "board", "From Bob", "the older paragraph"),
-    );
-    let second = screen.write(
-        &root,
-        component_row(ALICE, "note", "From Alice", "the newer paragraph"),
-    );
+    let mut screen = Screen::new(params());
+    let mut patches = Vec::new();
+    for (row, now) in [
+        (
+            component_row(BOB, "board", "From Bob", "the older paragraph"),
+            1_000,
+        ),
+        (
+            component_row(ALICE, "note", "From Alice", "the newer paragraph"),
+            2_000,
+        ),
+    ] {
+        let calls = screen.write(row, now);
+        let sent = screen
+            .hops()
+            .iter()
+            .filter(|h| h["route"] == "patch")
+            .count();
+        assert_eq!(sent, 1, "one patch per pass: {:#?}", screen.hops());
+        patches.push(calls);
+    }
 
     let td = TempDir::new().expect("td");
     let cell_dir = td.path().join("web");
     std::fs::create_dir_all(&cell_dir).expect("dir");
     let mut live = start(&cell_dir).await;
 
-    for calls in [&first, &second] {
+    for calls in &patches {
         let reply = apply(&mut live, calls).await;
         assert_eq!(
             reply["header"]["bundle_errors"],
@@ -1049,10 +965,10 @@ async fn both_views_reach_a_real_display() {
     }
     assert!(
         body.find("the newer paragraph") < body.find("the older paragraph"),
-        "the order holds on the page and not only in the plan. Neither window is open \
+        "the order holds on the page and not only in the tree. Neither window is open \
          here -- both are `fresh` in their own pass and neither reaches the bar -- so \
-         they stand in the order the state keys them, and `alice` sorts before `bob` \
-         (§ 6.3, GH #609):\n{body}"
+         they stand on the same seat and the display orders them by id: `alice` sorts \
+         before `bob` (§ 6.3, GH #609):\n{body}"
     );
     // Each wrapper says whose it is, which is what a member reads off a browser
     // event to route it back to the one agent that put the view up.

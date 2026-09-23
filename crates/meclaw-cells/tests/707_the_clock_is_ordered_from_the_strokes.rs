@@ -11,6 +11,9 @@
 //!
 //! This replaces `gh679_a_due_clock_sweeps_what_is_due.rs`: `next_due` computed ONE moment
 //! out of the object tree and ordered bar crossings that the reference model does not have.
+//!
+//! The script runs the way a `resident` code cell runs it: one living cell over every
+//! message (`support::Screen`, the curator driver, GH #809).
 
 mod support;
 
@@ -157,30 +160,37 @@ fn a_stroke_does_not_remove_the_order_that_struck() {
         .find(|o| o.0 == "add")
         .expect("an add")
         .1;
-    // The next pass is the strike itself: it carries the order's own id as `struck`.
-    let plan_struck = struck.clone();
-    let objects = screen.held.clone();
-    let plan = json!({
-        "views": screen.rows, "state": screen.state, "define": [], "now": 101_000,
-        "event": {"kind": "stroke"}, "struck": plan_struck,
-    });
-    let doc = json!({
-        "params": screen.params,
-        "body": {"messages": [{"origin": "tool", "type": "tool_result", "id": "d-query",
-                               "text": json!({"objects": objects}).to_string()}]},
-        "envelope": {"header": {
-            "hop": {"operation": "query"},
-            "context": {"display_origin": "read", "display_views": plan.to_string()},
-        }},
-    });
-    let emissions = support::raw(&doc);
-    let removed: Vec<&Value> = emissions
-        .iter()
-        .filter(|e| e["header"]["route"] == "due" && e["op"] == "remove")
+    // The next pass is the strike itself: the clock's `in_tick` carries the order's own
+    // id as its `schedule_id`, and the pass reads it as `struck`.
+    screen.pass(
+        json!({"kind": "stroke", "struck": struck.as_str()}),
+        101_000,
+    );
+    let removed: Vec<&Value> = screen
+        .lane("due")
+        .into_iter()
+        .filter(|e| e["op"] == "remove")
         .collect();
     assert!(
         removed.iter().all(|e| e["schedule_id"] != struck.as_str()),
         "the order that struck is not removed: {removed:?}"
+    );
+
+    // The counter-probe: the same pass WITHOUT the strike's id takes the standing order
+    // back, so the silence above is the `struck` and nothing else.
+    let mut other = Screen::new(params());
+    other.write(
+        note("n1", json!({"context": "system", "relevance": "0.9"})),
+        100_000,
+    );
+    other.pass(json!({"kind": "stroke"}), 101_000);
+    assert!(
+        other
+            .lane("due")
+            .iter()
+            .any(|e| e["op"] == "remove" && e["schedule_id"] == struck.as_str()),
+        "a stroke that names no strike removes the order it replaces: {:?}",
+        other.lane("due")
     );
 }
 
@@ -222,7 +232,6 @@ fn an_empty_screen_orders_nothing_and_takes_its_order_back() {
         .find(|o| o.0 == "add")
         .expect("an add")
         .1;
-    screen.withdraw("alex", "n1");
     screen.pass(
         json!({"kind": "app_withdraw", "oid": "view.alex.n1"}),
         101_000,

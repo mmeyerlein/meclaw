@@ -133,7 +133,7 @@ adr	status	anchor_home	target
 0041-a-log-read-is-not-the-colony-loop-s-work.md	accepted	self	test:a_message_read_declares_itself
 0041-a-log-read-is-not-the-colony-loop-s-work.md	accepted	self	file:crates/meclaw-api/src/handlers/message_log.rs#const RESOLVE_BLOB_MAX
 0042-the-display-pass-is-the-reference-model.md	accepted	self	test:the_pass_in_the_cell_is_the_reference_model
-0042-the-display-pass-is-the-reference-model.md	accepted	self	test:the_state_is_written_as_one_row_and_read_back
+0042-the-display-pass-is-the-reference-model.md	accepted	self	test:a_killed_cell_reads_its_memory_back_out_of_the_rest_row
 0042-the-display-pass-is-the-reference-model.md	accepted	self	file:templates/display/compose/scenarios/run_display_scenarios.py
 0043-a-cap-is-a-sandbox-shape-of-its-own.md	accepted	self	test:a_cap_alone_is_a_restricted_profile
 0043-a-cap-is-a-sandbox-shape-of-its-own.md	accepted	self	test:syscalls_without_a_filesystem_view_is_still_refused

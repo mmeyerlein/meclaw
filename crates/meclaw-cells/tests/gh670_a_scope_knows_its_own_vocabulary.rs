@@ -1,35 +1,28 @@
 //! GH #670 -- a scope recognises its own outdated vocabulary.
 //!
-//! The compose cell defines its components on the bootstrap pass and never
-//! again: `bootstrap` is true when the page has no `/` or a root that is not
-//! ours. A screen that is already running would, after a template swap, get
-//! new code and keep the old vocabulary. So the root carries a fingerprint of
-//! `components()` as a prop, and a read pass whose root holds another
-//! fingerprint redefines everything -- once per change of vocabulary, not per
-//! tick. Same economy the screen already has for an application's components
-//! ("the definitions only travel when they changed"), now for its own language.
+//! The compose cell defines its components on the bootstrap and never again:
+//! `bootstrap` is true when the tree `web` holds has no root of ours. A screen
+//! that is already running would, after a template swap, get new code and keep
+//! the old vocabulary. So the root carries a fingerprint of `components()` as a
+//! prop, and a boot whose read finds a root with another fingerprint redefines
+//! everything -- once per change of vocabulary, not per stroke. Same economy the
+//! screen already has for an application's components ("the definitions only
+//! travel when they changed"), now for its own language.
 //!
-//! The script is run the way a `code` cell runs it: as a subprocess, with the
-//! read-pass document on stdin, and the bundle it answers is what the display
-//! would receive. Skips when `python3` is absent or the templates do not ship,
-//! like every other interpreter guard in this tree (R2b).
+//! Since display 2.7.0 the cell runs `resident` (GH #809): it reads the tree
+//! ONCE, when a fresh child boots (and after a refused patch), and diffs every
+//! later pass against what it sent itself. A template swap is exactly such a
+//! fresh child, so the tests kill the cell over a tree `web` still holds and
+//! wake it with a stroke -- an event that changes nothing on its own -- and read
+//! the one patch its boot sends. The hive is played by `support::Screen`.
+//! Skips when the templates do not ship (R2b).
 
-use std::io::Write;
-use std::process::{Command, Stdio};
+mod support;
+
+use std::process::Command;
 
 use meclaw_core::serde_json::{Value, json};
-
-fn repo(rel: &str) -> std::path::PathBuf {
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join(rel)
-}
-
-const COMPOSE: &str = "templates/display/compose/compose.py";
-
-fn library_ships() -> bool {
-    repo("templates/display/template.json").is_file()
-}
+use support::{COMPOSE, Screen, component_view, library_ships, pane, repo};
 
 /// The fingerprint the shipped script computes (`compose.VOCAB`), the one a
 /// local copy of `components()` computes the same way, and the one a copy with
@@ -62,93 +55,50 @@ fn probe() -> Option<Value> {
     Some(meclaw_core::serde_json::from_slice(&out.stdout).expect("the probe is JSON"))
 }
 
-/// Run the shipped script over one document on stdin, the way a `code` cell
-/// does, and return the calls of the bundle it answers with -- each one the
-/// parsed `text` of a `tool_call` turn. An empty answer is an empty list.
-/// `None` when there is no `python3` on this host.
-fn read_pass(objects: Option<&Value>) -> Option<Vec<Value>> {
-    // The display's answer to the `query`: nothing at all before the first
-    // bootstrap, the objects it holds afterwards.
-    let messages = match objects {
-        None => json!([]),
-        Some(objs) => json!([{
-            "origin": "tool",
-            "type": "tool_result",
-            "id": "d-query",
-            "text": json!({"objects": objs}).to_string(),
-        }]),
-    };
-    let doc = json!({
-        "body": {"messages": messages},
-        "envelope": {"header": {
-            "hop": {"operation": "query"},
-            "context": {
-                "display_origin": "read",
-                "display_views": json!({"views": [], "define": []}).to_string(),
-            },
-        }},
-    });
-    let mut child = Command::new("python3")
-        .arg(repo(COMPOSE))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .ok()?;
-    child
-        .stdin
-        .take()
-        .expect("stdin")
-        .write_all(doc.to_string().as_bytes())
-        .expect("the document reaches the script");
-    let out = child.wait_with_output().expect("the script ends");
-    assert!(
-        out.status.success(),
-        "compose.py failed:\n{}",
-        String::from_utf8_lossy(&out.stderr)
+/// A screen with one window, booted: its first write found a fresh `web`, so its
+/// one patch is the bootstrap. The bootstrap's calls come back beside it.
+///
+/// One stroke follows at the same moment: a write leaves its window `fresh` only
+/// for its own pass, and the stroke settles it, so a later stroke -- of this cell
+/// or of a fresh child -- has nothing of its own to draw.
+fn booted() -> (Screen, Vec<Value>) {
+    let mut screen = Screen::new(json!({
+        "screens": {"monitor": {"display_type": "monitor", "inputs": ["pointer"]}},
+        "default_screen": "monitor",
+    }));
+    let first = screen.write(
+        component_view("a", "main", pane("a", json!({"title": "x"}))),
+        1000,
     );
-    let answer: Value =
-        meclaw_core::serde_json::from_slice(&out.stdout).expect("the answer is JSON");
-    let emissions = match answer {
-        Value::Array(list) => list,
-        one @ Value::Object(_) => vec![one],
-        other => panic!("emissions are objects: {other}"),
-    };
-    // GH #765 (way A): the pass draws nothing of its own -- its calls ride the state
-    // write and are emitted from the reply, once the store has said the row landed. So
-    // what a pass would draw is read off that request.
-    let drawn = emissions.iter().find_map(|em| {
-        if em["header"]["route"] != "views" {
-            return None;
-        }
-        let request: Value =
-            meclaw_core::serde_json::from_str(em["header"]["display_request"].as_str()?)
-                .expect("a request is JSON");
-        if request["state"] != json!(true) {
-            return None;
-        }
-        Some(request["patch"].as_array().cloned().unwrap_or_default())
-    });
-    Some(drawn.unwrap_or_default())
+    screen.pass(json!({"kind": "stroke"}), 1000);
+    (screen, first)
 }
 
-/// The objects a bootstrap creates, as the display would hold them and answer
-/// a later `query` with: id, parent, ord and props of every `object.create`.
-fn held_after(calls: &[Value]) -> Value {
-    Value::Array(
-        calls
+/// A fresh child over the tree `web` holds, woken by a stroke: the patch of its
+/// boot. The boot's read is asserted, so an empty patch is a read that found
+/// nothing to change and not a read that never happened.
+fn reboot(screen: &mut Screen) -> Vec<Value> {
+    screen.kill();
+    let calls = screen.pass(json!({"kind": "stroke"}), 1000);
+    assert_eq!(
+        screen
+            .hops()
             .iter()
-            .filter(|c| c["op"] == "object.create")
-            .map(|c| {
-                json!({
-                    "id": c["id"],
-                    "parent": c["parent"],
-                    "ord": c["ord"],
-                    "props": c["props"],
-                })
-            })
-            .collect(),
-    )
+            .filter(|h| h["route"] == "read")
+            .count(),
+        1,
+        "a fresh child reads the tree once: {:?}",
+        routes(screen)
+    );
+    calls
+}
+
+fn routes(screen: &Screen) -> Vec<String> {
+    screen
+        .hops()
+        .iter()
+        .map(|h| h["route"].as_str().unwrap_or("").to_string())
+        .collect()
 }
 
 fn ops(calls: &[Value]) -> Vec<&str> {
@@ -173,19 +123,11 @@ fn a_swapped_scope_redefines_its_vocabulary_without_a_bootstrap() {
     let Some(probe) = probe() else {
         return;
     };
-    let Some(first) = read_pass(None) else {
-        return;
-    };
-    let mut held = held_after(&first);
-    let root = held
-        .as_array_mut()
-        .expect("a list")
-        .iter_mut()
-        .find(|o| o["id"] == "display.root")
-        .expect("the bootstrap creates the root");
-    root["props"]["vocab"] = json!("0000deadbeef");
+    let (mut screen, _) = booted();
+    // The tree an older code left behind: the same root, another language.
+    screen.web_update("display.root", json!({"vocab": "0000deadbeef"}));
 
-    let calls = read_pass(Some(&held)).expect("python3 answered once already");
+    let calls = reboot(&mut screen);
     let defines = count(&calls, "component.define");
     assert_eq!(
         defines,
@@ -211,7 +153,7 @@ fn a_swapped_scope_redefines_its_vocabulary_without_a_bootstrap() {
         ops(&calls)[..defines]
             .iter()
             .all(|op| *op == "component.define"),
-        "the definitions lead the bundle: {:?}",
+        "the definitions lead the patch: {:?}",
         ops(&calls)
     );
     let update = calls
@@ -219,6 +161,16 @@ fn a_swapped_scope_redefines_its_vocabulary_without_a_bootstrap() {
         .find(|c| c["op"] == "object.update" && c["id"] == "display.root")
         .unwrap_or_else(|| panic!("the root is brought up to date: {:?}", ops(&calls)));
     assert_eq!(update["props"]["vocab"], probe["vocab"]);
+
+    // Once per change of vocabulary: the next stroke of the same cell diffs against
+    // what it sent and sends no definition again.
+    let next = screen.pass(json!({"kind": "stroke"}), 1000);
+    assert_eq!(
+        count(&next, "component.define"),
+        0,
+        "the vocabulary travelled once: {:?}",
+        ops(&next)
+    );
 }
 
 /// The same page with the fingerprint the code computes: no definition, no
@@ -231,27 +183,22 @@ fn an_unchanged_vocabulary_sends_no_definition() {
     let Some(probe) = probe() else {
         return;
     };
-    let Some(first) = read_pass(None) else {
-        return;
-    };
+    let (mut screen, first) = booted();
     assert_eq!(
         count(&first, "component.define"),
         probe["count"].as_u64().expect("a count") as usize,
         "the bootstrap defines the whole scope"
     );
-    let held = held_after(&first);
-    let root = held
-        .as_array()
-        .expect("a list")
+    let root = first
         .iter()
-        .find(|o| o["id"] == "display.root")
+        .find(|c| c["op"] == "object.create" && c["id"] == "display.root")
         .expect("the bootstrap creates the root");
     assert_eq!(
         root["props"]["vocab"], probe["vocab"],
         "the root is created with the fingerprint of the code that created it"
     );
 
-    let calls = read_pass(Some(&held)).expect("python3 answered once already");
+    let calls = reboot(&mut screen);
     assert_eq!(
         count(&calls, "component.define"),
         0,
@@ -267,8 +214,13 @@ fn an_unchanged_vocabulary_sends_no_definition() {
     );
     assert!(
         calls.is_empty(),
-        "a screen that matches the code gets no bundle at all: {:?}",
+        "a screen that matches the code gets no patch at all: {:?}",
         ops(&calls)
+    );
+    assert!(
+        !routes(&screen).iter().any(|r| r == "patch"),
+        "not even an empty one: {:?}",
+        routes(&screen)
     );
 }
 

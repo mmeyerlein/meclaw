@@ -162,14 +162,14 @@ fn no_order_of_the_screen_reads_a_clock() {
         "the dock does not sort on the last write either"
     );
 
-    // The rows the store hands over: a deterministic order for the plan, and nothing
-    // more. What a person SEES is the pass's word, so the `ord` a SENDER asked for is not
+    // The rows the cell holds (GH #809: in memory, `sorted_rows`): a deterministic order
+    // for the pass, and nothing more. What a person SEES is the pass's word, so the `ord` a SENDER asked for is not
     // read here either -- § 2 says a seat is "not the first-appearance order of views
     // (`ord`)", and § 10 retires "canvas order by first appearance" in favour of § 6.3.
-    let rows = body_of(&src, "def pass_views(body, ctx, hop):");
+    let rows = body_of(&src, "def sorted_rows(rows):");
     assert!(
-        rows.contains("REGION_INDEX.get(str(r.get(\"region\") or REGIONS[0]), 0),")
-            && rows.contains("str(r.get(\"owner\") or \"\"),"),
+        rows.contains("REGION_INDEX.get(str(x.get(\"region\") or REGIONS[0]), 0),")
+            && rows.contains("str(x.get(\"owner\") or \"\"),"),
         "the row order names the region and identity:{rows}"
     );
     assert!(
@@ -191,25 +191,28 @@ fn no_order_of_the_screen_reads_a_clock() {
     );
 
     // And the strongest reading of the sentence: nothing ORDERS on `updated_at`. The
-    // column is still read in exactly three places, and none of them is an order:
+    // column is read in exactly two places, and neither is an order:
     //
     //   * the reconciliation of OR-H0.9 asks a row WHEN the store wrote it, so a write it
-    //     has to replay lands at its own moment and `ttl_ms` and the decay count from
-    //     there -- the column used as a clock, which is what it is;
-    //   * and the state row's write asks its own row which VERSION it read, so a second
-    //     pass that computed on the same row cannot overwrite the first one's conclusion
-    //     (GH #744). A version is not a rank either: nothing on the screen moves because
-    //     of it.
+    //     has to replay at the boot lands at its own moment and `ttl_ms` and the decay
+    //     count from there -- the column used as a clock, which is what it is;
+    //   * and a write the door took is passed at the moment it was stamped
+    //     (`accept_row`), the same clock for the same reason.
     //
-    // A rank is what GH #609 was, and that is still nowhere.
+    // (The third reader, the state row's version check of GH #744, left with the state
+    // row in display 2.7.0, GH #809.) A rank is what GH #609 was, and that is still
+    // nowhere.
     let readers = [
         "def reconcile(state, rows, event, now):",
         "def _written_at(value, fallback):",
-        "def state_write_ops(state, now, settings, screens, said, held=None, mark=None, patch=None):",
+        "def accept_row(owner, row, withdraw):",
     ];
     let inside: usize = readers
         .iter()
-        .map(|header| body_of(&src, header).matches("get(\"updated_at\")").count())
+        .map(|header| {
+            let body = body_of(&src, header);
+            body.matches("get(\"updated_at\")").count() + body.matches("[\"updated_at\"]").count()
+        })
         .sum();
     let total =
         src.matches("get(\"updated_at\")").count() + src.matches("[\"updated_at\"]").count();
@@ -222,7 +225,7 @@ fn no_order_of_the_screen_reads_a_clock() {
     for header in [
         "def canvas_order(state):",
         "def step9_dock(state, now):",
-        "def pass_views(body, ctx, hop):",
+        "def sorted_rows(rows):",
         "def objects_from_state(state, rows, now, name, have=None):",
     ] {
         let body = body_of(&src, header);

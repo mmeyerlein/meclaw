@@ -1,4 +1,4 @@
-# `colony-view@1.1.2`
+# `colony-view@1.1.3`
 
 The colony, drawn. A committed mutation takes a topology snapshot, a `code` cell
 turns it into one view, and a display holds it and serves the page. The browser
@@ -10,6 +10,56 @@ mutation_committed  ->  probe (code)  ->  layout (code)  ->  view
    the receipt of        the colony's      one component      out of the hive,
    a graph change        graph endpoint    tree               towards a display
 ```
+
+## Written for display 2.7.0
+
+The view is a **window**, and the screen decides what to do with it. Since
+`1.1.3` the layout wraps its picture in a `display-pane` and says the words the
+display's curator reads off a window (the display README, *What an application
+writes*); the words exist since `display@2.2.0`, so the view reads on 2.2.0 and
+later.
+
+| Hint | Value | Why |
+|---|---|---|
+| `context` | `system` | the colony's own picture, not a conversation and not ambience |
+| `relevance` | `0.6` | as text: the display's template language reads a bare `0` as empty |
+| `pinned` | `true` | the tile stays in the dock when the relevance falls -- the colony is a thing that stands in the room |
+| `topic` | `colony` | one picture per colony |
+| `layer` | `canvas` | it never overlays a conversation |
+| `touched` | the snapshot's moment, epoch ms as text | a value greater than the last one is a touch |
+
+Inside the window stand two children: a `display-tile` keyed `tile` -- a hexagon,
+the line `colony` and the cell count -- which the display lifts out into the
+dock, and the `colony-view-shell` keyed `shell`, which is the picture as before.
+Both window components come from the display's vocabulary; this template
+defines none of them.
+
+**Why it had to be a window.** Until `1.1.2` the shell WAS the root of the view.
+The curator reads the first window component of a tree, found none, and read
+the shell's `title`, `viewbox` and `cells` as hints -- no context, no relevance,
+no pin, no tile. With the defaults that scored 0.5 x 0.5 = 0.25 against a bar of
+0.3: the picture was never present, stood in the dock only as a fallback dot,
+and gave a finger nothing to open
+([#808](https://github.com/mmeyerlein/meclaw/issues/808)).
+
+**`touched` is what makes a mutation visible.** The snapshot carries no moment
+of its own -- the graph reply has `scope`, `nodes` and `edges` and the probe
+hands on exactly those -- so the layout stamps its own clock when it draws. One
+committed mutation is one receipt, one snapshot, one greater `touched`: the
+screen counts it as a touch and puts the picture on the canvas for its linger
+time, then back into the dock.
+
+**The object ids moved one level down with it.** A box is
+`<window>/colony-view.window/shell/<key>` now, not `<window>/0/<key>`. Both new
+levels are keyed on purpose: the display takes the `tile` child out of the
+window before it walks the rest, so an index would name the shell `1` for one
+reader and `0` for another, and a drag would write to an object that does not
+exist -- which is [#544](https://github.com/mmeyerlein/meclaw/issues/544) again.
+The pane's DOM id is `colony-view-window` and not `colony-view`, because the
+shell inside it already carries that id.
+
+`region` still says `main`. The field has decided nothing since the display drew
+both regions as one canvas, but `in_view` carries it, so it stays.
 
 ## What an app is here
 
@@ -395,3 +445,15 @@ was never an interval anybody had a reason for.
   still never provable over the websocket alone, and here that is a stated gap
   rather than a covered one. Carrying it over is the obvious next thing to do
   and it has not been done.
+
+## Versions
+
+- `1.0.0` The colony as a view an app states, and a display holds.
+- `1.0.1` The flow owns where a box sits on every tick, a hand adds an offset beside it,
+  and a box is named by its cell (#544). Unwired cells are hidden by default.
+- `1.0.2` A hive frame says its level beside its directory name (#549).
+- `1.1.0` No timer: `mutation_committed` draws the picture, the boot receipt is the first fill (#553).
+- `1.1.1` The stylesheet describes the view and nothing else (#671).
+- `1.1.2` Every `:hover` rule asks the screen whether the output has a finger (#715).
+- `1.1.3` The view is a window the display's curator reads: context, relevance, pin,
+  topic, a dock tile with the cell count, and `touched` from the snapshot (#808).

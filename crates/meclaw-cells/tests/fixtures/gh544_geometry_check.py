@@ -239,8 +239,13 @@ def main():
     # layout's own stale output.
     fresh = layout.main.__globals__["content"](graph, owner)
     wrapper = layout.wrapper_id(owner)
+    # Since colony-view 1.1.3 the view the display is handed is the WINDOW with the
+    # shell inside it (GH #808), and the display walks it with a tile map, which lifts
+    # the `tile` child out -- so that is what is minted here, exactly as the display
+    # does it (`objects_from_state`), and not the bare shell.
+    window = layout.main.__globals__["window"]
     want = {}
-    compose.add_tree(want, wrapper, fresh, 0)
+    compose.add_tree(want, wrapper, window(graph, owner, 0), 0, {})
     claimed = {c["props"]["oid"] for c in fresh["children"]
                if c["component"] == "colony-view-node"}
     ok("every oid the picture claims is an object the display mints",
@@ -250,9 +255,8 @@ def main():
     grown = fixture()
     grown["edges"].append({"id": "late", "from": "/os/gateway/c0",
                            "to": "/os/builder/c0"})
-    after = layout.main.__globals__["content"](grown, owner)
     want2 = {}
-    compose.add_tree(want2, wrapper, after, 0)
+    compose.add_tree(want2, wrapper, window(grown, owner, 0), 0, {})
     keyed_before = {oid for oid, spec in want.items()
                     if spec["component"] == "colony-view-node"}
     keyed_after = {oid for oid, spec in want2.items()

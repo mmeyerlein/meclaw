@@ -4,7 +4,7 @@
 //! what it says. That covers 105 of the 107 scenarios, because the script hands its whole
 //! curator state out in one emission. What it CANNOT show is the five seams around the
 //! script: that the clock's order really strikes and comes back, that the judge really
-//! answers and its verdict reaches the next pass, that the state row really survives the
+//! answers and its verdict reaches the next pass, that a view really survives the
 //! store's delete+insert, that a mount really serves three outputs, and that an app's write
 //! really travels the door. Above all it cannot show the ABSENCE of a message, because a
 //! message that is never made is only missing where messages are made.
@@ -27,9 +27,11 @@
 //!
 //! **What a test reads.** The colony's own `message_log` (`ColonyMsg::ReadMessages`) is the
 //! `GET /colony/messages` of a running meclaw, and every hop of every pass is in it: the
-//! store bundles (and with them the ONE state row of § 3.1), the patch bundle for the web
+//! store bundles (the apps' rows and the curator's rest row), the patch bundle for the web
 //! cell, the orders to the clock, the questions to the judge. Reading it is also how a lock
-//! measures that NOTHING was made.
+//! measures that NOTHING was made. Since display 2.7.0 the curator's state is memory
+//! (GH #809) and no message carries it: a lock reads the screen at `web`, as the patch
+//! hops folded into a tree (`tree`), never inside the cell (OR-D11).
 #![allow(dead_code)]
 
 use std::sync::Arc;
@@ -267,8 +269,8 @@ def chat(cmd):
 
 
 # § 9.1: three views -- clock, weather, timer -- as the app writes them, all three in
-# ONE act. The pass reconciles its state with the store's rows before its own event runs
-# (OR-H0.9, H1-F4), so a breath of three writes keeps all three windows.
+# ONE act. Each write is its own pass on the one state in the curator's memory (GH #809),
+# so a breath of three writes keeps all three windows.
 AMBIENT = {
     "clock": {"title": "Clock", "seat": "bottom", "seat_ord": "0", "layer": "canvas",
               "topic": "clock", "context": "ambient", "relevance": "0.4"},
@@ -822,41 +824,61 @@ impl Colony {
             .await;
     }
 
-    /// Put one window up and WAIT until the pass has placed it.
+    /// Put one window up and WAIT until the pass has drawn it; the folded tree comes back.
     ///
-    /// Only the wait, never a pause before it: a pass reconciles its state with the
-    /// store's rows before its own event runs (§ 3.1, OR-H0.9, H1-F4), so a write that
-    /// reached the store reaches the state row too -- also when a second write, or a
-    /// verdict coming back, is in the air at the same moment. The lock that says so is
-    /// `707_the_state_is_reconciled_with_the_store.rs`.
+    /// Read at the receivers (GH #809): the write's store bundle reached `views` (its mark
+    /// names this window), the window stands in the tree the `patch` hops built at `web`,
+    /// and the colony went quiet -- so the pass that took the write has drawn.
     pub async fn put(&self, owner: &str, view_id: &str, props: Value) -> Value {
         self.put_ttl(owner, view_id, props, 0).await
     }
 
     /// `put` with a `ttl_ms` on the write (§ 4.34).
     pub async fn put_ttl(&self, owner: &str, view_id: &str, props: Value, ttl_ms: i64) -> Value {
-        let oid = self.oid(owner, view_id);
+        let before = self.writes_of(owner, view_id).await;
         self.write_view_ttl(owner, view_id, props, ttl_ms).await;
-        self.wait_state(&format!("the write of {oid} reaches the state row"), |s| {
-            s["views"].get(&oid).is_some()
-        })
-        .await
+        self.drawn_after(owner, view_id, before).await
     }
 
-    /// Tell the app stand-in to act, and WAIT until the pass has placed the window
-    /// `view_id`. An act may write more than one view (§ 9.1); this waits for one of them
-    /// and leaves the rest to the reconciliation of § 3.1 (H1-F4), which is what
-    /// `707_the_state_is_reconciled_with_the_store.rs` pins.
+    /// Tell the app stand-in to act, and WAIT until the pass has drawn the window
+    /// `view_id`. An act may write more than one view (§ 9.1); this waits for one of them.
     pub async fn app_put(&self, cmd: Value, view_id: &str) -> Value {
-        let oid = self.oid(PROBE, view_id);
-        let before = self
-            .state()
-            .await
-            .map(|s| s["views"][&oid]["written_at"].clone())
-            .unwrap_or(Value::Null);
+        let before = self.writes_of(PROBE, view_id).await;
         self.app(cmd).await;
-        self.wait_state(&format!("the app's write of {oid} reaches the pass"), |s| {
-            s["views"].get(&oid).is_some() && s["views"][&oid]["written_at"] != before
+        self.drawn_after(PROBE, view_id, before).await
+    }
+
+    /// How many store bundles put a row of `(owner, view_id)` into the table: an `insert`
+    /// leg of that row, read where the store took it.
+    pub async fn writes_of(&self, owner: &str, view_id: &str) -> usize {
+        self.store_bundles()
+            .await
+            .iter()
+            .filter(|calls| {
+                calls.iter().any(|c| {
+                    c["operation"] == "insert"
+                        && c["row"]["owner"] == owner
+                        && c["row"]["view_id"] == view_id
+                })
+            })
+            .count()
+    }
+
+    /// Wait until a write of `(owner, view_id)` beyond the first `before` reached the store
+    /// and its window stands in the tree, then until the colony is quiet.
+    async fn drawn_after(&self, owner: &str, view_id: &str, before: usize) -> Value {
+        let oid = self.oid(owner, view_id);
+        let deadline = Instant::now() + MARKER;
+        while self.writes_of(owner, view_id).await <= before {
+            if Instant::now() >= deadline {
+                let dlq = self.h.drain_dead_letters().await;
+                panic!("the write of {oid} never reached the store within 30s; DLQ {dlq:?}");
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        self.settle(Duration::from_millis(300)).await;
+        self.wait_tree(&format!("the window {oid} stands on the screen"), |t| {
+            t.get(&oid).is_some()
         })
         .await
     }
@@ -952,59 +974,152 @@ impl Colony {
             .collect()
     }
 
-    /// The ONE state row of § 3.1, as it stood after the last pass that wrote it -- the
-    /// content parsed. `None` while no pass has written one.
-    /// The content of the state row one store call writes, or `None` when the call is
-    /// not one. Two spellings since GH #744: the first creation inserts the row, every
-    /// later pass updates it under a condition on the version it read.
-    fn state_content(call: &Value) -> Option<&Value> {
-        match call["operation"].as_str().unwrap_or("") {
-            "insert"
-                if call["row"]["owner"] == "display"
-                    && call["row"]["view_id"] == "screen-state" =>
-            {
-                Some(&call["row"]["content"])
+    /// The tree the display holds, as the `patch` hops to `web` built it: every patch
+    /// bundle in log order, folded (GH #809, OR-D11). `{id: {props, parent, ord, component}}`.
+    ///
+    /// The curator's state is memory since display 2.7.0 and no message carries it, so a
+    /// lock reads the screen where it lands -- at `web` -- and never inside the cell.
+    pub async fn tree(&self) -> Value {
+        let mut held = meclaw_core::serde_json::Map::new();
+        for calls in self.patches().await {
+            fold(&mut held, &calls);
+        }
+        Value::Object(held)
+    }
+
+    /// Wait until `want` holds of the folded tree, or fail with the last one seen.
+    pub async fn wait_tree(&self, why: &str, want: impl Fn(&Value) -> bool) -> Value {
+        let deadline = Instant::now() + MARKER;
+        loop {
+            let tree = self.tree().await;
+            if want(&tree) {
+                return tree;
             }
-            "update"
-                if call["where"]["owner"] == "display"
-                    && call["where"]["view_id"] == "screen-state" =>
-            {
-                Some(&call["set"]["content"])
+            if Instant::now() >= deadline {
+                let dlq = self.h.drain_dead_letters().await;
+                let ids: Vec<&String> = tree
+                    .as_object()
+                    .map(|m| m.keys().collect())
+                    .unwrap_or_default();
+                panic!("{why} did not hold within 30s; the tree holds {ids:?}; DLQ {dlq:?}");
             }
-            _ => None,
+            tokio::time::sleep(Duration::from_millis(25)).await;
         }
     }
 
-    pub async fn state(&self) -> Option<Value> {
-        for bundle in self.store_bundles().await.into_iter().rev() {
-            for call in bundle {
-                if let Some(content) = Self::state_content(&call) {
-                    let text = content.as_str().unwrap_or("{}");
-                    return Some(
-                        meclaw_core::serde_json::from_str(text)
-                            .expect("the state row's content is JSON"),
-                    );
-                }
+    /// Wait until `want` holds of whatever it reads off the colony, or fail naming `why`.
+    pub async fn wait_until(&self, why: &str, want: impl AsyncFn() -> bool) {
+        let deadline = Instant::now() + MARKER;
+        while !want().await {
+            if Instant::now() >= deadline {
+                let dlq = self.h.drain_dead_letters().await;
+                panic!("{why} did not hold within 30s; DLQ {dlq:?}");
             }
+            tokio::time::sleep(Duration::from_millis(25)).await;
         }
-        None
     }
 
-    /// Every state row the colony ever wrote, oldest first.
-    pub async fn states(&self) -> Vec<Value> {
+    /// How many times the compose cell asked `web` for its tree (`hop.route == "read"`):
+    /// once per boot, and once after a refused patch (OR-D7).
+    pub async fn reads(&self) -> usize {
+        self.to_child("web")
+            .await
+            .iter()
+            .filter(|row| hop_of(row)["route"] == "read")
+            .count()
+    }
+
+    /// Every rest row the curator wrote (`owner "display"`, `view_id "screen-rest"`),
+    /// oldest first, the content parsed: what outlives the cell's memory (OR-D3).
+    pub async fn rest_rows(&self) -> Vec<Value> {
         let mut out = Vec::new();
         for bundle in self.store_bundles().await {
             for call in bundle {
-                if let Some(content) = Self::state_content(&call) {
-                    let text = content.as_str().unwrap_or("{}").to_string();
+                if call["operation"] == "insert"
+                    && call["row"]["owner"] == "display"
+                    && call["row"]["view_id"] == "screen-rest"
+                {
+                    let text = call["row"]["content"].as_str().unwrap_or("{}");
                     out.push(
-                        meclaw_core::serde_json::from_str(&text)
-                            .expect("the state row's content is JSON"),
+                        meclaw_core::serde_json::from_str(text)
+                            .expect("the rest row's content is JSON"),
                     );
                 }
             }
         }
         out
+    }
+
+    /// The last rest row the curator wrote, or `Null` while it wrote none.
+    pub async fn rest(&self) -> Value {
+        self.rest_rows().await.pop().unwrap_or(Value::Null)
+    }
+
+    /// The `headers_json` of every logged message whose receiver starts with `to_prefix`.
+    pub async fn headers(&self, to_prefix: &str) -> Vec<String> {
+        self.log(Some(to_prefix))
+            .await
+            .into_iter()
+            .map(|row| row.headers_json)
+            .collect()
+    }
+
+    /// Kill the compose cell's child: SIGKILL to every child of THIS process whose command
+    /// line is the resident harness (`crates/meclaw-cells/src/code/harness.py`, line 1).
+    ///
+    /// Found through `/proc/self/task/*/children`, never by name across the host: the
+    /// probe is a `cold` cell and runs no harness, so the one match is the curator. The
+    /// pool replaces the child with the next message (`tests/gh420_a_resident_child_may_
+    /// be_killed_mid_stream.rs`). Returns how many it killed.
+    pub async fn kill_compose(&self) -> usize {
+        let mut pids = Vec::new();
+        for task in std::fs::read_dir("/proc/self/task").expect("/proc/self/task") {
+            let children = task.expect("a task").path().join("children");
+            let text = std::fs::read_to_string(children).unwrap_or_default();
+            pids.extend(
+                text.split_whitespace()
+                    .filter_map(|p| p.parse::<i32>().ok()),
+            );
+        }
+        pids.sort_unstable();
+        pids.dedup();
+        let mut killed = 0;
+        let mut dead = Vec::new();
+        for pid in pids {
+            let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+            if !String::from_utf8_lossy(&cmdline).contains("resident runner harness") {
+                continue;
+            }
+            // SAFETY: a plain syscall on a pid that is a child of this very process.
+            if unsafe { libc::kill(pid, libc::SIGKILL) } == 0 {
+                killed += 1;
+                dead.push(pid);
+            }
+        }
+        // Until the kernel has made each a zombie (or it is reaped): a message that meets
+        // a DYING child fails with it (`script_failed`, exit -1, measured here), and the
+        // test is about the next message meeting a DEAD one, which the pool replaces
+        // (`gh420_a_resident_child_may_be_killed_mid_stream.rs` waits for the same).
+        let deadline = Instant::now() + MARKER;
+        for pid in dead {
+            loop {
+                let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+                let state = stat
+                    .rsplit(')')
+                    .next()
+                    .and_then(|r| r.split_whitespace().next());
+                if matches!(state, None | Some("Z") | Some("X")) {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "the killed child {pid} never died"
+                );
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        }
+        eprintln!("kill_compose: {killed} resident child(ren) killed");
+        killed
     }
 
     /// The patch bundles the compose cell sent to the `web` cell, as their calls.
@@ -1072,27 +1187,25 @@ impl Colony {
             .collect()
     }
 
-    /// The rows the store handed back the last time it was asked -- leg 0 of a write
-    /// bundle, or the select of a tick. This is the table itself, read through the real
-    /// store cell: what a lock uses to say a row SURVIVED, or never got there.
+    /// The `views` table as the store holds it: every bundle the compose cell sent to
+    /// `views`, folded in log order (delete by `where`, insert the row) over the empty
+    /// table this colony boots with. Read where the store took the calls; since GH #809 no
+    /// write asks the store back, so there is no answer to read the table out of.
     pub async fn store_rows(&self) -> Vec<Value> {
-        let from_store = format!("{SCREEN}/views");
-        for row in self.to_child("compose").await.iter().rev() {
-            if row.from_path != from_store {
-                continue;
-            }
-            let body = body_of(row);
-            let Some(first) = body["messages"].as_array().and_then(|m| m.first()) else {
-                continue;
-            };
-            let Some(text) = first["text"].as_str() else {
-                continue;
-            };
-            if let Ok(Value::Array(rows)) = meclaw_core::serde_json::from_str::<Value>(text) {
-                return rows;
+        let mut table: Vec<Value> = Vec::new();
+        for bundle in self.store_bundles().await {
+            for call in bundle {
+                match call["operation"].as_str().unwrap_or("") {
+                    "delete" => {
+                        let wanted = call["where"].as_object().cloned().unwrap_or_default();
+                        table.retain(|row| !wanted.iter().all(|(k, v)| row[k] == *v));
+                    }
+                    "insert" => table.push(call["row"].clone()),
+                    _ => {}
+                }
             }
         }
-        Vec::new()
+        table
     }
 
     /// Every receipt the screen sent out of the hive, as `(error_code, view_id)`.
@@ -1122,25 +1235,6 @@ impl Colony {
     /// How many questions reached the judge cell.
     pub async fn judge_questions(&self) -> usize {
         self.to_child("judge").await.len()
-    }
-
-    /// Wait until `want` holds of the state row, or fail with the last one seen.
-    pub async fn wait_state(&self, why: &str, want: impl Fn(&Value) -> bool) -> Value {
-        let deadline = Instant::now() + MARKER;
-        let mut last = Value::Null;
-        loop {
-            if let Some(state) = self.state().await {
-                if want(&state) {
-                    return state;
-                }
-                last = state;
-            }
-            if Instant::now() >= deadline {
-                let dlq = self.h.drain_dead_letters().await;
-                panic!("{why} did not hold within 30s; last state {last}; DLQ {dlq:?}");
-            }
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
     }
 
     /// Wait until the colony has settled: nothing new in the log for `quiet`.
@@ -1313,7 +1407,68 @@ pub fn calls_of(row: &MessageLogDto) -> Option<Vec<Value>> {
     (!out.is_empty()).then_some(out)
 }
 
-/// One curator value of one window, out of a state row.
-pub fn curator(state: &Value, oid: &str, key: &str) -> Value {
-    state["views"][oid]["curator"][key].clone()
+/// The `display_request` mark of one logged message, parsed (`Null` without one).
+pub fn request_of(row: &MessageLogDto) -> Value {
+    let headers: Value =
+        meclaw_core::serde_json::from_str(&row.headers_json).unwrap_or_else(|_| json!({}));
+    headers["context"]["display_request"]
+        .as_str()
+        .and_then(|t| meclaw_core::serde_json::from_str(t).ok())
+        .unwrap_or(Value::Null)
+}
+
+/// One patch bundle folded onto a held tree, the way `web` applies it (`support::apply`
+/// over a map): create, update (props merged), move, delete.
+pub fn fold(held: &mut meclaw_core::serde_json::Map<String, Value>, calls: &[Value]) {
+    for c in calls {
+        let Some(id) = c["id"].as_str() else { continue };
+        match c["op"].as_str().unwrap_or("") {
+            "object.create" => {
+                held.insert(
+                    id.to_string(),
+                    json!({"props": c["props"], "parent": c["parent"], "ord": c["ord"],
+                           "component": c["component"]}),
+                );
+            }
+            "object.update" => {
+                if let Some(obj) = held.get_mut(id) {
+                    if let Some(props) = c["props"].as_object() {
+                        for (k, v) in props {
+                            obj["props"][k] = v.clone();
+                        }
+                    }
+                    if !c["parent"].is_null() {
+                        obj["parent"] = c["parent"].clone();
+                    }
+                }
+            }
+            "object.move" => {
+                if let Some(obj) = held.get_mut(id) {
+                    obj["parent"] = c["parent"].clone();
+                    obj["ord"] = c["ord"].clone();
+                }
+            }
+            "object.delete" => {
+                held.remove(id);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The props one window wears on the screen (`<oid>/c.win`, the window node every app of
+/// these locks writes): the app's hints plus the curator's values (`rung`, `age`, `since`,
+/// `score`, `acted`, … -- `WINDOW_ATTRS` in compose.py).
+pub fn attr(tree: &Value, oid: &str, key: &str) -> Value {
+    tree[format!("{oid}/c.win")]["props"][key].clone()
+}
+
+/// The props of one window's tile in the dock of the default output.
+pub fn tile(tree: &Value, oid: &str) -> Value {
+    tree[format!("display.dock/tile.{oid}")]["props"].clone()
+}
+
+/// Whether the window stands on the screen: its wrapper is in the tree (§ 4.11).
+pub fn present(tree: &Value, oid: &str) -> bool {
+    tree.get(oid).is_some()
 }

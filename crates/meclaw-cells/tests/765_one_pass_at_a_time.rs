@@ -26,23 +26,14 @@
 //!      rather than four workers racing; and the warm pool is sized by the same
 //!      number, so there is exactly one child.
 //!
-//! WHAT IS NOT LOCKED HERE, said plainly because the measurement says it too: a
-//! PASS is not a message. A pass is two messages of this cell with a store round
-//! trip between them — the `select` that reads the state row and the reply that
-//! computes and writes it (`744_two_taps_in_one_round_trip.rs`). Serialising the
-//! messages removes the overlap inside one script run; it does not remove the
-//! overlap across the round trip, so two events that arrive inside one trip are
-//! still handed the same row, and the compare-and-set of #744 is still what
-//! keeps the first of them.
-//!
-//! That is not a reservation, it is a measurement: six runs of ten taps in
-//! 800 ms on the twin, three with four workers and three with one, produced the
-//! same refusals on both sides (1, 18 and 30 refused writes of 14, 31 and 44
-//! against 1, 7 and 18 of 14, 24 and 31), and every tap reached the state in all
-//! six. So this file locks the ORDER the cell works in, and nothing about the
-//! number of refused writes — which is why #765 stays open for the mechanism
-//! that would actually give the curator one PASS at a time
-//! (`plans/welle-p-2026-09-19/berichte/g0-t1.md`).
+//! A PASS AND A MESSAGE: until display 2.7.0 a PASS was two messages of this
+//! cell with a store round trip between them, and serialising the messages did
+//! not remove the overlap across that trip (measured on the twin: the same
+//! refused compare-and-set writes with four workers and with one,
+//! `plans/welle-p-2026-09-19/berichte/g0-t1.md`). Since GH #809 the curator runs
+//! `resident` and keeps its state in memory, so a pass IS one message and the
+//! order locked here is the order of the passes; `809_ten_taps_land_in_order.rs`
+//! holds what that means for a finger.
 //!
 //! Skips when the templates do not ship (R2b).
 

@@ -417,8 +417,9 @@ fn the_shell_draws_the_edge_no_other_level_could() {
         read("templates/meclaw-os/builder/config.json")["cell"]["template"],
         // 1.12.0 since GH #803: the `grow_level` recipe draws the two container
         // hops `member@1.9.0` needs — `in_delegation` into a generation,
-        // `in_advise` into a channel. The shell pin moves with the occupant.
-        "builder@1.12.0"
+        // `in_advise` into a channel. The shell pin moves with the occupant;
+        // 1.12.1 since GH #809 pins the member's screen at `display@2.7.0`.
+        "builder@1.12.1"
     );
     assert_eq!(
         read("templates/meclaw-os/operator/config.json")["cell"]["template"],
