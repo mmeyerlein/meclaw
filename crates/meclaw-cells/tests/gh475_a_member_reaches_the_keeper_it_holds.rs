@@ -43,7 +43,7 @@
 //!    an open container with no addressing edge would be `no_route` at the
 //!    container's own path on every export any member ever ran.
 //! 3. **An export that names `scribe` reaches FOUR.** The keeper's ledger lands
-//!    as `session-keeper/seed/sessions.jsonl`, carrying the very row from (1),
+//!    as `talky/session-keeper/seed/sessions.jsonl`, carrying the very row from (1),
 //!    and the member-level `export_final.json` names all four hives.
 //! 4. **The other generation is not touched.** `coach` holds a keeper too and it
 //!    stays empty: the name is an address, not a fan-out.
@@ -585,7 +585,7 @@ fn member_manifest(export_dir: &std::path::Path) -> Value {
         // member is named bare, and the path it lands at is unchanged.
         "scope": "/members",
         "diff": {
-            "add_nodes": [{"name": MEMBER, "template": "member@1.9.2",
+            "add_nodes": [{"name": MEMBER, "template": "member@1.9.3",
                            "override_params": over}],
             "add_edges": container_edges(),
         }
@@ -674,7 +674,7 @@ fn assistant_manifest(name: &str) -> Value {
         "ctx": {"model": "double/no-network", "model_fast": "double/no-network",
                 "model_surface": "double/no-network"},
         "diff": {
-            "add_nodes": [{"name": format!("assistants/{name}"), "template": "assistant@2.8.0"}],
+            "add_nodes": [{"name": format!("assistants/{name}"), "template": "assistant@2.8.1"}],
             "add_edges": add_edges,
         }
     }]})
@@ -876,7 +876,7 @@ async fn an_export_that_names_a_generation_reaches_that_generations_session_keep
          that way"
     );
     assert!(
-        !export_dir.join("session-keeper").exists(),
+        !export_dir.join("talky").exists() && !export_dir.join("talky-chat").exists(),
         "a keeper walked without being named. Two generations of one person hold \
          two session ledgers under one hive name, and two walks into one \
          directory would keep whichever finished last and say nothing about the \
@@ -899,14 +899,22 @@ async fn an_export_that_names_a_generation_reaches_that_generations_session_keep
         &[("assistant", json!(SCRIBE))],
     ))
     .await;
-    wait_for(
-        &export_dir.join("session-keeper/seed/export_final.json"),
-        "the session keeper's completeness marker",
-        &h,
-    )
-    .await;
-    let ledger = std::fs::read_to_string(export_dir.join("session-keeper/seed/sessions.jsonl"))
-        .expect("the keeper's ledger is on disk beside the other three documents");
+    // Since `session-keeper@2.2.2` (GH #712) each keeper of the generation files
+    // under its own path, and the export reaches both: the spoken keeper, which
+    // holds the session the turn opened, and the typed one, which holds none.
+    for talky in ["talky", "talky-chat"] {
+        wait_for(
+            &export_dir
+                .join(talky)
+                .join("session-keeper/seed/export_final.json"),
+            &format!("the completeness marker of {talky}'s session keeper"),
+            &h,
+        )
+        .await;
+    }
+    let ledger =
+        std::fs::read_to_string(export_dir.join("talky/session-keeper/seed/sessions.jsonl"))
+            .expect("the keeper's ledger is on disk beside the other three documents");
     let lines: Vec<&str> = ledger.lines().filter(|l| !l.trim().is_empty()).collect();
     assert_eq!(
         lines.len(),
@@ -934,8 +942,9 @@ async fn an_export_that_names_a_generation_reaches_that_generations_session_keep
     wrote.sort();
     assert_eq!(
         wrote,
-        vec!["affinity", "firewall", "memory-hive", "session-keeper"],
-        "one directory per holder that finished. Before GH #475 the fourth could \
+        vec!["affinity", "firewall", "memory-hive", "talky", "talky-chat"],
+        "one directory per holder that finished, and the keepers under their talky \
+         (GH #712). Before GH #475 the fourth could \
          not be among them at any price: the keeper stands four levels down \
          inside a generation, and no lane reached it; since GH #555 it writes \
          its own, which is why the DIRECTORY is the statement and no cell of any \
@@ -995,14 +1004,29 @@ async fn an_export_that_names_a_generation_reaches_that_generations_session_keep
         from_str(&std::fs::read_to_string(&after_boot).unwrap()).expect("after-boot messages");
     assert_eq!(
         msgs.len(),
-        1,
-        "the keeper holds ONE content table, so its document is one part -- and \
+        2,
+        "a keeper holds ONE content table, so its document is one part -- and \
          `session-keeper` is the one hive in the catalogue a BIRTH cannot seed, \
-         so it is the one this file writes out: {msgs:?}"
+         so it is the one this file writes out, once per keeper of the \
+         generation (GH #712): {msgs:?}"
     );
-    assert_eq!(msgs[0]["target"], format!("/members/{MEMBER}"));
-    assert_eq!(msgs[0]["header"]["hop"]["import_hive"], "session-keeper");
-    assert_eq!(msgs[0]["header"]["context"]["assistant"], COACH);
+    let mut addressed: Vec<&str> = msgs
+        .iter()
+        .map(|m| {
+            m["header"]["hop"]["import_hive"]
+                .as_str()
+                .unwrap_or_default()
+        })
+        .collect();
+    addressed.sort_unstable();
+    assert_eq!(
+        addressed,
+        vec!["talky-chat/session-keeper", "talky/session-keeper"]
+    );
+    for m in &msgs {
+        assert_eq!(m["target"], format!("/members/{MEMBER}"));
+        assert_eq!(m["header"]["context"]["assistant"], COACH);
+    }
 
     for m in &msgs {
         let hop: Map<String, Value> = m["header"]["hop"]
@@ -1028,7 +1052,12 @@ async fn an_export_that_names_a_generation_reaches_that_generations_session_keep
     while receipt.is_none() && std::time::Instant::now() < deadline {
         match tokio::time::timeout(Duration::from_secs(5), rx.recv()).await {
             Ok(Some(m)) => {
-                if m.headers.hop.get("route").and_then(|v| v.as_str()) == Some("dump") {
+                // The receipt of the spoken keeper's part: the typed keeper's
+                // part is empty and answers with a receipt of its own.
+                if m.headers.hop.get("route").and_then(|v| v.as_str()) == Some("dump")
+                    && m.headers.hop.get("port_hive").and_then(|v| v.as_str())
+                        == Some("talky/session-keeper")
+                {
                     receipt = Some(m);
                 }
             }

@@ -9,10 +9,10 @@ use serde_json::{Map, Value};
 use super::params::{Lane, Lanes};
 use super::wire;
 
-/// Why a crossing did not happen: one of the nine `error_code`s plus a detail.
+/// Why a crossing did not happen: one of the ten `error_code`s plus a detail.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Refusal {
-    /// One of the nine codes in [`wire`].
+    /// One of the ten codes in [`wire`].
     pub error_code: &'static str,
     /// The human-readable detail, naming what was refused.
     pub detail: String,

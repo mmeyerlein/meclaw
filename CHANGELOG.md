@@ -12,6 +12,107 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.44.0] — 2026-09-23
+
+A colony that lifts, exports and installs the way it promises. A lift compares what makes the
+instance — `cell`, `params`, `contract` — and names every database it sets aside; a colony keeps its
+own copy of every template version it ever instantiated, so the way back needs nothing from the
+repository; a session keeper is addressed by its path, so every talky's sessions travel; an app
+declares how it attaches and the builder draws it; an answer that comes back from a consult or a
+delegation carries the turn that asked, and says when it is late; a recall's dossier counts axes,
+not rows; the memory hive clears its working keys at its own exit; `meclaw --env-report` names
+the keys nothing binds; and a peer proxy carries a credential on its outgoing POST.
+
+### Added
+
+- **A peer proxy can carry a credential on its outgoing POST** ([#828](https://github.com/mmeyerlein/meclaw/issues/828)).
+  A `proxy` cell on platform `meclaw` takes an optional `params.auth` in one of two standard forms: a
+  static header whose value comes from `${VAR}`, or the OAuth 2.0 client-credentials grant against a
+  `token_url`, whose token is cached until shortly before `expires_in` and sent as
+  `Authorization: Bearer`. A `401` from the far side is answered with one fresh token and one retry; a second `401` is `peer_refused`
+  with the far side's answer. A token endpoint that does not answer, or answers without a token, is
+  the new code `auth_unavailable` on the sending side, with a `refused` receipt and no request to the
+  peer. `value` and `client_secret` must be written as `${VAR}`: a literal is refused at boot and at
+  the mutation door, naming the key — for that the substrate now hands every cell type its `params`
+  as declared, next to the resolved ones (`CellFactory::validate_declared_params`). Neither secret
+  nor token appears in `Debug`, a receipt, a log line or `cell.db`. The mount side and the frame are
+  unchanged, and no shipped template declares `auth`.
+- **A colony keeps every template version it has instantiated** ([#811](https://github.com/mmeyerlein/meclaw/issues/811)).
+  After a committed `add_nodes`, `swap_nodes` or `replace_nodes`, at boot and before every rescan,
+  each `name@version` a node was instantiated from (its own template and every hop of its chain) is
+  copied to the colony's own `local/` directory (`<name>@<version>/`), and its row in the `templates`
+  table is repointed there under the same `template_id`. That directory is `<library>/local` when the
+  library lies under the colony root and `<root>/templates/local` when it does not: a library the
+  colony is merely pointed at — a repository checkout, a shared library — is never written, neither by
+  a kept copy nor by `add_templates`, and the scan reads the colony's directory beside it. A library swap no longer removes older versions, and lifting a
+  node back to an earlier version needs no `add_templates`. The scanner lets the kept copy win over a
+  shipped directory of the same version (an identical twin is dropped, a changed one is skipped with
+  its reason instead of aborting the scan), in the same way whatever order the directories are listed
+  in, and a copy a crash left half-made is removed at the next boot or rescan. `add_templates` with a changed tree under a stored version
+  is refused as the new `template_version_immutable`; the same tree again stays `template_name_taken`.
+  `/colony/templates` entries carry `scanned_at`, and with `?name=` also `used_by`; lift receipts name
+  `from_template_id` / `to_template_id` per child. No schema change.
+- **Apps are installed from what they declare** ([#599](https://github.com/mmeyerlein/meclaw/issues/599)).
+  An app template carries its own wiring as a declaration under `app` in `template.json` — screen,
+  listened lanes, offers, observed tool results and the devices it drives — and the builder's fifth
+  fast-lane recipe, `install_app`, renders the mutation from it: unguarded observer edges with the
+  channel-less exit beside them, the binding to the app, `withdraw` on the view edge, tool and menu
+  v-lanes from both surfaces of the generation, and a device's road. A word outside the vocabulary is
+  refused as `app_declaration_invalid`. `builder@1.12.2`, `tools@1.4.3` (`build_topology` offers
+  `install_app`), `colony-view@1.1.4` (declares itself), `meclaw-os@1.8.13` (pin). The app loader
+  around the recipe stays in the register (`reg:app-loader`).
+- **`meclaw --env-report`** ([#826](https://github.com/mmeyerlein/meclaw/issues/826)). A new mode flag
+  names the `.env` keys no `${…}` in the colony's tree substitutes and the strict `${KEY}` references
+  whose key the `.env` lacks. Names only, never a value; it takes no root lease, opens no `colony.db`
+  and writes no log, so it answers for a running colony. Exit 0 with findings.
+
+### Fixed
+
+- **A lift keeps a child whose version only rewrote its prose, and names every store it sets aside**
+  ([#773](https://github.com/mmeyerlein/meclaw/issues/773)). `replace_nodes` judges a standing child by
+  the three blocks the substrate reads from a `config.json` — `cell` (less `cell.id`/`cell.provenance`),
+  `params`, `contract`; a rewritten `description` no longer replaces the child and parks its `cell.db`,
+  and a child that comes in through a `ref` is judged the same way, so a moved reference hop alone
+  replaces nothing. A `replaced` entry of the receipt's `changes` carries `parked_path` and
+  `parked_store`; `kept`, `added` and `left` entries are unchanged on the wire. `/colony/graph` nodes
+  carry `active` and `parked`. Carrying the database over to a successor stays deferred
+  (`reg:lift-store-carry-over`).
+- **Every session keeper of a generation travels** ([#712](https://github.com/mmeyerlein/meclaw/issues/712)).
+  `session-keeper@2.2.2`: the porter files its ledger under its own path inside the generation
+  (`<talky>/session-keeper`) instead of the constant hive name, and `export_done` / the import receipt
+  name that path. `assistant@2.8.1` draws the four transfer lanes at both talkys from one rule, so the
+  typed channel's sessions are exported and imported too. `member@1.9.3` routes a keeper part on its
+  path; `talky@5.2.2` pins the keeper. `examples/memory-import/build_import.py` reads the new layout and
+  still reads an older export as `talky/session-keeper`.
+- **Late answers keep their turn** ([#728](https://github.com/mmeyerlein/meclaw/issues/728)).
+  `collector@4.2.1`: a handed-over call leaves a `depart` round row; the round an advisor's answer or a
+  delegation opens is keyed `<member turn>~<deadline>~<hex>`, and its `answer` carries the member's turn
+  as `hop.turn_id`, the round key as `hop.round_id` and `hop.late` (past the new `late_after_ms`,
+  default 30 s). `assistant@2.8.1`: the consult edges drop `context.turn_id` and both talky ref markers
+  set `late_after_ms`. `voice@2.2.1`: a late answer for a turn the call has left is not spoken, and a
+  sidecar `fact` for a delegation already closed by the fallback is dropped after a turn change. Pins
+  follow: `talky@5.2.2`, `cogny@5.0.3`, `freeswitch@2.1.2`.
+- **The conversation brains name their app at OpenRouter.** `talky@5.2.2` (and with it the typed
+  channel's `talky-chat`) and `cogny@5.0.3`: `brain` sends `http_referer` / `x_title`, overridable by
+  `OPENROUTER_HTTP_REFERER` / `OPENROUTER_X_TITLE`, in the form the memory-hive cells already use.
+  Until now every request of a talky or a core reached the provider without an app attribution.
+- **A regenerated builder corpus reaches a colony** ([#811](https://github.com/mmeyerlein/meclaw/issues/811)).
+  `builder-librarian@2.2.1` carries the corpus regenerated from this release's templates and docs; a
+  colony keeps every version it instantiated and a stored version does not change, so a new corpus has
+  to be a new version. `builder@1.12.2` pins it.
+- **A recall's dossier counts axes, not rows** ([#691](https://github.com/mmeyerlein/meclaw/issues/691)).
+  `memory-hive@3.4.1`: the rows of one `(subject, predicate)` take one of the six dossier seats before
+  any axis takes a second, and a multi axis such as `has_child` still enumerates. A fact another leg
+  nominated only leaves the dossier when that leg votes. Duplicate episodes fold in the keyword and
+  semantic legs to one rank position, represented by the newest copy, with the `(seen: N)` count kept
+  true; the semantic leg looks `2 × tier1_leg_limit` deep, and a cut it makes is reported as a cap. No
+  new knob.
+- **A question no longer rides past the memory hive** ([#823](https://github.com/mmeyerlein/meclaw/issues/823)).
+  Every one of `memory-hive@3.4.1`'s twelve exit edges deletes the five recall working keys
+  (`recall_query`, `memory_tier`, `recall_as_of`, `recall_window_from`, `recall_window_to`), so an
+  answer, a refusal or a tool result leaves the hive without the question that produced it.
+  `member@1.9.3` pins the new hive.
+
 ## [0.43.0] — 2026-09-23
 
 The display's curator keeps its state in memory. Until now every pass carried the whole

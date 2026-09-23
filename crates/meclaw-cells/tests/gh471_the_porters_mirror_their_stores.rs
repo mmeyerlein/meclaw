@@ -155,7 +155,18 @@ fn every_porter_carries_its_store_column_for_column() {
     }
     for h in HIVES {
         let store = read_json(h.store);
-        let c = constants(h.porter, &["SCHEMA", "WALK", "FORMAT", "HIVE"]);
+        // The name a porter files under. Two hives stamp a constant; the session
+        // keeper derives its directory from its own path since
+        // `session-keeper@2.2.2` (GH #712) -- a generation holds one keeper per
+        // talky, and a constant would file both into one directory -- so what it
+        // carries is `NODE`, which a porter handed no `target` (as below) falls
+        // back to the hive's name.
+        let name_key = if h.name == "session-keeper" {
+            "NODE"
+        } else {
+            "HIVE"
+        };
+        let c = constants(h.porter, &["SCHEMA", "WALK", "FORMAT", name_key]);
 
         let declared = keys(&store["params"]["schema"]);
         let mirrored = keys(&c["SCHEMA"]);
@@ -201,7 +212,7 @@ fn every_porter_carries_its_store_column_for_column() {
              the walk never reads is a promise the document does not keep",
             h.name
         );
-        assert_eq!(c["HIVE"].as_str(), Some(h.name));
+        assert_eq!(c[name_key].as_str(), Some(h.name));
     }
 }
 

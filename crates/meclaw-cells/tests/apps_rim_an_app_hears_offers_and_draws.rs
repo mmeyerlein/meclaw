@@ -4,8 +4,11 @@
 //! Three ways to connect, and all three are edges (ruling R1, 2026-09-04):
 //!
 //! - **listening** is a fan-out, never an interception: `./firewall -> ./apps`
-//!   carries the SCREENED turn, `./assistants -> ./apps` the answer, and both
-//!   are guarded on the channel, so an operator's turn stays the operator's.
+//!   carries the SCREENED turn, `./assistants -> ./apps` the answer. Since
+//!   GH #599 neither is guarded on the channel — an app of a person hears the
+//!   answer of an operator's errand too — and the channel-less exit
+//!   `./assistants -> .` rides beside the answer observer, so that answer still
+//!   leaves the member exactly once.
 //! - **offering** is a v-lane in and a re-stamp back out: the surface calls
 //!   `show` straight into the app (ADR-0020), the app answers `tool_result` at
 //!   its own rim, and the member's own edge turns that into `in_tool` exactly
@@ -31,14 +34,14 @@
 //! The SHIPPED `member` and `assistant`, cell for cell, with `code` doubles in
 //! place of every `ref`, plus a fixture app `showcase` built out of two `code`
 //! cells — `show` answers the tool and the menu, `stage` turns everything it
-//! hears into a view. Every edge of the install manifest
-//! (`docs/superpowers/specs/2026-09-05-apps-rim-design.md` § 5) is appended to
-//! the member's own graph, unchanged.
+//! hears into a view. Every edge the builder's `install_app` recipe renders for
+//! the fixture's declaration (GH #599) is appended to the member's own graph,
+//! unchanged.
 //!
 //! Every assertion is a POSITIVE receipt: a double answers, the answer reaches
-//! the sink, and the assertion reads what it says. The one negative case (an
-//! operator's turn) carries its positive control in the same round — the answer
-//! has to arrive at the member's own exit, or the silence would prove nothing.
+//! the sink, and the assertion reads what it says. The operator's round is
+//! counted: the app hears the answer, and the answer leaves the member exactly
+//! once.
 //!
 //! Guarded like every other template-reading test (GH #49): the public export
 //! ships a subset of the library, and a template that did not travel is skipped
@@ -67,8 +70,10 @@ fn repo(rel: &str) -> std::path::PathBuf {
 fn shipped() -> Option<(std::path::PathBuf, std::path::PathBuf)> {
     let member = repo("templates/member");
     let assistant = repo("templates/assistant");
-    (member.join("config.json").is_file() && assistant.join("config.json").is_file())
-        .then_some((member, assistant))
+    (member.join("config.json").is_file()
+        && assistant.join("config.json").is_file()
+        && repo("templates/builder/recipes/config.json").is_file())
+    .then_some((member, assistant))
 }
 
 fn write(root: &std::path::Path, rel: &str, v: &Value) {
@@ -407,93 +412,63 @@ fn write_app_template(root: &std::path::Path) {
 
 // ══════════════════════════════════════ the wiring an installing mutation draws
 
-/// **The install manifest, verbatim** —
-/// `docs/superpowers/specs/2026-09-05-apps-rim-design.md` § 5, `add_edges`.
+/// The fixture app's declaration, in the vocabulary `template.json` → `app`
+/// carries (GH #599): a screen it draws `view` on, the three lanes of a
+/// conversation, a tool `show` offered at `./show`, and the observed tool
+/// results at `./stage`. No device.
+fn app_declaration() -> Value {
+    json!({
+        "screen": {"out": ["view"], "back": ["event", "receipt"]},
+        "listens": ["turn", "answer", "partial"],
+        "offers": [{"kind": "tool", "at": "./show", "tools": ["show"]}],
+        "observes_tool_results": "./stage",
+        "drives": []
+    })
+}
+
+/// **The install manifest, as the builder renders it** — the fast-lane recipe
+/// `install_app` over the fixture app's declaration (GH #599,
+/// `templates/builder/README.md` § *An app is a declaration*). Until #599 this
+/// file carried the manifest of `docs/superpowers/specs/2026-09-05-apps-rim-design.md`
+/// § 5 by hand; the recipe renders the form a live colony was corrected into
+/// instead, and this file boots what the recipe renders rather than a copy of it.
 ///
-/// The first three are the member-side observer edges. Since ruling M-1 they
-/// are NOT in the member template: the template declares the lanes at the
-/// container and the installing mutation draws them, because a member with no
-/// listening app should carry no edge at all. A second installation draws them
-/// again, identically, and the edge table holds them once.
+/// The observer edges are the member-side half. Since ruling M-1 they are NOT
+/// in the member template: the template declares the lanes at the container and
+/// the installing mutation draws them, because a member with no listening app
+/// should carry no edge at all. A second installation draws them again,
+/// identically, and the edge table holds them once. Since #599 they carry no
+/// channel guard, and the channel-less exit `./assistants -> .` rides beside the
+/// answer observer — see `an_operators_answer_is_heard_and_still_leaves_once`.
 fn install_edges(agent: &str, app: &str, screen: &str) -> Vec<Value> {
-    vec![
-        // 1. the SCREENED turn, after the firewall, with the firewall's own
-        //    hygiene (gh494) — and guarded on the channel, because an app
-        //    belongs to the person and hears the person's rooms.
-        json!({
-            "from": "./firewall", "to": "./apps",
-            "condition": "has(hop.route) && hop.route == 'pass' && has(context.channel_node) && context.channel_node != ''",
-            "modifier": {"set_hop": {"route": "'turn'"},
-                         "delete_context": ["fw_body", "fw_now", "fw_phase", "store_origin"]}
+    let out = meclaw_testing::emit_all(
+        &meclaw_testing::shipped_script(
+            repo("templates/builder/recipes/config.json")
+                .to_str()
+                .expect("a utf-8 path"),
+        ),
+        &json!({
+            "target": "/os/builder/recipes",
+            "header": {"hop": {"route": "recipe"}, "context": {}},
+            "ttl": 64,
+            "messages": [{"origin": "tool", "type": "tool_result", "id": "",
+                          "text": json!({"recipe": "install_app", "request": "…",
+                                         "params": {"scope": MEMBER, "app": app,
+                                                    "template": "showcase@1.0.0",
+                                                    "screen": screen, "generation": agent,
+                                                    "declaration": app_declaration()}})
+                                      .to_string()}],
         }),
-        // 2. the answer, on the same guard as `./assistants -> ./channels`. The
-        //    guarded DEFAULT `./assistants -> .` is untouched and keeps firing
-        //    for a channel-less answer (gh302 pins `is_default`).
-        json!({
-            "from": "./assistants", "to": "./apps",
-            "condition": "has(hop.route) && hop.route == 'answer' && has(context.channel_node) && context.channel_node != ''"
-        }),
-        // 3. the interim transcript of a voice channel (R-V8').
-        json!({
-            "from": "./channels", "to": "./apps",
-            "condition": "has(hop.route) && hop.route == 'partial'"
-        }),
-        // 4. the binding to THIS app inside the container.
-        json!({
-            "from": "./apps", "to": format!("./apps/{app}"),
-            "condition": "has(hop.route) && (hop.route == 'turn' || hop.route == 'answer' || hop.route == 'partial')"
-        }),
-        json!({
-            "from": "./apps", "to": format!("./apps/{app}"),
-            "condition": format!(
-                "has(hop.route) && (hop.route == 'event' || hop.route == 'receipt') && \
-                 has(hop.owner) && hop.owner.contains('/apps/{app}/')")
-        }),
-        // 5. what the app DRAWS, and the screen it draws on — one literal.
-        json!({
-            "from": format!("./apps/{app}"), "to": "./apps",
-            "condition": "has(hop.route) && (hop.route == 'view' || hop.route == 'error')",
-            "modifier": {"set_context": {"channel_node": format!("'{screen}'"),
-                                         "channel": format!("'{screen}'")}}
-        }),
-        // 6. what the app ANSWERS, stamped with who answered — the mutation is
-        //    the only one that knows the instance name (spec § 2.2).
-        json!({
-            "from": format!("./apps/{app}"), "to": "./apps",
-            "condition": "has(hop.route) && (hop.route == 'tool_result' || hop.route == 'tool_schemas')",
-            "modifier": {"set_context": {"tool_answerer": format!("'{app}'")}}
-        }),
-        // 7. the call, as a v-lane straight from the surface's rim. It bypasses
-        //    the assistant's own exit, so it carries that exit's stamps itself.
-        json!({
-            "from": format!("./assistants/{agent}/talky"), "to": format!("./apps/{app}/show"),
-            "lane": "tool",
-            "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'show'",
-            "modifier": {"set_context": {"tool_caller": "'talky'", "assistant": format!("'{agent}'")},
-                         "delete_context": ["col_phase", "consult_class", "consult_id", "tool_answerer"]}
-        }),
-        // 8. the menu tick, same form, same stamps.
-        json!({
-            "from": format!("./assistants/{agent}/talky"), "to": format!("./apps/{app}/show"),
-            "lane": "schemas",
-            "condition": "has(hop.route) && hop.route == 'schemas'",
-            "modifier": {"set_context": {"tool_caller": "'talky'", "assistant": format!("'{agent}'")},
-                         "delete_context": ["col_phase", "consult_class", "consult_id", "tool_answerer"]}
-        }),
-        // 9./10. the two producers of a tool result, observed (O-A4). Both are
-        //    v-lanes into the stage and NOT container edges — a container edge
-        //    would run the observed copy back into the assistant a second time.
-        json!({
-            "from": format!("./assistants/{agent}/tools"), "to": format!("./apps/{app}/stage"),
-            "lane": "tool_result",
-            "condition": "has(hop.route) && hop.route == 'tool_result'"
-        }),
-        json!({
-            "from": "./memory-hive", "to": format!("./apps/{app}/stage"),
-            "lane": "tool_result",
-            "condition": "has(hop.route) && hop.route == 'tool_result'"
-        }),
-    ]
+    );
+    let first = out.first().expect("the recipe emitted nothing");
+    assert!(
+        first["header"]["error_code"].is_null(),
+        "the recipe refused the fixture app: {first}"
+    );
+    first["manifest"][0]["diff"]["add_edges"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no edges in the rendered install: {first}"))
+        .clone()
 }
 
 /// The screen's two edges, plus the TEST's own witness edge.
@@ -967,28 +942,39 @@ async fn an_app_hears_the_turn_and_the_answer_of_a_channel_conversation() {
     drop(c.td);
 }
 
-/// **An operator's turn stays the operator's.** A turn injected at the member's
-/// own door names no channel; the app is not part of that conversation, and the
-/// answer goes back out of the level on the guarded DEFAULT exit.
+/// **An operator's answer is heard, and still leaves the member once.** A turn
+/// injected at the member's own door names no channel. Until GH #599 the
+/// observers were guarded on the channel and the app heard nothing of it; the
+/// live colony was corrected to the unguarded form, and the recipe draws that
+/// form — so the app hears the answer of an operator's errand too.
 ///
-/// The positive control is in the same round: the answer HAS to arrive at the
-/// sink. Without it the silence of the app would prove nothing at all.
+/// The half that must not change is the answer's way out. An unguarded regular
+/// edge suppresses the member's guarded DEFAULT `./assistants -> .` on every
+/// case it fires on, which would swallow the answer; the channel-less exit the
+/// recipe draws beside the observer is what carries it. Counted, not merely
+/// seen: exactly one answer at the sink — none would be the swallowed answer,
+/// two would be the default firing beside the exit.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_operators_turn_stays_the_operators() {
+async fn an_operators_answer_is_heard_and_still_leaves_once() {
     if skip() {
         return;
     }
     let mut c = start().await;
     let got = round(&mut c, "op", "").await;
-    assert!(
-        got.iter().any(|m| hop_of(m, "route") == "answer"),
-        "positive control: the answer has to leave the member on its default exit: {got:#?}"
-    );
+    let answers = got
+        .iter()
+        .filter(|m| hop_of(m, "route") == "answer")
+        .count();
     assert_eq!(
-        views_heard(&got),
-        Vec::new(),
-        "an app of this person is not part of an operator's errand -- and a regular fan-out \
-         edge here would also kill the guarded default the answer leaves on: {got:#?}"
+        answers, 1,
+        "the operator's answer has to leave the member exactly once, on the \
+         channel-less exit: {got:#?}"
+    );
+    let heard: Vec<String> = views_heard(&got).into_iter().map(|(h, _)| h).collect();
+    assert!(
+        heard.iter().any(|h| h == "answer"),
+        "and the app of this person hears it — the observers carry no channel guard \
+         since GH #599: {got:#?}"
     );
     c.h.shutdown().await;
     drop(c.td);

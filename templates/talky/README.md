@@ -1,4 +1,4 @@
-# `talky@5.2.1`
+# `talky@5.2.2`
 
 A whole conversational agent as one template. Three referenced units under one hive:
 [`session-keeper`](../session-keeper/), [`collector`](../collector/) and
@@ -62,13 +62,18 @@ The three sub-units are **references**, not copies. Each of the three directorie
 one `config.json` and nothing else:
 
 ```json
-{"cell": {"type": "ref", "template": "collector@4.2.0"}}
+{"cell": {"type": "ref", "template": "collector@4.2.1"}}
 ```
 
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`talky@5.2.1` above it in its provenance chain.
+`talky@5.2.2` above it in its provenance chain. `5.2.2` moves the `collector` pin to
+`4.2.1` ([#728](https://github.com/mmeyerlein/meclaw/issues/728)): the answer of an advice or a
+delegation round carries the member's turn, and `hop.late` beside it. The same version gives
+`brain` the OpenRouter app attribution (`http_referer` / `x_title`, overridable by
+`OPENROUTER_HTTP_REFERER` / `OPENROUTER_X_TITLE`, the form the memory-hive cells use), so a
+talky's request names its app at the provider.
 
 **The library has to carry the three.** A reference resolves against the colony's template
 registry, so `collector`, `session-keeper` and `dispatcher` have to sit in
@@ -647,7 +652,7 @@ tools this agent uses -- shipped as `["web_search", "web_fetch"]`, `["*"]` for e
 tools hive has -- and the schemas behind those names are asked for:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "talky@5.2.1",
+{"add_nodes": [{"name": "scribe", "template": "talky@5.2.2",
                 "override_params": {"collector/assemble": {"tools": ["web_search", "bash"]}}}]}
 ```
 

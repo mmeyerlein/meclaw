@@ -3104,16 +3104,38 @@ async fn the_receipt_names_every_child() {
             verdict,
             from_version: from.map(str::to_string),
             to_version: to.map(str::to_string),
+            parked_path: None,
+            parked_store: None,
+            from_template_id: None,
+            to_template_id: None,
         };
+    // GH #811: the entries also name the `templates` rows (ids minted by the
+    // colony); `gh811_…::the_lift_receipt_names_both_template_ids` pins them.
+    // Here they are stripped, so this test keeps saying what it said.
+    let bare: Vec<NodeChange> = changes
+        .iter()
+        .cloned()
+        .map(|mut c| {
+            c.from_template_id = None;
+            c.to_template_id = None;
+            c
+        })
+        .collect();
     assert_eq!(
-        changes,
+        &bare,
         &vec![
-            change(
-                "/alex/display/bump",
-                NodeVerdict::Replaced,
-                Some("1.0.0"),
-                Some("1.1.0")
-            ),
+            // GH #773: a replaced entry names its park path and whether a
+            // `cell.db` went with it — an echo_sub owns none.
+            NodeChange {
+                parked_path: Some("/alex/display/bump~1.0.0".to_string()),
+                parked_store: Some(false),
+                ..change(
+                    "/alex/display/bump",
+                    NodeVerdict::Replaced,
+                    Some("1.0.0"),
+                    Some("1.1.0"),
+                )
+            },
             change(
                 "/alex/display/fresh",
                 NodeVerdict::Added,
@@ -3136,11 +3158,18 @@ async fn the_receipt_names_every_child() {
     let reply = mutation_door_reply(&MutationDoorOutcome::Single(outcome.clone()));
     assert_eq!(reply["mutation"]["outcome"], "committed");
     assert_eq!(reply["mutation"]["id"], json!(id));
+    let mut wire_changes = reply["mutation"]["changes"].clone();
+    for c in wire_changes.as_array_mut().expect("changes is a list") {
+        let obj = c.as_object_mut().expect("a change is an object");
+        obj.remove("from_template_id");
+        obj.remove("to_template_id");
+    }
     assert_eq!(
-        reply["mutation"]["changes"],
+        wire_changes,
         json!([
             {"path": "/alex/display/bump", "verdict": "replaced",
-             "from_version": "1.0.0", "to_version": "1.1.0"},
+             "from_version": "1.0.0", "to_version": "1.1.0",
+             "parked_path": "/alex/display/bump~1.0.0", "parked_store": false},
             {"path": "/alex/display/fresh", "verdict": "added",
              "from_version": null, "to_version": "1.1.0"},
             {"path": "/alex/display/gone", "verdict": "left",

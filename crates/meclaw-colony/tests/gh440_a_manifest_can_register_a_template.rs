@@ -155,11 +155,15 @@ async fn rescan(c: &Colony, templates: &std::path::Path) -> Result<(), String> {
 }
 
 /// A shipped template, written by hand into the library.
+///
+/// The bytes are the ones `register_named_at` ships, on purpose: since GH #811
+/// a registration of a stored `name@version` is `template_name_taken` only for
+/// the SAME tree — a different one is `template_version_immutable`.
 fn write_template(templates: &std::path::Path, name: &str, version: &str) {
     write(
         templates,
         &format!("{name}/template.json"),
-        &format!(r#"{{"name":"{name}","version":"{version}"}}"#),
+        &format!(r#"{{"name": "{name}", "version": "{version}"}}"#),
     );
     write(templates, &format!("{name}/config.json"), CELL_CONFIG);
 }

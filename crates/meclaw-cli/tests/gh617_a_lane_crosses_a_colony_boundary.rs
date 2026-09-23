@@ -84,6 +84,7 @@ fn cli_for(root: &std::path::Path) -> Cli {
         daemon: false,
         validate: false,
         validate_strict: false,
+        env_report: false,
         apply: None,
         blobs: None,
         tokio_console: false,
@@ -664,4 +665,811 @@ async fn a_frame_whose_body_has_no_central_slot_is_refused_not_lost() {
     );
     north.stop().await;
     south.stop().await;
+}
+
+// ---------------------------------------------------------------------------
+// GH #828: the outgoing POST carries a credential.
+//
+// North's peer cell gains `params.auth` in the TempDir copy, its secrets come
+// from a `.env` written next to it, and the proxy in front of south now
+// authenticates for real: it reads the credential, answers `401` itself when
+// it does not know it, and strips it before the request reaches the mount --
+// the mount still reads the sender from `X-Meclaw-Peer` and from nowhere else.
+// For the OAuth form a token endpoint runs in this test process, like the
+// proxy. Every test ends by looking for the secret and every token it handed
+// out in all files of both colonies and in every log line the process wrote.
+// ---------------------------------------------------------------------------
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+
+/// The static credential; test-only, and deliberately unlike anything else in
+/// the trees, so a hit can only be a leak.
+const STATIC_SECRET: &str = "stat1c-cred-828-quux";
+/// The OAuth client secret, same reasoning.
+const CLIENT_SECRET: &str = "cl1ent-secret-828-zork";
+/// Every token the test endpoint hands out ends in this, so one needle finds
+/// all of them.
+const TOKEN_SALT: &str = "t0ken-828-frob";
+
+/// Every `tracing` event this test process emits at `debug` and above -- the
+/// colony's own logging, which is where a credential could slip. Not caught:
+/// `trace` events, and records of the `log` crate (reqwest, hyper), because no
+/// `LogTracer` bridge is installed here; production installs one via
+/// `try_init`. Today neither writes a header value. `nextest` runs each test in
+/// a process of its own, so the global subscriber is this test's alone; under
+/// `cargo test` the buffer is shared, which only makes the search wider.
+fn captured_logs() -> Arc<Mutex<Vec<u8>>> {
+    static LOGS: OnceLock<Arc<Mutex<Vec<u8>>>> = OnceLock::new();
+    LOGS.get_or_init(|| {
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&buf);
+        let sub = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::new("debug"))
+            .with_ansi(false)
+            .with_writer(move || LogWriter(Arc::clone(&sink)))
+            .finish();
+        let _ = tracing::subscriber::set_global_default(sub);
+        buf
+    })
+    .clone()
+}
+
+struct LogWriter(Arc<Mutex<Vec<u8>>>);
+
+impl std::io::Write for LogWriter {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        if let Ok(mut v) = self.0.lock() {
+            v.extend_from_slice(b);
+        }
+        Ok(b.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Reads one request off `s`: the head (without the blank line) and the body.
+async fn read_request(s: &mut tokio::net::TcpStream) -> Option<(Vec<u8>, Vec<u8>)> {
+    let mut buf = Vec::new();
+    let head = loop {
+        let mut b = [0u8; 4096];
+        match s.read(&mut b).await {
+            Ok(0) | Err(_) => return None,
+            Ok(n) => buf.extend_from_slice(&b[..n]),
+        }
+        if let Some(i) = find(&buf, b"\r\n\r\n") {
+            break i + 4;
+        }
+    };
+    let want = head + content_length(&buf[..head]);
+    while buf.len() < want {
+        let mut b = [0u8; 4096];
+        match s.read(&mut b).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => buf.extend_from_slice(&b[..n]),
+        }
+    }
+    Some((buf[..head - 2].to_vec(), buf[head..].to_vec()))
+}
+
+/// The header lines of a request head, names lower-cased, values trimmed.
+fn header_lines(head: &[u8]) -> Vec<(String, String)> {
+    String::from_utf8_lossy(head)
+        .split("\r\n")
+        .skip(1)
+        .filter_map(|l| {
+            let (k, v) = l.split_once(':')?;
+            Some((k.trim().to_ascii_lowercase(), v.trim().to_string()))
+        })
+        .collect()
+}
+
+fn header<'a>(lines: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    lines
+        .iter()
+        .find(|(k, _)| k == name)
+        .map(|(_, v)| v.as_str())
+}
+
+async fn answer(s: &mut tokio::net::TcpStream, status: &str, ctype: &str, body: &str) {
+    let msg = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let _ = s.write_all(msg.as_bytes()).await;
+    let _ = s.shutdown().await;
+}
+
+/// What the authenticating proxy decides for one request: `None` passes it on,
+/// `Some(detail)` answers `401` with that detail as the body.
+type Verdict = Arc<dyn Fn(&[(String, String)]) -> Option<String> + Send + Sync>;
+
+/// A reverse proxy that authenticates by credential: it records the headers
+/// of every request, asks `verdict`, and on a pass strips the credential
+/// headers and writes the sender, as `peer_forwarder` does.
+async fn auth_forwarder(
+    upstream: SocketAddr,
+    sender: &'static str,
+    verdict: Verdict,
+) -> (SocketAddr, Arc<Mutex<Vec<Vec<(String, String)>>>>) {
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = l.local_addr().expect("addr");
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let log = Arc::clone(&seen);
+    tokio::spawn(async move {
+        while let Ok((mut down, _)) = l.accept().await {
+            let verdict = Arc::clone(&verdict);
+            let log = Arc::clone(&log);
+            tokio::spawn(async move {
+                let Some((head, body)) = read_request(&mut down).await else {
+                    return;
+                };
+                let lines = header_lines(&head);
+                log.lock().expect("seen").push(lines.clone());
+                if let Some(detail) = verdict(lines.as_slice()) {
+                    answer(&mut down, "401 Unauthorized", "text/plain", &detail).await;
+                    return;
+                }
+                let mut out = strip_headers(
+                    &head,
+                    &[
+                        "x-meclaw-peer",
+                        "connection",
+                        "authorization",
+                        "x-peer-credential",
+                    ],
+                );
+                out.extend_from_slice(
+                    format!("X-Meclaw-Peer: {sender}\r\nConnection: close\r\n\r\n").as_bytes(),
+                );
+                out.extend_from_slice(&body);
+                let Ok(mut up) = tokio::net::TcpStream::connect(upstream).await else {
+                    return;
+                };
+                if up.write_all(&out).await.is_err() {
+                    return;
+                }
+                let mut back = Vec::new();
+                let _ = up.read_to_end(&mut back).await;
+                let _ = down.write_all(&back).await;
+                let _ = down.shutdown().await;
+            });
+        }
+    });
+    (addr, seen)
+}
+
+/// How the test token endpoint answers.
+#[derive(Clone, Copy)]
+enum TokenMode {
+    /// A fresh token per request, valid for this many seconds.
+    Issue { expires_in: u64 },
+    /// `401` with the OAuth error `invalid_client`.
+    Refuse,
+    /// Accepts the connection and never answers.
+    Silent,
+}
+
+/// An OAuth 2.0 token endpoint in the test process. The n-th request gets
+/// `tok-<n>-<salt>`; the form bodies are recorded.
+async fn token_endpoint(mode: TokenMode) -> (SocketAddr, Arc<Mutex<Vec<String>>>) {
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = l.local_addr().expect("addr");
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let log = Arc::clone(&seen);
+    let n = Arc::new(AtomicUsize::new(0));
+    tokio::spawn(async move {
+        while let Ok((mut s, _)) = l.accept().await {
+            let log = Arc::clone(&log);
+            let n = Arc::clone(&n);
+            tokio::spawn(async move {
+                let Some((_head, body)) = read_request(&mut s).await else {
+                    return;
+                };
+                log.lock()
+                    .expect("seen")
+                    .push(String::from_utf8_lossy(&body).into_owned());
+                match mode {
+                    TokenMode::Issue { expires_in } => {
+                        let i = n.fetch_add(1, Ordering::SeqCst) + 1;
+                        let token = json!({
+                            "access_token": format!("tok-{i}-{TOKEN_SALT}"),
+                            "token_type": "Bearer",
+                            "expires_in": expires_in,
+                        });
+                        answer(&mut s, "200 OK", "application/json", &token.to_string()).await;
+                    }
+                    TokenMode::Refuse => {
+                        let e = json!({"error": "invalid_client"}).to_string();
+                        answer(&mut s, "401 Unauthorized", "application/json", &e).await;
+                    }
+                    TokenMode::Silent => {
+                        // Holds the connection open and says nothing.
+                        std::future::pending::<()>().await;
+                        drop(s);
+                    }
+                }
+            });
+        }
+    });
+    (addr, seen)
+}
+
+/// Boots north with `auth` in its peer cell's params, `extra` merged beside
+/// it, and `env` as its `.env`.
+async fn boot_north_with(
+    peer_url: &str,
+    auth: Value,
+    extra: Value,
+    env: &[(&str, &str)],
+) -> Colony {
+    let td = prepare_north(peer_url, auth, extra, env);
+    let cli = cli_for(td.path());
+    let (addr_tx, addr_rx) = tokio::sync::oneshot::channel();
+    let (shutdown, shutdown_rx) = tokio::sync::oneshot::channel();
+    let join =
+        tokio::spawn(async move { run_with_hooks(cli, Some(addr_tx), Some(shutdown_rx)).await });
+    let addr = tokio::time::timeout(RECV, addr_rx)
+        .await
+        .expect("the colony must bind HTTP within 30s")
+        .expect("addr hook");
+    Colony {
+        addr,
+        shutdown,
+        join,
+        _td: td,
+    }
+}
+
+/// The north tree in a TempDir, its peer cell patched and its `.env` written.
+fn prepare_north(
+    peer_url: &str,
+    auth: Value,
+    extra: Value,
+    env: &[(&str, &str)],
+) -> tempfile::TempDir {
+    let td = tempfile::TempDir::new().expect("tempdir");
+    copy_dir_recursive(&fixture_path("peer-north"), td.path());
+    rewrite_configs(td.path(), &[("__PEER_URL__", peer_url)]);
+    let cfg_path = td.path().join("main/friend/config.json");
+    let mut cfg: Value =
+        serde_json::from_str(&std::fs::read_to_string(&cfg_path).expect("read")).expect("json");
+    cfg["params"]["auth"] = auth;
+    if let Some(more) = extra.as_object() {
+        for (k, v) in more {
+            cfg["params"][k] = v.clone();
+        }
+    }
+    std::fs::write(&cfg_path, serde_json::to_string_pretty(&cfg).expect("ser")).expect("write");
+    let lines: String = env.iter().map(|(k, v)| format!("{k}={v}\n")).collect();
+    std::fs::write(td.path().join(".env"), lines).expect("write env");
+    td
+}
+
+/// South, the authenticating proxy in front of it, and north with `auth`.
+async fn auth_pair(
+    verdict: Verdict,
+    auth: Value,
+    extra: Value,
+    env: &[(&str, &str)],
+) -> (Colony, Arc<Mutex<Vec<Vec<(String, String)>>>>, Colony) {
+    let _ = captured_logs();
+    let south = boot("peer-south", &[]).await;
+    let (fwd, seen) = auth_forwarder(south.addr, "north", verdict).await;
+    let url = format!("http://{fwd}/peer/");
+    let north = boot_north_with(&url, auth, extra, env).await;
+    (south, seen, north)
+}
+
+fn oauth_block(token: SocketAddr) -> Value {
+    json!({
+        "token_url": format!("http://{token}/realms/test/protocol/openid-connect/token"),
+        "client_id": "${PEER_CLIENT_ID}",
+        "client_secret": "${PEER_CLIENT_SECRET}",
+        "scope": "peer",
+        "audience": "south",
+    })
+}
+
+const OAUTH_ENV: &[(&str, &str)] = &[
+    ("PEER_CLIENT_ID", "north-colony"),
+    ("PEER_CLIENT_SECRET", CLIENT_SECRET),
+];
+
+/// Every file under both colonies' roots except the `.env` that holds the
+/// secret on purpose, and every captured log line: none contains a needle.
+fn assert_nowhere(colonies: &[&Colony], needles: &[&str]) {
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for e in std::fs::read_dir(dir).expect("read_dir").flatten() {
+            let p = e.path();
+            if e.file_type().expect("file_type").is_dir() {
+                walk(&p, out);
+            } else if p.file_name().is_some_and(|n| n != ".env") {
+                out.push(p);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    for c in colonies {
+        walk(c._td.path(), &mut files);
+    }
+    assert!(!files.is_empty(), "the search has something to search");
+    for f in &files {
+        let Ok(bytes) = std::fs::read(f) else {
+            continue;
+        };
+        for n in needles {
+            assert!(
+                find(&bytes, n.as_bytes()).is_none(),
+                "a credential stands in {} -- it must live in .env and in memory only",
+                f.display()
+            );
+        }
+    }
+    let logs = captured_logs().lock().expect("logs").clone();
+    assert!(
+        !logs.is_empty(),
+        "the log capture saw lines; an empty one would prove nothing"
+    );
+    for n in needles {
+        assert!(
+            find(&logs, n.as_bytes()).is_none(),
+            "a credential stands in a log line"
+        );
+    }
+}
+
+/// North's one receipt on `trace`.
+async fn north_receipt(north: &Colony, t: &str) -> Row {
+    let mut r = wait_for_rows(&north.addr, t, "/receipts", 1).await;
+    assert_eq!(r.len(), 1, "one receipt per crossing");
+    r.remove(0)
+}
+
+fn topic() -> Value {
+    json!({"messages": [], "topic": "gardening"})
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gh828_a_static_credential_rides_every_post_and_a_proxy_that_strips_it_still_delivers() {
+    let verdict: Verdict = Arc::new(|h: &[(String, String)]| {
+        (header(h, "x-peer-credential") != Some(STATIC_SECRET))
+            .then(|| "south-proxy: no known credential".to_string())
+    });
+    let auth = json!({"header": "X-Peer-Credential", "value": "${PEER_CREDENTIAL}"});
+    let (south, seen, north) = auth_pair(
+        verdict,
+        auth,
+        json!({}),
+        &[("PEER_CREDENTIAL", STATIC_SECRET)],
+    )
+    .await;
+    for _ in 0..2 {
+        let t = drive(&north.addr, "topic", topic(), 64).await;
+        assert_eq!(
+            north_receipt(&north, &t).await.hop["peer_event"],
+            json!("crossed"),
+            "the proxy knew the credential and let the frame through"
+        );
+        assert_eq!(
+            wait_for_rows(&south.addr, &t, "/sink", 1).await[0].hop["peer"],
+            json!("north"),
+            "the mount delivered without the header, which the proxy stripped: it is additive"
+        );
+    }
+    let seen = seen.lock().expect("seen").clone();
+    assert_eq!(seen.len(), 2, "one POST per crossing");
+    for h in &seen {
+        assert_eq!(
+            header(h, "x-peer-credential"),
+            Some(STATIC_SECRET),
+            "every POST carries the header with the resolved value"
+        );
+    }
+    assert_nowhere(&[&north, &south], &[STATIC_SECRET]);
+    north.stop().await;
+    south.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gh828_the_oauth_form_fetches_one_token_for_two_crossings() {
+    let (tok, grants) = token_endpoint(TokenMode::Issue { expires_in: 3600 }).await;
+    let verdict: Verdict = Arc::new(|h: &[(String, String)]| {
+        (!header(h, "authorization").is_some_and(|v| v.starts_with("Bearer tok-")))
+            .then(|| "south-proxy: no bearer".to_string())
+    });
+    let (south, seen, north) = auth_pair(verdict, oauth_block(tok), json!({}), OAUTH_ENV).await;
+    for _ in 0..2 {
+        let t = drive(&north.addr, "topic", topic(), 64).await;
+        assert_eq!(
+            north_receipt(&north, &t).await.hop["peer_event"],
+            json!("crossed"),
+            "the bearer was accepted"
+        );
+    }
+    let grants = grants.lock().expect("grants").clone();
+    assert_eq!(grants.len(), 1, "one token request for two crossings");
+    let form: Vec<(String, String)> = grants[0]
+        .split('&')
+        .filter_map(|kv| kv.split_once('='))
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    let get = |k: &str| form.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+    assert_eq!(
+        get("grant_type"),
+        Some("client_credentials"),
+        "RFC 6749 § 4.4"
+    );
+    assert_eq!(get("client_id"), Some("north-colony"));
+    assert_eq!(
+        get("client_secret"),
+        Some(CLIENT_SECRET),
+        "the secret goes in the form body"
+    );
+    assert_eq!(get("scope"), Some("peer"));
+    assert_eq!(get("audience"), Some("south"));
+    let seen = seen.lock().expect("seen").clone();
+    assert_eq!(seen.len(), 2);
+    for h in &seen {
+        assert_eq!(
+            header(h, "authorization"),
+            Some(format!("Bearer tok-1-{TOKEN_SALT}").as_str()),
+            "both crossings carry the one cached token"
+        );
+    }
+    assert_nowhere(&[&north, &south], &[CLIENT_SECRET, TOKEN_SALT]);
+    north.stop().await;
+    south.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gh828_a_token_past_expires_in_is_fetched_again() {
+    let (tok, grants) = token_endpoint(TokenMode::Issue { expires_in: 1 }).await;
+    let verdict: Verdict = Arc::new(|_: &[(String, String)]| None);
+    let (south, seen, north) = auth_pair(verdict, oauth_block(tok), json!({}), OAUTH_ENV).await;
+    let t = drive(&north.addr, "topic", topic(), 64).await;
+    assert_eq!(
+        north_receipt(&north, &t).await.hop["peer_event"],
+        json!("crossed")
+    );
+    // One second is the token's whole life; past it the cache must not hold.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let t = drive(&north.addr, "topic", topic(), 64).await;
+    assert_eq!(
+        north_receipt(&north, &t).await.hop["peer_event"],
+        json!("crossed")
+    );
+    assert_eq!(
+        grants.lock().expect("grants").len(),
+        2,
+        "an expired token is fetched again"
+    );
+    let seen = seen.lock().expect("seen").clone();
+    assert_eq!(
+        header(&seen[1], "authorization"),
+        Some(format!("Bearer tok-2-{TOKEN_SALT}").as_str()),
+        "and the second crossing carries the new one"
+    );
+    assert_nowhere(&[&north, &south], &[CLIENT_SECRET, TOKEN_SALT]);
+    north.stop().await;
+    south.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gh828_a_401_fetches_once_more_and_retries_once() {
+    let (tok, grants) = token_endpoint(TokenMode::Issue { expires_in: 3600 }).await;
+    // The proxy has revoked the first token; the second is good.
+    let verdict: Verdict = Arc::new(|h: &[(String, String)]| {
+        (header(h, "authorization") != Some(format!("Bearer tok-2-{TOKEN_SALT}").as_str()))
+            .then(|| "south-proxy: token revoked".to_string())
+    });
+    let (south, seen, north) = auth_pair(verdict, oauth_block(tok), json!({}), OAUTH_ENV).await;
+    let t = drive(&north.addr, "topic", topic(), 64).await;
+    assert_eq!(
+        north_receipt(&north, &t).await.hop["peer_event"],
+        json!("crossed"),
+        "the retry with a fresh token crossed"
+    );
+    assert_eq!(
+        grants.lock().expect("grants").len(),
+        2,
+        "exactly one re-fetch"
+    );
+    assert_eq!(seen.lock().expect("seen").len(), 2, "exactly one retry");
+    assert_eq!(
+        wait_for_rows(&south.addr, &t, "/sink", 1).await.len(),
+        1,
+        "one arrival"
+    );
+    assert_nowhere(&[&north, &south], &[CLIENT_SECRET, TOKEN_SALT]);
+    north.stop().await;
+    south.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gh828_a_second_401_is_peer_refused_with_the_far_sides_detail() {
+    let (tok, grants) = token_endpoint(TokenMode::Issue { expires_in: 3600 }).await;
+    let verdict: Verdict = Arc::new(|_: &[(String, String)]| {
+        Some("south-proxy: this client is not admitted".to_string())
+    });
+    let (south, seen, north) = auth_pair(verdict, oauth_block(tok), json!({}), OAUTH_ENV).await;
+    let t = drive(&north.addr, "topic", topic(), 64).await;
+    let r = north_receipt(&north, &t).await;
+    assert_eq!(r.hop["peer_event"], json!("refused"));
+    assert_eq!(
+        r.hop["error_code"],
+        json!("peer_refused"),
+        "the far side refused twice"
+    );
+    assert_eq!(r.hop["boundary"], json!("north"), "booked on this side");
+    let detail = r.body["messages"][0]["text"].as_str().expect("detail");
+    assert!(
+        detail.contains("south-proxy: this client is not admitted"),
+        "the detail carries the far side's word -- {detail}"
+    );
+    assert_eq!(
+        grants.lock().expect("grants").len(),
+        2,
+        "one re-fetch, no more"
+    );
+    assert_eq!(seen.lock().expect("seen").len(), 2, "one retry, no more");
+    assert!(
+        rows(&south.addr, &t, "/").await.is_empty(),
+        "nothing crossed"
+    );
+    assert_nowhere(&[&north, &south], &[CLIENT_SECRET, TOKEN_SALT]);
+    north.stop().await;
+    south.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gh828_a_token_endpoint_that_does_not_answer_refuses_on_the_sending_side() {
+    let (tok, grants) = token_endpoint(TokenMode::Silent).await;
+    let verdict: Verdict = Arc::new(|_: &[(String, String)]| None);
+    let extra = json!({"external_timeout_ms": 1000});
+    let (south, seen, north) = auth_pair(verdict, oauth_block(tok), extra, OAUTH_ENV).await;
+    let t = drive(&north.addr, "topic", topic(), 64).await;
+    let r = north_receipt(&north, &t).await;
+    assert_eq!(r.hop["peer_event"], json!("refused"), "a receipt, refused");
+    assert_eq!(r.hop["error_code"], json!("auth_unavailable"));
+    assert_eq!(r.hop["boundary"], json!("north"), "on the sending side");
+    assert_eq!(
+        grants.lock().expect("grants").len(),
+        1,
+        "the endpoint was asked"
+    );
+    assert!(
+        seen.lock().expect("seen").is_empty(),
+        "and the peer never was"
+    );
+    assert!(
+        rows(&south.addr, &t, "/").await.is_empty(),
+        "nothing crossed half"
+    );
+    assert_nowhere(&[&north, &south], &[CLIENT_SECRET, TOKEN_SALT]);
+    north.stop().await;
+    south.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gh828_a_token_endpoint_answering_non_2xx_refuses_on_the_sending_side() {
+    let (tok, _grants) = token_endpoint(TokenMode::Refuse).await;
+    let verdict: Verdict = Arc::new(|_: &[(String, String)]| None);
+    let (south, seen, north) = auth_pair(verdict, oauth_block(tok), json!({}), OAUTH_ENV).await;
+    let t = drive(&north.addr, "topic", topic(), 64).await;
+    let r = north_receipt(&north, &t).await;
+    assert_eq!(r.hop["error_code"], json!("auth_unavailable"));
+    let detail = r.body["messages"][0]["text"].as_str().expect("detail");
+    assert!(
+        detail.contains("401"),
+        "the detail names the status -- {detail}"
+    );
+    assert!(
+        detail.contains("invalid_client"),
+        "and the OAuth error code -- {detail}"
+    );
+    assert!(
+        seen.lock().expect("seen").is_empty(),
+        "the peer was never asked"
+    );
+    assert_nowhere(&[&north, &south], &[CLIENT_SECRET]);
+    north.stop().await;
+    south.stop().await;
+}
+
+/// Boots north and expects the boot to be refused; returns the refusal.
+async fn boot_refused(auth: Value, env: &[(&str, &str)]) -> String {
+    let td = prepare_north("http://127.0.0.1:9/peer/", auth, json!({}), env);
+    let cli = cli_for(td.path());
+    let (addr_tx, _addr_rx) = tokio::sync::oneshot::channel();
+    let (_shutdown, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let res = tokio::time::timeout(RECV, run_with_hooks(cli, Some(addr_tx), Some(shutdown_rx)))
+        .await
+        .expect("a refused boot ends within 30s");
+    format!("{:#}", res.expect_err("the boot must be refused"))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gh828_a_literal_secret_or_both_forms_at_once_do_not_boot() {
+    let literal = "a-literal-in-config-json";
+    let e = boot_refused(
+        json!({"header": "X-Peer-Credential", "value": literal}),
+        &[],
+    )
+    .await;
+    assert!(e.contains("auth.value"), "the refusal names the key -- {e}");
+    assert!(!e.contains(literal), "and never echoes the literal");
+    let e = boot_refused(
+        json!({"token_url": "http://127.0.0.1:9/token", "client_id": "north",
+               "client_secret": literal}),
+        &[],
+    )
+    .await;
+    assert!(
+        e.contains("auth.client_secret"),
+        "the refusal names the key -- {e}"
+    );
+    assert!(!e.contains(literal), "and never echoes the literal");
+    let e = boot_refused(
+        json!({"header": "X-Peer-Credential", "value": "${PEER_CREDENTIAL}",
+               "token_url": "http://127.0.0.1:9/token"}),
+        &[("PEER_CREDENTIAL", STATIC_SECRET)],
+    )
+    .await;
+    assert!(e.contains("auth"), "the refusal names the block -- {e}");
+    assert!(
+        e.contains("token_url"),
+        "and the key of the second form -- {e}"
+    );
+    assert!(!e.contains(STATIC_SECRET), "and never the resolved value");
+}
+
+/// GH #828 fix round 1 (review I2): the static form does not retry. A `401`
+/// to a static credential is `peer_refused` at once -- the same value sent
+/// again would be refused again -- with the far side's word in the detail.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gh828_a_401_to_the_static_form_is_peer_refused_after_one_post() {
+    let verdict: Verdict = Arc::new(|_: &[(String, String)]| {
+        Some("south-proxy: this credential is revoked".to_string())
+    });
+    let auth = json!({"header": "X-Peer-Credential", "value": "${PEER_CREDENTIAL}"});
+    let (south, seen, north) = auth_pair(
+        verdict,
+        auth,
+        json!({}),
+        &[("PEER_CREDENTIAL", STATIC_SECRET)],
+    )
+    .await;
+    let t = drive(&north.addr, "topic", topic(), 64).await;
+    let r = north_receipt(&north, &t).await;
+    assert_eq!(r.hop["peer_event"], json!("refused"));
+    assert_eq!(r.hop["error_code"], json!("peer_refused"));
+    assert_eq!(r.hop["boundary"], json!("north"), "booked on this side");
+    let detail = r.body["messages"][0]["text"].as_str().expect("detail");
+    assert!(
+        detail.contains("south-proxy: this credential is revoked"),
+        "the detail carries the far side's word -- {detail}"
+    );
+    assert_eq!(
+        seen.lock().expect("seen").len(),
+        1,
+        "exactly one POST: the static form has nothing fresh to retry with"
+    );
+    assert!(
+        rows(&south.addr, &t, "/").await.is_empty(),
+        "nothing crossed"
+    );
+    assert_nowhere(&[&north, &south], &[STATIC_SECRET]);
+    north.stop().await;
+    south.stop().await;
+}
+
+/// Every `config.json` under `root` with its bytes: the tree as the colony
+/// would boot it next time.
+fn config_snapshot(root: &std::path::Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+    fn walk(dir: &std::path::Path, out: &mut Vec<(std::path::PathBuf, Vec<u8>)>) {
+        for e in std::fs::read_dir(dir).expect("read_dir").flatten() {
+            let p = e.path();
+            if e.file_type().expect("file_type").is_dir() {
+                walk(&p, out);
+            } else if p.file_name().is_some_and(|n| n == "config.json") {
+                out.push((p.clone(), std::fs::read(&p).expect("read")));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(root, &mut out);
+    out.sort();
+    out
+}
+
+/// GH #828 fix round 1 (review I1): the mutation door asks the same question
+/// as the boot. A `meclaw` proxy grown by `add_nodes` with a literal
+/// `auth.value` is refused with `invalid_params`, naming the key and never the
+/// literal, and not one `config.json` of the tree has moved.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gh828_a_literal_secret_is_refused_at_the_mutation_door_too() {
+    let literal = "a-literal-grown-by-a-mutation";
+    let td = prepare_north(
+        "http://127.0.0.1:9/peer/",
+        json!({"header": "X-Peer-Credential", "value": "${PEER_CREDENTIAL}"}),
+        json!({}),
+        &[("PEER_CREDENTIAL", STATIC_SECRET)],
+    );
+    // A second peer proxy as a template: north's own, `auth` as a token, on a
+    // mount of its own. `override_params` may only address a param the
+    // template has (GH #198), so the mutation replaces `auth`, not adds it.
+    let mut tpl: Value = serde_json::from_str(
+        &std::fs::read_to_string(td.path().join("main/friend/config.json")).expect("read"),
+    )
+    .expect("json");
+    tpl["params"]["mount"] = json!("peer-two");
+    let tpl_dir = td.path().join("templates/peer-two");
+    std::fs::create_dir_all(&tpl_dir).expect("mkdir");
+    std::fs::write(tpl_dir.join("template.json"), br#"{"name":"peer-two"}"#).expect("write");
+    std::fs::write(
+        tpl_dir.join("config.json"),
+        serde_json::to_string_pretty(&tpl).expect("ser"),
+    )
+    .expect("write");
+    let mut cli = cli_for(td.path());
+    cli.rescan_templates = true;
+    let (addr_tx, addr_rx) = tokio::sync::oneshot::channel();
+    let (shutdown, shutdown_rx) = tokio::sync::oneshot::channel();
+    let join =
+        tokio::spawn(async move { run_with_hooks(cli, Some(addr_tx), Some(shutdown_rx)).await });
+    let addr = tokio::time::timeout(RECV, addr_rx)
+        .await
+        .expect("the colony must bind HTTP within 30s")
+        .expect("addr hook");
+    let before = config_snapshot(td.path());
+
+    let resp = reqwest::Client::new()
+        .post(format!("http://{addr}/colony/mutations"))
+        .json(&json!({
+            "scope": "/",
+            "ctx": {},
+            "diff": {"add_nodes": [{
+                "name": "friend-two",
+                "template": "peer-two",
+                "override_params": {
+                    "auth": {"header": "X-Peer-Credential", "value": literal}
+                }
+            }]}
+        }))
+        .send()
+        .await
+        .expect("post");
+    let status = resp.status().as_u16();
+    let body: Value = resp.json().await.expect("json");
+    assert_eq!(status, 422, "a refused mutation -- {body}");
+    assert_eq!(body["mutation"]["outcome"], json!("rejected"), "{body}");
+    assert_eq!(
+        body["mutation"]["error_code"],
+        json!("invalid_params"),
+        "{body}"
+    );
+    let details = body["mutation"]["details"].as_str().expect("details");
+    assert!(
+        details.contains("auth.value"),
+        "the refusal names the key -- {details}"
+    );
+    assert!(
+        !body.to_string().contains(literal),
+        "and never echoes the literal -- {body}"
+    );
+    assert_eq!(
+        config_snapshot(td.path()),
+        before,
+        "the tree is unchanged: no new node, no staging rest, no rewritten config"
+    );
+    assert!(!td.path().join("main/friend-two").exists());
+
+    let _ = shutdown.send(());
+    let _ = tokio::time::timeout(RECV, join).await;
 }

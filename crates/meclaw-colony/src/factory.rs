@@ -184,6 +184,27 @@ pub trait CellFactory: Send + Sync {
     /// called during staging.
     fn validate_params(&self, params: &JsonValue) -> Result<(), String>;
 
+    /// Pre-spawn validation of the `params` AS THE FILE DECLARES THEM, before
+    /// any `${VAR}` is bound (GH #828).
+    ///
+    /// [`Self::validate_params`] reads the resolved value, and a resolved value
+    /// looks the same whether it came from `.env` or stood in `config.json` as a
+    /// literal. A cell type that requires a secret to be an environment token —
+    /// so that it never lands on disk or in an export of the tree — can only ask
+    /// that of the declared form, and this hook is where it can.
+    ///
+    /// Called right after `validate_params` at both doors that put a cell into a
+    /// colony: `plan_bootstrap` with the parsed file, and the mutation staging
+    /// path with its disk view (instance tokens resolved, environment tokens
+    /// still tokens). The same obligation as `validate_params`: a pure look at a
+    /// value, no I/O, because staging runs on the colony task. The refusal names
+    /// the key and must not echo the literal it refuses.
+    ///
+    /// Default: `Ok(())`, since no other type has a key the rule applies to.
+    fn validate_declared_params(&self, _declared: &JsonValue) -> Result<(), String> {
+        Ok(())
+    }
+
     /// Pre-spawn validation of the cell's ON-DISK assets (issue #56).
     ///
     /// `validate_params` only sees the `params` block; a cell type whose

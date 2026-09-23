@@ -20,9 +20,11 @@ The mount a surface cell owns is `/<mount>/` on the colony's listener. Two cell 
 a `web` cell it is the mount with its `page.set` route grammar and the two reserved names, `@` and
 `live` ([`cell-types.md`](cell-types.md) § `web`). For a `proxy` cell on `platform: "meclaw"` it
 is the peer mount another colony posts to, and the wire-v1 frame that crosses it: the message
-frame and the receipt frame with their keys, the header that names the sending colony, and the
-nine `error_code` strings a refusal carries ([`cell-types.md`](cell-types.md) § `proxy`). The
-peer mount is the surface a colony you do not run builds against.
+frame and the receipt frame with their keys, the header that names the sending colony, the
+credential the outgoing POST carries (`params.auth`: a static header, or an OAuth 2.0
+client-credentials bearer), and the ten `error_code` strings a refusal carries
+([`cell-types.md`](cell-types.md) § `proxy`). The peer mount is the surface a colony you do not run
+builds against, and the credential is what the proxy in front of it checks.
 
 The documented `error_code` strings are the dead-letter reasons, the cell-type codes, and the
 codes a `/colony` read can answer with. The overview lists them in the sections that emit them.

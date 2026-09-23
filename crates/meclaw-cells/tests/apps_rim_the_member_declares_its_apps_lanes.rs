@@ -384,7 +384,7 @@ fn the_assistant_opens_its_brain_rims_for_tool_and_schemas() {
 fn the_versions_moved_with_the_declarations() {
     if let Some(v) = declared_version("member") {
         assert_eq!(
-            v, "1.9.2",
+            v, "1.9.3",
             "the apps-rim declarations and the two restamp edges shipped as 1.6.2; GH \
              #598 took the receipt restamp edge back out again as 1.6.3; GH #607 made the \
              level 1.7.0 with the `sidecar` lane and the two edges that sort it; and since \
@@ -393,13 +393,14 @@ fn the_versions_moved_with_the_declarations() {
              welle-live it is 1.9.0, because the level wires the channel whose model \
              answers on its own timeline (`in_delegation` up, `in_advise` back down) — the second \
              digit each time, because the level does something it never promised before; \
-             1.9.1 only pins `affinity@3.4.0` and 1.9.2 only names `display@2.7.0`, \
-             which is the third digit both times"
+             1.9.1 only pins `affinity@3.4.0`, 1.9.2 only names `display@2.7.0` and \
+             1.9.3 pins `memory-hive@3.4.1` and routes a keeper part on its path (GH #712), which is \
+             the third digit every time"
         );
     }
     if let Some(v) = declared_version("assistant") {
         assert_eq!(
-            v, "2.8.0",
+            v, "2.8.1",
             "the connect points on `tool`/`schemas` and the new `tool_result` lane shipped \
              as assistant@2.5.1; GH #607 added `sidecar` and made it 2.6.0; GH #709 made it \
              2.7.0, because the level holds one talky per channel that asks for its own and \
@@ -407,7 +408,11 @@ fn the_versions_moved_with_the_declarations() {
              it is 2.8.0, because a duplex voice call reaches the surface on a lane of its \
              own, `in_delegation` — a lane or an address added, none taken away; GH #799 \
              re-points its two refs at `talky@5.2.1` and the number does NOT move, because \
-             2.8.0 has not shipped and an unreleased version is extended, never superseded"
+             2.8.0 has not shipped and an unreleased version is extended, never superseded; \
+             GH #712 draws the transfer rim at both talkys and pins `talky@5.2.2`, the \
+             third digit; and GH #728 rides the same 2.8.1, a repair: the consult edges \
+             drop `turn_id` and the ref markers carry `late_after_ms`, no lane added or \
+             taken away"
         );
     }
 }

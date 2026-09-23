@@ -31,6 +31,7 @@ fn cli_for(root: &std::path::Path, strict: bool) -> Cli {
         daemon: false,
         validate: true,
         validate_strict: strict,
+        env_report: false,
         apply: None,
         blobs: None,
         tokio_console: false,

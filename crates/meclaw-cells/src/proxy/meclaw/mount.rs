@@ -87,7 +87,7 @@ pub enum PeerEvent {
         peer: Option<String>,
         /// The frame's trace, when the frame parsed (OR-Peer.L1b.3).
         trace_id: Option<Uuid>,
-        /// One of the nine codes.
+        /// One of the ten codes.
         error_code: &'static str,
         /// What was refused, in words.
         detail: String,

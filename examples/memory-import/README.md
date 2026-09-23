@@ -34,7 +34,7 @@ This example is the way in. It is one manifest.
                                    │  memory-hive/seed/<table>.jsonl
                                    │  affinity/seed/<table>.jsonl
                                    │  firewall/seed/rules.jsonl
-                                   │  session-keeper/seed/sessions.jsonl
+                                   │  <talky>/session-keeper/seed/sessions.jsonl
                                    ▼  export_final.json (one per directory)
                             build_import.py
                                    │  one manifest        one message per late part
@@ -46,7 +46,7 @@ This example is the way in. It is one manifest.
                         │   firewall/rules/seed   │
                         └──────────┬──────────────┘
                                    │  grow a generation, then
-                     in_import ────┘  hop.import_hive = 'session-keeper'
+                     in_import ────┘  hop.import_hive = '<talky>/session-keeper'
 ```
 
 Nothing in that picture touches a `cell.db`. There is no `sqlite3`, no file
@@ -81,13 +81,23 @@ operation and no flag that makes a running cell load one. So:
    the holder that is now running. A delta, a correction, a second source: one
    export part per message, and applying the same part twice leaves the same
    state. That lane is on the shipped `member` and since #475 it has four doors:
-   `hop.import_hive` names `affinity`, `firewall` or `session-keeper`, and a part
+   `hop.import_hive` names `affinity`, `firewall` or a session keeper's path
+   (`talky/session-keeper`, `talky-chat/session-keeper`), and a part
    that names nothing goes to the memory hive, which is where every part written
    before #471 came from. It is addressed at the member's own path — the org
    above does not carry the lane, and the manifest draws no edge for it. A
-   `session-keeper` part additionally names the GENERATION on
-   `context.assistant`: a member with two of them has two session ledgers, and
-   they are not one document.
+   keeper part additionally names the GENERATION on `context.assistant`: a
+   member with two of them has two session ledgers, and they are not one
+   document.
+
+   **A generation holds one keeper per talky, and each travels (GH #712).** Since
+   `session-keeper@2.2.2` a keeper files its ledger under its own path inside the
+   generation, so an export that names a generation carries
+   `<run>/talky/session-keeper/` and `<run>/talky-chat/session-keeper/`, and
+   `--after-boot` writes one part per directory, each addressed with that path. An
+   export written before 2.2.2 has a single `<run>/session-keeper/`; the tool reads it
+   as `talky/session-keeper` -- the default talky's keeper, the only one whose ledger
+   left a generation then -- and says so on stderr.
 
 There is no third option and no second chance. **A member that is already
 running cannot be given a past** — grow it again under another name, or do the
@@ -134,7 +144,7 @@ PY
 ```
 
 Step 4 exists only when the export carries something a birth cannot seed — today
-that is `session-keeper` and nothing else. Without `--after-boot` the tool behaves
+that is the session keepers and nothing else. Without `--after-boot` the tool behaves
 exactly as it always did and says on stderr what it left out.
 
 `--scope` is the org the member belongs to; `--name` is the member's name, and
@@ -258,10 +268,14 @@ transfer.
 
 `crates/meclaw-cells/tests/gh475_a_member_reaches_the_keeper_it_holds.rs` drives the
 fourth holder: a member with one generation is told `in_export` with that generation
-named, the keeper's own store writes `session-keeper/seed/sessions.jsonl` beside the other
+named, the keeper's own store writes `talky/session-keeper/seed/sessions.jsonl` beside the other
 directories,
 `--after-boot` turns it back into one `in_import` message, and the member's own door
 carries it into the keeper's store.
+`crates/meclaw-cells/tests/gh712_every_keeper_files_its_sessions_under_its_own_node.rs`
+drives both keepers of one generation: two directories, two parts, each landing in the
+keeper at the same node of another generation, plus a pre-2.2.2 directory read as the
+default talky's.
 
 `crates/meclaw-cells/tests/gh471_a_member_carries_all_of_itself.rs` does the same
 walk for all three holders at once: one distinctive row is written into each of

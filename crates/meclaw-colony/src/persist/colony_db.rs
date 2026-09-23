@@ -107,6 +107,45 @@ pub struct TemplateRow {
     pub author: Option<String>,
     /// Unix seconds of the last scan.
     pub scanned_at: i64,
+    /// GH #811 (T2b): the registry paths whose provenance chain names this
+    /// row — NOT a column. [`ColonyDb::read_templates`] leaves it `None`;
+    /// only a reader that asks for the provenance join
+    /// ([`ColonyDb::read_template_uses`], see
+    /// [`attach_template_uses`]) fills it.
+    pub used_by: Option<Vec<String>>,
+}
+
+/// GH #811 (T2b): one hop of one registry row's `template_chain`, joined to
+/// the `templates` row it names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TemplateUseRow {
+    /// The registry path the chain belongs to.
+    pub path: String,
+    /// Position of the hop in the chain, outermost first.
+    pub hop: usize,
+    /// The `templates` row the hop names — `None` is the audit finding
+    /// "stamp without a row": the node names a version the library does not
+    /// hold.
+    pub template_id: Option<String>,
+    /// Template name of the hop.
+    pub name: String,
+    /// Template version of the hop, `None` for an unversioned one.
+    pub version: Option<String>,
+}
+
+/// GH #811 (T2b): fill [`TemplateRow::used_by`] from the provenance join —
+/// every registry path with a hop on the row, sorted, deduplicated.
+pub fn attach_template_uses(rows: &mut [TemplateRow], uses: &[TemplateUseRow]) {
+    for row in rows.iter_mut() {
+        let mut paths: Vec<String> = uses
+            .iter()
+            .filter(|u| u.template_id.as_deref() == Some(row.template_id.as_str()))
+            .map(|u| u.path.clone())
+            .collect();
+        paths.sort();
+        paths.dedup();
+        row.used_by = Some(paths);
+    }
 }
 
 /// Persisted dead-letter row from the `dead_letters` table (Phase-16 W6d / A6).
@@ -288,6 +327,73 @@ impl ColonyDb {
                 tags_json: r.get(5)?,
                 author: r.get(6)?,
                 scanned_at: r.get(7)?,
+                used_by: None,
+            })
+        })?;
+        rows.collect()
+    }
+
+    /// GH #811: every `(name, version)` a registry row was instantiated from —
+    /// its own stamp and every hop of its `template_chain` — distinct, versioned
+    /// only. What the colony has to keep a copy of (`templates::keep`).
+    ///
+    /// The chain stays the JSON it has been since GH #277 (no DDL, schema v10);
+    /// `json_each` reads it, JSON1 is part of the bundled SQLite.
+    pub fn read_referenced_template_versions(&self) -> rusqlite::Result<Vec<(String, String)>> {
+        let mut stmt = self.read_conn.prepare(
+            "SELECT template, template_version FROM registry
+              WHERE template IS NOT NULL AND template_version IS NOT NULL
+             UNION
+             SELECT json_extract(h.value, '$[0]'), json_extract(h.value, '$[1]')
+               FROM (SELECT template_chain FROM registry
+                      WHERE template_chain IS NOT NULL AND json_valid(template_chain)) r,
+                    json_each(r.template_chain) h
+              WHERE json_extract(h.value, '$[0]') IS NOT NULL
+                AND json_extract(h.value, '$[1]') IS NOT NULL
+             ORDER BY 1, 2",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect()
+    }
+
+    /// GH #811 (T2b): provenance as a join. Every hop of every registry row's
+    /// `template_chain`, with the `templates` row it names (`name` equal,
+    /// `version` equal with `NULL` as `''` — the same key the unique index
+    /// uses). The chain stays JSON (no DDL, schema v10).
+    ///
+    /// A row stamped before `template_chain` existed has its stamp and no
+    /// chain; its stamp is its one hop, hop 0 (T2 review M5) — the same union
+    /// [`Self::read_referenced_template_versions`] keeps from.
+    pub fn read_template_uses(&self) -> rusqlite::Result<Vec<TemplateUseRow>> {
+        let mut stmt = self.read_conn.prepare(
+            "SELECT path, hop, template_id, name, version FROM (
+               SELECT r.path AS path, CAST(h.key AS INTEGER) AS hop, t.template_id AS template_id,
+                      json_extract(h.value, '$[0]') AS name, json_extract(h.value, '$[1]') AS version
+                 FROM (SELECT path, template_chain FROM registry
+                        WHERE template_chain IS NOT NULL AND json_valid(template_chain)) r
+                 JOIN json_each(r.template_chain) h
+                 LEFT JOIN templates t
+                   ON t.name = json_extract(h.value, '$[0]')
+                  AND COALESCE(t.version, '') = COALESCE(json_extract(h.value, '$[1]'), '')
+                WHERE json_extract(h.value, '$[0]') IS NOT NULL
+               UNION ALL
+               SELECT r.path, 0, t.template_id, r.template, r.template_version
+                 FROM registry r
+                 LEFT JOIN templates t
+                   ON t.name = r.template
+                  AND COALESCE(t.version, '') = COALESCE(r.template_version, '')
+                WHERE r.template IS NOT NULL
+                  AND (r.template_chain IS NULL OR NOT json_valid(r.template_chain)))
+             ORDER BY path, hop",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            let hop: i64 = r.get(1)?;
+            Ok(TemplateUseRow {
+                path: r.get(0)?,
+                hop: usize::try_from(hop).unwrap_or(0),
+                template_id: r.get(2)?,
+                name: r.get(3)?,
+                version: r.get(4)?,
             })
         })?;
         rows.collect()

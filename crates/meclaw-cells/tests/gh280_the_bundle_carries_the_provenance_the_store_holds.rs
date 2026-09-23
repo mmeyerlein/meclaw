@@ -772,7 +772,9 @@ fn a_keyword_page_records_the_cap_it_came_back_on() {
     let mut rows = Vec::new();
     for i in 0..20 {
         rows.push(serde_json::json!({
-            "id": format!("e-{i:02}"), "session_id": "s-1", "content": "x",
+            // Distinct content: since GH #691 copies of one normal form fold
+            // into one hit, and these twenty rows are twenty different turns.
+            "id": format!("e-{i:02}"), "session_id": "s-1", "content": format!("x{i}"),
             "recorded_at": "2026-01-01T09:00:00.000000Z", "channel": "chat",
             "audience_set": if i == 0 { serde_json::json!(["someone-else"]) }
                             else { serde_json::json!(["u1"]) }

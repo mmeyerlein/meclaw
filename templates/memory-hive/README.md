@@ -1,4 +1,4 @@
-# `memory-hive@3.4.0`
+# `memory-hive@3.4.1`
 
 A **member's** memory as a hive of existing cell types — no new cell type, no Rust. Fifteen cells:
 `store` (all durable data), `writer`, `recall`, `extract-glue`, `close-glue`, `closer`,
@@ -408,7 +408,9 @@ clean `false` under that probe and is read as no drain. Give the reject lane an 
 `recall_query`, `memory_tier`, `recall_as_of`, `recall_window_from`, `recall_window_to`,
 `happened_at`, `store_origin` are **not** ingress context keys (that list is closed: `turn_id`,
 `session_id`, `user_id`, `chat_id`, `locale`). They are promoted from `hop` by the caller's edge onto
-the hive — the `rag_question` pattern.
+the hive — the `rag_question` pattern. Since 3.4.1 every exit edge of this hive deletes all five
+again, so a question does not ride past the hive's own rim
+([#823](https://github.com/mmeyerlein/meclaw/issues/823), `docs/development-rules.md` § 8c).
 
 **A second consumer is where the hive's own bookkeeping starts to travel** (GH #152).
 `mem_phase` and `recall_id` belong to this hive and are *persistent* context: once a consumer
@@ -819,7 +821,7 @@ the substrate answers a `transfer` body slot for every cell that has a `cell.db`
 type and before `handle()` runs ([#253](https://github.com/mmeyerlein/meclaw/issues/253), and
 since [#555](https://github.com/mmeyerlein/meclaw/issues/555) it writes and reads DIRECTORIES).
 
-`memory-hive@3.4.0` therefore carries a **walk** and nothing else. Two messages, one each way:
+`memory-hive@3.4.1` therefore carries a **walk** and nothing else. Two messages, one each way:
 
 ```json
 {"operation": "export", "to": "<dir>/memory-hive", "tables": [ …the sixteen… ]}
@@ -1130,7 +1132,7 @@ nothing, and two members of one colony shared one memory configuration. Now a mu
 member's recall and leaves the other alone:
 
 ```json
-{"add_nodes": [{"name": "alex", "template": "member@1.9.2",
+{"add_nodes": [{"name": "alex", "template": "member@1.9.3",
                 "override_params": {"memory-hive/recall": {"tier1_topk": 40,
                                                            "sem_max_distance": 0.35}}}]}
 ```
@@ -1209,7 +1211,7 @@ say "no legacy subject at all".
 | `tier1_graph_fact_nodes` | `64` | How many distinct walked nodes go into the join's `in` filter (GH #520). The walk is already ranked when the cut is taken, so what falls off is the tail of the walk, never its front |
 | `tier1_graph_fact_limit` | `100` | Page bound of the join's `select facts` (GH #520). Generous on purpose: one popular subject carries a long version chain, and the leg's own `tier1_leg_limit` is the cut that decides what votes. A full page marks the leg **capped**, exactly as a full traverse page does |
 | `tier1_self_limit` | `20` | Page bound of the **self** leg (GH #536): how many of the asker's own facts it NOMINATES, newest first. Generous, because a member's dossier is a small bounded set (21 live rows on the hive this was measured on) and the leg has no query signal to rank by: what it cannot rank it must not cut early |
-| `tier1_self_budget` | `6` | How many of them may occupy a **bundle slot** while query-driven hits are waiting (GH #536). A different question from the one above: the leg nominates, the composition seats. Without it the dossier ate the fact half of every bundle — two different questions, one identical `FACTS` section. Leftover slots still fall back to the dossier, so it is a ceiling against competition and never a cut |
+| `tier1_self_budget` | `6` | How many of them may occupy a **bundle slot** while query-driven hits are waiting (GH #536). A different question from the one above: the leg nominates, the composition seats. Without it the dossier ate the fact half of every bundle — two different questions, one identical `FACTS` section. Leftover slots still fall back to the dossier, so it is a ceiling against competition and never a cut. Since 3.4.1 the budget counts **axes**, not rows ([#691](https://github.com/mmeyerlein/meclaw/issues/691)): the rows of one `(subject, predicate)` take one seat before any axis takes a second, and a multi axis (`has_child`) enumerates and is never folded |
 | `self_legacy_subject` | `"user"` | The pre-canonicalisation spelling of *the member whose hive this is* (GH #536). The extraction lane writes a PERSON NAME into `facts.subject` today; everything written before it did carries the literal `user` — 23 of 29 self facts on the measured hive — and those rows are about the asker exactly as the new ones are. A **migration artefact**, named as one: the empty string switches it off for a hive that never had them |
 | `tier1_topk` | `20` | How many fused candidates survive the RRF cut into the tier-1 bundle |
 | `sem_max_distance` | `0.5` | Relevance floor of the **semantic** leg (#297), as a fraction of the embedding's BIT WIDTH: a hit at or beyond `0.5 × dim` differing bits is where a random binary vector sits, so at the default the cut removes coin flips and cannot cost a genuine hit. `similar` RANKS and never filters — without this every one of its `tier1_leg_limit` rows votes in the fusion as loudly as a real hit. A missing, zero or non-numeric `dim` means no scale, and without a scale there is no cut |
@@ -1656,6 +1658,20 @@ query hits are waiting; a fact a query leg *also* found is not a dossier row at 
 with the rest, agreement bonus and everything. Leftover slots fall back to the dossier, so a
 question nothing else answered — the case this leg exists for — is still answered by it.
 
+**Since 3.4.1 the budget counts axes, and "a query leg also found it" means a VOTING leg**
+([#691](https://github.com/mmeyerlein/meclaw/issues/691)). Measured live on the question *what
+are my sons called*, asked in German: the six dossier seats went to self ranks 1–6, three of them
+the same car on the axis `(user, drives)`, and the fact that answered stood on self rank 7 and was
+cut. So a seat is spent per `(subject, predicate)` axis: the rows of one axis take one seat in the
+first pass and queue behind every other axis for the next — read off the axis map the fan already
+parks, no extra store hop. An axis of the multi core list (`has_child`, `owns`, …) ENUMERATES —
+two children are two answers, not two copies — and is never folded. Only the order the budget is
+spent in changes; the bundle's order is still the fusion's. And a fact another leg nominated is a
+dossier row unless that leg VOTES: in point mode the temporal leg is recency with no vote and
+overlaps the dossier on almost every row, so reading it as a query hit would bring the flood
+straight back — there nothing changes. In window mode it votes, and a fact the window found is
+seated with the query hits.
+
 **What was tried and rejected: the asker as a graph anchor.** Anchoring the walk on the asker as
 well *does* reach a subject spelling the audience token does not carry (`member:alex` → the edge
 `alex → Alex Example` → the facts written under the fuller name). But an asker is a **hub**, and a
@@ -2013,6 +2029,24 @@ safe to read:
 * **Nothing is deleted.** Level 0 stays append-only — all N rows remain in `episodes` and remain
   retrievable. The collapse lives in the bundle and nowhere else, which is why it needs no
   identity judgement about the episodes themselves.
+
+**Duplicate episodes fold in the query legs (GH #691, since 3.4.1).** The collapse above runs
+after the fusion, and by then the copies have already spent a leg. Measured live: a question asked
+ten times lay in the store as ten episodes, they were its own nearest neighbours, and the semantic
+leg spent its whole page of `tier1_leg_limit` on episodes, ten of them byte-identical — not one
+fact reached the leg. So the keyword episode page and the semantic leg now fold their own page by
+the same normal form: one rank position per normal form, at the best rank, represented by the
+NEWEST copy; the other copies travel with it as `copies`, united over every leg, so the line still
+says ` (seen: N)` truthfully. `copies` is bookkeeping and reaches neither the payload nor the
+diagnostic record, which carries the count. The semantic leg asks `similar` for `2 ×
+tier1_leg_limit` rows — derived, not a knob — so a fold has something behind the page to move up,
+and cuts back to `tier1_leg_limit` after gate, floor and fold. The same room serves the audience
+gate: a row it removes from the first page is now replaced from behind the page as well, so the
+leg comes back short under the gate less often than it did (GH #297's meaning of "short" is
+unchanged). Its episode companion page carries what the fold reads, the content's normal form and
+the recency that picks the representative; parked in `recall_scratch`, that is up to
+`2 × tier1_leg_limit` episode contents for the length of one recall, swept nightly with the rest
+of the lane state (GH #375). An episode without content has no normal form and never folds.
 
 **Degradation is arithmetic, not a special case.** An empty leg contributes no term, so a dead
 embedder makes the fusion mathematically identical to a three-leg fusion. The query lane of

@@ -174,17 +174,19 @@ fn the_shipped_member_declares_the_import_lane_and_the_edge_that_serves_it() {
          through which a part reaches the session keeper of one generation: \
          {named:?}"
     );
-    // The name in the hop is the HIVE the part came out of, which is the same
-    // word its directory carries. For two of the three that word is
-    // also the endpoint; for the keeper it is not, because the hive stands four
-    // levels below the endpoint the member can address.
+    // The name in the hop is the DIRECTORY the part came out of, relative to the
+    // export root. For two of the three that is the hive's name and also the
+    // endpoint; for a keeper it is its path inside the generation
+    // (`talky/session-keeper`, since `session-keeper@2.2.2`, GH #712), because a
+    // generation holds one keeper per talky -- so the door reads the path's last
+    // segment, and the generation's own edges read its first.
     for (to, cond) in &named {
-        let hive = match to.as_str() {
-            "./assistants" => "session-keeper",
-            other => other.trim_start_matches("./"),
+        let door = match to.as_str() {
+            "./assistants" => "hop.import_hive.endsWith('/session-keeper')".to_string(),
+            other => format!("hop.import_hive == '{}'", other.trim_start_matches("./")),
         };
         assert!(
-            cond.contains(&format!("hop.import_hive == '{hive}'")),
+            cond.contains(&door),
             "the door for {to} reads the holder off the hop, because a body is \
              model-writable and an edge is not; got {cond}"
         );

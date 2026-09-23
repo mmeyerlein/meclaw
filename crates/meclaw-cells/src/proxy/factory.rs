@@ -103,6 +103,24 @@ impl CellFactory for ProxyCellFactory {
         }
     }
 
+    /// GH #828: a `meclaw` proxy's secrets are `${VAR}` in the file, never a
+    /// literal. The chat platforms keep their convention unchecked here; their
+    /// tokens predate the hook, and changing what boots for them is not this
+    /// issue's to decide.
+    ///
+    /// Skipped only where the FILE names a chat platform (literally, or by
+    /// leaving `platform` out). A `platform` that is itself `${VAR}` does not
+    /// parse here and may resolve to `meclaw`; the check runs then too, and
+    /// only looks at `auth`, which no other platform has (review M3).
+    fn validate_declared_params(&self, declared: &JsonValue) -> Result<(), String> {
+        match crate::proxy::platform::parse_platform(declared) {
+            Ok(ProxyPlatform::Telegram | ProxyPlatform::Slack) => Ok(()),
+            Ok(ProxyPlatform::Meclaw) | Err(_) => {
+                crate::proxy::meclaw::params::validate_declared(declared)
+            }
+        }
+    }
+
     /// Spawn a `proxy` cell instance.
     ///
     /// **Corridor duty (phase-5 tripwire)**: the `make_build` closure runs on the
@@ -512,7 +530,7 @@ fn make_build_meclaw(
     // never a panic on the respawn path. The client too, for the same reason
     // (a TLS init failure); it is cheap to clone per life.
     let parsed = MeclawParams::parse(&params)?;
-    let client = PeerClient::new()?;
+    let client = PeerClient::with_auth(parsed.auth.as_ref())?;
 
     let path_cap = path;
     let outputs_cap = outputs_tx;
@@ -564,5 +582,33 @@ mod tests {
             .unwrap();
         let err = f.validate_params(&json!({"emit_to": "/x"})).unwrap_err();
         assert!(err.contains("bot_token"));
+    }
+
+    /// GH #828 fix round 1 (review M3): the `${VAR}` duty on `auth` secrets
+    /// holds whenever the file does not name a chat platform literally. A
+    /// `platform` that is itself `${VAR}` resolves to `meclaw` at boot, and
+    /// the literal secret beside it would otherwise boot unchecked.
+    #[test]
+    fn a_literal_secret_is_refused_unless_the_file_names_a_chat_platform() {
+        let f = ProxyCellFactory::new(Arc::new(SurfaceRegistry::new()));
+        let with = |platform: Option<&str>| {
+            let mut p = json!({"auth": {"header": "X-A", "value": "lit-828"}});
+            if let Some(v) = platform {
+                p["platform"] = json!(v);
+            }
+            f.validate_declared_params(&p)
+        };
+        for platform in [Some("meclaw"), Some("${PEER_PLATFORM}"), Some("bogus")] {
+            let e = with(platform).expect_err("refused");
+            assert!(e.starts_with("auth.value"), "{platform:?}: {e}");
+            assert!(!e.contains("lit-828"), "{e}");
+        }
+        for platform in [None, Some("telegram"), Some("slack")] {
+            assert_eq!(
+                with(platform),
+                Ok(()),
+                "{platform:?}: the chat platforms stay unchecked"
+            );
+        }
     }
 }

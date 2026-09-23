@@ -121,6 +121,7 @@ async fn cli_env_seam_carries_through_boot_mutation_and_adoption() {
         daemon: false,
         validate: false,
         validate_strict: false,
+        env_report: false,
         apply: None,
         blobs: None,
         tokio_console: false,

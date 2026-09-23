@@ -1,4 +1,4 @@
-# `session-keeper@2.2.1`
+# `session-keeper@2.2.2`
 
 A session lifecycle as a hive of existing cell types -- no new cell type, no Rust. Five cells:
 `stamp` (a `code` cell in the ingress path), `close` (a `code` cell for the night),
@@ -330,9 +330,22 @@ without. [`talky`](../talky/README.md) and [`assistant`](../assistant/README.md)
 `in_export` and `in_import` straight through — no modifier, because the lane is named the
 same on both sides of every one of those boundaries — and carry `export_done` and `dump`
 back out, past [`member`](../member/README.md) to whoever asked. Since #555 this keeper's
-own store writes the ledger beside the three holders' documents
-(`<fence>/<dir>/session-keeper/seed/`) rather than handing parts up to a cell of the member
-that files them. Two things are asked of the caller and neither is this hive's:
+own store writes the ledger beside the three holders' documents rather than handing parts
+up to a cell of the member that files them.
+
+**The directory is the keeper's own path, not its hive's name (since 2.2.2,
+[#712](https://github.com/mmeyerlein/meclaw/issues/712)).** A generation holds one keeper per
+talky -- `./talky` and, since `assistant@2.7.0`, `./talky-chat` -- and every one of them is a
+`session-keeper`. Until 2.2.2 the porter filed its document under the constant hive name, so two
+keepers of one generation would have claimed one directory and the second walk would have
+overwritten the first. The porter now reads its own path off `envelope.target` and files under
+the two segments above itself, the talky that holds it and the keeper node:
+`<fence>/<dir>/<talky>/session-keeper/seed/`. `export_done` names that same path on
+`hop.export_hive` (`talky/session-keeper`, `talky-chat/session-keeper`), the `dump` receipt on
+`hop.port_hive`, and an import part is addressed with it on `hop.import_hive`. A keeper that
+stands directly under a hive of its own (`/main/keeper-old/porter`) files under `main/keeper-old`
+by the same rule -- two segments, whatever they are. Two things are asked of the caller and
+neither is this hive's:
 
 ```jsonc
 // the export, at the member's own path
@@ -340,13 +353,16 @@ that files them. Two things are asked of the caller and neither is this hive's:
                                   "context": {"assistant": "<generation>"}}}
 // one part back, at the same path
 {"target": "<member>", "header": {"hop": {"route": "in_import",
-                                          "import_hive": "session-keeper"},
+                                          "import_hive": "talky/session-keeper"},
                                   "context": {"assistant": "<generation>"}}}
 ```
 
 `context.assistant` is the key a turn is addressed with, and it addresses a transfer for
-the same reason: it is the member's container that knows which generation is which. A part
-that names `session-keeper` and no generation has no address at all, and the container says
+the same reason: it is the member's container that knows which generation is which, and the
+path on `hop.import_hive` is what the generation's own edges read to pick the keeper -- the
+member routes every part whose address ends in `/session-keeper` into its generations, and
+the assistant hands it to the talky whose name is the first segment. A part that names a
+keeper and no generation has no address at all, and the container says
 so as `no_route` rather than delivering it to a holder that would refuse it under some
 other name. The refusal path is the one difference from the hive-to-hive shape above: a
 porter refusal is normalised inside the talky and leaves the generation on `error`, beside
@@ -396,8 +412,8 @@ one that is already running — the two are complements, not a choice.
   crosses `member -> assistants -> assistant -> surface -> session-keeper` since
   [#475](https://github.com/mmeyerlein/meclaw/issues/475), but the member's fan-out edge
   is guarded on `context.assistant`: a member with two generations holds two ledgers, and
-  they are not one document — nor could a directory hold both, since a document is filed
-  under the hive it came out of and both would claim the same name. So an export that
+  they are not one document. (Within ONE generation every keeper is walked: since 2.2.2 each
+  files under its own talky, so the directories cannot collide.) So an export that
   names no generation is the export the member always did, three holders and no sessions.
   That is a property of the address, not a gap in this hive.
 - **A session is keyed on a channel, and a channel belongs to the member.** Since
@@ -436,3 +452,10 @@ one that is already running — the two are complements, not a choice.
   stay behind by name and the document format that is this hive's alone. A mirror is the
   thing that rots silently: a column added to the store and not to the walk simply stops
   travelling, and the loss surfaces one colony later as an empty field nobody can trace.
+- `crates/meclaw-cells/tests/gh712_every_keeper_files_its_sessions_under_its_own_node.rs` --
+  both keepers of one generation walked by one export: two directories under the run, two
+  `export_done` naming two paths, and an import that puts each ledger back into the keeper at
+  the same node of another generation; a flat pre-2.2.2 export lands in the default talky's.
+- `crates/meclaw-cells/tests/gh712_the_transfer_rim_of_every_talky_is_the_rule.rs` -- the
+  porter reads its path and carries no hive-name constant, and a faked stdin under
+  `talky-chat` writes into `talky-chat/session-keeper`.

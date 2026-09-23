@@ -70,6 +70,18 @@ use tokio::sync::{mpsc, oneshot};
 /// The five children of the screen, in registry order (sorted by path).
 const CHILDREN: [&str; 5] = ["code", "llm", "store", "timer", "web"];
 
+/// GH #773 — whether a child of each type holds a `cell.db` when a lift
+/// parks it (woken by one probe, as every lift here finds them). Read off the
+/// children's directories at a run of this file; the database is created
+/// lazily by the cell, so it is the cell type that decides.
+const HOLDS_A_STORE: [(&str, bool); 5] = [
+    ("code", false),
+    ("llm", true),
+    ("store", true),
+    ("timer", true),
+    ("web", true),
+];
+
 /// The mount the screen's `web` child holds.
 const MOUNT: &str = "screen";
 
@@ -386,7 +398,17 @@ async fn lift_to(h: &ColonyHandle, version: &str) -> Vec<NodeChange> {
     )
     .await;
     match outcome {
-        MutationOutcome::Committed { changes, .. } => changes,
+        // GH #811: the template ids the entries carry are pinned in
+        // `gh811_a_colony_keeps_every_version_it_instantiated.rs`; this file
+        // is about the children, so they are stripped here.
+        MutationOutcome::Committed { changes, .. } => changes
+            .into_iter()
+            .map(|mut c| {
+                c.from_template_id = None;
+                c.to_template_id = None;
+                c
+            })
+            .collect(),
         MutationOutcome::Rejected {
             error_code,
             details,
@@ -408,14 +430,29 @@ async fn lift_to(h: &ColonyHandle, version: &str) -> Vec<NodeChange> {
 /// lift (overview § Mutation operations, `replace_nodes`) — every parked
 /// `~<version>` sibling an earlier lift left behind reported as `left`
 /// again, because the template does not name it either. Sorted by path.
+///
+/// GH #773: each `replaced` entry names its park path (`<child>~<from>`) and
+/// whether a `cell.db` went with it. Which of the five hold one when a lift
+/// takes them aside is [`HOLDS_A_STORE`], a table read off the children's
+/// directories and written down here — not derived from the disk at
+/// assertion time, which would only prove the code agrees with itself.
 fn all_replaced(from: &str, to: &str, parked_versions: &[&str]) -> Vec<NodeChange> {
     let mut changes = Vec::new();
     for c in CHILDREN {
+        let holds = HOLDS_A_STORE
+            .iter()
+            .find(|(t, _)| *t == c)
+            .map(|(_, h)| *h)
+            .expect("every child type is in HOLDS_A_STORE");
         changes.push(NodeChange {
             path: format!("/alex/display/{c}"),
             verdict: NodeVerdict::Replaced,
             from_version: Some(from.to_string()),
             to_version: Some(to.to_string()),
+            parked_path: Some(format!("/alex/display/{c}~{from}")),
+            parked_store: Some(holds),
+            from_template_id: None,
+            to_template_id: None,
         });
         for v in parked_versions {
             changes.push(NodeChange {
@@ -423,6 +460,10 @@ fn all_replaced(from: &str, to: &str, parked_versions: &[&str]) -> Vec<NodeChang
                 verdict: NodeVerdict::Left,
                 from_version: Some((*v).to_string()),
                 to_version: None,
+                parked_path: None,
+                parked_store: None,
+                from_template_id: None,
+                to_template_id: None,
             });
         }
     }

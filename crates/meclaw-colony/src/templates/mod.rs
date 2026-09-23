@@ -1,15 +1,17 @@
 //! Templates subsystem (phase 11). Spec: docs/meclaw-overview.md § Template system.
 
+pub(crate) mod keep;
 pub mod registry;
 pub mod requires;
 pub mod scanner;
 pub mod version;
 
+pub use keep::{keep_referenced_versions, local_root};
 pub use registry::{ResolveError, TemplateEntry, TemplatesRegistry};
 pub use requires::{RequiredKey, RequiresError, TemplateRequires, read_requires};
 pub use scanner::{
-    ScannedTemplate, ScannerError, SkippedTemplate, parse_template_json, scan_templates_dir,
-    scan_templates_dir_with_skips,
+    ScannedTemplate, ScannerError, SkippedTemplate, parse_template_json, scan_library_with_skips,
+    scan_templates_dir, scan_templates_dir_with_skips,
 };
 pub use version::{SimpleVersion, VersionError, parse_simple_version};
 
@@ -148,8 +150,21 @@ pub fn apply_scan_result<'a>(
     db: &ColonyDb,
     now: i64,
 ) -> impl std::future::Future<Output = Result<(), scanner::ScannerError>> + Send + 'a {
+    apply_library_scan(templates_root, &templates_root.join("local"), db, now)
+}
+
+/// [`apply_scan_result`] over the library AND the colony's own directory
+/// `local` ([`local_root`], GH #811) — the form every colony door uses, so a
+/// kept copy under a colony root outside the library is found, and its row
+/// survives the lazy remove.
+pub fn apply_library_scan<'a>(
+    templates_root: &'a std::path::Path,
+    local: &std::path::Path,
+    db: &ColonyDb,
+    now: i64,
+) -> impl std::future::Future<Output = Result<(), scanner::ScannerError>> + Send + use<'a> {
     // Synchronous prologue: scan + db read; none of it outlives the function end.
-    let scan_result = scanner::scan_templates_dir(templates_root);
+    let scan_result = scanner::scan_library_with_skips(templates_root, local).map(|(f, _)| f);
     let existing = db.read_templates().unwrap_or_default();
     let writer_tx = db.writer_tx.clone();
     let queue_depth = db.queue_depth.clone();
@@ -171,17 +186,28 @@ pub fn apply_scan_result<'a>(
 /// foreign — which is exactly what a restore without the `templates/` tree is.
 ///
 /// An empty index is never foreign; the empty-table branch already scans.
-fn index_is_foreign_to_root(templates_root: &std::path::Path, existing: &[TemplateRow]) -> bool {
-    let canonical_root = templates_root
-        .canonicalize()
-        .unwrap_or_else(|_| templates_root.to_path_buf());
+///
+/// GH #811: a row under the colony's own directory `local` ([`local_root`]) is
+/// at home too. For a colony whose library is its own that directory lies in
+/// the library anyway; for one pointed at a library outside its root, the
+/// kept copies and registrations live there, and reading them as foreign
+/// would rescan on every boot — and the rescan of the library alone would
+/// drop exactly those rows.
+fn index_is_foreign_to_root(
+    templates_root: &std::path::Path,
+    local: &std::path::Path,
+    existing: &[TemplateRow],
+) -> bool {
+    let under = |p: &std::path::Path, root: &std::path::Path| {
+        p.starts_with(root)
+            || p.canonicalize()
+                .ok()
+                .zip(root.canonicalize().ok())
+                .is_some_and(|(c, r)| c.starts_with(r))
+    };
     existing.iter().any(|row| {
         let p = std::path::Path::new(&row.filesystem_path);
-        !p.starts_with(templates_root)
-            && !p
-                .canonicalize()
-                .map(|c| c.starts_with(&canonical_root))
-                .unwrap_or(false)
+        !under(p, templates_root) && !under(p, local)
     })
 }
 
@@ -205,8 +231,26 @@ pub fn boot_load_or_scan<'a>(
     force_rescan: bool,
     now: i64,
 ) -> impl std::future::Future<Output = Result<(), scanner::ScannerError>> + Send + 'a {
+    boot_load_or_scan_library(
+        templates_root,
+        &templates_root.join("local"),
+        db,
+        force_rescan,
+        now,
+    )
+}
+
+/// [`boot_load_or_scan`] with the colony's own directory `local`
+/// ([`local_root`], GH #811) — what the CLI boot calls.
+pub fn boot_load_or_scan_library<'a>(
+    templates_root: &'a std::path::Path,
+    local: &std::path::Path,
+    db: &ColonyDb,
+    force_rescan: bool,
+    now: i64,
+) -> impl std::future::Future<Output = Result<(), scanner::ScannerError>> + Send + use<'a> {
     let existing = db.read_templates().unwrap_or_default();
-    let foreign_index = index_is_foreign_to_root(templates_root, &existing);
+    let foreign_index = index_is_foreign_to_root(templates_root, local, &existing);
     if foreign_index {
         tracing::info!(
             templates_root = %templates_root.display(),
@@ -216,7 +260,7 @@ pub fn boot_load_or_scan<'a>(
     }
     let needs_scan = force_rescan || existing.is_empty() || foreign_index;
     let scan_fut = if needs_scan {
-        Some(apply_scan_result(templates_root, db, now))
+        Some(apply_library_scan(templates_root, local, db, now))
     } else {
         None
     };
@@ -285,9 +329,10 @@ mod sync_tests {
             "a rescan of unchanged templates must not re-mint their ids"
         );
 
-        // A genuinely new template still mints a fresh id. It must carry a new
-        // *name*: a second version of "a" is a duplicate name and would abort the
-        // scan (GH #277, ruling Q7).
+        // A genuinely new template still mints a fresh id. A new name keeps the
+        // assertion below about "a" simple; since GH #664 a second VERSION of
+        // "a" would be a new entry too, not an aborted scan (only the same
+        // `(name, version)` twice aborts).
         make_template(&td, "c@2.0.0", "c", Some("2.0.0"));
         apply_scan_result(&root, &db, 300).await.unwrap();
         let rows = db.read_templates().unwrap();

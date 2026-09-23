@@ -1,4 +1,4 @@
-//! `freeswitch@2.1.1` — a telephone as a CHANNEL of a person: it turns the facts
+//! `freeswitch@2.1.2` — a telephone as a CHANNEL of a person: it turns the facts
 //! about the line a person could ANSWER into TURNS, books the rest, and offers
 //! the assistant five tools of its own.
 //!

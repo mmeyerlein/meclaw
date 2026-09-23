@@ -58,6 +58,7 @@ async fn slice_12b_demo_e2e_full_loop() {
         daemon: false,
         validate: false,
         validate_strict: false,
+        env_report: false,
         apply: None,
         blobs: None,
         tokio_console: false,

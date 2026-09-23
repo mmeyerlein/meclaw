@@ -35,7 +35,7 @@
 //!    mutation door and two generations grown from what `grow_level` renders —
 //!    nothing in the wiring is typed out in this file. A real turn opens a
 //!    session in the first, an `in_export` naming it has that keeper's own store
-//!    put that very row on disk as `session-keeper/seed/sessions.jsonl` beside
+//!    put that very row on disk as `talky/session-keeper/seed/sessions.jsonl` beside
 //!    the other three directories, and the second generation stays empty: the
 //!    name is an address, not a fan-out.
 //!
@@ -143,7 +143,7 @@ fn grow_level(params: Value) -> Value {
 fn rendered_transfer_edges(name: &str) -> Vec<Value> {
     let decl = grow_level(json!({
         "scope": format!("/members/{MEMBER}"), "level": "assistant", "name": name,
-        "template": "assistant@2.8.0"}));
+        "template": "assistant@2.8.1"}));
     decl["diff"]["add_edges"]
         .as_array()
         .expect("add_edges")
@@ -595,7 +595,7 @@ fn member_manifest(export_dir: &std::path::Path) -> Value {
         // member is named bare, and the path it lands at is unchanged.
         "scope": "/members",
         "diff": {
-            "add_nodes": [{"name": MEMBER, "template": "member@1.9.2",
+            "add_nodes": [{"name": MEMBER, "template": "member@1.9.3",
                            "override_params": over}],
             "add_edges": container_edges(),
         }
@@ -608,7 +608,7 @@ fn member_manifest(export_dir: &std::path::Path) -> Value {
 fn grown_generation(name: &str) -> Value {
     let decl = grow_level(json!({
         "scope": format!("/members/{MEMBER}"), "level": "assistant", "name": name,
-        "template": "assistant@2.8.0",
+        "template": "assistant@2.8.1",
         // The three brains of a generation are the doubles named in the header,
         // and a `ctx` key is still required: the model is a RESOLVED literal in
         // the template's `requires`, and the mutation refuses a generation whose
@@ -861,7 +861,15 @@ async fn a_generation_grown_from_a_wish_receives_the_export_that_names_it() {
         &[("assistant", json!(SCRIBE))],
     ))
     .await;
-    for hive in ["memory-hive", "affinity", "firewall", "session-keeper"] {
+    // The keepers are filed under their talky since `session-keeper@2.2.2`
+    // (GH #712): one directory per keeper of the named generation.
+    for hive in [
+        "memory-hive",
+        "affinity",
+        "firewall",
+        "talky/session-keeper",
+        "talky-chat/session-keeper",
+    ] {
         wait_for(
             &export_dir.join(hive).join("seed/export_final.json"),
             &format!(
@@ -874,8 +882,9 @@ async fn a_generation_grown_from_a_wish_receives_the_export_that_names_it() {
         )
         .await;
     }
-    let ledger = std::fs::read_to_string(export_dir.join("session-keeper/seed/sessions.jsonl"))
-        .expect("the keeper's ledger is on disk beside the other three documents");
+    let ledger =
+        std::fs::read_to_string(export_dir.join("talky/session-keeper/seed/sessions.jsonl"))
+            .expect("the keeper's ledger is on disk beside the other three documents");
     let lines: Vec<&str> = ledger.lines().filter(|l| !l.trim().is_empty()).collect();
     assert_eq!(
         lines.len(),
@@ -906,7 +915,7 @@ async fn a_generation_grown_from_a_wish_receives_the_export_that_names_it() {
     wrote.sort();
     assert_eq!(
         wrote,
-        vec!["affinity", "firewall", "memory-hive", "session-keeper"],
+        vec!["affinity", "firewall", "memory-hive", "talky", "talky-chat"],
         "three directories is what a grown generation produced before GH #476, \
          and three is exactly what a complete export looks like -- which is why \
          this file measures the fourth rather than the absence of a complaint"

@@ -2915,6 +2915,10 @@ fn without_the_marker_a_bundle_behaves_exactly_as_before() {
 /// answer belonged. Every emission of this invocation carries the round's
 /// number, so the store bundle is where it is measured -- it is what stamps the
 /// reply the seam is later assembled out of.
+/// GH #728 -- an advice with a correlation opens in TWO stages: the first
+/// parks its row and looks up the departure (`advice-look`), the second opens
+/// the round. Both carry the round's own number; the second is fed the reply
+/// the store hands back, with the `iter` the cstore edge promoted off the first.
 #[test]
 fn an_advice_turn_opens_its_round_with_the_whole_budget() {
     let out = emit(lane_with(
@@ -2929,9 +2933,53 @@ fn an_advice_turn_opens_its_round_with_the_whole_budget() {
         "the advisor's spent budget is not this round's: {out:?}"
     );
     assert_eq!(
-        out[0]["header"]["phase"], "turn-open",
+        out[0]["header"]["phase"], "advice-look",
+        "stage A: the departure is looked up first"
+    );
+    let opened = emit(advice_looked(&out[0], serde_json::json!([])));
+    assert_eq!(opened[0]["header"]["iter"], "0", "{opened:?}");
+    assert_eq!(
+        opened[0]["header"]["phase"], "turn-open",
         "and it is still assembled as a turn"
     );
+}
+
+/// Stage B of an advice (GH #728): the store's reply to the `advice-look`
+/// bundle `stage_a` emitted, with `departs` as what the departure lookup found
+/// and the advice row read back as stage A wrote it.
+fn advice_looked(stage_a: &serde_json::Value, departs: serde_json::Value) -> serde_json::Value {
+    let prov = stage_a["header"]["turn_id"]
+        .as_str()
+        .expect("provisional key");
+    let row = stage_a["messages"]
+        .as_array()
+        .expect("bundle")
+        .iter()
+        .find(|m| m["id"] == "c-look-turn")
+        .map(|m| {
+            serde_json::from_str::<serde_json::Value>(m["text"].as_str().expect("op"))
+                .expect("op json")["row"]
+                .clone()
+        })
+        .expect("the advice row");
+    let legs = [
+        ("c-look-depart", departs),
+        ("c-look-turn", serde_json::Value::Null),
+        ("c-look-self", serde_json::json!([row])),
+    ];
+    serde_json::json!({
+        "header": {"context": {"session_id": "s1", "turn_id": prov, "iter": "0",
+                               "consult_id": row["consult_id"],
+                               "col_phase": "advice-look", "store_origin": "collector"},
+                   "hop": {"operation": "bundle", "rows_affected": 1,
+                           "bundle_errors": 0}},
+        "messages": legs.iter().map(|(id, rows)| serde_json::json!(
+            {"origin": "tool", "type": "tool_result", "id": id, "text": rows.to_string()}))
+            .collect::<Vec<_>>(),
+        "results": legs.iter().map(|(id, _)| serde_json::json!(
+            {"tool_call_id": id, "operation": "select", "rows_affected": 1,
+             "duration_ms": 0})).collect::<Vec<_>>()
+    })
 }
 
 /// The counter-pin: a lane that is NOT turn-opening still reads the iteration
@@ -2955,6 +3003,8 @@ fn a_tool_result_still_carries_the_round_it_belongs_to() {
 fn an_advice_event_is_assembled_like_a_turn_and_keeps_its_correlation() {
     // Delta 3 of R-CG-3: the advisor's result comes back as an EVENT on its own
     // lane and starts a fresh round -- the turn it belongs to ended long ago.
+    // Since GH #728 in two stages: the row is written first, under a
+    // provisional key, beside the lookup of its departure.
     let out = emit(lane_with(
         "in_advice",
         serde_json::json!({}),
@@ -2963,25 +3013,47 @@ fn an_advice_event_is_assembled_like_a_turn_and_keeps_its_correlation() {
                             "text": "berlin: 21C"}]),
     ));
 
-    assert_eq!(emitted(&out), 1, "no memory leg configured: {out:?}");
-    let op = op_of(&out[0]);
     assert_eq!(
-        out[0]["header"]["phase"], "turn-open",
-        "the SAME chain as a turn"
+        out.len(),
+        1,
+        "one bundle, the memory leg waits for stage B: {out:?}"
     );
-    assert_eq!(op["table"], "turns");
+    let row = out[0]["messages"]
+        .as_array()
+        .expect("bundle")
+        .iter()
+        .find(|m| m["id"] == "c-look-turn")
+        .map(|m| {
+            serde_json::from_str::<serde_json::Value>(m["text"].as_str().expect("op"))
+                .expect("op json")
+        })
+        .expect("the advice row");
+    assert_eq!(row["table"], "turns");
     assert_eq!(
-        op["row"]["role"], "advice",
+        row["row"]["role"], "advice",
         "an event is not a user turn and not the agent's own words"
     );
-    assert_eq!(op["row"]["content"], "berlin: 21C");
+    assert_eq!(row["row"]["content"], "berlin: 21C");
     assert_eq!(
-        op["row"]["consult_id"], "k-7",
+        row["row"]["consult_id"], "k-7",
         "the correlation is what makes the exchange bilateral"
     );
-    let minted = out[0]["header"]["turn_id"].as_str().expect("turn_id");
-    assert!(!minted.is_empty(), "a fresh turn id: this is a new round");
-    assert_eq!(op["row"]["turn_id"], minted);
+    let prov = out[0]["header"]["turn_id"].as_str().expect("turn_id");
+    assert!(!prov.is_empty(), "a fresh turn id: this is a new round");
+    assert_eq!(row["row"]["turn_id"], prov);
+
+    // Stage B, nothing departed: the SAME chain as a turn, under the key the row
+    // already has.
+    let opened = emit(advice_looked(&out[0], serde_json::json!([])));
+    assert_eq!(emitted(&opened), 1, "no memory leg configured: {opened:?}");
+    assert_eq!(
+        opened[0]["header"]["phase"], "turn-open",
+        "the SAME chain as a turn"
+    );
+    let rekey = op_of(&opened[0]);
+    assert_eq!(rekey["operation"], "update");
+    assert_eq!(rekey["set"]["turn_id"], prov);
+    assert_eq!(opened[0]["header"]["turn_id"], prov);
 }
 
 #[test]
@@ -2995,8 +3067,26 @@ fn an_advice_event_fires_the_memory_leg_like_any_other_turn() {
             serde_json::json!([{"origin": "assistant", "type": "text", "text": "berlin: 21C"}]),
         ),
     );
-    assert_eq!(out.len(), 2, "the gate waits for the leg it configured");
-    assert_eq!(out[1]["header"]["route"], "recall");
+    assert_eq!(
+        out.len(),
+        1,
+        "stage A asks for the departure and nothing else"
+    );
+    // GH #728: the leg leaves with the round, under the round's key -- which is
+    // only known once the departure came back.
+    let opened = emit_with(
+        &[("memory_tier", "1")],
+        advice_looked(
+            &out[0],
+            serde_json::json!([{"turn_id": "chat#1", "deadline_ms": 9_999_999_999_999_i64}]),
+        ),
+    );
+    assert_eq!(opened.len(), 2, "the gate waits for the leg it configured");
+    assert_eq!(opened[1]["header"]["route"], "recall");
+    assert_eq!(
+        opened[1]["header"]["turn_id"], opened[0]["header"]["turn_id"],
+        "the leg parks on the round it belongs to"
+    );
 }
 
 #[test]

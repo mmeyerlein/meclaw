@@ -86,6 +86,12 @@ const SHARED: [&str; 24] = [
     "happened_at",
     "iter",
     "memory_call_id",
+    // The five recall keys below (`memory_tier`, `recall_as_of`, `recall_query`,
+    // `recall_window_from`, `recall_window_to`) are shared between the member and
+    // its memory hive on purpose: the member's door sets them to put a question to
+    // the hive. The hive deletes all five again on every one of its exit edges
+    // (GH #823, memory-hive@3.4.1), and `gh823_no_recall_key_leaves_the_memory_hive.rs`
+    // holds that rim — this list only keeps them from being read as a leak here.
     "memory_tier",
     "recall_as_of",
     "recall_caller",

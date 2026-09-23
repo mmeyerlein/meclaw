@@ -1,4 +1,4 @@
-# `member@1.9.2`
+# `member@1.9.3`
 
 One person, as a level. **Four holders, three open containers and no cell of
 its own** — seven nodes and sixty-six edges.
@@ -96,7 +96,7 @@ road per generation, and an edge on disk is an edge an audit can read.
 | `in_propose` | the record, to write | `context.actor`, and `context.subscriber` for a `subscribe` |
 | `in_build_result` | `./assistants`, under the same name | nothing. Which generation it belongs to is decided by the per-instance edge inside the container, the same way `in_bundle` finds its way home |
 | `in_export` | **all three holders**, unchanged — and `./assistants` as a fourth when the caller names a generation | nothing, or `context.assistant`. All three holders declare an empty context: an export is about the whole member, never about a round. The fourth target is the exception and it is an ADDRESS rather than a round: a member with two generations has two session ledgers, so the keeper is named, never fanned to ([#475](https://github.com/mmeyerlein/meclaw/issues/475)). Since 1.4.0 the lane fans out — until [#471](https://github.com/mmeyerlein/meclaw/issues/471) only the memory answered it |
-| `in_import` | the holder `hop.import_hive` names, memory by default | nothing, or `context.assistant` when `hop.import_hive` is `'session-keeper'` — that part has to reach one generation, and the container reads the same key a turn is addressed with. One export part per message, idempotent; the receipt rides the `dump` lane this level already drains (since 1.4.0, GH #467, GH #471 and GH #475) |
+| `in_import` | the holder `hop.import_hive` names, memory by default | nothing, or `context.assistant` when `hop.import_hive` ends in `/session-keeper` (`talky/session-keeper`, `talky-chat/session-keeper`) — that part has to reach one generation, and the container reads the same key a turn is addressed with. One export part per message, idempotent; the receipt rides the `dump` lane this level already drains (since 1.4.0, GH #467, GH #471 and GH #475) |
 
 | out | from | what it is |
 |---|---|---|
@@ -431,10 +431,13 @@ one.
 **The fourth target is guarded, and the guard is the point.** The edge reads
 `hop.route == 'in_export' && has(context.assistant) && context.assistant != ''`.
 Two measurable reasons, neither of them taste. A member with two generations
-holds **two** session ledgers and they are not one document; and a document is
-filed under the hive it came out of, so two keepers would both claim
-`<fence>/session-keeper/` and the directory would hold whichever walk finished
-last, silently. An export that names no generation is therefore exactly the
+holds **two** session ledgers and they are not one document -- a keeper files its
+document under its own path inside the generation (`<fence>/talky/session-keeper/`,
+`<fence>/talky-chat/session-keeper/`, since `session-keeper@2.2.2`,
+[#712](https://github.com/mmeyerlein/meclaw/issues/712)), so two GENERATIONS walked by
+one export would write the same two directories and each would hold whichever walk
+finished last, silently. The keepers of the ONE generation that is named are all
+walked, and each says `export_done` for itself. An export that names no generation is therefore exactly the
 export this level always did — three holders, no keeper, and no dead letter,
 because the container is open and an unguarded fan-out into an empty one would
 be a `no_route` on every export a member without an assistant ever ran.
@@ -523,15 +526,23 @@ the router evaluates it only when no guarded edge decided. That is not a
 courtesy to lazy callers; it is what keeps every part written before
 [#471](https://github.com/mmeyerlein/meclaw/issues/471) arriving where it always
 arrived, since the memory hive was the only place it could have come from.
-`'session-keeper'` is the third guarded name and it is the odd one out: its edge
-goes to `./assistants`, because the hive it names stands four levels below the
+A keeper is the third guarded address and it is the odd one out. `hop.import_hive`
+means the same thing for every holder -- the directory under the export root the part
+came out of -- and for `affinity` and `firewall` that is the hive's name, while a
+keeper's is its path inside the generation, `<talky>/session-keeper` (since the
+keeper's 2.2.2, [#712](https://github.com/mmeyerlein/meclaw/issues/712)), so its
+edge reads `hop.import_hive.endsWith('/session-keeper')`. That edge goes to `./assistants`, because the hive it names stands four levels below the
 deepest endpoint this level can address ([#475](https://github.com/mmeyerlein/meclaw/issues/475)).
 Which generation's keeper a part lands in is then the container's own question,
 answered on `context.assistant` — and a part that names the keeper and no
 generation has no address at all, so it stops as `no_route` at
 `<member>/assistants` rather than being handed to a holder that would refuse it
 under some other name. **Four** doors, exactly one of which can fire per
-message.
+message. A part addressed the way it was before the keeper's 2.2.2, with a bare
+`session-keeper`, does not end in `/session-keeper`: the guarded default takes it
+and it reaches the memory hive, not a keeper. `examples/memory-import/build_import.py`
+reads that old form as `talky/session-keeper`, so an old export sent through it
+arrives; a part sent by hand names the keeper's path.
 
 For one release the lane lived only on the derived template
 [`examples/memory-import/`](../../examples/memory-import/) built, so a member
@@ -731,7 +742,7 @@ never hears:
 | edge | condition | why |
 |---|---|---|
 | `./channels/display-<s> -> ./channels` | `event` or `receipt` | what the screen produced, stamped with `context.channel_node` and `context.channel`, which on a screen are the same word |
-| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@1.9.2` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
+| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@1.9.3` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
 | `./channels -> ./channels/display-<s>` | `error` | a channel's failure, re-stamped to the display's `in_notice` — since `builder@1.10.0`, drawn by the mutation that grows the screen |
 
 **A view comes down the way it went up.** Since `member@1.8.0` the edge that carries
@@ -965,7 +976,7 @@ The whole arrangement, as three mutations. The member first:
 
 ```json
 {"scope": "<org>/members", "diff": {
-  "add_nodes": [{"name": "alex", "template": "member@1.9.2"}]
+  "add_nodes": [{"name": "alex", "template": "member@1.9.3"}]
 }}
 ```
 
@@ -974,7 +985,7 @@ lanes (`../assistant/README.md` § *Instantiating* writes them out):
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@2.8.0"}],
+  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@2.8.1"}],
   "add_edges": [
     {"from": "./assistants", "to": "./assistants/scribe",
      "condition": "has(hop.route) && hop.route == 'in_turn' && has(context.assistant) && context.assistant == 'scribe'"},
@@ -1238,64 +1249,125 @@ either of them.
 
 ### Installing an app
 
-One mutation, scope `<member>`. `<gen>` is the generation the app offers its
-tool to, `<app>` is the instance name — which is the template name, because an
-instance is named after its template — and `<screen>` is the screen node in
-`./channels` the app draws on.
+One mutation, scope `<member>`, and the builder renders it: the fast-lane recipe
+`install_app` ([`builder`](../builder/) § *An app is a declaration*,
+[#599](https://github.com/mmeyerlein/meclaw/issues/599)) draws the wiring from
+the block the app's `template.json` carries under `app`. The wish hands that
+block over verbatim — the recipe reads nothing but the wish. `<gen>` is the
+generation the app offers its tool to, `<app>` is the instance name — which is
+the template name, because an instance is named after its template — and
+`<screen>` is the screen node in `./channels` the app draws on. This example
+declares every kind at once: a screen, three listened lanes, a tool and a
+sidecar section offered at `./show`, observed tool results at `./stage`, and a
+device `<device>` it opens pages on.
 
 ```json
-{"scope": "<member>", "diff": {
+{
+  "request": "install the app <app> into <member>",
+  "recipe": "install_app",
+  "params": {
+    "scope": "<member>",
+    "app": "<app>",
+    "template": "<app>@<version>",
+    "screen": "<screen>",
+    "generation": "<gen>",
+    "declaration": {
+      "screen": {
+        "out": [
+          "view",
+          "withdraw"
+        ],
+        "back": [
+          "event",
+          "receipt"
+        ]
+      },
+      "listens": [
+        "turn",
+        "answer",
+        "partial"
+      ],
+      "offers": [
+        {
+          "kind": "tool",
+          "at": "./show",
+          "tools": [
+            "show"
+          ]
+        },
+        {
+          "kind": "sidecar",
+          "at": "./show",
+          "section": "<section>"
+        }
+      ],
+      "observes_tool_results": "./stage",
+      "drives": [
+        {
+          "cell": "<device>",
+          "out": [
+            "open"
+          ],
+          "back": [
+            "page"
+          ]
+        }
+      ]
+    }
+  }
+}
+```
+
+It renders this declaration, and a test holds the two blocks together
+(`crates/meclaw-cells/tests/gh599_an_app_is_installed_from_what_it_declares.rs`):
+
+```json
+{"scope": "<member>", "ctx": {}, "diff": {
   "add_nodes": [{"name": "apps/<app>", "template": "<app>@<version>"}],
   "add_edges": [
-    {"from": "./firewall", "to": "./apps",
-     "condition": "has(hop.route) && hop.route == 'pass' && has(context.channel_node) && context.channel_node != ''",
-     "modifier": {"set_hop": {"route": "'turn'"}, "delete_context": ["fw_body", "fw_now", "fw_phase", "store_origin"]}},
-    {"from": "./assistants", "to": "./apps",
-     "condition": "has(hop.route) && hop.route == 'answer' && has(context.channel_node) && context.channel_node != ''"},
-    {"from": "./channels", "to": "./apps",
-     "condition": "has(hop.route) && hop.route == 'partial'"},
-    {"from": "./apps", "to": "./apps/<app>",
-     "condition": "has(hop.route) && (hop.route == 'turn' || hop.route == 'answer' || hop.route == 'partial')"},
-    {"from": "./apps", "to": "./apps/<app>",
-     "condition": "has(hop.route) && (hop.route == 'event' || hop.route == 'receipt') && has(hop.owner) && hop.owner.contains('/apps/<app>/')"},
-    {"from": "./apps", "to": "./apps/<app>",
-     "condition": "has(hop.route) && hop.route == 'sidecar' && has(hop.section) && hop.section == '<section>'"},
-    {"from": "./apps/<app>", "to": "./apps",
-     "condition": "has(hop.route) && (hop.route == 'view' || hop.route == 'error')",
-     "modifier": {"set_context": {"channel_node": "'<screen>'", "channel": "'<screen>'"}}},
-    {"from": "./apps/<app>", "to": "./apps",
-     "condition": "has(hop.route) && (hop.route == 'tool_result' || hop.route == 'tool_schemas')",
-     "modifier": {"set_context": {"tool_answerer": "'<app>'"}}},
-    {"from": "./assistants/<gen>/talky", "to": "./apps/<app>/show", "lane": "tool",
-     "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'show'",
-     "modifier": {"set_context": {"tool_caller": "'talky'", "assistant": "'<gen>'"},
-                  "delete_context": ["col_phase", "consult_class", "consult_id", "tool_answerer"]}},
-    {"from": "./assistants/<gen>/talky", "to": "./apps/<app>/show", "lane": "schemas",
-     "condition": "has(hop.route) && hop.route == 'schemas'",
-     "modifier": {"set_context": {"tool_caller": "'talky'", "assistant": "'<gen>'"},
-                  "delete_context": ["col_phase", "consult_class", "consult_id", "tool_answerer"]}},
-    {"from": "./assistants/<gen>/tools", "to": "./apps/<app>/stage", "lane": "tool_result",
-     "condition": "has(hop.route) && hop.route == 'tool_result'"},
-    {"from": "./memory-hive", "to": "./apps/<app>/stage", "lane": "tool_result",
-     "condition": "has(hop.route) && hop.route == 'tool_result'"}
+    {"from": "./firewall", "to": "./apps", "condition": "has(hop.route) && hop.route == 'pass'", "modifier": {"set_hop": {"route": "'turn'"}, "delete_context": ["fw_body", "fw_now", "fw_phase", "store_origin"]}},
+    {"from": "./assistants", "to": "./apps", "condition": "has(hop.route) && hop.route == 'answer'"},
+    {"from": "./assistants", "to": ".", "condition": "has(hop.route) && hop.route == 'answer' && (!has(context.channel_node) || context.channel_node == '')", "modifier": {"delete_context": ["tool_answerer"]}},
+    {"from": "./channels", "to": "./apps", "condition": "has(hop.route) && hop.route == 'partial'"},
+    {"from": "./apps", "to": "./apps/<app>", "condition": "has(hop.route) && (hop.route == 'turn' || hop.route == 'answer' || hop.route == 'partial')"},
+    {"from": "./apps", "to": "./apps/<app>", "condition": "has(hop.route) && hop.route == 'sidecar' && has(hop.section) && hop.section == '<section>'"},
+    {"from": "./apps", "to": "./apps/<app>", "condition": "has(hop.route) && (hop.route == 'event' || hop.route == 'receipt') && has(hop.owner) && hop.owner.contains('/apps/<app>/')"},
+    {"from": "./apps/<app>", "to": "./apps", "condition": "has(hop.route) && (hop.route == 'view' || hop.route == 'withdraw' || hop.route == 'error')", "modifier": {"set_context": {"channel_node": "'<screen>'", "channel": "'<screen>'"}}},
+    {"from": "./apps/<app>", "to": "./apps", "condition": "has(hop.route) && (hop.route == 'tool_result' || hop.route == 'tool_schemas')", "modifier": {"set_context": {"tool_answerer": "'<app>'"}}},
+    {"from": "./assistants/<gen>/talky", "to": "./apps/<app>/show", "lane": "tool", "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'show'", "modifier": {"set_context": {"tool_caller": "'talky'", "assistant": "'<gen>'"}, "delete_context": ["col_phase", "consult_class", "consult_id", "tool_answerer"]}},
+    {"from": "./assistants/<gen>/talky", "to": "./apps/<app>/show", "lane": "schemas", "condition": "has(hop.route) && hop.route == 'schemas'", "modifier": {"set_context": {"tool_caller": "'talky'", "assistant": "'<gen>'"}, "delete_context": ["col_phase", "consult_class", "consult_id", "tool_answerer"]}},
+    {"from": "./assistants/<gen>/talky-chat", "to": "./apps/<app>/show", "lane": "tool", "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'show'", "modifier": {"set_context": {"tool_caller": "'talky-chat'", "assistant": "'<gen>'"}, "delete_context": ["col_phase", "consult_class", "consult_id", "tool_answerer"]}},
+    {"from": "./assistants/<gen>/talky-chat", "to": "./apps/<app>/show", "lane": "schemas", "condition": "has(hop.route) && hop.route == 'schemas'", "modifier": {"set_context": {"tool_caller": "'talky-chat'", "assistant": "'<gen>'"}, "delete_context": ["col_phase", "consult_class", "consult_id", "tool_answerer"]}},
+    {"from": "./assistants/<gen>/tools", "to": "./apps/<app>/stage", "lane": "tool_result", "condition": "has(hop.route) && hop.route == 'tool_result'"},
+    {"from": "./memory-hive", "to": "./apps/<app>/stage", "lane": "tool_result", "condition": "has(hop.route) && hop.route == 'tool_result'"},
+    {"from": "./apps/<app>", "to": "./<device>", "condition": "has(hop.route) && hop.route == 'open'", "modifier": {"set_hop": {"route": "'in_open'"}}},
+    {"from": "./<device>", "to": "./apps/<app>", "condition": "has(hop.route) && hop.route == 'page'"}
   ]}}
 ```
 
-Read it in the three classes above. The first three edges are the **observer**
-fan-out into the container, each one guarded exactly the way the lane it copies
-is guarded elsewhere in this level: the screened turn carries the same channel
-guard and the same hygiene the road into `./assistants` carries, and the answer
-carries the same guard its channel edge carries — which is what keeps the
-guarded default to the parent alive, because a regular edge only suppresses a
-default on the case it actually fires on. The next five **bind** the app to its
-container, in both directions — the last of them being the section edge of
-[#607](https://github.com/mmeyerlein/meclaw/issues/607): the level carried every
-non-`memory` section into the container, and THIS edge is where the section is
-finally read by name, because the installer is the one act that knows both the
-app's instance name and the section it offered. The last four are **v-lanes** (ADR-0020): the
-call and the menu tick end on the connect points the app declares for itself,
-and the two observed `tool_result` lanes are fan-outs that leave the existing
-answers untouched.
+Read it in five classes. The first four edges are the **observer** fan-out into
+the container, and they carry **no channel guard**: an app of a person hears
+that person's turns and answers whatever carried them, an operator's errand
+included — the form a live colony was corrected into, after the guarded form
+this README used to publish had left the app deaf to every answer that named no
+channel. The third of them is the price of that: a regular edge suppresses the
+guarded DEFAULT `./assistants -> .` on every case it fires on, so the unguarded
+answer observer brings the channel-less exit with it as a regular edge, and an
+answer that names no channel still leaves the level exactly once. The next five
+**bind** the app to its container — the listened lanes, the section edge of
+[#607](https://github.com/mmeyerlein/meclaw/issues/607) (the level carries every
+non-`memory` section into the container, and THIS edge reads it by name,
+because the installer is the one act that knows both the app's instance name
+and the section it offered), the owner edge back from the screen, the view edge
+out with `withdraw` beside `view`, and the exit that stamps who answered. Then
+the **v-lanes** (ADR-0020): the call and the menu tick end on the connect point
+the app declares for itself, drawn from BOTH surfaces of the generation —
+`talky` for speech and `talky-chat` for the typed conversation, so a tool is
+callable from either — and the two observed `tool_result` lanes are fan-outs
+that leave the existing answers untouched. Last, the **device**: what the app
+sends to `./<device>` is restamped onto the device's own door, and what comes
+back is plain. The device has to stand before the edges do — an edge onto a node
+that is not there routes into the dead letters.
 
 Two more things belong to the same act. The voice channel is told
 `emit_partials: true` by override — a lane nobody ordered carries nothing, and
@@ -1304,13 +1376,11 @@ offer rather than with the names it was asked about: the collector merges the
 rows of every answerer, so a tool of an app reaches the brain's menu without the
 surface, its collector or the grow recipe being touched at all.
 
-A **second** installation into the same member redraws the three observer edges
+A **second** installation into the same member draws the observer edges again
 and they do not double: an edge is identified by its endpoints, its condition,
 its modifier and its default phase, and an identical one is held once — so the
-commit is idempotent and the container gets one copy of each turn. A second app
-that draws a DIFFERENT guard is two edges and two deliveries, which is why the
-installer is meant to be the builder: it reads `/colony/graph` and draws only
-what is missing.
+commit is idempotent and the container gets one copy of each turn. Every app
+installed by the recipe draws them identically; only its own bindings are new.
 
 ### A channel may offer a tool too
 
@@ -1430,6 +1500,16 @@ at it.
   has to fill it.
 
 ## Versioning
+
+`1.9.3` takes the **third** digit: no lane or declaration of this level moved, and
+the one edge that changed repairs a promise. It pins [`memory-hive`](../memory-hive/)
+at 3.4.1, whose exits now delete the five recall keys this level's door sets on the
+way in ([#823](https://github.com/mmeyerlein/meclaw/issues/823)), so the bundle and the
+refusal arrive back here without the question that produced them. And the door into
+`./assistants` routes a session keeper's import part on its PATH
+(`hop.import_hive.endsWith('/session-keeper')`), because a keeper now files under
+`<talky>/session-keeper` ([#712](https://github.com/mmeyerlein/meclaw/issues/712)) —
+the repair of what 1.5.0 promised.
 
 `1.9.0` takes the **second** digit, and by the plain rule: a caller can wire
 something it never could. Two edges arrive and none leaves, so sixty-four become

@@ -1,4 +1,4 @@
-# `collector@4.2.0`
+# `collector@4.2.1`
 
 Context assembly as a hive of existing cell types -- no new cell type, no Rust. Two cells:
 `assemble` (a `code` cell, the state machine) and `window` (a `store` cell, the state). The
@@ -93,7 +93,7 @@ message context.
 | lane | who sends it | what it does |
 |---|---|---|
 | `in_turn` | the inbound surface (proxy, intake) | writes the turn, opens the assembly, asks memory |
-| `in_advice` | an async tool's return lane (an advisor core), carrying `context.consult_id` | the SAME chain as `in_turn`, filed under role `advice`: an event that arrives after its turn ended and opens a fresh round |
+| `in_advice` | an async tool's return lane (an advisor core), carrying `context.consult_id` | the SAME chain as `in_turn`, filed under role `advice`: an event that arrives after its turn ended and opens a fresh round. Since `collector@4.2.1` ([#728](https://github.com/mmeyerlein/meclaw/issues/728)) in two stages when it carries a `consult_id`: the advice row is parked and the `depart` row the consult left behind is looked up by that id, and the round opens under a key that carries the member turn which asked (see "A late answer never invents an identity") |
 | `in_delegation` | the duplex `voice` cell, carrying `context.delegation_id` | the SECOND event lane (`collector@4.2.0`), filed under role `delegation`: in a duplex call the model speaks to the caller itself and hands the backend an errand of its own accord while it keeps talking. Assembled exactly like `in_advice` -- it belongs to a turn on the MODEL's clock, so it opens a fresh round with the whole budget -- and, like it, never drained into a memory |
 | `in_bundle` | the memory hive's recall port | becomes the memory leg of this turn. ONE meaning since `4.0.0` -- it carried a second, the tool result of a `memory_recall` call, told apart by a `memory_call_id` the request carried out ([#552](https://github.com/mmeyerlein/meclaw/issues/552)) |
 | `in_calls` | the tool dispatcher | the assistant `tool_call` turn of the round; `hop.async_calls` names the ids this fan-in must **not** wait for |
@@ -112,7 +112,7 @@ Exits leave **from the hive path** on `hop.route`:
 | route | to | notes |
 |---|---|---|
 | `brain` | the agent LLM | THE seam. Promote `hop.turn_id`, `hop.session_id` and `hop.iter` to context on this edge. `system.consult.open` carries the correlation ids of the advice turns still in the window -- **always**, empty included (`collector@2.0.3`): the `llm` cell upserts `system.*` per slot path, so a path that is not sent is a path that is not touched, and a slot that is only ever set keeps naming a consultation that closed long ago. `system.memory` follows the same rule and, since `collector@2.1.0`, carries nothing but that rule: the bundle itself is no longer anywhere in that subtree (GH #278) -- it travels as the `memory_recall` tool result at the end of `messages[]`. What the collector still sends there on every turn is the revocation, unconditionally and no longer tied to `memory_form`: an empty `text` on the FIXED path `system.memory.recall`, which clears a bundle an older collector may have left standing and contributes nothing to the system prompt, plus the `"$replace": true` marker on the whole `system.memory` node (`collector@2.0.4`, GH #264), which is what lets it revoke the `json` form's keys -- named by the memory hive per bundle, and therefore nameable by no fixed path. **Consequence for an `llm` cell with a `system_writable` allowlist, unchanged by the move**: the allowlist must carry `memory` as a prefix -- the replace ROOT is checked too, and `memory.recall` alone does not suffice. Since wave 11 it also reports what the curator did: `hop.tokens_window`, `hop.tokens_projected`, `hop.tokens_estimated`, `hop.curate_mark`, `hop.curate_stage`, `hop.curate_elided`, `hop.curate_saved`. |
-| `answer` | the reply sink | the brain's final turn, after it is in the window -- **or** a turn that reached `max_iter`, marked `hop.round_capped=1` **and**, since `collector@3.5.0`, `hop.partial=1`, whose last turn is a named PARTIAL ANSWER rather than the raw end of the tool round (see "A capped round is a partial answer") -- **or**, since `collector@2.1.1`, a turn that could not be assembled because the store refused, marked `hop.degraded=1` with `hop.store_error` and `hop.store_operation` beside it (see "When the store says no") |
+| `answer` | the reply sink | the brain's final turn, after it is in the window -- **or** a turn that reached `max_iter`, marked `hop.round_capped=1` **and**, since `collector@3.5.0`, `hop.partial=1`, whose last turn is a named PARTIAL ANSWER rather than the raw end of the tool round (see "A capped round is a partial answer") -- **or**, since `collector@2.1.1`, a turn that could not be assembled because the store refused, marked `hop.degraded=1` with `hop.store_error` and `hop.store_operation` beside it (see "When the store says no"). Since `collector@4.2.1` every answer also carries `hop.round_id` (the key of the round it left) and `hop.late`; an answer of an advice or delegation round carries the member's turn as `hop.turn_id` |
 | `recall` | the memory hive's recall port | the per-turn leg, and only that (`memory_tier` set); promote `recall_query`, `memory_tier`, `recall_window_from`, `recall_window_to`, `session_id`, `turn_id`, `iter`. A `memory_recall` CALL does not travel here since `4.0.0` -- it leaves the composite on the ordinary `tool` lane and the memory answers it ([#552](https://github.com/mmeyerlein/meclaw/issues/552)) |
 | `write` | wherever a closed session belongs | one batch per close: `messages[]` the whole conversation, the raw round rows in the top-level slot `rounds`. `messages[]` is what a PARTICIPANT said and nothing else (GH #282) -- interim answers, `advice` rows and any other role stay in the window; `origin` comes from an explicit `user`/`assistant` mapping, never from a fallback. See "Per-turn episodes" below. |
 | `turn_write` | a memory hive's episode lane | **one message per turn, never a batch** (GH #298): after every stored turn and every stored answer, every turn of the session that has not been written yet leaves as its own message -- one `user`/`assistant` turn in `messages[]`, `hop.turn_id` = `<session_id>#<index>`, `hop.turn_index` and `hop.happened_at` beside it. Filtered and attributed by the same rule as `write`, but **not the same document**: `write` is a closed day with its `rounds`, this is a turn. On by default. See "Per-turn episodes" below. |
@@ -225,6 +225,7 @@ for how to retune one, and for what `override_params` can and cannot do).
 | `round_bytes` | `16000` | byte cap over the whole tool round, counted from the newest iteration backwards. What does not fit falls as a whole **iteration**. |
 | `memory_chars` | `8000` | character cap on the memory bundle **where the bundle travels**: the synthetic `memory_recall` tool result of the AMBIENT leg. ONE cap over the whole result text, so under `memory_form: both` it bounds the readable block and the machine-readable form *together* rather than each of them separately. `hop.memory_capped` is measured on that result. The tool leg has a cap of its own, on `memory-hive/tool` (#552). |
 | `max_iter` | `8` | how often a turn may re-enter the brain with a tool round. At the cap the seam leaves on `answer` instead, with `hop.partial=1` and a named partial answer as its last turn (`collector@3.5.0`, GH #570). The count belongs to ONE round, and a turn opens one: since [#541](https://github.com/mmeyerlein/meclaw/issues/541) the turn-opening lanes (`in_turn`, `in_advice`, and since `collector@4.2.0` `in_delegation`) start at zero whatever `iter` the arrival carried. `in_advice` is the answer lane of another hive's round and carries ITS count -- a core that spent nine iterations used to hand the surface a turn that was over before it began, and the seam left on `answer` with the raw assembled round where the answer belonged, no brain call at all. |
+| `late_after_ms` | `30000` | deadline of a consult or a delegation (GH #728). A handed call leaves a `depart` row stamped now + this value; the answer of the round its return opens carries `hop.late = "1"` once the deadline has passed when the answer leaves, `"0"` before. Set per assistant on its talky ref markers. |
 | `round_idle_ms` | `120000` | idle window of one tool round (two minutes). A round whose last progress is older **and** whose fan-in is incomplete is closed at the next occasion with synthetic error results and fires with `hop.round_stale=1`. |
 | `memory_tier` | `""` | empty = no memory leg at all, and the assembly waits for the window leg alone. `"0"` / `"1"` / `"2"` request that recall tier once per turn, and **the ambient leg arrives as a synthetic `memory_recall` result** at the end of the round -- never as durable system state (`collector@2.1.0`, GH #278). |
 | `memory_form` | `"readable"` | which form of the bundle reaches the brain **in that tool result**: `readable` (the rendered block a model reads), `json` (the machine-readable bundle), `both` (the two joined by a newline, under one call id and one cap). Applies to the AMBIENT leg alone since `4.0.0` -- a model's own `memory_recall` call is rendered by `memory-hive/tool`, which has a `form` of its own ([#552](https://github.com/mmeyerlein/meclaw/issues/552)). Whatever the form, `system.memory` carries only the revocation -- the empty leaf on the fixed path `recall` plus the `$replace` marker on the node above it (see the `brain` lane, `collector@2.0.4`) -- and both halves are sent unconditionally, no longer chosen by this knob: an instance retuned from `readable` to `json` would otherwise carry its last leaf, or its last keys, for the rest of its life. |
@@ -353,7 +354,7 @@ caller that may use it, and no caller can offer a model anything nobody typed.
 own template says it uses -- and the schemas behind those names are **asked for**:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "collector@4.2.0",
+{"add_nodes": [{"name": "scribe", "template": "collector@4.2.1",
                 "override_params": {"assemble": {"tools": ["web_search", "web_fetch"]}}}]}
 ```
 
@@ -1091,6 +1092,39 @@ Details that keep the policy honest:
 *inside* a `cell.db` -- and `delete` is a first-class operation of the `store` cell type
 (`docs/cell-types.md` § store). No file is deleted or moved by a prune; the durable record
 of the session left with the batch, and R-OS-6 places it with the memory hive, not here.
+
+### A late answer never invents an identity (GH #728, since `collector@4.2.1`)
+
+`in_advice` and `in_delegation` open rounds of their own for an answer that
+comes back after the member's turn ended with its interim sentence. Until
+`4.2.1` both minted a fresh id for that round, and the answer that left it
+carried an id that belonged to no turn of the member -- so no window opened from
+it could close the chat (`display-hive.md` § 4.13).
+
+- **Departure.** `in_calls` writes one `round` row with role `depart` per
+  HANDED call, in the same bundle as the assistant row: the round key it left
+  from, `correlation` (the dispatcher's rule, `arguments.consult_id` or the call
+  id) and `deadline_ms` (now + `late_after_ms`). It is filed as fired, so no
+  open-round question ever sees it. It is still a `round` row, so the close
+  batch of the session carries it among its `rounds` and counts it in
+  `round_count`.
+- **Return.** An advice with a `consult_id` looks that row up; a delegation
+  reads the member turn off its hop (the voice cell stamps the turn that was
+  open when the model delegated). A delegation leaves no departure row -- the
+  voice cell hands it over, not this collector -- so its deadline is counted
+  from its arrival here, not from the moment the model delegated. The round is keyed
+  `<member turn>~<deadline_ms>~<hex8>`: unique per round, so two advices under
+  one turn never share a fan-in, and carrying the member's turn as a label.
+- **Answer.** On the `answer` route alone the key is taken apart:
+  `hop.turn_id` is the member's turn, `hop.round_id` the round's key, and
+  `hop.late` is `"1"` if the deadline had passed when the answer left, `"0"`
+  otherwise. Every other answer carries its own id in both and `late` empty.
+  A late answer keeps the member's turn -- it is late, not anonymous -- and
+  each consumer treats it after its kind: a voice call after a turn change
+  drops it, the chat delivers it.
+
+An advice whose departure is not found (a round from before `4.2.1`, a consult
+not declared a handoff) opens its round as before and says so on stderr.
 
 ### When the store says no (GH #343, since `collector@2.1.1`)
 

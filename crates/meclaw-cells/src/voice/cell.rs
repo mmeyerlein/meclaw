@@ -282,7 +282,22 @@ pub struct LiveSessionState {
     /// [`TurnState`] counts the same thing and keeps it private; this is the
     /// handler's own copy, moved by the one action that closes a turn.
     pub closed_turns: u64,
+    /// Delegations the deadline closed with the fallback sentence, with the
+    /// turn count each one opened at (GH #728).
+    ///
+    /// The colony may still answer such a delegation later. Spoken while the
+    /// caller is in the turn that asked, the answer is a late but welcome
+    /// fact; spoken after the conversation moved on, it is a sentence about
+    /// something nobody is talking about any more. The list is what lets
+    /// `advise` tell the two apart, and it is short by construction: at most
+    /// [`CLOSED_DELEGATIONS_KEPT`] entries, the oldest dropped first.
+    pub closed_delegations: Vec<OpenDelegation>,
 }
+
+/// How many fallback-closed delegations a session remembers (GH #728). A call
+/// carries none or one delegation, two on a bad day; eight is headroom, and a
+/// bound keeps a very long call from growing the list without end.
+pub const CLOSED_DELEGATIONS_KEPT: usize = 8;
 
 /// One delegation the model opened and nobody has answered yet (R-L9).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -296,6 +311,9 @@ pub struct OpenDelegation {
     /// `a-pacing.json` has the connection's own clock 626 ms ahead of it after
     /// 64 s, and the grace this feeds is measured in seconds.
     pub opened_at_ms: u64,
+    /// How many turns the session had closed when the delegation opened — the
+    /// index of the turn the model delegated from (GH #728).
+    pub opened_turn: u64,
 }
 
 impl LiveSessionState {
@@ -308,6 +326,7 @@ impl LiveSessionState {
             speak_open: None,
             mode,
             closed_turns: 0,
+            closed_delegations: Vec::new(),
         }
     }
 
@@ -762,6 +781,7 @@ impl VoiceCell {
                 state.open_delegations.push(OpenDelegation {
                     id: delegation_id.clone(),
                     opened_at_ms: offset_ms,
+                    opened_turn: state.closed_turns,
                 });
                 let usage_ratio = state.last_usage_ratio;
                 let mut extra = json!({
@@ -892,14 +912,25 @@ impl VoiceCell {
         // fallback fall once instead of once per tick (#793).
         let grace = self.duplex_delegation_grace_ms;
         let mut stale = Vec::new();
+        let mut closed = Vec::new();
         state.open_delegations.retain(|open| {
             if now_ms.saturating_sub(open.opened_at_ms) > grace {
                 stale.push(open.id.clone());
+                closed.push(open.clone());
                 false
             } else {
                 true
             }
         });
+        // Remembered, not forgotten (GH #728): the colony may still answer a
+        // delegation the fallback closed, and `advise` has to know whether the
+        // conversation has moved on since it opened.
+        state.closed_delegations.extend(closed);
+        let excess = state
+            .closed_delegations
+            .len()
+            .saturating_sub(CLOSED_DELEGATIONS_KEPT);
+        state.closed_delegations.drain(..excess);
         self.run_live_actions(session_id, actions, sink).await;
         for delegation_id in stale {
             // The same shape a `fact` travels in — `Commentary`, spoken,
@@ -1174,6 +1205,29 @@ impl VoiceCell {
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
             .map(str::to_string);
+        // A STRAGGLER OF THE SIDECAR (GH #728, OR-T13). A `fact` for a
+        // delegation the deadline already closed with the fallback sentence,
+        // arriving after another turn has closed since the delegation opened, is
+        // an answer to a question the caller has left behind: the header the
+        // splitter builds carries no `late`, so the cell's own bookkeeping is
+        // what decides. Dropped without a refusal -- nobody did anything wrong,
+        // and an error line would put a non-event on the screen.
+        if spoken
+            && let Some(id) = delegation_id.as_ref()
+            && let Some(state) = self.live_sessions.get(&session_id)
+            && state
+                .closed_delegations
+                .iter()
+                .any(|c| c.id == *id && state.closed_turns > c.opened_turn)
+        {
+            tracing::info!(
+                path = self.path.as_str(),
+                %session_id, delegation_id = %id,
+                "voice: a fact for a delegation the fallback closed arrived after the turn \
+                 changed — not spoken"
+            );
+            return;
+        }
         // A delegation this colony has now answered is no longer open. Without
         // this the list would only ever grow, for the whole length of a call.
         if let Some(id) = delegation_id.as_ref()
@@ -1183,6 +1237,41 @@ impl VoiceCell {
         }
         self.push_advise(&session_id, kind, delegation_id, &text, spoken)
             .await;
+    }
+
+    /// Whether an answer is a straggler for a turn this call has left (GH #728).
+    ///
+    /// Only a LATE answer can be one (`hop.late == "1"`), and only one that
+    /// names a turn: an answer without `turn_id` is none of this rule's
+    /// business. The running turn is the cascade's `"<session>#<turn_seq>"` —
+    /// the last one it emitted — or, on a duplex session, the open turn or the
+    /// one that closed last: the model may still be finishing the answer to
+    /// the sentence it just heard. A session this cell does not hold is left
+    /// to the lookups below, which refuse it by name.
+    fn is_straggler(&self, msg: &Message, session_id: &str) -> bool {
+        let hop = |key: &str| msg.headers.hop.get(key).and_then(|v| v.as_str());
+        if hop("late") != Some("1") {
+            return false;
+        }
+        let Some(turn_id) = hop("turn_id").filter(|t| !t.is_empty()) else {
+            return false;
+        };
+        if self.duplex {
+            let Some(state) = self.live_sessions.get(session_id) else {
+                return false;
+            };
+            let open = state.open_turn_id(session_id);
+            let last = state
+                .closed_turns
+                .checked_sub(1)
+                .map(|n| format!("{session_id}#{n}"));
+            turn_id != open && Some(turn_id) != last.as_deref()
+        } else {
+            let Some(state) = self.sessions.get(session_id) else {
+                return false;
+            };
+            turn_id != format!("{session_id}#{}", state.turn_seq)
+        }
     }
 
     /// An `in_speak` on a duplex session (OR-L6).
@@ -1787,6 +1876,25 @@ impl LongRunningCell for VoiceCell {
                 .await;
                 return;
             };
+
+            // A STRAGGLER AFTER A TURN CHANGE (GH #728, ruling 2026-09-22 point
+            // 2). The collector marks an answer that comes back after the
+            // assistant's deadline with `hop.late = "1"` and keeps the member's
+            // turn on `hop.turn_id`. If that turn is no longer the one this call
+            // is in, the answer is about something the caller stopped talking
+            // about, and a voice call drops it: no synthesis, no append, no
+            // `speak_end` -- and no refusal, because nothing went wrong. Inside
+            // the deadline (`late = "0"`) or for the turn still running, the
+            // answer is spoken as every answer is.
+            if self.is_straggler(&msg, &session_id) {
+                tracing::info!(
+                    path = self.path.as_str(),
+                    %session_id,
+                    turn_id = msg.headers.hop.get("turn_id").and_then(|v| v.as_str()).unwrap_or_default(),
+                    "voice: a late answer for a turn the call has left — not spoken"
+                );
+                return;
+            }
 
             // An `in_speak` on a duplex cell is an APPEND, not a synthesis
             // (OR-L6): the model paraphrases what it is given rather than

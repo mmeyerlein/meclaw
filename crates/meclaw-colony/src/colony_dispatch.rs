@@ -157,12 +157,21 @@ pub fn handle_read_templates(
     name: Option<String>,
     limit: usize,
 ) -> crate::api_dto::ReadTemplatesReply {
-    handle_read_templates_from_rows(
-        colony_db.read_templates().unwrap_or_default(),
-        cell_type,
-        name,
-        limit,
-    )
+    handle_read_templates_from_rows(read_templates_with_uses(colony_db), cell_type, name, limit)
+}
+
+/// GH #811 (T2b): the template rows with [`TemplateRow::used_by`] filled from
+/// the provenance join. A join that cannot be read leaves `used_by` unset
+/// rather than empty — "unknown" is not "nobody".
+///
+/// [`TemplateRow::used_by`]: crate::persist::colony_db::TemplateRow::used_by
+fn read_templates_with_uses(colony_db: &ColonyDb) -> Vec<crate::persist::colony_db::TemplateRow> {
+    let mut rows = colony_db.read_templates().unwrap_or_default();
+    match colony_db.read_template_uses() {
+        Ok(uses) => crate::persist::colony_db::attach_template_uses(&mut rows, &uses),
+        Err(e) => tracing::warn!(error = %e, "templates read: provenance join unreadable"),
+    }
+    rows
 }
 
 /// The cell type a scanned template instantiates, read off its `config.json`.
@@ -928,6 +937,8 @@ pub fn handle_read_graph(
         .map(|(p, e)| crate::api_dto::GraphNodeDto {
             path: p.as_str().to_string(),
             cell_type: e.cell_type.clone(),
+            active: e.active,
+            parked: crate::mutation::validate::is_parked_path(p.as_str()),
         })
         .collect();
     let scope_edges: Vec<crate::api_dto::GraphEdgeDto> = edges
@@ -977,8 +988,13 @@ pub fn handle_read_graph(
 pub fn handle_rescan_templates<'a>(
     colony_db: &ColonyDb,
     templates_root: &'a std::path::Path,
-) -> impl std::future::Future<Output = Result<(), crate::templates::scanner::ScannerError>> + Send + 'a
-{
+    // GH #811: the colony's own directory (`templates::local_root`). Both the
+    // keep and the scan read it only in their synchronous prologues, so the
+    // returned future does not borrow it.
+    local: &std::path::Path,
+) -> impl std::future::Future<Output = Result<(), crate::templates::scanner::ScannerError>>
++ Send
++ use<'a> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -987,7 +1003,18 @@ pub fn handle_rescan_templates<'a>(
     // pattern: the `&ColonyDb` borrow lives only in the sync prelude, the
     // returned future captures only Send-types (writer-tx clone +
     // queue-depth Arc-clone + owned data). Keeps `colony_task` Send.
-    crate::templates::apply_scan_result(templates_root, colony_db, now)
+    //
+    // GH #811: keep FIRST, then scan. A rescan after a library swap would
+    // otherwise delete the row of a version a node still stands on before its
+    // bytes are safe. The keep copies synchronously in its prologue, so the
+    // scan's walk (also in its prologue, one line below) already sees the
+    // copies; the rows are repointed under their ids before the scan's upserts.
+    let keep = crate::templates::keep_referenced_versions(local, colony_db);
+    let scan = crate::templates::apply_library_scan(templates_root, local, colony_db, now);
+    async move {
+        keep.await;
+        scan.await
+    }
 }
 
 // ============================================================================
@@ -1035,6 +1062,10 @@ pub(crate) fn templates_prologue<'a>(
     // there is not a duplicate class offer, and since ruling Q7 it would abort
     // the whole scan.
     templates_root: &'a std::path::Path,
+    // GH #811: the colony root, which decides the colony's own directory
+    // (`templates::local_root`) the rescan keeps into and reads beside the
+    // library.
+    colony_root: &std::path::Path,
 ) -> (
     crate::templates::TemplatesRegistry,
     Vec<crate::persist::colony_db::TemplateRow>,
@@ -1042,7 +1073,12 @@ pub(crate) fn templates_prologue<'a>(
 ) {
     let rescan_future: Option<RescanFuture<'a>> = if endpoint.as_str() == "/colony/templates/rescan"
     {
-        Some(Box::pin(handle_rescan_templates(colony_db, templates_root)))
+        let local = crate::templates::local_root(templates_root, colony_root);
+        Some(Box::pin(handle_rescan_templates(
+            colony_db,
+            templates_root,
+            &local,
+        )))
     } else {
         None
     };
@@ -1056,7 +1092,11 @@ pub(crate) fn templates_prologue<'a>(
             rescan_future,
         );
     }
-    let templates_rows = colony_db.read_templates().unwrap_or_default();
+    let templates_rows = if endpoint.as_str() == "/colony/templates" {
+        read_templates_with_uses(colony_db)
+    } else {
+        colony_db.read_templates().unwrap_or_default()
+    };
     let templates_snapshot = crate::templates::TemplatesRegistry::from_entries(
         templates_rows
             .clone()
@@ -2249,6 +2289,10 @@ fn handle_read_templates_from_rows(
             version: r.version,
             filesystem_path: r.filesystem_path,
             author: r.author,
+            scanned_at: r.scanned_at,
+            // GH #811 (T2b): answered together with the `?name=` filter —
+            // "which nodes stand on which version of this class".
+            used_by: if name.is_some() { r.used_by } else { None },
         })
         .collect();
     crate::api_dto::ReadTemplatesReply { entries }
@@ -2806,8 +2850,11 @@ mod tests {
             .build();
 
         let templates_rows = colony_db.read_templates().unwrap_or_default();
-        let rescan_future: Option<RescanFuture<'_>> =
-            Some(Box::pin(handle_rescan_templates(&colony_db, td.path())));
+        let rescan_future: Option<RescanFuture<'_>> = Some(Box::pin(handle_rescan_templates(
+            &colony_db,
+            td.path(),
+            &td.path().join("local"),
+        )));
         let db_path = colony_db.db_path().to_path_buf();
 
         let action = dispatch_colony_endpoint(
@@ -3084,8 +3131,11 @@ mod tests {
             .build();
 
         let templates_rows = colony_db.read_templates().unwrap_or_default();
-        let rescan_future: Option<RescanFuture<'_>> =
-            Some(Box::pin(handle_rescan_templates(&colony_db, td.path())));
+        let rescan_future: Option<RescanFuture<'_>> = Some(Box::pin(handle_rescan_templates(
+            &colony_db,
+            td.path(),
+            &td.path().join("local"),
+        )));
         let db_path = colony_db.db_path().to_path_buf();
 
         let action = dispatch_colony_endpoint(
@@ -3184,8 +3234,11 @@ mod tests {
             .build();
 
         let templates_rows = colony_db.read_templates().unwrap_or_default();
-        let rescan_future: Option<RescanFuture<'_>> =
-            Some(Box::pin(handle_rescan_templates(&colony_db, td.path())));
+        let rescan_future: Option<RescanFuture<'_>> = Some(Box::pin(handle_rescan_templates(
+            &colony_db,
+            td.path(),
+            &td.path().join("local"),
+        )));
         let db_path = colony_db.db_path().to_path_buf();
 
         let action = dispatch_colony_endpoint(
@@ -3266,6 +3319,7 @@ mod tests {
             tags_json: "[]".into(),
             author: None,
             scanned_at: 0,
+            used_by: None,
         }
     }
 

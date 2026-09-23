@@ -90,6 +90,7 @@ fn render_table(entries: &[TemplateEntryDto]) -> Markup {
                     th { "Template ID" }
                     th { "Filesystem path" }
                     th { "Author" }
+                    th { "Scanned at" }
                 }
             }
             tbody {
@@ -100,6 +101,7 @@ fn render_table(entries: &[TemplateEntryDto]) -> Markup {
                         td { code { (e.template_id) } }
                         td { code { (e.filesystem_path) } }
                         td { (e.author.clone().unwrap_or_default()) }
+                        td { (e.scanned_at) }
                     }
                 }
             }

@@ -37,6 +37,7 @@ async fn e2e_get_registry_via_real_colony_returns_200_empty() {
         daemon: false,
         validate: false,
         validate_strict: false,
+        env_report: false,
         apply: None,
         blobs: None,
         tokio_console: false,

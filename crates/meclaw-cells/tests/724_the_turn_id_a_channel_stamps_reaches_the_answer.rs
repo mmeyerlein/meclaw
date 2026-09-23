@@ -546,6 +546,10 @@ fn an_advisors_return_never_adopts_the_id_on_its_hop() {
     // `in_advice` opens a round too, but its hop belongs to the ADVISOR's answer, not to
     // a channel. Adopting that id would key this round's `turns` and `round` rows on an
     // id another session already owns.
+    //
+    // Since GH #728 the answer of such a round DOES carry a member's turn -- as a
+    // LABEL looked up by `consult_id` on the departure row, never adopted off this
+    // hop; the round's key stays its own (`gh728_an_advice_answer_carries_the_turn_that_asked`).
     let out = emit(ASSEMBLE, collector_turn("in_advice", Some(T)));
     let got = turn_id_of(
         on_route(&out, "cstore", "collector/assemble"),

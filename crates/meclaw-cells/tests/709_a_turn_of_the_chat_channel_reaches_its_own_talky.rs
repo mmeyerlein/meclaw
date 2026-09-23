@@ -244,44 +244,26 @@ fn every_edge_around_the_one_talky_has_a_twin_around_the_other() {
         v.sort();
         v
     };
-    // The ONE declared exception, and it is named rather than tolerated (GH #709). The
-    // transfer lanes address a keeper by the name of its HIVE and not of its node:
-    // `templates/session-keeper/porter/config.json` writes into `<dest>/session-keeper`
-    // and says why -- *"a member names ONE generation per export, because two keepers
-    // would otherwise both claim `session-keeper` and the directory would hold whichever
-    // walk finished last"* -- and `templates/member/config.json` addresses an import with
-    // `hop.import_hive == 'session-keeper'`, which BOTH keepers answer to. Two keepers
-    // under one generation therefore collide on the way out and cannot be told apart on
-    // the way in; the measured result was an export of one schema header and no row.
-    // Making them distinguishable is a `session-keeper` change -- a per-node directory
-    // and a per-node import address -- not an `assistant` one, so until then the typed
-    // keeper takes no part in transfer and its sessions do not travel. Said out loud
-    // here, in the README and in the CHANGELOG rather than found as an empty export.
-    const NO_TRANSFER: [&str; 4] = ["in_export", "in_import", "export_done", "dump"];
-    let spoken: Vec<_> = side("./talky")
-        .into_iter()
-        .filter(|(_, _, lane)| !NO_TRANSFER.contains(&lane.as_str()))
-        .collect();
+    // Since GH #712 there is no exception. The four transfer lanes used to stand at
+    // `./talky` alone, because the porter filed its document under the constant hive
+    // name and the member imported on `hop.import_hive == 'session-keeper'`: two keepers
+    // of one generation would have collided on the way out and been indistinguishable on
+    // the way in. `session-keeper@2.2.2` files under the keeper's own path
+    // (`<talky>/session-keeper`) and `assistant@2.8.1` draws the four lanes at every
+    // talky from one rule (`gh712_the_transfer_rim_of_every_talky_is_the_rule.rs`), so
+    // the rims are twins on EVERY lane -- the import guards differ only in the node name
+    // they read, which `rim()` does not look at.
     assert_eq!(
-        spoken,
+        side("./talky"),
         side("./talky-chat"),
-        "outside the transfer lanes the two keepers carry the same rim. Every sweep, \
-         prune and mutation receipt fans out to BOTH, because each of them has its own \
-         sessions to tidy, and everything either of them says leaves the level the same way"
+        "the two keepers carry the same rim. Every sweep, prune, transfer and mutation \
+         receipt fans out to BOTH, because each of them has its own sessions to tidy and \
+         to carry, and everything either of them says leaves the level the same way"
     );
-    for lane in NO_TRANSFER {
-        assert!(
-            !side("./talky-chat").iter().any(|(_, _, l)| l == lane),
-            "`{lane}` reaches the typed keeper. Both keepers then claim the directory \
-             `session-keeper` on the way out and both answer `import_hive == \
-             'session-keeper'` on the way in. Give the porter a per-node directory and a \
-             per-node import address FIRST, in `session-keeper`, then draw these four"
-        );
-    }
     assert_eq!(
         hp.graph.edges.len(),
-        63,
-        "thirty-nine edges and twenty-four twins. The number is asserted so that an \
+        67,
+        "thirty-nine edges and twenty-eight twins. The number is asserted so that an \
          edge added on one side and forgotten on the other is loud"
     );
 }

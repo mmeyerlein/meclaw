@@ -7,10 +7,12 @@
 //! Two invariants carry the whole module:
 //!
 //! 1. **The target path is built, never taken.**
-//!    `{templates_root}/local/<name>@<version>/` is composed from the resolved
-//!    `--templates` root, the clamped name and the version the entry's own
-//!    `template.json` declares; `{templates_root}/local/<name>/` when it
-//!    declares none. No field of the body becomes a path segment, so there is
+//!    `<local>/<name>@<version>/` is composed from the colony's own template
+//!    directory (`templates::local_root`: `{templates_root}/local` when the
+//!    resolved `--templates` library lies under the colony root, else
+//!    `<root>/templates/local` — GH #811, a library the colony does not own is
+//!    never written), the clamped name and the version the entry's own
+//!    `template.json` declares; `<local>/<name>/` when it declares none. No field of the body becomes a path segment, so there is
 //!    nothing to escape from and nothing to sanitise — `@` cannot arrive from
 //!    the body either, because `name_is_well_formed` forbids it and the version
 //!    is the parsed one. Siblings, not `local/<name>/<version>/` as a child
@@ -183,7 +185,10 @@ pub fn parse_entry(entry: &Value) -> Result<TemplateRegistration, MutationError>
 /// under `template_name_taken` — a narrower refusal under one code is additive,
 /// a second code would be a second answer to one question:
 ///
-/// 1. the identical `name@version` is already registered;
+/// 1. the identical `name@version` is already registered — decided in
+///    [`stage_registrations`] since GH #811, because only there do the staged
+///    bytes exist to compare: the same tree stays `template_name_taken`, a
+///    changed one is `template_version_immutable`. Here it passes;
 /// 2. an entry without a version arrives while versioned entries of that name
 ///    exist, or the mirror case. A version `resolve` cannot read never reaches
 ///    here — [`parse_entry`] refuses it before this.
@@ -205,12 +210,9 @@ pub fn refuse_if_taken(
     match reg.version.as_deref() {
         Some(v) => {
             if templates.resolve(&format!("{}@{v}", reg.name)).is_ok() {
-                return Err(MutationError::TemplateNameTaken(format!(
-                    "'{}@{v}' is already registered. A new version registers \
-                     beside it; the same one would be two answers to one \
-                     reference",
-                    reg.name
-                )));
+                // GH #811: decided against the staged tree in
+                // `stage_registrations` (taken vs. immutable).
+                return Ok(());
             }
             if existing.iter().any(|e| e.version.is_none()) {
                 return Err(MutationError::TemplateNameTaken(format!(
@@ -352,12 +354,13 @@ impl StagedRegistrations {
 /// would pick up.
 pub fn stage_registrations(
     regs: &[TemplateRegistration],
+    templates: &crate::templates::TemplatesRegistry,
     templates_root: &std::path::Path,
     root: &std::path::Path,
     mutation_id: &str,
 ) -> Result<StagedRegistrations, MutationError> {
     let staging = root.join(".staging-templates").join(mutation_id);
-    let local = templates_root.join("local");
+    let local = crate::templates::local_root(templates_root, root);
     let mut staged = StagedRegistrations {
         staging: staging.clone(),
         pending: Vec::with_capacity(regs.len()),
@@ -402,6 +405,47 @@ pub fn stage_registrations(
                  a reference resolves — two names is one of them being wrong",
                 reg.name, parsed.name
             )));
+        }
+
+        // GH #811: a `name@version` the colony already stores. The staged
+        // bytes are on disk now, so the one question left is whether they are
+        // the stored ones: the same tree is the old answer (taken), a changed
+        // tree under the same version is refused as immutable — nodes stand on
+        // that version and a way back names it. A stored tree that cannot be
+        // read cannot be compared; the conservative answer is the old one.
+        if let Some(v) = reg.version.as_deref()
+            && let Ok(stored) = templates.resolve(&format!("{}@{v}", reg.name))
+        {
+            let compared = crate::templates::keep::trees_equal(&stage_dir, &stored.filesystem_path);
+            // T2 review M4: an unreadable stored tree is still the old answer,
+            // but the refusal says why it could not tell the two apart.
+            let unreadable = compared
+                .as_ref()
+                .err()
+                .map(|e| {
+                    format!(
+                        " (the stored tree at {} could not be compared: {e})",
+                        stored.filesystem_path.display()
+                    )
+                })
+                .unwrap_or_default();
+            let same = compared.unwrap_or(true);
+            return Err(if same {
+                MutationError::TemplateNameTaken(format!(
+                    "'{}@{v}' is already registered. A new version registers \
+                     beside it; the same one would be two answers to one \
+                     reference{unreadable}",
+                    reg.name
+                ))
+            } else {
+                MutationError::TemplateVersionImmutable(format!(
+                    "'{}@{v}' is already stored in this colony with different \
+                     files. A stored version does not change under its name — \
+                     nodes stand on it and a way back names it. Ship the change \
+                     as a new version; it registers beside the old one",
+                    reg.name
+                ))
+            });
         }
 
         if let Err(e) = std::fs::create_dir_all(&local) {

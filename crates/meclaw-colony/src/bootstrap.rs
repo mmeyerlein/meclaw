@@ -1001,6 +1001,19 @@ pub fn plan_bootstrap_with_env(
                 });
                 continue;
             }
+            // GH #828: the same params as the file declares them, `${VAR}`
+            // still a token -- the only place a literal secret is visible.
+            let declared = raw_parsed
+                .get("params")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            if let Err(reason) = factory.validate_declared_params(&declared) {
+                errors.push(BootstrapError::InvalidParams {
+                    path: fs_path.clone(),
+                    reason,
+                });
+                continue;
+            }
             // Issue #56: the on-disk half of the same pre-spawn validation.
             // Statically parseable assets inside the cell directory (today: the
             // `store` cell's `seed/<table>.jsonl` files) are parsed HERE, so a

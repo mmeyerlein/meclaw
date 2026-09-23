@@ -76,8 +76,15 @@ const TEMPLATES: &[&str] = &[
 /// secret in a `config.json` is a secret in the repository, which is the one
 /// thing ruling R-0904-6 does NOT move. The gate reads the same classes off the
 /// name in `scripts/check_tree_rules.py` § R6.
+///
+/// The two attribution names are the grey-zone call `scripts/check_tree_rules.py`
+/// § R6 already makes out loud (`ENV_LANE_EXACT`): they travel with the
+/// endpoint and are one statement colony-wide. `talky` and `cogny` carry them
+/// since OR-T34 (2026-09-23), in the memory-hive form.
 const ENV_LANE: &[&str] = &[
     "OPENROUTER_API_KEY",
+    "OPENROUTER_HTTP_REFERER",
+    "OPENROUTER_X_TITLE",
     "SEARCH_API_KEY",
     "SEARCH_ENDPOINT",
     "TELEGRAM_BOT_TOKEN",

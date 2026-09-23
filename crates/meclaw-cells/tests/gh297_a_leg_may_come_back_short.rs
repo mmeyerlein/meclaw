@@ -272,7 +272,10 @@ fn search_rows(prefix: &str, ranks: &[serde_json::Value]) -> serde_json::Value {
             .map(|(i, r)| {
                 let mut row = serde_json::json!({
                     "id": format!("{prefix}{i}"), "channel": "chat",
-                    "audience_set": ["u1"], "claim": "c", "content": "c"
+                    // Distinct content per row: since GH #691 the episode page
+                    // folds rows of one normal form into one hit, and these
+                    // rows are meant as different turns, not copies of one.
+                    "audience_set": ["u1"], "claim": "c", "content": format!("c{i}")
                 });
                 if !r.is_null() {
                     row["rank"] = r.clone();

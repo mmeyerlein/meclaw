@@ -1,4 +1,4 @@
-# `voice@2.2.0`
+# `voice@2.2.1`
 
 A spoken conversation as one cell. One WebSocket surface, one pair of provider
 credentials, one wire up and one wire down. No persona, no memory, no answer of
@@ -70,7 +70,7 @@ with `edge_schema`.
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "channels/voice", "template": "voice@2.2.0",
+  "add_nodes": [{"name": "channels/voice", "template": "voice@2.2.1",
                  "override_params": {"mount": "voice"}}],
   "add_edges": [
     {"from": "./channels/voice", "to": "./channels",
@@ -214,7 +214,7 @@ install`). Until then the manifest that wants partials does both halves itself
 one key on the node:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.2.0",
+{"name": "channels/voice", "template": "voice@2.2.1",
  "override_params": {"emit_partials": true}}
 ```
 
@@ -248,7 +248,7 @@ at the switch pending — see [`freeswitch`](../freeswitch/) § *Hanging up*).
 **Both halves or neither**, exactly as for `partial`:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.2.0",
+{"name": "channels/voice", "template": "voice@2.2.1",
  "override_params": {"emit_speak_end": true}}
 ```
 
@@ -385,6 +385,17 @@ the client was told was that its microphone had failed -- twice, and then a
 is unchanged: there the session is the call, and a provider that stops
 listening ends it.
 
+### Since 2.2.1 a late answer after a turn change is not spoken
+
+An answer that reached the colony's collector after the assistant's deadline carries
+`hop.late = "1"` and the member turn it belongs to as `hop.turn_id`
+([#728](https://github.com/mmeyerlein/meclaw/issues/728)). If that turn is no longer the one
+the call is in -- the cascade's last emitted turn, or on a duplex session the open turn or the
+one that closed last -- the cell drops it: no synthesis, no append, no `speak_end`, and no
+error, because nothing went wrong. The duplex sidecar has its own case: a `fact` for a
+delegation the deadline already closed with `delegation_fallback` is dropped once another
+turn has closed since the delegation opened.
+
 ## The door
 
 An instance is reached at `/<mount>/` on the colony's one listener. That is the
@@ -400,7 +411,7 @@ a new name takes effect on the next life of the cell — the registration happen
 once, when the I/O half starts.
 
 ```json
-{"name": "channels/voice", "template": "voice@2.2.0",
+{"name": "channels/voice", "template": "voice@2.2.1",
  "override_params": {"mount": "voice-b"}}
 ```
 
@@ -465,7 +476,7 @@ spelling that says "not set" -- `VoiceParams::parse` reads a null `tts` exactly
 as an absent one, which is legal precisely when the recogniser is `echo`:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.2.0",
+{"name": "channels/voice", "template": "voice@2.2.1",
  "override_params": {"stt": {"provider": "echo"}, "tts": null}}
 ```
 
@@ -478,7 +489,7 @@ routes -- a self-hosted realtime transcription endpoint, a self-hosted
 `/v1/audio/speech` -- stands in for the hosted one without touching the cell:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.2.0",
+{"name": "channels/voice", "template": "voice@2.2.1",
  "override_params": {
    "tts": {"provider": "openai",
            "base_url": "http://<local-host>:<port>",
@@ -542,7 +553,7 @@ sets both to `null` in the same breath -- `override_params` merges and has no
 gesture that removes a key:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.2.0",
+{"name": "channels/voice", "template": "voice@2.2.1",
  "override_params": {"duplex": {"provider": "gpt_live",
                                 "api_key": "${OPENAI_API_KEY}",
                                 "instructions": "<who the model is for this session>",
@@ -703,7 +714,7 @@ instantiating manifest's `override_params`, where it is substituted at
 instantiation exactly like the two api keys.
 
 ```json
-{"name": "channels/voice", "template": "voice@2.2.0",
+{"name": "channels/voice", "template": "voice@2.2.1",
  "override_params": {"tts": {"provider": "cartesia",
                              "api_key": "${CARTESIA_API_KEY}",
                              "voice": "${CARTESIA_VOICE}"}}}
@@ -718,7 +729,7 @@ exactly the same place, and the whole switch is one override -- the template doe
 not change, because `provider` was always a value rather than a shape:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.2.0",
+{"name": "channels/voice", "template": "voice@2.2.1",
  "override_params": {"tts": {"provider": "elevenlabs",
                              "api_key": "${ELEVENLABS_API_KEY}",
                              "voice": "${ELEVENLABS_VOICE}"}}}

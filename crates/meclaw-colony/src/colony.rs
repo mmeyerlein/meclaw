@@ -595,6 +595,20 @@ pub enum ColonyMsg {
         /// `build_rescan_reply` has always written.
         ack: oneshot::Sender<Result<(), String>>,
     },
+    /// GH #811: keep every template version a registry row names under
+    /// `templates/local/<name>@<version>/` and repoint the rows — the second
+    /// boot keep, sent by the CLI after the filesystem bootstrap. The keep
+    /// before the template scan cannot see a first boot (the table is still
+    /// empty) nor a node the boot grows from a `ref` marker (GH #424): that
+    /// provenance arrives as `SetRegistryProvenance`, not through the mutation
+    /// door. The arm fences the writer first, so the provenance rows those
+    /// messages queued are durable before the keep reads them. Idempotent.
+    KeepTemplateVersions {
+        /// The templates root the keep copies under (`local/` below it).
+        templates_root: std::path::PathBuf,
+        /// Fires after the rows are repointed.
+        ack: oneshot::Sender<()>,
+    },
     /// Phase 12-B step-7.6: trace read with `spawn_blocking` + a fresh
     /// `SQLITE_OPEN_READ_ONLY` connection on `colony.db`. WAL allows
     /// concurrent readers; the writer thread stays unaffected.
@@ -2029,6 +2043,7 @@ async fn run_shutdown_teardown(
                                     &endpoint,
                                     &colony_db,
                                     eda_templates_root,
+                                    root,
                                 );
                             let db_path = colony_db.db_path().to_path_buf();
                             let follow = crate::colony_dispatch::dispatch_colony_endpoint(
@@ -2219,13 +2234,22 @@ async fn run_shutdown_teardown(
                 // aborting anyway; just unblock the waiting apply.
                 let _ = ack.send(());
             }
+            ColonyMsg::KeepTemplateVersions { ack, .. } => {
+                // Shutdown-drain: the boot is over or aborting; the next boot
+                // keeps what this one did not.
+                let _ = ack.send(());
+            }
             ColonyMsg::RescanTemplates {
                 templates_root,
                 ack,
             } => {
-                let outcome =
-                    crate::colony_dispatch::handle_rescan_templates(&colony_db, &templates_root)
-                        .await;
+                let local = crate::templates::local_root(&templates_root, root);
+                let outcome = crate::colony_dispatch::handle_rescan_templates(
+                    &colony_db,
+                    &templates_root,
+                    &local,
+                )
+                .await;
                 if let Err(e) = &outcome {
                     tracing::error!(error = ?e, "rescan failed (drain)");
                 }
@@ -2969,7 +2993,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                     // half of that prologue is taken only for the endpoints that
                                     // read templates.
                                     let (templates_snapshot, templates_rows, rescan_future) =
-                                        crate::colony_dispatch::templates_prologue(&endpoint, &colony_db, &eda_templates_root);
+                                        crate::colony_dispatch::templates_prologue(&endpoint, &colony_db, &eda_templates_root, &root);
                                     let db_path = colony_db.db_path().to_path_buf();
                                     let follow = crate::colony_dispatch::dispatch_colony_endpoint(
                                         &mut registry, &mut hive_scopes, &mut edges, &mut node_contracts, &mut dead_letters, &mut in_flight,
@@ -3161,8 +3185,16 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                         initial_apply_pending = true;
                         let _ = ack.send(());
                     }
+                    ColonyMsg::KeepTemplateVersions { templates_root, ack } => {
+                        fence(&colony_db.writer_tx).await;
+                        // GH #811: the colony's OWN directory, never a library it was pointed at.
+                        let local = crate::templates::local_root(&templates_root, &root);
+                        crate::templates::keep_referenced_versions(&local, &colony_db).await;
+                        let _ = ack.send(());
+                    }
                     ColonyMsg::RescanTemplates { templates_root, ack } => {
-                        let outcome = crate::colony_dispatch::handle_rescan_templates(&colony_db, &templates_root).await;
+                        let local = crate::templates::local_root(&templates_root, &root);
+                        let outcome = crate::colony_dispatch::handle_rescan_templates(&colony_db, &templates_root, &local).await;
                         if let Err(e) = &outcome {
                             tracing::error!(error = ?e, "rescan failed");
                         }
@@ -3754,7 +3786,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                 // half of that prologue is taken only for the endpoints that
                                 // read templates.
                                 let (templates_snapshot, templates_rows, rescan_future) =
-                                    crate::colony_dispatch::templates_prologue(&endpoint, &colony_db, &eda_templates_root);
+                                    crate::colony_dispatch::templates_prologue(&endpoint, &colony_db, &eda_templates_root, &root);
                                 let db_path = colony_db.db_path().to_path_buf();
                                 let follow = crate::colony_dispatch::dispatch_colony_endpoint(
                                     &mut registry, &mut hive_scopes, &mut edges, &mut node_contracts, &mut dead_letters, &mut in_flight,
@@ -4825,7 +4857,13 @@ pub(crate) async fn handle_mutation(
                 }
             }
         }
-        match crate::mutation::register::stage_registrations(&regs, templates_root, root, &id) {
+        match crate::mutation::register::stage_registrations(
+            &regs,
+            &templates,
+            templates_root,
+            root,
+            &id,
+        ) {
             Ok(staged) => {
                 // The staged paths are what a LATER entry of the same diff
                 // resolves against: the bytes are identical to the ones the
@@ -8935,6 +8973,29 @@ pub(crate) async fn handle_mutation(
         }
     }
 
+    // GH #811: every `(name, version)` this mutation stamped onto a node — the
+    // node's own template and every hop of its chain. Read off the buffered
+    // provenance ops before they are flushed; the copies are made after the
+    // commit below, so a refusal anywhere above keeps nothing.
+    let instantiated: Vec<(String, String)> = write_buffer
+        .iter()
+        .filter_map(|op| match op {
+            crate::persist::writer::ColonyWriteOp::SetRegistryProvenance { provenance, .. } => {
+                Some(provenance)
+            }
+            _ => None,
+        })
+        .flat_map(|p| {
+            let own = p.template_version.clone().map(|v| (p.template.clone(), v));
+            let hops = p
+                .template_chain
+                .iter()
+                .flatten()
+                .filter_map(|(n, v)| v.clone().map(|v| (n.clone(), v)));
+            own.into_iter().chain(hops).collect::<Vec<_>>()
+        })
+        .collect();
+
     // Success: flush the buffered edge + status WriteOps in FIFO order BEFORE the
     // durable committed-update (Entscheidung 8a).
     for op in write_buffer {
@@ -8960,6 +9021,44 @@ pub(crate) async fn handle_mutation(
             );
             // Don't propagate the error: the FS effect (none in T14) is already done.
             // Recovery on next boot will see the in_flight row and mark failed.
+        }
+    }
+
+    // GH #811: the colony keeps its own copy of every version this mutation
+    // instantiated, under `local/<name>@<version>/`, and repoints the row. After
+    // the commit, because only a committed instantiation is one; failures are
+    // logged and the mutation stands — nothing running depends on the copy, the
+    // next library swap does. The rows this mutation registered itself already
+    // sit on their kept directory (the same formula), so they need nothing.
+    if !instantiated.is_empty() {
+        let rows: Vec<crate::templates::TemplateEntry> = templates
+            .entries_iter()
+            .map(|e| {
+                let mut e = e.clone();
+                if let Some((_, fin)) = registered.iter().find(|(tid, _)| *tid == e.template_id) {
+                    e.filesystem_path = fin.filesystem_path.clone();
+                }
+                e
+            })
+            .collect();
+        // GH #811: into the colony's own directory. A library outside the
+        // colony root (the repository a scenario runner points at) is never
+        // written — measured 2026-09-23, `templates/local/memory-hive@3.4.1/`
+        // appeared in the repository during `scenarios:memory`.
+        let local = crate::templates::local_root(templates_root, root);
+        for (template_id, kept) in crate::templates::keep::keep_all(&local, &rows, &instantiated) {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let _ = log_tx
+                .send(crate::templates::upsert_op(
+                    template_id,
+                    &kept,
+                    now_edges,
+                    Some(tx),
+                ))
+                .await;
+            // Durable before the verdict goes back: the next mutation reads its
+            // template snapshot from `colony.db`.
+            let _ = rx.recv();
         }
     }
 

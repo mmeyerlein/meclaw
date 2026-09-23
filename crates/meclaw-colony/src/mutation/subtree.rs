@@ -1229,15 +1229,22 @@ pub fn classify_subtree_nodes(
 ///   the `from`; the `to` is the version the template child is cut from — the
 ///   last `ref` hop's for a child that comes in through a ref (the same hop
 ///   [`provenance_for`] stamps), the template's own otherwise. A child with no
-///   stamp at all is version-unknown, and version-unknown is `changed`. For a
-///   ref'd child the stamp must name the same template at the same version;
-///   for a child that lives literally in the template the outer version is
-///   deliberately NOT compared — it is the version being lifted, so it differs
-///   for every child of every lift, and a kept child keeps its old stamp
-///   (F1: not written), so the comparison would never again say "same". What
-///   such a child is, is its bytes.
-/// - **Bytes.** The standing `config.json` minus what instantiation minted
-///   (`cell.id`, `cell.provenance`) against the template child's `config.json`
+///   stamp at all is version-unknown, and version-unknown is `changed`. The
+///   version itself is deliberately NOT compared — neither the outer one nor,
+///   since GH #773 (OR-T3), a ref'd child's hop: a version belongs to the
+///   provenance stamp, not to the instance, and a kept child keeps its old
+///   stamp (F1: not written), so the comparison would never again say
+///   "same". A moved hop over the same blocks used to replace the child and
+///   park its `cell.db` — the prose trap of GH #773 one level up. What a
+///   child is, is its blocks. That includes a hop onto a template of another
+///   NAME: a ref that moved from `x@1` to `y@1` over the same blocks keeps the
+///   child, and the child keeps its old stamp, template name and all, until a
+///   lift changes one of its blocks.
+/// - **Blocks** (GH #773, ruling 2026-09-22). What makes the instance —
+///   `cell` (minus what instantiation minted, `cell.id` and
+///   `cell.provenance`), `params` and `contract`, the three blocks
+///   [`crate::config::ParsedConfig`] reads ([`VERDICT_KEYS`]) — of the
+///   standing `config.json` against the template child's `config.json`
 ///   rendered the way [`crate::mutation::stage::patch_and_substitute_config`]
 ///   would write it again: the ref markers' `override_params` and this lift's
 ///   `overrides` layered onto `params` (top-level key, last wins), the default
@@ -1246,8 +1253,10 @@ pub fn classify_subtree_nodes(
 ///   instance and cannot be re-derived here, so the token's span matches
 ///   whatever stands there — the literal segments around it must stand, in
 ///   order ([`template_string_matches`], which also states the limit of that).
-///   Everything else is compared as JSON values — key order and whitespace
-///   are not bytes that instantiation owns.
+///   Everything else in the three blocks is compared as JSON values — key
+///   order and whitespace are not bytes that instantiation owns. A top-level
+///   key outside them (today `description`) documents the version the stamp
+///   names and takes no part; prose INSIDE `contract` still counts.
 /// - **Only `config.json` is compared.** A version that changes a child's
 ///   `seed/` alone, or the declaration of a NESTED hive the child stands
 ///   under, is invisible here: such a child is kept, and a nested hive that
@@ -1411,6 +1420,16 @@ fn read_on_disk_config(cell_dir: &std::path::Path) -> Option<serde_json::Value> 
     serde_json::from_str(&raw).ok()
 }
 
+/// GH #811 — the template a standing node says it is an instance of, as
+/// `(name, version)`: its stamp's own `template` / `template_version`. `None`
+/// when there is no stamp (a node written by hand or before GH #62).
+pub(crate) fn stamped_template(dir: &std::path::Path) -> Option<(String, Option<String>)> {
+    read_on_disk_config(dir)
+        .as_ref()
+        .and_then(provenance_of_config)
+        .map(|p| (p.template, p.template_version))
+}
+
 /// The provenance stamp a standing `config.json` carries — `None` when there
 /// is no `cell.provenance` or it does not parse.
 fn provenance_of_config(cfg: &serde_json::Value) -> Option<crate::config::NodeProvenance> {
@@ -1428,7 +1447,7 @@ fn version_diff(
     ref_defaults: &HashMap<String, JsonValue>,
     overrides: &SubtreeOverrides,
 ) -> Option<ChangedNode> {
-    let (to_template, to_version) = node.ref_chain.last().cloned().unwrap_or(outer.clone());
+    let (_, to_version) = node.ref_chain.last().cloned().unwrap_or(outer.clone());
     let changed = |from_version: String| ChangedNode {
         node: node.clone(),
         final_path: final_path.to_path_buf(),
@@ -1444,14 +1463,10 @@ fn version_diff(
     };
     let from_version = version_label(stamp.template_version.as_deref());
 
-    // A ref'd child is an instance of the template the ref names, at the
-    // version the ref resolved to; another name or version is another child.
-    if !node.ref_chain.is_empty()
-        && (stamp.template != to_template || stamp.template_version != to_version)
-    {
-        return Some(changed(from_version));
-    }
-
+    // GH #773 (OR-T3): a ref'd child is judged by its blocks like every
+    // child. The hop (template, version) is provenance: the lift of a
+    // container whose ref moved to a version with the same blocks would
+    // otherwise park the child and its `cell.db` (GH #773).
     let rendered = render_child_like_instantiation(node, ref_defaults, overrides);
     if config_matches_rendered(&on_disk, &rendered) {
         None
@@ -1509,16 +1524,40 @@ fn render_child_like_instantiation(
     cfg
 }
 
+/// GH #773 (ruling 2026-09-22): a lift compares what makes the instance — the
+/// three blocks `ParsedConfig` (config.rs) reads. Everything else in a
+/// `config.json` (today: `description`) documents the template version the
+/// provenance stamp names, and takes no part in the verdict. A field that is
+/// promoted from documentation to behaviour moves into one of these blocks,
+/// and into `ParsedConfig`, to count.
+const VERDICT_KEYS: [&str; 3] = ["cell", "params", "contract"];
+
+/// The part of a `config.json` the verdict reads: an object with the
+/// [`VERDICT_KEYS`] the value carries, nothing else. A block missing on both
+/// sides is equal; missing on one side it is unequal, as before.
+fn verdict_view(v: &serde_json::Value) -> serde_json::Value {
+    let mut out = serde_json::Map::new();
+    if let Some(obj) = v.as_object() {
+        for key in VERDICT_KEYS {
+            if let Some(block) = obj.get(key) {
+                out.insert(key.to_string(), block.clone());
+            }
+        }
+    }
+    JsonValue::Object(out)
+}
+
 /// Whether a standing `config.json` is what the rendered template child would
-/// be written as: `cell.id` and `cell.provenance` stripped off the standing
-/// side, then [`values_match`] over the rest.
+/// be written as: both sides projected onto [`VERDICT_KEYS`], `cell.id` and
+/// `cell.provenance` stripped off the standing side, then [`values_match`]
+/// over the rest.
 fn config_matches_rendered(on_disk: &serde_json::Value, rendered: &serde_json::Value) -> bool {
-    let mut on_disk = on_disk.clone();
+    let mut on_disk = verdict_view(on_disk);
     if let Some(cell) = on_disk.get_mut("cell").and_then(|c| c.as_object_mut()) {
         cell.remove("id");
         cell.remove("provenance");
     }
-    values_match(rendered, &on_disk)
+    values_match(&verdict_view(rendered), &on_disk)
 }
 
 /// Structural equality between a template-side value and a standing one, with
@@ -4135,6 +4174,110 @@ mod tests {
         assert!(part.left.is_empty(), "nothing left: {:?}", part.left);
     }
 
+    /// GH #773 (ruling 2026-09-22): the verdict compares what makes the
+    /// instance — `cell`, `params`, `contract` — and nothing else. A version
+    /// that only rewrites a child's `description` keeps the child; the same
+    /// lift with changed `params` replaces it.
+    #[test]
+    fn a_rewritten_description_keeps_the_child() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let colony_root = tmp.path();
+        colony_root_with_root_cell(colony_root, "main");
+        let (v100, _v110, _registry) = screen_library(colony_root);
+        // Two more versions of `screen`, copies of 1.0.0 except at `keep`:
+        // 1.0.1 gives it a `description` (prose only), 1.0.2 other `params`.
+        let lib = colony_root.join("library");
+        let copy_of_v100 = |version: &str, keep_cfg: &str| -> std::path::PathBuf {
+            let dir = lib.join(format!("screen@{version}"));
+            write_json(
+                &dir.join("template.json"),
+                &format!(r#"{{"name":"screen","version":"{version}"}}"#),
+            );
+            write_json(
+                &dir.join("config.json"),
+                &fs::read_to_string(v100.join("config.json")).unwrap(),
+            );
+            for child in ["bump", "gone"] {
+                write_json(&dir.join(child).join("config.json"), &screen_child("1.0.0"));
+            }
+            write_json(&dir.join("keep").join("config.json"), keep_cfg);
+            dir
+        };
+        let v101 = copy_of_v100(
+            "1.0.1",
+            r#"{"cell":{"type":"echo_sub"},"params":{"echo_to":"/capture"},"contract":{"version":"1.0.0","settings":{},"consumes":{}},"description":{"purpose":"keeps the view it was handed"}}"#,
+        );
+        let v102 = copy_of_v100(
+            "1.0.2",
+            r#"{"cell":{"type":"echo_sub"},"params":{"echo_to":"/elsewhere"},"contract":{"version":"1.0.0","settings":{},"consumes":{}}}"#,
+        );
+        let registry = crate::templates::TemplatesRegistry::from_entries(
+            [("1.0.0", &v100), ("1.0.1", &v101), ("1.0.2", &v102)]
+                .into_iter()
+                .map(|(v, dir)| crate::templates::TemplateEntry {
+                    template_id: format!("t-screen-{v}"),
+                    name: "screen".into(),
+                    version: Some(v.into()),
+                    filesystem_path: dir.clone(),
+                })
+                .collect(),
+        );
+        grow_for_real(
+            colony_root,
+            "mid-grow",
+            "/alex",
+            "display",
+            &v100,
+            "screen",
+            "1.0.0",
+            &HashMap::new(),
+            &SubtreeOverrides::default(),
+            &registry,
+        );
+
+        let prose = classify_subtree_nodes_in(
+            colony_root,
+            "/alex",
+            "display",
+            &v101,
+            &registry,
+            DiffMode::Replace,
+            &SubtreeOverrides::default(),
+            &[],
+        )
+        .expect("partition against the description-only version");
+        assert_eq!(
+            existing_paths(&prose.existing),
+            vec![
+                "/alex/display/bump",
+                "/alex/display/gone",
+                "/alex/display/keep"
+            ],
+            "a rewritten description keeps every child"
+        );
+        assert!(
+            prose.changed.is_empty(),
+            "description takes no part in the verdict: {:?}",
+            prose.changed
+        );
+
+        let behaviour = classify_subtree_nodes_in(
+            colony_root,
+            "/alex",
+            "display",
+            &v102,
+            &registry,
+            DiffMode::Replace,
+            &SubtreeOverrides::default(),
+            &[],
+        )
+        .expect("partition against the params version");
+        assert_eq!(behaviour.changed.len(), 1, "{:?}", behaviour.changed);
+        assert_eq!(behaviour.changed[0].node.rel_path, "keep");
+        assert_eq!(behaviour.changed[0].from_version, "1.0.0");
+        assert_eq!(behaviour.changed[0].to_version, "1.0.2");
+    }
+
     /// GH #682: the comparison mirrors the rest of what instantiation writes —
     /// an instance token rendered from `ctx`, an `override_params` value merged
     /// into `params`, and the default sandbox block a `code` cell receives. With
@@ -4479,10 +4622,12 @@ mod tests {
         );
     }
 
-    /// GH #682 (fix round 1): the ref branch of the version rule. A child that
-    /// comes in through a `ref` is kept when its stamp names the same hop
-    /// (template, version) and the bytes stand; another hop version with the
-    /// same bytes is changed, from/to being the hop versions.
+    /// GH #682 (fix round 1), GH #773 (OR-T3): a child that comes in through
+    /// a `ref` is judged like every child — by `cell`, `params`, `contract`.
+    /// The hop version belongs to the provenance stamp, not to the instance:
+    /// the same hop is kept, another hop version with the same blocks is kept
+    /// too (and keeps its old stamp), another hop version with other `params`
+    /// is changed, from/to being the hop versions.
     #[test]
     fn a_ref_child_is_judged_by_its_hop() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -4490,14 +4635,22 @@ mod tests {
         colony_root_with_root_cell(colony_root, "main");
         let lib = colony_root.join("library");
         let widget = r#"{"cell":{"type":"echo"},"params":{"k":"v"},"contract":{"version":"1.0.0","settings":{},"consumes":{}}}"#;
+        let widget_other = r#"{"cell":{"type":"echo"},"params":{"k":"w"},"contract":{"version":"1.0.0","settings":{},"consumes":{}}}"#;
         let mut entries = Vec::new();
-        for version in ["1.0.0", "1.1.0"] {
+        for version in ["1.0.0", "1.1.0", "1.2.0"] {
             let dir = lib.join(format!("widget@{version}"));
             write_json(
                 &dir.join("template.json"),
                 &format!(r#"{{"name":"widget","version":"{version}"}}"#),
             );
-            write_json(&dir.join("config.json"), widget);
+            write_json(
+                &dir.join("config.json"),
+                if version == "1.2.0" {
+                    widget_other
+                } else {
+                    widget
+                },
+            );
             entries.push(crate::templates::TemplateEntry {
                 template_id: format!("t-widget-{version}"),
                 name: "widget".into(),
@@ -4575,11 +4728,29 @@ mod tests {
             &[],
         )
         .expect("partition against the other hop");
-        assert!(other_hop.existing.is_empty());
-        assert_eq!(other_hop.changed.len(), 1);
-        assert_eq!(other_hop.changed[0].node.rel_path, "w");
-        assert_eq!(other_hop.changed[0].from_version, "1.0.0");
-        assert_eq!(other_hop.changed[0].to_version, "1.1.0");
+        assert_eq!(
+            existing_paths(&other_hop.existing),
+            vec!["/main/p/w"],
+            "another hop version with the same blocks is kept"
+        );
+        assert!(other_hop.changed.is_empty(), "{:?}", other_hop.changed);
+
+        let other_params = classify_subtree_nodes_in(
+            colony_root,
+            "/main",
+            "p",
+            &lib.join("panel@1.2.0"),
+            &registry,
+            DiffMode::Replace,
+            &SubtreeOverrides::default(),
+            &[],
+        )
+        .expect("partition against the hop with other params");
+        assert!(other_params.existing.is_empty());
+        assert_eq!(other_params.changed.len(), 1);
+        assert_eq!(other_params.changed[0].node.rel_path, "w");
+        assert_eq!(other_params.changed[0].from_version, "1.0.0");
+        assert_eq!(other_params.changed[0].to_version, "1.2.0");
     }
 
     /// GH #682: `Resume` mode is the old behaviour byte for byte — a child

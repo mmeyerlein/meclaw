@@ -58,6 +58,7 @@ async fn demo_colony_boots_mutates_and_reaches_echo() {
         daemon: false,
         validate: false,
         validate_strict: false,
+        env_report: false,
         apply: None,
         blobs: None,
         tokio_console: false,

@@ -319,10 +319,12 @@ fn stage_one_lift(
         .collect();
     let changes = node_changes(
         &template,
+        templates,
         &subtree_root_abs,
+        &final_path,
         &provenance,
         &added_roots,
-        &partition.changed,
+        &changed,
         &partition.existing,
         &partition.left,
     );
@@ -352,13 +354,18 @@ fn stage_one_lift(
 /// cells below, and those are listed. The versions follow the partition's
 /// own rule: a standing child's is its provenance stamp
 /// ([`stamped_version`]), a template child's is the last `ref` hop's or the
-/// lifted template's own.
+/// lifted template's own. A replaced entry also names its park path and
+/// whether a `cell.db` went with it (GH #773) — read off the staged move, so
+/// the path is the one the apply renames to, `~<n>` suffix included.
+#[allow(clippy::too_many_arguments)]
 fn node_changes(
     template: &SubtreeTemplate,
+    templates: &TemplatesRegistry,
     subtree_root_abs: &Path,
+    hive_dir: &std::path::Path,
     provenance: &crate::config::NodeProvenance,
     added_roots: &[(String, bool)],
-    changed: &[ChangedNode],
+    changed: &[StagedChange],
     kept: &[ResolvedExistingNode],
     left: &[LeftNode],
 ) -> Vec<NodeChange> {
@@ -372,6 +379,45 @@ fn node_changes(
             .unwrap_or_else(|| provenance.template_version.clone())
             .unwrap_or_else(|| VERSION_UNVERSIONED.to_string())
     };
+    // GH #811: the row a `name@version` stands for in the library this lift
+    // resolved against. `resolve` for a pinned version, the unversioned entry
+    // otherwise — the same two answers a reference gets.
+    let row_of = |name: &str, version: Option<&str>| -> Option<String> {
+        match version {
+            Some(v) => templates.resolve(&format!("{name}@{v}")).ok(),
+            None => templates
+                .entries_iter()
+                .find(|e| e.name == name && e.version.is_none()),
+        }
+        .map(|e| e.template_id.clone())
+    };
+    let stamped_row = |dir: &std::path::Path| -> Option<String> {
+        crate::mutation::subtree::stamped_template(dir)
+            .and_then(|(name, version)| row_of(&name, version.as_deref()))
+    };
+    // What a child of the NEW version is cut from: the last `ref` hop that
+    // placed it, the lifted template itself for an inline child — the same
+    // rule `provenance_for` stamps it with.
+    let new_row = |rel: &str| -> Option<String> {
+        let hop = template
+            .cells
+            .iter()
+            .find(|n| n.rel_path == rel)
+            .and_then(|n| n.ref_chain.last().cloned())
+            .unwrap_or_else(|| {
+                (
+                    provenance.template.clone(),
+                    provenance.template_version.clone(),
+                )
+            });
+        row_of(&hop.0, hop.1.as_deref())
+    };
+    let rel_of = |abs_path: &str| -> String {
+        abs_path
+            .strip_prefix(subtree_root_abs.as_str())
+            .map(|r| r.trim_start_matches('/').to_string())
+            .unwrap_or_default()
+    };
     let mut out: Vec<NodeChange> = Vec::new();
     for k in kept {
         let version = stamped_version(&k.final_path);
@@ -380,14 +426,22 @@ fn node_changes(
             verdict: NodeVerdict::Kept,
             from_version: Some(version.clone()),
             to_version: Some(version),
+            parked_path: None,
+            parked_store: None,
+            from_template_id: stamped_row(&k.final_path),
+            to_template_id: stamped_row(&k.final_path),
         });
     }
     for c in changed {
         out.push(NodeChange {
-            path: abs(&c.node.rel_path),
+            path: c.aside.from.as_str().to_string(),
             verdict: NodeVerdict::Replaced,
             from_version: Some(c.from_version.clone()),
             to_version: Some(c.to_version.clone()),
+            parked_path: Some(c.aside.to.as_str().to_string()),
+            parked_store: Some(holds_a_store(&c.aside.from_dir)),
+            from_template_id: stamped_row(&c.aside.from_dir),
+            to_template_id: new_row(&rel_of(c.aside.from.as_str())),
         });
     }
     for (rel, _is_hive) in added_roots {
@@ -396,6 +450,10 @@ fn node_changes(
             verdict: NodeVerdict::Added,
             from_version: None,
             to_version: Some(template_version(rel)),
+            parked_path: None,
+            parked_store: None,
+            from_template_id: None,
+            to_template_id: new_row(rel),
         });
     }
     for l in left {
@@ -404,10 +462,34 @@ fn node_changes(
             verdict: NodeVerdict::Left,
             from_version: Some(l.version.clone()),
             to_version: None,
+            parked_path: None,
+            parked_store: None,
+            from_template_id: stamped_row(&hive_dir.join(&l.rel_path)),
+            to_template_id: None,
         });
     }
     out.sort_by(|a, b| a.path.cmp(&b.path));
     out
+}
+
+/// GH #773 — whether a standing directory (the whole subtree a replaced child
+/// takes aside) holds a `cell.db` anywhere. The database is created lazily
+/// (store, llm, timer, vault, mcp, subcolony, anything seeded), so only the
+/// disk can say. Read at staging, before the rename, like the kept versions;
+/// a cell that first wakes between staging and rename is reported `false` —
+/// that window lies inside one mutation on the colony task (OR-T3). An
+/// unreadable directory is `false`.
+fn holds_a_store(dir: &std::path::Path) -> bool {
+    if dir.join("cell.db").is_file() {
+        return true;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    entries
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .any(|e| holds_a_store(&e.path()))
 }
 
 /// Ruling T4-C4: the standing node and the template have to be of one class

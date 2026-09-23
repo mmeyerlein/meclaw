@@ -1,0 +1,487 @@
+{
+  "_source": "GH #599 -- the wiring a live colony carries for four installed apps, as its install manifests drew it and as it was measured standing: the three apps of the voice2vision repository (manifests/install.json, scripts/ambient_install.py, scripts/chat_install.py, scripts/v2v_install.py for the browser road, and the talky-chat twin every talky v-lane gets) and colony-view as the builder's member_devices renders it. Member-relative; the generation is called `sam`. The three voice2vision templates do not travel with this repository, so their declarations stand here as a fixture beside the edges they must render; the colony-view declaration is read from templates/colony-view/template.json.",
+  "voice2vision": {
+    "template": "voice2vision@0.7.2",
+    "screen": "display",
+    "generation": "sam",
+    "declaration": {
+      "screen": {
+        "out": [
+          "view",
+          "withdraw"
+        ],
+        "back": [
+          "event",
+          "receipt"
+        ]
+      },
+      "listens": [
+        "turn",
+        "answer",
+        "partial"
+      ],
+      "offers": [
+        {
+          "kind": "sidecar",
+          "at": "./show",
+          "section": "display"
+        }
+      ],
+      "observes_tool_results": "./stage",
+      "drives": [
+        {
+          "cell": "browser",
+          "out": [
+            "open",
+            "close",
+            "navigate"
+          ],
+          "back": [
+            "page",
+            "receipt"
+          ]
+        }
+      ]
+    },
+    "edges": [
+      {
+        "from": "./firewall",
+        "to": "./apps",
+        "condition": "has(hop.route) && hop.route == 'pass'",
+        "modifier": {
+          "set_hop": {
+            "route": "'turn'"
+          },
+          "delete_context": [
+            "fw_body",
+            "fw_now",
+            "fw_phase",
+            "store_origin"
+          ]
+        }
+      },
+      {
+        "from": "./assistants",
+        "to": "./apps",
+        "condition": "has(hop.route) && hop.route == 'answer'"
+      },
+      {
+        "from": "./assistants",
+        "to": ".",
+        "condition": "has(hop.route) && hop.route == 'answer' && (!has(context.channel_node) || context.channel_node == '')",
+        "modifier": {
+          "delete_context": [
+            "tool_answerer"
+          ]
+        }
+      },
+      {
+        "from": "./channels",
+        "to": "./apps",
+        "condition": "has(hop.route) && hop.route == 'partial'"
+      },
+      {
+        "from": "./apps",
+        "to": "./apps/voice2vision",
+        "condition": "has(hop.route) && (hop.route == 'turn' || hop.route == 'answer' || hop.route == 'partial')"
+      },
+      {
+        "from": "./apps",
+        "to": "./apps/voice2vision",
+        "condition": "has(hop.route) && hop.route == 'sidecar' && has(hop.section) && hop.section == 'display'"
+      },
+      {
+        "from": "./apps",
+        "to": "./apps/voice2vision",
+        "condition": "has(hop.route) && (hop.route == 'event' || hop.route == 'receipt') && has(hop.owner) && hop.owner.contains('/apps/voice2vision/')"
+      },
+      {
+        "from": "./apps/voice2vision",
+        "to": "./apps",
+        "condition": "has(hop.route) && (hop.route == 'view' || hop.route == 'withdraw' || hop.route == 'error')",
+        "modifier": {
+          "set_context": {
+            "channel_node": "'display'",
+            "channel": "'display'"
+          }
+        }
+      },
+      {
+        "from": "./apps/voice2vision",
+        "to": "./apps",
+        "condition": "has(hop.route) && hop.route == 'tool_schemas'",
+        "modifier": {
+          "set_context": {
+            "tool_answerer": "'voice2vision'"
+          }
+        }
+      },
+      {
+        "from": "./assistants/sam/talky",
+        "to": "./apps/voice2vision/show",
+        "lane": "schemas",
+        "condition": "has(hop.route) && hop.route == 'schemas'",
+        "modifier": {
+          "set_context": {
+            "tool_caller": "'talky'",
+            "assistant": "'sam'"
+          },
+          "delete_context": [
+            "col_phase",
+            "consult_class",
+            "consult_id",
+            "tool_answerer"
+          ]
+        }
+      },
+      {
+        "from": "./assistants/sam/tools",
+        "to": "./apps/voice2vision/stage",
+        "lane": "tool_result",
+        "condition": "has(hop.route) && hop.route == 'tool_result'"
+      },
+      {
+        "from": "./memory-hive",
+        "to": "./apps/voice2vision/stage",
+        "lane": "tool_result",
+        "condition": "has(hop.route) && hop.route == 'tool_result'"
+      },
+      {
+        "from": "./assistants/sam/talky-chat",
+        "to": "./apps/voice2vision/show",
+        "lane": "schemas",
+        "condition": "has(hop.route) && hop.route == 'schemas'",
+        "modifier": {
+          "set_context": {
+            "tool_caller": "'talky-chat'",
+            "assistant": "'sam'"
+          },
+          "delete_context": [
+            "col_phase",
+            "consult_class",
+            "consult_id",
+            "tool_answerer"
+          ]
+        }
+      },
+      {
+        "from": "./apps/voice2vision",
+        "to": "./browser",
+        "condition": "has(hop.route) && hop.route == 'open'",
+        "modifier": {
+          "set_hop": {
+            "route": "'in_open'"
+          }
+        }
+      },
+      {
+        "from": "./apps/voice2vision",
+        "to": "./browser",
+        "condition": "has(hop.route) && hop.route == 'close'",
+        "modifier": {
+          "set_hop": {
+            "route": "'in_close'"
+          }
+        }
+      },
+      {
+        "from": "./apps/voice2vision",
+        "to": "./browser",
+        "condition": "has(hop.route) && hop.route == 'navigate'",
+        "modifier": {
+          "set_hop": {
+            "route": "'in_navigate'"
+          }
+        }
+      },
+      {
+        "from": "./browser",
+        "to": "./apps/voice2vision",
+        "condition": "has(hop.route) && hop.route == 'page'"
+      },
+      {
+        "from": "./browser",
+        "to": "./apps/voice2vision",
+        "condition": "has(hop.route) && hop.route == 'receipt'"
+      }
+    ]
+  },
+  "ambient": {
+    "template": "ambient@0.6.3",
+    "screen": "display",
+    "generation": "sam",
+    "declaration": {
+      "screen": {
+        "out": [
+          "view",
+          "withdraw"
+        ],
+        "back": [
+          "event",
+          "receipt"
+        ]
+      },
+      "listens": [
+        "answer"
+      ],
+      "offers": [
+        {
+          "kind": "tool",
+          "at": "./timer",
+          "tools": [
+            "set_timer",
+            "cancel_timer"
+          ]
+        }
+      ],
+      "drives": []
+    },
+    "edges": [
+      {
+        "from": "./assistants",
+        "to": "./apps",
+        "condition": "has(hop.route) && hop.route == 'answer'"
+      },
+      {
+        "from": "./assistants",
+        "to": ".",
+        "condition": "has(hop.route) && hop.route == 'answer' && (!has(context.channel_node) || context.channel_node == '')",
+        "modifier": {
+          "delete_context": [
+            "tool_answerer"
+          ]
+        }
+      },
+      {
+        "from": "./assistants/sam/talky",
+        "to": "./apps/ambient/timer",
+        "lane": "tool",
+        "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && (hop.tool_name == 'set_timer' || hop.tool_name == 'cancel_timer')",
+        "modifier": {
+          "set_context": {
+            "tool_caller": "'talky'",
+            "assistant": "'sam'"
+          },
+          "delete_context": [
+            "col_phase",
+            "consult_class",
+            "consult_id",
+            "tool_answerer"
+          ]
+        }
+      },
+      {
+        "from": "./assistants/sam/talky",
+        "to": "./apps/ambient/timer",
+        "lane": "schemas",
+        "condition": "has(hop.route) && hop.route == 'schemas'",
+        "modifier": {
+          "set_context": {
+            "tool_caller": "'talky'",
+            "assistant": "'sam'"
+          },
+          "delete_context": [
+            "col_phase",
+            "consult_class",
+            "consult_id",
+            "tool_answerer"
+          ]
+        }
+      },
+      {
+        "from": "./apps/ambient",
+        "to": "./apps",
+        "condition": "has(hop.route) && (hop.route == 'tool_result' || hop.route == 'tool_schemas')",
+        "modifier": {
+          "set_context": {
+            "tool_answerer": "'ambient'"
+          }
+        }
+      },
+      {
+        "from": "./apps/ambient",
+        "to": "./apps",
+        "condition": "has(hop.route) && (hop.route == 'view' || hop.route == 'withdraw' || hop.route == 'error')",
+        "modifier": {
+          "set_context": {
+            "channel_node": "'display'",
+            "channel": "'display'"
+          }
+        }
+      },
+      {
+        "from": "./apps",
+        "to": "./apps/ambient",
+        "condition": "has(hop.route) && (hop.route == 'event' || hop.route == 'receipt') && has(hop.owner) && hop.owner.contains('/apps/ambient/')"
+      },
+      {
+        "from": "./apps",
+        "to": "./apps/ambient",
+        "condition": "has(hop.route) && hop.route == 'answer'"
+      },
+      {
+        "from": "./assistants/sam/talky-chat",
+        "to": "./apps/ambient/timer",
+        "lane": "tool",
+        "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && (hop.tool_name == 'set_timer' || hop.tool_name == 'cancel_timer')",
+        "modifier": {
+          "set_context": {
+            "tool_caller": "'talky-chat'",
+            "assistant": "'sam'"
+          },
+          "delete_context": [
+            "col_phase",
+            "consult_class",
+            "consult_id",
+            "tool_answerer"
+          ]
+        }
+      },
+      {
+        "from": "./assistants/sam/talky-chat",
+        "to": "./apps/ambient/timer",
+        "lane": "schemas",
+        "condition": "has(hop.route) && hop.route == 'schemas'",
+        "modifier": {
+          "set_context": {
+            "tool_caller": "'talky-chat'",
+            "assistant": "'sam'"
+          },
+          "delete_context": [
+            "col_phase",
+            "consult_class",
+            "consult_id",
+            "tool_answerer"
+          ]
+        }
+      }
+    ]
+  },
+  "chat": {
+    "template": "chat@0.3.3",
+    "screen": "display",
+    "declaration": {
+      "screen": {
+        "out": [
+          "view",
+          "withdraw"
+        ],
+        "back": [
+          "event",
+          "receipt"
+        ]
+      },
+      "listens": [
+        "turn",
+        "answer",
+        "partial"
+      ],
+      "offers": [],
+      "drives": [
+        {
+          "cell": "channels/chat",
+          "out": [
+            "typed"
+          ],
+          "back": []
+        }
+      ]
+    },
+    "edges": [
+      {
+        "from": "./firewall",
+        "to": "./apps",
+        "condition": "has(hop.route) && hop.route == 'pass'",
+        "modifier": {
+          "set_hop": {
+            "route": "'turn'"
+          },
+          "delete_context": [
+            "fw_body",
+            "fw_now",
+            "fw_phase",
+            "store_origin"
+          ]
+        }
+      },
+      {
+        "from": "./assistants",
+        "to": "./apps",
+        "condition": "has(hop.route) && hop.route == 'answer'"
+      },
+      {
+        "from": "./assistants",
+        "to": ".",
+        "condition": "has(hop.route) && hop.route == 'answer' && (!has(context.channel_node) || context.channel_node == '')",
+        "modifier": {
+          "delete_context": [
+            "tool_answerer"
+          ]
+        }
+      },
+      {
+        "from": "./channels",
+        "to": "./apps",
+        "condition": "has(hop.route) && hop.route == 'partial'"
+      },
+      {
+        "from": "./apps",
+        "to": "./apps/chat",
+        "condition": "has(hop.route) && (hop.route == 'turn' || hop.route == 'answer' || hop.route == 'partial')"
+      },
+      {
+        "from": "./apps",
+        "to": "./apps/chat",
+        "condition": "has(hop.route) && (hop.route == 'event' || hop.route == 'receipt') && has(hop.owner) && hop.owner.contains('/apps/chat/')"
+      },
+      {
+        "from": "./apps/chat",
+        "to": "./apps",
+        "condition": "has(hop.route) && (hop.route == 'view' || hop.route == 'withdraw' || hop.route == 'error')",
+        "modifier": {
+          "set_context": {
+            "channel_node": "'display'",
+            "channel": "'display'"
+          }
+        }
+      },
+      {
+        "from": "./apps/chat",
+        "to": "./channels/chat",
+        "condition": "has(hop.route) && hop.route == 'typed'",
+        "modifier": {
+          "set_hop": {
+            "route": "'in_typed'"
+          }
+        }
+      }
+    ]
+  },
+  "colony-view": {
+    "template": "colony-view@1.1.4",
+    "screen": "display",
+    "edges": [
+      {
+        "from": "./apps/colony-view",
+        "to": "./apps",
+        "condition": "has(hop.route) && (hop.route == 'view' || hop.route == 'error')",
+        "modifier": {
+          "set_context": {
+            "channel_node": "'display'",
+            "channel": "'display'"
+          }
+        }
+      },
+      {
+        "from": "./apps",
+        "to": "./apps/colony-view",
+        "condition": "has(hop.route) && (hop.route == 'event' || hop.route == 'receipt') && has(hop.owner) && hop.owner.contains('/apps/colony-view/')"
+      },
+      {
+        "from": "./apps",
+        "to": "./apps/colony-view",
+        "condition": "has(hop.route) && hop.route == 'mutation_committed'"
+      }
+    ]
+  }
+}

@@ -1,4 +1,4 @@
-# `cogny@5.0.2`
+# `cogny@5.0.3`
 
 The agent core as one template. Four units under one hive:
 [`collector`](../collector/) and [`dispatcher`](../dispatcher/) -- each carrying its
@@ -90,7 +90,7 @@ The two sub-units are **references**, not copies. Each of the two directories ho
 `config.json` and nothing else:
 
 ```json
-{"cell": {"type": "ref", "template": "collector@4.2.0"},
+{"cell": {"type": "ref", "template": "collector@4.2.1"},
  "override_params": {"assemble": {"context_window": 128000,
                                   "curate_soft": 0.5,
                                   "curate_hard": 0.75,
@@ -102,6 +102,15 @@ The `collector` composes the block contract it asks a brain for out of the secti
 answerers OFFER, instead of carrying one as a literal. This core is unaffected in substance: it
 has no `splitter`, so it asks for no block, offers none and ignores any that is offered to it --
 a section describing a fence nobody would cut.
+
+**`5.0.3` moves it once more, and names its app**
+([#728](https://github.com/mmeyerlein/meclaw/issues/728)). The collector at `4.2.1` writes a
+`depart` row for a handed call and keys the round of a late answer on the member's turn; this
+core hands nothing over, so what it does is unchanged. The same version gives `brain` the
+OpenRouter app attribution (`http_referer` / `x_title`, overridable by `OPENROUTER_HTTP_REFERER` /
+`OPENROUTER_X_TITLE`, the form the memory-hive cells use). Since the same fix the assistant's
+consult edges drop `context.turn_id` on the way in, so each consult is a round of this core
+with an id of its own.
 
 **`5.0.2` moves it again, and nothing else**
 ([#784](https://github.com/mmeyerlein/meclaw/issues/784), [#794](https://github.com/mmeyerlein/meclaw/issues/794)).
@@ -576,7 +585,7 @@ Now the knob is set where it belongs, and the sub-unit stays a reference to the 
 `collector`:
 
 ```json
-{"op": "instantiate", "template": "cogny@5.0.2", "at": "/cores/deep",
+{"op": "instantiate", "template": "cogny@5.0.3", "at": "/cores/deep",
  "override_params": {"collector/assemble": {"context_window": 200000,
                                             "recoverability": "lookup:repeatable,write:env"}}}
 ```

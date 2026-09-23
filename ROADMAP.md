@@ -25,7 +25,7 @@ Release detail is in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
 When Now is empty, the tree is between two waves: what the last one built is in
-v0.43.0, under [§ Shipped](#shipped), and the open findings wait in the tracker
+v0.44.0, under [§ Shipped](#shipped), and the open findings wait in the tracker
 for the next wave to give them a horizon. A horizon holds bullets only — a
 sentence like this one stands up here, above the first heading, where the gate
 does not read it.
@@ -109,6 +109,11 @@ worked examples listed in [`templates/README.md`](templates/README.md), where
 One line per release. Details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- v0.44.0: a colony lifts, exports and installs the way it promises. It keeps its own copy of
+  every template version it instantiated, an app is installed from what it declares, a late answer
+  carries the turn that asked, `meclaw --env-report` names the keys nothing binds, and a `proxy` on
+  platform `meclaw` carries a credential on its outgoing POST (a static header or an OAuth 2.0
+  client-credentials bearer, new code `auth_unavailable`).
 - v0.43.0: the display's curator keeps its state in memory. `display@2.7.0` runs compose
   `resident`, the store keeps the applications' rows and one small row of history, one pass
   sends one `patch` and no `read`, and no header carries the screen plan any more (measured on

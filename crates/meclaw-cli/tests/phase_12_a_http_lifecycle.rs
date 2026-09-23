@@ -33,6 +33,7 @@ async fn meclaw_api_starts_serves_health_and_shuts_down_on_signal() {
         daemon: false,
         validate: false,
         validate_strict: false,
+        env_report: false,
         apply: None,
         blobs: None,
         tokio_console: false,

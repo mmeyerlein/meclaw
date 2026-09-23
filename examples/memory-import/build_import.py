@@ -4,8 +4,10 @@
 A `member` exports what it IS -- since GH #471 that is three documents, not one:
 `memory-hive/seed/<table>.jsonl` (what was said to this person), `affinity/…`
 (the curated record that decides who may be told what) and `firewall/…` (the
-screen every inbound turn passes), plus the session ledger of a NAMED generation
-(`session-keeper/…`, GH #475). Since GH #555 each of those is written by the
+screen every inbound turn passes), plus the session ledgers of a NAMED generation
+(`talky/session-keeper/…`, `talky-chat/session-keeper/…` -- one per keeper, filed
+under the keeper's path inside the generation since `session-keeper@2.2.2`, GH #475,
+GH #712). Since GH #555 each of those is written by the
 holder's OWN store, inside the fence it declares, and each directory carries its
 own `seed/export_final.json` when that store finished. There is no marker beside
 them naming the set: a directory says for itself whether it is whole.
@@ -162,13 +164,38 @@ def hive_seed_files(seed_dir, own_seed):
     return files
 
 
-def export_parts(export_dir):
-    """Every hive this export carries, as {hive: {table file: content}}.
+# The key a session keeper's directory had before `session-keeper@2.2.2`, and
+# the key it is read as now. Until then the keeper filed its ledger under the
+# constant hive name, and a generation had exactly one keeper whose ledger ever
+# left it -- the one in `./talky` (GH #712). An export written then is that
+# keeper's, so it is read as the default talky's.
+LEGACY_KEEPER = "session-keeper"
+LEGACY_KEEPER_AS = "talky/session-keeper"
 
-    Two shapes are read. The one written since GH #471 is a directory per hive;
-    the flat one that came before -- `seed/` directly under the export directory
-    -- is read as a memory-hive-only export, because that is what every document
-    already on disk looks like and refusing it would strand them.
+# Where each part's directory actually is, relative to the export directory,
+# for the one key whose name is not its path (the pre-2.2.2 keeper).
+SOURCE = {}
+
+
+def base_of(key):
+    """The hive a part key names: the last segment. A keeper's key is its path
+    inside the generation (`talky/session-keeper`); every other key is a hive
+    name and its own base."""
+    return key.rsplit("/", 1)[-1]
+
+
+def export_parts(export_dir):
+    """Every hive this export carries, as {key: {table file: content}}.
+
+    Three shapes are read. The one written since GH #471 is a directory per hive;
+    since `session-keeper@2.2.2` (GH #712) a session keeper's directory stands one
+    level deeper, under the talky that holds it, and is keyed by that path
+    (`talky/session-keeper`, `talky-chat/session-keeper`). A keeper directory
+    directly under the export is the form written before 2.2.2 and is read as
+    `talky/session-keeper`, said on stderr. The flat one that came before all of
+    them -- `seed/` directly under the export directory -- is read as a
+    memory-hive-only export, because that is what every document already on
+    disk looks like and refusing it would strand them.
     """
     if not os.path.isdir(export_dir):
         die("%s is not a directory" % export_dir)
@@ -178,10 +205,46 @@ def export_parts(export_dir):
     parts = {}
     for entry in sorted(os.listdir(export_dir)):
         seed_dir = os.path.join(export_dir, entry, "seed")
-        if not os.path.isdir(seed_dir):
+        if os.path.isdir(seed_dir):
+            key = entry
+            if entry == LEGACY_KEEPER:
+                key = LEGACY_KEEPER_AS
+                sys.stderr.write(
+                    "build_import: %s/ is a session keeper's ledger in the pre-2.2.2 "
+                    "form (filed under the hive name, not the keeper's path); it is "
+                    "read as %s, the default talky's keeper -- the only one whose "
+                    "ledger left a generation before GH #712\n"
+                    % (entry, key))
+            if key in parts:
+                die("%s holds %s twice, once in the pre-2.2.2 form and once under "
+                    "the keeper's path -- two runs share one directory" % (export_dir, key))
+            SOURCE[key] = entry
+            own = PLACEABLE.get(entry, (None, set()))[1]
+            parts[key] = hive_seed_files(seed_dir, own)
             continue
-        own = PLACEABLE.get(entry, (None, set()))[1]
-        parts[entry] = hive_seed_files(seed_dir, own)
+        holder = os.path.join(export_dir, entry)
+        if not os.path.isdir(holder):
+            continue
+        for sub in sorted(os.listdir(holder)):
+            deep = os.path.join(holder, sub, "seed")
+            if not os.path.isdir(deep):
+                continue
+            # One level deeper stands only a session keeper, filed under its
+            # talky (GH #712). Anything else there is no part a member holds:
+            # taken in, it would become an import part addressed to a holder
+            # that does not exist.
+            if sub != LEGACY_KEEPER:
+                sys.stderr.write(
+                    "build_import: %s/%s/seed is not a session keeper's ledger "
+                    "(only <talky>/%s stands one level deeper); left alone\n"
+                    % (entry, sub, LEGACY_KEEPER))
+                continue
+            key = entry + "/" + sub
+            if key in parts:
+                die("%s holds %s twice, once in the pre-2.2.2 form and once under "
+                    "the keeper's path -- two runs share one directory" % (export_dir, key))
+            SOURCE[key] = key
+            parts[key] = hive_seed_files(deep, set())
     if not parts:
         die("%s holds neither a seed/ directory nor one per hive -- point "
             "--export at the directory that HOLDS them, not at a seed/ itself"
@@ -327,7 +390,8 @@ def import_part(hive, marker, table_file, body, index, of):
     if not isinstance(schema, dict):
         die("%s/%s has no schema header. A row list without one is a guess, and "
             "the receiving porter refuses it as such" % (hive, table_file))
-    return {"format": HIVE_FORMAT.get(hive) or marker.get("format"), "hive_template": hive,
+    return {"format": HIVE_FORMAT.get(base_of(hive)) or marker.get("format"),
+            "hive_template": base_of(hive),
             "export_id": marker.get("export_id") or "", "exported_at": marker.get("exported_at"),
             "table": table_file[:-len(".jsonl")], "part": index, "of": of,
             "final": index == of, "absent": False, "schema": schema, "rows": rows}
@@ -338,12 +402,14 @@ def after_boot_messages(export_dir, target, parts, holders):
 
     One message per part, addressed at the member's own path with
     `hop.import_hive` naming the holder -- the door the member has carried since
-    GH #475. Applying the same message twice leaves the same state, so the list
+    GH #475. For a session keeper that is its full path inside the generation
+    (`talky/session-keeper`), which is what the generation's own edges read to
+    pick the keeper (GH #712). Applying the same message twice leaves the same state, so the list
     is a repair procedure as much as a transfer.
     """
     out = []
     for hive in sorted(parts):
-        marker_path = os.path.join(export_dir, hive, "seed", MARKER)
+        marker_path = os.path.join(export_dir, SOURCE.get(hive, hive), "seed", MARKER)
         marker = json.loads(read(marker_path)) if os.path.isfile(marker_path) else {}
         table_files = sorted(parts[hive])
         if len(table_files) > 1:
@@ -361,7 +427,7 @@ def after_boot_messages(export_dir, target, parts, holders):
                                index, of)
             hop = {"route": "in_import", "import_hive": hive}
             header = {"hop": hop}
-            key = AFTER_BOOT.get(hive)
+            key = AFTER_BOOT.get(base_of(hive))
             if key:
                 if not holders.get(key):
                     die("a %s part needs --%s: the member forwards it into the "

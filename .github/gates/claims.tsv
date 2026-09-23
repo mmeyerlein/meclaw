@@ -279,6 +279,12 @@ PIN-add-templates-name-taken-de	docs/meclaw-overview.md	ein Eintrag, den die Reg
 PIN-add-templates-name-taken-en	docs/meclaw-overview.en.md	an entry the registry already answers is `template_name_taken`	pinned	a_taken_name_is_refused_and_leaves_nothing_behind
 PIN-add-templates-new-version-de	docs/meclaw-overview.md	eine **neue** Version einer registrierten Klasse registriert sich also neben der alten	pinned	a_new_version_registers_beside_the_old_one
 PIN-add-templates-new-version-en	docs/meclaw-overview.en.md	a **new** version of a registered class registers beside the old one	pinned	a_new_version_registers_beside_the_old_one
+PIN-add-templates-version-immutable-de	docs/meclaw-overview.md	das die Kolonie schon mit anderen Dateien speichert, ist `template_version_immutable`	pinned	a_changed_tree_under_a_stored_version_is_refused_as_immutable
+PIN-add-templates-version-immutable-en	docs/meclaw-overview.en.md	the colony already stores with different files is `template_version_immutable`	pinned	a_changed_tree_under_a_stored_version_is_refused_as_immutable
+PIN-templates-kept-copy-de	docs/meclaw-overview.md	Die Kolonie behält jede Version, die sie instanziiert hat (GH #811)	pinned	the_way_back_needs_no_add_templates_after_the_library_moved_on
+PIN-templates-kept-copy-en	docs/meclaw-overview.en.md	The colony keeps every version it instantiated (GH #811)	pinned	the_way_back_needs_no_add_templates_after_the_library_moved_on
+PIN-templates-local-own-de	docs/meclaw-overview.md	`local/` gehört der Kolonie	pinned	a_library_outside_the_root_stays_byte_identical
+PIN-templates-local-own-en	docs/meclaw-overview.en.md	`local/` is the colony's own	pinned	a_library_outside_the_root_stays_byte_identical
 PIN-resolve-bare-name-highest-de	docs/meclaw-overview.md	Ohne Version gewinnt die höchste registrierte Version	pinned	a_bare_name_resolves_to_the_newer_and_a_pin_resolves_exactly
 PIN-resolve-bare-name-highest-en	docs/meclaw-overview.en.md	the highest registered version wins	pinned	a_bare_name_resolves_to_the_newer_and_a_pin_resolves_exactly
 PIN-add-templates-unreadable-version-de	docs/meclaw-overview.md	die nicht `major.minor.patch` ist, ist `schema`	pinned	a_version_the_resolver_cannot_read_is_refused_at_the_door
@@ -445,3 +451,7 @@ PIN-voice-duplex-immutable-de	docs/cell-types.md	`duplex` steht daneben und ist 
 PIN-voice-duplex-immutable-en	docs/cell-types.en.md	`duplex` stands beside them and is immutable for the same reason	pinned	an_update_may_not_move_the_engine
 PIN-voice-duplex-spoken-frame-de	docs/voice-wire-protocol.md	Kumulativ wie `partial`: jedes ersetzt das vorige. Nur hinter einem Duplex-Provider.	pinned	a_spoken_frame_names_the_turn_it_is_filling
 PIN-voice-duplex-spoken-frame-en	docs/voice-wire-protocol.en.md	Cumulative like `partial`: each one replaces the previous. Behind a duplex provider only.	pinned	a_spoken_frame_names_the_turn_it_is_filling
+PIN-env-report-names-only-de	docs/meclaw-overview.md	welche strikten `${KEY}`-Referenzen einen Key nennen, den die Datei nicht trägt	pinned	the_report_names_exactly_the_unused_and_the_missing_key
+PIN-env-report-names-only-en	docs/meclaw-overview.en.md	which strict `${KEY}` references name a key the file does not carry	pinned	the_report_names_exactly_the_unused_and_the_missing_key
+PIN-env-report-no-value-de	docs/meclaw-overview.md	Nur Namen, nie ein Wert.	pinned	no_value_of_the_env_file_is_printed
+PIN-env-report-no-value-en	docs/meclaw-overview.en.md	Names only, never a value.	pinned	no_value_of_the_env_file_is_printed

@@ -80,10 +80,12 @@ fn a_duplicate_route_an_empty_route_and_a_relative_emit_to_are_each_refused() {
             .starts_with("emit_to: ")
     );
     // A boundary a message can rename is not a boundary (README § 0a A9).
+    // Nine since GH #828: `auth`, the credential, is a key of the boundary too.
     assert_eq!(
         IMMUTABLE_KEYS.len(),
-        8,
+        9,
         "every key of the variant, and no more"
     );
     assert!(IMMUTABLE_KEYS.contains(&"lanes") && IMMUTABLE_KEYS.contains(&"mount"));
+    assert!(IMMUTABLE_KEYS.contains(&"auth"));
 }

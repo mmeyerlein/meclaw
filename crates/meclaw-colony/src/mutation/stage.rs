@@ -769,6 +769,18 @@ pub(crate) fn patch_and_substitute_config(
             refusal_name(&cfg_path)
         )));
     }
+    // GH #828: the same question of the DISK view, where an environment token
+    // is still a token -- a literal secret is only visible here, and refusing
+    // it here keeps it off the filesystem this function is about to write.
+    if let Some(factory) = factories.get(&cell_type) {
+        let declared = cfg.get("params").cloned().unwrap_or(JsonValue::Null);
+        if let Err(reason) = factory.validate_declared_params(&declared) {
+            return Err(MutationError::InvalidParams(format!(
+                "{}: {reason}",
+                refusal_name(&cfg_path)
+            )));
+        }
+    }
     // Extract the contract block from the post-substitution config (T23) and
     // compile it, with the same config's `params`, via the shared
     // `compile_spawn_view` helper (paket-7 B4; GH #555 added the params half).

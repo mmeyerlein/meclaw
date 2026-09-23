@@ -1,4 +1,4 @@
-# `colony-view@1.1.3`
+# `colony-view@1.1.4`
 
 The colony, drawn. A committed mutation takes a topology snapshot, a `code` cell
 turns it into one view, and a display holds it and serves the page. The browser
@@ -457,3 +457,5 @@ was never an interval anybody had a reason for.
 - `1.1.2` Every `:hover` rule asks the screen whether the output has a finger (#715).
 - `1.1.3` The view is a window the display's curator reads: context, relevance, pin,
   topic, a dock tile with the cell count, and `touched` from the snapshot (#808).
+- `1.1.4` The template declares its own installation (`app`), which the builder's
+  `install_app` recipe renders (#599).

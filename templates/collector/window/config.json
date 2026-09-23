@@ -23,7 +23,9 @@
         "role": "text",
         "turn": "json",
         "fired": "int",
-        "recorded_at": "text"
+        "recorded_at": "text",
+        "correlation": "text",
+        "deadline_ms": "int"
       },
       "batched": {
         "session_id": "text",

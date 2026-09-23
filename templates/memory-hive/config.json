@@ -519,9 +519,14 @@
               "dream_run",
               "dream_to",
               "mem_phase",
+              "memory_tier",
               "port_run",
               "port_table",
+              "recall_as_of",
               "recall_id",
+              "recall_query",
+              "recall_window_from",
+              "recall_window_to",
               "store_origin"
             ]
           }
@@ -540,9 +545,14 @@
               "dream_run",
               "dream_to",
               "mem_phase",
+              "memory_tier",
               "port_run",
               "port_table",
+              "recall_as_of",
               "recall_id",
+              "recall_query",
+              "recall_window_from",
+              "recall_window_to",
               "store_origin"
             ]
           }
@@ -558,9 +568,14 @@
               "dream_run",
               "dream_to",
               "mem_phase",
+              "memory_tier",
               "port_run",
               "port_table",
+              "recall_as_of",
               "recall_id",
+              "recall_query",
+              "recall_window_from",
+              "recall_window_to",
               "store_origin"
             ]
           }
@@ -576,9 +591,14 @@
               "dream_run",
               "dream_to",
               "mem_phase",
+              "memory_tier",
               "port_run",
               "port_table",
+              "recall_as_of",
               "recall_id",
+              "recall_query",
+              "recall_window_from",
+              "recall_window_to",
               "store_origin"
             ]
           }
@@ -594,9 +614,14 @@
               "dream_run",
               "dream_to",
               "mem_phase",
+              "memory_tier",
               "port_run",
               "port_table",
+              "recall_as_of",
               "recall_id",
+              "recall_query",
+              "recall_window_from",
+              "recall_window_to",
               "store_origin"
             ]
           }
@@ -612,9 +637,14 @@
               "dream_run",
               "dream_to",
               "mem_phase",
+              "memory_tier",
               "port_run",
               "port_table",
+              "recall_as_of",
               "recall_id",
+              "recall_query",
+              "recall_window_from",
+              "recall_window_to",
               "store_origin"
             ]
           }
@@ -630,9 +660,14 @@
               "dream_run",
               "dream_to",
               "mem_phase",
+              "memory_tier",
               "port_run",
               "port_table",
+              "recall_as_of",
               "recall_id",
+              "recall_query",
+              "recall_window_from",
+              "recall_window_to",
               "store_origin"
             ]
           }
@@ -671,9 +706,14 @@
               "dream_run",
               "dream_to",
               "mem_phase",
+              "memory_tier",
               "port_run",
               "port_table",
+              "recall_as_of",
               "recall_id",
+              "recall_query",
+              "recall_window_from",
+              "recall_window_to",
               "store_origin"
             ]
           }
@@ -689,9 +729,14 @@
               "dream_run",
               "dream_to",
               "mem_phase",
+              "memory_tier",
               "port_run",
               "port_table",
+              "recall_as_of",
               "recall_id",
+              "recall_query",
+              "recall_window_from",
+              "recall_window_to",
               "store_origin"
             ]
           }
@@ -707,9 +752,14 @@
               "dream_run",
               "dream_to",
               "mem_phase",
+              "memory_tier",
               "port_run",
               "port_table",
+              "recall_as_of",
               "recall_id",
+              "recall_query",
+              "recall_window_from",
+              "recall_window_to",
               "store_origin"
             ]
           }
@@ -733,9 +783,14 @@
               "dream_run",
               "dream_to",
               "mem_phase",
+              "memory_tier",
               "port_run",
               "port_table",
+              "recall_as_of",
               "recall_id",
+              "recall_query",
+              "recall_window_from",
+              "recall_window_to",
               "store_origin"
             ]
           }
@@ -783,9 +838,14 @@
               "dream_run",
               "dream_to",
               "mem_phase",
+              "memory_tier",
               "port_run",
               "port_table",
+              "recall_as_of",
               "recall_id",
+              "recall_query",
+              "recall_window_from",
+              "recall_window_to",
               "store_origin",
               "memory_call_id"
             ]

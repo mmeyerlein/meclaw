@@ -124,6 +124,7 @@ async fn a_scheduled_lane_is_triggerable_once_over_the_http_api() {
         daemon: false,
         validate: false,
         validate_strict: false,
+        env_report: false,
         apply: None,
         blobs: None,
         tokio_console: false,

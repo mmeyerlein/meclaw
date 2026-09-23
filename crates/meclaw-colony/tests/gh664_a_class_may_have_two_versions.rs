@@ -30,7 +30,8 @@ fn write_class(templates: &std::path::Path, dir: &str, name: &str, version: &str
 }
 
 /// Two versions of one class are two entries; the same version twice is the
-/// ambiguity Q7 really meant, and it still aborts the whole scan.
+/// ambiguity Q7 really meant, and it still aborts the whole scan — unless one
+/// of the two is the colony's kept copy and the bytes agree (GH #811).
 #[test]
 fn the_scan_carries_two_versions_and_aborts_on_two_identical_ones() {
     let td = tempfile::TempDir::new().expect("tempdir");
@@ -47,25 +48,41 @@ fn the_scan_carries_two_versions_and_aborts_on_two_identical_ones() {
     versions.sort_unstable();
     assert_eq!(versions, vec!["1.0.0", "1.0.1"]);
 
-    // The third directory repeats a version that is already there. A pinned
-    // reference would have two answers, so the scan aborts — and it names both
-    // directories, because the collision is a place on disk, not a word.
+    // GH #811: a third directory repeats 1.0.1 byte for byte. One of the two
+    // is `local/a@1.0.1/` — the colony's kept copy of that version — so they
+    // are one template, not an ambiguity: the kept copy is the entry.
     write_class(&templates, "vendored/a-again", "a", "1.0.1");
+    let found = scan_templates_dir(&templates)
+        .expect("an identical twin of the kept copy is no ambiguity (GH #811)");
+    assert_eq!(found.len(), 2, "{found:?}");
+    assert!(
+        found
+            .iter()
+            .any(|t| t.filesystem_path == templates.join("local/a@1.0.1")),
+        "the kept copy is the entry: {found:?}"
+    );
+
+    // Two directories of which NEITHER is the kept copy repeat one version. A
+    // pinned reference would have two answers, so the scan aborts — and it
+    // names both directories, because the collision is a place on disk, not a
+    // word.
+    write_class(&templates, "vendored/b", "b", "2.0.0");
+    write_class(&templates, "other/b-again", "b", "2.0.0");
     let err = scan_templates_dir(&templates).expect_err("the same version twice must abort");
     let (name, version) = match &err {
         ScannerError::DuplicateVersion { name, version, .. } => (name.clone(), version.clone()),
         other => panic!("expected DuplicateVersion, got {other:?}"),
     };
-    assert_eq!(name, "a");
-    assert_eq!(version.as_deref(), Some("1.0.1"));
+    assert_eq!(name, "b");
+    assert_eq!(version.as_deref(), Some("2.0.0"));
     let rendered = err.to_string();
     assert!(
-        rendered.contains("a@1.0.1"),
+        rendered.contains("b@2.0.0"),
         "the message must name the class AND the version: {rendered}"
     );
     assert!(
-        rendered.contains(&templates.join("local/a@1.0.1").display().to_string())
-            && rendered.contains(&templates.join("vendored/a-again").display().to_string()),
+        rendered.contains(&templates.join("vendored/b").display().to_string())
+            && rendered.contains(&templates.join("other/b-again").display().to_string()),
         "the message must name both directories: {rendered}"
     );
 }

@@ -98,6 +98,50 @@ fn lane(route: &str, messages: Value) -> meclaw_core::Message {
         .build()
 }
 
+/// A lane arrival with extra context and hop keys — the #728 roads read the
+/// consult id off the context and the handed calls / the delegation's turn off
+/// the hop.
+fn lane_with(route: &str, ctx: Value, hop: Value, messages: Value) -> meclaw_core::Message {
+    let mut c = json!({"session_id":"s1","turn_id":"t1","iter":"0","channel":"c1",
+                       "audience_set":"a1","speaker":"sp"});
+    for (k, v) in ctx.as_object().expect("ctx object") {
+        c[k] = v.clone();
+    }
+    let mut h = json!({"route": route});
+    for (k, v) in hop.as_object().expect("hop object") {
+        h[k] = v.clone();
+    }
+    MessageBuilder::new(Path::new("/assemble"))
+        .context(map_of(c))
+        .hop(map_of(h))
+        .body(Body::Inline(json!({ "messages": messages })))
+        .reply_to(Path::new("/sink"))
+        .build()
+}
+
+/// A store BUNDLE reply, one leg per `(tool_call_id, rows)` — the shape of
+/// `support/assemble_cell.rs::bundle_reply`.
+fn bundle(phase: &str, turn_id: &str, legs: &[(&str, Value)]) -> meclaw_core::Message {
+    MessageBuilder::new(Path::new("/assemble"))
+        .context(map_of(
+            json!({"session_id":"s1","turn_id":turn_id,"iter":"0",
+                   "col_phase":phase,"store_origin":"collector"}),
+        ))
+        .hop(map_of(
+            json!({"operation":"bundle","rows_affected":1,"bundle_errors":0}),
+        ))
+        .body(Body::Inline(json!({
+            "messages": legs.iter().map(|(id, rows)| json!(
+                {"origin":"tool","type":"tool_result","id":id,"text":rows.to_string()}))
+                .collect::<Vec<_>>(),
+            "results": legs.iter().map(|(id, _)| json!(
+                {"tool_call_id":id,"operation":"select","rows_affected":1,"duration_ms":0}))
+                .collect::<Vec<_>>()
+        })))
+        .reply_to(Path::new("/sink"))
+        .build()
+}
+
 /// A store reply as the hive's own edge delivers it back. Mirrors
 /// `collector_window::reply_doc` for the non-bundle operations.
 fn reply(phase: &str, op: &str, rows_affected: i64, payload: Value) -> meclaw_core::Message {
@@ -153,6 +197,45 @@ fn stream() -> Vec<meclaw_core::Message> {
                     "text":"{\"name\":\"thread_recall\",\"arguments\":{}}"}]),
         ),
         lane("in_advice", json!([])),
+        // GH #728 (T5 review M2): the three roads the late-answer build added.
+        // A handed call leaves a `depart` row; an advice with a consult id is
+        // parked and looks its departure up (stage A), and the look comes back
+        // (stage B, `advice-look`) and opens the round under the member's turn;
+        // a delegation reads the turn off its hop.
+        lane_with(
+            "in_calls",
+            json!({}),
+            json!({"handoff_calls": "c9"}),
+            json!([{"origin":"assistant","type":"tool_call","id":"c9",
+                    "text":"{\"name\":\"consult_cogny\",\"arguments\":{\"consult_id\":\"k-1\"}}"}]),
+        ),
+        lane_with(
+            "in_advice",
+            json!({"consult_id": "k-1", "turn_id": "cogny-round-1"}),
+            json!({"turn_id": "cogny-round-1"}),
+            json!([{"origin":"assistant","type":"text","text":"the advice"}]),
+        ),
+        bundle(
+            "advice-look",
+            "prov-1",
+            &[
+                (
+                    "c-look-depart",
+                    json!([{"turn_id": "t1", "deadline_ms": 4102444800000_i64}]),
+                ),
+                ("c-look-turn", Value::Null),
+                (
+                    "c-look-self",
+                    json!([{"id": "r-1", "content": "the advice", "consult_id": "k-1"}]),
+                ),
+            ],
+        ),
+        lane_with(
+            "in_delegation",
+            json!({"delegation_id": "d-1"}),
+            json!({"turn_id": "t1"}),
+            json!([{"origin":"assistant","type":"text","text":"look this up"}]),
+        ),
         // …and round again, so a name left by the SECOND pass over a lane is
         // seen by a path that already ran once.
         lane(
@@ -335,6 +418,18 @@ async fn a_resident_assembler_answers_exactly_as_a_fresh_one_does() {
              persistent one — the shipped assembler carries state across messages"
         );
     }
+
+    // The #728 roads were walked, not skipped: stage A asked in phase
+    // `advice-look`, and stage B opened a round (T5 review M2).
+    let all = format!("{warm:?}");
+    assert!(
+        all.contains("advice-look"),
+        "stage A of an advice never ran"
+    );
+    assert!(
+        all.contains("c-open-rekey"),
+        "stage B of an advice never re-keyed its row"
+    );
 
     // A transcript of nothing would make the comparison above vacuous.
     let emitted: usize = warm.iter().map(Vec::len).sum();

@@ -1,4 +1,4 @@
-# `builder-librarian@2.2.0`
+# `builder-librarian@2.2.1`
 
 Lexical retrieval over the builder's own knowledge base, as a hive of existing cell types
 -- no new cell type, no Rust. Three cells: `retrieve` (a `code` cell, the query/brief state
@@ -13,6 +13,12 @@ of carrying the whole corpus in its prompt. One per builder hive.
 and paying a metered provider to embed a corpus the builder can already find by name would
 be the wrong trade. BM25 over section-cut chunks answers the question a builder actually
 asks -- "show me the pattern for X" -- and answers it for nothing.
+
+**Since 2.2.1 a new corpus is a new version.** A colony keeps every template version it
+instantiated and never lets a stored version change under its name
+([#811](https://github.com/mmeyerlein/meclaw/issues/811)), so a regenerated
+`store/seed/docs.jsonl` under an unchanged version would never reach a colony that already holds
+that version. 2.2.1 carries the regenerated corpus; the cells are unchanged.
 
 ## The cells
 

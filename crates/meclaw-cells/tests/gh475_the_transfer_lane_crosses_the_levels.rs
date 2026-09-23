@@ -35,9 +35,10 @@
 //! 4. **The member NAMES the generation instead of fanning out to it.** The
 //!    fourth export target is guarded on `context.assistant`. Two measurable
 //!    reasons: a member with two generations holds two ledgers and they are not
-//!    one document, and a part is filed under the hive it came out of, so two
-//!    keepers would both claim `<fence>/session-keeper/` and the directory would
-//!    keep whichever walk finished last. The guard is also what keeps an
+//!    one document, and a keeper files its part under its path INSIDE the
+//!    generation (`<fence>/talky/session-keeper/`, since `session-keeper@2.2.2`,
+//!    GH #712), so the keepers of two generations would claim the same
+//!    directories and each would keep whichever walk finished last. The guard is also what keeps an
 //!    ordinary export of a member with no generation from dead-lettering into an
 //!    empty container. **What the member does NOT do any more is take the parts
 //!    back:** GH #555 removed the one cell of that level that turned a walk into
@@ -108,11 +109,19 @@ fn carrying(config: &Value, from: &str, to: &str, route: &str) -> Vec<Value> {
 /// something, and does: it stamps `context.port_phase`, which is how the porter
 /// tells the two legs of its own walk apart. What NO door may do is rename the
 /// lane — see the assertion.
-const CHAIN: [(&str, &str, &str, bool); 3] = [
+const CHAIN: [(&str, &str, &str, bool); 4] = [
     (
         "templates/assistant/config.json",
         "./talky",
         "the generation",
+        true,
+    ),
+    // Since GH #712 the typed channel's surface carries the lane too: each talky
+    // of a generation holds a keeper, and each keeper's ledger travels.
+    (
+        "templates/assistant/config.json",
+        "./talky-chat",
+        "the generation's typed surface",
         true,
     ),
     (
@@ -260,9 +269,9 @@ fn the_member_names_the_generation_whose_ledger_it_wants() {
             && condition.contains("context.assistant != ''"),
         "the fourth export target is UNGUARDED. Two things break at once: a member \
          with two generations holds two session ledgers and they are not one \
-         document — and a part is filed under the hive it came out of, so both \
-         keepers would claim `<fence>/session-keeper/` and the directory would \
-         hold whichever walk finished last, silently. The guard is \
+         document — and a keeper files its part under its path inside the \
+         generation, so the keepers of both would claim `<fence>/talky/session-keeper/` \
+         and the directory would hold whichever walk finished last, silently. The guard is \
          also what keeps an ordinary export of a member with no generation at all \
          from dead-lettering into an empty container: {condition}"
     );
@@ -282,12 +291,13 @@ fn the_member_names_the_generation_whose_ledger_it_wants() {
     );
     let condition = import[0]["condition"].as_str().unwrap_or_default();
     assert!(
-        condition.contains("hop.import_hive == 'session-keeper'"),
+        condition.contains("hop.import_hive.endsWith('/session-keeper')"),
         "the import door reads the holder off the BODY. A body is model-writable \
          and an edge is not, which is why the other two holders are named on \
-         `hop.import_hive` and this one has to be as well — and the name is the \
-         hive's (`session-keeper`), not the endpoint's, because a part is filed \
-         under the hive it came out of: {condition}"
+         `hop.import_hive` and this one has to be as well — and since \
+         `session-keeper@2.2.2` the address is the keeper's PATH inside the \
+         generation (`talky/session-keeper`), because a keeper files its part \
+         under that path (GH #712): {condition}"
     );
     assert!(
         import[0]["modifier"].is_null(),
@@ -320,10 +330,13 @@ fn the_member_names_the_generation_whose_ledger_it_wants() {
     }
 }
 
-/// The keeper's document is filed under a name, and that name is what the sink
+/// The keeper's document is filed under a path, and that path is what the store
 /// turns into a directory. It is written down in three places — the porter that
-/// stamps it, the member's prose and the example that reads the directory back —
-/// and a mismatch between any two of them is a document filed where nobody looks.
+/// derives it, the member's import door and the example that reads the directory
+/// back — and a mismatch between any two of them is a document filed where nobody
+/// looks. Since `session-keeper@2.2.2` (GH #712) the path is the keeper's own,
+/// `<talky>/session-keeper`, read off `envelope.target`, and there is no hive-name
+/// constant any more.
 #[test]
 fn the_name_the_keeper_stamps_is_the_name_the_import_door_and_the_example_use() {
     let Some(member) = shipped("templates/member/config.json") else {
@@ -334,11 +347,11 @@ fn the_name_the_keeper_stamps_is_the_name_the_import_door_and_the_example_use() 
         return;
     };
     assert!(
-        porter.contains(r#"HIVE = \"session-keeper\""#),
-        "the keeper's porter no longer stamps `session-keeper` as its hive. That \
-         string is the directory a part of its walk is filed under and the word \
-         `hop.import_hive` carries on the way back; changing it in one place \
-         files a document where nothing looks for it"
+        porter.contains(r#"NODE = \"/\".join(_segs[-3:-1])"#) && !porter.contains("HIVE ="),
+        "the keeper's porter no longer derives its directory from its own path. \
+         That path is the directory a part of its walk is filed under and the \
+         address `hop.import_hive` carries on the way back; a constant here files \
+         the documents of two keepers of one generation into one directory"
     );
 
     let import = carrying(&member, ".", "./assistants", "in_import");
@@ -346,7 +359,7 @@ fn the_name_the_keeper_stamps_is_the_name_the_import_door_and_the_example_use() 
         import[0]["condition"]
             .as_str()
             .unwrap_or_default()
-            .contains("'session-keeper'")
+            .contains("endsWith('/session-keeper')")
     );
 
     let Ok(example) = std::fs::read_to_string(repo("examples/memory-import/build_import.py"))
@@ -354,10 +367,12 @@ fn the_name_the_keeper_stamps_is_the_name_the_import_door_and_the_example_use() 
         return;
     };
     assert!(
-        example.contains("\"session-keeper\": \"assistant\""),
+        example.contains("\"session-keeper\": \"assistant\"")
+            && example.contains("LEGACY_KEEPER_AS = \"talky/session-keeper\""),
         "`examples/memory-import/build_import.py` no longer knows the keeper as a \
-         hive it cannot seed at birth but CAN carry in after boot. Without that row \
-         a session document is silently dropped from the transfer, which reads \
+         hive it cannot seed at birth but CAN carry in after boot, or no longer \
+         reads a pre-2.2.2 export as the default talky's keeper. Without either a \
+         session document is silently dropped from the transfer, which reads \
          exactly like one that was never exported"
     );
 }

@@ -36,6 +36,7 @@ async fn validate_skips_http_bind_even_with_api_flag() {
         daemon: false,
         validate: true,
         validate_strict: false,
+        env_report: false,
         apply: None,
         blobs: None,
         tokio_console: false,

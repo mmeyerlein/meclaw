@@ -280,11 +280,15 @@ fn main_config(silent_advisor: bool) -> Value {
         // `consult_id` becomes context so it survives the advisor's own chain,
         // and `col_phase` is cleared because this message comes out of ANOTHER
         // collector's chain and would otherwise arrive mid-assembly.
+        // GH #728 (OR-T13): and `turn_id` is DROPPED, as on the assistant's own
+        // consult edges -- the core's rounds are the core's, it mints their ids, and
+        // the return is correlated by `consult_id` alone.
         json!({"from": "./talky/dispatcher", "to": advisor,
                "condition": "has(hop.tool_name) && hop.tool_name == 'consult_cogny'",
                "modifier": {"set_hop": {"route": "'in_turn'"},
                             "set_context": {"consult_id": "hop.consult_id",
                                             "col_phase": "''"},
+                            "delete_context": ["turn_id"],
                             "restore_ttl": true}}),
         // a second edge on the same condition: the probe that lets this test
         // read what the correlation actually was
@@ -559,6 +563,68 @@ async fn a_consult_answers_the_channel_at_once_and_the_advice_follows_later() {
     assert!(
         second.contains("one moment, i am asking"),
         "and the interim answer is part of the conversation: {second}"
+    );
+
+    h.shutdown().await;
+}
+
+/// GH #728, lock 9 -- the advice answer carries the turn that asked, in a running
+/// colony. The interim answer leaves the member's round under its id; the follow-up
+/// leaves a FRESH round of the talky (its own key, `round_id`) and still carries that
+/// same id as `turn_id` -- found on the depart row the consult left behind -- with
+/// `late = 0`, because the advisor answered inside `late_after_ms`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gh728_the_advice_answer_carries_the_turn_of_the_interim() {
+    let mock = MockOpenAI::start(vec![
+        canned_content_and_tool_calls(
+            "one moment, i am asking",
+            vec![(
+                "call-1",
+                "consult_cogny",
+                r#"{"question":"weather in berlin","eta":"seconds"}"#,
+            )],
+        ),
+        canned_chat_completion("the advisor says it is 21C and sunny.", "stop"),
+    ])
+    .await;
+    let td = tempfile::TempDir::new().unwrap();
+    build_tree(&td, &mock.base_url, false, "120000");
+    let (h, mut sink_rx, _park_rx) = boot(&td).await;
+
+    h.send(turn("what is the weather in berlin?")).await;
+
+    let interim = recv_bounded(&mut sink_rx)
+        .await
+        .expect("the interim answer");
+    assert_eq!(answer_text(&interim), "one moment, i am asking");
+    let t = hop_of(&interim, "turn_id");
+    assert!(
+        !t.is_empty(),
+        "the member's round has an id: {:?}",
+        interim.headers.hop
+    );
+
+    let follow_up = recv_bounded(&mut sink_rx).await.expect("the follow-up");
+    assert_eq!(
+        answer_text(&follow_up),
+        "the advisor says it is 21C and sunny."
+    );
+    assert_eq!(
+        hop_of(&follow_up, "turn_id"),
+        t,
+        "the advice answer carries the turn that asked: {:?}",
+        follow_up.headers.hop
+    );
+    assert_eq!(
+        hop_of(&follow_up, "late"),
+        "0",
+        "{:?}",
+        follow_up.headers.hop
+    );
+    let round = hop_of(&follow_up, "round_id");
+    assert!(
+        !round.is_empty() && round != t,
+        "and it left a round of its own: {round:?}"
     );
 
     h.shutdown().await;

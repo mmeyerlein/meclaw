@@ -6,6 +6,7 @@
 pub mod apply;
 pub mod ask;
 pub mod bridge;
+pub mod env_report;
 pub mod factories;
 pub mod lease;
 mod mux;
@@ -276,6 +277,13 @@ pub struct Cli {
     #[arg(long = "validate-strict", default_value_t = false)]
     pub validate_strict: bool,
 
+    /// Name the `.env` keys no `${…}` in this colony's tree substitutes, and the `${…}`
+    /// references whose key the `.env` does not carry. Names only, never a value. Reads
+    /// files and nothing else: no lease, no `colony.db`, no log, so it answers for a
+    /// colony that is running (GH #826).
+    #[arg(long = "env-report", default_value_t = false)]
+    pub env_report: bool,
+
     /// Apply a mutation manifest right after the boot: one ordered list of
     /// mutation bodies in one file, handed to `/colony/mutations` as one body.
     /// `-` reads it from stdin. Without `--daemon`/`--api` this is a one-shot --
@@ -412,7 +420,8 @@ pub type Args = Cli;
 ///    over every mode and returns through `std::process::exit` with the
 ///    answer's verdict (0 answer, 1 error or transport failure, 2 timeout).
 /// 2. `--sandbox-probe` (GH #97) — a question about the host, answered without
-///    a subscriber for the same reason.
+///    a subscriber for the same reason; `--env-report` (GH #826) likewise, a
+///    question about the root's `.env` that writes nothing into the root.
 /// 3. everything else — the tracing subscriber is wired here, before any colony
 ///    work, and its guard outlives [`run`] because `Drop` flushes the appender.
 pub async fn entrypoint(mut cli: Cli) -> anyhow::Result<()> {
@@ -425,7 +434,9 @@ pub async fn entrypoint(mut cli: Cli) -> anyhow::Result<()> {
             }
         }
     }
-    if cli.sandbox_probe {
+    // GH #826: `--env-report` reads files and nothing else, so it writes no
+    // `log.jsonl` either — it must answer inside a running colony's root.
+    if cli.sandbox_probe || cli.env_report {
         return run(cli).await;
     }
     let log_path = cli
@@ -585,6 +596,22 @@ pub async fn run_with_hooks_tuned(
         return Ok(());
     }
 
+    // GH #826: --env-report answers before the vault modes and before the root
+    // lease. The measured case is a RUNNING colony, whose lease `--validate`
+    // cannot take; the report reads files only (no colony.db, no log), so it
+    // needs none.
+    if cli.env_report {
+        if cli.validate || cli.api.is_some() || cli.daemon || cli.apply.is_some() {
+            eprintln!(
+                "note: --env-report has precedence; --validate/--api/--daemon/--apply ignored"
+            );
+        }
+        let report =
+            crate::env_report::build(&cli.root, cli.env.as_deref(), cli.templates.as_deref())?;
+        print!("{}", report.render());
+        return Ok(());
+    }
+
     // GH #151: the vault user channel. Like `--sandbox-probe` it answers
     // before anything colony-shaped happens, and for a sharper reason: these
     // modes must NOT boot a colony. A secret that travels no edge cannot be
@@ -667,8 +694,24 @@ pub async fn run_with_hooks_tuned(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
-    if let Err(e) = meclaw_colony::templates::boot_load_or_scan(
+    // GH #811: before the scan, the colony keeps its own copy of every
+    // template version a registry row was instantiated from and repoints the
+    // row there. On a colony from before #811 this is the migration (its rows
+    // sit on the shipped directories); on every later boot it finds nothing to
+    // do. Before and not after the scan, so that a scanning boot
+    // (`--rescan-templates`) already finds the copies and the scanner's
+    // kept-copy rule applies to them.
+    // A first boot and the nodes a boot grows are kept by the second call,
+    // after the filesystem bootstrap (`KeepTemplateVersions` below).
+    // The copies land in the colony's OWN directory: `<library>/local` when
+    // the library lies under `--root`, `<root>/templates/local` when it does
+    // not — a library the colony was merely pointed at (a repository, a shared
+    // checkout) is never written, and the scan reads that directory beside it.
+    let local = meclaw_colony::templates::local_root(&templates_root, &cli.root);
+    meclaw_colony::templates::keep_referenced_versions(&local, &colony_db).await;
+    if let Err(e) = meclaw_colony::templates::boot_load_or_scan_library(
         &templates_root,
+        &local,
         &colony_db,
         cli.rescan_templates,
         now,
@@ -1208,6 +1251,25 @@ pub async fn run_with_hooks_tuned(
                 "filesystem bootstrap applied"
             );
             cells_at_boot = report.cell_count;
+            // GH #811: the second boot keep, after the bootstrap. The keep
+            // above the template scan is the migration of a colony from
+            // before #811; it cannot see a FIRST boot (the table was empty
+            // then) nor a node this boot grew from a `ref` marker (GH #424 —
+            // its provenance arrived as a colony message, not through the
+            // mutation door). Idempotent: a version already kept is reused.
+            // Before the watchdog arms and before `--apply`, so a manifest
+            // lifting a grown node away finds its version already safe.
+            let (keep_tx, keep_rx) = tokio::sync::oneshot::channel();
+            if inbox_tx
+                .send(meclaw_colony::ColonyMsg::KeepTemplateVersions {
+                    templates_root: templates_root.clone(),
+                    ack: keep_tx,
+                })
+                .await
+                .is_ok()
+            {
+                let _ = keep_rx.await;
+            }
             // Issue #6: boot is over — from here on, silence from the colony
             // loop is a fault and not a slow start. This is the ONLY arming
             // site; the failure branch below returns without arming.

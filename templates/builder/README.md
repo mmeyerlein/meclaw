@@ -1,4 +1,4 @@
-# `builder@1.12.1`
+# `builder@1.12.2`
 
 The intake that turns a structural wish into a **manifest** — an ordered list of
 mutation declarations, ready to be submitted by whoever asked for it.
@@ -52,7 +52,7 @@ address them.
 | Cell | Type | What it does |
 |---|---|---|
 | `classify` | `code` | Reads the tool arguments and decides the CLASS: a named recipe whose parameters are complete, or everything else. Calls no model. |
-| `recipes` | `code` | The fast lane. Renders one of four predefined recipes straight into a manifest, deterministically — including the whole transit edge set of a composition level. |
+| `recipes` | `code` | The fast lane. Renders one of five predefined recipes straight into a manifest, deterministically — including the whole transit edge set of a composition level, and the wiring an app declares. |
 | `builder-librarian` | `ref builder-librarian` | Retrieval over the corpus. Referenced, never copied (ADR-0011). |
 | `brief` | `code` | Assembles the authoring prompt: the retrieved sections become instructions, the request stays a user turn. It emits twice — the prompt to the composer, and the same question and the same instruction tree into the round table, because round 1 onwards is briefed by the loop and not by this cell. |
 | `compose` | `llm` | The model call of the design lane — asked once per round, not once per build. |
@@ -102,10 +102,11 @@ look alike.
 
 ## The two classes
 
-**Fast lane** — the caller named a recipe and its parameters validate. Four
+**Fast lane** — the caller named a recipe and its parameters validate. Five
 recipes ship: `rewire_edge` (remove the old edge, then draw the new one),
 `add_node` (grow a cell from a template and wire it in), `attach_drain` (hang a
-lane on an existing pair) and `grow_level` (§ *A level is a recipe*). No model is
+lane on an existing pair), `grow_level` (§ *A level is a recipe*) and
+`install_app` (§ *An app is a declaration*). No model is
 consulted, no network is reachable, and the whole walk is a python start plus
 string work.
 
@@ -382,7 +383,7 @@ devices:
    "diff": {"add_nodes": [{"name": "display", "template": "display@2.7.0",
                            "override_params": {"web": {"mount": "alex-display"}}}], "…": "…"}},
   {"scope": "/os/orgs/acme/members/alex/apps",
-   "diff": {"add_nodes": [{"name": "colony-view", "template": "colony-view@1.1.3"}], "…": "…"}}]}
+   "diff": {"add_nodes": [{"name": "colony-view", "template": "colony-view@1.1.4"}], "…": "…"}}]}
 ```
 
 **There is no way to ask for a member without them.** A person in this substrate
@@ -749,6 +750,93 @@ So: a table, and the table is pinned against the examples rather than described.
 levels and compares them **byte for byte** against `examples/organism/grow-*.json`
 — the recipe and the worked example cannot drift apart, because one is generated
 and diffed against the other.
+
+## An app is a declaration
+
+An application is installed into a MEMBER by one mutation, and until `1.12.2`
+that mutation was a manifest somebody wrote by hand — the member README
+published one, every app repository carried its own, and a live colony was
+repaired twice where the two had drifted apart. `install_app`
+([#599](https://github.com/mmeyerlein/meclaw/issues/599)) renders it from one
+block the app's `template.json` carries beside `"tags": ["app"]`:
+
+```json
+"app": {
+  "screen":  {"out": ["view", "withdraw"], "back": ["event", "receipt"]},
+  "listens": ["turn", "answer", "partial"],
+  "offers":  [{"kind": "tool", "at": "./timer", "tools": ["set_timer", "cancel_timer"]},
+              {"kind": "sidecar", "at": "./show", "section": "display"}],
+  "observes_tool_results": "./stage",
+  "drives":  [{"cell": "browser", "out": ["open", "close", "navigate"], "back": ["page", "receipt"]}]
+}
+```
+
+**The wish carries the block, and the recipe reads nothing else.** `recipes`
+reads its stdin and no disk, and the library answers `/colony/templates` with
+names and versions, never with a block — so whoever places the wish reads
+`app` out of the template and hands it over verbatim as `params.declaration`,
+beside `scope` (the member), `app` (the instance name, which is the template's
+name), `template` and `screen` (the node in `./channels` the app draws on).
+`generation` joins them whenever the declaration offers something or observes
+tool results, and the switch refuses the wish without it
+(`recipe_params_incomplete`, `missing: ["generation"]`).
+
+**The vocabulary is closed**, and a word outside it is refused as
+`app_declaration_invalid` with `field` and `known`: `screen.out` is drawn from
+`view` and `withdraw` (`error` always travels with them), `screen.back` is
+`["event", "receipt"]`, `listens` from `turn`, `answer`, `partial` and
+`mutation_committed`, an offer is a `tool` (with its `tools`) or a `sidecar`
+(with its `section`) at a cell `./<name>` inside the app, and a drive names a
+cell of the member with the lanes it sends and hears back. An app that
+"listens to gossip" would otherwise install green and hear nothing.
+
+**What each kind draws**, all of it in ONE declaration at the member — the
+lowest common ancestor of `./firewall`, a generation's surfaces and a device:
+
+| kind | edges |
+|---|---|
+| `screen` | the view edge out of the app, every declared lane plus `error`, stamped `channel_node`/`channel` with the screen; the owner edge back in on `event`/`receipt` — the two `grow_level level=app` draws |
+| `listens` | one observer edge into `./apps` per lane — `turn` off `./firewall` with the firewall's hygiene, `answer` off `./assistants`, `partial` off `./channels` — all of them UNGUARDED; beside the `answer` observer the channel-less exit `./assistants -> .`; and one binding `./apps -> ./apps/<app>` for all listened lanes. `mutation_committed` needs no observer: the member draws `. -> ./apps` itself |
+| `offers` | a `sidecar` is read by name at the container; a `tool` is a `tool` v-lane from each surface of the generation, guarded on the tool names; every offering cell answers the menu tick on a `schemas` v-lane from each surface; one exit stamps `tool_answerer` |
+| `observes_tool_results` | two `tool_result` v-lanes into the named cell: from the generation's `./tools` and from `./memory-hive` |
+| `drives` | every lane out is restamped `in_<lane>` onto the device, every lane back is plain |
+
+**Why the observers carry no guard, and why the channel-less exit rides with
+them.** An app of a person hears the person's answers whatever carried them —
+an operator's errand too; that is the wiring a live colony was corrected into.
+A regular edge suppresses the member's guarded DEFAULT `./assistants -> .` on
+every case it fires on, so an unguarded answer observer alone would swallow
+every answer that names no channel; the regular exit beside it lets that answer
+leave the member exactly once.
+
+**The surfaces are both of them.** A tool v-lane starts at a generation's
+surface, and a generation has two — `talky` for speech and `talky-chat` for the
+typed conversation. The recipe draws every offer from both (`SURFACE_CALLERS`,
+a property of the assistant level the way the credential askers are): a tool
+only the spoken surface could call is a tool the typed one never sees.
+
+**A device has to stand first.** The edges of `drives` end on a node the
+declaration does not create; an edge onto a node that is not there routes into
+the dead letters. The recipe reads no tree, so that is written here and not
+checked.
+
+A second app that listens to the same lane draws the same observer edge, and the
+edge table holds an identical edge once — installing another app adds only its
+own bindings.
+
+What the four declarations that exist render, derived in
+`crates/meclaw-cells/tests/gh599_an_app_is_installed_from_what_it_declares.rs`
+against the wiring a live colony carries for them:
+
+| app | edges |
+|---|---|
+| `voice2vision` | 18 |
+| `ambient` | 10 |
+| `chat` | 8 |
+| `colony-view` | 3 |
+
+`templates/member/README.md` § *Installing an app* shows one wish and the
+declaration it renders, and a test holds the two together.
 
 ## The design lane is a loop, and it is bounded four times
 

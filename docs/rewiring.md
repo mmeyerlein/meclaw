@@ -414,7 +414,7 @@ Scope is `channels`, the hive that already exists.
     "add_nodes": [
       {"name": "telegram", "template": "telegram-connector@2.0.1",
        "override_params": {"bot_token": "${TELEGRAM_BOT_TOKEN}"}},
-      {"name": "talky", "template": "talky@5.2.1"}
+      {"name": "talky", "template": "talky@5.2.2"}
     ]
   }
 }
@@ -639,7 +639,8 @@ directory holds the answer any more.
 A hive's generation swap is one act since GH #682: `replace_nodes` lifts it in
 place to a new version of its template (`meclaw-overview.md` § Mutation
 operations). The talky keeps its path and its outer edges, a child the new
-version leaves unchanged keeps its `cell.db`, a changed one is replaced under
+version leaves unchanged (unchanged = `cell`, `params`, `contract`, GH #773)
+keeps its `cell.db`, a changed one is replaced under
 its own name with the old one parked beside it as `<name>~<old-version>`, a new
 one is grown, and the receipt says what happened to every child. The way back
 is the same operation with the old version. For a leaf with a new name the

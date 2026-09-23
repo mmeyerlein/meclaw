@@ -1,7 +1,7 @@
-# `assistant@2.8.0`
+# `assistant@2.8.1`
 
 One generation of one person's agent.
-**Four refs at three templates, no container at all,** and sixty-three edges.
+**Four refs at three templates, no container at all,** and sixty-seven edges.
 
 | what | it is | why it is at THIS level |
 |---|---|---|
@@ -59,8 +59,8 @@ named `surface` after the ROLE it plays. The tree said one thing and the address
 said another, and every reader had to learn the translation before they could
 follow an edge.
 
-The node is `./talky`. **Twenty-eight of this level's sixty-three edges carry the
-name**, and since 2.7.0 twenty-four more carry `./talky-chat`, and two stamped tokens
+The node is `./talky`. **Twenty-eight of this level's sixty-seven edges carry the
+name**, and since 2.8.1 twenty-eight more carry `./talky-chat` (twenty-four since 2.7.0), and two stamped tokens
 are renamed with it, because a discriminator that outlives the node it is named after
 is a word that has to be read historically:
 
@@ -118,18 +118,28 @@ reaches the typed keeper through the member's memory, not out of its own window.
 what one identity per channel means rather than a defect of it, and the chat *application*
 shows every channel either way (`display-hive.md` § 8.1, R-24-4).
 
-**What does NOT fan out, and why it is said here.** The four TRANSFER lanes — `in_export`
-and `in_import` in, `export_done` and `dump` out — stay on `./talky` alone. Both keepers
-are a `session-keeper`, and the transfer lanes address a keeper by the name of its HIVE
-rather than of its node: the porter writes into `<destination>/session-keeper`
-(`../session-keeper/porter/config.json`, which says in as many words that *two keepers
-would otherwise both claim `session-keeper` and the directory would hold whichever walk
-finished last*), and the member addresses an import with `hop.import_hive ==
-'session-keeper'`, which both would answer. So the typed keeper's sessions do not travel
-yet, and a per-node directory plus a per-node import address is a `session-keeper` change
-before it is this level's. It is written here, in the CHANGELOG and in a Rust lock rather
-than discovered as an export of one schema header and no row, and it is filed as
-[#712](https://github.com/mmeyerlein/meclaw/issues/712).
+**The transfer rim, one per talky, from one rule (since 2.8.1,
+[#712](https://github.com/mmeyerlein/meclaw/issues/712)).** The four TRANSFER lanes —
+`in_export` and `in_import` in, `export_done` and `dump` out — reach **every** talky of the
+level, and each talky's four edges are rendered by the same rule rather than typed per node:
+
+| lane | edge | why |
+|---|---|---|
+| `in_export` | `. -> ./<t>`, plain | every keeper writes into its own directory, so the fan-out is the whole export of the generation |
+| `in_import` | `. -> ./<t>`, `hop.import_hive.startsWith('<t>/')` | a part is addressed with the keeper's path under the generation, and the talky named by its first segment takes it; `./talky`, the default rim, also takes a part with no address, because a bare route is what the mutation door's lane probe sends |
+| `export_done`, `dump` | `./<t> -> .`, plain, with the level's exit scrub | a drain that tests a second key reads as no drain under the `required_drains` probe |
+
+That became possible in `session-keeper@2.2.2`: until then every keeper filed its document
+under the constant `session-keeper` and the member imported on `hop.import_hive ==
+'session-keeper'`, so two keepers of one generation would have claimed one directory on the
+way out and been indistinguishable on the way in — which is why 2.7.0 drew these four lanes
+at `./talky` alone and the typed channel's sessions did not travel. Since 2.2.2 the porter
+files under its own path (`<run>/talky/session-keeper`, `<run>/talky-chat/session-keeper`)
+and names that path on `export_done`; the member (since 1.9.3) routes every part whose address ends in
+`/session-keeper` into its generations. An export that names a generation therefore says
+`export_done` once PER KEEPER. A third talky gets its rim by the same rule —
+`crates/meclaw-cells/tests/gh712_the_transfer_rim_of_every_talky_is_the_rule.rs` renders it
+for a node the template does not have and holds the template's own talkys to it.
 
 **What the SENDER draws.** A connect point is a permission, not an edge: `in_pack`,
 `pack_ack`, `recall`, `in_bundle`, `tool` and `schemas` now name `./talky-chat` beside
@@ -162,7 +172,7 @@ And since 2.0.0, a **channel, no**:
 
 ```
 assistant/
-  config.json            the level: twenty-one lanes, five drain pairings, sixty-three edges
+  config.json            the level: twenty-one lanes, five drain pairings, sixty-seven edges
   talky/config.json      a ref to talky, at the version its because names
   talky-chat/config.json the same ref, for the channel chat
   cogny/config.json      a ref to cogny, at the version its because names
@@ -233,7 +243,7 @@ door `. -> <generation>` every growth recipe draws.
 | `answer` | **what this generation said**, on its way back to the channel that asked. New in 2.0.0. The assistant does not know which channel it came from and must not: `context.channel_node` rode in on the turn and rides back out on the answer, and the member's own edge into `./channels` is what turns that name into an address (`context.channel`, the chat, rides along beside it — GH #522) |
 | `write` | a closed session as one write batch |
 | `turn_write` | one finished turn per message, after every stored turn and every stored answer — never a batch (GH #298, ruling Q11) |
-| `sidecar` | **one section** of the block the answer carried, one message per section, since 2.6.0 ([#607](https://github.com/mmeyerlein/meclaw/issues/607)). It is `extraction` grown a dimension: the same fence, opened with ```` ```sidecar ```` rather than ```` ```memory ````, holding ONE object with one key per section, cut up by the splitter inside `./talky` and stamped with `hop.section`. This level neither reads a section nor knows which ones exist — the sections a turn may carry are the OFFERS its answerers made, and an answerer may sit outside this generation entirely — so the lane leaves undivided and the MEMBER sorts it. It REPLACES `extraction`, which `talky@5.2.1` no longer has; the member still carries an `extraction` edge for a generation grown against an older surface |
+| `sidecar` | **one section** of the block the answer carried, one message per section, since 2.6.0 ([#607](https://github.com/mmeyerlein/meclaw/issues/607)). It is `extraction` grown a dimension: the same fence, opened with ```` ```sidecar ```` rather than ```` ```memory ````, holding ONE object with one key per section, cut up by the splitter inside `./talky` and stamped with `hop.section`. This level neither reads a section nor knows which ones exist — the sections a turn may carry are the OFFERS its answerers made, and an answerer may sit outside this generation entirely — so the lane leaves undivided and the MEMBER sorts it. It REPLACES `extraction`, which `talky@5.2.2` no longer has; the member still carries an `extraction` edge for a generation grown against an older surface |
 | `recall` | a memory read this turn needs. **One lane, two askers** since [#532](https://github.com/mmeyerlein/meclaw/issues/532): the surface and the reasoning core, each stamping `context.recall_caller` with its own name on the way out |
 | `prune` | the report of a window prune: one message per cut session, or a single zero report |
 | `error` | a normalised failure from anything inside this generation — the surface or the reasoning core. A **channel's** failure is no longer among them: since #454 the connector stands in the member's `channels` container and its failures leave beside this lane, one level up |
@@ -478,6 +488,17 @@ before the discriminator** (driver ruling W7-R4): an answer travels back through
 the very path the dispatch left from, and a door that asks only about
 `hop.tool_name` hands an answer to its own sender until the TTL runs out.
 
+**Both consult edges drop `context.turn_id`** (since `2.8.1`,
+[#728](https://github.com/mmeyerlein/meclaw/issues/728)). The core's rounds are the core's: it
+mints their ids, so two `consult_cogny` calls in one bundle are two rounds of the core instead of
+one key meeting its own fan-in guard. The return is correlated by `consult_id` alone: the
+surface's collector finds the member turn that asked on the `depart` row it wrote when the
+consult left, and the answer carries that turn as `hop.turn_id`. How long an answer counts as
+part of that turn is `late_after_ms`, set at its default of 30000 on BOTH ref markers
+(`./talky`, `./talky-chat`) under `override_params."collector/assemble"` -- a hive param would
+reach no child cell, and it is a decision about this assistant. Past it the answer says
+`hop.late = "1"`; a voice call after a turn change drops it.
+
 **`consult_cogny` belongs in the talky dispatcher's `handoff_tools`**
 (GH #372), and since [#530](https://github.com/mmeyerlein/meclaw/issues/530) it is the
 whole list. It is not a synchronous tool call: an advisor's answer arrives as its own
@@ -584,9 +605,10 @@ The `./talky -> ./cogny` pair is **not** two errands. It was, up to 2.1.0 —
 `schemas` ask in its place, so the count stood still while both of its halves changed.
 
 Since 2.7.0 twenty-four of those twenty-eight are drawn a second time around
-`./talky-chat`: the table above reads identically with the other name in it, minus the
-four TRANSFER edges — `in_export` and `in_import` in, `export_done` and `dump` out. Those
-four stay on `./talky` alone, and why is in *One talky per channel* below.
+`./talky-chat`, and since 2.8.1 all twenty-eight are: the table above reads identically
+with the other name in it. The four TRANSFER edges — `in_export` and `in_import` in,
+`export_done` and `dump` out — joined last, because until `session-keeper@2.2.2` two
+keepers could not be told apart on them; see *One talky per channel* above.
 `every_edge_around_the_one_talky_has_a_twin_around_the_other` derives both halves from the
 file rather than from this sentence.
 
@@ -595,7 +617,7 @@ Eleven more edges do not touch either keeper at all — `./cogny -> ./tools` twi
 three times (`error`, and since #552 the memory road's `tool` and `schemas`),
 `. -> ./cogny` twice (the two answers coming back, on one edge guarded by
 `context.tool_caller`, and the mutation receipt since #553), `./tools -> .` on
-`build`, and `. -> ./tools` on `in_build_result` — which makes **sixty-three**
+`build`, and `. -> ./tools` on `in_build_result` — which makes **sixty-seven**
 for the level. The one that moved last is `./talky -> .`: it carried `extraction`
 until 2.6.0 and carries `sidecar` now, which is why the exits row above still
 counts ten.
@@ -605,18 +627,20 @@ belongs to the tool round that asked, so it is delivered to `./tools` directly.
 ### The sessions leave, and come back (#475)
 
 The one store this generation holds that the member cannot recompute is the session
-ledger inside `./talky` — the table that decides whether a conversation continues or
+ledger inside each talky — the table that decides whether a conversation continues or
 starts at zero. It has had a transfer lane since `session-keeper@2.1.0`, and for one
 release nothing above it forwarded one, so a member rebuilt from its own export greeted a
 person it had been talking to for a year as a stranger. Three edges of this level close
-that, and all three are pure transit:
+that per talky, and all of them are pure transit (shown for `./talky`; `./talky-chat`
+carries the same set with its own name in the import guard, and `export_done` leaves beside
+`dump`):
 
 ```json
 [
   { "from": ".", "to": "./talky",
     "condition": "has(hop.route) && hop.route == 'in_export'" },
   { "from": ".", "to": "./talky",
-    "condition": "has(hop.route) && hop.route == 'in_import'" },
+    "condition": "has(hop.route) && hop.route == 'in_import' && (!has(hop.import_hive) || hop.import_hive.startsWith('talky/'))" },
   { "from": "./talky", "to": ".",
     "condition": "has(hop.route) && hop.route == 'dump'" }
 ]
@@ -656,7 +680,7 @@ comes afterwards.**
  "ctx": {"model": "<the reasoning core's model>",
          "model_surface": "<the conversation surface's model>"},
  "diff": {
-  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@2.8.0",
+  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@2.8.1",
                  "override_params": {"cogny/brain": {"temperature": 0.2}}}],
   "add_edges": [
     {"from": "./assistants", "to": "./assistants/scribe",
@@ -805,6 +829,11 @@ the correct row of that rule table, and the exception it makes to the union rule
 is written down as one in `docs/development-rules.md` § 8b.
 
 ## Versioning
+
+`2.8.1` takes the **third** digit ([#728](https://github.com/mmeyerlein/meclaw/issues/728)): it
+repairs the promise of `display-hive.md` § 8.2 for the answers of a consult and a delegation.
+The two consult edges drop `context.turn_id`, both ref markers carry `late_after_ms`, and the
+refs follow the new `talky` and `cogny` versions. No lane and no edge is added or taken away.
 
 `2.6.0` takes the **second** digit, the same digit `talky` took (5.1.0) for the
 same move: `extraction` is RENAMED to `sidecar`

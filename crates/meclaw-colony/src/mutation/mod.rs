@@ -442,6 +442,13 @@ pub enum MutationError {
     /// the time of writing saying so (GH #277 ruling Q7 is what makes the scan
     /// abort; this code is what makes it never happen).
     TemplateNameTaken(String),
+    /// GH #811: an `add_templates[]` entry declares a `name@version` the colony
+    /// already stores, with a DIFFERENT tree. A stored version is immutable —
+    /// nodes stand on it and a way back names it — so a changed tree is a new
+    /// version. The identical tree again stays `template_name_taken`.
+    /// Pre-commit — raised against the staged bytes, before anything moves
+    /// into the library.
+    TemplateVersionImmutable(String),
     /// GH #456: a `seed_rows[]` entry names a target that is not a `store` —
     /// nothing is registered there, it is a cell of another type, or its
     /// declaration could not be read. Only a `store` owns declared tables, so
@@ -525,6 +532,7 @@ impl MutationError {
             Self::LiveTreeMutated(_) => "schema",
             Self::InvalidTemplateName(_) => "invalid_template_name",
             Self::TemplateNameTaken(_) => "template_name_taken",
+            Self::TemplateVersionImmutable(_) => "template_version_immutable",
             Self::SeedTargetNotAStore(_) => "seed_target_not_a_store",
             Self::SeedTableUndeclared(_) => "seed_table_undeclared",
             Self::VLaneNoConnectPoint(_) => "v_lane_no_connect_point",
@@ -569,6 +577,7 @@ impl MutationError {
             | Self::LiveTreeMutated(s)
             | Self::InvalidTemplateName(s)
             | Self::TemplateNameTaken(s)
+            | Self::TemplateVersionImmutable(s)
             | Self::VLaneNoConnectPoint(s)
             | Self::VLaneMandatoryHop(s)
             | Self::VLaneUnanchored(s)
@@ -615,14 +624,38 @@ pub struct NodeChange {
     /// The version it stands at now; `None` for a left child. A kept child
     /// names the same version twice.
     pub to_version: Option<String>,
+    /// GH #773 — for a `replaced` child: the absolute logical path the old
+    /// child was parked at (`<path>~<from_version>`, `~<n>` on a repeat);
+    /// `None` otherwise. Absent on the wire when `None`, so `kept`, `added`
+    /// and `left` entries stay byte for byte what they were.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parked_path: Option<String>,
+    /// GH #773 — for a `replaced` child: whether a `cell.db` went with the
+    /// parked subtree (a database set aside, not carried over — the
+    /// successor starts empty, `reg:lift-store-carry-over`); `None` otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parked_store: Option<bool>,
+    /// GH #811 — the `templates` row the child stood on before: the
+    /// `template_id` of its stamped `name@version` in the library the lift
+    /// resolved against. `None` for an added child, and for a stamp the
+    /// library has no row for (a child without provenance, or a version
+    /// nobody kept) — the audit finding "stamp without a row". Absent on the
+    /// wire when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_template_id: Option<String>,
+    /// GH #811 — the `templates` row the child stands on now; `None` for a
+    /// left child. A kept child names the same row twice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_template_id: Option<String>,
 }
 
 /// GH #682 — the four verdicts of the version diff, one per child.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum NodeVerdict {
-    /// What stands is what the new version would write again — untouched,
-    /// `cell.id` and `cell.db` kept.
+    /// What makes the instance (`cell`, `params`, `contract`) is what the
+    /// new version would write again (GH #773) — untouched, `cell.id` and
+    /// `cell.db` kept.
     Kept,
     /// Instantiated anew under its own name, the old one renamed beside it.
     Replaced,
@@ -717,6 +750,7 @@ mod tests {
             MutationError::LiveTreeMutated("x".into()).error_code(),
             MutationError::InvalidTemplateName("x".into()).error_code(),
             MutationError::TemplateNameTaken("x".into()).error_code(),
+            MutationError::TemplateVersionImmutable("x".into()).error_code(),
             MutationError::SeedTargetNotAStore("x".into()).error_code(),
             MutationError::SeedTableUndeclared("x".into()).error_code(),
             MutationError::VLaneNoConnectPoint("x".into()).error_code(),
@@ -768,6 +802,8 @@ mod tests {
             "requirement_missing",
             "invalid_template_name",
             "template_name_taken",
+            // GH #811: a stored version does not change under its name.
+            "template_version_immutable",
             // GH #456: the two refusals `seed_rows` contributes.
             "seed_target_not_a_store",
             "seed_table_undeclared",
@@ -800,7 +836,7 @@ mod tests {
              `error_code` is documented as an ENUM, so a caller matching on it \
              would meet a token the contract never named"
         );
-        assert_eq!(spec.len(), 33, "the documented enum is 33 tokens wide");
+        assert_eq!(spec.len(), 34, "the documented enum is 34 tokens wide");
     }
 
     #[test]
@@ -922,5 +958,22 @@ mod tests {
     #[test]
     fn resolve_scoped_path_strips_trailing_slash() {
         assert_eq!(resolve_scoped_path("/main/", "x").as_str(), "/main/x");
+    }
+
+    /// T1 review minor 5: a receipt written before GH #773 / #811 carries none
+    /// of `parked_path`, `parked_store`, `from_template_id`, `to_template_id`.
+    /// It still reads, with every one of them absent.
+    #[test]
+    fn a_node_change_from_before_the_new_fields_still_reads() {
+        let old = meclaw_core::serde_json::json!({
+            "path": "/alex/display/bump",
+            "verdict": "replaced",
+            "from_version": "1.0.0",
+            "to_version": "1.1.0"
+        });
+        let c: NodeChange = meclaw_core::serde_json::from_value(old).expect("an old receipt reads");
+        assert_eq!(c.verdict, NodeVerdict::Replaced);
+        assert!(c.parked_path.is_none() && c.parked_store.is_none());
+        assert!(c.from_template_id.is_none() && c.to_template_id.is_none());
     }
 }

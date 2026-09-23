@@ -194,3 +194,45 @@ async fn cell_handle_passes_attribution_params_to_wire_and_keeps_body_clean() {
         "attribution param must NOT appear in the request body"
     );
 }
+
+/// OR-T34 (2026-09-23): the conversation brains name their app at the provider
+/// in the form the memory-hive cells already use. Measured before: every GPT
+/// request of a talky or a core reached OpenRouter without an app attribution;
+/// only the four memory-hive llm cells set one. `talky-chat` is a `ref` onto
+/// `talky` and carries its brain. The form is compared against
+/// `memory-hive/closer` rather than spelled out here, so the two cannot drift.
+#[test]
+fn the_shipped_conversation_brains_carry_the_attribution_params() {
+    let templates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../templates");
+    let cells = ["memory-hive/closer", "talky/brain", "cogny/brain"];
+    // GH #49: a tree without the shipped templates has nothing to judge.
+    if !cells
+        .iter()
+        .all(|c| templates.join(c).join("config.json").is_file())
+    {
+        return;
+    }
+    let params = |cell: &str| -> serde_json::Value {
+        let raw = std::fs::read_to_string(templates.join(cell).join("config.json"))
+            .unwrap_or_else(|e| panic!("{cell}: {e}"));
+        serde_json::from_str::<serde_json::Value>(&raw).unwrap_or_else(|e| panic!("{cell}: {e}"))
+            ["params"]
+            .clone()
+    };
+    let form = params("memory-hive/closer");
+    for key in ["http_referer", "x_title"] {
+        assert!(
+            form[key]
+                .as_str()
+                .is_some_and(|v| v.starts_with("${OPENROUTER_")),
+            "the reference form moved: closer {key} = {}",
+            form[key]
+        );
+    }
+    for cell in &cells[1..] {
+        let p = params(cell);
+        for key in ["http_referer", "x_title"] {
+            assert_eq!(p[key], form[key], "{cell} {key}: not the memory-hive form");
+        }
+    }
+}

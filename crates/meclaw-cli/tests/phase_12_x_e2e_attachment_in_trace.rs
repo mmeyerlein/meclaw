@@ -55,6 +55,7 @@ async fn multipart_attachment_appears_in_colony_trace_entry() {
         daemon: false,
         validate: false,
         validate_strict: false,
+        env_report: false,
         apply: None,
         blobs: Some(blob_root.clone()),
         tokio_console: false,

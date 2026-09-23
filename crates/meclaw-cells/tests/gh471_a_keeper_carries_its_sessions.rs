@@ -8,7 +8,7 @@
 //!
 //! Two keepers stand in one colony here, and since GH #555 the transfer between
 //! them goes through a DIRECTORY rather than through an edge: the sending
-//! keeper's own store writes `<fence>/session-keeper/seed/sessions.jsonl`
+//! keeper's own store writes `<fence>/old/seed/sessions.jsonl` (its own path, GH #712)
 //! itself, and the document is carried into the receiving keeper as an
 //! `in_import` part built out of that file — the same document read the other
 //! way round, and exactly what `examples/memory-import/build_import.py`
@@ -347,14 +347,19 @@ async fn a_session_ledger_crosses_and_the_new_keeper_continues_the_conversation(
         &h,
     )
     .await;
-    assert_eq!(done[0]["hop"]["export_hive"], "session-keeper");
+    // Since `session-keeper@2.2.2` (GH #712) a keeper files under its own path,
+    // not under the hive's name: the porter reads `envelope.target`
+    // (`/old/porter` here) and takes the segments above itself. A keeper that
+    // stands directly under the root has one, so its directory is `old` -- the
+    // same rule that makes a keeper inside a generation `talky/session-keeper`.
+    assert_eq!(done[0]["hop"]["export_hive"], "old");
     assert_eq!(
-        done[0]["hop"]["seed_dir"], "session-keeper/seed",
+        done[0]["hop"]["seed_dir"], "old/seed",
         "the completion word names the directory RELATIVE to the fence the store \
          declares -- a receipt travels further than the fence does: {done:?}"
     );
     assert_eq!(done[0]["hop"]["rows_written"], 1);
-    let seed = fence.join("session-keeper/seed");
+    let seed = fence.join("old/seed");
     let text = std::fs::read_to_string(seed.join("sessions.jsonl"))
         .expect("the store must have written its own seed file");
     let lines: Vec<&str> = text.trim_end_matches('\n').split('\n').collect();

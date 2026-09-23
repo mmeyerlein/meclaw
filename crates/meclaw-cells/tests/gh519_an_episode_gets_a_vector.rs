@@ -376,8 +376,16 @@ fn an_episode_neighbour_becomes_an_episode_candidate_gated_from_episodes() {
     assert_eq!(ep_aud["where"]["id"]["in"], json!(["ep1"]));
     assert_eq!(
         ep_aud["columns"],
-        json!(["id", "channel", "audience_set"]),
-        "an episode carries its own gate columns and no axis: {ep_aud}"
+        json!([
+            "id",
+            "channel",
+            "audience_set",
+            "content",
+            "happened_at",
+            "recorded_at"
+        ]),
+        "an episode carries its own gate columns and no axis — plus, since GH #691, \
+         what the duplicate fold reads (normal form and recency): {ep_aud}"
     );
 }
 

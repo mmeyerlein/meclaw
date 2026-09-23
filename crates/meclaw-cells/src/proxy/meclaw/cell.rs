@@ -39,7 +39,10 @@ impl MeclawCell {
     /// A cell with a client of its own. A client that cannot be built (TLS
     /// init) is a spawn error.
     pub fn new(p: &MeclawParams) -> Result<Self, String> {
-        Ok(Self::with_client(p, PeerClient::new()?))
+        Ok(Self::with_client(
+            p,
+            PeerClient::with_auth(p.auth.as_ref())?,
+        ))
     }
 
     /// A cell posting through `client` (cheap to clone; the factory builds one

@@ -326,6 +326,15 @@ pub struct GraphNodeDto {
     pub path: String,
     /// Cell-type string from `config.json`.
     pub cell_type: String,
+    /// GH #773 — edge-derived activity, the `active` of [`RegistryEntryDto`].
+    #[serde(default)]
+    pub active: bool,
+    /// GH #773 — a lift's parked predecessor (`~` in a segment): a registry
+    /// row kept by No-Delete, not a cell that merely lost its edges. Marked,
+    /// not filtered: leaving inactive rows out would also hide nodes born
+    /// inactive (GH #437/#491), `left` children and disconnected cells.
+    #[serde(default)]
+    pub parked: bool,
 }
 
 /// Per-edge graph projection from the in-memory `EdgeTable`.
@@ -437,6 +446,17 @@ pub struct TemplateEntryDto {
     pub filesystem_path: String,
     /// Optional author string from `template.json::author`.
     pub author: Option<String>,
+    /// GH #811: unix seconds at which this row was last written by a scan, a
+    /// registration or the colony keeping its own copy. Additive: a reader
+    /// that predates the field reads `0`.
+    #[serde(default)]
+    pub scanned_at: i64,
+    /// GH #811: the registry paths whose provenance chain names this row —
+    /// their own template or any composite that placed them. Answered with
+    /// the `?name=` filter and absent otherwise; an empty list is "no node
+    /// stands on this version".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub used_by: Option<Vec<String>>,
 }
 
 /// DTO mirror of [`crate::DeadLetter`]; the in-memory struct holds a `Message`
@@ -586,5 +606,15 @@ mod message_log_dto_tests {
         assert_eq!(back.next.expect("cursor").created_at, 42);
         assert!(back.scan_truncated);
         assert_eq!(back.scan_budget, 5000);
+    }
+
+    /// T1 review minor 5: a graph node from before GH #773 carries neither
+    /// `active` nor `parked`. It still reads; both default to `false`.
+    #[test]
+    fn a_graph_node_from_before_active_and_parked_still_reads() {
+        let old = meclaw_core::serde_json::json!({"path": "/a", "cell_type": "echo"});
+        let n: GraphNodeDto = meclaw_core::serde_json::from_value(old).expect("an old node reads");
+        assert_eq!(n.path, "/a");
+        assert!(!n.active && !n.parked);
     }
 }

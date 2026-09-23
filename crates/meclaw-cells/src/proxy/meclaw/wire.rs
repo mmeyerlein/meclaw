@@ -1,4 +1,4 @@
-//! The two frames that cross between colonies, and the nine codes a crossing
+//! The two frames that cross between colonies, and the ten codes a crossing
 //! can fail with.
 
 use meclaw_core::{Message, Uuid};
@@ -8,7 +8,7 @@ use serde_json::{Map, Value, Value as JsonValue, json};
 use super::lanes::Refusal;
 use super::params::Lane;
 
-// The nine codes. `protocol_mismatch`, `invalid_frame` and `ttl_exhausted` are
+// The ten codes. `protocol_mismatch`, `invalid_frame` and `ttl_exhausted` are
 // deliberately the words of `subcolony/wire.rs` and `meclaw-cli/src/bridge.rs`:
 // a boundary that renamed them would make an operator learn the same failure
 // twice. The set is closed and disjoint from the five Telegram codes at the
@@ -32,6 +32,9 @@ pub const PROTOCOL_MISMATCH: &str = "protocol_mismatch";
 pub const INVALID_FRAME: &str = "invalid_frame";
 /// No hops left; the crossing would have been one more.
 pub const TTL_EXHAUSTED: &str = "ttl_exhausted";
+/// GH #828: the credential could not be obtained (the token endpoint did not
+/// answer, or answered no token), so the frame never left this side.
+pub const AUTH_UNAVAILABLE: &str = "auth_unavailable";
 
 /// The protocol integer every frame carries as `v`. This build speaks exactly one.
 pub const PROTOCOL_VERSION: u64 = 1;
