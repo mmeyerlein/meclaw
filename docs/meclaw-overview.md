@@ -1575,7 +1575,10 @@ the cell. Every other event is a semantic source emission on `hop.route = "event
 shape the `proxy` cell uses for an inbound platform turn, and the header carries `event_name`,
 `session_id` and `page_route`. With `params.identity_header` set, the value of that request header
 rides along as `hop.user_id` and the ingress edge promotes it; an empty param stamps nothing,
-because a header a client can set without a proxy in front is not an identity. The cell interprets
+because a header a client can set without a proxy in front is not an identity. For the same reason
+the header counts only on a connection from an address in `params.trusted_proxies` (by default
+loopback, decided once per connection); from anywhere else page and socket are served and no
+`hop.user_id` is stamped. The cell interprets
 no event name of its own: what one means is
 decided by the out-edges, which is what keeps a display ignorant of the topology it hangs in.
 Working example: `templates/canvy`.
@@ -2309,7 +2312,10 @@ the receiving one through its own to the destination.
 
 The mount sits on the colony's one listener like any other. Who is sending comes from the
 header a reverse proxy in front writes, never from the frame: a frame carrying a sender field
-is `invalid_frame`, and a mount whose `identity_header` is empty accepts nothing. A body field
+is `invalid_frame`, and a mount whose `identity_header` is empty accepts nothing. The header
+counts only on a connection from an address in `params.trusted_proxies` (by default loopback,
+decided once per connection from the address the listener accepted); from anywhere else a signed
+frame is `invalid_frame` as well, with a receipt naming the list. A body field
 the lane does not name is **refused** rather than stripped; the addressee and its address
 travel in the sending side's `hop` and never cross. The trace and the budget do cross: one
 conversation stays one trace across two message logs, and the `ttl` falls by one at the

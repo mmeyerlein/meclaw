@@ -6,7 +6,7 @@
         "add_nodes": [
           {
             "name": "os",
-            "template": "meclaw-os@1.8.13"
+            "template": "meclaw-os@1.8.14"
           }
         ],
         "add_edges": []
@@ -131,7 +131,7 @@
         "add_nodes": [
           {
             "name": "alex",
-            "template": "member@1.9.3"
+            "template": "member@1.10.0"
           }
         ],
         "add_edges": [
@@ -249,7 +249,7 @@
         "add_nodes": [
           {
             "name": "scribe",
-            "template": "assistant@2.8.1",
+            "template": "assistant@2.9.0",
             "override_params": {
               "cogny/brain": {
                 "temperature": 0.2
@@ -318,6 +318,41 @@
                 "tool_answerer"
               ]
             }
+          },
+          {
+            "from": "./scribe/talky",
+            "to": ".",
+            "lane": "brief",
+            "condition": "has(hop.route) && hop.route == 'brief'",
+            "modifier": {
+              "set_context": {
+                "brief_surface": "'talky'"
+              }
+            }
+          },
+          {
+            "from": ".",
+            "to": "./scribe/talky",
+            "lane": "in_briefing",
+            "condition": "has(hop.route) && hop.route == 'in_briefing' && has(context.assistant) && context.assistant == 'scribe'",
+            "default": true
+          },
+          {
+            "from": "./scribe/talky-chat",
+            "to": ".",
+            "lane": "brief",
+            "condition": "has(hop.route) && hop.route == 'brief'",
+            "modifier": {
+              "set_context": {
+                "brief_surface": "'talky-chat'"
+              }
+            }
+          },
+          {
+            "from": ".",
+            "to": "./scribe/talky-chat",
+            "lane": "in_briefing",
+            "condition": "has(hop.route) && hop.route == 'in_briefing' && has(context.assistant) && context.assistant == 'scribe' && has(hop.brief_surface) && hop.brief_surface == 'talky-chat'"
           },
           {
             "from": "./scribe",

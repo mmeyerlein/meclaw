@@ -1,4 +1,4 @@
-# `affinity@3.4.0`
+# `affinity@3.5.0`
 
 The curated record of the people and agents a colony knows -- as one hive of existing
 cell types. No new cell type, no Rust, and no model: every judgement in here is a
@@ -82,10 +82,18 @@ only affinity is quoted. Memory is allowed to be wrong; affinity has to have dec
   request that declares its round only under the old name is refused `no_round`.
   **No template may ever introduce a second name for it**: a second spelling is not a
   convenience, it is a second gate that can stand open while the first one reads shut.
-- **Identity in the subscriber's own prompt.** The pack leaves as `system.identity`,
-  `system.peer`, `system.relationship` and `system.channel`, and an `llm` cell accumulates
-  those four per path in its own `cell.db`: an attune at birth and every later change
-  update only the slot that moved.
+- **Identity in the subscriber's own prompt -- through one door.** The pack leaves as
+  `system.identity`, `system.peer`, `system.relationship` and `system.channel`, and an `llm`
+  cell accumulates what it is handed per path in its own `cell.db`: an attune at birth and
+  every later change update only the slot that moved. A generation's brain is not reached
+  that way. The pack reaches the subscriber's brain only through `in_pack`, which admits
+  `identity`, `persona`, `handover` and `instructions` -- the collector's closed list
+  (`PACK_SLOTS`) -- and refuses a pack that names any other family whole (`slot_unknown`). A
+  subscription meant to land in a brain therefore asks for `identity` or `brain`; `peer`,
+  `relationship` and `channel` answer a caller on the tool lane (`out_brief`).
+  What a turn needs about its COUNTERPART reaches a generation's brain as the per-turn brief
+  instead (`collector` since 4.3.0, [#834](https://github.com/mmeyerlein/meclaw/issues/834)), never as
+  a pushed slot.
 - **And the agent's own identity has its durable home here too** (GH #488). The `system.*`
   tree of a brain is a delivered COPY; what an agent is and how it answers lives in the
   reserved `mx.brain` subtree of its own entity record, is asked for by the fifth request
@@ -185,7 +193,7 @@ fifth is the agent's own durable state:
 | slot | reads | lands in the recipient as |
 |---|---|---|
 | `identity` | the subject's AIeOS identity, motivations and summary | `system.identity`, one rendered leaf |
-| `peer` | how the subject speaks, what it likes, and where to reach it | `system.peer`, one rendered leaf |
+| `peer` | how the subject speaks, what it likes, where to reach it, and how far this record trusts it (`trust_level` and its `trust_rank`, § The write ops) -- in an answered brief only: a refusal carries neither, and a missing rank means no | `system.peer`, one rendered leaf |
 | `relationship` | the relation walk from the asker to the subject | `system.relationship`, one rendered leaf |
 | `channel` | the channel persona for `channel` | `system.channel`, one rendered leaf |
 | `brain` | the reserved `mx.brain` subtree of the subject's own record ([#488](https://github.com/mmeyerlein/meclaw/issues/488)) | one `system.<family>` per family, one leaf per raw text below it -- see § The agent's own identity lives here |
@@ -534,7 +542,7 @@ so without a second declaration an `import` would write rows straight past the o
 sentence this hive is built on. `store/config.json` therefore also carries
 `"write_surface": "internal"` in its **`contract`** block. Both halves compute the same
 owning scope, so the store has exactly one boundary; an `export` is a read and neither
-half bounds it. The transfer lane of `affinity@3.4.0` is not an exception to that and does
+half bounds it. The transfer lane of `affinity@3.5.0` is not an exception to that and does
 not need to be: `./porter` stands **inside** the hive scope and writes through the store's
 own ops, so it is bounded by the same sentence as `./gate` is. `clock` carries the contract half as well: its `cell.db` is where the
 schedules live, and a planted schedule fires into `./push` with an `emit_to` of the
@@ -572,11 +580,11 @@ All of them arrive as one `tool_call` turn whose `text` is the JSON below.
 | `upsert_entity` | supersede the active row, insert the new one | a mandatory AIeOS path is missing, `kind` is not one of person/agent/org/group/pet, `display_name` is empty |
 | `add_relation` | one `relations` row | an endpoint is empty, `kind` is not canonical `snake_case`, `weight` outside 0..100 |
 | `retract_relation` | `status: retracted` plus `valid_until` | the id is empty |
-| `set_trust` | one `trust` row (append-only, newest wins) | `entity_id` or `audience` is empty (`trust_target_empty`), or the level is not stranger/known/trusted/intimate (`trust_level_unknown`) |
+| `set_trust` | one `trust` row (append-only, newest wins -- also inside one second, see below) | `entity_id` or `audience` is empty (`trust_target_empty`), or the level is not blocked/stranger/known/trusted/intimate (`trust_level_unknown`) |
 | `set_disclosure` | one `disclosure` row (append-only, newest wins) with the `audience_set` it was released in -- default the addressee alone | `entity_id`, `audience` or `field_path` is empty (`disclosure_target_empty`), the mode is not share/summarize/redact (`disclosure_mode_unknown`), the set is empty (`audience_set_empty`) |
 | `subscribe` | deactivate the old row, insert the new one | in check order: `subject` is empty (`subscription_target_empty`), the body carries `cell_path` or `audience` at all (`identity_from_body`), the edge named no subscriber (`subscriber_not_on_edge`) or no actor (`actor_not_on_edge`) |
 | `propose` | one `proposals` row, **`status: accepted`** -- pass `auto_accept: false` for a row that waits, and an `audience` beginning with `directory:` always waits | source/entity/field reference incomplete |
-| `decide_proposal` | marks the judged row `superseded` and **appends** the verdict with `supersedes` | the id is empty (`proposal_id_empty`), the status is neither (`proposal_status_unknown`), or the new row would carry no content (`proposal_incomplete`) |
+| `decide_proposal` | marks the judged row `superseded` and **appends** the verdict with `supersedes`; an `accepted` verdict that names an `audience` also writes the `disclosure` row it decides, in the same pass (see below) | the id is empty (`proposal_id_empty`), the status is neither (`proposal_status_unknown`), or the new row would carry no content (`proposal_incomplete`); and, for an accepted verdict with an audience, the field path is not rooted at `aieos.` or `mx.` (`disclosure_field_unrooted`), the mode is not share/summarize/redact (`disclosure_mode_unknown`) or the set is empty (`audience_set_empty`) -- a refusal writes neither the verdict nor the release |
 
 **The proposal lane has no human gate** (R-AF-1). The system may and shall extend its
 picture of a person on its own -- good models judge people well, and the safety net is the
@@ -591,11 +599,64 @@ what R-AF-1 licenses; publishing it into a directory somebody else keeps is a di
 and the member makes it. The wish is overruled rather than refused, because a guard a body can
 switch off is not a guard and a body is written by a model.
 
+**An accepted verdict is the release** ([#831](https://github.com/mmeyerlein/meclaw/issues/831)).
+The member makes the release by deciding, and `./gate` applies it in the same pass:
+`decide_proposal` with `status: accepted` and an `audience` writes the `disclosure` row --
+`entity_id` is the `entity_ref` the verdict carries, `field_path` and `audience` are the
+verdict's too (the single pass never reads the proposal row, so a caller sends all three with
+the verdict), `audience_set` defaults to the audience alone, `mode` comes from the verdict
+(default `share`), and the row's `id` is `disc:` plus the hex of the verdict's own id, so every
+release names the verdict that made it. The `ack` and the audit row's `detail` carry it as
+`disclosure`. The verdict never applies the proposed `value`, and the value is written by
+`upsert_entity`, by whoever applies it: `disclosure` has no value column, and changing the
+entity document needs a read of the active row that this single-pass cell does not make. A
+`rejected` verdict releases nothing, an accepted one that names no audience releases nothing,
+and a proposal accepted as it arrives -- R-AF-1, `auto_accept` left on -- never releases, or
+every memory-born guess would be a publication. A verdict releases one path below a root, so
+a field path that does not start with `aieos.` or `mx.` is refused as
+`disclosure_field_unrooted`. That covers two cases: a path under neither root
+(`interests.music`) could never match a field, because `brief` cuts a document as
+`{aieos, mx}`; `*` and a bare `aieos` or `mx` would match -- the whole record, a whole root --
+and are refused all the same, because a verdict names a path under a root, and a release that
+wide is a `set_disclosure`. An unknown mode is `disclosure_mode_unknown`. Both refusals write
+nothing at all, the verdict included.
+
 **A verdict appends** (R-AF-4). Deciding a proposal does not overwrite it: the judged row
-is marked `superseded` and the decision arrives as a new row pointing back at it. That is
+is marked `superseded` and the decision arrives as a new row pointing back at it -- and the
+release it makes, if it makes one, carries that new row's id. That is
 what keeps the agent **answerable** when somebody asks why its picture of them changed --
 the timeline is a read, not an archaeology problem. Conflicts between canon and episode are
 resolved by time: the temporally latest assertion counts.
+
+**Trust is an order, and one level says no on purpose** ([#832](https://github.com/mmeyerlein/meclaw/issues/832)).
+A `trust` row names one of five levels, lowest first; the position is its rank:
+
+| rank | level | means |
+|---|---|---|
+| 0 | `blocked` | says no on purpose -- a door that reads the rank refuses this counterpart from the next message on; distinct from `stranger`, which is the default of a pair nobody decided |
+| 1 | `stranger` | nobody decided about this pair; also what `brief` reads when the pair has no row at all |
+| 2 | `known` | the record knows this counterpart |
+| 3 | `trusted` | the record trusts it |
+| 4 | `intimate` | the closest circle |
+
+`brief` reports both in the `peer` slot, `trust_level` and `trust_rank`, and the receipt line
+reads `trust <level> (<rank>)`, so a caller compares a number and not a word. Both ride in an
+answered brief only. `brief` answers once at least one field of the subject is released to the
+round; with nothing released it refuses before it reads the subject's document
+(`not_disclosed`, or `audience_not_subset` when the release went to a smaller round), and that
+refusal carries neither `trust_level` nor `trust_rank` -- a `blocked` pair with nothing
+released reads exactly like a `known` one. A caller that derives a permission from the rank
+therefore reads a missing rank as no. `brief` itself compares nothing: what rank is enough to
+talk is the caller's rule. A stored word outside the
+five -- a row that came in from elsewhere -- is passed through as `trust_level` and ranked as
+`stranger`. **The newest row of a pair wins, inside one second too.** `set_trust` stamps
+`decided_at` to the microsecond, and only there: at second precision two verdicts of one
+second tied, and the store served the one it scanned first -- the earlier. The tie cannot be
+broken on insertion order instead, because the store resolves an `order_by` column through
+its catalog, which does not list `rowid`. One mix still sorts the wrong way: a row stamped
+before 3.5.0 carries no fraction (`…:24Z`), and against a 3.5.0 row of the very same second
+(`…:24.000100Z`) it reads as the newer, because `Z` sorts after `.` -- only an upgrade or an
+import landing inside that one second can produce such a pair.
 
 Every one of them writes an `audit` row, refusals included -- a refusal is the more
 interesting half of the log.
@@ -795,7 +856,7 @@ the export carries it -- a fictional `Alex Kern` beside an imported record would
 person nobody imported. `in_import` is the other half: the way into a hive that is already
 running, which no seed can reach.
 
-`affinity` hangs directly under the member (`member/affinity`, a `ref` to `affinity@3.4.0`) and
+`affinity` hangs directly under the member (`member/affinity`, a `ref` to `affinity@3.5.0`) and
 its `in_export` is fanned by the member's own. The sink files the parts under
 `<export_dir>/affinity/seed/`, and a directory per hive is a requirement rather than tidiness:
 `memory-hive` and `affinity` both have a table called `entities`, and a flat sink would have
@@ -874,9 +935,18 @@ beside the old one.
 - **No name resolution.** A `subject` is an entity_id. The store carries the canonical name
   binding (`display_name` -> `canonical_name`, normalising) and an FTS index over it, so a
   lookup lane is a small addition -- it is just not v1.
-- **No per-turn recall.** Affinity is never in the turn hot path. The per-turn wire stays
-  collector -> memory (`system.memory`); affinity owns `identity`, `peer`, `relationship`
-  and `channel`, one writer per system path.
+- **Per turn only when asked, and never into `system.*`.** Until
+  [#834](https://github.com/mmeyerlein/meclaw/issues/834) nothing in a turn asked this hive at
+  all. Since `collector@4.3.0` a turn on a channel with many counterparts asks it ONCE, at the
+  turn's opening: an ordinary `in_brief` about `context.counterpart`, raised as the collector's
+  `brief` and stamped by the member (`asker = 'agent:' + context.assistant`, the turn's own
+  round), and the answer -- or an error, as an empty leg -- reaches the brain as a synthetic
+  `affinity_brief` tool result. Nothing of it is written into `system.*`, so the rule stands:
+  affinity owns `identity`, `peer`, `relationship` and `channel` on the push lane, one writer
+  per system path, and the brief writes none of them. The per-turn memory wire (collector ->
+  memory, a `memory_recall` tool result since GH #278) is unchanged. The rows a turn's brief
+  can use carry the round WITH the counterpart in it (R-AF-3: the asker always counts to the
+  round, and the turn's round is the one asked in).
 - **~~No export lane.~~ Retracted in `affinity@3.2.0`
   ([#471](https://github.com/mmeyerlein/meclaw/issues/471)).** This entry used to read: *"No
   export lane. The substrate does have a counterpart to the seed -- the `transfer` body slot,

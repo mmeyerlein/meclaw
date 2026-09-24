@@ -295,6 +295,8 @@ fn every_connect_point_names_both_rims() {
     assert_eq!(
         named,
         vec![
+            "brief",
+            "in_briefing",
             "in_bundle",
             "in_pack",
             "pack_ack",
@@ -302,7 +304,7 @@ fn every_connect_point_names_both_rims() {
             "schemas",
             "tool"
         ],
-        "the six lanes that dock on a brain rim"
+        "the eight lanes that dock on a brain rim -- `brief` and `in_briefing` since GH #834"
     );
 }
 

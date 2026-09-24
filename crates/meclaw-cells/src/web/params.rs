@@ -1,6 +1,6 @@
 //! W8 (GH #380): the `web` cell's params.
 //!
-//! Three keys, and none of them is immutable.
+//! Four keys, and none of them is immutable.
 //!
 //! # A named removal
 //!
@@ -46,6 +46,16 @@ pub struct WebParams {
     /// set without a proxy is not an identity, so nothing is stamped until an
     /// operator names the header their proxy actually writes.
     pub identity_header: String,
+    /// GH #833: the addresses whose `identity_header` this display believes —
+    /// IP addresses or CIDRs. `None` (the key absent) is loopback
+    /// (`127.0.0.0/8`, `::1/128`, R-AG-1); an empty list believes nobody. A
+    /// socket upgraded on a connection from anywhere else is served without an
+    /// identity: page and socket work, `hop.user_id` is absent.
+    ///
+    /// Only the identity rides on this list. `X-Forwarded-Prefix` is read from
+    /// every connection as before (OR-AG-6): the display's public path depends
+    /// on it, and its grammar is what keeps it harmless.
+    pub trusted_proxies: Option<Vec<String>>,
     /// Operation-timeout (hard rule 12, A) for I/O this cell initiates.
     pub external_timeout_ms: u64,
 }
@@ -105,6 +115,27 @@ impl WebParams {
             ));
         }
 
+        // `null` reads as absent, so an update can hand the default back.
+        let trusted_proxies = match obj.get("trusted_proxies") {
+            None | Some(JsonValue::Null) => None,
+            Some(JsonValue::Array(items)) => {
+                let mut list = Vec::with_capacity(items.len());
+                for (i, item) in items.iter().enumerate() {
+                    let entry = item.as_str().ok_or_else(|| {
+                        format!("trusted_proxies[{i}]: must be a string, got {item}")
+                    })?;
+                    list.push(entry.to_string());
+                }
+                meclaw_colony::surfaces::parse_trusted_proxies(&list)?;
+                Some(list)
+            }
+            Some(other) => {
+                return Err(format!(
+                    "trusted_proxies: must be a list of IP addresses or CIDRs, got {other}"
+                ));
+            }
+        };
+
         let external_timeout_ms = obj
             .get("external_timeout_ms")
             .map(|t| {
@@ -118,14 +149,26 @@ impl WebParams {
         Ok(Self {
             mount: mount.to_string(),
             identity_header,
+            trusted_proxies,
             external_timeout_ms,
         })
+    }
+
+    /// GH #833: the list the I/O half judges each connection with — the
+    /// default (loopback) when the key is absent, the parsed entries otherwise.
+    ///
+    /// [`Self::parse`] has already refused an entry that does not parse, so
+    /// the error arm is unreachable for params that came through it; it trusts
+    /// nobody rather than everybody (fail-closed).
+    pub fn trusted(&self) -> Vec<meclaw_colony::surfaces::ProxyNet> {
+        meclaw_colony::surfaces::trusted_proxies_or_default(self.trusted_proxies.as_deref())
+            .unwrap_or_default()
     }
 }
 
 /// The runtime params-update overlay of a `web` cell.
 ///
-/// It carries all three keys, because `apply_update` merges the update over the
+/// It carries all four keys, because `apply_update` merges the update over the
 /// **serialised current params**: a key that is not serialised here is missing
 /// from the merge base, so an update naming only `identity_header` would be
 /// re-parsed against a document with no `mount` in it and refused with
@@ -142,14 +185,24 @@ pub struct WebOverlay {
     pub mount: String,
     /// The proxy's identity header, or empty. Mutable; effect on the next life.
     pub identity_header: String,
+    /// GH #833: whose identity header is believed. Mutable; effect on the next
+    /// life, like `identity_header` — the I/O half reads it when it starts.
+    /// Not serialised when absent, so the merge base of an update keeps
+    /// "absent" (the default) apart from "empty" (nobody).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trusted_proxies: Option<Vec<String>>,
     /// Operation-timeout for I/O this cell initiates. Mutable.
     pub external_timeout_ms: u64,
 }
 
 impl OverlayParams for WebOverlay {
     /// Every key an update may name.
-    const KNOWN_KEYS: &'static [&'static str] =
-        &["mount", "identity_header", "external_timeout_ms"];
+    const KNOWN_KEYS: &'static [&'static str] = &[
+        "mount",
+        "identity_header",
+        "trusted_proxies",
+        "external_timeout_ms",
+    ];
 
     /// **Empty.** No param of this cell type is fixed for its lifetime: a
     /// display is renamed by being told to, not by being rebuilt. What a value
@@ -164,6 +217,7 @@ impl OverlayParams for WebOverlay {
         WebParams::parse(raw).map(|p| Self {
             mount: p.mount,
             identity_header: p.identity_header,
+            trusted_proxies: p.trusted_proxies,
             external_timeout_ms: p.external_timeout_ms,
         })
     }
@@ -238,7 +292,12 @@ mod tests {
             WebOverlay::IMMUTABLE_KEYS.is_empty(),
             "a display is renamed by being told to, not by being rebuilt"
         );
-        for key in ["mount", "identity_header", "external_timeout_ms"] {
+        for key in [
+            "mount",
+            "identity_header",
+            "trusted_proxies",
+            "external_timeout_ms",
+        ] {
             assert!(WebOverlay::KNOWN_KEYS.contains(&key), "{key} must be known");
         }
     }
@@ -274,6 +333,67 @@ mod tests {
                 "a bad value is Invalid, not Immutable: {bad} gave {err:?}"
             );
         }
+    }
+
+    /// GH #833: absent is the default, `[]` is nobody, and an entry that is
+    /// no address is refused by index and value at plan time.
+    #[test]
+    fn trusted_proxies_default_to_loopback_and_refuse_a_bad_entry_by_name() {
+        let p = WebParams::parse(&json!({"mount": "web"})).unwrap();
+        assert_eq!(p.trusted_proxies, None);
+        assert_eq!(p.trusted(), meclaw_colony::surfaces::loopback_only());
+        let none = WebParams::parse(&json!({"mount": "web", "trusted_proxies": []})).unwrap();
+        assert!(none.trusted().is_empty(), "an empty list trusts nobody");
+        let listed = WebParams::parse(
+            &json!({"mount": "web", "trusted_proxies": ["192.0.2.0/24", "2001:db8::1"]}),
+        )
+        .unwrap();
+        assert_eq!(listed.trusted().len(), 2);
+        let err = WebParams::parse(
+            &json!({"mount": "web", "trusted_proxies": ["192.0.2.1", "proxy.example"]}),
+        )
+        .unwrap_err();
+        assert!(
+            err.starts_with(r#"trusted_proxies[1]: "proxy.example" is not an IP address or CIDR"#),
+            "got {err}"
+        );
+        for bad in [json!("192.0.2.1"), json!([7])] {
+            let err =
+                WebParams::parse(&json!({"mount": "web", "trusted_proxies": bad})).unwrap_err();
+            assert!(err.starts_with("trusted_proxies"), "{bad}: {err}");
+        }
+    }
+
+    /// An update naming only `trusted_proxies` keeps the other keys, and the
+    /// overlay a respawn replays carries the list — or, absent, nothing.
+    #[test]
+    fn a_trusted_proxies_update_merges_and_round_trips() {
+        use crate::params_overlay::apply_update;
+        let current = <WebOverlay as OverlayParams>::parse(
+            &json!({"mount": "web", "identity_header": "X-User"}),
+        )
+        .unwrap();
+        let s = meclaw_core::serde_json::to_string(&current).unwrap();
+        assert!(
+            !s.contains("trusted_proxies"),
+            "absent stays absent in the merge base: {s}"
+        );
+        let mut update = meclaw_core::serde_json::Map::new();
+        update.insert("trusted_proxies".into(), json!(["192.0.2.7"]));
+        let (merged, _) = apply_update(&current, &update).expect("the update applies");
+        assert_eq!(
+            (merged.mount.as_str(), merged.identity_header.as_str()),
+            ("web", "X-User")
+        );
+        assert_eq!(merged.trusted_proxies, Some(vec!["192.0.2.7".to_string()]));
+        let back: JsonValue = meclaw_core::serde_json::from_str(
+            &meclaw_core::serde_json::to_string(&merged).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            WebParams::parse(&back).unwrap().trusted_proxies,
+            Some(vec!["192.0.2.7".to_string()])
+        );
     }
 
     #[test]

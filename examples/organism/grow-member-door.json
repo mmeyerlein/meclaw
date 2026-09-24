@@ -213,6 +213,17 @@
         "from": ".",
         "to": "./scribe",
         "condition": "has(hop.route) && hop.route == 'in_turn' && !has(context.assistant) && has(hop.owner) && hop.owner.contains('/assistants/scribe/')"
+      },
+      {
+        "from": ".",
+        "to": "./scribe",
+        "default": true,
+        "condition": "has(hop.route) && hop.route == 'in_turn'",
+        "modifier": {
+          "set_context": {
+            "assistant": "'scribe'"
+          }
+        }
       }
     ]
   }

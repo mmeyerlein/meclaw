@@ -1,7 +1,7 @@
 {
   "cell": {
     "type": "ref",
-    "template": "talky@5.2.2"
+    "template": "talky@5.3.0"
   },
   "override_params": {
     "brain": {
@@ -15,11 +15,15 @@
         "memory_recall"
       ],
       "memory_tier": "1",
+      "brief_slots": [
+        "peer",
+        "channel"
+      ],
       "late_after_ms": 30000
     }
   },
   "description": {
-    "purpose": "The conversation surface of the channel `chat`: the second sealed talky of this generation, for the one channel that is typed. Same ref, same version, same overrides as `./talky` -- one identity, one tone (display-hive.md § 8.2, `meclaw-next/archive/03-os-structure.md`, 'One talky per channel'). It is a SECOND NODE onto the template the level already holds, not a second agent: the model, the tool list and the memory tier are the level's decisions and they are repeated here word for word, because a chat that answered in a different voice would be a different assistant to the same person.",
+    "purpose": "The conversation surface of the channel `chat`: the second sealed talky of this generation, for the one channel that is typed. Same ref, same version, same overrides as `./talky` -- one identity, one tone (display-hive.md § 8.2, `meclaw-next/archive/03-os-structure.md`, 'One talky per channel'). It is a SECOND NODE onto the template the level already holds, not a second agent: the model, the tool list and the memory tier are the level's decisions and they are repeated here word for word, because a chat that answered in a different voice would be a different assistant to the same person. Since [#834](https://github.com/mmeyerlein/meclaw/issues/834) it carries the brief leg's knob as well, `brief_slots: [\"peer\", \"channel\"]`, word for word as `./talky` does -- a typed channel with many counterparts is briefed about the one a turn is with exactly as the spoken one is.",
     "use_when": "Never on its own -- it travels with the assistant level, and it is reached only by the split the level draws: `in_turn` with `context.channel_node == 'chat'` comes here, everything else goes to `./talky`. Point `override_params` at `<assistant>/talky-chat/brain` or `<assistant>/talky-chat/collector` to give the typed channel a prompt of its own; leave them alone and it answers exactly as the spoken one does. What it does NOT share with `./talky` is the one thing a talky owns: its SESSIONS. Two talkys are two session windows, so what was spoken reaches this one through the member's memory rather than out of its own window -- which is the price of the rule and not a defect of it (R-24-4; the chat APP shows all channels either way, § 8.1). Its sessions TRAVEL since assistant@2.8.1: the four transfer lanes reach this node as they reach `./talky`, its keeper files its ledger under `talky-chat/session-keeper` (session-keeper@2.2.2) and takes the import part addressed to that path (GH #712).",
     "not_in_scope": "No channel and no connector: the channel `chat` is the MEMBER's (`templates/chat-channel`), it stands in `<member>/channels/chat`, and it reaches this surface by addressing the assistant path with the stamp its own edge wrote. No third surface for a third channel unless that channel asks for one -- a talky per channel is a rule about channels that want their own voice, not a rule that every transport gets a node. No divergence from `./talky` that is not written down here: an override this node carries and its sibling does not is a difference in the person's assistant, and it belongs in a `because` where a reader will find it."
   }

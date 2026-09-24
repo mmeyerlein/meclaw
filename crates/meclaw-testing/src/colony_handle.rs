@@ -17,6 +17,13 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
+/// GH #47: the shutdown drain budget of every harness colony whose own
+/// `colony.json` names none — 250 ms, not the production 10 s, so one hung cell
+/// costs a suite of hundreds of colonies a blink. Public so that a test which
+/// bounds a shutdown reads the budget it discriminates against instead of
+/// restating it (GH #812).
+pub const HARNESS_DRAIN_BUDGET_MS: u64 = 250;
+
 pub struct ColonyHandle {
     /// Sender into the Colony inbox; exposed for constructing a `ColonyRuntime`
     /// until T4 adds the `runtime()` helper method.
@@ -243,17 +250,18 @@ impl ColonyHandle {
         // GH #47: the harness DRAINS — a drain that only runs in five dedicated
         // tests is a drain nobody exercises. But a single hung cell must never
         // cost a suite with hundreds of colonies more than a blink, so the
-        // budget here is 250 ms, not the production 10 s. A test that measures
-        // the drain sets its own budget through `colony.json`, and that value
-        // MUST win: the key's presence in the file, not its parsed value, is
-        // what decides — a test asking for exactly the production default or
-        // for `0` (the documented off switch, Ruling O7) is asking for it on
-        // purpose, and neither is distinguishable from "absent" after parsing.
+        // budget here is `HARNESS_DRAIN_BUDGET_MS` (250 ms), not the production
+        // 10 s. A test that measures the drain sets its own budget through
+        // `colony.json`, and that value MUST win: the key's presence in the
+        // file, not its parsed value, is what decides — a test asking for
+        // exactly the production default or for `0` (the documented off
+        // switch, Ruling O7) is asking for it on purpose, and neither is
+        // distinguishable from "absent" after parsing.
         let names_own_drain_budget = std::fs::read_to_string(dir.join("colony.json"))
             .map(|s| s.contains("shutdown_drain_timeout_ms"))
             .unwrap_or(false);
         if !names_own_drain_budget {
-            colony_config.shutdown_drain_timeout_ms = 250;
+            colony_config.shutdown_drain_timeout_ms = HARNESS_DRAIN_BUDGET_MS;
         }
         let mut cfg = meclaw_colony::ColonyTaskConfig::new(
             self_tx,

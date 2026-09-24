@@ -566,7 +566,23 @@ fn frame_with_trace_and(extra: Value) -> (Value, String) {
 
 /// One frame straight at a peer mount; the answer IS the receipt.
 async fn post_frame(addr: &SocketAddr, frame: Value, headers: &[(&str, &str)]) -> Value {
-    let mut req = reqwest::Client::new()
+    post_frame_from(None, addr, frame, headers).await
+}
+
+/// [`post_frame`] from a chosen source address (GH #833). Linux routes all of
+/// `127.0.0.0/8` over `lo`, so `127.0.0.2` is a second host on the same box —
+/// the cheapest real "client that is not the proxy" there is (OR-AG-21).
+async fn post_frame_from(
+    source: Option<std::net::IpAddr>,
+    addr: &SocketAddr,
+    frame: Value,
+    headers: &[(&str, &str)],
+) -> Value {
+    let client = reqwest::Client::builder()
+        .local_address(source)
+        .build()
+        .expect("a client");
+    let mut req = client
         .post(format!("http://{addr}/peer/"))
         .header("Content-Type", "application/json")
         .body(frame.to_string());
@@ -619,6 +635,82 @@ async fn a_sender_field_in_the_frame_is_refused() {
         "no authenticated sender header on this mount"
     );
     north.stop().await;
+    south.stop().await;
+}
+
+/// The direct client of the GH #833 pin: a second loopback address, never the
+/// forwarder's `127.0.0.1`.
+const DIRECT: std::net::IpAddr = std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 2));
+
+/// GH #833, A-f(2): a client that reaches the colony's port directly, past the
+/// proxy, and writes the sender header itself. With the default list (loopback
+/// only, R-AG-1) the header counts from `127.0.0.2` too — the pin is what the
+/// SOURCE decides, so the south fixture lists the forwarder's address and the
+/// direct client's is outside: refused as `invalid_frame`, nothing arrives,
+/// and the forwarder on `127.0.0.1` still crosses. A second south that trusts
+/// only `127.0.0.2` turns both outcomes round.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gh833_a_forged_sender_header_from_a_direct_client_is_refused_while_the_forwarder_crosses()
+{
+    const HDR: &str = r#""identity_header": "X-Meclaw-Peer","#;
+    let trusting = |list: &str| format!(r#"{HDR} "trusted_proxies": {list},"#);
+
+    // (1) South believes the forwarder's address and no other.
+    let only_fwd = trusting(r#"["127.0.0.1/32"]"#);
+    let south = boot("peer-south", &[(HDR, only_fwd.as_str())]).await;
+    let fwd = peer_forwarder(south.addr, "north").await;
+    let (f, forged) = frame_with_trace();
+    let r = post_frame_from(Some(DIRECT), &south.addr, f, &[("X-Meclaw-Peer", "north")]).await;
+    assert_eq!(
+        r["result"],
+        json!("refused"),
+        "a forged sender does not cross"
+    );
+    assert_eq!(
+        r["error_code"],
+        json!("invalid_frame"),
+        "no new code (OR-AG-5)"
+    );
+    let detail = r["detail"].as_str().expect("detail");
+    assert!(
+        detail.contains("trusted_proxies"),
+        "the receipt names the reason -- {detail}"
+    );
+    let (f, honest) = frame_with_trace();
+    let c = post_frame(&fwd, f, &[]).await;
+    assert_eq!(c["result"], json!("crossed"), "the forwarder still crosses");
+    assert_eq!(
+        wait_for_rows(&south.addr, &honest, "/sink", 1).await[0].hop["peer"],
+        json!("north")
+    );
+    assert!(
+        rows(&south.addr, &forged, "/sink").await.is_empty(),
+        "0 arrivals from the direct client -- read NEXT TO the forwarder's arrival"
+    );
+    south.stop().await;
+
+    // (2) The same two requests against a south that trusts only 127.0.0.2.
+    let only_direct = trusting(r#"["127.0.0.2/32"]"#);
+    let south = boot("peer-south", &[(HDR, only_direct.as_str())]).await;
+    let fwd = peer_forwarder(south.addr, "north").await;
+    let (f, direct) = frame_with_trace();
+    let r = post_frame_from(Some(DIRECT), &south.addr, f, &[("X-Meclaw-Peer", "north")]).await;
+    assert_eq!(
+        r["result"],
+        json!("crossed"),
+        "a listed source is believed -- {r}"
+    );
+    assert_eq!(
+        wait_for_rows(&south.addr, &direct, "/sink", 1).await[0].hop["peer"],
+        json!("north")
+    );
+    let (f, _) = frame_with_trace();
+    let c = post_frame(&fwd, f, &[]).await;
+    assert_eq!(
+        (c["result"].clone(), c["error_code"].clone()),
+        (json!("refused"), json!("invalid_frame")),
+        "and the forwarder, now unlisted, is not -- {c}"
+    );
     south.stop().await;
 }
 

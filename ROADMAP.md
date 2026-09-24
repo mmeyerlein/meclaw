@@ -25,7 +25,7 @@ Release detail is in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
 When Now is empty, the tree is between two waves: what the last one built is in
-v0.44.0, under [§ Shipped](#shipped), and the open findings wait in the tracker
+v0.45.0, under [§ Shipped](#shipped), and the open findings wait in the tracker
 for the next wave to give them a horizon. A horizon holds bullets only — a
 sentence like this one stands up here, above the first heading, where the gate
 does not read it.
@@ -109,6 +109,12 @@ worked examples listed in [`templates/README.md`](templates/README.md), where
 One line per release. Details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- v0.45.0: agents behind one member, each answering for itself. An accepted proposal about a
+  disclosure becomes the disclosure row and a trust level says no on purpose (`affinity@3.5.0`); a turn
+  on a channel with many counterparts briefs the member's record about the counterpart (a third turn
+  leg, context key `counterpart`); a member grows a door that takes every turn nobody addressed
+  (`builder@1.13.0`); and a mount believes an identity header only from the proxies it trusts,
+  loopback by default (`params.trusted_proxies`, breaking for a proxy on another host).
 - v0.44.0: a colony lifts, exports and installs the way it promises. It keeps its own copy of
   every template version it instantiated, an app is installed from what it declares, a late answer
   carries the turn that asked, `meclaw --env-report` names the keys nothing binds, and a `proxy` on

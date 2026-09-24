@@ -382,6 +382,11 @@ fn the_briefing_tells_the_composer_the_same_counts() {
         "twenty-two",
         "twenty-three",
         "twenty-four",
+        "twenty-five",
+        "twenty-six",
+        "twenty-seven",
+        "twenty-eight",
+        "twenty-nine",
     ];
     for (name, n) in rendered_counts() {
         let word = words.get(n - 1).copied().unwrap_or("?");
@@ -449,7 +454,7 @@ fn a_named_grow_level_missing_its_per_level_parameter_is_refused_not_downgraded(
 #[test]
 fn the_grow_sentence_takes_the_fast_lane_and_a_half_sentence_does_not() {
     let full = run_classify(json!({
-        "request": "grow an assistant named scribe from assistant@2.8.1 under \
+        "request": "grow an assistant named scribe from assistant@2.9.0 under \
                     /os/orgs/acme/members/alex",
         "ctx": {"model": "m", "model_fast": "f", "model_surface": "s"}}));
     assert_eq!(full["header"]["route"], json!("recipe"));
@@ -515,6 +520,275 @@ fn the_composer_budget_in_the_readme_is_the_one_the_cell_declares() {
     );
 }
 
+// ---------------------------------------------- the member's door (GH #835)
+
+/// The assistant wish of the table above, grown as its member's door.
+fn door_params() -> Value {
+    let mut params = levels()
+        .into_iter()
+        .find(|lv| lv.name == "assistant")
+        .expect("the table carries the assistant level")
+        .params;
+    params["template"] = json!("a-template@1.0.0");
+    params["door"] = json!(true);
+    params
+}
+
+/// The count is derived here like the six above: the door is ONE edge more than
+/// the level, and the README says how many that is exactly once, in a sentence
+/// this test reads rather than a table it would have to extend.
+#[test]
+fn the_door_is_one_edge_more_and_the_readme_counts_it() {
+    let plain = rendered_counts()
+        .into_iter()
+        .find(|(name, _)| *name == "assistant")
+        .map(|(_, n)| n)
+        .expect("the assistant count");
+    let door = grow(door_params())["diff"]["add_edges"]
+        .as_array()
+        .expect("add_edges")
+        .len();
+    assert_eq!(
+        door,
+        plain + 1,
+        "a door is one default edge beside the level, never a second set"
+    );
+
+    let Some(readme) = read(&repo("templates/builder/README.md")) else {
+        return;
+    };
+    let flat = readme.split_whitespace().collect::<Vec<_>>().join(" ");
+    let anchor = "grown with `door: true` carries";
+    let start = flat.find(anchor).unwrap_or_else(|| {
+        panic!("the README no longer says how many edges a door costs ({anchor:?})")
+    });
+    let stated: usize = flat[start + anchor.len()..]
+        .split(|c: char| !c.is_ascii_digit())
+        .find(|s| !s.is_empty())
+        .and_then(|s| s.parse().ok())
+        .expect("a number after the anchor");
+    assert_eq!(
+        stated, door,
+        "the README's door count and the renderer disagree -- § 2d"
+    );
+}
+
+/// Only an assistant can be a door. A member, a channel or an app grown with the
+/// switch would be refused at BOTH cells by name: the switch before an inference
+/// is bought, the renderer because a cell knows no topology and must not build
+/// on who stands in front of it.
+#[test]
+fn a_door_on_any_level_but_an_assistant_is_refused_by_name() {
+    let params = json!({"scope": "/os/orgs/acme", "level": "member", "name": "alex",
+                        "template": "member@1.10.0", "door": true});
+    let early = run_classify(json!({"request": "…", "recipe": "grow_level",
+                                    "params": params.clone()}));
+    assert_eq!(early["header"]["route"], json!("error"));
+    assert_eq!(early["header"]["error_code"], json!("door_level_invalid"));
+    let payload: Value =
+        meclaw_core::serde_json::from_str(early["messages"][0]["text"].as_str().expect("payload"))
+            .expect("json payload");
+    assert_eq!(payload["level"], json!("member"));
+    assert_eq!(payload["known"], json!(["assistant"]));
+
+    let late = run_recipes(json!({"recipe": "grow_level", "request": "…",
+                                  "params": params}));
+    assert_eq!(late["header"]["error_code"], json!("door_level_invalid"));
+    assert!(
+        late["manifest"].is_null(),
+        "no manifest on a refusal: a member rendered without the door it was asked \
+         for is a different wish answered"
+    );
+}
+
+/// `door` is a boolean. A model that stringifies it -- `"door": "false"` -- is
+/// refused by name at BOTH cells rather than read by truthiness, which drew a
+/// door for the string `"false"` (review of #835, Minor 2: 25 edges rendered).
+/// Dropping it instead would answer a different wish than the one made, the
+/// same reason an off-level door is refused.
+#[test]
+fn a_door_that_is_not_a_boolean_is_refused_by_name() {
+    let mut params = door_params();
+    params["door"] = json!("false");
+
+    let early = run_classify(json!({"request": "…", "recipe": "grow_level",
+                                    "params": params.clone()}));
+    assert_eq!(early["header"]["route"], json!("error"), "{early}");
+    assert_eq!(
+        early["header"]["error_code"],
+        json!("door_invalid"),
+        "{early}"
+    );
+    let payload: Value =
+        meclaw_core::serde_json::from_str(early["messages"][0]["text"].as_str().expect("payload"))
+            .expect("json payload");
+    assert_eq!(
+        payload["door"],
+        json!("false"),
+        "the refusal names the value"
+    );
+
+    // The sentence lane reads the same key, and a key beats the words.
+    let ctx = json!({"model": "m", "model_fast": "f", "model_surface": "s"});
+    let spoken = run_classify(json!({
+        "request": "grow an assistant named scribe from assistant@2.9.0 under \
+                    /os/orgs/acme/members/alex",
+        "ctx": ctx, "door": "true"}));
+    assert_eq!(
+        spoken["header"]["error_code"],
+        json!("door_invalid"),
+        "{spoken}"
+    );
+
+    let late = run_recipes(json!({"recipe": "grow_level", "request": "…",
+                                  "params": params}));
+    assert_eq!(
+        late["header"]["error_code"],
+        json!("door_invalid"),
+        "{late}"
+    );
+    assert!(
+        late["manifest"].is_null(),
+        "no manifest on a refusal: a string is not a switch, whichever way it reads"
+    );
+}
+
+/// The sentence hears the door: "grow the member's door named …" and "grow an
+/// assistant named … as the member's door" both render `door: true`, and a
+/// sentence that says neither renders no door.
+#[test]
+fn the_grow_sentence_hears_the_door() {
+    let ctx = json!({"model": "m", "model_fast": "f", "model_surface": "s"});
+    let door_of = |request: &str| -> Value {
+        let out = run_classify(json!({"request": request, "ctx": ctx.clone()}));
+        assert_eq!(
+            out["header"]["route"],
+            json!("recipe"),
+            "{request:?} is a complete grow sentence: {out}"
+        );
+        let payload: Value = meclaw_core::serde_json::from_str(
+            out["messages"][0]["text"].as_str().expect("payload"),
+        )
+        .expect("json payload");
+        assert_eq!(
+            payload["params"]["level"],
+            json!("assistant"),
+            "{request:?}"
+        );
+        payload["params"]["door"].clone()
+    };
+    assert_eq!(
+        door_of(
+            "grow the member's door named reception from assistant@2.9.0 under \
+             /os/orgs/acme/members/alex"
+        ),
+        json!(true)
+    );
+    assert_eq!(
+        door_of(
+            "grow an assistant named scribe from assistant@2.9.0 under \
+             /os/orgs/acme/members/alex as the member's door"
+        ),
+        json!(true)
+    );
+    assert_eq!(
+        door_of(
+            "grow an assistant named scribe from assistant@2.9.0 under \
+             /os/orgs/acme/members/alex"
+        ),
+        Value::Null,
+        "a sentence that names no door grows no door"
+    );
+    // A sentence that MENTIONS a door without asking for one grows none. The
+    // words are read as a request -- "as the (member's) door" -- and never as a
+    // noun anywhere in the sentence: a second door is a second default edge of
+    // one sender on one lane, and every unaddressed turn would be answered
+    // twice (review of #835, Minor 1, measured on both sentences below).
+    for mention in [
+        "grow an assistant named helper from assistant@2.9.0 under \
+         /os/orgs/acme/members/alex next to the member's door",
+        "grow an assistant named helper from assistant@2.9.0 under \
+         /os/orgs/acme/members/alex, not as the door",
+        "grow an assistant named helper from assistant@2.9.0 under \
+         /os/orgs/acme/members/alex, never as the member's door",
+        // A possessive is a noun of the door, not a request to be one: `\b`
+        // sits in front of the apostrophe, and this drew a second door (review
+        // of the #812 fix strand, Minor 2).
+        "grow an assistant named helper from assistant@2.9.0 under \
+         /os/orgs/acme/members/alex, to stand in as the door's relief",
+        "grow an assistant named helper from assistant@2.9.0 under \
+         /os/orgs/acme/members/alex, to stand in as the member’s door’s relief",
+    ] {
+        assert_eq!(
+            door_of(mention),
+            Value::Null,
+            "{mention:?} mentions a door and asks for none"
+        );
+    }
+    assert_eq!(
+        door_of(
+            "grow an assistant named scribe from assistant@2.9.0 under \
+             /os/orgs/acme/members/alex as its door"
+        ),
+        json!(true),
+        "the short form still asks"
+    );
+    // A MEMBER sentence is untouched by the new words: "member" still means the
+    // level, and only "member's door" means the switch.
+    let member = run_classify(json!({
+        "request": "grow a member named alex from member@1.10.0 under /os/orgs/acme"}));
+    let payload: Value =
+        meclaw_core::serde_json::from_str(member["messages"][0]["text"].as_str().expect("payload"))
+            .expect("json payload");
+    assert_eq!(payload["params"]["level"], json!("member"));
+    assert!(payload["params"]["door"].is_null());
+}
+
+/// `"door": null` is an absent key on the sentence lane too, as the builder
+/// README says: the words still decide. Read as "the key was given", a null
+/// silenced the words and grew an ordinary assistant -- a different wish
+/// answered, visible only as one edge fewer in the draft (review of the #812
+/// fix strand, Minor 1). An explicit `false` still beats the words.
+#[test]
+fn a_null_door_is_an_absent_key_in_the_sentence() {
+    let ctx = json!({"model": "m", "model_fast": "f", "model_surface": "s"});
+    let door_of = |request: &str, door: Value| -> Value {
+        let out = run_classify(json!({"request": request, "ctx": ctx.clone(), "door": door}));
+        assert_eq!(
+            out["header"]["route"],
+            json!("recipe"),
+            "{request:?}: {out}"
+        );
+        let payload: Value = meclaw_core::serde_json::from_str(
+            out["messages"][0]["text"].as_str().expect("payload"),
+        )
+        .expect("json payload");
+        assert_eq!(
+            payload["params"]["level"],
+            json!("assistant"),
+            "{request:?}"
+        );
+        payload["params"]["door"].clone()
+    };
+    for asked in [
+        "grow the member's door named reception from assistant@2.9.0 under \
+         /os/orgs/acme/members/alex",
+        "grow an assistant named scribe from assistant@2.9.0 under \
+         /os/orgs/acme/members/alex as the member's door",
+    ] {
+        assert_eq!(
+            door_of(asked, Value::Null),
+            json!(true),
+            "{asked:?} with `door: null` is the sentence alone"
+        );
+        assert_eq!(
+            door_of(asked, json!(false)),
+            Value::Null,
+            "{asked:?} with `door: false` is a decision, and it beats the words"
+        );
+    }
+}
+
 // ---------------------------------------------- the credential lanes (GH #560)
 
 /// The wish that grows a generation with no key of its own. The three values
@@ -523,7 +797,7 @@ fn the_composer_budget_in_the_readme_is_the_one_the_cell_declares() {
 /// for byte — the same discipline the six levels above run under.
 fn credentialled_wish() -> Value {
     json!({"scope": "/os/orgs/acme/members/alex", "level": "assistant",
-           "name": "scribe", "template": "assistant@2.8.1",
+           "name": "scribe", "template": "assistant@2.9.0",
            "ctx": {"model": "${MODEL_CORE}", "model_fast": "${MODEL_CORE_FAST}",
                    "model_surface": "${MODEL_SURFACE}"},
            "override_params": {"cogny/brain": {"temperature": 0.2}},

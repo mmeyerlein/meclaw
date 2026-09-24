@@ -288,6 +288,7 @@ fn make_build(
             Ok(o) => WebParams {
                 mount: o.mount,
                 identity_header: o.identity_header,
+                trusted_proxies: o.trusted_proxies,
                 external_timeout_ms: o.external_timeout_ms,
             },
             Err(e) => {
@@ -325,7 +326,7 @@ fn make_build(
         //    listener answers `503 starting` while it is, so "not ready yet" and
         //    "no such route" stop arriving as the same status code.
         let (ready_tx, ready_rx) = watch::channel(false);
-        let io = WebIo::new(
+        let mut io = WebIo::new(
             parsed.mount.clone(),
             parsed.identity_header.clone(),
             path_cap.as_str(),
@@ -335,6 +336,10 @@ fn make_build(
             push_rx,
             Arc::clone(&surfaces_cap),
         );
+        // GH #833: set after `new` rather than passed to it — the list is the
+        // effective params' (birth ⊕ overlay, like `identity_header`), and a
+        // ninth argument would move four test call sites for one field.
+        io.trusted = Arc::new(parsed.trusted());
         let cell = WebCell::new(
             path_cap.as_str().to_string(),
             io,

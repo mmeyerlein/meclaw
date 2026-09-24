@@ -12,6 +12,117 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.45.0] — 2026-09-24
+
+Agents behind one member, each answering for itself. An accepted proposal about a disclosure becomes the disclosure
+row, a trust level says no on purpose and the newest trust row wins by construction; a turn on a channel with many
+counterparts briefs the member's record about the counterpart, so tone and permission come from that record and not
+from the channel; a member grows a door — the one assistant that takes every turn nobody addressed; and a mount
+believes the identity header only from the proxy it trusts, loopback unless told otherwise.
+
+### Breaking
+
+- **A mount believes an identity header only from its proxy** ([#833](https://github.com/mmeyerlein/meclaw/issues/833)).
+  The peer mount of a `proxy` cell on platform `meclaw` (`identity_header`, the sender of every frame) and a
+  `web` cell (`identity_header` → `hop.user_id`) now read that header only on a connection whose peer address is
+  in the new `params.trusted_proxies`, decided once per connection from the address the listener accepted. The
+  default is loopback (`127.0.0.0/8`, `::1/128`): a reverse proxy on the same host needs nothing, one on another
+  host must be listed — otherwise every frame through it is refused as `invalid_frame` and every `web` socket
+  through it loses `hop.user_id`. Until now a client that reached the colony's port past the proxy could name any
+  sender. **Migration: list the proxy's address (`"trusted_proxies": ["192.0.2.10"]`), or restore the old
+  behaviour with `"trusted_proxies": ["0.0.0.0/0", "::/0"]`.** Order of the rollout: `proxy/meclaw` refuses
+  unknown keys, so a configuration carrying `trusted_proxies` does not boot on 0.44 or older — replace the binary
+  first, then add the key. `web` ignores an unknown key on older binaries, so there the key has no effect until
+  the binary is replaced.
+
+### Upgrade
+
+- The brief leg has no deadline. A turn waits for ever when three things meet: `brief_slots` is set on the surface's
+  collector (`assistant@2.9.0` sets it on both surface ref markers), an entry edge stamps `context.counterpart`, and the
+  level has no brief road — the four brief v-lanes `grow_level assistant` draws since `builder@1.13.0`, and the member's
+  edges of `member@1.10.0`. Upgrade in this order: lift the member to 1.10.0 and draw the brief road (regrow the
+  assistant level, or add the four v-lanes), then set the knob (or lift the assistant to 2.9.0, which sets it), and only
+  then let an entry edge stamp `counterpart`. A level on which no edge stamps `counterpart` never waits: without one the
+  leg is parked empty (#834).
+
+### Added
+
+- **`params.trusted_proxies` on the peer mount and on `web`** ([#833](https://github.com/mmeyerlein/meclaw/issues/833)).
+  A list of IP addresses or CIDRs, parsed with `std::net` alone; host bits under the prefix are masked, and a
+  v4-mapped IPv6 peer (`::ffff:a.b.c.d`, what a listener bound to `[::]` reports) matches its IPv4 range. Absent
+  means loopback, `[]` believes nobody. A signed POST from outside the list is `invalid_frame` with a `refused`
+  receipt whose detail names `params.trusted_proxies`, and the local refusal carries no sender — no new
+  `error_code`. On `web` the page and the socket are served as before and `hop.user_id` is absent. Immutable on
+  `proxy/meclaw` (ten immutable keys), an overlay key on `web` read on the next life, like `identity_header`. An
+  entry that is not an address or CIDR is refused at validation, naming its index
+  (`trusted_proxies[1]: "proxy.example" is not an IP address or CIDR`). `X-Forwarded-Prefix` is read from every
+  connection as before. No shipped template declares the key.
+- **An accepted verdict about a disclosure becomes the disclosure row** — `affinity@3.5.0`
+  ([#831](https://github.com/mmeyerlein/meclaw/issues/831)). `decide_proposal` with `status: accepted` and an
+  `audience` writes the `disclosure` row in the same pass — `entity_id`, `field_path` and `audience` from the verdict
+  body (the proposal row is not read, so a caller sends them with the verdict), `mode` from the verdict (default
+  `share`), `audience_set` default the audience alone, and an `id` of `disc:` plus the hex of the verdict id; the `ack`
+  and the audit `detail` carry it as `disclosure`. A rejected verdict, an accepted one without an audience and a
+  proposal accepted as it arrives release nothing; the proposed `value` is never applied (`upsert_entity` writes it).
+  New refusals `disclosure_field_unrooted` (a verdict releases one path below `aieos.` or `mx.`; `*` and a bare root
+  are a `set_disclosure`) and `disclosure_mode_unknown`; a refusal writes neither the verdict nor the release.
+- **A trust level that says no on purpose** — `affinity@3.5.0` ([#832](https://github.com/mmeyerlein/meclaw/issues/832)).
+  `blocked` sits below `stranger`; the five levels carry a rank 0–4, and an answered `brief` reports `trust_rank`
+  beside `trust_level` in the `peer` slot and in the receipt line (`trust <level> (<rank>)`). A brief refused because
+  nothing is released to the round carries neither, so a caller reads a missing rank as no. `brief` still compares
+  nothing — the rank a conversation needs is the caller's rule. The newest trust row of a pair wins inside one second
+  too: `set_trust` stamps `decided_at` to the microsecond (a row stamped before 3.5.0 in the very same second still
+  sorts first).
+- **A turn on a channel with many counterparts briefs the member's record about the counterpart** — `collector@4.3.0`
+  ([#834](https://github.com/mmeyerlein/meclaw/issues/834)). A third turn leg beside the window and the memory: the knob
+  `brief_slots` (default `[]`, leg off) makes the turn's opening raise `brief` (`{subject: context.counterpart,
+  channel, slots}`) and the fan-in wait for `leg-brief`; the answer comes home on `in_briefing` and reaches the brain
+  as a synthetic `affinity_brief` tool pair, never as `system.*`; the call id comes from the answer's first message, and
+  a pack above the cap is cut with a `… [truncated, N chars total]` marker. An error is an empty leg; a turn without
+  `counterpart` asks nothing and waits for nothing. `assemble` contract 2.2.0.
+- **New context key `counterpart`** ([#834](https://github.com/mmeyerlein/meclaw/issues/834)): an entity reference
+  (`peer:<…>`) stamped by the entry edge of a channel with many counterparts, beside `channel`; the firewall does not
+  touch it.
+- `talky@5.3.0`: `brief` leaves the collector for the rim, `in_briefing` joins the entrance list (#834).
+- `assistant@2.9.0`: `brief` / `in_briefing` docked at both surfaces (`at: ["./talky", "./talky-chat"]`),
+  `brief_slots` `["peer", "channel"]` on both surface ref markers (#834).
+- `member@1.10.0`: the brief road — `./assistants -> ./affinity` stamps `turn_id`, `asker = 'agent:' +
+  context.assistant` and `brief_caller = 'inside'`; `./affinity -> ./assistants` brings answer and error home as
+  `in_briefing`; both turn doors carry `counterpart` (#834).
+- **A member's door** — `builder@1.13.0` ([#835](https://github.com/mmeyerlein/meclaw/issues/835)). An assistant can
+  be grown as the one agent of its member that takes every turn naming no agent: `door: true` on a `grow_level` wish
+  draws one default edge from the member's assistants container into that generation, on `in_turn` only, stamping
+  `context.assistant` with its name. Until now such a turn — an `in_turn` at the member's rim, a frame from a channel
+  that stamps no default — died at the container as `hive_no_route`, and it still does in a member without a door. A
+  turn that names an agent the member has still takes that agent's strict edge; the door runs only when no regular
+  edge of the container decided (GH #283), so a turn naming an agent the member does not have reaches it too, under the
+  door's name: behind a door a stale channel default is answered, not dead-lettered as `hive_no_route`. One door per
+  member is a rule of the wish; a `door` on any other level is refused as `door_level_invalid`, and one that is not a
+  boolean as `door_invalid`. The sentence form reads "… as the member's door" / "… as its door" as the switch, never a
+  door merely mentioned. `grow_level assistant` also draws the brief v-lanes for both surfaces (#834): an
+  assistant level is 28 edges, 29 with the door. Worked example `examples/organism/grow-member-door.json`; member
+  README § The member's door.
+
+### Changed
+
+- `cogny@5.0.4`: pins `collector@4.3.0`; the brief leg stays off in the core (#834).
+- `tools@1.4.4`: the `build_topology` declaration names the `door` switch; pinned by `assistant/tools` (#835).
+- `meclaw-os@1.8.14`: pins `builder@1.13.0` (#835).
+- The builder-librarian level rows spell a default edge as `(default: true)` (#835).
+- `builder-librarian@2.2.2` carries the corpus regenerated from this release's templates and docs; a stored version
+  does not change, so a new corpus is a new version (#811). `builder@1.13.0` pins it.
+
+### Fixed
+
+- `member@1.10.0`: the exits `./affinity -> .` take `brief_caller != 'inside'`, so no internal brief answer leaves the
+  member and dead-letters at the OS root; the door stamps `brief_caller = 'outside'` (#834).
+- `affinity` README: the pack reaches a subscribing brain only through `in_pack`, which admits `identity`, `persona`,
+  `handover` and `instructions` — the old sentence promised `system.peer`/`system.channel` there.
+- **The idle-shutdown test measures a promise instead of a host** ([#812](https://github.com/mmeyerlein/meclaw/issues/812)).
+  Its bound was a bare 500 ms, twice the harness drain budget it guarded, so a colony that sat out that budget
+  passed it and a loaded CI runner (541 ms) failed it. The idle colony now names its own budget and the bound, both
+  multiples of the harness budget `meclaw_testing::HARNESS_DRAIN_BUDGET_MS`: 10 s against 2 s.
+
 ## [0.44.0] — 2026-09-23
 
 A colony that lifts, exports and installs the way it promises. A lift compares what makes the

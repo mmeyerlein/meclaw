@@ -1,4 +1,4 @@
-# `talky@5.2.2`
+# `talky@5.3.0`
 
 A whole conversational agent as one template. Three referenced units under one hive:
 [`session-keeper`](../session-keeper/), [`collector`](../collector/) and
@@ -7,7 +7,7 @@ A whole conversational agent as one template. Three referenced units under one h
 and one error collector. No new cell type, no Rust.
 
 **The first production rollout wired this by hand.** Keeper in the ingress, collector at the seam,
-dispatcher for the fan-out, the close batch out to the write port -- thirty-four edges,
+dispatcher for the fan-out, the close batch out to the write port -- thirty-five edges,
 each of them a decision that had already been made in a README. That is the definition of a
 composite: a recurring unit that should be instantiated, not re-derived. Here it is one
 `add_nodes` plus the four port edges the parent has to draw anyway.
@@ -62,18 +62,24 @@ The three sub-units are **references**, not copies. Each of the three directorie
 one `config.json` and nothing else:
 
 ```json
-{"cell": {"type": "ref", "template": "collector@4.2.1"}}
+{"cell": {"type": "ref", "template": "collector@4.3.0"}}
 ```
 
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`talky@5.2.2` above it in its provenance chain. `5.2.2` moves the `collector` pin to
+`talky@5.3.0` above it in its provenance chain. `5.2.2` moves the `collector` pin to
 `4.2.1` ([#728](https://github.com/mmeyerlein/meclaw/issues/728)): the answer of an advice or a
 delegation round carries the member's turn, and `hop.late` beside it. The same version gives
 `brain` the OpenRouter app attribution (`http_referer` / `x_title`, overridable by
 `OPENROUTER_HTTP_REFERER` / `OPENROUTER_X_TITLE`, the form the memory-hive cells use), so a
-talky's request names its app at the provider.
+talky's request names its app at the provider. `5.3.0` moves the `collector` pin to `4.3.0`
+([#834](https://github.com/mmeyerlein/meclaw/issues/834)) and carries its brief leg across
+this rim: `brief` leaves `./collector` for `.`, and `in_briefing` joins the entrance list into
+`./collector` beside `in_bundle`. The knob `brief_slots` stays empty here -- a standalone talky
+has no record of people beside it, and a brief that leaves for an address nobody wired would
+hold every turn with a counterpart for ever; the assistant's ref markers set it, where the
+member's brief road is drawn.
 
 **The library has to carry the three.** A reference resolves against the colony's template
 registry, so `collector`, `session-keeper` and `dispatcher` have to sit in
@@ -476,9 +482,9 @@ downstream as well.
 
 ## The internal wiring, edge by edge
 
-Fifteen edges of round in this hive's `params.graph` -- plus the nineteen that ARE the
-boundary (seven door edges from `.`, twelve leaving towards it, and those are the lanes
-above; the sixth door is the mutation receipt, GH #553, and the seventh is the `in_menu`
+Fifteen edges of round in this hive's `params.graph` -- plus the twenty that ARE the
+boundary (seven door edges from `.`, thirteen leaving towards it, and those are the lanes
+above; the thirteenth is the brief leg's request, GH #834; the sixth door is the mutation receipt, GH #553, and the seventh is the `in_menu`
 fan that reaches `./schemas` beside the collector, GH #783). The two halves are the whole of this file, counted from it. Every one of the
 fifteen names a sub-unit **by its path**: two of the seven nodes below are sealed hives, so
 the address is the hive and the lane in the third column is what the door behind it
@@ -508,6 +514,7 @@ dispatcher --(tool_name == thread_recall)--> collector  in_thread_call   <- serv
 collector --(write)---------->  .            <- the close batch, out of the write port
 collector --(pack_ack)-------->  .            <- the pack receipt, GH #458
 collector --(schemas)--------->  .            <- what tools this agent declares, GH #464
+collector --(brief)----------->  .            <- the counterpart's brief, GH #834
 
 [sealed]  session-keeper  collector   [plain]  brain  schemas  splitter  dispatcher  errors
 ```
@@ -652,7 +659,7 @@ tools this agent uses -- shipped as `["web_search", "web_fetch"]`, `["*"]` for e
 tools hive has -- and the schemas behind those names are asked for:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "talky@5.2.2",
+{"add_nodes": [{"name": "scribe", "template": "talky@5.3.0",
                 "override_params": {"collector/assemble": {"tools": ["web_search", "bash"]}}}]}
 ```
 

@@ -18,6 +18,11 @@
 //! routes every message. ADR-0031 records the decision.
 
 pub mod listener;
+pub mod trusted;
+
+pub use trusted::{
+    ProxyNet, admits, loopback_only, parse_trusted_proxies, trusted_proxies_or_default,
+};
 
 use meclaw_core::Path;
 use std::collections::HashMap;

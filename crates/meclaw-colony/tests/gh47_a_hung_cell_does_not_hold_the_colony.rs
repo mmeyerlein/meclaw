@@ -9,7 +9,7 @@
 //! because the line is emitted on the colony's task, not on the test's.
 
 use meclaw_core::{Cell, Message, OutputSink, Path};
-use meclaw_testing::{ColonyHandle, MessageBuilder};
+use meclaw_testing::{ColonyHandle, HARNESS_DRAIN_BUDGET_MS, MessageBuilder};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -195,14 +195,42 @@ async fn a_hung_handler_ends_the_drain_at_the_deadline_and_is_named() {
 /// The counter-test: a colony with nothing in flight does not spend its budget.
 /// Without this, every one of the existing `Shutdown` call sites would pay the
 /// drain deadline and the suite would crawl.
+///
+/// GH #812: the bound and the budget are both named multiples of the harness
+/// budget (`HARNESS_DRAIN_BUDGET_MS`, 250 ms), and the bound sits well BELOW the
+/// budget. It used to be a bare 500 ms around a colony on the harness budget:
+/// twice the 250 ms it was meant to tell apart, so a colony that sat out its
+/// whole budget still passed, and a loaded CI runner (three shards in parallel)
+/// measured 541 ms around this one `await` with nothing in flight and failed
+/// it. A wall clock can only say "it did not wait" when the budget is far above
+/// what a busy host adds, so this colony names its own:
+///
+/// - budget `IDLE_BUDGET_FACTOR` × 250 ms = 10 s, the production default — a
+///   colony that sat it out takes at least that long;
+/// - bound `BOUND_FACTOR` × 250 ms = 2 s — 3.7 times the worst host measured
+///   (541 ms), and still a fifth of the budget.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_idle_colony_shuts_down_immediately() {
-    let h = ColonyHandle::new(); // budget is the harness default
-    let t0 = std::time::Instant::now();
-    h.shutdown().await;
+    const IDLE_BUDGET_FACTOR: u64 = 40;
+    const BOUND_FACTOR: u64 = 8;
+    let budget_ms = HARNESS_DRAIN_BUDGET_MS * IDLE_BUDGET_FACTOR;
+    let bound = Duration::from_millis(HARNESS_DRAIN_BUDGET_MS * BOUND_FACTOR);
+
+    let td = tempfile::TempDir::new().expect("tempdir");
+    std::fs::write(
+        td.path().join("colony.json"),
+        format!(r#"{{"shutdown_drain_timeout_ms": {budget_ms}}}"#),
+    )
+    .expect("write the test colony.json");
+    let h = ColonyHandle::new_with_factories_at(&td, vec![]);
+    let t0 = Instant::now();
+    tokio::time::timeout(MARKER, h.shutdown())
+        .await
+        .expect("the shutdown must return within the failure marker");
+    let took = t0.elapsed();
     assert!(
-        t0.elapsed() < std::time::Duration::from_millis(500),
-        "an idle colony must not sit out its drain budget, took {:?}",
-        t0.elapsed()
+        took < bound,
+        "an idle colony must not sit out its {budget_ms} ms drain budget: took \
+         {took:?}, bound {bound:?}"
     );
 }

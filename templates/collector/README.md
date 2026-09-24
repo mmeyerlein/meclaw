@@ -1,4 +1,4 @@
-# `collector@4.2.1`
+# `collector@4.3.0`
 
 Context assembly as a hive of existing cell types -- no new cell type, no Rust. Two cells:
 `assemble` (a `code` cell, the state machine) and `window` (a `store` cell, the state). The
@@ -75,7 +75,7 @@ the window and what leaves it**, in one place, and hands the result to the brain
 
 | cell | type | what it holds |
 |---|---|---|
-| `assemble` | `code` | the whole state machine: thirteen entry lanes plus the internal `in_menu_tick`, the fan-in gate, the eviction policy, the seam, the round-robustness exits, the prune chain |
+| `assemble` | `code` | the whole state machine: fourteen entry lanes plus the internal `in_menu_tick`, the fan-in gate, the eviction policy, the seam, the round-robustness exits, the prune chain |
 | `window` | `store` | `turns` (the rolling conversation) and `round` (the per-turn slate: the assembled legs plus the tool round) -- both carry `session_id`, which is what makes them readable as a whole session at close time, and write times, which is what makes them prunable. Plus `batched`, the delivery ledger of the close lane, and -- since `3.4.0` -- `menu`, one row per answerer, which is the memory the tool menu is merged out of (GH #529). |
 
 ## Ports
@@ -96,6 +96,7 @@ message context.
 | `in_advice` | an async tool's return lane (an advisor core), carrying `context.consult_id` | the SAME chain as `in_turn`, filed under role `advice`: an event that arrives after its turn ended and opens a fresh round. Since `collector@4.2.1` ([#728](https://github.com/mmeyerlein/meclaw/issues/728)) in two stages when it carries a `consult_id`: the advice row is parked and the `depart` row the consult left behind is looked up by that id, and the round opens under a key that carries the member turn which asked (see "A late answer never invents an identity") |
 | `in_delegation` | the duplex `voice` cell, carrying `context.delegation_id` | the SECOND event lane (`collector@4.2.0`), filed under role `delegation`: in a duplex call the model speaks to the caller itself and hands the backend an errand of its own accord while it keeps talking. Assembled exactly like `in_advice` -- it belongs to a turn on the MODEL's clock, so it opens a fresh round with the whole budget -- and, like it, never drained into a memory |
 | `in_bundle` | the memory hive's recall port | becomes the memory leg of this turn. ONE meaning since `4.0.0` -- it carried a second, the tool result of a `memory_recall` call, told apart by a `memory_call_id` the request carried out ([#552](https://github.com/mmeyerlein/meclaw/issues/552)) |
+| `in_briefing` | the member's `affinity`, restamped by the member ([#834](https://github.com/mmeyerlein/meclaw/issues/834)) | becomes the **brief leg** of this turn: affinity's answer to the `brief` this hive raised, parked as text -- its `system` is dropped at the lane. `hop.brief_outcome == 'error'` parks the leg EMPTY. Since `collector@4.3.0` |
 | `in_calls` | the tool dispatcher | the assistant `tool_call` turn of the round; `hop.async_calls` names the ids this fan-in must **not** wait for |
 | `in_tool` | a tool cell | one tool result: **every** `tool_result` turn of its `messages[]`, each filed under the call id it answers. See "What a tool result may carry" below |
 | `in_thread_call` | the tool dispatcher, on `hop.tool_name == 'thread_recall'` | the thread tool: brings an elided payload of THIS turn back, uncapped, out of the collector's own slate (wave 11) |
@@ -114,6 +115,7 @@ Exits leave **from the hive path** on `hop.route`:
 | `brain` | the agent LLM | THE seam. Promote `hop.turn_id`, `hop.session_id` and `hop.iter` to context on this edge. `system.consult.open` carries the correlation ids of the advice turns still in the window -- **always**, empty included (`collector@2.0.3`): the `llm` cell upserts `system.*` per slot path, so a path that is not sent is a path that is not touched, and a slot that is only ever set keeps naming a consultation that closed long ago. `system.memory` follows the same rule and, since `collector@2.1.0`, carries nothing but that rule: the bundle itself is no longer anywhere in that subtree (GH #278) -- it travels as the `memory_recall` tool result at the end of `messages[]`. What the collector still sends there on every turn is the revocation, unconditionally and no longer tied to `memory_form`: an empty `text` on the FIXED path `system.memory.recall`, which clears a bundle an older collector may have left standing and contributes nothing to the system prompt, plus the `"$replace": true` marker on the whole `system.memory` node (`collector@2.0.4`, GH #264), which is what lets it revoke the `json` form's keys -- named by the memory hive per bundle, and therefore nameable by no fixed path. **Consequence for an `llm` cell with a `system_writable` allowlist, unchanged by the move**: the allowlist must carry `memory` as a prefix -- the replace ROOT is checked too, and `memory.recall` alone does not suffice. Since wave 11 it also reports what the curator did: `hop.tokens_window`, `hop.tokens_projected`, `hop.tokens_estimated`, `hop.curate_mark`, `hop.curate_stage`, `hop.curate_elided`, `hop.curate_saved`. |
 | `answer` | the reply sink | the brain's final turn, after it is in the window -- **or** a turn that reached `max_iter`, marked `hop.round_capped=1` **and**, since `collector@3.5.0`, `hop.partial=1`, whose last turn is a named PARTIAL ANSWER rather than the raw end of the tool round (see "A capped round is a partial answer") -- **or**, since `collector@2.1.1`, a turn that could not be assembled because the store refused, marked `hop.degraded=1` with `hop.store_error` and `hop.store_operation` beside it (see "When the store says no"). Since `collector@4.2.1` every answer also carries `hop.round_id` (the key of the round it left) and `hop.late`; an answer of an advice or delegation round carries the member's turn as `hop.turn_id` |
 | `recall` | the memory hive's recall port | the per-turn leg, and only that (`memory_tier` set); promote `recall_query`, `memory_tier`, `recall_window_from`, `recall_window_to`, `session_id`, `turn_id`, `iter`. A `memory_recall` CALL does not travel here since `4.0.0` -- it leaves the composite on the ordinary `tool` lane and the memory answers it ([#552](https://github.com/mmeyerlein/meclaw/issues/552)) |
+| `brief` | the member's `affinity` (via the member's stamping edge) | the brief leg's request, only with `brief_slots` set and a `context.counterpart` to be briefed about: one `tool_call` `{subject, channel, slots}` under an id derived from the turn and the subject, `hop.turn_id` the turn. Who asks and in which round are edge truth -- the member stamps `asker`, the turn's `audience_set` rides along. Since `collector@4.3.0` ([#834](https://github.com/mmeyerlein/meclaw/issues/834)) |
 | `write` | wherever a closed session belongs | one batch per close: `messages[]` the whole conversation, the raw round rows in the top-level slot `rounds`. `messages[]` is what a PARTICIPANT said and nothing else (GH #282) -- interim answers, `advice` rows and any other role stay in the window; `origin` comes from an explicit `user`/`assistant` mapping, never from a fallback. See "Per-turn episodes" below. |
 | `turn_write` | a memory hive's episode lane | **one message per turn, never a batch** (GH #298): after every stored turn and every stored answer, every turn of the session that has not been written yet leaves as its own message -- one `user`/`assistant` turn in `messages[]`, `hop.turn_id` = `<session_id>#<index>`, `hop.turn_index` and `hop.happened_at` beside it. Filtered and attributed by the same rule as `write`, but **not the same document**: `write` is a closed day with its `rounds`, this is a turn. On by default. See "Per-turn episodes" below. |
 | `prune` | a log sink or the operator surface | one report per pruned session (`hop.session_id`, `hop.pruned_turns`, `hop.pruned_rounds`, `hop.prune_boundary`) -- or a single zero report when nothing was eligible -- or, since `collector@2.1.1`, a zero report marked `hop.degraded=1` because the store refused one of the prune chain's own reads or deletes |
@@ -174,7 +176,9 @@ Two consequences, both deliberate:
   in the prompt until something overwrites that exact slot path -- it is durable state of
   the agent, not evidence of one round. A single tool result gets no second chance to
   correct itself, and a brief about one subject would still be in the prompt three
-  subjects later. `system.*` is also out of the curator's reach on purpose -- it is where
+  subjects later -- which is why the brief leg of `collector@4.3.0` hands affinity's
+  pack to the brain as a tool pair and drops its `system` at `in_briefing` too (see "The
+  brief leg"). `system.*` is also out of the curator's reach on purpose -- it is where
   hard *constraints* belong -- so a tool writing there would grow the prompt with nothing
   left able to cut it, against a slot budget the `llm` cell caps at 256 (GH #118).
 
@@ -229,6 +233,7 @@ for how to retune one, and for what `override_params` can and cannot do).
 | `round_idle_ms` | `120000` | idle window of one tool round (two minutes). A round whose last progress is older **and** whose fan-in is incomplete is closed at the next occasion with synthetic error results and fires with `hop.round_stale=1`. |
 | `memory_tier` | `""` | empty = no memory leg at all, and the assembly waits for the window leg alone. `"0"` / `"1"` / `"2"` request that recall tier once per turn, and **the ambient leg arrives as a synthetic `memory_recall` result** at the end of the round -- never as durable system state (`collector@2.1.0`, GH #278). |
 | `memory_form` | `"readable"` | which form of the bundle reaches the brain **in that tool result**: `readable` (the rendered block a model reads), `json` (the machine-readable bundle), `both` (the two joined by a newline, under one call id and one cap). Applies to the AMBIENT leg alone since `4.0.0` -- a model's own `memory_recall` call is rendered by `memory-hive/tool`, which has a `form` of its own ([#552](https://github.com/mmeyerlein/meclaw/issues/552)). Whatever the form, `system.memory` carries only the revocation -- the empty leaf on the fixed path `recall` plus the `$replace` marker on the node above it (see the `brain` lane, `collector@2.0.4`) -- and both halves are sent unconditionally, no longer chosen by this knob: an instance retuned from `readable` to `json` would otherwise carry its last leaf, or its last keys, for the rest of its life. |
+| `brief_slots` | `[]` | slots to brief affinity about the counterpart of a turn; empty = no brief leg ([#834](https://github.com/mmeyerlein/meclaw/issues/834)). Set (`["peer", "channel"]`), a turn whose context carries `counterpart` raises ONE `brief` at its opening and the fan-in waits for `leg-brief`; a turn without one parks the leg empty and waits for nothing. See "The brief leg" below. |
 | `async_tools` | -- | **not a collector knob.** The async class is declared once, at the dispatcher (its own `async_tools` param since `dispatcher@1.2.0`), and travels as `hop.async_calls`. |
 | `prune_after_ms` | `604800000` | age gate on the prune lane (seven days). A session is pruned only when its close batch left **and** that delivery is older than this. |
 | `turn_write` | `"1"` | **on by default since GH #298** -- it is the only path from a conversation into an episodes table, and a shipped "off" would be a shipped agent that remembers nothing. Every stored turn hands out one message per unwritten turn on route `turn_write`. `""` or `"0"` switch it off, and off means nothing said in this session reaches a memory *at all*, not that it reaches one later. Switch it off only where that route is unwired: an unrouted emission per turn is a dead letter per turn. |
@@ -354,7 +359,7 @@ caller that may use it, and no caller can offer a model anything nobody typed.
 own template says it uses -- and the schemas behind those names are **asked for**:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "collector@4.2.1",
+{"add_nodes": [{"name": "scribe", "template": "collector@4.3.0",
                 "override_params": {"assemble": {"tools": ["web_search", "web_fetch"]}}}]}
 ```
 
@@ -1126,6 +1131,65 @@ it could close the chat (`display-hive.md` § 4.13).
 An advice whose departure is not found (a round from before `4.2.1`, a consult
 not declared a handoff) opens its round as before and says so on stderr.
 
+### The brief leg (GH #834, since `collector@4.3.0`)
+
+On a channel with many counterparts -- a peer channel, a room -- the person's record says
+what may be said to whom, and in what tone. Until `4.3.0` nothing in a turn asked it:
+measured on a peer channel, three turns, zero messages to the member's `affinity`. No knob,
+no emission, no lane, and the one door into the brain that carries durable slots
+(`in_pack`) refuses `peer` and `channel` by design (gh458).
+
+The brief is the THIRD leg of a turn, built the way the memory leg is:
+
+- **Asked once, at the turn's opening.** With `brief_slots` set and a `context.counterpart`
+  -- an entity reference (`peer:<...>`) the ENTRY EDGE of such a channel stamps beside
+  `channel` -- `open_round` raises `brief` beside `recall`: one `tool_call` in affinity's
+  own request shape, `{"subject": <counterpart>, "channel": <channel_node or channel>,
+  "slots": [...]}`, `hop.turn_id` the turn. The asker and the round are not in it: the
+  member's edge stamps `asker = 'agent:' + context.assistant`, and the round is the turn's
+  own `audience_set` (OR-AG-13).
+- **Waited for by configuration.** `EXPECT` gains `leg-brief` whenever `brief_slots` is set.
+  A turn WITHOUT a counterpart asks nothing and parks the leg EMPTY in its own turn-open
+  bundle, so it waits for nothing -- there is no fallback subject (OR-AG-10). The leg has no
+  deadline (OR-AG-12): like the memory leg it is a leg of the opening, not an event after the
+  turn (`late_after_ms` is that pattern, and it is not this one).
+- **Answer and error both come home.** `in_briefing` parks affinity's answer as text; an
+  `error` (`hop.brief_outcome == 'error'`, stamped by the member) parks the leg empty and
+  the turn opens without a brief. A refusal ("nothing is disclosed to this audience") is an
+  answer, and the model is shown it.
+- **A tool pair, never `system`.** The brain sees a synthetic `affinity_brief` call and its
+  result behind the memory pair -- the call with `{subject, slots}`, the result with
+  affinity's receipt line and the pack below it, capped by `tool_chars`. The cut is marked
+  in the house form of a visible cut, `… [truncated, N chars total]`, so a pack that ends
+  mid-JSON is not mistaken for a short one; the full text stays in the round table:
+
+  ```
+  tool_call    id  call_brief_<16 hex>
+               text {"name": "affinity_brief",
+                     "arguments": "{\"subject\": \"peer:north\", \"slots\": [\"peer\", \"channel\"]}"}
+  tool_result  id  call_brief_<16 hex>
+               text affinity brief on North (peer) for agent:scribe: slots peer, trust known, 0 relation(s)
+                    {"peer": {"subject": "peer:north", "trust_level": "known", "names": {...}, ...}}
+  ```
+
+  The `system` affinity sends beside the text is dropped at the lane: `system.*` is durable
+  state of the brain, and one counterpart's brief would stand in the prompt of the next.
+- **The id is derived, never drawn**: `call_brief_` + 16 hex of the turn and the subject,
+  so a re-assembly of the same turn -- a tool round re-entering the seam -- is the same call.
+  The request leaves under it and affinity answers under it, so the lane parks the answer
+  under the id the answer CARRIES (`messages[0].id`) and derives one only when it carries
+  none -- affinity's echo of the subject is its reading of the request, not the request.
+
+The road between the two lanes is the member's (`templates/member/README.md`, "The brief
+road"): a v-lane out of the surface, the member's stamping edge into `affinity`, and the way
+back restamped onto `in_briefing`. **Set the knob only where that road is drawn** -- a
+collector whose `brief` goes nowhere waits for its brief on every turn with a counterpart.
+The assistant sets it on both surface ref markers and the builder recipe draws both roads.
+
+`./assemble`'s cell contract moved (`contract.version` 2.2.0): `brief` joins the emitted
+routes, `brief_slots` the settings, `counterpart`, `channel_node` and `channel` the consumed
+context, `brief_outcome`, `subject` and `slots` the consumed hop.
+
 ### When the store says no (GH #343, since `collector@2.1.1`)
 
 Since `collector@3.0.2` most of the assembler's reads travel as **bundles**, and a bundle reply
@@ -1750,6 +1814,12 @@ It is revoked with the ids, by the same empty rendering, for the same reason.
   `"1"` -- and, the counter-pin, the byte cap raises `round_capped` with `partial == "0"`
   and appends nothing. Since `4.2.0` also the second unconditional `system` slot: the tree
   of a window without advice carries `instructions.mode` emptied beside `consult`.
+- `crates/meclaw-cells/tests/gh834_a_turn_briefs_affinity_about_the_counterpart.rs` -- the
+  brief leg over the shipped script: the request with the counterpart as subject, the fan-in
+  that waits for it, the empty leg without a counterpart, no leg without the knob, the pair in
+  the prompt with no `system`, an error as an empty leg, the derived id.
+  `gh834_the_member_stamps_the_brief_and_the_answer_finds_the_generation.rs` -- the same
+  road on a booted colony, member and affinity included.
 - `crates/meclaw-cells/tests/voice_duplex_the_collector_switches_to_advise_on_the_engine.rs`
   -- the advise mode: `context.engine == 'duplex'` writes the charter, everything else
   writes the slot EMPTY, the channel node alone switches nothing, another engine name is not

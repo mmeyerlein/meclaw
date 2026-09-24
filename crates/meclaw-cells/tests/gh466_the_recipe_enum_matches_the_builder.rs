@@ -221,3 +221,74 @@ fn the_declaration_says_what_each_recipe_does() {
          — and this one had already outlived its list: {text:?}"
     );
 }
+
+// ═════════════════════════════════════════════════ an extra is a word too (GH #835)
+
+/// A recipe's EXTRA lives in the same three places its name does, and drifts
+/// the same way: `door` (the member's door, GH #835) is offered to a model in
+/// the schema's `params` prose, known to the switch, and rendered by the
+/// renderer. Each is asked the way the substrate asks it, not read off a list.
+#[test]
+fn the_door_extra_is_known_in_all_three_copies() {
+    // 1. What a model is TOLD. `params` has no machine-readable properties --
+    //    every recipe's parameters are prose there -- so the prose is the copy.
+    let text = build_topology_declaration()["parameters"]["properties"]["params"]["description"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        text.contains("`door`"),
+        "the declaration a model reads never mentions `door`: a switch nobody is \
+         told about is one no request can reach: {text:?}"
+    );
+
+    // 2. What the SWITCH knows: it refuses the word off its one level by name,
+    //    which it can only do if it has the word at all.
+    let out = emit_one(
+        &shipped_script(CLASSIFY),
+        &json!({
+            "target": "/os/builder/classify",
+            "header": {"hop": {"route": "in_build"}, "context": {}},
+            "ttl": 64,
+            "messages": [{"origin": "tool", "type": "tool_call", "id": "c1",
+                          "text": json!({"request": "…", "recipe": "grow_level",
+                                         "params": {"scope": "/os", "level": "org",
+                                                    "name": "acme", "template": "org@1.4.1",
+                                                    "door": true}}).to_string()}],
+        }),
+    );
+    assert_eq!(
+        out["header"]["error_code"],
+        json!("door_level_invalid"),
+        "the switch does not know `door`: {out}"
+    );
+
+    // 3. What the RENDERER draws: one edge more for the same assistant wish.
+    let edges = |door: bool| -> usize {
+        let mut params = json!({"scope": "/os/orgs/acme/members/alex", "level": "assistant",
+                                "name": "scribe", "template": "assistant@2.9.0"});
+        if door {
+            params["door"] = json!(true);
+        }
+        let out = emit_one(
+            &shipped_script(RECIPES),
+            &json!({
+                "target": "/os/builder/recipes",
+                "header": {"hop": {"route": "recipe"}, "context": {}},
+                "ttl": 64,
+                "messages": [{"origin": "tool", "type": "tool_result", "id": "",
+                              "text": json!({"recipe": "grow_level", "request": "…",
+                                             "params": params}).to_string()}],
+            }),
+        );
+        out["manifest"][0]["diff"]["add_edges"]
+            .as_array()
+            .unwrap_or_else(|| panic!("no manifest: {out}"))
+            .len()
+    };
+    assert_eq!(
+        edges(true),
+        edges(false) + 1,
+        "the renderer ignores `door`: the switch lets it through and nothing draws it"
+    );
+}

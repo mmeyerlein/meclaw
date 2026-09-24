@@ -815,9 +815,13 @@ async fn a_directory_audience_is_never_auto_accepted() {
     build_tree(&td, &root, QUIET_CRON);
     let (h, mut rx, _push_rx) = boot(&td).await;
 
-    // 1. The directory audience, asked for with `auto_accept: true`.
+    // 1. The directory audience, asked for with `auto_accept: true`. The field path
+    //    is rooted the way `brief` cuts a document (`aieos.` / `mx.`), because since
+    //    GH #831 an accepted verdict IS the release, and a release of a path nothing
+    //    can match is refused rather than written.
     let op = json!({"op": "propose", "source_ref": "mem:ep-1",
-                    "entity_ref": "entity:alex", "field_path": "interests.music",
+                    "entity_ref": "entity:alex",
+                    "field_path": "aieos.interests.favorites.music_genre",
                     "value": "techno", "audience": "directory:example",
                     "auto_accept": true});
     h.send(to(
@@ -851,13 +855,23 @@ async fn a_directory_audience_is_never_auto_accepted() {
         "nobody decided it: {rows}"
     );
 
+    // An open proposal releases nothing: the directory is told nothing yet.
+    let ask = r#"{"audience":"directory:example","subject":"entity:alex","slots":["peer"]}"#;
+    h.send(to("/asker", ask)).await;
+    let answer = recv_route(&mut rx, "answer").await;
+    assert!(
+        body_of(&answer).get("system").is_none(),
+        "an open proposal is not a release: {}",
+        turn_text(&answer)
+    );
+
     // 1b. The member decides it. The verdict is a NEW row (R-AF-4, supersede
     //     by append), and that row has to keep the audience: an accepted row
     //     without it reads like any R-AF-1 extension and loses the one fact
     //     the proposal waited for.
     let op = json!({"op": "decide_proposal", "id": pid.clone(), "status": "accepted",
                     "source_ref": "mem:ep-1", "entity_ref": "entity:alex",
-                    "field_path": "interests.music", "value": "techno",
+                    "field_path": "aieos.interests.favorites.music_genre", "value": "techno",
                     "audience": "directory:example"});
     h.send(to(
         "/writer",
@@ -866,6 +880,16 @@ async fn a_directory_audience_is_never_auto_accepted() {
     .await;
     let payload = turn_json(&recv_route(&mut rx, "ack").await);
     assert_eq!(payload["outcome"].as_str(), Some("accepted"), "{payload}");
+    let verdict_id = payload["id"].as_str().expect("the verdict id").to_string();
+    let disc_id = payload["disclosure"]
+        .as_str()
+        .expect("GH #831: the ack names the release the verdict made")
+        .to_string();
+    assert_eq!(
+        disc_id,
+        format!("disc:{}", verdict_id.trim_start_matches("prop:")),
+        "the release names the verdict: {payload}"
+    );
     let sel = json!({"operation": "select", "table": "proposals",
                      "columns": ["audience", "status", "supersedes"],
                      "where": {"id": payload["id"].clone()}, "limit": 5});
@@ -879,10 +903,62 @@ async fn a_directory_audience_is_never_auto_accepted() {
         "the verdict row keeps the audience the proposal waited for: {rows}"
     );
 
+    // 1c. GH #831: the accepted verdict IS the release. The row stands in the
+    //     store, measured at the store ...
+    let sel = json!({"operation": "select", "table": "disclosure",
+                     "columns": ["id", "entity_id", "field_path", "audience",
+                                 "audience_set", "mode"],
+                     "where": {"entity_id": "entity:alex",
+                               "audience": "directory:example"}, "limit": 5});
+    let rows = probe(&h, &mut rx, sel).await;
+    assert_eq!(
+        rows.as_array().map(|a| a.len()),
+        Some(1),
+        "one release: {rows}"
+    );
+    assert_eq!(rows[0]["id"].as_str(), Some(disc_id.as_str()), "{rows}");
+    assert_eq!(
+        rows[0]["field_path"].as_str(),
+        Some("aieos.interests.favorites.music_genre"),
+        "{rows}"
+    );
+    assert_eq!(
+        rows[0]["mode"].as_str(),
+        Some("share"),
+        "default mode: {rows}"
+    );
+    let released: Value = match &rows[0]["audience_set"] {
+        Value::String(s) => meclaw_core::serde_json::from_str(s).unwrap_or(Value::Null),
+        v => v.clone(),
+    };
+    assert_eq!(released, json!(["directory:example"]), "{rows}");
+
+    //     ... and at the reader: the same audience now gets the field, and only it.
+    //     The field carries the SEEDED value, not the proposed one: the verdict
+    //     releases the path and never applies `value` (OR-AG-2, `upsert_entity`
+    //     writes it) -- which is why the proposal says `techno` and the seed `jazz`.
+    h.send(to("/asker", ask)).await;
+    let answer = recv_route(&mut rx, "answer").await;
+    let system = body_of(&answer)
+        .get("system")
+        .cloned()
+        .unwrap_or(Value::Null);
+    assert_eq!(
+        system["peer"]["interests"],
+        json!({"favorites": {"music_genre": "jazz"}}),
+        "the released field reaches the audience it was released to, with the record's \
+         value and not the proposed `techno`: {system}"
+    );
+    assert!(
+        system["peer"].get("names").is_none(),
+        "nothing beyond the one field: {system}"
+    );
+
     // 2. The counter-proof: an ordinary audience is accepted as it arrives,
     //    which is R-AF-1 and stays R-AF-1.
     let op = json!({"op": "propose", "source_ref": "mem:ep-2",
-                    "entity_ref": "entity:alex", "field_path": "interests.food",
+                    "entity_ref": "entity:alex",
+                    "field_path": "aieos.interests.favorites.food",
                     "value": "ramen", "audience": "member:alex",
                     "auto_accept": true});
     h.send(to(
@@ -902,6 +978,17 @@ async fn a_directory_audience_is_never_auto_accepted() {
         rows[0]["decided_by"].as_str(),
         Some("member:alex"),
         "the decider is the actor the EDGE named: {rows}"
+    );
+    // ... and an auto-accepted proposal is never a release (GH #831): the
+    //     picture of the person grew, nobody was told anything.
+    let sel = json!({"operation": "select", "table": "disclosure", "columns": ["id"],
+                     "where": {"field_path": "aieos.interests.favorites.food"},
+                     "limit": 5});
+    let rows = probe(&h, &mut rx, sel).await;
+    assert_eq!(
+        rows.as_array().map(|a| a.len()),
+        Some(0),
+        "an auto-accept released a field: {rows}"
     );
 
     h.shutdown().await;

@@ -60,7 +60,8 @@ fn only_the_answer_route_hands_out_the_label() {
 #[test]
 fn the_contract_declares_the_two_new_hop_keys() {
     let c = &config_of(ASSEMBLE)["contract"];
-    assert_eq!(c["version"], "2.1.1");
+    // 2.2.0 since GH #834 (the brief leg); the two keys of GH #728 stand.
+    assert_eq!(c["version"], "2.2.0");
     for k in ["late", "round_id"] {
         assert_eq!(c["emits"]["hop"][k]["type"], "string", "emits.hop.{k}");
     }

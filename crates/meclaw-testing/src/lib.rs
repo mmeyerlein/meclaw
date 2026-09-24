@@ -29,7 +29,7 @@ pub use code_wire::{
     code_stdin, code_stdin_bytes, emit_all, emit_one, resolve_script_vars, run_shipped_script,
     shipped_script,
 };
-pub use colony_handle::{ColonyHandle, spawn_colony_task_at};
+pub use colony_handle::{ColonyHandle, HARNESS_DRAIN_BUDGET_MS, spawn_colony_task_at};
 pub use factories::EmitOnceMockCellFactory;
 pub use factories::{SPAWN_REFUSAL, SpawnRefusesCellFactory};
 pub use message_builder::MessageBuilder;

@@ -315,6 +315,9 @@ fn the_container_draws_one_v_lane_per_asker_in_each_direction() {
         let up: Vec<&EdgeSpec> = specs
             .iter()
             .filter(|e| e.from == format!("./scribe/{asker}") && e.to == ".")
+            // GH #834 draws the brief road beside this one out of the same rim;
+            // it is its own pin (gh834), not a second recall.
+            .filter(|e| e.lane.as_deref() != Some("brief"))
             .collect();
         assert_eq!(
             up.len(),
@@ -342,6 +345,7 @@ fn the_container_draws_one_v_lane_per_asker_in_each_direction() {
         let down: Vec<&EdgeSpec> = specs
             .iter()
             .filter(|e| e.from == "." && e.to == format!("./scribe/{asker}"))
+            .filter(|e| e.lane.as_deref() != Some("in_briefing"))
             .collect();
         assert_eq!(
             down.len(),
@@ -630,8 +634,9 @@ fn the_shipped_v_lane_is_the_one_the_rule_table_allows() {
     });
     assert_eq!(
         diff["add_edges"].as_array().map(Vec::len),
-        Some(4),
-        "four v-lanes: one recall and one in_bundle per asker"
+        Some(8),
+        "eight v-lanes: one recall and one in_bundle per asker, and since GH #834 one brief \
+         and one in_briefing per surface -- all of them judged by the same rule table below"
     );
     assert!(
         lane_verdicts(BOX_ABS, &diff, &contracts).is_empty(),

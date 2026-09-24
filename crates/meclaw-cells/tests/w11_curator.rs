@@ -939,7 +939,7 @@ fn the_shipped_contract_declares_every_new_knob_and_key() {
          does not describe the cell"
     );
     assert_eq!(
-        v["contract"]["version"], "2.1.1",
+        v["contract"]["version"], "2.2.0",
         "wave 11 added a lane and seven hop keys; wave 13 moved every setting \
          off the environment onto params; GH #372 added `consumes.hop.handoff_calls`; \
          GH #458 made `messages` optional in BOTH directions and added the `pack` / \
@@ -974,7 +974,10 @@ fn the_shipped_contract_declares_every_new_knob_and_key() {
          there is nothing left for a caller to set under it, and the only shipped \
          setter (`talky`) moves in the same wave. GH #728 is a THIRD digit: two emitted \
          hop keys on `answer` (`round_id`, `late`) and one setting (`late_after_ms`), all \
-         to repair the promise that an answer carries the member's turn"
+         to repair the promise that an answer carries the member's turn. GH #834 is the \
+         SECOND digit again: an emitted route (`brief`), a setting (`brief_slots`), three \
+         consumed context keys (`counterpart`, `channel_node`, `channel`) and three consumed \
+         hop keys (`brief_outcome`, `subject`, `slots`) -- the brief leg, nothing taken away"
     );
 }
 

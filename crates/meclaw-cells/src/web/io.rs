@@ -176,6 +176,14 @@ pub struct WebIo {
     /// The request header a proxy in front puts the viewer's identity in, or
     /// empty for none. Read once per socket upgrade — see [`identity_of`].
     pub identity_header: String,
+    /// GH #833: the proxies whose `identity_header` is believed. Loopback from
+    /// [`WebIo::new`]; the factory sets the cell's own list after it.
+    pub trusted: Arc<Vec<meclaw_colony::surfaces::ProxyNet>>,
+    /// GH #833: whether THIS connection came from an address in [`Self::trusted`].
+    /// Decided once per connection at the handoff (the peer address is the
+    /// connection's, O-639-6) and `false` on the state no connection has
+    /// reached yet, so a router built without a handoff believes nobody.
+    pub peer_trusted: bool,
     /// The cell's own path — the identity the session token is minted for.
     pub cell_path: Arc<str>,
     /// The rendered pages, as last published by the handler half.
@@ -273,6 +281,8 @@ impl WebIo {
         Self {
             mount,
             identity_header,
+            trusted: Arc::new(meclaw_colony::surfaces::loopback_only()),
+            peer_trusted: false,
             cell_path: Arc::from(cell_path),
             pages,
             assets,
@@ -287,6 +297,15 @@ impl WebIo {
             // Minted by `run_io`, which is the only side that knows when this
             // half goes away.
             shutdown: None,
+        }
+    }
+
+    /// The state one handed connection is served with: this display's state,
+    /// plus whether the connection's peer address is a trusted proxy (GH #833).
+    pub fn for_connection(&self, peer: std::net::IpAddr) -> Self {
+        Self {
+            peer_trusted: meclaw_colony::surfaces::admits(&self.trusted, peer),
+            ..self.clone()
         }
     }
 }
@@ -653,6 +672,18 @@ fn identity_of(headers: &HeaderMap, identity_header: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+/// GH #833: the identity of a connection — the header, but only when the
+/// connection came from a proxy in `trusted_proxies`. Anywhere else the header
+/// is a line any client can write, so it names nobody, and the socket is
+/// served without one (`hop.user_id` absent, O-P-4).
+fn connection_identity(
+    headers: &HeaderMap,
+    identity_header: &str,
+    peer_trusted: bool,
+) -> Option<String> {
+    identity_of(headers, identity_header).filter(|_| peer_trusted)
+}
+
 /// `GET /<mount>/live/websocket` — the LiveView transport.
 ///
 /// The phoenix client appends exactly `/websocket` to the socket URL it is
@@ -681,7 +712,7 @@ async fn get_socket(
     };
     let viewers = io.viewers.clone();
     let base = base_of(&headers, &io.mount);
-    let user_id = identity_of(&headers, &io.identity_header);
+    let user_id = connection_identity(&headers, &io.identity_header, io.peer_trusted);
     up.on_upgrade(move |ws| run_connection(ws, io, events_tx, viewers, base, user_id))
 }
 
@@ -827,9 +858,11 @@ pub async fn run_io(
                 tokio::select! {
                     handed = rx.recv() => match handed {
                         Some(handed) => {
+                            // GH #833: the connection's address decides,
+                            // once, whether its identity header counts.
                             connections.spawn(crate::handed::serve_handed(
                                 handed.stream,
-                                mounted_router(io.clone()),
+                                mounted_router(io.for_connection(handed.peer.ip())),
                             ));
                         }
                         // The registry dropped the sender: a respawn of this
@@ -1332,6 +1365,23 @@ mod tests {
             identity_of(&empty, "X-Forwarded-User"),
             None,
             "an empty value names nobody"
+        );
+    }
+
+    /// GH #833: the same header names the viewer only on a connection from a
+    /// trusted proxy; the decision is the connection's, made at the handoff.
+    #[test]
+    fn an_identity_counts_only_on_a_trusted_connection() {
+        let mut h = HeaderMap::new();
+        h.insert("x-forwarded-user", "alex".parse().expect("a header"));
+        assert_eq!(
+            connection_identity(&h, "X-Forwarded-User", true).as_deref(),
+            Some("alex")
+        );
+        assert_eq!(
+            connection_identity(&h, "X-Forwarded-User", false),
+            None,
+            "a header from outside trusted_proxies names nobody"
         );
     }
 }

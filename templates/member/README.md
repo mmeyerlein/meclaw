@@ -1,4 +1,4 @@
-# `member@1.9.3`
+# `member@1.10.0`
 
 One person, as a level. **Four holders, three open containers and no cell of
 its own** — seven nodes and sixty-six edges.
@@ -90,9 +90,9 @@ road per generation, and an edge on disk is an edge an audit can read.
 
 | in | goes to | the caller promotes |
 |---|---|---|
-| `in_turn` | the screen | `context.channel` — the chat or room this turn is in — and `context.user_id` if this colony has per-user firewall rules. The door edge promotes what it finds and falls back to the empty string, so an unpromoted channel costs one shared rate bucket rather than a vanished turn. A caller that wants the answer routed back into one of this member's own channels promotes `context.channel_node` as well (§ *The two channel keys*); an operator that does not gets the answer out of the level, which is what it asked for |
+| `in_turn` | the screen | `context.channel` — the chat or room this turn is in — and `context.user_id` if this colony has per-user firewall rules; on a channel with many counterparts `context.counterpart` as well — the entity the conversation is with (§ *The two channel keys*, since 1.10.0). The door edge promotes what it finds and falls back to the empty string, so an unpromoted channel costs one shared rate bucket rather than a vanished turn. A caller that wants the answer routed back into one of this member's own channels promotes `context.channel_node` as well (§ *The two channel keys*); an operator that does not gets the answer out of the level, which is what it asked for |
 | `in_recall` | the memory, as its own `in_query` | `hop.recall_query`, `hop.memory_tier`, `hop.recall_window_from`, `hop.recall_window_to`, plus the round: `context.audience_set` and `context.channel`. The lane carried a correlation id as well until 1.6.0; it does not any more ([#552](https://github.com/mmeyerlein/meclaw/issues/552)), because the hive's own `bundle` exit branches on exactly that key to tell a tool round from the ambient one, and a door that set it would send every outside question through the adapter. The answer comes back on `bundle` and the refusal on `reject`, both out of this level — see § *The asker outside* ([#533](https://github.com/mmeyerlein/meclaw/issues/533)); until then the lane promised an answer the level had no exit for |
-| `in_brief` | the record, to read | `context.asker` and `context.audience_set` |
+| `in_brief` | the record, to read | `context.asker` and `context.audience_set`. The door stamps `context.brief_caller = 'outside'` itself (since 1.10.0), which is what keeps the answer on this lane's exit rather than on the way into a generation |
 | `in_propose` | the record, to write | `context.actor`, and `context.subscriber` for a `subscribe` |
 | `in_build_result` | `./assistants`, under the same name | nothing. Which generation it belongs to is decided by the per-instance edge inside the container, the same way `in_bundle` finds its way home |
 | `in_export` | **all three holders**, unchanged — and `./assistants` as a fourth when the caller names a generation | nothing, or `context.assistant`. All three holders declare an empty context: an export is about the whole member, never about a round. The fourth target is the exception and it is an ADDRESS rather than a round: a member with two generations has two session ledgers, so the keeper is named, never fanned to ([#475](https://github.com/mmeyerlein/meclaw/issues/475)). Since 1.4.0 the lane fans out — until [#471](https://github.com/mmeyerlein/meclaw/issues/471) only the memory answered it |
@@ -130,6 +130,7 @@ sends.
 |---|---|
 | `answer` | into `./channels` when `context.channel_node` names one, **out** on `answer` when it does not |
 | `recall` | consumed — into the memory as `in_query` |
+| `brief` | consumed — into the record as `in_brief`, the asker and the reply-to token stamped (since 1.10.0, see *The brief road*) |
 | `sidecar` | consumed, and **sorted by section** (since 1.7.0, [#607](https://github.com/mmeyerlein/meclaw/issues/607)): `hop.section == 'memory'` into the memory as `in_remember`, everything else into `./apps`. `extraction` still carries the memory block on its own lane beside it |
 | `write` | **both**: fanned onto the memory's `in_close_pass` *and* out on `write` |
 | `turn_write` | **both** (since #527): fanned onto the memory's `in_episode` *and* out on `turn_write` |
@@ -149,6 +150,32 @@ the contract: this level already emitted `error` from `./affinity`, so the
 declaration was satisfied while an **assistant's** error had no exit at all and
 died as `no_route` at the container. Several senders, one lane, one declaration —
 and one exit edge each.
+
+### The brief road (1.10.0)
+
+A turn on a channel with many counterparts asks this member's record about the one it is
+with ([#834](https://github.com/mmeyerlein/meclaw/issues/834)): the THIRD leg of a turn,
+beside the window and the ambient memory. The collector of the asking surface raises
+`brief` (subject = `context.counterpart`), it leaves the generation on a v-lane stamped
+`context.brief_surface`, and this level is the mandatory hop for the same reason it is on
+the memory road -- nothing below it knows the person's record, nothing above it knows
+which generation asked:
+
+| edge | lane | what it does |
+|---|---|---|
+| `./assistants -> ./affinity` (A) | `brief`, with `context.assistant` set | turns it into affinity's own `in_brief` and stamps three keys: `turn_id` off the HOP (the #535 lesson below: the answer has to name the round it belongs to, and the context may still name the round before), `asker = 'agent:' + context.assistant` (who asks is edge truth, never body text) and `brief_caller = 'inside'`, this level's reply-to token -- and carries the round, the turn's own `context.audience_set`, which affinity's `in_brief` requires on the edge that states the lane (the `has(...) ? ... : ''` form the door uses) |
+| `./affinity -> ./assistants` (B) | `answer` **or** `error`, `context.brief_caller == 'inside'` | restamps it to `in_briefing`, hands affinity's route over as `hop.brief_outcome` (an `error` becomes an empty leg -- the turn opens without a brief instead of never), puts `context.brief_surface` back on the HOP for the container's two doors, and clears `asker` and `brief_caller`: both were stamped for this one round trip |
+| `. -> ./affinity` (the door) | `in_brief` | stamps `brief_caller = 'outside'` beside the asker and the round it already promoted |
+| `./affinity -> .` (the exits) | `answer` (`hop.subscriber == ''`), `error` | fire only when `!has(context.brief_caller) \|\| context.brief_caller != 'inside'` |
+
+**The discriminator on the exits is the leak this road would otherwise have opened.** The
+two exits were written for an asker OUTSIDE this member; unguarded, every internal brief
+answer would ALSO have left through them, up the org and the OS, and dead-lettered at the
+root as `hive_no_route` -- one dead letter per turn with a counterpart. A caller at the door
+is `outside` by stamp, and a caller that stamped nothing at all is outside too, which is how
+every colony wired before 1.10.0 keeps its answers.
+`crates/meclaw-cells/tests/gh834_the_member_stamps_the_brief_and_the_answer_finds_the_generation.rs`
+boots the road and counts zero messages of it above this level.
 
 ### The asker outside, and the token that addresses it
 
@@ -656,6 +683,18 @@ shapes. A channel that stamps nothing leaves the key empty, and empty is the
 value every reader treats as the ordinary kind, so no colony has to be rewired
 for a key it does not use.
 
+**Since 1.10.0 a fourth key rides beside them, and it names a person rather than a
+room: `context.counterpart`** ([#834](https://github.com/mmeyerlein/meclaw/issues/834)). It is
+an entity reference -- `peer:<...>` -- stamped by the entry edge of a channel with many
+counterparts, beside `channel`: the composed `channel` value tells two conversations apart,
+`counterpart` says WHO the conversation is with, in the vocabulary of this member's record.
+The brief leg takes it as its subject; nothing else reads it. It is not `user_id`, and it
+cannot be: the firewall deletes `user_id` on both of its `pass` exits (GH #494), and the
+firewall never touches `counterpart`. This level carries it over both turn doors into the
+firewall (`has(context.counterpart) ? context.counterpart : ''`, the form of `channel`), so
+the key is present and empty on a turn whose channel stamped none -- and a turn without a
+counterpart asks the record nothing. There is no fallback subject.
+
 **For a chat channel: two lanes up, one lane down, and no more.** (A screen is a
 channel too and carries more — see *The display channel* below; a channel with a
 live model carries two more again, and they are the last two rows here.)
@@ -742,7 +781,7 @@ never hears:
 | edge | condition | why |
 |---|---|---|
 | `./channels/display-<s> -> ./channels` | `event` or `receipt` | what the screen produced, stamped with `context.channel_node` and `context.channel`, which on a screen are the same word |
-| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@1.9.3` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
+| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@1.10.0` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
 | `./channels -> ./channels/display-<s>` | `error` | a channel's failure, re-stamped to the display's `in_notice` — since `builder@1.10.0`, drawn by the mutation that grows the screen |
 
 **A view comes down the way it went up.** Since `member@1.8.0` the edge that carries
@@ -958,7 +997,8 @@ them (#555).
 `./members` fans out to its children exactly as `./assistants` does here — one
 edge per member, guarded on `context.member`. The only difference is the FORM:
 `context.assistant` is strict (`has(…) && … == 'scribe'`) because a turn that
-names no generation has nowhere to go, while `context.member` is permissive
+names no generation has nowhere to go (unless the member has a door, § *The
+member's door*), while `context.member` is permissive
 (`!has(…) || … == 'alex'`) because nothing promotes it yet and a strict guard
 would strand every turn a running colony has. Both are the same rule: `Edge.to`
 is static, so a container with two children costs two edges and each one says
@@ -976,7 +1016,7 @@ The whole arrangement, as three mutations. The member first:
 
 ```json
 {"scope": "<org>/members", "diff": {
-  "add_nodes": [{"name": "alex", "template": "member@1.9.3"}]
+  "add_nodes": [{"name": "alex", "template": "member@1.10.0"}]
 }}
 ```
 
@@ -985,7 +1025,7 @@ lanes (`../assistant/README.md` § *Instantiating* writes them out):
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@2.8.1"}],
+  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@2.9.0"}],
   "add_edges": [
     {"from": "./assistants", "to": "./assistants/scribe",
      "condition": "has(hop.route) && hop.route == 'in_turn' && has(context.assistant) && context.assistant == 'scribe'"},
@@ -1007,6 +1047,75 @@ is copied and nothing is synchronised, because there was only ever one of each.
 That is what #454 bought, and
 `crates/meclaw-cells/tests/gh454_two_assistants_one_channel.rs` is what measures
 it.
+
+### The member's door
+
+**One assistant takes every turn that names no agent**
+([#835](https://github.com/mmeyerlein/meclaw/issues/835)). The container above fans a turn
+out with one strict edge per assistant, so a turn without `context.assistant` matches none of
+them: an `in_turn` at the member's own rim, a frame from a channel whose ingress stamps no
+default. Without a door that turn dies at `./assistants` as `hive_no_route`, and that is still
+what happens in every member grown without one.
+
+The door is an ordinary assistant grown with one switch, `door: true` on the `grow_level`
+wish (`templates/builder/README.md` § *The member's door is one default edge*). Beside the
+strict guard, the recipe draws one more edge in the container:
+
+```json
+{"from": "./assistants", "to": "./assistants/reception", "default": true,
+ "condition": "has(hop.route) && hop.route == 'in_turn'",
+ "modifier": {"set_context": {"assistant": "'reception'"}}}
+```
+
+Written from inside the container, as the rendered declaration spells it, that is
+`.` → `./reception`; the absolute edge is the same. Three parts, and each one does a job:
+
+- **`default: true`.** A default edge is evaluated only when no regular out-edge of the same
+  sender decided ([#283](https://github.com/mmeyerlein/meclaw/issues/283)), which is the same
+  rule the guarded `answer` default of this level lives under. A turn that names an agent this
+  member has takes that agent's strict edge and the door never runs. A screen event that names a
+  generation through `hop.owner` takes that generation's edge, and the door does not run then
+  either.
+- **The lane test.** Suppression is per sender, not per lane. Without `hop.route == 'in_turn'`
+  the door would also take every `in_bundle`, `in_tool` or receipt that no regular edge of the
+  container decided, and treat it as a turn.
+- **The stamp.** `set_context.assistant` writes the door's name onto the turn. From there on the
+  turn carries a name like any other, and every guard downstream addresses the door by it: the
+  memory road back into its surface, the tool and menu doors, a build result.
+
+**A turn that names an agent this member does not have reaches the door too.** Nothing else
+decided for it, and that is the only question a default edge asks. The name it arrived with is
+replaced by the door's, and nothing records it. In a member without a door that turn is a
+`hive_no_route` line in the dead letters; in a member with one it is answered. A channel whose
+literal default still names a renamed or removed agent therefore stops showing up as dead
+letters once a door exists: the door answers in the old agent's place, and the stale name is
+gone from the turn. Look at the channel's ingress edges after renaming an agent, not only at
+the dead letters.
+
+**The door's rules do not live in the topology.** How the door answers is its persona, the
+reserved `mx.brain` subtree of its own entity record in `./affinity`
+(`../affinity/README.md` § *The agent's own identity lives here*). Whom it may tell what is the
+member's record in the same hive: trust levels and disclosures, per counterpart. The edge only
+decides *who takes the turn*. It is not a filter, and there is no door cell and no new level. A
+member's door is a role of one of its assistants.
+
+**One door per member is a rule of the wish.** The builder renders what it is told and never
+sees the colony, so it cannot notice a second door. Two doors are two default edges of one
+sender on one lane, and the default phase hands the message to every default that matches:
+every unaddressed turn would be answered twice. That is the operator's mistake to avoid, and
+the way out is to remove one of the two edges.
+
+**Handing a turn on is the job of a gate in front of the member, not of the door.** `hop.addressed_to`
+has no producer in the substrate. A connector with an address rule, or a gate an operator puts
+in front of a channel, can write it. The channel's ingress edge then turns it into
+`context.assistant` (§ *Addressing an assistant through a channel*, step 1). The strict edge of
+the named agent takes the turn from there, and the door stays silent. A turn that carries the
+name of one of the member's agents never reaches the door, so the door has nothing to hand on.
+
+`crates/meclaw-cells/tests/gh835_a_door_takes_the_turn_nobody_addressed.rs` measures all of
+it on a booted colony with two rendered generations. It checks the door, a named agent, an
+unknown name and a member without a door, and it holds the rendered manifest to
+`examples/organism/grow-member-door.json` byte for byte.
 
 ## The credential v-lanes
 
@@ -1500,6 +1609,18 @@ at it.
   has to fill it.
 
 ## Versioning
+
+`1.10.0` takes the **second** digit ([#834](https://github.com/mmeyerlein/meclaw/issues/834)):
+a caller can do something it never could -- a generation of this member briefs the record
+about the counterpart of a turn. Two lanes are declared at `./assistants` (`brief` accepted,
+`in_briefing` emitted, the shape of `recall` / `in_bundle`), two edges arrive
+(`./assistants -> ./affinity` and `./affinity -> ./assistants`), so sixty-six become
+**sixty-eight**; the door `. -> ./affinity` stamps `brief_caller = 'outside'`, the two exits
+`./affinity -> .` take the discriminator, and both turn doors into the firewall carry
+`context.counterpart` beside `channel`. Nothing at the rim moves, so a parent wired at `1.9.3`
+is still wired correctly -- and its outside briefs still leave through the same two exits. The
+same number pins [`affinity`](../affinity/) at 3.5.0 (#831, #832): an accepted proposal about a
+disclosure becomes the disclosure row, and `blocked` says no on purpose.
 
 `1.9.3` takes the **third** digit: no lane or declaration of this level moved, and
 the one edge that changed repairs a promise. It pins [`memory-hive`](../memory-hive/)

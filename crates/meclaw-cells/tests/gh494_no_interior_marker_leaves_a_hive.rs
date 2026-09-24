@@ -63,7 +63,7 @@ use std::path::{Path, PathBuf};
 use meclaw_core::serde_json::{Value, from_str};
 
 /// Context the templates pass between hives on purpose. Never cleared at a rim.
-const SHARED: [&str; 24] = [
+const SHARED: [&str; 26] = [
     "actor",
     "asker",
     "audience_now",
@@ -71,8 +71,23 @@ const SHARED: [&str; 24] = [
     "build_auto_submit",
     "build_call_id",
     "build_caller",
+    // GH #834 -- the member's reply-to token on the brief road, the ADR-0019
+    // shape `recall_caller` has one level over: the member stamps it on the way
+    // INTO its own `affinity` (`inside` on the edge from `./assistants`,
+    // `outside` at the door), and reads it on the way OUT of that hive, where it
+    // decides whether an answer goes home to the generation or leaves the level.
+    // It has to cross affinity's rim untouched -- a rim that cleared it would
+    // send every internal answer out of the member.
+    "brief_caller",
     "channel",
     "chat_id",
+    // GH #834 -- who a turn on a channel with many counterparts is WITH, as an
+    // entity reference (`peer:<...>`). The entry edge of such a channel stamps
+    // it beside `channel`, the member carries it over both turn doors into the
+    // firewall, and the collector reads it three levels further in as the
+    // subject of the brief leg -- past the firewall, which deletes `user_id` on
+    // its `pass` exits (GH #494) and never touches this key.
+    "counterpart",
     // The two keys a DUPLEX voice call travels on (welle-live). `engine` says
     // what is talking on the other end -- the collector reads it on every
     // assembly to decide whether the brain answers or ADVISES -- and

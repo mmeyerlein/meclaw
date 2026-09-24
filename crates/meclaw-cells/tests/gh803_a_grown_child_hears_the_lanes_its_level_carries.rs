@@ -144,7 +144,7 @@ fn a_grown_generation_receives_the_delegation_the_member_stamps() {
     assert_every_stamped_lane_arrives(
         "./assistants",
         json!({"scope": "/os/orgs/acme/members/alex", "level": "assistant",
-               "name": "scribe", "template": "assistant@2.8.1",
+               "name": "scribe", "template": "assistant@2.9.0",
                "ctx": {"model": "m", "model_fast": "m", "model_surface": "m"}}),
         "./scribe",
     );
@@ -174,7 +174,7 @@ fn every_door_of_a_grown_child_names_the_child_it_is_for() {
     for (params, child, key) in [
         (
             json!({"scope": "/os/orgs/acme/members/alex", "level": "assistant",
-                   "name": "scribe", "template": "assistant@2.8.1",
+                   "name": "scribe", "template": "assistant@2.9.0",
                    "ctx": {"model": "m", "model_fast": "m", "model_surface": "m"}}),
             "./scribe",
             "context.assistant",

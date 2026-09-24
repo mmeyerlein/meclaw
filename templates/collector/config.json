@@ -27,6 +27,10 @@
           "because": "a memory bundle"
         },
         {
+          "route": "in_briefing",
+          "because": "the brief of the turn's counterpart coming home (GH #834): affinity's answer to the `brief` this hive raised at the turn's opening -- or its error, stamped `hop.brief_outcome == 'error'`, which parks the leg empty -- restamped onto this lane by the member's edge and carried down by a v-lane. It is the third leg of a turn beside the window and the memory, and the fan-in waits for it whenever `assemble.brief_slots` is set. `context.counterpart` (an entity reference the entry edge of a channel with many counterparts stamps) is what the brief was about; it is optional and it is not a requirement of any lane here: a turn without it asks nothing and parks the leg empty"
+        },
+        {
           "route": "in_advice",
           "because": "an advisor's answer"
         },
@@ -71,6 +75,10 @@
         {
           "route": "recall",
           "because": "a memory read this turn needs"
+        },
+        {
+          "route": "brief",
+          "because": "the brief this turn asks for (GH #834): one `tool_call` in affinity's request shape (`{subject, channel, slots}`) under an id derived from the turn and the subject, `hop.turn_id` the turn it belongs to. Raised once at the turn's opening, beside `recall`, only with `assemble.brief_slots` set and a `context.counterpart` to be briefed about. Who asks and in which round are edge truth: the member's edge that turns it into `in_brief` stamps the asker, and the turn's `audience_set` rides along"
         },
         {
           "route": "answer",

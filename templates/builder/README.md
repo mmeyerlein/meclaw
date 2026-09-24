@@ -1,4 +1,4 @@
-# `builder@1.12.2`
+# `builder@1.13.0`
 
 The intake that turns a structural wish into a **manifest** — an ordered list of
 mutation declarations, ready to be submitted by whoever asked for it.
@@ -239,7 +239,7 @@ repairs, and a refusal a human cannot read is one they cannot answer.
 
 Growing a child into a composition level was, until `1.2.0`, a paragraph a model
 rewrote from scratch on every build: an organisation gets **20** transit edges, a
-member **20**, an assistant **24**, a channel **4**, a screen **3**, an app
+member **20**, an assistant **28**, a channel **4**, a screen **3**, an app
 **3** — and they are the same edges every time, with the child's name
 substituted in. `examples/organism` writes all six out by hand, which is what
 made them measurable.
@@ -340,6 +340,17 @@ every delegation died there as `hive_no_route`, and the one manifest that wired 
 drew the hop by hand beside the table. A **channel** grew the mirror of it in the same place —
 see § *A channel is a node and a chat*.
 
+**Since `1.13.0` it costs four more: the brief road**
+([#834](https://github.com/mmeyerlein/meclaw/issues/834)). A turn on a channel with many
+counterparts asks the member's `affinity` about the one it is with, and the road is the memory
+road one lane over: per SURFACE one v-lane `./<name>/talky -> .` and `./<name>/talky-chat -> .`
+on `brief`, each stamping `context.brief_surface` with its own name, and one door back on
+`in_briefing` into each, guarded on `context.assistant` — the typed surface's door also on
+`hop.brief_surface == 'talky-chat'`, the spoken surface's the **default**, the shape of the two
+`in_bundle` doors. Both surfaces, where the memory road draws `talky` alone: the assistant sets the
+brief knob on both surface ref markers, and a surface whose knob is on and whose road is missing
+waits for its brief on every turn with a counterpart.
+
 `grow_level` renders them from a table. What it does **not** decide is the
 template: which class a level is filled with is a catalogue question, and the
 catalogue is the librarian's. The recipe is told the template and renders the
@@ -364,6 +375,7 @@ on a `channel` (§ *A round is provenance*).
 | `subscribe` | optional, `assistant` | draw the identity door as well — since #561 four v-lanes: one push from the member's own `./affinity` into each brain rim of the generation, and one `pack_ack` drain back from each. It is not part of the level and is not counted in the table above; see § *The identity door is opt-in* |
 | — | never for `member` | there is **no** parameter that turns the screen off, chooses what fills it or names its door. A member always gets both devices, and what fills them is the builder's own configuration (§ *A member grows a screen and an app, and the OS hands out the mount*) |
 | `credential` | optional, `assistant` | grow the generation with **no key of its own** — four more v-lanes to the member's own broker, the grants that answer them, and both credential params on both brains. `{"cred_ref": …, "subject": …, "expires_at": …}` are required inside it, `rule_id` and `rate_per_min` optional. Since `1.6.1` it is drawn in the SAME declaration as the generation, which stands at the member for it; the four edges are not counted in the table above; see § *The credential lanes are opt-in too, and they ride in the level's own declaration* |
+| `door` | optional, `assistant` | grow the generation as its **member's door**: one default edge more, from the container into it, on `in_turn` only, stamping `context.assistant` with its name — so a turn that names no agent reaches it instead of dying at the container as `hive_no_route`. One door per member is a rule of the wish, not checked here. A value that is not a boolean is refused as `door_invalid`; on any other level it is refused as `door_level_invalid`; see § *The member's door is one default edge* |
 
 ### A member grows a screen and an app, and the OS hands out the mount
 
@@ -730,7 +742,7 @@ reason is worth writing down so nobody re-derives the disappointment:
   its `accepts` and `emits` are both empty, and its two upward edges condition on
   `has(hop.error_code)` — on a failure key, not on a lane.
 - **Lane count is not edge count**, in either direction. `assistant` declares
-  twenty-eight lanes and gets twenty-four edges: four of them are addressed at the
+  thirty lanes and gets twenty-eight edges: four of them are addressed at the
   path directly (ruling W7-R5), `in_pack` and `pack_ack` are the opt-in identity
   door and no part of the level, `tool_result`
   is spoken inside the level and crosses no container edge, `display` folds
@@ -739,7 +751,10 @@ reason is worth writing down so nobody re-derives the disappointment:
   the memory road costs FOUR edges for two lanes, because `recall` and
   `in_bundle` are v-lanes and a v-lane is drawn once per asker
   (`./<name>/talky`, `./<name>/cogny`), which no lane count could have told
-  anybody.
+  anybody. Since [#834](https://github.com/mmeyerlein/meclaw/issues/834) the brief road
+  costs four more for two more lanes, `brief` and `in_briefing`, drawn once per SURFACE
+  (`./<name>/talky`, `./<name>/talky-chat`): both surface ref markers switch the brief leg
+  on, and a surface whose road is missing waits for its brief for ever.
 - **Guards, modifiers and literals live in no contract.** `context.assistant ==
   '<name>'`, the `audience_set` literal, `hop.owner.contains(…)`, the
   `set_hop.route = 'in_view'` restamp. Addressing is a property of the parent,
@@ -750,6 +765,44 @@ So: a table, and the table is pinned against the examples rather than described.
 levels and compares them **byte for byte** against `examples/organism/grow-*.json`
 — the recipe and the worked example cannot drift apart, because one is generated
 and diffed against the other.
+
+### The member's door is one default edge
+
+Since `1.13.0` an assistant can be grown as its **member's door**: the one generation that takes
+every turn that names no agent ([#835](https://github.com/mmeyerlein/meclaw/issues/835)).
+`door: true` draws exactly one edge more, as the last edge of the declaration, behind the
+level's own set and behind both older switches, so no index either of them renders at moves:
+
+```json
+{"from": ".", "to": "./<name>", "default": true,
+ "condition": "has(hop.route) && hop.route == 'in_turn'",
+ "modifier": {"set_context": {"assistant": "'<name>'"}}}
+```
+
+An assistant grown with `door: true` carries **29** edges: the level's own set and this one.
+The edge takes the level's form. It is `.` → `./<name>` in the container, and
+`./assistants` → `./assistants/<name>` when `subscribe` or `credential` moved the declaration to
+the member. The absolute edge is the same either way, so the door adds no third reason for the
+wide form.
+
+It is a **default** edge ([#283](https://github.com/mmeyerlein/meclaw/issues/283)): the
+container's strict per-assistant edges decide first, and only a turn none of them took reaches
+the door. The lane test keeps it to turns, because suppression is per sender and not per lane.
+The stamp gives the turn the door's name, so everything downstream addresses the door like any
+named agent. The measured failure it removes, the rule of one door per member and where the
+door's own rules live are in `templates/member/README.md` § *The member's door*.
+
+The switch is refused off its level. A `door` on any level but `assistant` comes back as
+**`door_level_invalid`**, with the level and `known: ["assistant"]`, from the switch before an
+inference is bought and from the renderer again, because a member rendered without the door it
+was asked for would be a different wish answered. The switch is a boolean, and a value that is
+not one (`"door": "false"`, `1`) comes back as **`door_invalid`** with the value, from both cells,
+rather than read by its truthiness; `null` is an absent key. The sentence form hears it too:
+*grow the member's door named reception from … under …* and *grow an assistant named … as the
+member's door* (or *as its door*) both render `door: true`. The words are read as a request, not
+as a noun anywhere in the sentence: *… next to the member's door* and *…, not as the door* render
+none. An explicit `door` argument beats the words, as it does for `birth`. The worked example is `examples/organism/grow-member-door.json`, held to the renderer
+byte for byte by `crates/meclaw-cells/tests/gh835_a_door_takes_the_turn_nobody_addressed.rs`.
 
 ## An app is a declaration
 

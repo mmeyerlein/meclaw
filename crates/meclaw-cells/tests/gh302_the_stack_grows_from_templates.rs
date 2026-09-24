@@ -413,6 +413,22 @@ impl Grown {
             .count()
     }
 
+    /// Edges between the `assistants` container and everything outside it — the
+    /// member's own traffic with its generations, the same shape as
+    /// `channels_to_siblings`. The example README's table and its "stay at"
+    /// sentence quote this number.
+    fn assistants_to_siblings(&self) -> usize {
+        let container = format!("{MEMBER}/assistants");
+        let below = format!("{container}/");
+        self.edges
+            .iter()
+            .filter(|(from, to)| {
+                (*from == container && !to.starts_with(&below))
+                    || (*to == container && !from.starts_with(&below))
+            })
+            .count()
+    }
+
     /// Every edge with at least one endpoint inside the assistant's subtree —
     /// the number GH #454 predicts a second CHANNEL cannot move, because the
     /// assistant has no channels any more.
@@ -964,9 +980,9 @@ async fn c_a_second_assistant_is_one_instantiation_with_its_own_parameters() {
          `member` template on disk declares"
     );
     assert_eq!(
-        declared, 33,
+        declared, 35,
         "the member's own edges to and from its assistants container are the member \
-         template's, drawn ONCE at member instantiation. FIFTEEN reach the container: the \
+         template's, drawn ONCE at member instantiation. SIXTEEN reach the container: the \
          screened turn coming back off ./firewall, the memory hive's bundle \u{2014} as the \
          DEFAULT since GH #533, so a bundle addressed to the asker OUTSIDE the member takes \
          the level's own exit instead \u{2014} the memory hive's REFUSAL of a recall an asker \
@@ -998,7 +1014,9 @@ async fn c_a_second_assistant_is_one_instantiation_with_its_own_parameters() {
          duplex voice channel (welle-live) \u{2014} the errand the voice model handed the \
          backend of its own accord, off ./channels on `delegation` and re-stamped to \
          `in_delegation`, which does NOT pass the firewall: its exit stamps `in_turn`, and a \
-         delegation is no turn of the conversation. EIGHTEEN \
+         delegation is no turn of the conversation, and \u{2014} since GH #834 \u{2014} \
+         `./affinity`'s answer to a generation's brief, answer and error alike, re-stamped \
+         to `in_briefing` when the member's own reply-to token says `inside`. NINETEEN \
          leave it: recall, `sidecar` THREE times \u{2014} TWICE since GH #607 \u{2014} the one lane \
          this level SORTS rather than forwards, the memory section onto the very door \
          `extraction` used to take and every other section into `./apps`, on a section-blind edge \
@@ -1023,7 +1041,9 @@ async fn c_a_second_assistant_is_one_instantiation_with_its_own_parameters() {
          a transfer document at this level is gone with the ruling that gave every store \
          its own files \u{2014} plus \u{2014} since GH #552 \u{2014} the memory \
          road's other half: `tool`, on the one tool name that leaves a generation, and \
-         `schemas`, the menu tick that asks what it looks like. The push itself draws no \
+         `schemas`, the menu tick that asks what it looks like, and \u{2014} since GH #834 \
+         \u{2014} `brief` into `./affinity` as `in_brief`, stamped with the turn, the asker \
+         and `brief_caller`. The push itself draws no \
          edge here: producer and \
          consumer are siblings, so it addresses \
          `<member>/assistants/<agent>` at its own path. A second agent must not move this \
@@ -1215,6 +1235,7 @@ async fn print_the_measurement() {
     println!("registry rows      = {}", grown.rows.len());
     println!("edges              = {}", grown.edges.len());
     println!("channels<->member  = {}", grown.channels_to_siblings());
+    println!("assistants<->member= {}", grown.assistants_to_siblings());
     println!("inside channels    = {}", grown.inside_channels());
     println!("touching assistant = {}", grown.touching_the_assistant());
     let mut declared = 0usize;

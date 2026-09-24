@@ -665,7 +665,13 @@ const REFERENCED_SUB_UNITS: [&str; 3] = ["collector", "dispatcher", "session-kee
 /// talky, so that is 2 x 2. The `delete_context` the same strand put on the
 /// twelve exit edges is a modifier and costs no edge. RE-MEASURED with
 /// [`print_the_measurement`].
-const EDGES: usize = 198;
+///
+/// Moved 198 -> 200 with GH #834: `talky` carries the brief leg's request out
+/// of its collector on one more exit edge (`./collector -> .` on `brief`), and
+/// two of the five declarations grow a talky, so that is 2 x 1. The entrance
+/// that takes the answer back in (`in_briefing`) widened an existing condition
+/// and costs no edge.
+const EDGES: usize = 200;
 
 /// Cells that were on disk before the first declaration — the three seeds' own
 /// cells (`hard-shell`'s `probe`, `never-forgets`'s `replay`,

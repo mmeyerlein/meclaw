@@ -7,6 +7,7 @@
 //! refusals come from [`MeclawParams::validate`] in the house style (field,
 //! echoed value, what is allowed).
 
+use meclaw_colony::surfaces::ProxyNet;
 use meclaw_core::Path;
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
@@ -23,6 +24,7 @@ pub const IMMUTABLE_KEYS: &[&str] = &[
     "query_timeout_ms",
     "lanes",
     "auth",
+    "trusted_proxies",
 ];
 
 /// The refusal text for a runtime `params` update aimed at a `meclaw` proxy.
@@ -94,6 +96,14 @@ pub struct MeclawParams {
     /// POST goes out anonymously, as before.
     #[serde(default)]
     pub auth: Option<PeerAuth>,
+    /// GH #833: the addresses whose `identity_header` this mount believes —
+    /// IP addresses or CIDRs. Absent means loopback (`127.0.0.0/8`, `::1/128`,
+    /// R-AG-1); an empty list believes nobody. A connection from anywhere else
+    /// is judged as if it carried no header. Kept raw, as written, so `Debug`
+    /// and a refusal show what the operator wrote; [`Self::trusted`] is the
+    /// parsed form.
+    #[serde(default)]
+    pub trusted_proxies: Option<Vec<String>>,
 }
 
 impl MeclawParams {
@@ -132,6 +142,12 @@ impl MeclawParams {
                 self.identity_header
             ));
         }
+        // GH #833: an entry that is no address is refused at plan time and by
+        // index; a list that silently matched nothing would refuse every frame
+        // with a detail about the proxy instead of the typo.
+        if let Some(list) = &self.trusted_proxies {
+            meclaw_colony::surfaces::parse_trusted_proxies(list)?;
+        }
         if self.boundary.is_empty() {
             return Err(
                 "boundary: required (this side's own name; it rides every receipt)".to_string(),
@@ -154,6 +170,17 @@ impl MeclawParams {
     /// `emit_to` as a [`Path`].
     pub fn emit_to_path(&self) -> Path {
         Path::new(&self.emit_to)
+    }
+
+    /// GH #833: the list the mount judges each connection with — the default
+    /// (loopback) when the key is absent, the parsed entries otherwise.
+    ///
+    /// [`Self::validate`] has already refused an entry that does not parse, so
+    /// the error arm is reached only by params that skipped it; it trusts
+    /// nobody rather than everybody (fail-closed).
+    pub fn trusted(&self) -> Vec<ProxyNet> {
+        meclaw_colony::surfaces::trusted_proxies_or_default(self.trusted_proxies.as_deref())
+            .unwrap_or_default()
     }
 }
 
@@ -601,6 +628,20 @@ mod tests {
     fn auth_is_immutable() {
         assert!(IMMUTABLE_KEYS.contains(&"auth"));
         assert!(refuse_params_update().contains("auth"));
+    }
+
+    /// GH #833: whose header counts is part of the boundary.
+    #[test]
+    fn trusted_proxies_is_immutable_and_debug_shows_it_as_written() {
+        assert!(IMMUTABLE_KEYS.contains(&"trusted_proxies"));
+        assert!(refuse_params_update().contains("trusted_proxies"));
+        let mut v = base(json!(null));
+        v["trusted_proxies"] = json!(["192.0.2.0/24"]);
+        if let Some(o) = v.as_object_mut() {
+            o.remove("auth");
+        }
+        let p = MeclawParams::parse(&v).expect("parses");
+        assert!(format!("{p:?}").contains("192.0.2.0/24"));
     }
 
     #[test]

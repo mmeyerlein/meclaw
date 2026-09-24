@@ -2,7 +2,7 @@
 
 An empty folder, the template library, and **six declarations**. Out of that: a colony
 shell, an organisation, a person, one generation of that person's agent, and a Telegram
-channel that person is reached on — **92 cells and 567 edges**, of which **72 edges were
+channel that person is reached on — **104 cells and 659 edges**, of which **76 edges were
 written by hand**.
 
 `meclaw-os` is the example that grows *one agent* from templates. This one grows the whole
@@ -48,14 +48,16 @@ organism/
 │   ├── colony.json            byte-identical to seed/colony.json
 │   └── main/
 │       ├── config.json        byte-identical to seed/main/config.json
-│       └── os/config.json     type: "ref", template: "meclaw-os@1.8.13"
+│       └── os/config.json     type: "ref", template: "meclaw-os@1.8.14"
 ├── grow-os.json               1. the shell.        1 node,  0 edges
 ├── grow-org.json              2. an organisation.  1 node, 20 edges
 ├── grow-member.json           3. a person.         1 node, 20 edges
-├── grow-assistant.json        4. one generation.   1 node, 24 edges
+├── grow-assistant.json        4. one generation.   1 node, 28 edges
 ├── grow-channel.json          5. a Telegram channel. 1 node,  4 edges, born asleep
 ├── grow-credentials.json      6. the credential v-lanes. 0 nodes, 4 edges, 2 grants
 ├── grow-door.json             beyond the six: the front door. 2 nodes, 4 edges
+├── grow-member-door.json      beyond the six: 4. grown as the member's door.
+│                              1 node, 29 edges
 ├── grow-screen.json           beyond the six: a screen and an app. 2 declarations,
 │                              2 nodes, 6 edges — one storey each, so one manifest
 └── grow.manifest.json         all six, in one body, in that order
@@ -68,27 +70,27 @@ principle of GH #26: a tree is grown, not checked in.
 ## What grows
 
 ```
-/os                                 meclaw-os@1.8.13   the shell
+/os                                 meclaw-os@1.8.14   the shell
 ├── access                            → access@2.5.0        the capability broker
 ├── argus                             → argus@1.1.0         the control loop
 └── orgs                              (empty container)
     └── acme                       org@1.4.1         a namespace and a boundary
         └── members                  (empty container)
-            └── alex               member@1.9.3      one person
-                ├── affinity          → affinity@3.4.0      identity and meaning
+            └── alex               member@1.10.0      one person
+                ├── affinity          → affinity@3.5.0      identity and meaning
                 ├── firewall          → firewall@2.3.1      the screen
                 ├── memory-hive       → memory-hive@3.4.1   what was said to them
                 ├── channels          (empty container)
                 │   └── telegram      telegram-connector@2.0.1   how alex is reached
                 └── assistants        (empty container)
-                    └── scribe    assistant@2.8.1   one generation of an agent
-                        ├── talky       → talky@5.2.2       the conversation surface
-                        ├── talky-chat  → talky@5.2.2       the same, for the channel chat
-                        ├── cogny       → cogny@5.0.3       the reasoning core
-                        └── tools       → tools@1.4.3       the tool surface
+                    └── scribe    assistant@2.9.0   one generation of an agent
+                        ├── talky       → talky@5.3.0       the conversation surface
+                        ├── talky-chat  → talky@5.3.0       the same, for the channel chat
+                        ├── cogny       → cogny@5.0.4       the reasoning core
+                        └── tools       → tools@1.4.4       the tool surface
 ```
 
-Five `add_nodes` entries name five templates, and **seventeen** distinct templates end up stamped
+Five `add_nodes` entries name five templates, and **sixteen** distinct templates end up stamped
 on the registry's leaf rows — because a level is a composite and a composite resolves through
 `ref`s. The four levels themselves carry no cell at all, so they never appear as a leaf stamp;
 they appear in the **chain**. `<scribe>/cogny/collector/assemble` records
@@ -116,7 +118,7 @@ is a separate act.
 
 ```json
 {"scope": "/",
- "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.8.13"}],
+ "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.8.14"}],
           "add_edges": []}}
 ```
 
@@ -197,7 +199,7 @@ its holders' exports is gone, and every holder's store writes its own seed set
 
 ### 4. `grow-assistant.json` — one generation
 
-Twenty-four edges: eleven down and thirteen up, and four of the twenty-four are **v-lanes**.
+Twenty-eight edges: thirteen down and fifteen up, and eight of the twenty-eight are **v-lanes**.
 
 Down are `in_turn` TWICE — the screened turn coming back off the member's firewall, guarded on
 `context.assistant`, and the one a view event on this generation's own screen takes, guarded on
@@ -205,7 +207,8 @@ Down are `in_turn` TWICE — the screened turn coming back off the member's fire
 mutation door's receipt, GH #553), `in_build_result` (the builder's answer), `in_tool` and
 `in_menu` (the memory's two answers on their way back, GH #552), the two transfer lanes
 `in_export` and `in_import` (since GH #475), `in_bundle` TWICE — one edge per asker inside
-the generation — and, since `member@1.9.0` wired the level for a channel whose model answers on
+the generation —, `in_briefing` TWICE — one per surface, since
+[#834](https://github.com/mmeyerlein/meclaw/issues/834) — and, since `member@1.9.0` wired the level for a channel whose model answers on
 its own timeline, `in_delegation`: the handover a duplex channel sends straight past the
 firewall, carried the last hop here because a container is not a pass-through
 ([#803](https://github.com/mmeyerlein/meclaw/issues/803)). Up are `answer`, `sidecar` (since
@@ -214,8 +217,9 @@ block the answer ends with, carried out undivided because this level reads no se
 `write`, `turn_write`, `prune`, `error`, `build`,
 `export_done` and `dump` (since GH #555 the keeper says its own completion word and the lane
 that is left carries an import receipt) and — since GH #552 — `tool` and `schemas`, the
-outbound half of that same memory road, plus `recall` twice, again one per asker. The member
-consumes `answer`, `recall` and `sidecar` itself and passes the rest on.
+outbound half of that same memory road, plus `recall` twice, again one per asker, and `brief`
+twice, one per surface. The member consumes `answer`, `recall`, `brief` and `sidecar` itself and
+passes the rest on.
 
 **The four `recall` / `in_bundle` edges do not end on the generation's path** — they end on
 `./scribe/talky` and `./scribe/cogny`, and each names the lane it carries
@@ -228,13 +232,25 @@ WITHOUT a connect point below `./assistants`, so it stays a mandatory hop — it
 `audience_now`, `channel` and `recall_as_of`, and an author who tried to draw a v-lane straight
 from a brain to the memory is refused with `v_lane_mandatory_hop` rather than debugging a
 `missing_audience` in the log.
-`assistant@2.8.1` emits a tenth lane, `pack_ack` (GH #458), and this walkthrough draws no edge
+`assistant@2.9.0` emits a tenth lane, `pack_ack` (GH #458), and this walkthrough draws no edge
 for it: nothing here pushes an identity into the generation, so nothing here produces the
 receipt. A colony that wires the push wires the receipt with it, and the member already declares
 the exit. Since GH #561 both halves are **v-lanes** and neither ends at this level: the push
 goes from `<member>/affinity` straight to `<member>/assistants/<agent>/talky` and `…/cogny`,
 the receipts come back from those same two rims, and the generation declares them as the lane's
 connect points instead of carrying the pack through its own rim.
+
+**The four `brief` / `in_briefing` edges are the same road one lane over**
+([#834](https://github.com/mmeyerlein/meclaw/issues/834)). A turn on a channel with many
+counterparts asks the member's `affinity` about the one it is with -- the THIRD leg of a turn,
+beside the window and the memory -- and they are v-lanes for the reason the memory road is: the
+generation declares `at: ["./talky", "./talky-chat"]`, the member declares the lane with no
+connect point and stays the mandatory hop that stamps the asker (`'agent:' + context.assistant`),
+the turn and its reply-to token `brief_caller`. They are drawn for BOTH surfaces, where the
+memory road draws `talky` alone: the brief is a knob of both surface ref markers, and a surface
+whose knob is on and whose road is missing waits for its brief for ever. Each surface stamps
+`context.brief_surface` on the way out, the member hands it back on the hop, and the door to
+`talky-chat` is guarded on it while the door to `talky` is the default.
 
 **The four transfer edges are what a generation costs beyond a conversation** (GH #475/#476).
 A generation holds one store the member cannot recompute — the session ledger of its own
@@ -280,7 +296,7 @@ model of its own with `override_params` on `<assistant>/talky/brain` if the two 
 channel belongs to the person, not to a generation, so this step is declared at the *member's*
 `channels` container and the node is `telegram`. The name is no label: it is the value
 `context.channel_node` carries, and it is what the answer is routed back by. Nothing stands beside it — the
-conversation surface travels inside `assistant@2.8.1` as `talky` -- and, since
+conversation surface travels inside `assistant@2.9.0` as `talky` -- and, since
 2.7.0, a second one called `talky-chat` stands beside it for the channel `chat`, which this
 walkthrough does not grow.
 
@@ -335,7 +351,7 @@ Four edges:
   ([#803](https://github.com/mmeyerlein/meclaw/issues/803)).
 
 **The eleven edges between `channels` and its siblings are not among them** — they belong to
-`member@1.9.3` and were drawn once, when step 3 ran: `./channels → ./firewall` turns the raw
+`member@1.10.0` and were drawn once, when step 3 ran: `./channels → ./firewall` turns the raw
 `turn` into `in_turn`, `./assistants → ./channels` carries a finished answer back to the channel
 that asked, `./apps → ./channels` carries an app's `view` — and, since 1.8.0, its `withdraw` —
 the same way, `./channels → .` lets a
@@ -390,8 +406,8 @@ its provider credential out of it, **sealed**, on an ordinary broker invocation.
 
 They are **v-lanes** (GH #559). Three levels lie between a brain and the broker —
 `./assistants`, the generation, `talky` — and the innermost is sealed, so the edge
-lands on a cell inside a sealed hive and is legal anyway: `talky@5.2.2` and
-`cogny@5.0.3` name `./brain` as this lane's connect point in their own contract
+lands on a cell inside a sealed hive and is legal anyway: `talky@5.3.0` and
+`cogny@5.0.4` name `./brain` as this lane's connect point in their own contract
 (`"at": ["./brain"]`), which is the one opening a template pronounces about
 itself. The two levels in between declare nothing about the lane and are
 therefore transparent. Take the `at` away and the mutation is refused by name,
@@ -428,7 +444,7 @@ Both are one instantiation with their own parameters, and neither re-runs anythi
 {"scope": "/os/orgs/acme/members/alex/assistants",
  "ctx": {"model": "${MODEL_CORE}", "model_fast": "${MODEL_CORE_FAST}",
          "model_surface": "${MODEL_SURFACE}"},
- "diff": {"add_nodes": [{"name": "aide", "template": "assistant@2.8.1",
+ "diff": {"add_nodes": [{"name": "aide", "template": "assistant@2.9.0",
                          "override_params": {"cogny/brain": {"temperature": 0.9}}}],
           "add_edges": []}}
 ```
@@ -447,8 +463,29 @@ learns nothing at all. A turn from any channel arrives on the same `in_turn` doo
 leaves on the same `answer` lane, with `context.channel_node` telling the member where to send
 it back.
 
-The member's own twenty-six edges to and from its `assistants` container stay at twenty-six, and
-its ten to and from `channels` stay at ten. That is what makes each of them one instantiation.
+The member's own thirty-five edges to and from its `assistants` container stay at thirty-five, and
+its twelve to and from `channels` stay at twelve. That is what makes each of them one instantiation.
+
+## The member's door: the agent a turn reaches when it names none
+
+`grow-member-door.json` is `grow-assistant.json` with one switch set, `door: true`, and one edge
+more at the end:
+
+```json
+{"from": ".", "to": "./scribe", "default": true,
+ "condition": "has(hop.route) && hop.route == 'in_turn'",
+ "modifier": {"set_context": {"assistant": "'scribe'"}}}
+```
+
+A turn that names an agent reaches that agent by its strict guard, as above. A turn that names
+none, such as an `in_turn` posted at the member's rim, matched nothing in the container and died
+there as `hive_no_route`. This default edge takes every `in_turn` that no regular edge of the
+container decided (GH #283): those turns, and a turn naming an agent the member does not have. It
+hands them to `scribe` and writes `scribe` onto the turn. It is not the front door of the next section: that one lets a turn into the colony at all,
+and this one decides which of a member's agents answers when nobody said.
+One per member. `templates/member/README.md` § *The member's door* has the rules, and
+`templates/builder/README.md` § *The member's door is one default edge* has the recipe switch
+that renders this file.
 
 ## A front door, so a person can talk to it
 
@@ -559,14 +596,14 @@ static-`Edge.to` cost a second assistant has
 | what | how many |
 |---|---:|
 | cells checked in | **0** |
-| cells after the six declarations | **92** |
-| edges after the six declarations | **567** |
-| edges written by hand in the six files | **72** |
-| edges that came with a template | **495** |
+| cells after the six declarations | **104** |
+| edges after the six declarations | **659** |
+| edges written by hand in the six files | **76** |
+| edges that came with a template | **583** |
 | `add_nodes` entries | **5** |
 | distinct templates stamped in the registry | **16** |
-| edges between the member's `channels` and its siblings | **10** |
-| edges between the member's `assistants` and its siblings | **25** |
+| edges between the member's `channels` and its siblings | **12** |
+| edges between the member's `assistants` and its siblings | **35** |
 
 Re-measure them with
 
@@ -643,7 +680,7 @@ nothing until an operator turns on exactly what they mean.
 shall stand.
 
 ```json
-{"cell": {"type": "ref", "template": "meclaw-os@1.8.13"}}
+{"cell": {"type": "ref", "template": "meclaw-os@1.8.14"}}
 ```
 
 That is a **declaration, not a cell**. The FIRST `meclaw --root ./examples/organism/seed-ref`
@@ -655,8 +692,8 @@ bookkept — a second boot finds nothing to grow, and a node you later remove wi
 cannot be re-declared into existence by a restart.
 
 **What it is not.** `seed-ref/` does not replace the six declarations, and it cannot. A `ref`
-marker declares a **node** and never an **edge** — and 72 of this example's 567 edges are
-hand-written: 68 transit lanes hanging off `orgs`, `members`, `assistants` and `channels`, hives
+marker declares a **node** and never an **edge** — and 76 of this example's 659 edges are
+hand-written: 72 transit lanes hanging off `orgs`, `members`, `assistants` and `channels`, hives
 the templates themselves materialise, plus the four credential v-lanes of step 6. Until the growth has happened those addresses do not exist, so
 there is nowhere to write them down. `seed-ref/` therefore grows exactly the first level, and it
 is the honest form of "a tree that boots itself".

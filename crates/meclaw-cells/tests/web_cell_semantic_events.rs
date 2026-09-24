@@ -402,3 +402,58 @@ async fn an_identity_header_becomes_hop_user_id() {
     );
     plain.join.abort();
 }
+
+/// GH #833: the identity header counts only on a connection from a proxy the
+/// display trusts. The test's client dials from 127.0.0.1: a list without it
+/// serves page and socket and stamps no `hop.user_id`; a list with it stamps
+/// the header as before. Same page, same event, same header both times, so the
+/// only thing that differs is where the connection came from.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_identity_header_from_an_untrusted_address_is_not_a_user_id() {
+    let td = TempDir::new().expect("td");
+
+    let elsewhere = td.path().join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).expect("dir");
+    seed(&elsewhere);
+    let mut live = start_with(
+        &elsewhere,
+        json!({ "mount": MOUNT, "identity_header": "X-Forwarded-User",
+                "trusted_proxies": ["192.0.2.0/24"] }),
+    )
+    .await;
+    let mut ws = join_page_as(live.port, Some(("X-Forwarded-User", "alex"))).await;
+    send_event(&mut ws, "action", json!({"name": "start"})).await;
+    let emission = tokio::time::timeout(Duration::from_secs(30), live.out_rx.recv())
+        .await
+        .expect("page and socket still work without an identity")
+        .expect("emission");
+    let header = &emission.content["header"];
+    assert!(
+        header.get("user_id").is_none(),
+        "a header from outside the list names nobody — absent, not empty: {header}"
+    );
+    live.join.abort();
+
+    let here = td.path().join("here");
+    std::fs::create_dir_all(&here).expect("dir");
+    seed(&here);
+    let mut live = start_with(
+        &here,
+        json!({ "mount": MOUNT, "identity_header": "X-Forwarded-User",
+                "trusted_proxies": ["127.0.0.1/32"] }),
+    )
+    .await;
+    let mut ws = join_page_as(live.port, Some(("X-Forwarded-User", "alex"))).await;
+    send_event(&mut ws, "action", json!({"name": "start"})).await;
+    let emission = tokio::time::timeout(Duration::from_secs(30), live.out_rx.recv())
+        .await
+        .expect("emission")
+        .expect("emission");
+    assert_eq!(
+        emission.content["header"]["user_id"],
+        json!("alex"),
+        "from a listed address the header is the identity: {}",
+        emission.content["header"]
+    );
+    live.join.abort();
+}

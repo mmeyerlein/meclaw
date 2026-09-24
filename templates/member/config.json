@@ -7,7 +7,7 @@
       "accepts": [
         {
           "route": "in_turn",
-          "because": "a turn that entered from outside this member -- an operator, a digest, a second person's agent -- on its way to the screen. It meets the firewall before it meets anything of this member's, which is the whole reason the firewall sits at this level: two channels of one person need ONE view of an attacker, and the rate window must not restart because a generation was replaced. The caller should promote `context.channel` (and `context.user_id` where this colony has per-user rules); the door edge promotes what it finds and falls back to the empty string, so an unpromoted channel costs one shared rate bucket rather than a vanished turn"
+          "because": "a turn that entered from outside this member -- an operator, a digest, a second person's agent -- on its way to the screen. It meets the firewall before it meets anything of this member's, which is the whole reason the firewall sits at this level: two channels of one person need ONE view of an attacker, and the rate window must not restart because a generation was replaced. The caller should promote `context.channel` (and `context.user_id` where this colony has per-user rules, and `context.counterpart` where one channel reaches many counterparts -- the subject of the brief leg, GH #834); the door edge promotes what it finds and falls back to the empty string, so an unpromoted channel costs one shared rate bucket rather than a vanished turn"
         },
         {
           "route": "in_recall",
@@ -19,6 +19,13 @@
             "./assistants"
           ],
           "because": "the lane a generation of this member raises when it needs to read the memory -- declared here, since GH #562, so that nothing may carry it PAST this level. It is not a lane of this rim and never was: it starts inside `./assistants` and ends inside `./memory-hive`, both siblings in here, and `at` says so -- the one address it docks on at this level is the container. Under ADR-0020 a level that declares a lane takes part in it and may not be skipped, and taking part is exactly what this level does: the door `./assistants -> ./memory-hive` turns `recall` into the hive's own `in_query` and stamps the three keys the hive refuses a question without -- `audience_now` (the round, from `context.audience_set`), `channel` (the room) and `recall_as_of`. Nothing below this level knows the round and nothing above it knows the person, so a v-lane drawn from a generation's asker to any memory outside this member would produce `missing_audience` at runtime; it is refused at mutation time instead, with `v_lane_mandatory_hop`. The declaration is the sentence that does it"
+        },
+        {
+          "route": "brief",
+          "at": [
+            "./assistants"
+          ],
+          "because": "the brief a generation of this member raises about the COUNTERPART of a turn (GH #834) -- declared here for the reason `recall` is, and with the same effect: it starts inside `./assistants` and ends inside `./affinity`, both siblings in here, so `at` names the container and nothing else, and under ADR-0020 a v-lane that would carry it past this level is a mandatory hop refused at mutation time. Taking part is what this level does: the edge `./assistants -> ./affinity` turns `brief` into affinity's own `in_brief` and stamps the three keys the answer cannot come home without -- `turn_id` off the HOP (the #535 lesson: the context may still name the round before this one), `asker = 'agent:' + context.assistant` (who asks is edge truth, never body text) and `brief_caller = 'inside'`, the reply-to token this level reads on the way back. The round is the turn's own `context.audience_set`, which rides along (OR-AG-13). Nothing below this level knows the person's record and nothing above it knows which generation asked"
         },
         {
           "route": "in_brief",
@@ -92,6 +99,13 @@
             "./assistants"
           ],
           "because": "the way back of the lane above, declared here for the same reason and with the same effect (GH #562). The hive's `bundle` becomes `in_bundle` on the edge `./memory-hive -> ./assistants`, which is this level restamping a lane rather than forwarding it, and from the container one v-lane per asker carries it the last step. Like `recall` it is no lane of this rim -- both ends are inside -- so `at` names the container and nothing else: a v-lane that would deliver a bundle straight into a generation from OUTSIDE this member is a mandatory hop refused here, because the level that stamped the round on the way out is the level that owes the answer its way home"
+        },
+        {
+          "route": "in_briefing",
+          "at": [
+            "./assistants"
+          ],
+          "because": "the way back of `brief` (GH #834), declared here for the reason `in_bundle` is. affinity answers the brief -- or fails it, and `error` comes home too, so the turn that waits for the leg opens with an empty one instead of never -- and the edge `./affinity -> ./assistants` restamps it onto this lane when `context.brief_caller == 'inside'`, hands affinity's route over as `hop.brief_outcome` and the asking surface's token as `hop.brief_surface`, and clears `asker` and `brief_caller`: both were stamped for this one round trip. From the container one v-lane per surface carries it the last step, guarded on `context.assistant`. The same test keeps it OFF the level's own exits: `./affinity -> .` on `answer` and on `error` fire only for a brief whose caller is not `inside`, which is the door's `outside` or none at all -- before 1.10.0 every internal answer would have left this level too and dead-lettered at the OS root"
         },
         {
           "route": "ack",
@@ -182,7 +196,8 @@
           "condition": "has(hop.route) && hop.route == 'in_turn'",
           "modifier": {
             "set_context": {
-              "channel": "has(context.channel) ? context.channel : ''"
+              "channel": "has(context.channel) ? context.channel : ''",
+              "counterpart": "has(context.counterpart) ? context.counterpart : ''"
             }
           }
         },
@@ -196,6 +211,7 @@
             },
             "set_context": {
               "channel": "has(context.channel) ? context.channel : ''",
+              "counterpart": "has(context.counterpart) ? context.counterpart : ''",
               "engine": "has(hop.engine) ? hop.engine : ''"
             }
           }
@@ -439,7 +455,8 @@
           "modifier": {
             "set_context": {
               "asker": "has(context.asker) && context.asker != '' ? context.asker : (has(hop.audience) ? hop.audience : '')",
-              "audience_set": "has(context.audience_set) && context.audience_set != '' ? context.audience_set : (has(hop.audience_set) ? hop.audience_set : '')"
+              "audience_set": "has(context.audience_set) && context.audience_set != '' ? context.audience_set : (has(hop.audience_set) ? hop.audience_set : '')",
+              "brief_caller": "'outside'"
             }
           }
         },
@@ -455,9 +472,41 @@
           }
         },
         {
+          "from": "./assistants",
+          "to": "./affinity",
+          "condition": "has(hop.route) && hop.route == 'brief' && has(context.assistant)",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_brief'"
+            },
+            "set_context": {
+              "turn_id": "has(hop.turn_id) ? hop.turn_id : ''",
+              "asker": "'agent:' + context.assistant",
+              "audience_set": "has(context.audience_set) ? context.audience_set : ''",
+              "brief_caller": "'inside'"
+            }
+          }
+        },
+        {
+          "from": "./affinity",
+          "to": "./assistants",
+          "condition": "has(hop.route) && (hop.route == 'answer' || hop.route == 'error') && has(context.brief_caller) && context.brief_caller == 'inside'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_briefing'",
+              "brief_outcome": "hop.route",
+              "brief_surface": "has(context.brief_surface) ? context.brief_surface : ''"
+            },
+            "delete_context": [
+              "asker",
+              "brief_caller"
+            ]
+          }
+        },
+        {
           "from": "./affinity",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'answer' && has(hop.subscriber) && hop.subscriber == ''",
+          "condition": "has(hop.route) && hop.route == 'answer' && has(hop.subscriber) && hop.subscriber == '' && (!has(context.brief_caller) || context.brief_caller != 'inside')",
           "modifier": {
             "set_hop": {
               "route": "'answer'"
@@ -490,7 +539,7 @@
         {
           "from": "./affinity",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'error'",
+          "condition": "has(hop.route) && hop.route == 'error' && (!has(context.brief_caller) || context.brief_caller != 'inside')",
           "modifier": {
             "delete_context": [
               "tool_answerer"

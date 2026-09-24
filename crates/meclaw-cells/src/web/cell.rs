@@ -143,6 +143,9 @@ pub struct WebCell {
     pub(crate) mount: String,
     /// The proxy's identity header, or empty. See [`WebCell::mount`].
     pub(crate) identity_header: String,
+    /// GH #833: whose identity header is believed, as written; `None` is the
+    /// default. See [`WebCell::mount`].
+    pub(crate) trusted_proxies: Option<Vec<String>>,
     /// The live operation-timeout, held for the same reason: a params update
     /// merges over it.
     pub(crate) external_timeout_ms: u64,
@@ -172,6 +175,7 @@ impl WebCell {
             push_tx,
             mount: params.mount.clone(),
             identity_header: params.identity_header.clone(),
+            trusted_proxies: params.trusted_proxies.clone(),
             external_timeout_ms: params.external_timeout_ms,
         }
     }
@@ -365,6 +369,7 @@ impl WebCell {
         let current = crate::web::params::WebOverlay {
             mount: self.mount.clone(),
             identity_header: self.identity_header.clone(),
+            trusted_proxies: self.trusted_proxies.clone(),
             external_timeout_ms: self.external_timeout_ms,
         };
         let (merged, overlay) = match crate::params_overlay::apply_update(&current, update) {
@@ -403,6 +408,7 @@ impl WebCell {
 
         self.mount = merged.mount.clone();
         self.identity_header = merged.identity_header.clone();
+        self.trusted_proxies = merged.trusted_proxies.clone();
         self.external_timeout_ms = merged.external_timeout_ms;
         db.set_query_timeout(Some(std::time::Duration::from_millis(
             self.external_timeout_ms,

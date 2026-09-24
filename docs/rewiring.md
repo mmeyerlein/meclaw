@@ -414,7 +414,7 @@ Scope is `channels`, the hive that already exists.
     "add_nodes": [
       {"name": "telegram", "template": "telegram-connector@2.0.1",
        "override_params": {"bot_token": "${TELEGRAM_BOT_TOKEN}"}},
-      {"name": "talky", "template": "talky@5.2.2"}
+      {"name": "talky", "template": "talky@5.3.0"}
     ]
   }
 }
@@ -470,13 +470,13 @@ hive used to carry outward.
     "modifier": {"set_context": {"channel_open_history": "'0'"}}},
    {"from": ".", "to": "./telegram",
     "condition": "has(hop.route) && hop.route == 'in_reply' && has(context.channel) && context.channel == <chat-id>"},
-   // in_tool | in_advice | in_delegation | in_bundle | in_thread_call |
+   // in_tool | in_advice | in_delegation | in_bundle | in_briefing | in_thread_call |
    // in_sweep | in_prune | in_round_sweep: same shape, target ./talky
    …
 
    // outbound: the talky's lanes, unchanged but for the sender
    {"from": "./talky", "to": ".", "condition": "has(hop.route) && hop.route == 'write'"},
-   // turn_write | sidecar | recall | prune | tool | error: same shape
+   // turn_write | sidecar | recall | brief | prune | tool | error: same shape
    …
 
    // a round that ran out of iterations, and a turn the store could not

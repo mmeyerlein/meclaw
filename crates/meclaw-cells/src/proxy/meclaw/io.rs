@@ -61,9 +61,11 @@ pub async fn run_io(
                 tokio::select! {
                     handed = rx.recv() => match handed {
                         Some(handed) => {
+                            // GH #833: the connection's address decides,
+                            // once, whether its identity header counts.
                             connections.spawn(crate::handed::serve_handed(
                                 handed.stream,
-                                mounted_router(io.clone()),
+                                mounted_router(io.for_connection(handed.peer.ip())),
                             ));
                         }
                         // A respawn registered over this entry.

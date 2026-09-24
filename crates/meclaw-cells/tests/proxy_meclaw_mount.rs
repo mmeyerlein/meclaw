@@ -31,8 +31,20 @@ async fn mounted(
     Arc<SurfaceRegistry>,
     mpsc::Sender<PeerReconfig>,
 ) {
+    mounted_with(params(identity_header)).await
+}
+
+/// [`mounted`], with the params spelled out — for `trusted_proxies` (GH #833).
+async fn mounted_with(
+    v: Value,
+) -> (
+    std::net::SocketAddr,
+    mpsc::Receiver<PeerEvent>,
+    Arc<SurfaceRegistry>,
+    mpsc::Sender<PeerReconfig>,
+) {
     let surfaces = Arc::new(SurfaceRegistry::new());
-    let p = MeclawParams::parse(&params(identity_header)).expect("params");
+    let p = MeclawParams::parse(&v).expect("params");
     let (events_tx, events_rx) = mpsc::channel(16);
     let (reconfig_tx, reconfig_rx) = mpsc::channel(1);
     tokio::spawn(run_io(
@@ -105,6 +117,78 @@ async fn a_post_nobody_signed_is_an_invalid_frame_however_the_signature_is_missi
         r["error_code"],
         json!("invalid_frame"),
         "a peer mount with no header named is an open door"
+    );
+}
+
+/// `params` with `trusted_proxies` set to `list`.
+fn params_trusting(list: Value) -> Value {
+    let mut v = params(HDR);
+    v["trusted_proxies"] = list;
+    v
+}
+
+/// GH #833: a signed POST from an address the mount does not trust as a proxy
+/// is judged as if it carried no header — `invalid_frame` on the wire, a
+/// `refused` receipt, and a local refusal that names no sender. The test's
+/// client dials from 127.0.0.1, so a list without loopback is "outside".
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_post_from_an_address_outside_the_list_is_an_invalid_frame_with_a_receipt() {
+    let (addr, mut rx, _s, _t) = mounted_with(params_trusting(json!(["192.0.2.0/24"]))).await;
+    let r = post(addr, Some("north"), &frame("topic", 5, Uuid::now_v7())).await;
+    assert_eq!(r["result"], json!("refused"), "the frame did not cross");
+    assert_eq!(
+        r["error_code"],
+        json!("invalid_frame"),
+        "no new code (OR-AG-5)"
+    );
+    let detail = r["detail"].as_str().unwrap_or_default();
+    assert!(
+        detail.contains("trusted_proxies"),
+        "the receipt names the reason: {r}"
+    );
+    match rx.recv().await.expect("a local receipt") {
+        PeerEvent::Refused {
+            peer,
+            error_code,
+            detail,
+            ..
+        } => {
+            assert_eq!(peer, None, "a header nobody vouched for names nobody");
+            assert_eq!(error_code, "invalid_frame");
+            assert!(detail.contains("trusted_proxies"), "{detail}");
+        }
+        o => panic!("expected a refusal, got {o:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_post_from_a_listed_address_crosses() {
+    let (addr, mut rx, _s, _t) = mounted_with(params_trusting(json!(["127.0.0.1/32"]))).await;
+    let r = post(addr, Some("north"), &frame("topic", 5, Uuid::now_v7())).await;
+    assert_eq!(r["result"], json!("crossed"), "{r}");
+    match rx.recv().await.expect("an arrival") {
+        PeerEvent::Arrived { peer, .. } => assert_eq!(peer, "north"),
+        o => panic!("expected an arrival, got {o:?}"),
+    }
+}
+
+/// R-AG-1: without the key the mount believes loopback, so a proxy on the same
+/// host needs no configuration — and an explicit empty list believes nobody.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_default_list_is_loopback() {
+    let (addr, _rx, _s, _t) = mounted(HDR).await;
+    let r = post(addr, Some("north"), &frame("topic", 5, Uuid::now_v7())).await;
+    assert_eq!(
+        r["result"],
+        json!("crossed"),
+        "no key: loopback is trusted; {r}"
+    );
+    let (addr, _rx, _s, _t) = mounted_with(params_trusting(json!([]))).await;
+    let r = post(addr, Some("north"), &frame("topic", 5, Uuid::now_v7())).await;
+    assert_eq!(
+        (r["result"].clone(), r["error_code"].clone()),
+        (json!("refused"), json!("invalid_frame")),
+        "an empty list trusts nobody, not the default; {r}"
     );
 }
 

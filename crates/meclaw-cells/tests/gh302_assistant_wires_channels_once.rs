@@ -830,6 +830,7 @@ fn the_boundary_matches_the_member_this_level_is_instantiated_into() {
         .collect();
     let want: BTreeSet<String> = [
         "answer",
+        "brief",
         "recall",
         "sidecar",
         "write",
@@ -842,7 +843,7 @@ fn the_boundary_matches_the_member_this_level_is_instantiated_into() {
     .collect();
     assert_eq!(
         consumed_by_the_member, want,
-        "the member consumes exactly the seven lanes of this level it has a holder for: the \
+        "the member consumes exactly the eight lanes of this level it has a holder for: the \
          `answer` goes to a channel of the PERSON (GH #454), `recall` and `sidecar` to \
          the memory that belongs to the person (GH #122), `write` is fanned onto the \
          memory's close pass as well as leaving the level (GH #447), `turn_write` is fanned \
@@ -854,8 +855,9 @@ fn the_boundary_matches_the_member_this_level_is_instantiated_into() {
          level SORTS rather than forwards: the memory section takes the same door \
          `extraction` used to take, every other section goes into the person's apps container, and \
          this level neither reads a section nor could -- a section is an OFFER, and an \
-         offer may be made by an app standing outside the generation. Every other lane an \
-         assistant raises crosses the member and is the parent's to drain."
+         offer may be made by an app standing outside the generation. Since GH #834 `brief` \
+         goes to the person's record (`./affinity`, as `in_brief`, the asker stamped). Every \
+         other lane an assistant raises crosses the member and is the parent's to drain."
     );
     for lane in &consumed_by_the_member {
         assert!(

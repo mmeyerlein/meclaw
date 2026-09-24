@@ -20,7 +20,8 @@ The mount a surface cell owns is `/<mount>/` on the colony's listener. Two cell 
 a `web` cell it is the mount with its `page.set` route grammar and the two reserved names, `@` and
 `live` ([`cell-types.md`](cell-types.md) § `web`). For a `proxy` cell on `platform: "meclaw"` it
 is the peer mount another colony posts to, and the wire-v1 frame that crosses it: the message
-frame and the receipt frame with their keys, the header that names the sending colony, the
+frame and the receipt frame with their keys, the header that names the sending colony and the
+addresses it is believed from (`params.trusted_proxies`, loopback by default), the
 credential the outgoing POST carries (`params.auth`: a static header, or an OAuth 2.0
 client-credentials bearer), and the ten `error_code` strings a refusal carries
 ([`cell-types.md`](cell-types.md) § `proxy`). The peer mount is the surface a colony you do not run
@@ -35,7 +36,10 @@ Changes to those five are additive. A route, a key, a port or a code that is the
 tomorrow, and new ones arrive beside it.
 
 A change that breaks an existing topology gets its own Breaking section in
-[`CHANGELOG.md`](../CHANGELOG.md), with the migration named. That is the whole mechanism. meclaw
+[`CHANGELOG.md`](../CHANGELOG.md), with the migration named. That is the whole mechanism. A
+new default counts as such a change when it refuses something an existing topology relied on:
+`trusted_proxies` arrived that way in 0.45.0, and a proxy on another host needs its address
+listed. meclaw
 has no deprecation period and no compatibility flag, so the release note is where you find out.
 
 Nothing under `crates/` carries a SemVer guarantee. The Rust crates are internals and move

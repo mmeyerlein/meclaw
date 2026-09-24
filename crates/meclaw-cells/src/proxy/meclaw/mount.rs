@@ -27,6 +27,7 @@ use tokio::sync::mpsc;
 use super::lanes::{self, Direction, Refusal};
 use super::params::{Lanes, MeclawParams};
 use super::wire;
+use meclaw_colony::surfaces::ProxyNet;
 
 /// What the mount half needs: its name, whom it trusts to name the sender, its
 /// own boundary name, the contract, the mount table and the way to the handler.
@@ -34,6 +35,13 @@ use super::wire;
 pub struct MeclawIo {
     pub(crate) mount: String,
     pub(crate) identity_header: String,
+    /// GH #833: the proxies whose `identity_header` is believed.
+    pub(crate) trusted: Arc<Vec<ProxyNet>>,
+    /// GH #833: whether the connection this copy serves came from an address
+    /// in [`Self::trusted`]. Set per connection by [`Self::for_connection`] at
+    /// the handoff — the peer address is the connection's, decided once
+    /// (O-639-6) — and `false` on a copy no connection has reached.
+    pub(crate) peer_trusted: bool,
     pub(crate) boundary: String,
     pub(crate) cell_path: String,
     pub(crate) lanes: Arc<Lanes>,
@@ -48,11 +56,22 @@ impl MeclawIo {
         Self {
             mount: p.mount.clone(),
             identity_header: p.identity_header.clone(),
+            trusted: Arc::new(p.trusted()),
+            peer_trusted: false,
             boundary: p.boundary.clone(),
             cell_path: cell_path.to_string(),
             lanes: Arc::new(p.lanes.clone()),
             surfaces,
             events_tx: None,
+        }
+    }
+
+    /// The state one handed connection is served with: this mount's state,
+    /// plus whether the connection's peer address is a trusted proxy.
+    pub(crate) fn for_connection(&self, peer: std::net::IpAddr) -> Self {
+        Self {
+            peer_trusted: meclaw_colony::surfaces::admits(&self.trusted, peer),
+            ..self.clone()
         }
     }
 }
@@ -119,7 +138,7 @@ async fn post_frame(State(io): State<MeclawIo>, headers: HeaderMap, body: Bytes)
         // Only reachable if a router were built outside `run_io`.
         return (StatusCode::SERVICE_UNAVAILABLE, "no handler\n").into_response();
     };
-    let (receipt, event) = judge(&io, &headers, &body);
+    let (receipt, event) = judge(&io, io.peer_trusted, &headers, &body);
     // Both ways: the far side reads the receipt, this side keeps its own. An
     // answer the handler could not take would be a receipt nobody here holds,
     // so it is not given: the far side reads a non-200, i.e. `peer_unreachable`.
@@ -136,15 +155,37 @@ async fn post_frame(State(io): State<MeclawIo>, headers: HeaderMap, body: Bytes)
 
 /// The five checks, in this order: sender, parse, lane, budget, body (its
 /// fields, then whether what is left can be delivered at all).
-fn judge(io: &MeclawIo, headers: &HeaderMap, body: &[u8]) -> (Value, PeerEvent) {
+///
+/// `peer_trusted` is the connection's verdict, passed in rather than looked
+/// up, so the whole judgement stays a pure function of its arguments. The
+/// parameter is the one that counts: `judge` never reads `io.peer_trusted`,
+/// and a caller that holds a different verdict than the copy it passes is
+/// judged by the parameter.
+fn judge(
+    io: &MeclawIo,
+    peer_trusted: bool,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> (Value, PeerEvent) {
     // (0) Who sent it: only the header the proxy fills. An empty param and a
     // missing header are the same refusal (fail-closed; this is where the cell
     // departs from `web`, which stamps nothing and carries on).
-    let Some(peer) = identity_of(headers, &io.identity_header) else {
-        let r = Refusal::new(
-            wire::INVALID_FRAME,
-            "no authenticated sender header on this mount",
-        );
+    let claimed = identity_of(headers, &io.identity_header);
+    let Some(peer) = claimed.as_ref().filter(|_| peer_trusted).cloned() else {
+        // GH #833: a header on a connection from outside `trusted_proxies` is
+        // a line any client that reaches the port can write — a direct POST
+        // with a forged sender arrived as that sender until 0.45.0. It counts
+        // as missing. The detail says which of the two it was, so an operator
+        // whose proxy on another host is not listed reads the list, not the
+        // header; the value itself is never echoed, and no sender is booked
+        // (OR-AG-5: `invalid_frame`, no eleventh code).
+        let detail = if claimed.is_some() {
+            "the sender header came from an address this mount does not trust as a proxy \
+             (params.trusted_proxies)"
+        } else {
+            "no authenticated sender header on this mount"
+        };
+        let r = Refusal::new(wire::INVALID_FRAME, detail);
         return refuse(io, String::new(), None, None, r, None);
     };
     // (1) Parse: JSON first, then the frame itself (`v` before anything else).
@@ -298,4 +339,88 @@ fn identity_of(headers: &HeaderMap, identity_header: &str) -> Option<String> {
         .and_then(|v| v.to_str().ok())
         .filter(|v| !v.is_empty())
         .map(str::to_string)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn io() -> MeclawIo {
+        let p = MeclawParams::parse(&json!({
+            "platform": "meclaw", "mount": "peer", "identity_header": "X-Meclaw-Peer",
+            "boundary": "south", "emit_to": "/sink", "lanes": {
+                "accepts": [{"route": "topic", "fields": ["topic"], "because": "a subject"}],
+                "emits": []}
+        }))
+        .expect("params");
+        MeclawIo::new(&p, "/friend", Arc::new(SurfaceRegistry::new()))
+    }
+
+    fn signed() -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert("x-meclaw-peer", "north".parse().expect("a header"));
+        h
+    }
+
+    const FRAME: &[u8] = br#"{"v": 1, "type": "message", "lane": "topic",
+        "trace_id": "0192f1b0-0000-7000-8000-000000000001", "ttl": 5, "context": {},
+        "body": {"messages": [], "topic": "gardening"}}"#;
+
+    /// GH #833: the same signed frame, judged twice — the connection's verdict
+    /// is the only input that differs, and no HTTP is involved.
+    #[test]
+    fn a_signed_frame_crosses_only_on_a_trusted_connection() {
+        let io = io();
+        let (receipt, event) = judge(&io, true, &signed(), FRAME);
+        assert_eq!(receipt["result"], json!("crossed"), "{receipt}");
+        assert!(matches!(event, PeerEvent::Arrived { ref peer, .. } if peer == "north"));
+
+        let (receipt, event) = judge(&io, false, &signed(), FRAME);
+        assert_eq!(receipt["error_code"], json!(wire::INVALID_FRAME));
+        match event {
+            PeerEvent::Refused { peer, detail, .. } => {
+                assert_eq!(peer, None, "a header nobody vouched for names nobody");
+                assert!(detail.contains("params.trusted_proxies"), "{detail}");
+                assert!(
+                    !detail.contains("north"),
+                    "the claimed value is never echoed"
+                );
+            }
+            o => panic!("expected a refusal, got {o:?}"),
+        }
+    }
+
+    /// No header at all keeps its old detail, trusted or not: the list is not
+    /// the reason a frame nobody signed is refused.
+    #[test]
+    fn an_unsigned_frame_keeps_the_old_detail_wherever_it_comes_from() {
+        let io = io();
+        for trusted in [true, false] {
+            let (receipt, _) = judge(&io, trusted, &HeaderMap::new(), FRAME);
+            assert_eq!(
+                receipt["detail"],
+                json!("no authenticated sender header on this mount"),
+                "trusted = {trusted}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_copy_no_connection_reached_trusts_nobody_and_the_handoff_decides() {
+        let io = io();
+        assert!(!io.peer_trusted, "fail-closed before any handoff");
+        assert!(
+            io.for_connection("127.0.0.1".parse().expect("ip"))
+                .peer_trusted
+        );
+        assert!(
+            io.for_connection("::ffff:127.0.0.9".parse().expect("ip"))
+                .peer_trusted
+        );
+        assert!(
+            !io.for_connection("192.0.2.1".parse().expect("ip"))
+                .peer_trusted
+        );
+    }
 }

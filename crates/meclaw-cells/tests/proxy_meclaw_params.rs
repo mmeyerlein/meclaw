@@ -81,11 +81,40 @@ fn a_duplicate_route_an_empty_route_and_a_relative_emit_to_are_each_refused() {
     );
     // A boundary a message can rename is not a boundary (README § 0a A9).
     // Nine since GH #828: `auth`, the credential, is a key of the boundary too.
+    // Ten since GH #833: whose header the mount believes is part of who may cross.
     assert_eq!(
         IMMUTABLE_KEYS.len(),
-        9,
+        10,
         "every key of the variant, and no more"
     );
     assert!(IMMUTABLE_KEYS.contains(&"lanes") && IMMUTABLE_KEYS.contains(&"mount"));
     assert!(IMMUTABLE_KEYS.contains(&"auth"));
+    assert!(IMMUTABLE_KEYS.contains(&"trusted_proxies"));
+}
+
+/// GH #833: a typo in the list is a refusal at plan time that names the entry,
+/// never an address that silently matches nothing.
+#[test]
+fn a_trusted_proxies_entry_that_is_not_an_address_is_refused_by_name() {
+    let mut v = minimal();
+    v["trusted_proxies"] = json!(["127.0.0.1", "proxy.example", "192.0.2.0/24"]);
+    let err = MeclawParams::parse(&v).expect_err("a host name is not an address");
+    assert!(
+        err.starts_with(r#"trusted_proxies[1]: "proxy.example" is not an IP address or CIDR"#),
+        "{err}"
+    );
+    let mut w = minimal();
+    w["trusted_proxies"] = json!(["192.0.2.0/33"]);
+    let err = MeclawParams::parse(&w).expect_err("a prefix past 32");
+    assert!(err.starts_with("trusted_proxies[0]: "), "{err}");
+    let mut ok = minimal();
+    ok["trusted_proxies"] = json!(["192.0.2.0/24", "2001:db8::/32", "::1"]);
+    let p = MeclawParams::parse(&ok).expect("addresses and CIDRs parse");
+    assert_eq!(p.trusted().len(), 3);
+    let absent = MeclawParams::parse(&minimal()).expect("parses");
+    assert_eq!(
+        absent.trusted(),
+        meclaw_colony::surfaces::loopback_only(),
+        "no key is loopback (R-AG-1)"
+    );
 }

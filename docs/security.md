@@ -68,7 +68,14 @@ on the wire is a handle. [`security/secrets.md`](security/secrets.md) has both.
 `affinity` is the curated record of who a colony knows: one AIeOS document per entity, plus
 relations, trust and disclosure as tables. A field reaches an audience because a `disclosure`
 row named it, never because no rule forbade it, and the round it is asked in has to be
-declared or the read does not happen.
+declared or the read does not happen. A member releases a field by accepting a proposal: the
+accepted verdict writes the `disclosure` row itself, a proposal accepted on the system's own
+word never does, and a verdict releases one path below `aieos.` or `mx.` -- anything else,
+`*` included, is refused (`disclosure_field_unrooted`, beside `disclosure_mode_unknown`); a
+release that wide is a `set_disclosure`. Trust is an ordered set of levels, and the lowest,
+`blocked`, says no on purpose; an answered brief reports the level with its rank and leaves the
+decision to its caller. A refused brief carries neither, so a caller reads a missing rank as
+no.
 
 `firewall` screens an ingress channel before the agent sees anything. Every inbound turn ends
 on `pass`, byte identical, or on `reject`, naming the reason and the rule that fired. Above
@@ -87,7 +94,10 @@ keep the word `sandboxed` in the schema and lose the property behind it
 
 The HTTP server installs no authentication, no TLS and no session. meclaw knows paths and
 knows no identities, and who may reach the port is the reverse proxy's business, the same as
-for any other Linux daemon. The binary opens no port unless you pass `--api`.
+for any other Linux daemon. Whose identity header a mount believes is `trusted_proxies`: the
+peer mount and `web` read the header only on a connection from a listed address, loopback by
+default, so a client that reaches the port past the proxy cannot name itself. The binary opens
+no port unless you pass `--api`.
 
 ## See it refuse
 

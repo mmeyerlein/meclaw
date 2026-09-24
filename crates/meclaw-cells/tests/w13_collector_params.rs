@@ -28,7 +28,7 @@ use std::process::{Command, Stdio};
 
 const ASSEMBLE_CONFIG: &str = "../../templates/collector/assemble/config.json";
 
-/// The twenty-seven knobs, with the kind of accessor the script reads each one with.
+/// The twenty-eight knobs, with the kind of accessor the script reads each one with.
 /// Restated here on purpose: this is the inventory the migration claims to be
 /// complete, and a knob that quietly leaves the config should fail the pin.
 const KNOBS: &[(&str, &str)] = &[
@@ -85,6 +85,10 @@ const KNOBS: &[(&str, &str)] = &[
     // shipped default and asks nothing, which is why a collector that ships
     // without a tools hive beside it is silent rather than noisy.
     ("tools", "_list"),
+    // GH #834 -- the brief leg. A LIST like `tools`, and a question like it too:
+    // the names are affinity's slot vocabulary, asked about the counterpart of a
+    // turn. Empty is the shipped default and asks nothing.
+    ("brief_slots", "_list"),
 ];
 
 fn config() -> serde_json::Value {
@@ -203,7 +207,7 @@ fn nothing_in_the_shipped_collector_reads_the_environment_any_more() {
 /// The script literal is read out of the source text rather than exercised,
 /// because that literal IS the fallback: `_int("window_turns", 12)` is the
 /// value a cell uses when its config says nothing, and comparing the text is
-/// the complete check over all twenty-seven knobs.
+/// the complete check over all twenty-eight knobs.
 #[test]
 fn every_knob_is_a_param_a_setting_and_a_script_literal_with_one_value() {
     let cfg = config();
@@ -242,7 +246,7 @@ fn every_knob_is_a_param_a_setting_and_a_script_literal_with_one_value() {
         );
     }
 
-    // No knob may hide: every non-substrate param is one of the twenty-seven above.
+    // No knob may hide: every non-substrate param is one of the twenty-eight above.
     //
     // The allow-list is the `code` cell's OWN param surface, i.e. every key
     // `CodeParams::parse` reads (crates/meclaw-cells/src/code/params.rs) --
