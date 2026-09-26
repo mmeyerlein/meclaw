@@ -95,7 +95,11 @@ pub enum PeerEvent {
         fields: Vec<String>,
         /// The `context` keys the lane lets cross.
         context: Map<String, Value>,
-        /// The projected body.
+        /// What the sender claimed about its turns — `peer_origins` and
+        /// `peer_speakers` (GH #847, [`lanes::restamp_as_peer`]); empty for a
+        /// body without turns.
+        claims: Map<String, Value>,
+        /// The projected body, every turn stamped `origin: "peer"`.
         body: Value,
     },
     /// A frame was refused; the far side read the same verdict on the wire.
@@ -106,7 +110,7 @@ pub enum PeerEvent {
         peer: Option<String>,
         /// The frame's trace, when the frame parsed (OR-Peer.L1b.3).
         trace_id: Option<Uuid>,
-        /// One of the ten codes.
+        /// One of the eleven codes.
         error_code: &'static str,
         /// What was refused, in words.
         detail: String,
@@ -178,7 +182,7 @@ fn judge(
         // as missing. The detail says which of the two it was, so an operator
         // whose proxy on another host is not listed reads the list, not the
         // header; the value itself is never echoed, and no sender is booked
-        // (OR-AG-5: `invalid_frame`, no eleventh code).
+        // (OR-AG-5: `invalid_frame`, no new code).
         let detail = if claimed.is_some() {
             "the sender header came from an address this mount does not trust as a proxy \
              (params.trusted_proxies)"
@@ -246,6 +250,11 @@ fn judge(
             );
         }
     };
+    // (4a) GH #847 / R-SN-3: every arriving turn is `peer`; what the sender
+    // claimed moves to the hop. Before the deliverability check, because a
+    // `speaker` the sender left on a turn it calls `user` is no valid body —
+    // moved out, the turn is.
+    let (projected, claims) = lanes::restamp_as_peer(projected);
     // (4b) What is accepted must be deliverable. A debug colony dead-letters an
     // emission whose body is no UBF body (`invalid_ubf_body`), a release colony
     // passes it on unchecked, and either way that happens after the cell has
@@ -273,6 +282,7 @@ fn judge(
         ttl: frame.ttl,
         fields: lane.fields.clone(),
         context,
+        claims,
         body: projected,
     };
     (receipt, event)

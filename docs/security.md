@@ -96,8 +96,13 @@ The HTTP server installs no authentication, no TLS and no session. meclaw knows 
 knows no identities, and who may reach the port is the reverse proxy's business, the same as
 for any other Linux daemon. Whose identity header a mount believes is `trusted_proxies`: the
 peer mount and `web` read the header only on a connection from a listed address, loopback by
-default, so a client that reaches the port past the proxy cannot name itself. The binary opens
-no port unless you pass `--api`.
+default, so a client that reaches the port past the proxy cannot name itself. Where a peer cell
+may send is `egress`: it posts a frame, and the credential with it, only to an origin its own
+`params.egress` lists, and without the list it sends nothing. A blob reference from another
+colony never crosses the peer mount, so it is never resolved against this colony's store.
+`POST /messages` is operator trust: whoever can reach it can write any `hop`, `peer_url`
+included, and `egress` is what still holds then. The binary opens no port unless you pass
+`--api`.
 
 ## See it refuse
 

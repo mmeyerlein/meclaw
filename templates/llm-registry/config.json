@@ -1,0 +1,200 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "ports": [],
+    "contract": {
+      "accepts": [
+        {
+          "route": "in_select",
+          "context": [
+            "asker"
+          ],
+          "because": "which model serves this tier, right now. The caller edge promotes the asker to context.asker; the answer names a model or says why it could not"
+        },
+        {
+          "route": "in_hand",
+          "context": [
+            "actor"
+          ],
+          "because": "a command: move a tier (`remap`), set or clear a replacement (`override_set`, `override_clear`), put one cell back on what it resolves to without its targeted replacements (`reset`), register a subscriber and what it states it needs (`subscribe`), keep the catalogue (`model_upsert`, `model_retire`), ask the translator what a failed round left unanswered (`retranslate`), or read the view per cell (`show`). The caller edge MUST promote the deciding identity to context.actor -- without one the command is refused with no_actor"
+        }
+      ],
+      "emits": [
+        {
+          "route": "answer",
+          "because": "the resolved model for a request (`select`), with hop.resolved / hop.reason_code / hop.model_id / hop.tier -- and the view per cell `show` answers with (`hand`): model, rank, reason and since for every subscriber"
+        },
+        {
+          "route": "ack",
+          "because": "accepted or rejected, plus a reason_code, for whoever gave the command"
+        },
+        {
+          "route": "update",
+          "because": "one model package for one subscribed llm cell -- hop.subscriber names which, hop.rank says which rule of the precedence produced it; the body is a params-only message that goes into the cell through its composite's `in_model` door"
+        },
+        {
+          "route": "error",
+          "because": "the lane could not be served. The parent MUST wire it"
+        }
+      ]
+    },
+    "graph": {
+      "edges": [
+        {
+          "from": ".",
+          "to": "./select",
+          "condition": "has(hop.route) && hop.route == 'in_select'",
+          "modifier": {
+            "delete_context": [
+              "lr_carry",
+              "lr_phase",
+              "registry_origin"
+            ]
+          }
+        },
+        {
+          "from": ".",
+          "to": "./hand",
+          "condition": "has(hop.route) && hop.route == 'in_hand'",
+          "modifier": {
+            "delete_context": [
+              "lr_carry",
+              "lr_phase",
+              "registry_origin"
+            ]
+          }
+        },
+        {
+          "from": "./select",
+          "to": "./store",
+          "condition": "has(hop.route) && hop.route == 'rstore'",
+          "modifier": {
+            "set_context": {
+              "registry_origin": "'select'",
+              "lr_phase": "hop.phase",
+              "lr_carry": "hop.carry"
+            }
+          }
+        },
+        {
+          "from": "./store",
+          "to": "./select",
+          "condition": "context.registry_origin == 'select'"
+        },
+        {
+          "from": "./hand",
+          "to": "./store",
+          "condition": "has(hop.route) && hop.route == 'rstore'",
+          "modifier": {
+            "set_context": {
+              "registry_origin": "'hand'",
+              "lr_phase": "hop.phase",
+              "lr_carry": "hop.carry"
+            }
+          }
+        },
+        {
+          "from": "./store",
+          "to": "./hand",
+          "condition": "context.registry_origin == 'hand'"
+        },
+        {
+          "from": "./hand",
+          "to": "./translate",
+          "condition": "has(hop.route) && hop.route == 'translate'",
+          "modifier": {
+            "set_context": {
+              "registry_origin": "'translate'",
+              "lr_phase": "hop.phase",
+              "lr_carry": "hop.carry"
+            }
+          }
+        },
+        {
+          "from": "./translate",
+          "to": "./hand",
+          "condition": "context.registry_origin == 'translate'"
+        },
+        {
+          "from": "./select",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'answer'",
+          "modifier": {
+            "delete_context": [
+              "lr_carry",
+              "lr_phase",
+              "registry_origin"
+            ]
+          }
+        },
+        {
+          "from": "./select",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'error'",
+          "modifier": {
+            "delete_context": [
+              "lr_carry",
+              "lr_phase",
+              "registry_origin"
+            ]
+          }
+        },
+        {
+          "from": "./hand",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'answer'",
+          "modifier": {
+            "delete_context": [
+              "lr_carry",
+              "lr_phase",
+              "registry_origin"
+            ]
+          }
+        },
+        {
+          "from": "./hand",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'ack'",
+          "modifier": {
+            "delete_context": [
+              "lr_carry",
+              "lr_phase",
+              "registry_origin"
+            ]
+          }
+        },
+        {
+          "from": "./hand",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'update'",
+          "modifier": {
+            "delete_context": [
+              "lr_carry",
+              "lr_phase",
+              "registry_origin"
+            ]
+          }
+        },
+        {
+          "from": "./hand",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'error'",
+          "modifier": {
+            "delete_context": [
+              "lr_carry",
+              "lr_phase",
+              "registry_origin"
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "description": {
+    "purpose": "Scope marker of the llm-registry: the catalog of models, the tier index behind the `.env` names, the one cell allowed to move that index, and -- since 2.3.0 -- the translator that turns a cell's prose requirement into a choice from the catalogue. Four internal edges carry the store round trips and two the translator's, and all of them exist for the same reason -- a code cell has no cell.db, so the state of a multi-read lane rides in the hop keys these edges promote to context and comes back on the answer. The round trip IS the cell's memory. The two doors clear those keys on the way in, so nothing from outside can pose as an answer.",
+    "use_when": "Once per colony, as a sibling of the agents. `.env` names the tier a cell is born on; this hive is the living truth of what that tier means today, what it costs, and what has gone wrong with it. Wire the ports in the SAME mutation as the add_nodes -- a composite with no crossing edge is an inactive island.",
+    "not_in_scope": "No model in the RESOLUTION: every push is decided by deterministic code over tables, so a registry that needed a model to pick a model could still repair one. The one llm cell in here, `translate`, answers a question at most once per (requirement, catalogue) pair; its answer becomes a row that is checked against the catalogue before anything reads it, its own model is a start value the registry never resolves, and when it fails the last resolution stays. No control loop either -- nothing in here reacts to an incident, and v1 carries no timer at all, which is a ruling and not an omission (GH #130). And no resolution path for a running cell: a cell cannot read the colony, so the registry PUSHES and lives with eventual consistency."
+  }
+}

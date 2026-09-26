@@ -1,4 +1,4 @@
-# `assistant@2.9.0`
+# `assistant@2.9.2`
 
 One generation of one person's agent.
 **Four refs at three templates, no container at all,** and sixty-seven edges.
@@ -246,7 +246,7 @@ door `. -> <generation>` every growth recipe draws.
 | `answer` | **what this generation said**, on its way back to the channel that asked. New in 2.0.0. The assistant does not know which channel it came from and must not: `context.channel_node` rode in on the turn and rides back out on the answer, and the member's own edge into `./channels` is what turns that name into an address (`context.channel`, the chat, rides along beside it — GH #522) |
 | `write` | a closed session as one write batch |
 | `turn_write` | one finished turn per message, after every stored turn and every stored answer — never a batch (GH #298, ruling Q11) |
-| `sidecar` | **one section** of the block the answer carried, one message per section, since 2.6.0 ([#607](https://github.com/mmeyerlein/meclaw/issues/607)). It is `extraction` grown a dimension: the same fence, opened with ```` ```sidecar ```` rather than ```` ```memory ````, holding ONE object with one key per section, cut up by the splitter inside `./talky` and stamped with `hop.section`. This level neither reads a section nor knows which ones exist — the sections a turn may carry are the OFFERS its answerers made, and an answerer may sit outside this generation entirely — so the lane leaves undivided and the MEMBER sorts it. It REPLACES `extraction`, which `talky@5.3.0` no longer has; the member still carries an `extraction` edge for a generation grown against an older surface |
+| `sidecar` | **one section** of the block the answer carried, one message per section, since 2.6.0 ([#607](https://github.com/mmeyerlein/meclaw/issues/607)). It is `extraction` grown a dimension: the same fence, opened with ```` ```sidecar ```` rather than ```` ```memory ````, holding ONE object with one key per section, cut up by the splitter inside `./talky` and stamped with `hop.section`. This level neither reads a section nor knows which ones exist — the sections a turn may carry are the OFFERS its answerers made, and an answerer may sit outside this generation entirely — so the lane leaves undivided and the MEMBER sorts it. It REPLACES `extraction`, which `talky@5.4.1` no longer has; the member still carries an `extraction` edge for a generation grown against an older surface |
 | `recall` | a memory read this turn needs. **One lane, two askers** since [#532](https://github.com/mmeyerlein/meclaw/issues/532): the surface and the reasoning core, each stamping `context.recall_caller` with its own name on the way out |
 | `brief` | the brief of a turn about its counterpart, for the member's `affinity`: raised by a surface's collector when its `brief_slots` is set and the turn carries `context.counterpart`, leaving on a v-lane with `context.brief_surface` stamped. The member stamps the asker. Since 2.9.0 ([#834](https://github.com/mmeyerlein/meclaw/issues/834)) |
 | `prune` | the report of a window prune: one message per cut session, or a single zero report |
@@ -712,7 +712,7 @@ comes afterwards.**
  "ctx": {"model": "<the reasoning core's model>",
          "model_surface": "<the conversation surface's model>"},
  "diff": {
-  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@2.9.0",
+  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@2.9.2",
                  "override_params": {"cogny/brain": {"temperature": 0.2}}}],
   "add_edges": [
     {"from": "./assistants", "to": "./assistants/scribe",
@@ -861,6 +861,16 @@ the correct row of that rule table, and the exception it makes to the union rule
 is written down as one in `docs/development-rules.md` § 8b.
 
 ## Versioning
+
+`2.9.2` takes the **third** digit ([#858](https://github.com/mmeyerlein/meclaw/issues/858)): no lane and no edge of
+this level moved. It pins [`talky`](../talky/) at 5.4.1 and [`cogny`](../cogny/) at 5.1.1, whose brains state in `params.requirement` what they
+need, and the builder's `grow_level assistant` announces that need with each brain.
+
+`2.9.1` takes the **third** digit ([#845](https://github.com/mmeyerlein/meclaw/issues/845)):
+both consult edges into `./cogny` delete `context.tools_allow` and `context.tools_deny`. A channel's tool
+scope narrows the menu of the surface's sessions, and it must not follow a consult into the core: the core
+answers every surface and every channel, so it keeps its full menu and its prompt cache. No lane, no
+declaration and no knob moves.
 
 `2.9.0` takes the **second** digit ([#834](https://github.com/mmeyerlein/meclaw/issues/834)): two
 new lanes, `brief` out and `in_briefing` back, both docking at the two surfaces

@@ -20,6 +20,10 @@
           "route": "in_ingest",
           "context": [],
           "because": "a nudge to reconcile the corpus behind this hive against the colony's own template registry, forwarded to the librarian and read by nothing here. The corpus is a SEED: it describes the library of the moment the librarian was born, so a class registered since -- an `add_templates`, a directory dropped in plus a rescan -- is resolvable at the mutation door and invisible to the composer. The lane is a TRANSIT lane and that is the whole of its design: the mechanism lives one storey down (GH #496) and was unreachable, because the only cell in a tree that knows a submission committed AND that its diff registered a class sits outside this hive, and an edge from there to a cell INSIDE it crosses two seals. A lane at the hive path is the one form both ends can draw"
+        },
+        {
+          "route": "in_model",
+          "because": "a model package for this hive's model call, pushed by the colony's llm-registry (GH #858): a PARAMS-ONLY body -- an empty `system` slot, no `messages` -- that the llm cell merges into its live params and answers with nothing. It goes from this path straight to `./compose`, the one llm cell of this hive, past every other cell, because a params body is not a request. The llm cell takes package keys from a params-only message only (GH #853), so no request on another lane can change the model it runs on. Draw it only from the registry's `update` lane, restamped `in_model`"
         }
       ],
       "emits": [
@@ -276,6 +280,11 @@
           "from": ".",
           "to": "./weave",
           "condition": "has(hop.route) && hop.route == 'in_receipt'"
+        },
+        {
+          "from": ".",
+          "to": "./compose",
+          "condition": "has(hop.route) && hop.route == 'in_model'"
         },
         {
           "from": "./weave",

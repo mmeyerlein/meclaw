@@ -6,6 +6,7 @@
   "params": {
     "provider": "openai",
     "model": "${ctx.model}",
+    "requirement": "Condenses a batch of closed conversation into a short prose summary. It needs faithful summarising that adds nothing, clear plain language and a context of a few thousand tokens. Nobody waits on it and it runs once per batch, so a small, inexpensive model is enough.",
     "api_key": "${OPENROUTER_API_KEY}",
     "base_url": "https://openrouter.ai/api/v1",
     "temperature": 0.2,
@@ -71,9 +72,13 @@
       "body": {
         "messages": {
           "type": "array",
-          "required": true
+          "required": false
         },
         "system": {
+          "type": "object",
+          "required": false
+        },
+        "params": {
           "type": "object",
           "required": false
         }
@@ -89,7 +94,7 @@
     "use_when": "Inside the summarizer hive only. finish_reason drives the two internal return edges: stop/length back to prep as the answer, error/content_filter back to prep as the failure.",
     "not_in_scope": "No tool round (no tools are offered; a tool_calls answer would die unrouted). No retry - retry is edge business. Not the agent's brain: this cell never sees a live turn, only closed sessions.",
     "emits_meaning": "finish_reason 'stop'/'length' -> ./prep in_answer (a 'length' summary is truncated but real - better a cut handover than none); 'error'/'content_filter' -> ./prep in_error (MUST stay wired).",
-    "consumes_meaning": "messages[] one prompt document per batch; body.system upserted pre-call (system.instructions, sent by prep).",
+    "consumes_meaning": "messages[] one prompt document per batch; body.system upserted pre-call (system.instructions, sent by prep). The one body without messages[] is a params-only push on the hive's `in_model` door (GH #858): an empty system slot and a params slot the cell merges into its live params, answered with nothing.",
     "examples": [
       "prompt document -> one assistant turn with the handover prose, finish_reason stop"
     ]

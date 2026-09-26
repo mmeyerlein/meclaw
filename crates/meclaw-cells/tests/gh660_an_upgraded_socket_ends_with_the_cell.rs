@@ -47,16 +47,22 @@ struct Life {
     /// The seam that ends this life: closing it is what a colony does when the
     /// handler half returns, and the only thing `run_io` ends on.
     reconfig_tx: Option<mpsc::Sender<VoiceReconfig>>,
-    /// Held for the length of the life. The events seam closing would be a
-    /// second way out, and this test is about the one it names.
-    _events_rx: mpsc::Receiver<meclaw_cells::voice::cell::VoiceEvent>,
 }
 
 impl Life {
     /// Start `run_io` on `surfaces`, put a listener in front of it and wait for
     /// the mount to be on the table.
     async fn start(surfaces: &Arc<SurfaceRegistry>) -> Self {
-        let (events_tx, events_rx) = mpsc::channel(64);
+        // The events seam stays open for the length of the life -- closing it
+        // would be a second way out, and this test is about the one it names --
+        // and its reader takes every session, the one thing a handler owes a
+        // connection before its `hello` (GH #836).
+        let (events_tx, mut events_rx) = mpsc::channel::<meclaw_cells::voice::cell::VoiceEvent>(64);
+        tokio::spawn(async move {
+            while let Some(mut event) = events_rx.recv().await {
+                event.acknowledge();
+            }
+        });
         let (reconfig_tx, reconfig_rx) = mpsc::channel(64);
         let mut io = VoiceIo::new(
             MOUNT.to_string(),
@@ -77,7 +83,6 @@ impl Life {
             task,
             listener,
             reconfig_tx: Some(reconfig_tx),
-            _events_rx: events_rx,
         }
     }
 

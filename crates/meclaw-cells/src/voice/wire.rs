@@ -8,6 +8,11 @@ use crate::voice::contract::AudioFormat;
 pub const PROTOCOL: &str = "meclaw-voice/1";
 /// Close code: a second connection claimed this session; the first is dropped.
 pub const CLOSE_SESSION_REPLACED: u16 = 4409;
+/// Close code: the cell did not take the session within `external_timeout_ms`
+/// of the upgrade, so no `hello` was sent (GH #836). `1013` is the standard
+/// "try again later": the cell was busy, not broken, and a reconnect is the
+/// answer.
+pub const CLOSE_SESSION_NOT_TAKEN: u16 = 1013;
 
 /// Per-connection mode. `auto` = provider endpointing, `hold` = client frames.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

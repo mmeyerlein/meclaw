@@ -1,8 +1,8 @@
 {
   "name": "daily-digest",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": {
-    "purpose": "Scheduled fetch-and-forward: a timer fires daily, a web_fetch pulls a URL, a code cell formats the result, a Telegram proxy delivers it to a fixed chat. Since 2.1.0 both behaviour knobs are PARAMS of `./clock` rather than substitution tokens out of the colony's environment ([#138](https://github.com/mmeyerlein/meclaw/issues/138), ruling R-0904-6): they live inside `params.schedules`, the one key that holds the whole list, so an `override_params` entry names `schedules` and replaces it, and `contract.settings` declares what each field means.",
+    "purpose": "Scheduled fetch-and-forward: a timer fires daily, a web_fetch pulls a URL, a code cell formats the result, a Telegram proxy delivers it to a fixed chat. Since 2.1.0 both behaviour knobs are PARAMS of `./clock` rather than substitution tokens out of the colony's environment ([#138](https://github.com/mmeyerlein/meclaw/issues/138), ruling R-0904-6): they live inside `params.schedules`, the one key that holds the whole list, so an `override_params` entry names `schedules` and replaces it, and `contract.settings` declares what each field means. Since 2.1.1 the silent terminal `./void` runs `warm` rather than `cold` ([#852](https://github.com/mmeyerlein/meclaw/issues/852)): it swallows every inbound chat of the bot, keeps no state and reads its stdin as text only, so a fresh namespace per message is all it needs; nothing a caller sees moves, which is why it is the third digit.",
     "use_when": "Periodic push of one URL's content to one Telegram chat. Override the URL, the cron expression and the chat id at instantiation. A parent may also demand a run at the hive path on lane in_digest, bringing context.chat_id itself, and take the formatted digest back on lane digest.",
     "not_in_scope": "No multi-source aggregation, no LLM summarization (insert an llm cell between format and notifier for that), no per-user subscriptions.",
     "examples": [

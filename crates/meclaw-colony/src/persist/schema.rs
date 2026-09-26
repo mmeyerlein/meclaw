@@ -155,6 +155,15 @@ CREATE TABLE IF NOT EXISTS dead_letters (
 );
 CREATE INDEX IF NOT EXISTS idx_dlq_created ON dead_letters(created_at);
 CREATE INDEX IF NOT EXISTS idx_dlq_error_code ON dead_letters(error_code);
+CREATE TABLE IF NOT EXISTS mailbox_overflow (
+  cell_path   TEXT NOT NULL,
+  message_id  TEXT NOT NULL,
+  seq         INTEGER NOT NULL,
+  bytes       INTEGER NOT NULL,
+  enqueued_at INTEGER NOT NULL,
+  PRIMARY KEY (cell_path, message_id)
+);
+CREATE INDEX IF NOT EXISTS idx_overflow_seq ON mailbox_overflow(cell_path, seq);
 CREATE TABLE IF NOT EXISTS meta (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -399,9 +408,30 @@ mod tests {
         }
     }
 
+    /// GH #850: the overflow table belongs to `colony.db` alone — a cell's own
+    /// database never carries it (it would travel with every export).
     #[test]
-    fn setup_colony_db_seeds_schema_version_10() {
-        // GH #612: the `dead_letters.detail` column → schema v10, on top of the
+    fn the_overflow_table_is_the_colonys_not_a_cells() {
+        let colony = rusqlite::Connection::open_in_memory().unwrap();
+        setup_colony_db(&colony).unwrap();
+        let cell = rusqlite::Connection::open_in_memory().unwrap();
+        setup_cell_db(&cell).unwrap();
+        let has = |c: &rusqlite::Connection| -> i64 {
+            c.query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='mailbox_overflow'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(has(&colony), 1, "colony.db has the overflow table");
+        assert_eq!(has(&cell), 0, "cell.db does not");
+    }
+
+    #[test]
+    fn setup_colony_db_seeds_schema_version_11() {
+        // GH #850: the `mailbox_overflow` table → schema v11, on top of GH #612:
+        // the `dead_letters.detail` column → schema v10, on top of the
         // GH #559 edges `lane` column (v9) and the GH #491 registry `dormant`
         // column (v8).
         let conn = rusqlite::Connection::open_in_memory().unwrap();
@@ -413,7 +443,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(v, "10");
+        assert_eq!(v, "11");
     }
 
     #[test]
@@ -442,7 +472,7 @@ mod tests {
     fn read_schema_version_returns_9_after_colony_setup() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         setup_colony_db(&conn).unwrap();
-        assert_eq!(read_schema_version(&conn).unwrap(), 10);
+        assert_eq!(read_schema_version(&conn).unwrap(), 11);
     }
 
     #[test]
@@ -717,7 +747,7 @@ mod tests {
         assert!(cols.contains(&"modifier".to_string()));
         // GH #559: the v9 column, on the fresh-create path.
         assert!(cols.contains(&"lane".to_string()));
-        assert_eq!(read_schema_version(&conn).unwrap(), 10);
+        assert_eq!(read_schema_version(&conn).unwrap(), 11);
     }
 
     #[test]
@@ -743,7 +773,7 @@ mod tests {
         // GH #559: the v9 column, reached through the whole migration chain
         // from a v1 database — the ALTER path, not the fresh-create one.
         assert!(cols.contains(&"lane".to_string()));
-        assert_eq!(read_schema_version(&conn).unwrap(), 10);
+        assert_eq!(read_schema_version(&conn).unwrap(), 11);
     }
 
     /// GH #90: a pre-v5 database whose `registry` already exists without the
@@ -766,7 +796,7 @@ mod tests {
         )
         .unwrap();
         setup_colony_db(&conn).unwrap();
-        assert_eq!(read_schema_version(&conn).unwrap(), 10);
+        assert_eq!(read_schema_version(&conn).unwrap(), 11);
         let idx: i64 = conn
             .query_row(
                 "SELECT count(*) FROM sqlite_master WHERE type='index' AND name='idx_registry_template'",

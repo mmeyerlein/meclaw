@@ -1,0 +1,111 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json, uuid, datetime\n\n# GH #138 (ruling R-0904-6) -- this cell's page bounds are PARAMS, not\n# environment. The incoming message and this cell's own configuration arrive on\n# the same stdin document: `params` is one of its three top-level objects,\n# beside `envelope` and `body`, and the substrate always sets it ({} when there\n# is nothing to hand over). So the bound is per-INSTANCE -- two registries in\n# one colony page apart, and a mutation retunes one of them without touching a\n# colony-wide environment. The literal beside each name is the shipped default,\n# and it is the same number `contract.settings` declares.\n\n\ndef _knob(key, default):\n    # A knob explicitly set to null or to whitespace is \"not configured\", not a\n    # crash: an operator who blanks a line in a config means the default.\n    v = P.get(key, default)\n    return default if v is None else v\n\n\ndef _int(key, default):\n    v = _knob(key, default)\n    if isinstance(v, str) and not v.strip():\n        return default\n    return int(v)\n\n\n\n# The rank, as a literal, because it is part of the contract and not an\n# implementation detail: cheapest completion first, cheapest prompt next, more\n# context next, and the model id last as the total tie-break. The last key is\n# what makes the choice DETERMINISTIC -- two runs over the same catalog cannot\n# disagree, because no two active rows share a model_id.\nRANK = \"cost_out asc, cost_in asc, context_window desc, model_id asc\"\nORDER = [{\"col\": \"cost_out\", \"dir\": \"asc\"}, {\"col\": \"cost_in\", \"dir\": \"asc\"},\n         {\"col\": \"context_window\", \"dir\": \"desc\"}, {\"col\": \"model_id\", \"dir\": \"asc\"}]\nMODEL_COLS = [\"model_id\", \"provider\", \"base_url\", \"wire_dialect\", \"context_window\",\n              \"cost_in\", \"cost_out\", \"caps\", \"traits\", \"status\", \"note\"]\n\n\ndef now():\n    return datetime.datetime.now(datetime.timezone.utc).strftime(\"%Y-%m-%dT%H:%M:%SZ\")\n\n\ndef emit(route, phase, carry, extra, body=None):\n    h = {\"route\": route, \"phase\": phase,\n         \"carry\": json.dumps(carry) if carry else \"\",\n         \"resolved\": \"\", \"reason_code\": \"\", \"model_id\": \"\", \"tier\": \"\"}\n    h.update(extra or {})\n    m = {\"header\": h}\n    m.update(body or {})\n    return m\n\n\ndef store(operation, phase, carry, **rest):\n    args = {\"operation\": operation}\n    args.update(rest)\n    return emit(\"rstore\", phase, carry, None, {\n        \"messages\": [{\"origin\": \"assistant\", \"type\": \"tool_call\",\n                      \"id\": uuid.uuid4().hex[:12], \"text\": json.dumps(args)}]})\n\n\ndef fail(detail):\n    return emit(\"error\", \"\", None, {}, {\n        \"messages\": [{\"origin\": \"tool\", \"type\": \"tool_result\", \"id\": \"\",\n                      \"text\": \"llm-registry/select: \" + detail}]})\n\n\ndef rows_of(d):\n    \"\"\"The store's result, as rows: one turn, JSON in its text.\"\"\"\n    msgs = d.get(\"messages\") or []\n    if not msgs:\n        return []\n    try:\n        v = json.loads(msgs[-1].get(\"text\") or \"null\")\n    except Exception:\n        return []\n    return v if isinstance(v, list) else []\n\n\ndef as_obj(v):\n    \"\"\"A `json` column arrives as the TEXT the store kept.\"\"\"\n    if isinstance(v, dict):\n        return v\n    if isinstance(v, str) and v.strip():\n        try:\n            p = json.loads(v)\n        except Exception:\n            return {}\n        return p if isinstance(p, dict) else {}\n    return {}\n\n\ndef as_int(v, fallback=None):\n    try:\n        return int(v)\n    except Exception:\n        return fallback\n\n\ndef rank_key(m):\n    return (as_int(m.get(\"cost_out\"), 0), as_int(m.get(\"cost_in\"), 0),\n            -as_int(m.get(\"context_window\"), 0), str(m.get(\"model_id\") or \"\"))\n\n\ndef shortfall(m, req):\n    \"\"\"Why this model does NOT satisfy the request -- \"\" when it does.\n\n    Every branch is a comparison. There is no scoring, no closeness, no \"near\n    enough\": a requirement is met or the model is out.\n    \"\"\"\n    caps = as_obj(m.get(\"caps\"))\n    for c in req[\"caps\"]:\n        if caps.get(c) is not True:\n            return \"capability_missing\"\n    if req[\"max_cost\"] is not None and as_int(m.get(\"cost_out\"), 0) > req[\"max_cost\"]:\n        return \"over_budget\"\n    if req[\"min_context\"] is not None \\\n            and as_int(m.get(\"context_window\"), 0) < req[\"min_context\"]:\n        return \"context_too_small\"\n    return \"\"\n\n\ndef answer(req, resolved, model, reason_code, detail, considered):\n    payload = {\"resolved\": bool(resolved), \"tier\": req[\"tier\"],\n               \"reason_code\": reason_code, \"considered\": considered, \"rank\": RANK}\n    if detail:\n        payload[\"detail\"] = detail\n    if resolved:\n        payload[\"model_id\"] = str(model.get(\"model_id\") or \"\")\n        payload[\"provider\"] = str(model.get(\"provider\") or \"\")\n        payload[\"base_url\"] = str(model.get(\"base_url\") or \"\")\n        payload[\"wire_dialect\"] = str(model.get(\"wire_dialect\") or \"\")\n        payload[\"context_window\"] = as_int(model.get(\"context_window\"), 0)\n        payload[\"cost_in\"] = as_int(model.get(\"cost_in\"), 0)\n        payload[\"cost_out\"] = as_int(model.get(\"cost_out\"), 0)\n        payload[\"caps\"] = as_obj(model.get(\"caps\"))\n    else:\n        # A refusal names no model at all. Not the closest one, not a default:\n        # a guess here would be a wrong answer wearing the shape of a right one.\n        payload[\"model_id\"] = \"\"\n    return emit(\"answer\", \"\", None,\n                {\"resolved\": \"true\" if resolved else \"false\",\n                 \"reason_code\": reason_code, \"tier\": req[\"tier\"],\n                 \"model_id\": payload[\"model_id\"]},\n                {\"messages\": [{\"origin\": \"tool\", \"type\": \"tool_result\",\n                               \"id\": req[\"call_id\"], \"text\": json.dumps(payload)}]})\n\n\ndef journal(req, model_id, reason_code):\n    \"\"\"Every resolution, granted or refused, leaves one line. A refusal is the\n    half of the log worth reading: it says the catalog could not answer.\"\"\"\n    return store(\"insert\", \"written\", None, table=\"resolutions\", row={\n        \"id\": uuid.uuid4().hex, \"tier\": req[\"tier\"], \"model_id\": model_id,\n        \"cell_path\": req[\"asker\"], \"at\": now(), \"reason\": reason_code})\n\n\ndoc = json.load(sys.stdin)\nd = doc[\"body\"]\nP = doc.get(\"params\") or {}\nTIER_ROWS = _int(\"tier_rows\", 200)\nMODEL_ROWS = _int(\"model_rows\", 500)\nenvelope = doc[\"envelope\"]\nheader = envelope.get(\"header\") or {}\nhop = header.get(\"hop\") or {}\ncontext = header.get(\"context\") or {}\necho = \"operation\" in hop\nphase = str(context.get(\"lr_phase\") or \"\") if echo else \"in\"\ntry:\n    carry = json.loads(str(context.get(\"lr_carry\") or \"{}\")) or {}\nexcept Exception:\n    carry = {}\n\nif echo and str(hop.get(\"error_code\") or \"\"):\n    sys.stdout.write(json.dumps([fail(\"store rejected op %s (%s)\" % (\n        hop.get(\"operation\"), hop.get(\"error_code\")))]))\n    sys.exit(0)\n\nif phase == \"in\":\n    call_id, raw = \"\", None\n    for m in reversed(d.get(\"messages\") or []):\n        if m.get(\"type\") == \"tool_call\":\n            call_id = str(m.get(\"id\") or \"\")\n            try:\n                raw = json.loads(str(m.get(\"text\") or \"null\"))\n            except Exception:\n                raw = None\n            break\n    if not isinstance(raw, dict):\n        sys.stdout.write(json.dumps([fail(\"request is not a tool_call turn \"\n                                          \"carrying a JSON object\")]))\n        sys.exit(0)\n    caps = raw.get(\"capability\")\n    if isinstance(caps, str):\n        caps = [caps]\n    if not isinstance(caps, list):\n        caps = []\n    req = {\"tier\": str(raw.get(\"tier\") or \"\"),\n           # sorted + de-duplicated, so two spellings of the same request are\n           # one request and produce one journal reason.\n           \"caps\": sorted({str(c) for c in caps if str(c).strip()}),\n           \"max_cost\": as_int(raw.get(\"max_cost\")),\n           \"min_context\": as_int(raw.get(\"min_context\")),\n           # Edge truth, never body text: who asked is what the edge promoted.\n           \"asker\": str(context.get(\"asker\") or \"\"),\n           \"call_id\": call_id}\n    sys.stdout.write(json.dumps([store(\n        \"select\", \"tiers\", {\"req\": req}, table=\"tiers\",\n        columns=[\"tier\", \"model_id\", \"since\", \"active\"], where={\"active\": 1},\n        order_by=[{\"col\": \"tier\", \"dir\": \"asc\"}, {\"col\": \"since\", \"dir\": \"desc\"}],\n        limit=TIER_ROWS)]))\n    sys.exit(0)\n\nif phase == \"tiers\":\n    req = carry.get(\"req\") or {}\n    tiers = {}\n    for r in rows_of(d):\n        if isinstance(r, dict) and str(r.get(\"tier\") or \"\") not in tiers:\n            tiers[str(r.get(\"tier\") or \"\")] = str(r.get(\"model_id\") or \"\")\n    sys.stdout.write(json.dumps([store(\n        \"select\", \"models\", {\"req\": req, \"tiers\": tiers}, table=\"models\",\n        columns=MODEL_COLS, where={\"status\": \"active\"}, order_by=ORDER,\n        limit=MODEL_ROWS)]))\n    sys.exit(0)\n\nif phase == \"models\":\n    req = carry.get(\"req\") or {}\n    tiers = carry.get(\"tiers\") or {}\n    models = {}\n    for r in rows_of(d):\n        if isinstance(r, dict) and str(r.get(\"model_id\") or \"\"):\n            models[str(r.get(\"model_id\"))] = r\n    considered = len(models)\n\n    if req.get(\"tier\"):\n        # A named tier is an INDEX LOOKUP, not a search. If the model behind it\n        # cannot serve the request, the answer is no -- picking a different one\n        # would silently move a cell off the tier its operator chose.\n        mid = tiers.get(req[\"tier\"], \"\")\n        if not mid:\n            out = [answer(req, False, None, \"unknown_tier\", \"\", considered),\n                   journal(req, \"\", \"unknown_tier\")]\n        elif mid not in models:\n            out = [answer(req, False, None, \"tier_model_inactive\", mid, considered),\n                   journal(req, \"\", \"tier_model_inactive\")]\n        else:\n            miss = shortfall(models[mid], req)\n            if miss:\n                out = [answer(req, False, None, \"tier_below_requirement\", miss,\n                              considered),\n                       journal(req, \"\", \"tier_below_requirement\")]\n            else:\n                out = [answer(req, True, models[mid], \"tier_active\", \"\", considered),\n                       journal(req, mid, \"tier_active\")]\n    else:\n        cands = sorted([m for m in models.values() if not shortfall(m, req)],\n                       key=rank_key)\n        if not cands:\n            out = [answer(req, False, None, \"no_candidate\", \"\", considered),\n                   journal(req, \"\", \"no_candidate\")]\n        else:\n            out = [answer(req, True, cands[0], \"ranked\", \"\", considered),\n                   journal(req, str(cands[0].get(\"model_id\") or \"\"), \"ranked\")]\n    sys.stdout.write(json.dumps(out))\n    sys.exit(0)\n\n# phase \"written\": the store's echo of the journal line. Nothing follows it.\nsys.stdout.write(\"[]\")\n",
+    "external_timeout_ms": 15000,
+    "tier_rows": 200,
+    "model_rows": 500
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {
+      "tier_rows": {
+        "type": "number",
+        "secret": false,
+        "default": 200,
+        "description": "Page bound of the tier index read: how many tier rows one selection may consider."
+      },
+      "model_rows": {
+        "type": "number",
+        "secret": false,
+        "default": 500,
+        "description": "Page bound of the active-model read: how many catalog rows one selection ranks over."
+      }
+    },
+    "multi_send_capable": true,
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "required": true,
+          "values": [
+            "rstore",
+            "answer",
+            "error"
+          ]
+        },
+        "phase": {
+          "type": "string",
+          "required": true
+        },
+        "carry": {
+          "type": "string",
+          "required": true
+        },
+        "resolved": {
+          "type": "string",
+          "required": true
+        },
+        "reason_code": {
+          "type": "string",
+          "required": true
+        },
+        "model_id": {
+          "type": "string",
+          "required": true
+        },
+        "tier": {
+          "type": "string",
+          "required": true
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": false
+        }
+      },
+      "context": {
+        "lr_phase": {
+          "type": "string",
+          "required": false
+        },
+        "lr_carry": {
+          "type": "string",
+          "required": false
+        },
+        "asker": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "The lookup: a request names REQUIREMENTS (a tier, capabilities, a cost ceiling, a context floor) and the answer is a resolution -- one model id with its provider, wire dialect, window and price, plus the reason code that produced it. Every step is a comparison against catalog rows; the rank `cost_out asc, cost_in asc, context_window desc, model_id asc` is total, so the same request over the same catalog resolves the same way forever.",
+    "use_when": "As the read port of the registry. Ask it before wiring a cell, or from an agent as a tool: `which tier handles vision under 5 cents` is a filter, not a judgement. A named tier is an index lookup; a request without a tier is a ranked search over the active models.",
+    "not_in_scope": "It never guesses. Requirements nothing satisfies come back `resolved: false` with a reason code and NO model id -- there is no nearest match and no default, because a wrong model returned confidently is worse than no answer. It sends nothing to anybody either: resolving is not remapping, that is `./hand` and only on call. And it cannot tell a cell what it is running today -- a cell cannot be read, only pushed to.",
+    "emits_meaning": "route answer: the resolution as a tool_result, with hop.resolved / hop.reason_code / hop.model_id / hop.tier so a parent edge can fork without opening the body. route rstore: its own two catalog reads and the one journal line. route error: the store refused an op, or the request was not a tool_call turn carrying JSON.",
+    "consumes_meaning": "context.lr_phase and context.lr_carry are the lane's state -- a code cell has no cell.db, so the request rides the store round trip. context.asker is edge truth and becomes the cell_path of the journal line.",
+    "examples": [
+      "{\"tier\":\"mid\"} -> resolved: the model the tier index points at, reason_code tier_active",
+      "{\"tier\":\"light\",\"capability\":\"vision\"} -> resolved: false, tier_below_requirement -- the tier is the answer or there is none",
+      "{\"capability\":[\"tools\",\"vision\"],\"max_cost\":500} -> the cheapest active model that has both, reason_code ranked",
+      "{\"max_cost\":1} -> resolved: false, no_candidate, model_id \"\" -- and one resolutions row saying so"
+    ]
+  }
+}

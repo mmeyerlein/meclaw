@@ -6,6 +6,7 @@
   "params": {
     "provider": "openai",
     "model": "${MODEL_CLOSER}",
+    "requirement": "Reads one closed conversation whole and corrects what the notes taken turn by turn got wrong: later corrections, values settled at the end, claims taken back. It needs strong, careful reasoning over a long transcript and must answer in exactly the structured form it is asked for. It runs once per closed session and never while a person waits, so quality matters more than speed or price.",
     "api_key": "${OPENROUTER_API_KEY}",
     "base_url": "${MEMORY_LLM_BASE_URL:-https://openrouter.ai/api/v1}",
     "temperature": 0,
@@ -75,9 +76,13 @@
       "body": {
         "messages": {
           "type": "array",
-          "required": true
+          "required": false
         },
         "system": {
+          "type": "object",
+          "required": false
+        },
+        "params": {
           "type": "object",
           "required": false
         }
@@ -92,7 +97,7 @@
     "use_when": "Called by close-glue exactly once per closed session, with the session's turns and the open facts they produced in the prompt. Never per turn — the whole value of this call is that the turns are already over.",
     "not_in_scope": "It does not EXTRACT. A turn nobody annotated stays unannotated: reading the session again to mine it for facts the front model missed would rebuild the batch lane wave 5 deleted, on a more expensive tier. Its four-point contract is what makes that distinction checkable rather than a matter of tone. No store access either, and no writing of its own: what it proposes goes to the inline ingress, which canonicalises, deduplicates and supersedes it like any other block.",
     "emits_meaning": "messages[]: one assistant turn holding the sharpening JSON. hop.finish_reason='error' is not a crash — close-glue closes the pass, says so on the report lane and leaves every fact the turns already wrote exactly as it found it.",
-    "consumes_meaning": "system.instructions.text: the four-point contract of the pass (what may be sharpened, what may be closed, what must be left alone, and the JSON shape). messages[]: one user turn with the session's turns and its open facts as JSON.",
+    "consumes_meaning": "system.instructions.text: the four-point contract of the pass (what may be sharpened, what may be closed, what must be left alone, and the JSON shape). messages[]: one user turn with the session's turns and its open facts as JSON. The one body without messages[] is a params-only push on the hive's `in_model` door (GH #858): an empty system slot and a params slot the cell merges into its live params, answered with nothing.",
     "examples": [
       "a session whose second turn said \"I live in Berlin\" and whose ninth said \"actually I moved to Lisbon last month\" -> the pass closes the first statement against the second instead of leaving two open claims on one axis",
       "a session that mentioned a date only in passing (\"since the spring\") and pinned it later (\"March 3rd\") -> the same fact with a valid_from the turn-local annotation could not have known",

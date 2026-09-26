@@ -1,8 +1,15 @@
-# `operator@1.2.0`
+# `operator@1.2.2`
 
 **One front door into the OS, and one place a submission lives.** A sealed hive at the
 colony shell with one occupant per subject, reached by naming a lane and never a cell. It
 decides nothing, and it remembers exactly one thing: a draft nobody has said yes to yet.
+
+Since 1.2.1 it carries `submit@2.3.2`, whose gate also checks the form of the model registry's
+road ([#855](https://github.com/mmeyerlein/meclaw/issues/855)); nothing of this hive's own moved.
+Since 1.2.2 it carries `submit@2.3.3`, whose gate takes that road onto any one cell directly in
+the edge's target -- a member's four memory cells beside an assistant's brains -- and an
+announced cell's prose `requirement` ([#858](https://github.com/mmeyerlein/meclaw/issues/858));
+again nothing of this hive's own moved.
 
 Since 1.1.0 ([#556](https://github.com/mmeyerlein/meclaw/issues/556)) the **submitter** is
 one of the occupants. It used to be a hive of its own beside this one, which meant a

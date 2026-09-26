@@ -1,6 +1,6 @@
-# `steward@2.0.13`
+# `steward@2.1.0`
 
-> **Deprecated since GH #462.** This template has been renamed: the colony's control loop is `argus` in the table next door, and `argus@1.1.0` is where the work goes from here. `steward` is not removed and not going to break -- an instance grown from it keeps running, because instantiation copies -- but it takes no further work, and a new control loop should be an `argus`.
+> **Deprecated since GH #462.** This template has been renamed: the colony's control loop is `argus` in the table next door, and `argus@1.2.0` is where the work goes from here. `steward` is not removed and not going to break -- an instance grown from it keeps running, because instantiation copies -- but it takes no further work, and a new control loop should be an `argus`.
 
 The colony's control loop, as a hive of seven cells. It is what turns "the
 system can improve itself" from a claim into something you can check.
@@ -203,6 +203,7 @@ and it is named for what a caller asks for, never for the cell it lands on.
 | lane | direction | carries |
 |---|---|---|
 | `in_cycle` | in → the hive | run a cycle now (a cost alert, a DLQ spike). The timer is the ordinary trigger; this is the extra one |
+| `in_model` | in → the hive | a model package for `./judge`, pushed by the colony's `llm-registry`: a params-only body (an empty `system` slot, no `messages`) the cell merges into its live params and answers with nothing. See *The model door*. Since 2.1.0 ([#858](https://github.com/mmeyerlein/meclaw/issues/858)) |
 | `mutate` | out → the hive | a params update — body `{system:{}, params:{…}}`, `hop.target` naming the cell it is for. A parent draws one edge per cell the loop may reach |
 | `error` | out → the hive | a step of the cycle could not complete |
 
@@ -237,6 +238,27 @@ not let it read a row, a header or another cell's state, and it moves nothing.
 The two of them are the whole list -- a `/colony/*` path is not sanctioned by
 being one, and the steward's own edge test asserts against the literal pair.
 
+### The model door (`in_model`, [#858](https://github.com/mmeyerlein/meclaw/issues/858))
+
+**A model package reaches `./judge` through `in_model` and nothing else.** The hive is sealed,
+so no edge from outside may name `./judge`; since 2.1.0 one door edge is the way in, drawn for
+the colony's `llm-registry`:
+
+```json
+{"from": ".", "to": "./judge", "condition": "has(hop.route) && hop.route == 'in_model'"}
+```
+
+The body is params-only -- an empty `system` slot, no `messages` -- which the `llm` cell
+merges into its live params, persists in its own `cell.db` and answers with nothing
+(`docs/cell-types.md` § `llm`). A request on any other lane cannot change the model a
+cell runs on: package keys are taken from a params-only message only (GH #853).
+
+**`./judge` says what it needs, in prose.** `params.requirement` names the role, the latency,
+the context, the depth of reasoning and the price the cell can bear, and never a model; a
+registry translates it against its catalogue once per change and keeps the result
+(`templates/llm-registry/README.md`). Without a registry the door stays unused and the
+cell runs its start value.
+
 ## Relationship to `llm-registry`
 
 **The registry is the book, the steward is the brain.** The registry stays a
@@ -258,7 +280,7 @@ to this hive.
 | `STEWARD_PROBE_WINDOW_SEC` | 120 | how far back the health check looks |
 | `STEWARD_PROBE_MAX_ERRORS` | 0 | errors tolerated in that window |
 | `STEWARD_PROBE_LEDGER_TRIES` | 3 | how often the health check re-**asks** the ledger -- one round trip per try, 100 ms apart -- before it calls the cycle's params update missing. Closes the write-lag race against a row that is still being written |
-| `STEWARD_JUDGE_MODEL` | `anthropic/claude-opus-4` | the thinking model. The one cell in the hive where a weaker model is a false economy: it decides what the colony does to itself |
+| `STEWARD_JUDGE_MODEL` | `anthropic/claude-opus-5.5` | the thinking model. The one cell in the hive where a weaker model is a false economy: it decides what the colony does to itself |
 | `STEWARD_JUDGE_PROVIDER` | `openai` | provider adapter of the judge. `openai` is the only value `LlmParams` accepts today; it names the Chat-Completions **wire**, not the vendor, and the endpoint it talks to is `STEWARD_JUDGE_BASE_URL` ([#387](https://github.com/mmeyerlein/meclaw/issues/387)) |
 | `STEWARD_JUDGE_BASE_URL` | `https://openrouter.ai/api/v1` | provider endpoint of the judge |
 | `OPENROUTER_API_KEY` | — (required) | the judge's key. Bound late, never stored in the tree |

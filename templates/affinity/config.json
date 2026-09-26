@@ -36,7 +36,7 @@
       "emits": [
         {
           "route": "answer",
-          "because": "the brief, for whoever asked"
+          "because": "the brief, for whoever asked -- and on the tool lane, since 3.6.0, the body slot `who {ref, name, identity, known}` naming the subject it is about, on the served brief and on every refusal after the subject was read whose subject is in the round (#848)"
         },
         {
           "route": "ack",

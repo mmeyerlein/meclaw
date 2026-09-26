@@ -36,3 +36,11 @@ The literal `__PEER_URL__` in `main/config.json` is filled at run time with the
 address of the reverse proxy in front of the south colony. Its port is ephemeral,
 so the replacement happens only in the TempDir copy the test boots; the committed
 tree keeps the literal.
+
+## __PEER_ORIGIN__
+
+The literal `__PEER_ORIGIN__` in `main/friend/config.json` is the one entry of
+the peer cell's `params.egress` (GH #840). It is filled in the same TempDir copy
+with the origin of that reverse proxy (`http://127.0.0.1:<port>`): without the
+entry the peer cell sends nothing out, and with any other origin every crossing
+is `egress_denied`.

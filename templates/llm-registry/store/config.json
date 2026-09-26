@@ -1,0 +1,145 @@
+{
+  "cell": {
+    "type": "store"
+  },
+  "params": {
+    "schema": {
+      "models": {
+        "model_id": "text",
+        "provider": "text",
+        "base_url": "text",
+        "wire_dialect": "text",
+        "context_window": "int",
+        "cost_in": "int",
+        "cost_out": "int",
+        "caps": "json",
+        "traits": "json",
+        "status": "text",
+        "note": "text",
+        "package": "json",
+        "prompt": "text",
+        "strengths": "text"
+      },
+      "tiers": {
+        "tier": "text",
+        "model_id": "text",
+        "since": "text",
+        "decided_by": "text",
+        "active": "int"
+      },
+      "overrides": {
+        "id": "text",
+        "scope": "text",
+        "match": "text",
+        "model_id": "text",
+        "since": "text",
+        "decided_by": "text",
+        "active": "int"
+      },
+      "subscribers": {
+        "cell_path": "text",
+        "tier": "text",
+        "pinned": "int",
+        "wired_at": "text",
+        "start_model": "text",
+        "package_hash": "text",
+        "model_id": "text",
+        "rank": "text",
+        "reason": "text",
+        "since": "text",
+        "requirement": "text",
+        "requirement_hash": "text",
+        "because": "text",
+        "base_model": "text",
+        "base_rank": "text",
+        "base_source": "text"
+      },
+      "resolutions": {
+        "id": "text",
+        "tier": "text",
+        "model_id": "text",
+        "cell_path": "text",
+        "at": "text",
+        "reason": "text",
+        "rank": "text",
+        "source_id": "text"
+      },
+      "translations": {
+        "requirement_hash": "text",
+        "catalogue_hash": "text",
+        "model_id": "text",
+        "reason": "text",
+        "at": "text"
+      },
+      "open_questions": {
+        "requirement_hash": "text",
+        "catalogue_hash": "text",
+        "claim": "text",
+        "at": "text"
+      },
+      "incidents": {
+        "id": "text",
+        "model_id": "text",
+        "kind": "text",
+        "at": "text",
+        "detail": "json"
+      }
+    },
+    "query_timeout_ms": 5000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "write_surface": "internal",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "results": {
+          "type": "array",
+          "required": false
+        }
+      },
+      "hop": {
+        "operation": {
+          "type": "string",
+          "required": true
+        },
+        "rows_affected": {
+          "type": "number",
+          "required": false
+        },
+        "duration_ms": {
+          "type": "number",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        },
+        "bundle_errors": {
+          "type": "number",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "The catalogue: which models exist, what they cost and what a brain needs to run each of them (`models`, one model package per row -- `package` and `prompt` since 2.2.0), which model a tier currently means (`tiers`), which replacements an operator set (`overrides`), which cells are served, what each states it needs and what it resolved to (`subscribers`), what the translator chose for each (requirement, catalogue) pair and why (`translations`, since 2.3.0), what every resolution and every push decided (`resolutions`), and what went wrong in the field (`incidents`). Costs are CENT INTEGERS per million tokens -- a store column is text/int/json and has no float, and a price kept as text would sort lexicographically, which is the wrong answer dressed as an order.",
+    "use_when": "Inside the llm-registry hive. Two writers live in here: `hand` writes `tiers`, `overrides`, `subscribers`, `translations`, journals and -- since 2.3.0, on `model_upsert` / `model_retire` -- `models`; `select` journals. `models` and `tiers` arrive from `seed/*.jsonl` at instantiation; `incidents` has NO writer among the hive's lanes and is maintained over a parent's BOOT-graph edge straight into this store, which also still reaches `models` (the bootstrap is outside the port seal's scope on purpose). That is why `contract.write_surface` is declared -- GH #260: a `transfer` import would otherwise write catalogue or subscriber rows in bulk from any sender, past the hand -- and why `params.write_surface` deliberately is NOT: the operator who maintains the catalogue is outside this scope by construction. See the hive README, `The tables`.",
+    "not_in_scope": "It is not the resolver: no cell can ask this store what it should run, because a cell cannot read the colony -- the hand pushes. It is not a cost ledger either -- token spend lives in `meta` and the message log, not here. And it decides nothing on its own: an `incidents` row is a line in a journal, never a trigger (GH #130)."
+  }
+}

@@ -67,6 +67,26 @@ pub enum AuthMode {
     OauthSubscription,
 }
 
+/// Where the chat-completions request carries `reasoning_effort` and
+/// `thinking_budget` (GH #854).
+///
+/// `Nested` is the pre-#854 shape byte for byte (`"reasoning": {"effort": …}`)
+/// and what the shipped templates keep, because the hosted provider they
+/// target reads it. `TopLevel` exists because an OpenAI-compatible local server
+/// (vLLM) drops the nested block and reads `reasoning_effort` /
+/// `thinking_token_budget` at the root instead — measured: the high default
+/// ran into `length` with empty content in 2 of 8 calls, medium answered 38 of
+/// 38 (GH #854).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningWire {
+    /// `"reasoning": {"effort": …, "max_tokens": …}` — the default.
+    #[default]
+    Nested,
+    /// `"reasoning_effort": …` and `"thinking_token_budget": …` at the root.
+    TopLevel,
+}
+
 /// Which provider wire format the cell speaks (P10).
 ///
 /// Deliberately orthogonal to `provider`: the Responses API is the SAME vendor
@@ -255,6 +275,108 @@ pub struct LlmParams {
     /// form). `None` = the field is not sent.
     #[serde(default)]
     pub reasoning: Option<Value>,
+    /// GH #854: where `reasoning_effort` and `thinking_budget` go on the
+    /// chat-completions wire. Default `nested` = the request of before.
+    #[serde(default)]
+    pub reasoning_wire: ReasoningWire,
+    /// GH #854: a thinking budget in tokens. `nested` sends it as
+    /// `reasoning.max_tokens`, `top_level` as `thinking_token_budget` at the
+    /// root; a key of the same name in `provider_extra` wins (it is overlaid
+    /// last). `None` = not sent.
+    #[serde(default)]
+    pub thinking_budget: Option<u32>,
+    /// GH #853: the prompt block of one model — its peculiarities, apart from
+    /// the model-neutral persona. The cell puts it FIRST in the system part
+    /// (`translate::compose_system_prompt`). A param, not a system slot: it
+    /// travels with the overlay and returns with `$reset`, and the collector
+    /// stays the one writer on `system`. Empty = no block. At most
+    /// [`MODEL_PROMPT_MAX_BYTES`].
+    #[serde(default)]
+    pub model_prompt: Option<String>,
+    /// GH #853: the origins a RUN-TIME `base_url` may point at. Immutable —
+    /// the list is only worth something out of the message path's reach.
+    /// Empty (the default) = `base_url` is fixed at run time. The start value
+    /// needs no entry.
+    #[serde(default)]
+    pub base_url_allow: Vec<String>,
+    /// GH #858: what this cell needs from a model, in prose — its role, the
+    /// latency it can afford, how much context it reads, how deep it thinks,
+    /// what it may cost; never a model name. In meclaw-os the `llm-registry`
+    /// translates it against its catalogue once per change. The cell itself
+    /// never reads it on a call: it only shows in the params line. Immutable
+    /// (a statement of the template, not a knob), at most
+    /// [`REQUIREMENT_MAX_BYTES`].
+    #[serde(default)]
+    pub requirement: Option<String>,
+}
+
+/// GH #853: the upper bound of `model_prompt`, in bytes. A model's quirks are
+/// a paragraph; anything bigger is a persona in the wrong slot.
+pub const MODEL_PROMPT_MAX_BYTES: usize = 8 * 1024;
+
+/// GH #858: the upper bound of `requirement`, in bytes. Two to four sentences
+/// of need fit many times over; the registry's hand refuses the same bound.
+pub const REQUIREMENT_MAX_BYTES: usize = 2 * 1024;
+
+/// GH #853 / #854: the keys of a model package — what an operator (in
+/// meclaw-os: the `llm-registry`) sets when it moves a cell to another model.
+///
+/// They take effect only from a params-only message (a body without a
+/// `messages` slot): a conversation cannot change the model it talks to.
+/// `reasoning` is in the set because it outranks `reasoning_effort`; leaving
+/// it out would let a turn change the deliberation after all. This list is
+/// the contract the registry pushes against — a change here is a contract
+/// change.
+pub const MODEL_PACKAGE_KEYS: &[&str] = &[
+    "model",
+    "base_url",
+    "wire_dialect",
+    "reasoning_effort",
+    "reasoning_wire",
+    "reasoning",
+    "thinking_budget",
+    "max_tokens",
+    "temperature",
+    "external_timeout_ms",
+    "provider_extra",
+    "model_prompt",
+];
+
+/// GH #853: the absolute floor of the backstop margin, in ms.
+pub const BACKSTOP_MARGIN_FLOOR_MS: u64 = 10_000;
+
+/// GH #853: the relative floor of the backstop margin, as a divisor (10 %).
+pub const BACKSTOP_MARGIN_DIVISOR: u64 = 10;
+
+/// The ONE statement of the "B generous, A precise" rule (AGENTS.md rule 12):
+/// `Some(required_ms)` iff a backstop of `backstop_ms` does not clear a call
+/// of `external_ms` by at least 10 s AND 10 %. A `None` backstop is no
+/// backstop, which can never cut the call short.
+///
+/// Called by the shipped-template gate
+/// (`tests/a_shipped_llm_backstop_outlasts_its_own_call.rs`) and by the
+/// run-time update path, so a run-time `external_timeout_ms` cannot recreate
+/// the inversion the gate removed from the templates (a watchdog kill instead
+/// of an answer, CHANGELOG § 0.27.0).
+pub fn backstop_shortfall(external_ms: u64, backstop_ms: Option<u64>) -> Option<u64> {
+    let backstop = backstop_ms?;
+    let required =
+        external_ms + BACKSTOP_MARGIN_FLOOR_MS.max(external_ms / BACKSTOP_MARGIN_DIVISOR);
+    (backstop < required).then_some(required)
+}
+
+/// GH #853: the origin of a URL (`scheme://host[:port]`) if it is one a list
+/// may name — `http`/`https`, a host, no userinfo. `None` otherwise.
+pub(crate) fn listable_origin(raw: &str) -> Option<String> {
+    let url = reqwest::Url::parse(raw).ok()?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return None;
+    }
+    url.host_str()?;
+    Some(url.origin().ascii_serialization())
 }
 
 impl LlmParams {
@@ -315,6 +437,39 @@ impl LlmParams {
         }
         if p.system_max_leaf_bytes == 0 {
             return Err("system_max_leaf_bytes must be at least 1".to_string());
+        }
+        // GH #853: the model block and the allow list are checked at birth, so
+        // a run-time update (which re-parses the merge) is checked the same way.
+        if let Some(mp) = &p.model_prompt
+            && mp.len() > MODEL_PROMPT_MAX_BYTES
+        {
+            return Err(format!(
+                "model_prompt is {} bytes; at most {MODEL_PROMPT_MAX_BYTES} are allowed",
+                mp.len()
+            ));
+        }
+        if let Some(req) = &p.requirement
+            && req.len() > REQUIREMENT_MAX_BYTES
+        {
+            return Err(format!(
+                "requirement is {} bytes; at most {REQUIREMENT_MAX_BYTES} are allowed",
+                req.len()
+            ));
+        }
+        for entry in &p.base_url_allow {
+            // Compared in normal form (review of L2, M-5): `HTTPS://X.com:443`
+            // is the origin `https://x.com`; a path, a query or a fragment
+            // still makes the entry no origin.
+            match (listable_origin(entry), reqwest::Url::parse(entry)) {
+                (Some(_), Ok(url))
+                    if url.path() == "/" && url.query().is_none() && url.fragment().is_none() => {}
+                _ => {
+                    return Err(format!(
+                        "base_url_allow entry {entry:?} must be an origin \
+                         (scheme://host[:port], http or https, no userinfo, no path)"
+                    ));
+                }
+            }
         }
         for prefix in &p.system_writable {
             if prefix.is_empty() {
@@ -377,6 +532,79 @@ impl LlmParams {
         // key-sets + parse are supplied via `impl OverlayParams for LlmParams`.
         crate::params_overlay::apply_update(self, update)
     }
+
+    /// GH #853: the run-time guards a params update passes on top of `parse`.
+    ///
+    /// `self` is the CURRENT params (its `base_url_allow` is immutable, so it
+    /// is also the merged one's), `merged` the params the update would give,
+    /// `start_base_url` the birth value, `backstop_ms` the cell's resolved
+    /// `message_timeout` (`None` = no backstop). Every detail names the key and
+    /// the rule; a URL is named only by its origin, never with its path or
+    /// userinfo (and not at all where no list exists), a refused timeout by its
+    /// ms and the backstop it needs. No detail carries a secret.
+    ///
+    /// - `base_url` moves only to an origin in `base_url_allow`; without a list
+    ///   it is fixed. Its own start value is always allowed back (a package
+    ///   that repeats the start endpoint is no change), and `null` is refused:
+    ///   it falls back to the provider default silently and takes the bearer
+    ///   with it (`cell.rs`, `wire::OPENAI_DEFAULT_BASE_URL`). Before the list
+    ///   a message could send the bearer to any host while `api_key` itself
+    ///   was immutable.
+    /// - `external_timeout_ms` must stay cleared by the backstop
+    ///   ([`backstop_shortfall`], the rule the shipped-template gate uses).
+    pub(crate) fn check_run_time_update(
+        &self,
+        start_base_url: Option<&str>,
+        update: &serde_json::Map<String, Value>,
+        merged: &LlmParams,
+        backstop_ms: Option<u64>,
+    ) -> Result<(), String> {
+        match update.get("base_url") {
+            None => {}
+            Some(Value::String(url)) if Some(url.as_str()) == start_base_url => {}
+            Some(Value::String(url)) => {
+                let origin = listable_origin(url).ok_or_else(|| {
+                    "params update rejected: 'base_url' must be an http(s) URL without userinfo"
+                        .to_string()
+                })?;
+                if self.base_url_allow.is_empty() {
+                    return Err("params update rejected: 'base_url' is fixed at run time — \
+                                params.base_url_allow names no origin"
+                        .to_string());
+                }
+                if !self
+                    .base_url_allow
+                    .iter()
+                    .any(|a| listable_origin(a).as_deref() == Some(origin.as_str()))
+                {
+                    return Err(format!(
+                        "params update rejected: the origin {origin} of 'base_url' is not in \
+                         params.base_url_allow"
+                    ));
+                }
+            }
+            Some(Value::Null) => {
+                return Err(
+                    "params update rejected: 'base_url' cannot be null at run time — \
+                            '$reset' returns it to its start value"
+                        .to_string(),
+                );
+            }
+            // Any other type has already failed `parse`.
+            Some(_) => {}
+        }
+        if update.contains_key("external_timeout_ms")
+            && let Some(required) = backstop_shortfall(merged.external_timeout_ms, backstop_ms)
+        {
+            return Err(format!(
+                "params update rejected: 'external_timeout_ms' {} ms is not cleared by this \
+                 cell's backstop (needs a message_timeout of at least {required} ms: +10 s and \
+                 +10 %)",
+                merged.external_timeout_ms
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl crate::params_overlay::OverlayParams for LlmParams {
@@ -415,6 +643,14 @@ pub(crate) const KNOWN_PARAM_KEYS: &[&str] = &[
     // GH #124 reasoning passthrough (chat-completions lane).
     "reasoning_effort",
     "reasoning",
+    // GH #854 reasoning wire form + budget.
+    "reasoning_wire",
+    "thinking_budget",
+    // GH #853 model package: prompt block + run-time endpoint allow list.
+    "model_prompt",
+    "base_url_allow",
+    // GH #858: the prose requirement the registry translates.
+    "requirement",
     // P10 auth dimension.
     "auth",
     "auth_ref",
@@ -430,10 +666,12 @@ pub(crate) const KNOWN_PARAM_KEYS: &[&str] = &[
 ///
 /// `provider` (the wire protocol this cell was built around) and `api_key`
 /// (credential, secret-hygiene);
-/// P10 adds the whole auth dimension — `auth`/`auth_ref` are credential
-/// identity, and `wire_dialect`/`oauth_*` decide which endpoint a credential is
+/// P10 adds the credential half of the auth dimension — `auth`/`auth_ref` are
+/// credential identity, and `oauth_*` decide which endpoint a credential is
 /// presented to. Letting a message repoint any of them would let a params
-/// update send an existing token somewhere new.
+/// update send an existing token somewhere new. `wire_dialect` left this list
+/// with GH #853: a model package names its dialect, the credential stays the
+/// same, and `parse` re-checks the `auth` pairing on every update.
 pub(crate) const IMMUTABLE_PARAM_KEYS: &[&str] = &[
     "provider",
     "api_key",
@@ -444,7 +682,6 @@ pub(crate) const IMMUTABLE_PARAM_KEYS: &[&str] = &[
     "credential_grant_id",
     "auth",
     "auth_ref",
-    "wire_dialect",
     "oauth_token_endpoint",
     "oauth_client_id",
     "oauth_originator",
@@ -460,6 +697,27 @@ pub(crate) const IMMUTABLE_PARAM_KEYS: &[&str] = &[
     "system_max_slots",
     "system_max_leaf_bytes",
     "system_writable",
+    // GH #853: the run-time endpoint allow list. A message that could widen
+    // it would make the guard it is about to pass meaningless.
+    "base_url_allow",
+    // GH #858: what the template says this cell needs. The registry reads it
+    // from the template, so a run-time copy would be a second truth nobody
+    // translates.
+    "requirement",
+];
+
+/// GH #853: the immutable keys that are credential identity. An update naming
+/// one is told that a package needing another one needs a mutation.
+pub(crate) const CREDENTIAL_KEYS: &[&str] = &[
+    "provider",
+    "api_key",
+    "credential_grant_id",
+    "auth",
+    "auth_ref",
+    "oauth_token_endpoint",
+    "oauth_client_id",
+    "oauth_originator",
+    "oauth_client_version",
 ];
 
 /// β: the reject type now lives in the generic params-overlay core. Re-exported
@@ -867,7 +1125,6 @@ mod tests {
         for key in [
             "auth",
             "auth_ref",
-            "wire_dialect",
             "oauth_token_endpoint",
             "oauth_client_id",
             "oauth_originator",
@@ -881,6 +1138,181 @@ mod tests {
                 "key {key} must be immutable, got {err:?}"
             );
         }
+    }
+
+    /// GH #853: `wire_dialect` changes at run time, and the `auth` pairing is
+    /// checked again on every update — a subscription credential still never
+    /// goes out on chat-completions.
+    #[test]
+    fn wire_dialect_is_mutable_and_the_auth_pairing_still_holds() {
+        let base = LlmParams::parse(&api_key_raw()).unwrap();
+        let update = json!({"wire_dialect": "responses"})
+            .as_object()
+            .unwrap()
+            .clone();
+        let (merged, _) = base.apply_update(&update).expect("mutable since GH #853");
+        assert_eq!(merged.effective_wire_dialect(), WireDialect::Responses);
+
+        let oauth = LlmParams::parse(&oauth_raw()).unwrap();
+        let back = json!({"wire_dialect": "chat_completions"})
+            .as_object()
+            .unwrap()
+            .clone();
+        assert!(matches!(
+            oauth.apply_update(&back),
+            Err(super::ParamUpdateError::Invalid(_))
+        ));
+    }
+
+    // ───── GH #853: base_url_allow, model_prompt, backstop rule ─────
+
+    #[test]
+    fn base_url_allow_is_immutable_and_its_entries_must_be_origins() {
+        let base = LlmParams::parse(&api_key_raw()).unwrap();
+        let upd = json!({"base_url_allow": ["http://127.0.0.1:1"]})
+            .as_object()
+            .unwrap()
+            .clone();
+        assert!(matches!(
+            base.apply_update(&upd),
+            Err(super::ParamUpdateError::Immutable(ref k)) if k == "base_url_allow"
+        ));
+        for bad in [
+            "127.0.0.1:1",
+            "ftp://127.0.0.1",
+            "http://u:p@127.0.0.1",
+            "http://127.0.0.1/v1",
+        ] {
+            let mut raw = api_key_raw();
+            raw["base_url_allow"] = json!([bad]);
+            assert!(LlmParams::parse(&raw).is_err(), "{bad} is not an origin");
+        }
+        let mut raw = api_key_raw();
+        raw["base_url_allow"] = json!(["https://example.com", "http://127.0.0.1:8000/"]);
+        assert!(LlmParams::parse(&raw).is_ok());
+    }
+
+    /// Review of L2, M-5: an entry spelled with its default port or with
+    /// capitals in the host names the same origin and is taken, compared in
+    /// normal form -- it no longer fails at birth with "must be an origin".
+    #[test]
+    fn an_allow_entry_in_another_spelling_of_the_same_origin_is_taken() {
+        let mut raw = api_key_raw();
+        raw["base_url"] = json!("http://127.0.0.1:1/v1");
+        raw["base_url_allow"] = json!(["HTTPS://Host.Example:443", "http://h.example:80/"]);
+        let p = LlmParams::parse(&raw).expect("an origin in another spelling is an origin");
+        for url in ["https://host.example/v1", "http://h.example/x"] {
+            let upd = json!({"base_url": url}).as_object().unwrap().clone();
+            let (merged, _) = p.apply_update(&upd).map_err(|e| e.detail()).unwrap();
+            assert!(
+                p.check_run_time_update(Some("http://127.0.0.1:1/v1"), &upd, &merged, None)
+                    .is_ok(),
+                "{url} is inside the list"
+            );
+        }
+        for bad in ["https://host.example/v1?x=1", "https://host.example#f"] {
+            let mut raw = api_key_raw();
+            raw["base_url_allow"] = json!([bad]);
+            assert!(LlmParams::parse(&raw).is_err(), "{bad} is not an origin");
+        }
+    }
+
+    #[test]
+    fn the_run_time_base_url_guard() {
+        let mut raw = api_key_raw();
+        raw["base_url"] = json!("http://127.0.0.1:1/v1");
+        raw["base_url_allow"] = json!(["http://127.0.0.1:2"]);
+        let p = LlmParams::parse(&raw).unwrap();
+        let check = |upd: Value| {
+            let upd = upd.as_object().unwrap().clone();
+            let (merged, _) = p.apply_update(&upd).map_err(|e| e.detail())?;
+            p.check_run_time_update(Some("http://127.0.0.1:1/v1"), &upd, &merged, None)
+        };
+        assert!(check(json!({"base_url": "http://127.0.0.1:2/x"})).is_ok());
+        assert!(
+            check(json!({"base_url": "http://127.0.0.1:1/v1"})).is_ok(),
+            "the start value is always allowed back"
+        );
+        let err = check(json!({"base_url": "http://127.0.0.1:3/v1"})).unwrap_err();
+        assert!(
+            err.contains("http://127.0.0.1:3") && err.contains("base_url_allow"),
+            "{err}"
+        );
+        let err = check(json!({"base_url": "http://user:secret@127.0.0.1:2/v1"})).unwrap_err();
+        assert!(!err.contains("secret"), "no userinfo in a detail: {err}");
+        assert!(check(json!({"base_url": null})).is_err());
+
+        let fixed = LlmParams::parse(&api_key_raw()).unwrap();
+        let upd = json!({"base_url": "http://127.0.0.1:2/v1"})
+            .as_object()
+            .unwrap()
+            .clone();
+        let (merged, _) = fixed.apply_update(&upd).unwrap();
+        let err = fixed
+            .check_run_time_update(None, &upd, &merged, None)
+            .unwrap_err();
+        assert!(err.contains("fixed at run time"), "{err}");
+    }
+
+    #[test]
+    fn the_backstop_rule_is_ten_seconds_and_ten_percent() {
+        assert_eq!(backstop_shortfall(120_000, Some(180_000)), None);
+        assert_eq!(backstop_shortfall(170_000, Some(180_000)), Some(187_000));
+        assert_eq!(backstop_shortfall(50_000, Some(59_999)), Some(60_000));
+        assert_eq!(
+            backstop_shortfall(999_999, None),
+            None,
+            "no backstop, no inversion"
+        );
+    }
+
+    #[test]
+    fn the_package_keys_are_known_and_mutable() {
+        for key in MODEL_PACKAGE_KEYS {
+            assert!(KNOWN_PARAM_KEYS.contains(key), "{key} unknown");
+            assert!(!IMMUTABLE_PARAM_KEYS.contains(key), "{key} immutable");
+        }
+    }
+
+    #[test]
+    fn model_prompt_has_an_upper_bound() {
+        let mut raw = api_key_raw();
+        raw["model_prompt"] = json!("x".repeat(MODEL_PROMPT_MAX_BYTES));
+        assert!(LlmParams::parse(&raw).is_ok());
+        raw["model_prompt"] = json!("x".repeat(MODEL_PROMPT_MAX_BYTES + 1));
+        let err = LlmParams::parse(&raw).unwrap_err();
+        assert!(err.contains("model_prompt"), "{err}");
+    }
+
+    // ───── GH #858: requirement ─────
+
+    #[test]
+    fn requirement_is_prose_with_an_upper_bound_and_no_effect_by_default() {
+        let p = LlmParams::parse(&api_key_raw()).unwrap();
+        assert_eq!(p.requirement, None, "no implicit requirement");
+        let mut raw = api_key_raw();
+        raw["requirement"] = json!("r".repeat(REQUIREMENT_MAX_BYTES));
+        assert!(LlmParams::parse(&raw).is_ok());
+        raw["requirement"] = json!("r".repeat(REQUIREMENT_MAX_BYTES + 1));
+        let err = LlmParams::parse(&raw).unwrap_err();
+        assert!(err.contains("requirement"), "{err}");
+    }
+
+    #[test]
+    fn requirement_is_known_and_immutable() {
+        assert!(KNOWN_PARAM_KEYS.contains(&"requirement"));
+        assert!(!MODEL_PACKAGE_KEYS.contains(&"requirement"));
+        let mut raw = api_key_raw();
+        raw["requirement"] = json!("Answers briefly.");
+        let p = LlmParams::parse(&raw).unwrap();
+        let upd = json!({"requirement": "Something else."})
+            .as_object()
+            .unwrap()
+            .clone();
+        assert!(matches!(
+            p.apply_update(&upd),
+            Err(super::ParamUpdateError::Immutable(ref k)) if k == "requirement"
+        ));
     }
 
     /// P14 — the param exists, is optional, and carries no implicit value.

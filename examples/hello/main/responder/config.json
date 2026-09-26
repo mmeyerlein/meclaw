@@ -5,6 +5,7 @@
   "params": {
     "provider": "openai",
     "model": "openai/gpt-4o-mini",
+    "requirement": "Answers a greeting in one or two short sentences. Any small, fast and inexpensive chat model will do: there is no tool use and almost no context.",
     "api_key": "${OPENROUTER_API_KEY}",
     "base_url": "https://openrouter.ai/api/v1",
     "temperature": 0.3,

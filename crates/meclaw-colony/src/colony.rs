@@ -30,13 +30,42 @@ const DEFAULT_RESTART_LIMIT: u32 = 5;
 
 /// Phase-13.5 Lifecycle-3b Task 4 (F5-Variante-A): default wall-clock budget for
 /// the inline death-ack-wait after a colony-initiated peace-stop during a
-/// mutation, in milliseconds. A cell finishing its in-flight `handle()`, closing
-/// `cell.db`, and firing `death_ack` is normally sub-millisecond; 5 s is the
-/// generous backstop that lets a backpressured cell (stuck mid-`handle()` on a
-/// full `outputs_tx`) time out cleanly into a `term_timeout` reject instead of
-/// hanging the colony inbox loop. 5 s mirrors the project's other
-/// graceful-termination budgets (Phase-10 watcher/abort join-timeouts).
+/// mutation, in milliseconds.
+///
+/// A cell answers the peace-stop only after its in-flight `handle()` returns,
+/// then closes `cell.db` and fires `death_ack`. For an idle cell that is
+/// sub-millisecond; for a busy one it is as long as its handler runs — an `llm`
+/// cell waits on its provider for up to `external_timeout_ms` (up to 120 s in
+/// shipped templates), and a backpressured cell is stuck mid-`handle()` on a
+/// full `outputs_tx`. 5 s is the budget after which such a cell rejects the
+/// mutation cleanly as `term_timeout` instead of holding the colony inbox loop.
+///
+/// GH #838: the budget is ONE deadline per wait, shared by every cell the wait
+/// covers ([`await_death_ack`]), not a fresh 5 s per cell — measured before the
+/// fix: N cells waited one after the other, N × 5 s in one work item. And the
+/// wait beats the watchdog while it lasts; silent, 5 s is exactly
+/// `WORK_ITEM_BUDGET_FACTOR` × the default 500 ms window, and a wait that long
+/// read as `stuck_work_item`, fatal under `on_trip = exit`. Deliberately not a
+/// `colony.json` key (OR-SN-9): the deadline bounds the mutation, it is not a
+/// knob for a slow cell.
 const DEFAULT_TERM_TIMEOUT_MS: u64 = 5_000;
+
+/// GH #838: how often a death-ack wait beats the watchdog. A fifth of the
+/// default 500 ms window (`watchdog_threshold` × `watchdog_period_ms`), and the
+/// same rate as the colony loop's own heartbeat interval.
+const DEATH_ACK_PULSE: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// GH #838: the rollback's wait after a `term_timeout` reject. By then the one
+/// deadline of the disconnect is spent, and the rollback has just sent the stops
+/// for the cells this mutation created. Waiting against the spent deadline would
+/// not wait at all — the directory sweep would walk a `cell.db` a task still
+/// holds open (the GH #276 half-removed directory). Opening a second full
+/// `term_timeout` made the reject cost 2 × term (measured 3.0 s at a 1.5 s term,
+/// `the_rollback_after_a_term_timeout_waits_a_grace_not_a_second_term`). A fresh
+/// cell has handled nothing yet and answers its stop in well under a
+/// millisecond, so a fixed grace far below the default term covers it; one that
+/// needs longer is swept with the same logged warning as on a timeout.
+const ROLLBACK_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// Phase-13.5 slice-4 T9c: runtime-overridable term-timeout budget (ms).
 ///
@@ -774,6 +803,11 @@ pub enum ColonyMsg {
         /// The unread remainder, oldest first.
         messages: Vec<Message>,
     },
+    /// GH #850: a cell's overflow drain task reports — messages that left the
+    /// overflow (delivered or dead-lettered), a block to spill to `colony.db`,
+    /// or a mailbox that closed under it. Sent only by the drain tasks of
+    /// `crate::overflow`; the payload is opaque outside this crate.
+    Overflow(crate::overflow::OverflowReport),
     /// Phase-13.5 Lifecycle-3b Task 3 (F2): a cell-task has finished its
     /// colony-initiated **peace-stop** (Disconnect, NOT idle) and is returning
     /// its mailbox `Receiver` so the remainder can be drained to the DLQ.
@@ -1465,31 +1499,101 @@ fn dead_letter_rescued(
 /// successor (normal end → entry removed, or the restart limit was exhausted)
 /// and the remainder goes to the DLQ.
 ///
-/// Order is preserved, and a failing send stops the delivery: everything from
-/// that point on is dead-lettered rather than re-ordered behind later traffic.
-async fn deliver_rescued_mailbox(
+/// GH #850 (R-SN-5): nothing here waits on the new mailbox any more — the
+/// loop never does. Rescued messages are older than anything in the cell's
+/// overflow, so when the cell has one (or the fresh mailbox fills), they go to
+/// the FRONT of it and its drain task delivers them first; otherwise they are
+/// handed over with `try_send`, as before in order. The same call site points
+/// the drain task at the successor's mailbox, or — no successor — has it
+/// dead-letter what it holds. A closed successor mailbox stops the hand-over:
+/// the rest is dead-lettered rather than re-ordered behind later traffic.
+fn deliver_rescued_mailbox(
     registry: &HashMap<Path, RegistryEntry>,
     rescued: &mut HashMap<Path, Vec<Message>>,
     dead_letters: &mut VecDeque<DeadLetter>,
+    in_flight: &mut crate::drain::DrainLedger,
     path: &Path,
     restarted: bool,
 ) {
-    let Some(messages) = rescued.remove(path) else {
+    let successor = if restarted {
+        registry.get(path).map(|e| &e.handle)
+    } else {
+        None
+    };
+    let messages = rescued.remove(path).unwrap_or_default();
+    // GH #850 review I-2: the overflow at this path is the dead cell's only
+    // while it delivers into the dead cell's mailbox, which is closed by now.
+    // An overflow that still delivers into an OPEN mailbox belongs to another
+    // cell (the path changed hands) and is not this death's business.
+    let dead_cells_overflow =
+        in_flight.overflow.holds(path) && !in_flight.overflow.drains_into_an_open_mailbox(path);
+    let Some(handle) = successor else {
+        if dead_cells_overflow {
+            in_flight.overflow.abandon(path);
+        }
+        if !messages.is_empty() {
+            tracing::warn!(
+                path = %path.as_str(),
+                count = messages.len(),
+                "rescued mailbox messages have no successor — dead-lettering"
+            );
+            dead_letter_rescued(dead_letters, path, messages);
+        }
         return;
     };
+    if in_flight.overflow.holds(path) && !dead_cells_overflow {
+        // Not the dead cell's, and not the successor's either: the cell it
+        // was for is displaced.
+        in_flight.overflow.abandon(path);
+    }
     let mut queue: VecDeque<Message> = messages.into();
-    if restarted && let Some(handle) = registry.get(path).map(|e| e.handle.clone()) {
-        let total = queue.len();
+    let total = queue.len();
+    if in_flight.overflow.holds(path) {
+        if let Err(back) = in_flight
+            .overflow
+            .front(handle, path, queue.drain(..).collect())
+        {
+            queue.extend(back);
+        }
+        in_flight.overflow.rehandle(path, handle);
+    } else {
         while let Some(msg) = queue.pop_front() {
-            if let Err(e) = handle.send(msg).await {
-                queue.push_front(e.0);
-                break;
+            match handle.try_send(msg) {
+                Ok(()) => {}
+                Err(e) => match *e {
+                    tokio::sync::mpsc::error::TrySendError::Full(m) => {
+                        queue.push_front(m);
+                        if let Err(back) =
+                            in_flight
+                                .overflow
+                                .front(handle, path, queue.drain(..).collect())
+                        {
+                            // No overflow can take them (not wired, or its
+                            // drain task is gone): dead-lettered below, loudly
+                            // — never dropped (GH #850 review M-2).
+                            tracing::error!(
+                                path = %path.as_str(),
+                                count = back.len(),
+                                "rescued mailbox messages found a full mailbox and no \
+                                 overflow to wait in — dead-lettering"
+                            );
+                            queue.extend(back);
+                        }
+                        break;
+                    }
+                    tokio::sync::mpsc::error::TrySendError::Closed(m) => {
+                        queue.push_front(m);
+                        break;
+                    }
+                },
             }
         }
+    }
+    if total > 0 {
         tracing::info!(
             path = %path.as_str(),
-            delivered = total - queue.len(),
-            "rescued mailbox messages handed to the respawned cell"
+            handed = total - queue.len(),
+            "rescued mailbox messages handed to the respawned cell (directly or through its overflow)"
         );
     }
     if !queue.is_empty() {
@@ -1499,6 +1603,117 @@ async fn deliver_rescued_mailbox(
             "rescued mailbox messages have no successor — dead-lettering"
         );
         dead_letter_rescued(dead_letters, path, queue);
+    }
+}
+
+/// GH #850: a cell (re-)registered — an overflow that came back from disk
+/// starts draining into its mailbox, if the cell can take it.
+///
+/// Review I-1: only an active cell that has not failed is adopted. A
+/// disconnected or failed one is never woken to read a delivery (the wake paths
+/// skip it, and a message routed to it dead-letters `cell_inactive`), so its
+/// overflow is dead-lettered the same way at once — instead of a drain task
+/// waiting for ever on a parked mailbox, with the rows on disk and their
+/// tickets keeping the colony from ever being quiescent.
+fn adopt_overflow(
+    registry: &HashMap<Path, RegistryEntry>,
+    in_flight: &mut crate::drain::DrainLedger,
+    path: &Path,
+) {
+    match registry.get(path) {
+        Some(e) => in_flight
+            .overflow
+            .adopt(path, &e.handle, e.active && !e.failed),
+        None => in_flight.overflow.abandon(path),
+    }
+}
+
+/// GH #850 review I-1: the boot apply has registered every cell the boot
+/// knows (and a shutdown drain will not wait for more). An overflow that came
+/// back from disk and whose drain task never started is adopted by the cell
+/// now at its path, or — the path is not registered any more (its directory
+/// went away between two boots) — dead-lettered `cell_inactive`.
+fn settle_unstarted_overflows(
+    registry: &HashMap<Path, RegistryEntry>,
+    in_flight: &mut crate::drain::DrainLedger,
+) {
+    for path in in_flight.overflow.unstarted() {
+        adopt_overflow(registry, in_flight, &path);
+    }
+}
+
+/// GH #850: apply one drain task's report and do the part that needs the
+/// registry. A delivery into a parked cell wakes it (the drain task cannot —
+/// waking is the colony's); a drain task whose mailbox closed gets the cell's
+/// current mailbox, or — the cell is gone, failed or disconnected — is told to
+/// dead-letter what it holds. A closed mailbox of a cell that is still `Awake`
+/// and active is a death in flight: its `CellDied` call site decides.
+async fn on_overflow_report(
+    registry: &mut HashMap<Path, RegistryEntry>,
+    in_flight: &mut crate::drain::DrainLedger,
+    dead_letters: &mut VecDeque<DeadLetter>,
+    log_tx: &tokio::sync::mpsc::Sender<crate::persist::writer::ColonyWriteOp>,
+    report: crate::overflow::OverflowReport,
+) {
+    let mut tickets_back: Vec<Path> = Vec::new();
+    let follow = in_flight
+        .overflow
+        .on_report(report, log_tx, dead_letters, &mut tickets_back)
+        .await;
+    for p in &tickets_back {
+        in_flight.leave(p);
+    }
+    match follow {
+        crate::overflow::Followup::None => {}
+        crate::overflow::Followup::Delivered(path) => {
+            if let Some(entry) = registry.get_mut(&path) {
+                wake_if_mail_waiting(entry);
+            }
+        }
+        // Review I-2: the drain task's mailbox closed. Only the SAME mailbox
+        // decides anything here: still open (a stale report — the respawn
+        // already pointed the task at it) → point it again; closed under a
+        // live, awake entry → a death in flight, its `CellDied` call site
+        // decides. Any other mailbox at the path means the cell the overflow
+        // was for is gone — a `replace_nodes` lift put a new cell there (GH
+        // #682/#688: the newcomer never inherits the old one's remainder), a
+        // disconnect or a failure parked it on a fresh channel — and the
+        // overflow is dead-lettered, like the rest of that mailbox.
+        crate::overflow::Followup::Stalled(path) => match registry.get(&path) {
+            Some(e) if in_flight.overflow.drains_into(&path, &e.handle) => {
+                if !e.handle.is_closed() {
+                    in_flight.overflow.rehandle(&path, &e.handle);
+                } else if !e.active || e.failed || !matches!(e.status, CellStatus::Awake) {
+                    in_flight.overflow.abandon(&path);
+                }
+            }
+            _ => in_flight.overflow.abandon(&path),
+        },
+    }
+}
+
+/// GH #850: wake a parked cell whose parked mailbox holds mail — the same wake
+/// `route_with_log` performs before a delivery, for the deliveries its drain
+/// task made. A cell without a wake mechanic or an inactive one is left alone.
+fn wake_if_mail_waiting(entry: &mut RegistryEntry) {
+    let has_mail = match &entry.status {
+        CellStatus::Asleep { receiver } | CellStatus::NotYetSpawned { receiver } => {
+            !receiver.is_empty()
+        }
+        CellStatus::Awake => false,
+    };
+    if !has_mail || !entry.active || entry.wake.is_none() {
+        return;
+    }
+    match std::mem::replace(&mut entry.status, CellStatus::Awake) {
+        CellStatus::Awake => {}
+        CellStatus::Asleep { receiver } | CellStatus::NotYetSpawned { receiver } => {
+            if let Some(wake) = entry.wake.as_ref() {
+                let (stop_tx, death_ack_rx) = wake(receiver);
+                entry.stop_tx = Some(stop_tx);
+                entry.death_ack_rx = Some(death_ack_rx);
+            }
+        }
     }
 }
 
@@ -1657,6 +1872,11 @@ pub struct ColonyTaskConfig {
     /// runtime path is byte-identical to before. Same opt-in pattern as
     /// `egress_tx`/`heartbeat_tx`.
     pub death_ack_wait_tx: Option<mpsc::Sender<()>>,
+    /// GH #850, test-only: where the overflow reports what it did (a cell
+    /// entered it, the table was read, written, deleted from). `None`
+    /// (default, production) → nothing is sent. Same opt-in pattern as
+    /// `death_ack_wait_tx`.
+    pub overflow_probe: Option<mpsc::UnboundedSender<crate::overflow::OverflowProbe>>,
 }
 
 impl ColonyTaskConfig {
@@ -1692,6 +1912,7 @@ impl ColonyTaskConfig {
             egress_tx: None,
             egress_policy: EgressPolicy::All,
             death_ack_wait_tx: None,
+            overflow_probe: None,
         }
     }
 
@@ -1743,6 +1964,16 @@ impl ColonyTaskConfig {
     /// the field stays `None` and the runtime path is unchanged.
     pub fn with_death_ack_wait_signal(mut self, tx: mpsc::Sender<()>) -> Self {
         self.death_ack_wait_tx = Some(tx);
+        self
+    }
+
+    /// Test-only: observe the mailbox overflow (see
+    /// [`ColonyTaskConfig::overflow_probe`]). Production never calls this.
+    pub fn with_overflow_probe(
+        mut self,
+        tx: mpsc::UnboundedSender<crate::overflow::OverflowProbe>,
+    ) -> Self {
+        self.overflow_probe = Some(tx);
         self
     }
 }
@@ -1986,6 +2217,13 @@ async fn run_shutdown_teardown(
             ColonyMsg::IoLiveness { path, at } => {
                 io_liveness.insert(path, at);
             }
+            ColonyMsg::Overflow(report) => {
+                // GH #850: the teardown ends every overflow with the colony;
+                // what stage 1 held is lost like a mailbox's content, what
+                // stage 2 holds is delivered after the next boot. Dropping the
+                // report also drops a spill's ack, which ends its drain task.
+                drop(report);
+            }
             ColonyMsg::WorkDone { path } => {
                 // Teardown-drain: the ledger is about to be
                 // dropped; nothing left to account for.
@@ -2140,10 +2378,10 @@ async fn run_shutdown_teardown(
                     registry,
                     rescued_mailboxes,
                     dead_letters,
+                    in_flight,
                     &died,
                     restarted,
-                )
-                .await;
+                );
             }
             ColonyMsg::DrainDeadLetters { ack: dl_ack } => {
                 // W6d (A6): shutdown-drain has no post-select
@@ -2447,6 +2685,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
         egress_tx,
         egress_policy,
         death_ack_wait_tx,
+        overflow_probe,
     } = cfg;
     #[cfg(debug_assertions)]
     meclaw_core::init_validator();
@@ -2494,6 +2733,17 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
     // are taken in `route_with_log` (Task 8) and given back by `ColonyMsg::WorkDone`;
     // the shutdown drain waits on it. Loop-local state, no shared counter (O3).
     let mut in_flight = crate::drain::DrainLedger::default();
+    // GH #850 (R-SN-5): the overflow a full mailbox runs into instead of
+    // stopping this loop. Wired to this colony's inbox (drain tasks report
+    // there) and database file (drain tasks read stage 2 with their own
+    // connection); the counters it persisted are read once, here.
+    in_flight.overflow = crate::overflow::Overflow::wired(
+        crate::overflow::OverflowConfig::from_colony(&colony_config),
+        inbox_self_tx.clone(),
+        colony_db.db_path().to_path_buf(),
+        overflow_probe,
+    );
+    in_flight.hydrate_overflow(&colony_db.read_conn);
     // GH #47: which of the loop's two modes is running. A `Shutdown` no longer
     // tears down where it is read — it flips this, and the loop head decides.
     let mut phase = LoopPhase::Serving;
@@ -2760,6 +3010,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
             if tokio::time::Instant::now() >= *deadline {
                 tracing::warn!(
                     drain_incomplete = in_flight.total(),
+                    overflow_pending = in_flight.overflow.total_pending(),
                     busy = %in_flight.busy_paths(),
                     mailbox_backlog = backlog,
                     "shutdown drain hit its deadline — the work named here is being cut"
@@ -2854,6 +3105,10 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                             drain_budget_ms = budget,
                             "shutdown requested — draining in-flight work"
                         );
+                        // GH #850 review I-1: a drain waits for the overflow to
+                        // empty, and one nobody adopted never would — settle it
+                        // (a colony that never saw its boot apply ends here).
+                        settle_unstarted_overflows(&registry, &mut in_flight);
                         phase = LoopPhase::Draining {
                             deadline: tokio::time::Instant::now()
                                 + std::time::Duration::from_millis(budget),
@@ -2902,10 +3157,16 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                         break;
                     }
                     ColonyMsg::Register { path, sender, join, peace_rx, backstop_rx, stop_tx, death_ack_rx, respawn, wake, restart_limit, cell_id, cell_type, active, ack } => {
+                        let registered = path.clone();
                         handle_register(&mut registry, &inbox_self_tx, &colony_db.writer_tx, &colony_db.queue_depth, path, sender, join, peace_rx, backstop_rx, stop_tx, death_ack_rx, respawn, wake, restart_limit, cell_id, cell_type, active, ack).await;
+                        // GH #850: an overflow that survived a restart starts
+                        // draining once its cell is back.
+                        adopt_overflow(&registry, &mut in_flight, &registered);
                     }
                     ColonyMsg::RegisterDormant { path, sender, receiver, respawn, wake, restart_limit, cell_id, cell_type, active, failed, dormant, eager_on_reconnect, ack } => {
+                        let registered = path.clone();
                         handle_register_dormant(&mut registry, &colony_db.writer_tx, &colony_db.queue_depth, path, sender, receiver, respawn, wake, restart_limit, cell_id, cell_type, active, failed, dormant, eager_on_reconnect, ack).await;
+                        adopt_overflow(&registry, &mut in_flight, &registered);
                     }
                     ColonyMsg::AddEdge { id, from, to, ack } => {
                         edges.insert(Edge { id, from, to, condition: None, modifier: None, is_default: false, lane: None });
@@ -2938,6 +3199,12 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                     // with routing for loop time.
                     ColonyMsg::IoLiveness { path, at } => {
                         io_liveness.insert(path, at);
+                    }
+                    // GH #850: a drain task reports what left a cell's overflow
+                    // (delivered, dead-lettered, spilled) or that its mailbox is
+                    // gone. Counters and writes only — nothing here waits on a cell.
+                    ColonyMsg::Overflow(report) => {
+                        on_overflow_report(&mut registry, &mut in_flight, &mut dead_letters, &colony_db.writer_tx, report).await;
                     }
                     // GH #47: a delivery came back. Pure in-memory decrement,
                     // no DB, no await — see the IoLiveness rationale above.
@@ -3060,7 +3327,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                     park_entry_non_running(e, &path);
                                 }
                             }
-                            deliver_rescued_mailbox(&registry, &mut rescued_mailboxes, &mut dead_letters, &died, restarted).await;
+                            deliver_rescued_mailbox(&registry, &mut rescued_mailboxes, &mut dead_letters, &mut in_flight, &died, restarted);
                         }
                     }
                     ColonyMsg::DrainDeadLetters { ack } => {
@@ -3134,6 +3401,10 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                 .expect("writer thread dead");
                         }
                         // Reboot: skip — edges/hive_scopes were hydrated at boot start.
+                        // GH #850 review I-1: every cell the boot knows is
+                        // registered now — an overflow from disk nobody adopted
+                        // is dead-lettered instead of waiting for ever.
+                        settle_unstarted_overflows(&registry, &mut in_flight);
                         // GH #285: the boot declaration is where most slots enter.
                         slot_table_dirty = true;
                         // GH #389: the edge table stands — reopen the outputs arm.
@@ -3989,6 +4260,24 @@ async fn offload_oversized(
     msg
 }
 
+/// GH #850: the message exactly as `route()` delivers it in its registry
+/// branch — the TTL decrement it starts with and the resolved target it sends
+/// to, the same two expressions as the corridor. Used only on the overflow path,
+/// which does not enter the corridor; a drift lock compares the two deliveries
+/// at the receiver. `pre_routable` guarantees `ttl > 0`; the saturating form
+/// keeps the hot path panic-free regardless.
+fn routed_like_the_corridor(sender_path: &Path, msg: Message) -> Message {
+    let msg = Message {
+        ttl: msg.ttl.saturating_sub(1),
+        ..msg
+    };
+    let resolved = Path::resolve(sender_path, msg.target.as_str());
+    Message {
+        target: resolved,
+        ..msg
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn route_with_log(
     registry: &mut HashMap<Path, RegistryEntry>,
@@ -4162,39 +4451,56 @@ async fn route_with_log(
         );
     }
 
-    // GH #162: say WHICH mailbox, before blocking on it.
+    // GH #850 (R-SN-5, ADR-0045, OR-SN-38): a full mailbox overflows, it
+    // never stops this loop.
     //
-    // `route()` delivers with `entry.handle.send(routed).await`. That await is
-    // deliberate — a full mailbox is backpressure, and dropping the message
-    // instead would be worse. But the colony's routing loop is what waits, so
-    // while it waits the colony routes nothing at all, and the corridor is byte-
-    // frozen and silent. From the outside that looked like a colony that simply
-    // stopped after twenty seconds, with an EMPTY dead-letter queue and nothing
-    // in the message log (the log row is written after the send returns) — GH
-    // #161 cost most of a day for exactly that reason, and the diagnosis in the
-    // end needed a SQLite client on `colony.db`.
-    //
-    // So this is the same construction as the TTL twin above: a pre-check at the
-    // call site that names the target, the sender and the trace before the
-    // corridor is entered. Nothing is added inside `route()`, and nothing changes
-    // about the semantics — a full mailbox still blocks.
-    if pre_routable
-        && let Some(entry) = registry.get(&resolved_target)
-        && entry.handle.free_capacity() == 0
-    {
-        tracing::warn!(
-            target = %resolved_target.as_str(),
-            sender = %sender_path.as_str(),
-            trace_id = %msg.trace_id,
-            mailbox_capacity = entry.handle.max_capacity(),
-            reason = "mailbox_full",
-            "target mailbox is FULL — the colony's routing loop now blocks on this \
-             delivery and routes nothing else until it drains. If the colony appears \
-             to stop with an empty dead-letter queue, this is the mailbox it is \
-             waiting on: either the cell is too slow for its producers or an edge is \
-             multiplying messages (cell.mailbox_size raises the buffer, it does not \
-             fix a loop)"
-        );
+    // `route()` delivers with `entry.handle.send(routed).await`, and until this
+    // point the loop waited there whenever a mailbox was full — the colony
+    // routed nothing at all until the cell drained, and a cell that was slower
+    // than its producers ended the colony by watchdog (GH #162 named the
+    // mailbox, GH #850 counted the deaths). Now the wrapper decides BEFORE the
+    // corridor: while the cell's overflow is empty and its mailbox has room,
+    // the message goes through `route()` exactly as before — one lookup on an
+    // (almost always empty) map and one capacity read, and with a single
+    // producer the send inside cannot wait. Otherwise the message is built the
+    // way `route()` would deliver it, logged once, and appended to the cell's
+    // overflow; its drain task delivers it in order, outside the loop. Above
+    // the cell's cap it dead-letters as `mailbox_full` instead. The corridor
+    // is not entered on that path and stays byte-frozen and pure.
+    let overflows = pre_routable
+        && registry.get(&resolved_target).is_some_and(|e| {
+            in_flight
+                .overflow
+                .must_overflow(&resolved_target, &e.handle)
+        });
+    if overflows {
+        let original_target = msg.target.clone();
+        let routed = routed_like_the_corridor(&sender_path, msg);
+        if let Some(row) = log_row_opt {
+            let _ = log_tx
+                .send(crate::persist::writer::ColonyWriteOp::InsertMessageLog(row))
+                .await;
+        }
+        let Some(entry) = registry.get(&resolved_target) else {
+            return RouteAction::Done;
+        };
+        match in_flight
+            .overflow
+            .accept(&entry.handle, &resolved_target, routed, &sender_path)
+        {
+            crate::overflow::Accepted::Queued => in_flight.enter(&resolved_target),
+            crate::overflow::Accepted::Refused(message) => push_dead_letter(
+                dead_letters,
+                DeadLetter {
+                    sender_path,
+                    original_target,
+                    resolved_target,
+                    message,
+                    reason: crate::dead_letter::DeadLetterReason::MailboxFull { detail: None },
+                },
+            ),
+        }
+        return RouteAction::Done;
     }
 
     // GH #47, ruling O1: `pre_routable` is the wrapper's own pre-check and it is
@@ -4332,12 +4638,20 @@ fn remove_swept_dir(dir: &std::path::Path, id: &str) {
 /// [`rollback_registered_hive_scopes`], which this calls and which the two
 /// post-state reject blocks (that register nothing and therefore never call
 /// this) call for themselves.
+///
+/// GH #838: the stopped cells share one deadline and the wait beats `pulse`
+/// ([`await_death_ack`]). `spent` is the deadline a `term_timeout` reject has
+/// already used up: with it, the wait lasts until that deadline or
+/// [`ROLLBACK_GRACE`] from now, whichever is later; without it (every reject
+/// that waited on nothing yet), one fresh [`term_timeout`].
 async fn rollback_registered_nodes(
     registry: &mut HashMap<Path, RegistryEntry>,
     node_contracts: &mut HashMap<Path, NodeContract>,
     hive_scopes: &mut HiveScopeTable,
     registered: &[Path],
     registered_hive_scopes: &[Path],
+    pulse: &crate::watchdog::WorkPulse,
+    spent: Option<tokio::time::Instant>,
 ) {
     rollback_registered_hive_scopes(hive_scopes, registered_hive_scopes);
     let mut death_acks: Vec<(Path, oneshot::Receiver<()>)> = Vec::new();
@@ -4352,13 +4666,59 @@ async fn rollback_registered_nodes(
         }
         node_contracts.remove(path);
     }
+    let now = tokio::time::Instant::now();
+    let deadline = match spent {
+        Some(spent) => spent.max(now + ROLLBACK_GRACE),
+        None => now + term_timeout(),
+    };
     for (path, rx) in death_acks {
-        if tokio::time::timeout(term_timeout(), rx).await.is_err() {
+        if !await_death_ack(rx, deadline, pulse, &path).await {
             tracing::warn!(
                 path = %path.as_str(),
-                "rolled-back cell did not answer the peace-stop within the term-timeout — \
-                 sweeping its directory while its task may still hold cell.db"
+                "rolled-back cell did not answer the peace-stop within its deadline (the \
+                 rollback grace after a reject, else the term-timeout) — sweeping its \
+                 directory while its task may still hold cell.db"
             );
+        }
+    }
+}
+
+/// GH #838 — wait for one cell's death-ack until `deadline`, beating the
+/// watchdog while waiting. `true` = the ack came (or its sender dropped: the task
+/// is gone either way), `false` = the deadline passed first.
+///
+/// The wait runs inline in the colony task: the mutation's atomicity and its
+/// serialisation against every other event depend on it (OR-SN-9 — detaching it
+/// would break both). Before this helper it was one silent stretch, and the
+/// watchdog judged a busy cell's handler as a wedged loop (`stuck_work_item`,
+/// fatal under `on_trip = exit`). Now it beats every [`DEATH_ACK_PULSE`] under a
+/// label that names the cell, and the beats end with `deadline` — a cell that
+/// never answers cannot keep the colony pulsing. Callers compute `deadline` ONCE
+/// per wait and pass it for every cell, so N cells cost at most one
+/// [`term_timeout`].
+///
+/// Panic-free and lock-free: `WorkPulse::tick` is a `try_send`.
+async fn await_death_ack(
+    rx: oneshot::Receiver<()>,
+    deadline: tokio::time::Instant,
+    pulse: &crate::watchdog::WorkPulse,
+    path: &Path,
+) -> bool {
+    let pulse = pulse.with_label(crate::watchdog::WorkItem::new(format!(
+        "{} death-ack {}",
+        pulse.label(),
+        path.as_str()
+    )));
+    pulse.tick();
+    let mut beat_iv = tokio::time::interval(DEATH_ACK_PULSE);
+    beat_iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let wait = tokio::time::timeout_at(deadline, rx);
+    tokio::pin!(wait);
+    loop {
+        tokio::select! {
+            biased;
+            answered = &mut wait => return answered.is_ok(),
+            _ = beat_iv.tick() => pulse.tick(),
         }
     }
 }
@@ -6656,6 +7016,19 @@ pub(crate) async fn handle_mutation(
     // the `Stopped` message finds no entry at the old path and drains it to the
     // DLQ, the same route a `remove_nodes` disconnect takes.
     let mut staged = staged;
+    // GH #838: two phases, like the disconnect in step 10c. Phase one takes every
+    // source entry out and sends every stop; only then does the ONE deadline
+    // start, and every relocated cell is waited for against it. Sending each stop
+    // inside the wait loop let a hung cell use the whole deadline before the next
+    // cell had even been told to stop — that one was then renamed and respawned
+    // at once, its old task still holding `cell.db` (fix-round review I1, pinned
+    // by `a_move_waits_for_every_relocated_cell_before_it_respawns_one`).
+    let mut moving: Vec<(
+        &crate::mutation::relocate::PlannedMove,
+        crate::mutation::relocate::RelocatedNode,
+        RegistryEntry,
+    )> = Vec::with_capacity(planned_moves.len());
+    let mut move_acks: Vec<(Path, oneshot::Receiver<()>)> = Vec::new();
     for (mv, node) in planned_moves.iter().zip(relocated_nodes) {
         let Some(mut entry) = registry.remove(&mv.from) else {
             // Cannot happen: validate hit the registry. Not worth a panic in the
@@ -6666,20 +7039,35 @@ pub(crate) async fn handle_mutation(
             );
             continue;
         };
-        let cell_id = entry.cell_id;
         if matches!(entry.status, CellStatus::Awake)
             && let Some(stop) = entry.stop_tx.take()
         {
             let _ = stop.send(());
             if let Some(rx) = entry.death_ack_rx.take() {
-                // Bounded, like every other death-ack wait: a cell that will not
-                // come down must not hold the mutation open forever. The wait is
-                // for `cell.db` to be closed before the directory moves — on a
-                // timeout the rename still happens (POSIX renames the inode, so
-                // no write is lost) and the stale handle dies with its task.
-                let _ = tokio::time::timeout(term_timeout(), rx).await;
+                move_acks.push((mv.from.clone(), rx));
             }
         }
+        // The entry itself is held until the wait is over, as before the two
+        // phases: its handles go when the old task is down, not earlier.
+        moving.push((mv, node, entry));
+    }
+    // Bounded, like every other death-ack wait: a cell that will not come down
+    // must not hold the mutation open forever. The wait is for `cell.db` to be
+    // closed before the directory moves — on a timeout the rename still happens
+    // (POSIX renames the inode, so no write is lost) and the stale handle dies
+    // with its task.
+    let move_deadline = tokio::time::Instant::now() + term_timeout();
+    for (path, rx) in move_acks {
+        if !await_death_ack(rx, move_deadline, &pulse, &path).await {
+            tracing::warn!(
+                path = %path.as_str(),
+                "moved cell did not answer the peace-stop within the term-timeout — \
+                 renaming its directory while its task may still hold cell.db"
+            );
+        }
+    }
+    for (mv, node, entry) in moving {
+        let cell_id = entry.cell_id;
         drop(entry);
         node_contracts.remove(&mv.from);
 
@@ -7756,6 +8144,8 @@ pub(crate) async fn handle_mutation(
                     hive_scopes,
                     &registered_by_this_mutation,
                     &hive_scopes_registered_by_this_mutation,
+                    &pulse,
+                    None,
                 )
                 .await;
                 undo_lifts(&applied_lifts, registry, node_contracts, hive_scopes, &id);
@@ -8001,6 +8391,8 @@ pub(crate) async fn handle_mutation(
                     hive_scopes,
                     &registered_by_this_mutation,
                     &hive_scopes_registered_by_this_mutation,
+                    &pulse,
+                    None,
                 )
                 .await;
                 undo_lifts(&applied_lifts, registry, node_contracts, hive_scopes, &id);
@@ -8565,6 +8957,8 @@ pub(crate) async fn handle_mutation(
                 hive_scopes,
                 &registered_by_this_mutation,
                 &hive_scopes_registered_by_this_mutation,
+                &pulse,
+                None,
             )
             .await;
             undo_lifts(&applied_lifts, registry, node_contracts, hive_scopes, &id);
@@ -8743,9 +9137,9 @@ pub(crate) async fn handle_mutation(
         }
     }
 
-    // Apply sequence step 10c (F5 variant A): inline death-ack-wait with a
-    // term-timeout per deactivated Awake cell. Happy path: every death_ack fires
-    // < term_timeout() → proceed to flush+commit. Timeout on ANY cell → full in-RAM
+    // Apply sequence step 10c (F5 variant A): inline death-ack-wait, one
+    // term-timeout shared by every deactivated Awake cell (GH #838, below).
+    // Happy path: every death_ack fires before the deadline → proceed to flush+commit. Timeout on ANY cell → full in-RAM
     // rollback + discard buffer → Rejected{term_timeout} (colony.db untouched).
     // Test-only deterministic sync point: the peace-stops are sent and the colony
     // is about to block on the inline death-ack-wait. Fire ONE tick so a test can
@@ -8756,12 +9150,16 @@ pub(crate) async fn handle_mutation(
     {
         let _ = tx.try_send(());
     }
+    // GH #838: ONE deadline for every disconnected cell of this mutation — the
+    // per-cell budget made N cells cost N × term_timeout in one work item — and
+    // the wait beats the watchdog while it lasts (`await_death_ack`).
+    let death_ack_deadline = tokio::time::Instant::now() + term_timeout();
     for (node, rx) in death_acks {
-        match tokio::time::timeout(term_timeout(), rx).await {
-            Ok(_) => {
+        match await_death_ack(rx, death_ack_deadline, &pulse, &node).await {
+            true => {
                 // death_ack fired (or sender dropped — task gone either way).
             }
-            Err(_) => {
+            false => {
                 tracing::warn!(
                     path = %node.as_str(),
                     "death-ack term-timeout during disconnect — rolling back mutation"
@@ -8799,6 +9197,10 @@ pub(crate) async fn handle_mutation(
                     hive_scopes,
                     &registered_by_this_mutation,
                     &hive_scopes_registered_by_this_mutation,
+                    &pulse,
+                    // The disconnect has spent its deadline: a grace, not a
+                    // second term-timeout (`ROLLBACK_GRACE`).
+                    Some(death_ack_deadline),
                 )
                 .await;
                 undo_lifts(&applied_lifts, registry, node_contracts, hive_scopes, &id);
@@ -8839,6 +9241,8 @@ pub(crate) async fn handle_mutation(
                     hive_scopes,
                     &registered_by_this_mutation,
                     &hive_scopes_registered_by_this_mutation,
+                    &pulse,
+                    None,
                 )
                 .await;
                 undo_lifts(&applied_lifts, registry, node_contracts, hive_scopes, &id);
@@ -8884,6 +9288,8 @@ pub(crate) async fn handle_mutation(
                     hive_scopes,
                     &registered_by_this_mutation,
                     &hive_scopes_registered_by_this_mutation,
+                    &pulse,
+                    None,
                 )
                 .await;
                 undo_lifts(&applied_lifts, registry, node_contracts, hive_scopes, &id);
@@ -8933,6 +9339,8 @@ pub(crate) async fn handle_mutation(
                     hive_scopes,
                     &registered_by_this_mutation,
                     &hive_scopes_registered_by_this_mutation,
+                    &pulse,
+                    None,
                 )
                 .await;
                 undo_lifts(&applied_lifts, registry, node_contracts, hive_scopes, &id);
@@ -9849,8 +10257,11 @@ pub(crate) fn dead_letter_from_row(row: crate::persist::colony_db::DeadLetterRow
     // `from_code` reads a bare string — so the path goes back on here, and the
     // reconstructed entry answers `detail()` exactly as the original did. `NULL`
     // in an old row and `None` here are the same statement.
-    if let crate::dead_letter::DeadLetterReason::HiveBoundary { hive } = &mut reason {
-        *hive = row.detail;
+    match &mut reason {
+        crate::dead_letter::DeadLetterReason::HiveBoundary { hive } => *hive = row.detail,
+        // GH #850: the same round trip for the overflow's one fact.
+        crate::dead_letter::DeadLetterReason::MailboxFull { detail } => *detail = row.detail,
+        _ => {}
     }
     DeadLetter {
         sender_path: Path::new(&row.sender_path),

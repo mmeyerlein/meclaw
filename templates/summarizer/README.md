@@ -1,4 +1,4 @@
-# `summarizer@2.1.0`
+# `summarizer@2.2.0`
 
 The session handover step as a hive of existing cell types -- no new cell type, no Rust.
 Two cells: `prep` (a `code` cell, the glue) and `writer` (an `llm` cell, the prose).
@@ -68,7 +68,8 @@ writes `handover`, and this hive writes nothing else.
 
 The entry lane goes **onto the hive path itself**: `params.ports` is `[]`, so
 `<summarizer>` is the only address and the `in_` lane the edge names is what the door
-inside picks up. The parent edge consumes exactly the collector's close-batch form
+inside picks up -- every `in_` lane but one: `in_model` goes past `./prep` straight to
+`./writer` (see *The model door* below). The parent edge consumes exactly the collector's close-batch form
 (`messages[]` the whole day in order, the raw round rows in the top-level slot `rounds`,
 `hop.session_id` / `turn_count` / `round_count` the sizes):
 
@@ -81,6 +82,7 @@ inside picks up. The parent edge consumes exactly the collector's close-batch fo
 | lane | who sends it | what it does |
 |---|---|---|
 | `in_batch` | the collector's close lane (route `write`) | shapes the day into the prompt, asks the writer |
+| `in_model` | the colony's `llm-registry` (its `update` lane, restamped) | a model package for `./writer`, pushed by the colony's `llm-registry`: a params-only body (an empty `system` slot, no `messages`) the cell merges into its live params and answers with nothing. See *The model door*. Since 2.2.0 ([#858](https://github.com/mmeyerlein/meclaw/issues/858)) |
 
 Exits leave **from the hive path** on `hop.route` -- `./prep -> .` is the out-door, so a
 parent drains `<summarizer>` and never the cell behind it. **Where they lead is the parent's wiring,
@@ -96,6 +98,27 @@ Wire the ports in the **same mutation** that instantiates the hive: an island wi
 crossing edge derives inactive and never spawns. Instantiation needs `ctx.model` -- a
 **resolved literal** per the K-H2 convention (the builder reads `MODEL_<ROLE>` from
 `.env` and passes the value, not the `${...}` token).
+
+### The model door (`in_model`, [#858](https://github.com/mmeyerlein/meclaw/issues/858))
+
+**A model package reaches `./writer` through `in_model` and nothing else.** The hive is sealed,
+so no edge from outside may name `./writer`; since 2.2.0 one door edge is the way in, drawn for
+the colony's `llm-registry`:
+
+```json
+{"from": ".", "to": "./writer", "condition": "has(hop.route) && hop.route == 'in_model'"}
+```
+
+The body is params-only -- an empty `system` slot, no `messages` -- which the `llm` cell
+merges into its live params, persists in its own `cell.db` and answers with nothing
+(`docs/cell-types.md` § `llm`). A request on any other lane cannot change the model a
+cell runs on: package keys are taken from a params-only message only (GH #853).
+
+**`./writer` says what it needs, in prose.** `params.requirement` names the role, the latency,
+the context, the depth of reasoning and the price the cell can bear, and never a model; a
+registry translates it against its catalogue once per change and keeps the result
+(`templates/llm-registry/README.md`). Without a registry the door stays unused and the
+cell runs its start value.
 
 ## Knobs
 

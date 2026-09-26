@@ -40,6 +40,18 @@ impl CellFactory for CodeCellFactory {
         mailbox_capacity: usize,
     ) -> Result<SpawnedCellKind, String> {
         let params = CodeParams::parse(&raw_params)?;
+        // GH #844: a cell whose inline script is materialised per spawn clears
+        // the leftovers of processes that were killed before their guard could
+        // unlink them -- only files of this crate's own name shape, only of
+        // dead pids (`script_file::sweep_dead_leftovers`). Once per cell spawn,
+        // not per message: a leftover can only be made by a process that has
+        // since died, and this is the first moment the next one looks.
+        if params.runner_mode == crate::code::RunnerMode::Cold
+            && let crate::code::Script::Inline(code) = &params.script
+            && crate::code::script_file::is_oversized(code)
+        {
+            crate::code::script_file::sweep_dead_leftovers(&std::env::temp_dir());
+        }
         // `resident` forces 1 (R2); every other mode keeps the pre-lane default.
         // The SAME number bounds the dispatcher and sizes the pool, so a warm
         // cell can never have more workers than children or the other way round.

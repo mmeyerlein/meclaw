@@ -98,7 +98,10 @@ use crate::voice::contract::{
 use crate::voice::io::{ToConnection, VoiceIoShared, register, unregister};
 use crate::voice::link::{ClientLink, Incoming, LinkSink, Outgoing};
 use crate::voice::service::{Negotiated, audio_out_frame_ms, stt_name, tts_name};
-use crate::voice::wire::{ClientFrame, Mode, PROTOCOL, ServerFrame, SpeakEndReason, WireErrorCode};
+use crate::voice::wire::{
+    CLOSE_SESSION_NOT_TAKEN, ClientFrame, Mode, PROTOCOL, ServerFrame, SpeakEndReason,
+    WireErrorCode,
+};
 
 /// How long a lost recognition session is left alone before the one retry.
 ///
@@ -339,6 +342,45 @@ async fn half_is_gone(shutdown: &mut Option<tokio::sync::watch::Receiver<()>>) {
     }
 }
 
+/// Wait until the handler has the session in its table, and only then let the
+/// caller say `hello` (GH #836, OR-SN-14).
+///
+/// `register` puts `Connected` into the event channel, but the handler's loop
+/// serves its mailbox before its events (`stop > mailbox > events`, the A4
+/// contract of every long-running cell). A `hello` sent right after `register`
+/// therefore raced the handler: an `in_speak` already queued in the mailbox was
+/// answered `unknown_session` for a connection whose client held its `hello`
+/// (measured: 1 of 500 test runs, a 30 s timeout with no name). The bias stays;
+/// the handshake waits for the acknowledgement instead.
+///
+/// Bounded by `external_timeout` (hard rule 12). A handler that does not take
+/// the session in time -- or is gone, which drops the acknowledgement -- gets
+/// it taken back (`unregister`, so no half-registered session is left behind)
+/// and the client a close [`CLOSE_SESSION_NOT_TAKEN`] instead of a `hello`.
+/// Returns whether the connection may go on.
+async fn session_taken(
+    shared: &Arc<VoiceIoShared>,
+    sink: &mut LinkSink,
+    session_id: &str,
+    conn_id: u64,
+    taken: oneshot::Receiver<()>,
+) -> bool {
+    let why = match tokio::time::timeout(shared.external_timeout, taken).await {
+        Ok(Ok(())) => return true,
+        Ok(Err(_)) => "the handler is gone",
+        Err(_) => "the cell did not take the session in time",
+    };
+    tracing::warn!(
+        session_id,
+        reason = why,
+        timeout_ms = shared.external_timeout.as_millis() as u64,
+        "voice: no hello -- the session was not taken"
+    );
+    unregister(shared, session_id, conn_id).await;
+    sink.close(CLOSE_SESSION_NOT_TAKEN, why).await;
+    false
+}
+
 /// Drive one connection until it ends.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_connection(
@@ -366,7 +408,10 @@ pub async fn run_connection(
     // Two halves rather than one link: the loop below reads the client in one
     // `select!` arm and writes to it from four others.
     let (mut sink, mut stream) = link.into_halves();
-    register(&shared, &session_id, conn_id, to_conn_tx, mode).await;
+    let taken = register(&shared, &session_id, conn_id, to_conn_tx, mode).await;
+    if !session_taken(&shared, &mut sink, &session_id, conn_id, taken).await {
+        return;
+    }
 
     let echo = shared.stt.name() == "echo";
     // The pair this connection agreed to in `?sample_rate=` (GH #619), not the
@@ -1156,7 +1201,10 @@ async fn run_duplex(
     mut to_conn_rx: mpsc::Receiver<ToConnection>,
 ) {
     let (mut sink, mut stream) = link.into_halves();
-    register(&shared, &session_id, conn_id, to_conn_tx, mode).await;
+    let taken = register(&shared, &session_id, conn_id, to_conn_tx, mode).await;
+    if !session_taken(&shared, &mut sink, &session_id, conn_id, taken).await {
+        return;
+    }
 
     // One format for both directions: what the model hears is what it says.
     let Negotiated {
@@ -2006,5 +2054,138 @@ mod tests {
         let mut f = Framer::new(Some(AudioFormat::pcm16_mono(24_000)), 20);
         assert_eq!(f.push(vec![4; 4]), vec![vec![4; 4]]);
         assert!(f.push(Vec::new()).is_empty(), "an empty chunk is no frame");
+    }
+
+    // ── GH #836: `hello` only after the handler took the session ─────────
+
+    /// The failure marker of this repo: generous, never a budget.
+    const MARKER: Duration = Duration::from_secs(30);
+
+    /// One cascade connection on a channel link, driven by hand: the test IS
+    /// the handler, so it decides when -- and whether -- `Connected` is taken.
+    struct Hand {
+        events: mpsc::Receiver<VoiceEvent>,
+        to_cell: mpsc::Sender<meclaw_colony::LinkFrame>,
+        from_cell: mpsc::Receiver<meclaw_colony::LinkFrame>,
+        conn: tokio::task::JoinHandle<()>,
+    }
+
+    fn hand(external_timeout: Duration) -> Hand {
+        let (events_tx, events) = mpsc::channel::<VoiceEvent>(16);
+        let shared = crate::voice::io::VoiceIoShared::for_test(events_tx, external_timeout);
+        let (to_cell, to_cell_rx) = mpsc::channel(16);
+        let (from_cell_tx, from_cell) = mpsc::channel(16);
+        let link = ClientLink::chan(to_cell_rx, from_cell_tx);
+        let negotiated =
+            crate::voice::service::negotiate(&shared, None).expect("the echo half negotiates");
+        let (conn_id, to_conn_tx, to_conn_rx) = crate::voice::io::new_connection_slot();
+        let conn = tokio::spawn(run_connection(
+            link,
+            shared,
+            "call-1".to_string(),
+            Mode::Auto,
+            negotiated,
+            conn_id,
+            to_conn_tx,
+            to_conn_rx,
+        ));
+        Hand {
+            events,
+            to_cell,
+            from_cell,
+            conn,
+        }
+    }
+
+    impl Hand {
+        async fn event(&mut self) -> VoiceEvent {
+            tokio::time::timeout(MARKER, self.events.recv())
+                .await
+                .expect("the connection reports to the handler")
+                .expect("the event channel is open")
+        }
+
+        async fn frame(&mut self) -> meclaw_colony::LinkFrame {
+            tokio::time::timeout(MARKER, self.from_cell.recv())
+                .await
+                .expect("the connection says something to its client")
+                .expect("the link is open")
+        }
+    }
+
+    fn is_hello(frame: &meclaw_colony::LinkFrame) -> bool {
+        matches!(frame, meclaw_colony::LinkFrame::Text(t) if t.contains("\"hello\""))
+    }
+
+    /// The defect: `hello` left right after `Connected` was queued, so a
+    /// client could hold its `hello` while the handler did not know the
+    /// session yet. The silence below has its control in the same test: once
+    /// the event is taken, the very next frame IS the `hello`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn gh836_hello_waits_until_the_handler_took_the_session() {
+        let mut h = hand(MARKER);
+        let mut connected = h.event().await;
+        assert!(
+            matches!(&connected, VoiceEvent::Connected { session_id, .. } if session_id == "call-1"),
+            "the connection reports itself first: {connected:?}"
+        );
+        // Held, not taken: nothing may reach the client yet. The window is a
+        // semantic one (the control is the frame right after it), not a
+        // guess at how long anything takes.
+        let early = tokio::time::timeout(Duration::from_millis(500), h.from_cell.recv()).await;
+        assert!(
+            early.is_err(),
+            "no frame may reach the client before the handler took the session; got {early:?}"
+        );
+        connected.acknowledge();
+        let first = h.frame().await;
+        assert!(
+            is_hello(&first),
+            "the first frame after the acknowledgement is the hello: {first:?}"
+        );
+        drop(h.to_cell);
+        let _ = tokio::time::timeout(MARKER, h.conn).await;
+    }
+
+    /// A handshake nobody takes is bounded by `external_timeout`: no `hello`,
+    /// a close `1013` naming why, and the session given back -- the
+    /// `Disconnected` is the receipt that nothing stays registered.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn gh836_a_session_nobody_takes_is_closed_and_given_back() {
+        let mut h = hand(Duration::from_millis(300));
+        let _held = h.event().await;
+        let frame = h.frame().await;
+        let meclaw_colony::LinkFrame::Close { code, reason } = frame else {
+            panic!("the first and only frame is the close, never a hello: {frame:?}")
+        };
+        assert_eq!(code, CLOSE_SESSION_NOT_TAKEN);
+        assert!(reason.contains("in time"), "the close says why: {reason:?}");
+        let gone = h.event().await;
+        assert!(
+            matches!(&gone, VoiceEvent::Disconnected { session_id } if session_id == "call-1"),
+            "the session is taken back rather than left half-registered: {gone:?}"
+        );
+        tokio::time::timeout(MARKER, h.conn)
+            .await
+            .expect("the connection task ends")
+            .expect("no panic");
+    }
+
+    /// A handler that is gone drops the acknowledgement, and the connection
+    /// does not wait out its deadline for an answer that cannot come.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn gh836_a_handler_that_dropped_the_event_closes_at_once() {
+        let mut h = hand(MARKER);
+        drop(h.event().await);
+        // Far below MARKER, the deadline this connection was given: the close
+        // has to come from the dropped acknowledgement, not from the clock.
+        let frame = tokio::time::timeout(Duration::from_secs(10), h.from_cell.recv())
+            .await
+            .expect("the close does not wait for the deadline")
+            .expect("the link is open");
+        assert!(
+            matches!(&frame, meclaw_colony::LinkFrame::Close { code, .. } if *code == CLOSE_SESSION_NOT_TAKEN),
+            "no hello for a session nobody holds: {frame:?}"
+        );
     }
 }

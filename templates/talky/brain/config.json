@@ -1,11 +1,12 @@
 {
   "cell": {
     "type": "llm",
-    "message_timeout": 180000
+    "message_timeout": 240000
   },
   "params": {
     "provider": "openai",
     "model": "${ctx.model}",
+    "requirement": "The voice of a conversation: it answers a person turn by turn, so a reply must start within a few seconds. It reads a context of a few thousand to some tens of thousands of tokens, calls tools reliably and writes natural, warm prose in the language it is addressed in. Everyday reasoning is enough, the deep work is handed to a reasoning core. It runs on every turn, so the price per call should stay low.",
     "api_key": "${OPENROUTER_API_KEY}",
     "credential_grant_id": "",
     "credential_wait_ms": 30000,
@@ -108,6 +109,10 @@
           "required": false
         },
         "sealed": {
+          "type": "object",
+          "required": false
+        },
+        "params": {
           "type": "object",
           "required": false
         }

@@ -362,6 +362,27 @@ impl Live {
     }
 }
 
+/// The events of an I/O half with the test standing in for its handler.
+///
+/// A handler owes a connection one thing before its `hello`: to take the
+/// session (GH #836) -- the connection holds `hello` until the `Connected`
+/// is acknowledged. This forwarder does that the moment the event arrives,
+/// which is where a handler with nothing queued in front of it would, and
+/// hands the event on unchanged otherwise. Order is kept: one task, one queue.
+fn acknowledging_events() -> (mpsc::Sender<VoiceEvent>, mpsc::Receiver<VoiceEvent>) {
+    let (tx, mut raw) = mpsc::channel::<VoiceEvent>(64);
+    let (forward, rx) = mpsc::channel::<VoiceEvent>(64);
+    tokio::spawn(async move {
+        while let Some(mut event) = raw.recv().await {
+            event.acknowledge();
+            if forward.send(event).await.is_err() {
+                break;
+            }
+        }
+    });
+    (tx, rx)
+}
+
 impl Drop for Live {
     fn drop(&mut self) {
         self.task.abort();
@@ -401,7 +422,7 @@ async fn start_framed(
     audio_out_frame_ms: u32,
 ) -> Live {
     let surfaces = Arc::new(meclaw_colony::SurfaceRegistry::new());
-    let (events_tx, events_rx) = mpsc::channel(64);
+    let (events_tx, events_rx) = acknowledging_events();
     let (reconfig_tx, reconfig_rx) = mpsc::channel(64);
     let mut io = VoiceIo::new(MOUNT.to_string(), stt, tts, mode, external, idle, events_tx);
     io.audio_out_frame_ms = audio_out_frame_ms;
@@ -606,7 +627,9 @@ async fn info_page_and_hello_declare_the_same_wiring() {
         "the same declaration the read gives, on the connection itself"
     );
     match live.event().await {
-        VoiceEvent::Connected { session_id, mode } => {
+        VoiceEvent::Connected {
+            session_id, mode, ..
+        } => {
             assert_eq!(session_id, "abc");
             assert_eq!(mode, Mode::Hold);
         }
@@ -1996,13 +2019,6 @@ async fn text_a_provider_is_handed(speak_plain: Option<bool>, written: &[&str]) 
     let (addr, listener) = surface_listener(Arc::clone(&surfaces)).await;
     await_mount(&surfaces).await;
     let mut ws = connect(&format!("ws://{addr}/{MOUNT}"), "?session=call-1").await;
-    let hello = next_text(&mut ws).await;
-    assert_eq!(hello["session_id"], json!("call-1"));
-    assert_eq!(
-        hello["speak_plain"],
-        json!(speak_plain.unwrap_or(true)),
-        "the declaration says what will happen to the text: {hello}"
-    );
 
     let mut db = cell_db();
     let (out_tx, mut out_rx) = mpsc::channel::<meclaw_core::CellEmission>(16);
@@ -2017,6 +2033,8 @@ async fn text_a_provider_is_handed(speak_plain: Option<bool>, written: &[&str]) 
         None,
     );
     let (reconfig_tx, _reconfig_rx) = mpsc::channel(8);
+    // GH #836: the `hello` waits until the handler has taken the session, so
+    // the `Connected` is handled before the first frame is read.
     let connected = next_event().await;
     assert!(
         matches!(connected, VoiceEvent::Connected { .. }),
@@ -2024,6 +2042,13 @@ async fn text_a_provider_is_handed(speak_plain: Option<bool>, written: &[&str]) 
         label(&connected)
     );
     cell.handle_event(connected, &origin, &mut db).await;
+    let hello = next_text(&mut ws).await;
+    assert_eq!(hello["session_id"], json!("call-1"));
+    assert_eq!(
+        hello["speak_plain"],
+        json!(speak_plain.unwrap_or(true)),
+        "the declaration says what will happen to the text: {hello}"
+    );
 
     for answer in written {
         let mut ctx = meclaw_core::serde_json::Map::new();

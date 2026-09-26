@@ -6,6 +6,7 @@
   "params": {
     "provider": "openai",
     "model": "${MODEL_BUILDER:-}",
+    "requirement": "Turns a briefed request into a draft manifest: strict JSON in a closed vocabulary, following long instructions and tool results exactly. It needs precise instruction following and reliable structured output of up to many thousands of tokens, and no deliberate reasoning step. An operator waits on it, so an answer within a few minutes is required, the price per call should stay moderate, and a model served locally is welcome.",
     "api_key": "${LOCAL_LLM_API_KEY:-}",
     "base_url": "${LOCAL_LLM_BASE_URL:-}",
     "temperature": 0,
@@ -44,7 +45,15 @@
       "body": {
         "messages": {
           "type": "array",
-          "required": true
+          "required": false
+        },
+        "system": {
+          "type": "object",
+          "required": false
+        },
+        "params": {
+          "type": "object",
+          "required": false
         }
       }
     }

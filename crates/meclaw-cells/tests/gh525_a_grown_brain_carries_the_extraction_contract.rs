@@ -659,7 +659,7 @@ fn the_shipped_default_asks_for_nothing() {
         turn["system"]["instructions"]
             .as_object()
             .map(|o| o.keys().cloned().collect::<Vec<_>>()),
-        Some(vec!["mode".to_string()]),
+        Some(vec!["mode".to_string(), "peer".to_string()]),
         "and nothing else of the family travels with a turn either: {turn}"
     );
 }
@@ -715,7 +715,17 @@ const CHARTER: &str =
 /// `system_writable`: a slot smuggled in under a fifth family would be refused
 /// rather than silently accepted.
 fn brain(td: &tempfile::TempDir, base_url: &str) -> (LlmCell, DbConn) {
-    let slots = json!(["identity", "instructions", "tools", "memory", "consult"]);
+    // `roster` since GH #847: the collector writes the legend on every
+    // assembly, empty without a participant, and an allowlist that lacks the
+    // family refuses the whole update.
+    let slots = json!([
+        "identity",
+        "instructions",
+        "tools",
+        "memory",
+        "consult",
+        "roster"
+    ]);
     let params = LlmParams::parse(&json!({
         "provider": "openai", "model": "gpt-x", "api_key": "sk-test",
         "base_url": format!("{base_url}/v1"),

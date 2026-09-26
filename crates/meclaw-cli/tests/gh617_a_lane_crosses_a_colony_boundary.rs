@@ -143,8 +143,25 @@ async fn pair() -> (Colony, SocketAddr, Colony) {
     let south = boot("peer-south", &[]).await;
     let fwd = peer_forwarder(south.addr, "north").await;
     let url = format!("http://{fwd}/peer/");
-    let north = boot("peer-north", &[("__PEER_URL__", url.as_str())]).await;
+    let origin = origin_of(&url);
+    let north = boot(
+        "peer-north",
+        &[
+            ("__PEER_URL__", url.as_str()),
+            ("__PEER_ORIGIN__", origin.as_str()),
+        ],
+    )
+    .await;
     (south, fwd, north)
+}
+
+/// GH #840: the origin of a peer URL, the one entry of north's
+/// `params.egress` (`__PEER_ORIGIN__` in the fixture).
+fn origin_of(url: &str) -> String {
+    reqwest::Url::parse(url)
+        .expect("a peer URL")
+        .origin()
+        .ascii_serialization()
 }
 
 fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
@@ -1027,7 +1044,14 @@ fn prepare_north(
 ) -> tempfile::TempDir {
     let td = tempfile::TempDir::new().expect("tempdir");
     copy_dir_recursive(&fixture_path("peer-north"), td.path());
-    rewrite_configs(td.path(), &[("__PEER_URL__", peer_url)]);
+    let origin = origin_of(peer_url);
+    rewrite_configs(
+        td.path(),
+        &[
+            ("__PEER_URL__", peer_url),
+            ("__PEER_ORIGIN__", origin.as_str()),
+        ],
+    );
     let cfg_path = td.path().join("main/friend/config.json");
     let mut cfg: Value =
         serde_json::from_str(&std::fs::read_to_string(&cfg_path).expect("read")).expect("json");

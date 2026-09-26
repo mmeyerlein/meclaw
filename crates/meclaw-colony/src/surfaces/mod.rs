@@ -135,7 +135,16 @@ pub struct HandedConnection {
 }
 
 /// Capacity of the handoff channel per mount.
-pub const HANDOFF_QUEUE: usize = 16;
+///
+/// GH #851: 64, the same as [`LINK_QUEUE`] (was 16). A burst of short
+/// connections is absorbed here and by [`HANDOFF_WAIT`] instead of being
+/// refused while the consumer is between two `recv`.
+pub const HANDOFF_QUEUE: usize = 64;
+
+/// How long the listener waits for a free slot in a full handoff channel before
+/// it answers `503 surface busy` (GH #851). A closed channel — the reader is
+/// gone — is refused at once and does not wait.
+pub const HANDOFF_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// What a surface cell registers.
 pub struct SurfaceEntry {

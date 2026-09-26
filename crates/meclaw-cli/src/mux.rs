@@ -412,6 +412,7 @@ mod tests {
             let _ = stop_rx.await;
         }));
 
+        let asked = std::time::Instant::now();
         let answer = tokio::time::timeout(
             Duration::from_secs(30),
             reqwest::get(format!("http://{addr}/voice/info")),
@@ -419,7 +420,14 @@ mod tests {
         .await
         .expect("a mount nobody reads answers instead of swallowing the client")
         .expect("the request itself went through");
+        let took = asked.elapsed();
         assert_eq!(answer.status(), 503);
+        // GH #851: a FULL queue is waited on, a CLOSED one is not — the
+        // teardown depends on hearing the refusal at once.
+        assert!(
+            took < meclaw_colony::surfaces::HANDOFF_WAIT,
+            "a mount whose reader is gone refuses at once, not after the wait; took {took:?}"
+        );
         assert_eq!(
             answer.text().await.expect("text"),
             "surface busy\n",
@@ -479,6 +487,7 @@ mod tests {
             let _ = stop_rx.await;
         }));
 
+        let asked = std::time::Instant::now();
         let answer = tokio::time::timeout(
             Duration::from_secs(30),
             reqwest::get(format!("http://{addr}/voice/info")),
@@ -486,7 +495,14 @@ mod tests {
         .await
         .expect("a full mount answers instead of parking the client")
         .expect("the request itself went through");
+        let took = asked.elapsed();
         assert_eq!(answer.status(), 503);
+        // GH #851: a full queue whose reader is still there is given the wait
+        // for a slot before it is refused.
+        assert!(
+            took >= meclaw_colony::surfaces::HANDOFF_WAIT,
+            "a full mount refuses only after the wait for a slot; took {took:?}"
+        );
         assert_eq!(
             answer.text().await.expect("text"),
             "surface busy\n",

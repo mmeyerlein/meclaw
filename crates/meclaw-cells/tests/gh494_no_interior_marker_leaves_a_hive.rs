@@ -63,7 +63,7 @@ use std::path::{Path, PathBuf};
 use meclaw_core::serde_json::{Value, from_str};
 
 /// Context the templates pass between hives on purpose. Never cleared at a rim.
-const SHARED: [&str; 26] = [
+const SHARED: [&str; 29] = [
     "actor",
     "asker",
     "audience_now",
@@ -108,6 +108,20 @@ const SHARED: [&str; 26] = [
     // (GH #823, memory-hive@3.4.1), and `gh823_no_recall_key_leaves_the_memory_hive.rs`
     // holds that rim — this list only keeps them from being read as a leak here.
     "memory_tier",
+    // GH #855 -- the mark of the model registry's announcement lane, beside
+    // `actor` and `asker`: `meclaw-os` stamps it on the bridge from `./orgs`
+    // and the registry's hand, one hive in, reads it as "this is an
+    // announcement and never a command". It is identity vocabulary the shell
+    // hands to its registry, not a marker of the shell's own.
+    "model_announcer",
+    // GH #858 -- the two keys of an announcement itself. The builder's road
+    // stamps them at `/os/orgs`; since meclaw-os 1.10.0 the shell stamps them
+    // too, on its own announcement of `/os/argus/judge` and
+    // `/os/builder/compose` to `./llm-registry`. They are the registry's
+    // vocabulary like `model_announcer`, and the hand answers an announcement
+    // with nothing, so no exit of the shell ever carries one it set.
+    "model_announced",
+    "model_generation",
     "recall_as_of",
     "recall_caller",
     "recall_query",

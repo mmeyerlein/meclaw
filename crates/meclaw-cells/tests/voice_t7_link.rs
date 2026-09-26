@@ -288,6 +288,13 @@ async fn a_topic_is_a_door_and_it_answers_like_the_socket() {
             ..Default::default()
         })
         .await;
+    // GH #836: the connection says `hello` once the handler has taken the
+    // session, so the handler is handed the `Connected` first.
+    let connected = live.pump_one().await;
+    assert!(
+        connected.starts_with("Connected") && connected.contains("c1"),
+        "the link is reported like any other connection; got {connected}"
+    );
     let Some(LinkFrame::Text(hello)) = link.from_cell.recv().await else {
         panic!("hello is the first frame")
     };
@@ -425,10 +432,16 @@ async fn a_topic_is_a_door_and_it_answers_like_the_socket() {
         Some(4409),
         "a reconnect claims the address it had, and the first is told the code"
     );
-    let Some(LinkFrame::Text(hello2)) = second.from_cell.recv().await else {
-        panic!("the successor gets its own hello")
-    };
-    assert!(hello2.contains("\"session_id\":\"c1\""), "{hello2}");
+    // The successor's `hello` waits for its own `Connected` to be taken
+    // (GH #836), so the handler is fed while the link is read.
+    let seen = live
+        .frames_until(&mut second, |v| v["type"] == "hello")
+        .await;
+    let hello2 = seen
+        .iter()
+        .find_map(text_of)
+        .expect("the successor gets its own hello");
+    assert_eq!(hello2["session_id"], "c1", "{hello2}");
 }
 
 /// A page that stops reading is counted out, and says so before it goes.

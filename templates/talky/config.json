@@ -60,6 +60,10 @@
           "because": "a durable `system.*` slot for this agent's brain -- the door in the wall (GH #458). This composite is sealed: an edge naming `./brain` is refused with `hive_port_boundary`, so until this lane existed there was no way at all for an identity to reach the brain from outside, and `affinity` could push into nowhere. The pack travels the door edges it always would (`.` -> `./collector` -> `./brain`); the collector is what turns it into a system-slot upsert, and it is a LANE rather than a body flag because what lands in `system.*` is UPSERTed into the brain's own `cell.db` and stands there until something overwrites that exact path -- durable state of the agent, told apart from the evidence of one round by the topology and not by a key a model could have written. Body: `system` carrying one or more slot subtrees (what `affinity`'s push lane emits: the slots and NO turn beside them, so the update costs a write and not an inference, GH #263), or `slot` + `content` for a single one written by hand. Only `identity`, `persona`, `handover` and `instructions` may be written -- a subset of the collector's `SYS_KEEP`, so what arrives here is out of the curator's reach at any budget. `instructions` joined that list in GH #488: holding the charter out of the lane assumed it had another owner, and it had none -- nothing exported it and no template seeded it, so a rebuilt generation came up with an empty charter and answered as the vendor's default assistant. What guards it now is the edge that stamps the lane, drawn only where a brain may draw its OWN push edge, from a source whose single writer is `affinity`'s audited gate; anything else refuses the WHOLE pack with `slot_unknown`, an empty one with `pack_empty`. The owner is taken from `envelope.reply_to` and never from the body. PAIRED with `pack_ack` in `params.required_drains`: it answers unconditionally, and a push whose receipt nobody takes dead-letters after the sender was already told it was accepted"
         },
         {
+          "route": "in_model",
+          "because": "a model package for the brain, pushed by the colony's llm-registry (GH #855): a PARAMS-ONLY body -- an empty `system` slot, no `messages` -- that the brain merges into its live params and answers with nothing. It goes from this path straight to `./brain`, past the collector: a params body is not a turn, and the collector has no business holding, stamping or dropping one. It is the one way a model package reaches the brain; the brain applies package keys only from a params-only message (GH #853), so a turn on any other lane cannot change the model it talks to. Draw it only from the registry's `update` lane, restamped `in_model`"
+        },
+        {
           "route": "in_menu",
           "because": "the tool declarations coming back from a tools hive the parent wired (GH #464). Since talky@4.5.1 this composite ASKS what its tools look like instead of carrying a menu somebody typed: `./collector`'s `params.tools` is the list of names this agent declares it uses, the request leaves on `schemas`, and what arrives here is the answer -- `schemas[]` plus the names the hive had nothing under. The collector wraps each declaration in the provider envelope and writes the result into `./brain` as durable `system.tools`, so the menu costs one write per change and nothing per turn. PAIRED with `schemas`: a parent that draws one half of the pair and not the other has a composite that asks into nothing, or one that is answered at a door it does not have"
         },
@@ -88,7 +92,7 @@
       "emits": [
         {
           "route": "answer",
-          "because": "the finished turn, for the reply sink. Two sorts travel here and hop.round_capped tells them apart: a real answer and a round that hit max_iter. Since collector@2.1.1 a THIRD sort travels here and it is told apart by `hop.degraded`, not by `round_capped` (which such a message does not carry): a turn that could not be assembled at all because the store refused a read or a write (GH #343). `hop.store_error` carries the store's `error_code`, `hop.store_operation` the op it refused, and the text names both. A parent that renders an answer must branch on `degraded` -- without it a failure reads as a real reply"
+          "because": "the finished turn, for the reply sink. Two sorts travel here and hop.round_capped tells them apart: a real answer and a round that hit max_iter. Since collector@2.1.1 a THIRD sort travels here and it is told apart by `hop.degraded`, not by `round_capped` (which such a message does not carry): a turn that could not be assembled at all because the store refused a read or a write (GH #343). `hop.store_error` carries the store's `error_code`, `hop.store_operation` the op it refused, and the text names both. A parent that renders an answer must branch on `degraded` -- without it a failure reads as a real reply. Since `collector@4.4.0` every answer also says how the completion behind it ended (GH #843): `hop.finish_reason` (`stop`, `length`, or empty where the collector knows no reason -- a capped round's digest, a store report) and `hop.truncated`, `\"1\"` when the completion was cut on `length`. A `length` finish goes through the splitter since `talky@5.4.0`, so a cut answer leaves without its sidecar; a consumer that must not pass on a half sentence refuses or marks it on `truncated`"
         },
         {
           "route": "write",
@@ -188,6 +192,11 @@
         },
         {
           "from": ".",
+          "to": "./brain",
+          "condition": "has(hop.route) && hop.route == 'in_model'"
+        },
+        {
+          "from": ".",
           "to": "./schemas",
           "condition": "has(hop.route) && hop.route == 'in_menu'"
         },
@@ -258,7 +267,7 @@
         {
           "from": "./brain",
           "to": "./splitter",
-          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'stop' || hop.finish_reason == 'tool_calls')"
+          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'stop' || hop.finish_reason == 'tool_calls' || hop.finish_reason == 'length')"
         },
         {
           "from": "./splitter",
@@ -276,7 +285,7 @@
           }
         },
         {
-          "from": "./brain",
+          "from": "./splitter",
           "to": "./collector",
           "condition": "has(hop.finish_reason) && hop.finish_reason == 'length'",
           "modifier": {

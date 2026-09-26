@@ -36,7 +36,7 @@
             "audience_set",
             "channel"
           ],
-          "because": "a block the front model decided to remember NOW, in the inline contract form; it is bound to the newest user turn of the caller session, so the session must be in the context. So must the provenance, on the same terms as `in_episode`: `audience_set` and `channel` are required and the block is refused on `reject` without them. The inline ingress writes facts directly, so it is the one lane where a missing audience would mint an untagged row without an episode ever refusing it first"
+          "because": "a block the front model decided to remember NOW, in the inline contract form; it is bound to the newest user or peer turn of the caller session (refused as `ambiguous_speaker` when the turns it may answer name more than one speaker, GH #849; a fact that names its speaker as `source` is bound to that participant's turn instead, or dropped as `unknown_source` when no such turn is among them), so the session must be in the context. So must the provenance, on the same terms as `in_episode`: `audience_set` and `channel` are required and the block is refused on `reject` without them. The inline ingress writes facts directly, so it is the one lane where a missing audience would mint an untagged row without an episode ever refusing it first"
         },
         {
           "route": "in_close_pass",
@@ -70,6 +70,10 @@
           "route": "in_schemas",
           "context": [],
           "because": "a collector asking this memory what its tool looks like, by NAME -- `{\"tools\": [\"memory_recall\"]}`, or `[\"*\"]` for everything this hive declares, which is one schema. Whoever is reached declares themselves (GH #552): until this lane the schema was a hand-typed projection of THIS hive's `in_query` contract, kept in a collector one composite away and seeded a second time into a brain. It is not a tool round and carries no `tool_name`. The lane, the body and the answer are the tools hive's own, byte for byte, so a collector cuts this answer together with a tools hive's without knowing which of them was which"
+        },
+        {
+          "route": "in_model",
+          "because": "a model package for this hive's model call, pushed by the colony's llm-registry (GH #858): a PARAMS-ONLY body -- an empty `system` slot, no `messages` -- that the llm cell merges into its live params and answers with nothing. It goes from this path straight to the llm cell it is addressed to (`./closer`, `./dialectic`, `./dreamer`, `./judge`), past every other cell, because a params body is not a request. This hive has 4 llm cells, so the door reads `hop.subscriber` -- the cell path the registry addresses a push by -- and one edge per cell carries only the pushes whose path ends in that cell's name. The guard is permissive (the form of GH #478): a message with no subscriber at all -- which the registry never sends -- would reach every llm cell, and that is what lets the substrate's lane check see a door for the lane. The llm cell takes package keys from a params-only message only (GH #853), so no request on another lane can change the model it runs on. Draw it only from the registry's `update` lane, restamped `in_model`"
         }
       ],
       "emits": [
@@ -320,7 +324,8 @@
               "store_origin": "'dream'",
               "mem_phase": "hop.phase",
               "dream_run": "hop.dream_run",
-              "dream_to": "hop.dream_to"
+              "dream_to": "hop.dream_to",
+              "dream_from": "hop.dream_from"
             }
           }
         },
@@ -516,6 +521,7 @@
             "delete_context": [
               "batch_id",
               "close_pass",
+              "dream_from",
               "dream_run",
               "dream_to",
               "mem_phase",
@@ -542,6 +548,7 @@
             "delete_context": [
               "batch_id",
               "close_pass",
+              "dream_from",
               "dream_run",
               "dream_to",
               "mem_phase",
@@ -565,6 +572,7 @@
             "delete_context": [
               "batch_id",
               "close_pass",
+              "dream_from",
               "dream_run",
               "dream_to",
               "mem_phase",
@@ -588,6 +596,7 @@
             "delete_context": [
               "batch_id",
               "close_pass",
+              "dream_from",
               "dream_run",
               "dream_to",
               "mem_phase",
@@ -611,6 +620,7 @@
             "delete_context": [
               "batch_id",
               "close_pass",
+              "dream_from",
               "dream_run",
               "dream_to",
               "mem_phase",
@@ -634,6 +644,7 @@
             "delete_context": [
               "batch_id",
               "close_pass",
+              "dream_from",
               "dream_run",
               "dream_to",
               "mem_phase",
@@ -657,6 +668,7 @@
             "delete_context": [
               "batch_id",
               "close_pass",
+              "dream_from",
               "dream_run",
               "dream_to",
               "mem_phase",
@@ -703,6 +715,7 @@
             "delete_context": [
               "batch_id",
               "close_pass",
+              "dream_from",
               "dream_run",
               "dream_to",
               "mem_phase",
@@ -726,6 +739,7 @@
             "delete_context": [
               "batch_id",
               "close_pass",
+              "dream_from",
               "dream_run",
               "dream_to",
               "mem_phase",
@@ -749,6 +763,7 @@
             "delete_context": [
               "batch_id",
               "close_pass",
+              "dream_from",
               "dream_run",
               "dream_to",
               "mem_phase",
@@ -780,6 +795,7 @@
             "delete_context": [
               "batch_id",
               "close_pass",
+              "dream_from",
               "dream_run",
               "dream_to",
               "mem_phase",
@@ -804,6 +820,26 @@
               "memory_call_id": "has(hop.tool_call_id) ? hop.tool_call_id : ''"
             }
           }
+        },
+        {
+          "from": ".",
+          "to": "./closer",
+          "condition": "has(hop.route) && hop.route == 'in_model' && (!has(hop.subscriber) || hop.subscriber.endsWith('/closer'))"
+        },
+        {
+          "from": ".",
+          "to": "./dialectic",
+          "condition": "has(hop.route) && hop.route == 'in_model' && (!has(hop.subscriber) || hop.subscriber.endsWith('/dialectic'))"
+        },
+        {
+          "from": ".",
+          "to": "./dreamer",
+          "condition": "has(hop.route) && hop.route == 'in_model' && (!has(hop.subscriber) || hop.subscriber.endsWith('/dreamer'))"
+        },
+        {
+          "from": ".",
+          "to": "./judge",
+          "condition": "has(hop.route) && hop.route == 'in_model' && (!has(hop.subscriber) || hop.subscriber.endsWith('/judge'))"
         },
         {
           "from": "./tool",
@@ -835,9 +871,11 @@
             "delete_context": [
               "batch_id",
               "close_pass",
+              "dream_from",
               "dream_run",
               "dream_to",
               "mem_phase",
+              "memory_call_id",
               "memory_tier",
               "port_run",
               "port_table",
@@ -846,8 +884,7 @@
               "recall_query",
               "recall_window_from",
               "recall_window_to",
-              "store_origin",
-              "memory_call_id"
+              "store_origin"
             ]
           }
         }

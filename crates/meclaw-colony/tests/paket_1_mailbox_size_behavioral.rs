@@ -15,6 +15,12 @@
 //! the mailbox while the gate holds the in-flight message, prove the
 //! over-capacity `send` times out (blocked on backpressure), then open the
 //! gate and prove the same `send` now completes (positive receipt).
+//!
+//! ADR-0004 pin — superseded by ADR-0045 for ROUTING (GH #850): the colony no
+//! longer calls this blocking `send` from its loop on a full mailbox, it hands
+//! the message to the cell's overflow. What this file proves still holds and is
+//! what the overflow relies on: the mailbox itself is bounded, and a `send`
+//! into a full one waits — which is why the loop must not be the one waiting.
 
 use meclaw_colony::cell_task;
 use meclaw_core::{ActorHandle, Cell, Message, MessageBuilder, OutputSink, Path};

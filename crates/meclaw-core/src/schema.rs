@@ -74,6 +74,83 @@ mod tests {
         assert!(!err.is_empty());
     }
 
+    /// GH #847: `peer` is the role of the other side's words — a turn from
+    /// another colony or another speaker in a room, never the agent's own person.
+    #[test]
+    fn peer_origin_is_valid() {
+        validate_ubf_body(&json!({
+            "messages": [{"origin": "peer", "type": "text", "text": "hello from the far side"}]
+        }))
+        .expect("origin peer is a member of the closed set");
+    }
+
+    /// GH #847 / OR-SN-32: `speaker` and `speaker_ref` name who a peer turn is from.
+    #[test]
+    fn speaker_fields_on_a_peer_turn_are_valid() {
+        for speaker_ref in ["3a47fe3e", "3a47fe3e0b1c"] {
+            validate_ubf_body(&json!({
+                "messages": [{"origin": "peer", "type": "text", "text": "hi",
+                    "speaker": "Jonas", "speaker_ref": speaker_ref}]
+            }))
+            .unwrap_or_else(|e| panic!("speaker_ref {speaker_ref} must be valid: {e}"));
+        }
+    }
+
+    /// GH #847: the speaker fields exist only on `peer` — on the agent's own
+    /// person, on its own answer or anywhere else they are a claim nobody checked.
+    #[test]
+    fn speaker_fields_on_a_non_peer_turn_are_invalid() {
+        for origin in ["user", "assistant", "tool", "system"] {
+            for (field, value) in [("speaker", "Jonas"), ("speaker_ref", "3a47fe3e")] {
+                let mut turn = json!({"origin": origin, "type": "text", "text": "hi"});
+                turn[field] = json!(value);
+                assert!(
+                    validate_ubf_body(&json!({"messages": [turn]})).is_err(),
+                    "{field} on origin {origin} must be refused"
+                );
+            }
+        }
+    }
+
+    /// GH #847: the reference has one form (8 or 12 lowercase hex digits), so it
+    /// cannot carry a path, a bracket or another name.
+    #[test]
+    fn a_malformed_speaker_ref_is_invalid() {
+        for bad in [
+            "3A47",
+            "3A47FE3E",
+            "../x",
+            "3a47fe3",
+            "3a47fe3e0",
+            "",
+            "3a47fe3e]",
+        ] {
+            assert!(
+                validate_ubf_body(&json!({
+                    "messages": [{"origin": "peer", "type": "text", "speaker_ref": bad}]
+                }))
+                .is_err(),
+                "speaker_ref {bad:?} must be refused"
+            );
+        }
+    }
+
+    /// GH #847: a speaker name is short; 120 characters is the cap.
+    #[test]
+    fn an_overlong_speaker_is_invalid() {
+        let long = "x".repeat(121);
+        assert!(
+            validate_ubf_body(&json!({
+                "messages": [{"origin": "peer", "type": "text", "speaker": long}]
+            }))
+            .is_err()
+        );
+        validate_ubf_body(&json!({
+            "messages": [{"origin": "peer", "type": "text", "speaker": "x".repeat(120)}]
+        }))
+        .expect("120 characters is still a name");
+    }
+
     #[test]
     fn tool_call_without_id_fails_validation() {
         let err = validate_ubf_body(&json!({

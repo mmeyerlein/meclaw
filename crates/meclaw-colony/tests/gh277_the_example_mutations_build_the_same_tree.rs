@@ -671,7 +671,15 @@ const REFERENCED_SUB_UNITS: [&str; 3] = ["collector", "dispatcher", "session-kee
 /// two of the five declarations grow a talky, so that is 2 x 1. The entrance
 /// that takes the answer back in (`in_briefing`) widened an existing condition
 /// and costs no edge.
-const EDGES: usize = 200;
+///
+/// Moved 200 -> 203 with GH #855: `talky@5.4.0` and `cogny@5.1.0` each carry
+/// one more door edge (`. -> ./brain` on `in_model`, the model door), and the
+/// declarations grow two talkies and one cogny, so that is 2 x 1 + 1 x 1.
+///
+/// Moved 203 -> 204 with GH #858: `argus@1.2.0` carries the model door
+/// (`. -> ./judge` on `in_model`), and `grow-argus.json` grows one argus, so
+/// that is 1 x 1. talky and cogny moved only prose.
+const EDGES: usize = 204;
 
 /// Cells that were on disk before the first declaration — the three seeds' own
 /// cells (`hard-shell`'s `probe`, `never-forgets`'s `replay`,

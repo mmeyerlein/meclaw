@@ -923,7 +923,8 @@ mod tests {
         let db_path = td.path().join("colony.db");
         let db = ColonyDb::open(&db_path).unwrap();
         assert!(db_path.exists(), "colony.db file created");
-        // Schema check: the meta table has schema_version='10' (GH #612: the
+        // Schema check: the meta table has schema_version='11' (GH #850: the
+        // mailbox_overflow table, on top of GH #612: the
         // dead_letters `detail` column, on top of the GH #559 edges `lane`, the
         // GH #491 registry `dormant`, the GH #283 edges `is_default`, the
         // GH #277 registry `template_chain`, the GH #62 provenance triple and
@@ -936,7 +937,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(v, "10");
+        assert_eq!(v, "11");
         // Single-owner invariant: writer_tx is present (not consumed)
         let _ = &db.writer_tx;
         drop(db);

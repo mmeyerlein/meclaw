@@ -57,7 +57,7 @@
 use rusqlite::Connection;
 
 /// Target schema version for `colony.db` after this slice.
-pub(crate) const TARGET_SCHEMA_VERSION: u32 = 10;
+pub(crate) const TARGET_SCHEMA_VERSION: u32 = 11;
 
 /// Error during the `colony.db` schema migration.
 #[derive(Debug, thiserror::Error)]
@@ -85,7 +85,7 @@ pub(crate) fn migrate(conn: &Connection) -> Result<(), MigrationError> {
     let current = super::schema::read_schema_version(conn)?;
     match current {
         v if v == TARGET_SCHEMA_VERSION => Ok(()),
-        1..=9 => {
+        1..=10 => {
             let tx = conn.unchecked_transaction()?;
             // v1→v2: durable-edges CEL columns. `table_exists`-guarded like
             // v4→v5 below: since GH #90 this runs BEFORE the DDL batch, so a
@@ -217,6 +217,29 @@ pub(crate) fn migrate(conn: &Connection) -> Result<(), MigrationError> {
             {
                 tx.execute("ALTER TABLE dead_letters ADD COLUMN detail TEXT", [])?;
             }
+            // v10→v11 (GH #850): stage 2 of a cell's mailbox overflow. One row
+            // per message a full mailbox could not take and memory could not
+            // keep — only the id; the message is in `message_log`. `seq` is the
+            // order within the cell (arrival order, not the uuid's clock), and
+            // `bytes` the body estimate the per-cell cap counts. `CREATE ... IF
+            // NOT EXISTS` is idempotent like the v3→v4 stage.
+            if current <= 10 {
+                tx.execute(
+                    "CREATE TABLE IF NOT EXISTS mailbox_overflow (
+                       cell_path   TEXT NOT NULL,
+                       message_id  TEXT NOT NULL,
+                       seq         INTEGER NOT NULL,
+                       bytes       INTEGER NOT NULL,
+                       enqueued_at INTEGER NOT NULL,
+                       PRIMARY KEY (cell_path, message_id)
+                     )",
+                    [],
+                )?;
+                tx.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_overflow_seq ON mailbox_overflow(cell_path, seq)",
+                    [],
+                )?;
+            }
             tx.execute(
                 "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",
                 rusqlite::params![TARGET_SCHEMA_VERSION.to_string()],
@@ -278,6 +301,35 @@ mod tests {
             .unwrap()
             .map(Result::unwrap)
             .collect()
+    }
+
+    /// GH #850 (v10→v11): an old database opens and gains the overflow table;
+    /// a second pass changes nothing, and the table takes a row.
+    #[test]
+    fn migrate_v10_to_v11_adds_the_mailbox_overflow_table() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO meta (key, value) VALUES ('schema_version', '10');",
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        migrate(&conn).unwrap(); // idempotent second pass
+        assert!(table_exists(&conn, "mailbox_overflow").unwrap());
+        assert_eq!(
+            super::super::schema::read_schema_version(&conn).unwrap(),
+            TARGET_SCHEMA_VERSION
+        );
+        conn.execute(
+            "INSERT INTO mailbox_overflow (cell_path, message_id, seq, bytes, enqueued_at)
+             VALUES ('/c', 'm-1', 1, 10, 0)",
+            [],
+        )
+        .unwrap();
+        let n: i64 = conn
+            .query_row("SELECT count(*) FROM mailbox_overflow", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
     }
 
     /// GH #612 (v9→v10): an OLD dead-letter row keeps every value it had and

@@ -108,7 +108,14 @@ impl Drop for Live {
 /// Start `run_io`, put a listener in front of it and wait for the mount.
 async fn start(stt: Arc<dyn SttProvider>, tts: Option<Arc<dyn TtsProvider>>) -> Live {
     let surfaces = Arc::new(meclaw_colony::SurfaceRegistry::new());
-    let (events_tx, _events_rx) = mpsc::channel(64);
+    // The test stands in for the handler, and the one thing a handler owes a
+    // connection before its `hello` is to take the session (GH #836).
+    let (events_tx, mut events_rx) = mpsc::channel::<meclaw_cells::voice::cell::VoiceEvent>(64);
+    tokio::spawn(async move {
+        while let Some(mut event) = events_rx.recv().await {
+            event.acknowledge();
+        }
+    });
     let (reconfig_tx, reconfig_rx) = mpsc::channel(64);
     let mut io = VoiceIo::new(
         MOUNT.to_string(),
@@ -441,6 +448,9 @@ struct Fixture {
     /// blocks on this channel, so the test — and nothing else — decides how
     /// fast it drains.
     handled: Option<mpsc::Receiver<()>>,
+    /// Emissions a wait already took off `egress` (GH #836); the next reader
+    /// of the door is handed them first, so nothing a test watched is lost.
+    buffered: Vec<Message>,
 }
 
 impl Fixture {
@@ -574,6 +584,7 @@ impl Fixture {
             listener,
             seen,
             handled: paced_listener.then_some(handled_rx),
+            buffered: Vec::new(),
         }
     }
 
@@ -633,7 +644,7 @@ impl Fixture {
     /// Every emission that reached the door within `window`.
     async fn emissions_for(&mut self, window: Duration) -> Vec<Message> {
         let deadline = Instant::now() + window;
-        let mut out = Vec::new();
+        let mut out = std::mem::take(&mut self.buffered);
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
@@ -650,7 +661,7 @@ impl Fixture {
     /// together with everything else that arrived.
     async fn wait_for_route(&mut self, route: &str, n: usize) -> Vec<Message> {
         let deadline = Instant::now() + DEADLINE;
-        let mut out = Vec::new();
+        let mut out = std::mem::take(&mut self.buffered);
         loop {
             if out.iter().filter(|m| hop_route(m) == Some(route)).count() >= n {
                 return out;
@@ -689,6 +700,40 @@ impl Fixture {
                     .build(),
             )
             .await;
+    }
+
+    /// Wait for the frame `frame` a `speak` to `session` produces at `client`,
+    /// and fail AT ONCE, by name, when the cell answers that speak
+    /// `unknown_session` on its error lane instead (GH #836) -- the shape the
+    /// race between an order and the handshake had, which used to surface as
+    /// a 30 s timeout that said nothing. What the door carried on the way is
+    /// kept for the next reader.
+    async fn heard(&mut self, client: &mut VoiceClient, session: &str, frame: &str) -> Value {
+        let Self {
+            egress, buffered, ..
+        } = self;
+        let refused = async {
+            loop {
+                let Some(m) = egress.recv().await else {
+                    return std::future::pending::<()>().await;
+                };
+                let hit = hop_str(&m, "error_code") == Some("unknown_session")
+                    && hop_str(&m, "session_id") == Some(session);
+                buffered.push(m);
+                if hit {
+                    return;
+                }
+            }
+        };
+        tokio::select! {
+            got = client.next_frame_of_type(frame, DEADLINE) => {
+                got.unwrap_or_else(|e| panic!("no `{frame}` for {session:?}: {e}"))
+            }
+            () = refused => panic!(
+                "the cell answered `unknown_session` for {session:?}, a connection whose \
+                 client already held its hello: the order overtook the handshake (GH #836)"
+            ),
+        }
     }
 
     async fn shutdown(self) {
@@ -870,10 +915,8 @@ async fn session_replaced_4409() {
     // registration, this speak would come back as an `unknown_session` error —
     // a reconnecting client would find itself unreachable under its own name.
     fx.speak("twin", "Are you still there?").await;
-    let start = second
-        .next_frame_of_type("speak_start", DEADLINE)
-        .await
-        .expect("the surviving connection is the one the session addresses");
+    // The surviving connection is the one the session addresses.
+    let start = fx.heard(&mut second, "twin", "speak_start").await;
     assert!(start["speak_id"].is_string());
     assert!(
         fx.emissions_for(Duration::from_millis(300))
@@ -1472,6 +1515,7 @@ async fn cancel_mid_speak() {
         "A long sentence nobody wants to hear to the end.",
     )
     .await;
+    let _ = fx.heard(&mut client, "speak-1", "speak_start").await;
 
     let mut audio = 0usize;
     let deadline = Instant::now() + DEADLINE;
@@ -1532,15 +1576,13 @@ async fn barge_in_cancels_speak() {
     // so the barge-in below is triggered by the test, not by a race.
     let stt = fakes::deepgram(fakes::speech_started(fakes::flux_after_audio(AUDIO_GATE))).await;
     let tts = fakes::cartesia(fakes::cartesia_chunks(20, 50)).await;
-    let fx = Fixture::boot(fakes::both_params(MOUNT, &stt, &tts)).await;
+    let mut fx = Fixture::boot(fakes::both_params(MOUNT, &stt, &tts)).await;
     let (mut client, _) = fx.connect("session=barge-1").await;
 
     fx.speak("barge-1", "I am now telling something at great length.")
         .await;
-    let _ = client
-        .next_frame_of_type("speak_start", DEADLINE)
-        .await
-        .expect("the synthesis starts");
+    // The synthesis starts.
+    let _ = fx.heard(&mut client, "barge-1", "speak_start").await;
 
     client
         .send_audio(&vec![0u8; AUDIO_GATE])
@@ -1583,10 +1625,8 @@ async fn speak_end_is_a_lane_whoever_waits_orders() {
     let (mut client, _) = fx.connect("session=end-1").await;
 
     fx.speak("end-1", "Ein kurzer Satz.").await;
-    let end = client
-        .next_frame_of_type("speak_end", DEADLINE)
-        .await
-        .expect("the synthesis ends on the socket too");
+    // The synthesis ends on the socket too.
+    let end = fx.heard(&mut client, "end-1", "speak_end").await;
     assert_eq!(end["reason"], "done");
 
     let got = fx.wait_for_route("speak_end", 1).await;
@@ -1622,10 +1662,8 @@ async fn speak_end_is_a_lane_whoever_waits_orders() {
     let mut fx = Fixture::boot(fakes::both_params_default(MOUNT, &stt, &tts)).await;
     let (mut client, _) = fx.connect("session=end-2").await;
     fx.speak("end-2", "Ein kurzer Satz.").await;
-    let end = client
-        .next_frame_of_type("speak_end", DEADLINE)
-        .await
-        .expect("the client is told either way — its frame is a different path");
+    // The client is told either way — its frame is a different path.
+    let end = fx.heard(&mut client, "end-2", "speak_end").await;
     assert_eq!(end["reason"], "done");
     let quiet = fx.emissions_for(Duration::from_millis(300)).await;
     assert!(

@@ -177,28 +177,32 @@ evaluation pulled out of the routing path, or several colony instances serving d
 
 ### Backpressure
 
-Bounded mpsc mailboxes (default 1000 per cell) plus `block` as the only strategy: when a mailbox is
-full the sender waits (`send().await`) until there is room. Backpressure propagates backward through
-the graph without silent message loss on the live path, without drop logic and without a per-cell
-strategy choice. The cell panic and restart path preserves the waiting messages too (GH #18); only
-the message being processed is lost.
+Bounded mpsc mailboxes (default 1000 per cell), and a full mailbox **overflows** instead of making
+anyone wait (GH #850, ADR-0045). The colony's routing loop never waits on a cell: while a cell's
+overflow is empty and its mailbox has room, a message is delivered into the mailbox as before; when
+the mailbox is full, or the overflow already holds something, the message is appended to that
+cell's overflow and a drain task of the cell delivers it, in order, as the cell makes room. Stage 1
+of the overflow is memory; a long flood moves its oldest blocks to `colony.db` (stage 2, only the
+message ids, the messages are in the message log). Only above the per-cell cap is a message lost —
+as a `mailbox_full` dead letter, never silently. The cell panic and restart path preserves the
+waiting messages too (GH #18), and they are delivered before the overflow; only the message being
+processed is lost.
 
-Two backward cascades exist symmetrically.
+What a slow cell does to the rest of the graph:
 
-1. Inbox backpressure. A full cell mailbox makes the sender (colony during routing) block, colony
-   drains its routing inbox more slowly, and upstream cells writing to colony block in turn.
-2. Output backpressure. Each cell writes its emits into a central `outputs` mailbox. A full one
-   makes the cell block on `outputs_tx.send().await`, so the cell drains its own inbox more slowly,
-   which lands in case 1.
+1. Inbox side. A full cell mailbox costs that cell latency and nothing else: the colony keeps
+   routing to every other cell, and the watchdog never trips because of a full mailbox.
+2. Output side. Each cell writes its emits into a central `outputs` mailbox. A full one makes the
+   cell block on `outputs_tx.send().await` until the colony takes the next emission — and since
+   the colony no longer waits on any mailbox, it always does.
 
 A fully dead cell is caught by the message timeout plus the `one_for_one` restart.
 
-The honest limit: `block` backpressure is liveness-safe as long as inflow stays at or below outflow.
-Under sustained over-saturation across a closed wait chain (cell A blocks on B, B on C, C on A) a
-wait-cycle deadlock arises and stands permanently, and backstop-less long-running source cells
-(`message_timeout` `0` or `-1`) in the cycle are particularly exposed. TTL counts routing hops, and
-in the deadlock no message flows, so it does not catch this. The case lies beyond the roadmap load
-profile and is registered as a post-MVP item.
+The wait cycle this section used to name as its honest limit (cell A blocked on its output, the
+colony blocked on A's mailbox) cannot form any more: its colony half is gone. What remains is a
+bound, not a wait — under sustained over-saturation a cell's overflow grows to its cap
+(`colony.json` `mailbox_overflow_*`, § `colony.json` — Schema) and then dead-letters what exceeds
+it. A deployment that relied on backpressure to slow a producer sets the caps lower.
 
 For stateless cells, inbox backpressure plays out at the dispatcher, which slows itself down via its
 `Semaphore`; worker tasks can only be stuck on output backpressure.
@@ -884,7 +888,8 @@ a future code. Notes on the substrate codes:
 - `stop_wiring_unavailable`: disconnect or swap of a cell whose stop wiring is not restorable after
   a term_timeout survivor (F5 guard, a permanent backstop).
 - `term_timeout`: a death-ack timeout on disconnect or swap of an awake cell, which means a full
-  rollback plus reject.
+  rollback plus reject. The cells one mutation disconnects share one deadline, 5 s from the start of
+  the wait, and the wait beats the watchdog while it lasts (GH #838, § Heartbeat watchdog).
 - `shutdown_draining`: a build order that arrived during the shutdown drain (GH #47). It happens
   before any staging, so the reject leaves no trace.
 - `resume_requires_stopped_cell`: the resume path requires a stopped cell.
@@ -1092,6 +1097,12 @@ never operations configuration: paths and logging stay CLI flags, nginx-style.
   "blob_max_recursion_depth":      64,
   "slot_park_max":                 64,
 
+  "mailbox_overflow_spill_messages":  10000,
+  "mailbox_overflow_spill_bytes":  33554432,
+  "mailbox_overflow_memory_bytes": 268435456,
+  "mailbox_overflow_cap_messages":  100000,
+  "mailbox_overflow_cap_bytes":    268435456,
+
   "strict_validation":          false,
 
   "log_default_level":          "info",
@@ -1117,6 +1128,11 @@ never operations configuration: paths and logging stay CLI flags, nginx-style.
 | `blob_inline_max_bytes` | Threshold above which a body is offloaded as a blob; smaller bodies stay inline in the message. |
 | `blob_max_recursion_depth` | Hard limit for recursive in-message pointer resolution. Wired since GH #19: the value rides on the blob store and is read at the delivery boundary. `0` is a valid kill switch, expanding no pointer. On exceedance: `blob_recursion_too_deep`. |
 | `slot_park_max` | How many messages one `park` slot may hold while nothing is bound behind it (default 64, GH #285). A `park` slot nobody ever fills would otherwise grow its queue for as long as the colony runs. At the bound the newest arrival is refused (`slot_park_overflow`), so the earliest context, the part a later reader cannot reconstruct, survives. `0` is a valid kill switch: every message onto an unbound `park` slot is refused and no empty queue is created either. The queue lives in the colony task and not on disk, so a colony shutdown discards whatever is still parked: it is a promise about the running colony's topology, not a durable outbox. |
+| `mailbox_overflow_spill_messages` | How many messages a cell's overflow keeps in memory (stage 1) before it moves its oldest block to the `mailbox_overflow` table of `colony.db` (stage 2; default 10 000, GH #850). A full mailbox does not stop the colony: the message waits in the cell's overflow and is delivered in order (§ Backpressure). Stage 2 stores only the message id; the message is in the message log. `0` sends every overflowing message to disk at once. |
+| `mailbox_overflow_spill_bytes` | The byte twin of `mailbox_overflow_spill_messages` (default 32 MiB). Bytes are an estimate: the length of the body's JSON, or of the blob id of an offloaded body. |
+| `mailbox_overflow_memory_bytes` | The memory ceiling of all cells' stage 1 together (default 256 MiB). Above it the cell holding the most bytes in memory spills its oldest block, whatever its own threshold says. |
+| `mailbox_overflow_cap_messages` | The most messages one cell's overflow may hold, memory and disk together (default 100 000). A message beyond it is dead-lettered as `mailbox_full` (it was routed and logged; the delivery is refused), with one `warn` per second and cell. This is the only point at which a full mailbox costs a message. Stage 1 is lost on a crash like a mailbox's content; stage 2 is delivered after the next boot. |
+| `mailbox_overflow_cap_bytes` | The byte twin of `mailbox_overflow_cap_messages` (default 256 MiB), counted like `mailbox_overflow_spill_bytes`. |
 | `strict_validation` | Release-build default for whether JSON schema validation against `emits`/`consumes` is active (a debug build is always `true`). |
 | `log_default_level` | Tracing default level. This field is parsed but not applied today: the effective default comes from the `--log-level` flag or `info`. |
 | `shutdown_drain_timeout_ms` | GH #47. How long the colony loop waits for quiescence after the shutdown signal before it cuts off (`u64`, default 10000). The drain lets every in-flight message and its follow-on hops run to their end and refuses new ingress (`shutdown_draining`). `0` means drain off, so the loop breaks off immediately as it did before GH #47, which makes it the rollback switch without a redeploy. At the deadline a `warn` line on stderr names what was left behind (`drain_incomplete`, `busy`); the exit code stays `0`. Under a process supervisor the value belongs together with the stop budget: after the signal the process needs this budget plus the teardown chain, which at the default stays comfortably within a `TimeoutStopSec=30`. Whoever raises the drain raises `TimeoutStopSec` with it. |
@@ -1501,8 +1517,10 @@ colony opens. A surface cell registers a name (`params.mount`) and is reached on
 `/<mount>/…`. The listener reads the first request line and hands the connection over unread to the
 cell that holds the first path segment; from there the cell serves its own protocol on its own
 routes. A connection is decided once, on that first line, and a second request on it is not
-inspected again. A mounted cell whose handoff queue is full answers `503 surface busy` and closes. A
-connection that sends no complete request line within five seconds, or a line above 4 KiB, is
+inspected again. When a mounted cell's handoff queue (64 connections) is full, the listener waits up
+to one second for a slot and hands the connection over as soon as one frees (GH #851); only after
+that second, or at once when the cell has dropped its queue, does it answer `503 surface busy` and
+close. A connection that sends no complete request line within five seconds, or a line above 4 KiB, is
 dropped without an answer. `GET /colony/surfaces` publishes the mount table, one row per surface
 with its `mount` and its `kind`, and `?format=traefik` the same table as a map for the proxy in
 front.
@@ -1798,7 +1816,9 @@ land in the queue, with reason `ColonyEndpointUnimplemented` or `ColonyEndpointI
 Every entry carries six locating fields plus `message_id`, and since GH #612 an optional `detail`:
 the one reason-specific fact the locating fields cannot carry. It is one value per reason, machine
 readable rather than prose — for `hive_boundary` the absolute path of the hive that refused the
-address. Every other reason has none today and omits the field.
+address; for `mailbox_full` (GH #850) `missing_from_log` when a persisted overflow row names a
+message the log no longer has, and nothing when the cap refused it. Every other reason has none
+today and omits the field.
 
 **Canonical `error_code` strings**: every dead-letter reason (internally a `DeadLetterReason` enum
 variant) has a canonical string representation exposed in the dead-letter queue as the `error_code`
@@ -1806,7 +1826,7 @@ field, which is what the `?error_code=` filter matches: `unresolved_path`, `hive
 `no_route`, `cell_inactive`, `ttl_expired`, `colony_endpoint_unimplemented`,
 `colony_endpoint_invalid`, `blob_unavailable`, `blob_recursion_too_deep`, `invalid_ubf_body`,
 `consumes_violation`, `contract_violation`, `slot_unbound`, `slot_park_overflow`,
-`shutdown_draining`, `hive_boundary`. These strings are part of the stable API contract; new reasons
+`shutdown_draining`, `hive_boundary`, `mailbox_full`. These strings are part of the stable API contract; new reasons
 extend the list, existing ones do not change their string form. `shutdown_draining` (GH #47) carries a new source
 emission that arrived during the shutdown drain; it is not routed, because that would start work the
 drain would then have to wait for.
@@ -1860,6 +1880,13 @@ Notes on the delivery-boundary codes:
   routing corridor, so no `message_log` row is written: a boundary refusal lives in the dead-letter
   queue and never in `/colony/trace`. It is joinable all the same — the entry carries the
   `trace_id` and the `message_id` of the message that was posted.
+- `mailbox_full`: the target cell's overflow is at its cap (`colony.json`
+  `mailbox_overflow_cap_messages` / `mailbox_overflow_cap_bytes`, GH #850). A full mailbox alone
+  is not this: below the cap the message waits in the cell's overflow and is delivered in order
+  (§ Backpressure). The message was routed and has its `message_log` row; the delivery is what is
+  refused. `resolved_target` is the cell. The one other case carries `detail`
+  `missing_from_log`: a persisted overflow row whose message is not in the log is dead-lettered
+  rather than dropped.
 
 When processing a cell emission in the outputs arm, exactly one of three disjoint paths applies, in
 this order (ruling A1, 2026-06-12):
@@ -2708,11 +2735,13 @@ Each entry is either a turn object, a turn pointer or a bulk pointer:
 
 ```json
 // turn object, inline
-{ "origin":      "user|assistant|tool|system",
+{ "origin":      "user|assistant|tool|system|peer",
   "type":        "text|tool_call|tool_result|image|audio",
   "text":        "<inline-string>",
   "id":          "<required for tool_call/tool_result>",
-  "happened_at": "<optional: event time of this turn>" }
+  "happened_at": "<optional: event time of this turn>",
+  "speaker":     "<optional, peer only: short name>",
+  "speaker_ref": "<optional, peer only: participant reference>" }
 
 // turn pointer, a single turn content in the blob
 { "text_id": "<UUIDv7>" }
@@ -2721,7 +2750,11 @@ Each entry is either a turn object, a turn pointer or a bulk pointer:
 { "messages_id": "<UUIDv7>" }
 ```
 
-- `origin` (required, enum): who spoke the turn.
+- `origin` (required, enum): who spoke the turn. `peer` (GH #847) is the other side's words — a
+  turn from another colony or from another speaker in a room, never the agent's own person (`user`)
+  and never its own answer (`assistant`). The `proxy` platform `meclaw` stamps every arriving turn
+  `peer` (`docs/cell-types.en.md` § platform `meclaw`), the `llm` cell sends it as role `user`
+  behind a frame (`docs/cell-types.en.md` § `llm`).
 - `type` (required): determines the semantic format. `image` and `audio` are reserved for
   multi-modal and are a label, never a container: the payload of a multi-modal turn always travels
   through `attachments[]` as a blob reference. That is frozen: there will be no inline `data:` field
@@ -2732,9 +2765,15 @@ Each entry is either a turn object, a turn pointer or a bulk pointer:
 - `happened_at` (optional, string) is the event time of this turn, as opposed to the moment a
   consumer received it. Consumers that stamp their own clock ignore the field, and a turn without it
   is valid unchanged.
+- `speaker` (optional, string, at most 120 characters) and `speaker_ref` (optional, string, pattern
+  `^[0-9a-f]{8}([0-9a-f]{4})?$`) say who a `peer` turn is from: short name and participant
+  reference, the same in every channel and in memory. Both are allowed **only** with
+  `origin: "peer"` (`if`/`else` in the schema); on any other turn either one makes the body
+  `invalid_ubf_body`. They are set on this side of a boundary from a checked identity — what the
+  other side sends itself, the peer mount takes out of the turn (`hop.peer_speakers`).
 - The turn object is closed (`additionalProperties: false` in
   `crates/meclaw-core/schemas/ubf-body.json` § `$defs.TurnObject`): exactly `origin`, `type`,
-  `text`, `id` and `happened_at` are allowed. An additional field, for instance a tool name next to
+  `text`, `id`, `happened_at`, `speaker` and `speaker_ref` are allowed. An additional field, for instance a tool name next to
   `type: "tool_call"`, makes the entire body `invalid_ubf_body`. Structural extra information
   belongs in the `header` slot.
 - Why `happened_at` is the exception (GH #135): the `header` carries one time per message, and a
@@ -3761,19 +3800,38 @@ mutation path (`handle_mutation`), never in the restart handling.
 
 Mailboxes are bounded with a default of 1000, overridable per cell via `cell.mailbox_size` in
 `config.json`.
-`block` is the only backpressure strategy in the entire system, with no cell-, colony- or
-path-specific overrides (semantics and the saturation limit: § Backpressure). `ActorHandle` is a
-trivial wrapper around `mpsc::Sender<Message>`, so `handle.send(msg).await` is one line, with no
-drop logic and no per-routing-step strategy evaluation.
+Overflow is the only strategy for a full mailbox in the entire system, with no cell-, colony- or
+path-specific strategy choice (semantics and caps: § Backpressure, GH #850, ADR-0045). The routing
+loop never waits on a mailbox: the wrapper around the routing corridor checks the cell's overflow
+counter and the mailbox's free capacity, delivers through the corridor when both allow it, and
+otherwise appends the message to the cell's overflow, whose drain task delivers it with
+`Sender::reserve` outside the loop. The five caps are `colony.json` keys
+(`mailbox_overflow_spill_messages`, `mailbox_overflow_spill_bytes`, `mailbox_overflow_memory_bytes`,
+`mailbox_overflow_cap_messages`, `mailbox_overflow_cap_bytes`); stage 2 is the `mailbox_overflow`
+table of `colony.db`, read once at boot and otherwise only by a drain task.
 
 A fully dead cell is detected by the message timeout, the `handle()` call is aborted, the cell
 marked crashed and the `one_for_one` restart takes effect; the respawned cell starts with a fresh
-mailbox into which the colony replays the rescued remainder in order. A `tracing` warn log on `send`
-operations that block longer than a threshold gives early diagnostics.
+mailbox into which the colony replays the rescued remainder in order — before its overflow, which
+the drain task then continues into the new mailbox. A `warn` names the cell when its overflow
+comes into being (`reason = "mailbox_overflow"`, with the sender, the trace and the mailbox
+capacity; at most once per second and cell, counting the overflows opened since), and once per
+second while its cap refuses messages (`reason = "mailbox_full"`).
 
-Rejected before the commitment to `block`-only were `drop_newest`, `drop_oldest` and `deadletter`,
-all of them silent loss. Whoever needs a different strategy builds it via a `code` cell as a
-priority filter.
+An overflow belongs to the mailbox it was queued for, not to the path. A respawn continues it into
+the successor's mailbox, because that is the same cell. Anything else that puts a different mailbox
+at the path — a `replace_nodes` lift, a disconnect, a failure — dead-letters what the overflow holds
+as `cell_inactive`, like the rest of that mailbox, and a cell that now stands at the path starts
+with an empty overflow of its own: it never receives what was queued for the cell it replaced
+(across a crash, rows on disk carry no generation and go to the cell then at the path). An
+overflow that comes back from `colony.db` after a restart goes only to a cell that is active and has
+not failed, waking it when it is parked; for a disconnected or failed cell, and for a path no cell
+registers by the end of the boot apply, it is dead-lettered as `cell_inactive` at once.
+
+Rejected before the commitment to the overflow were `drop_newest`, `drop_oldest` and `deadletter`
+as strategies of a full mailbox, all of them silent or early loss; `deadletter` survives only as
+what happens above the per-cell cap. Whoever needs a different strategy builds it via a `code` cell
+as a priority filter.
 
 ### Two timeout concepts
 
@@ -3898,6 +3956,9 @@ iteration that takes longer than the limit). It does not detect a live loop whos
 other. The supervisor counts nothing until the filesystem bootstrap has completed, because a boot is
 not a steady state, and a boot that fails never arms.
 
+A full mailbox never stops the loop (GH #850, § Backpressure): the message goes to the cell's
+overflow and the loop moves on, so a slow cell is never the reason for a trip.
+
 The limit is a statement about a single iteration: the default of 5 x 100 ms says no iteration may
 take longer than half a second. It also covers what runs synchronously inside the colony task,
 because the colony is the only write authority: an instantiating mutation creates cell directories,
@@ -3914,6 +3975,17 @@ Every `/colony/*` says its name (GH #439, GH #571). A mutation declares itself u
 scope (`mutation <id> scope=<scope>`), a read under its endpoint (`colony-read /colony/graph`), both
 through the same work pulse and both on the same `work_item_budget`. A read that takes long is
 therefore a named work item (`slow_work_item`) instead of nameless silence (`colony_loop`).
+
+A mutation that stops an awake cell (disconnect, swap, move, or the rollback of a rejected
+mutation) waits for that cell's death-ack inside the colony task (GH #838). The wait is a named work
+item of its own (`mutation <id> scope=<scope> death-ack <path>`) and beats every 100 ms, so a cell
+that is busy inside its handler, an `llm` cell waiting on its provider for instance, does not read
+as a wedged loop. It is bounded: the cells one step stops share one deadline, `term_timeout` (5 s)
+from the start of the wait, and a cell that has not answered by then rejects the mutation as
+`term_timeout`. Two cases differ: a move still renames and reports the hung cell as a warning, and
+the rollback after a reject waits a grace of 250 ms instead of a second deadline. The beats stop
+with that deadline, so a cell that never answers cannot keep the
+colony pulsing.
 
 | Policy | Behaviour |
 |---|---|

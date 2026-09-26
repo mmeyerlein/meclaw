@@ -70,13 +70,8 @@
 //! function the sweep uses — no file is touched.
 
 use meclaw_cells::LlmParams;
+use meclaw_cells::llm::params::backstop_shortfall;
 use meclaw_colony::{ColonyConfig, resolve_message_timeout};
-
-/// Absolute floor on the gap between backstop and operation timeout.
-const MARGIN_FLOOR_MS: u64 = 10_000;
-
-/// Relative floor, as a divisor: the gap must be at least `external / 10`.
-const MARGIN_DIVISOR: u64 = 10;
 
 /// A sweep that finds nothing passes for free. The published subset ships
 /// fewer templates than the development tree (30 of 36 at the time of writing)
@@ -132,19 +127,17 @@ fn deadlines_of(config: &serde_json::Value) -> Result<Deadlines, String> {
 /// The whole verdict: `Some(complaint)` iff B would pre-empt A, or sit so
 /// close above it that A has no room to fire first.
 fn inversion(d: Deadlines) -> Option<String> {
-    let Some(backstop) = d.backstop_ms else {
-        // No backstop at all — B can never cut A short. Documented in
-        // `docs/config.md` (`0`/`-1`) and normal for long-running handlers.
-        return None;
-    };
-    let required = d.external_ms + MARGIN_FLOOR_MS.max(d.external_ms / MARGIN_DIVISOR);
-    (backstop < required).then(|| {
-        format!(
-            "backstop {backstop} ms does not clear the {} ms call it wraps \
-             (needs at least {required} ms: +10 s and +10 %)",
-            d.external_ms
-        )
-    })
+    // GH #853: the rule lives ONCE, in `llm::params::backstop_shortfall`; the
+    // run-time update path of the cell calls the same function. `None` = no
+    // backstop at all (documented in `docs/config.md`, `0`/`-1`), which can
+    // never cut A short.
+    let backstop = d.backstop_ms?;
+    let required = backstop_shortfall(d.external_ms, d.backstop_ms)?;
+    Some(format!(
+        "backstop {backstop} ms does not clear the {} ms call it wraps \
+         (needs at least {required} ms: +10 s and +10 %)",
+        d.external_ms
+    ))
 }
 
 #[test]

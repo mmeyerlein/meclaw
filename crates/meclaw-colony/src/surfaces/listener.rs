@@ -27,7 +27,7 @@
 //! `a_reused_connection_keeps_the_backend_of_its_first_request` in
 //! `meclaw-cli`'s `mux` pins the behaviour rather than the hope.
 
-use super::{BoxFuture, HandedConnection, SurfaceRegistry};
+use super::{BoxFuture, HANDOFF_WAIT, HandedConnection, SurfaceRegistry};
 use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -193,10 +193,13 @@ async fn refuse_busy(mut stream: TcpStream, peer: SocketAddr, mount: &str) {
 
 /// Decide one connection and give it to whoever serves it.
 ///
-/// `signal` is the listener's shutdown, and it reaches this in one place: before
-/// the decision it ends the wait, because a connection that has asked for
+/// `signal` is the listener's shutdown, and it reaches this in two places.
+/// Before the decision it ends the peek, because a connection that has asked for
 /// nothing yet is dropped where it stands — there is nothing to finish and
-/// nobody is owed an answer. After the decision the fallback's own graceful end
+/// nobody is owed an answer. During the handoff wait of a mounted connection
+/// (GH #851) it ends that wait with `503 surface busy`: this connection has
+/// asked, so it is owed the refusal, and nobody will take it after the
+/// shutdown. Once the connection is handed on, the fallback's own graceful end
 /// takes over, and the mounted side has none: that stream belongs to its cell.
 async fn decide(
     stream: TcpStream,
@@ -233,11 +236,29 @@ async fn decide(
         fallback.serve(stream, peer).await;
         return;
     };
-    // The mount is expected to be reading; a full or closed channel is the cell
-    // saying so, and the client hears it rather than waiting.
+    // GH #851: a FULL channel is waited on for a bounded time, a CLOSED one is
+    // refused at once. The handoff used to be a `try_send`, and a full queue was
+    // a 503 on the spot — measured: 20 parallel POSTs through a proxy without
+    // keep-alive met 1–3 refusals in 500 frames in about one run of four, which
+    // is scheduling jitter between two `recv` of a consumer that drains into its
+    // own task, not a dead consumer. `reserve()` resolves with a slot as soon as
+    // one frees and with an error as soon as the receiver is dropped — the
+    // teardown window of GH #660, in which the client still has to hear the
+    // refusal immediately. The listener's shutdown ends the wait as well: nobody
+    // will take the connection after it.
     let mount = segment.unwrap_or_default();
-    if let Err(refused) = handoff.try_send(HandedConnection { stream, peer }) {
-        refuse_busy(refused.into_inner().stream, peer, &mount).await;
+    let permit = tokio::select! {
+        biased;
+        reserved = tokio::time::timeout(HANDOFF_WAIT, handoff.reserve()) => match reserved {
+            Ok(Ok(permit)) => Some(permit),
+            // Closed (the reader is gone) or the wait is over: refuse.
+            Ok(Err(_)) | Err(_) => None,
+        },
+        _ = signal.closed() => None,
+    };
+    match permit {
+        Some(permit) => permit.send(HandedConnection { stream, peer }),
+        None => refuse_busy(stream, peer, &mount).await,
     }
 }
 

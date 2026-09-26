@@ -25,6 +25,7 @@ pub const IMMUTABLE_KEYS: &[&str] = &[
     "lanes",
     "auth",
     "trusted_proxies",
+    "egress",
 ];
 
 /// The refusal text for a runtime `params` update aimed at a `meclaw` proxy.
@@ -104,6 +105,15 @@ pub struct MeclawParams {
     /// parsed form.
     #[serde(default)]
     pub trusted_proxies: Option<Vec<String>>,
+    /// GH #840: the origins (`http(s)://host[:port]`) an outgoing frame may be
+    /// posted to. `hop.peer_url` is written by whoever wrote the message — any
+    /// edge, any `header` slot, any `/messages` caller — and the POST carries
+    /// the credential of `auth`; the list is what keeps both at the gateways
+    /// the operator named. Absent sends nothing out (R-SN-6, fail-closed, like
+    /// `trusted_proxies`); an empty list likewise. Kept raw, as written;
+    /// [`Self::egress_origins`] is the parsed form.
+    #[serde(default)]
+    pub egress: Option<Vec<String>>,
 }
 
 impl MeclawParams {
@@ -148,6 +158,10 @@ impl MeclawParams {
         if let Some(list) = &self.trusted_proxies {
             meclaw_colony::surfaces::parse_trusted_proxies(list)?;
         }
+        // GH #840: the same at plan time for the egress list, by index.
+        if let Some(list) = &self.egress {
+            parse_egress(list)?;
+        }
         if self.boundary.is_empty() {
             return Err(
                 "boundary: required (this side's own name; it rides every receipt)".to_string(),
@@ -181,6 +195,57 @@ impl MeclawParams {
     pub fn trusted(&self) -> Vec<ProxyNet> {
         meclaw_colony::surfaces::trusted_proxies_or_default(self.trusted_proxies.as_deref())
             .unwrap_or_default()
+    }
+
+    /// GH #840: the parsed `egress` list, each entry as its origin's ASCII
+    /// serialisation (`https://host` or `http://host:port`, default ports
+    /// dropped). `None` when the key is absent.
+    ///
+    /// [`Self::validate`] has already refused an entry that does not parse, so
+    /// the error arm is reached only by params that skipped it; it lists
+    /// nothing rather than everything (fail-closed).
+    pub fn egress_origins(&self) -> Option<Vec<String>> {
+        self.egress
+            .as_ref()
+            .map(|list| parse_egress(list).unwrap_or_default())
+    }
+}
+
+/// GH #840: every entry is exactly one origin — `http` or `https`, a host, an
+/// optional port, a path that is empty or `/`, no query, no fragment and no
+/// credentials. A refusal names the entry by index like `trusted_proxies`;
+/// an entry with credentials in it is not echoed (the `token_url` precedent).
+pub fn parse_egress(list: &[String]) -> Result<Vec<String>, String> {
+    let mut out = Vec::with_capacity(list.len());
+    for (i, raw) in list.iter().enumerate() {
+        let shape = "an origin is http(s)://host[:port], with no path, query or fragment";
+        let shown = quoted_url(raw);
+        let url = reqwest::Url::parse(raw)
+            .map_err(|_| format!("egress[{i}]: {shown} is not an origin; {shape}"))?;
+        if !url.username().is_empty() || url.password().is_some() {
+            return Err(format!(
+                "egress[{i}]: must not carry credentials in the URL; the entry is not echoed"
+            ));
+        }
+        let bare = url.path() == "/" && url.query().is_none() && url.fragment().is_none();
+        if !matches!(url.scheme(), "http" | "https") || url.host().is_none() || !bare {
+            return Err(format!("egress[{i}]: {shown} is not an origin; {shape}"));
+        }
+        out.push(url.origin().ascii_serialization());
+    }
+    Ok(out)
+}
+
+/// A URL as it may appear in a refusal: quoted, unless it holds an `@`. Only
+/// a parsed `http(s)` URL has its userinfo checked, so a foreign scheme
+/// (`ftp://id:pw@host`) or one that does not parse (`http://id:pw@[x`) would
+/// echo the password into a receipt, a log line or a plan error (review G,
+/// Minor 1); such a string is named, never shown (the `token_url` precedent).
+pub(crate) fn quoted_url(raw: &str) -> String {
+    if raw.contains('@') {
+        "(not echoed: it contains an `@` and may carry credentials)".to_string()
+    } else {
+        format!("{raw:?}")
     }
 }
 

@@ -1,4 +1,4 @@
-# `freeswitch@2.1.2`
+# `freeswitch@2.1.3`
 
 A telephone as one **channel** of a person, in two halves inside one hive.
 
@@ -197,7 +197,7 @@ tool v-lanes and their way back.
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "channels/freeswitch", "template": "freeswitch@2.1.2",
+  "add_nodes": [{"name": "channels/freeswitch", "template": "freeswitch@2.1.3",
                  "override_params": {
                    "signal": {"dial_prefix": "sofia/gateway/fs02/",
                               "voice_ws_url": "ws://<colony-host>:<listener-port>/phone/ws",
@@ -942,6 +942,11 @@ the same wait, and the far end's own `call_ended` always ends the row.
 
 ## Versioning
 
+**`2.1.3` moves the `voice` pin** ([#836](https://github.com/mmeyerlein/meclaw/issues/836)),
+whose connection sends `hello` only after the cell has taken the session, so the first
+answer into a freshly forked call is no longer refused as `unknown_session`. Nothing on this
+channel's own surface moves.
+
 **`2.1.2` moves the `voice` pin** ([#728](https://github.com/mmeyerlein/meclaw/issues/728)),
 whose media half drops a late answer for a turn the call has already left. Nothing on this
 channel's own surface moves.
@@ -1034,7 +1039,7 @@ caller types before they are put through, are the proxy's business — this colo
 holds no register of them and no PIN at all, and there is no tool that reads one
 back.
 
-Migrating a colony on `1.1.1`: `swap_nodes` onto `freeswitch@2.1.2`, then give
+Migrating a colony on `1.1.1`: `swap_nodes` onto `freeswitch@2.1.3`, then give
 `./signal` a `line_user_id` (without it the three new tools refuse by name and
 nothing else changes), and point `voice_ws_url` at the colony's listener and this
 hive's mount instead of at a port. The dialplan keeps working unchanged as long
@@ -1047,7 +1052,7 @@ exported, so for almost everybody this section is history. A colony that *did* g
 in two steps and keeps its call table:
 
 1. `swap_nodes` the node onto the new template
-   (`{"match": {"name": "channels/phone"}, "template": "freeswitch@2.1.2"}`),
+   (`{"match": {"name": "channels/phone"}, "template": "freeswitch@2.1.3"}`),
    which leaves the `store` where it is.
 2. Rewrite the edges of the installing manifest above: they name the node, and
    the node's name is what changed. The receipt edges go in at the same time.

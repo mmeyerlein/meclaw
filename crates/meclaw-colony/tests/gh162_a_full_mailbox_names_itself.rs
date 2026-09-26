@@ -1,19 +1,20 @@
-//! GH #162 — a colony that stops on a full mailbox says which mailbox.
+//! GH #162 — a full mailbox says which mailbox.
 //!
-//! `route()` delivers with `entry.handle.send(routed).await`, and that await is
-//! correct: a full mailbox is backpressure, and dropping the message would be
-//! worse. But the waiter is the colony's own routing loop, so while it waits the
-//! colony routes nothing at all — and the corridor is byte-frozen and silent.
-//! What that looked like from the outside during GH #161 was a colony that
-//! stopped after twenty seconds with an **empty** dead-letter queue and **nothing
-//! in the message log** (the log row is written after the send returns). It cost
-//! most of a day, and the diagnosis in the end needed a SQLite client on
-//! `colony.db`.
+//! Until GH #850, `route()` delivered with `entry.handle.send(routed).await` and
+//! the waiter was the colony's own routing loop: while one mailbox was full the
+//! colony routed nothing at all, and the corridor is byte-frozen and silent.
+//! What that looked like during GH #161 was a colony that stopped after twenty
+//! seconds with an **empty** dead-letter queue and **nothing in the message
+//! log**. GH #162 added a pre-check at the call site that named the mailbox
+//! before the loop blocked on it.
 //!
-//! The fix is a pre-check at the call site — the same construction as the TTL
-//! twin already in `route_with_log` — so the semantics are untouched: a full
-//! mailbox still blocks. This file proves the line is there, names the mailbox,
-//! and that a colony routing normally does not emit it.
+//! Since GH #850 (R-SN-5, ADR-0045) a full mailbox no longer blocks: the
+//! message goes to the cell's overflow and the colony keeps routing. The line
+//! stays — it is the one moment an operator needs to know about — and now says
+//! `mailbox_overflow`, once, when the cell's overflow comes into being. The
+//! reason `mailbox_full` is reserved for the overflow's cap, where a message is
+//! really refused. This file proves the line is there, names the mailbox, does
+//! not claim `mailbox_full`, and that a colony routing normally emits neither.
 //!
 //! The recorder is hand-rolled on `tracing` alone (same approach as
 //! `gh80_edge_condition_log_level.rs`); no crate is added to read one log line.
@@ -140,7 +141,7 @@ async fn register_never_draining(h: &ColonyHandle, path: Path) -> mpsc::Receiver
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_blocking_delivery_names_its_mailbox_before_it_blocks() {
+async fn a_full_mailbox_names_itself_and_the_colony_keeps_routing() {
     let rec = recorder();
     let td = tempfile::TempDir::new().unwrap();
     let h = ColonyHandle::new_with_factories_at(&td, vec![]);
@@ -151,9 +152,10 @@ async fn the_blocking_delivery_names_its_mailbox_before_it_blocks() {
     h.send(MessageBuilder::new(Path::new("/wedged")).build())
         .await;
 
-    // The second delivery is the one that finds capacity 0. The colony blocks on
-    // it — which is the behaviour under test, not a defect — so nothing after
-    // this line may depend on the colony routing anything again.
+    // The second and third deliveries find capacity 0: the first of them opens
+    // the cell's overflow (one line), the second joins it (no second line).
+    h.send(MessageBuilder::new(Path::new("/wedged")).build())
+        .await;
     h.send(MessageBuilder::new(Path::new("/wedged")).build())
         .await;
 
@@ -161,7 +163,7 @@ async fn the_blocking_delivery_names_its_mailbox_before_it_blocks() {
     // presence of the line, not its latency.
     let mut hits = Vec::new();
     for _ in 0..300 {
-        hits = rec.warnings_containing("mailbox_full", "/wedged");
+        hits = rec.warnings_containing("mailbox_overflow", "/wedged");
         if !hits.is_empty() {
             break;
         }
@@ -170,7 +172,7 @@ async fn the_blocking_delivery_names_its_mailbox_before_it_blocks() {
     assert_eq!(
         hits.len(),
         1,
-        "exactly one line, for the delivery that found the mailbox full, got: {hits:?}"
+        "exactly one line, when the cell's overflow came into being, got: {hits:?}"
     );
     assert!(
         hits[0].contains("/wedged"),
@@ -182,9 +184,27 @@ async fn the_blocking_delivery_names_its_mailbox_before_it_blocks() {
         "and say how big it is, so `cell.mailbox_size` is actionable: {}",
         hits[0]
     );
+    assert!(
+        rec.warnings_containing("mailbox_full", "/wedged")
+            .is_empty(),
+        "`mailbox_full` is the cap's word — below the cap nothing is refused"
+    );
 
-    // The colony is wedged on purpose: abort rather than shut down.
-    h.abort();
+    // The colony did not stop: it still routes, and it shuts down cleanly.
+    let (ack, ack_rx) = oneshot::channel();
+    h.runtime()
+        .inbox_tx
+        .send(ColonyMsg::ReadInboundEdges {
+            of: Path::new("/wedged"),
+            ack,
+        })
+        .await
+        .expect("colony inbox closed");
+    tokio::time::timeout(std::time::Duration::from_secs(30), ack_rx)
+        .await
+        .expect("the loop answers while the mailbox is full")
+        .expect("ack");
+    h.shutdown().await;
 }
 
 /// The other half: a colony delivering normally must stay quiet. A pre-check that
@@ -192,7 +212,8 @@ async fn the_blocking_delivery_names_its_mailbox_before_it_blocks() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_colony_with_room_in_its_mailboxes_says_nothing() {
     let rec = recorder();
-    let before = rec.warnings_containing("mailbox_full", "/fine").len();
+    let before = rec.warnings_containing("mailbox_full", "/fine").len()
+        + rec.warnings_containing("mailbox_overflow", "/fine").len();
     let td = tempfile::TempDir::new().unwrap();
     let h = ColonyHandle::new_with_factories_at(&td, vec![]);
     h.spawn(Path::new("/fine"), || EchoMockCell::new(Path::new("/fine")))
@@ -205,7 +226,8 @@ async fn a_colony_with_room_in_its_mailboxes_says_nothing() {
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
     assert_eq!(
-        rec.warnings_containing("mailbox_full", "/fine").len(),
+        rec.warnings_containing("mailbox_full", "/fine").len()
+            + rec.warnings_containing("mailbox_overflow", "/fine").len(),
         before,
         "a healthy delivery path must not emit the line"
     );

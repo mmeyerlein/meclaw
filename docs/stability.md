@@ -23,7 +23,8 @@ is the peer mount another colony posts to, and the wire-v1 frame that crosses it
 frame and the receipt frame with their keys, the header that names the sending colony and the
 addresses it is believed from (`params.trusted_proxies`, loopback by default), the
 credential the outgoing POST carries (`params.auth`: a static header, or an OAuth 2.0
-client-credentials bearer), and the ten `error_code` strings a refusal carries
+client-credentials bearer), the origins that POST may go to (`params.egress`, nothing without
+it), and the eleven `error_code` strings a refusal carries
 ([`cell-types.md`](cell-types.md) § `proxy`). The peer mount is the surface a colony you do not run
 builds against, and the credential is what the proxy in front of it checks.
 
@@ -39,7 +40,11 @@ A change that breaks an existing topology gets its own Breaking section in
 [`CHANGELOG.md`](../CHANGELOG.md), with the migration named. That is the whole mechanism. A
 new default counts as such a change when it refuses something an existing topology relied on:
 `trusted_proxies` arrived that way in 0.45.0, and a proxy on another host needs its address
-listed. meclaw
+listed. The mailbox overflow is the other kind of breaking change, a behaviour an existing topology
+may have leaned on: since 0.46.0 a full mailbox no longer holds back the producers of a cell, it
+overflows per cell and only dead-letters above a cap, and a topology that used that back-pressure to
+slow a producer sets the `colony.json` `mailbox_overflow_*` caps lower. The new dead-letter code it
+brings, `mailbox_full`, is additive like any other. meclaw
 has no deprecation period and no compatibility flag, so the release note is where you find out.
 
 Nothing under `crates/` carries a SemVer guarantee. The Rust crates are internals and move

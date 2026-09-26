@@ -8,7 +8,7 @@
       },
       {
         "name": "sink",
-        "template": "terminal@1.0.1"
+        "template": "terminal@1.0.2"
       }
     ],
     "add_edges": [

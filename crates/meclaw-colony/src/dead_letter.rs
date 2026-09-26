@@ -101,8 +101,8 @@ pub enum DeadLetterReason {
     /// forward, so `hive_no_route` would be one too. The address of a sealed
     /// hive is the hive path plus a lane.
     ///
-    /// **It carries the boundary it refused at, and it is the only reason that
-    /// carries anything.** The six locating fields of a [`DeadLetter`] answer
+    /// **It carries the boundary it refused at** (the first reason that carried
+    /// anything; GH #850's `mailbox_full` is the second). The six locating fields of a [`DeadLetter`] answer
     /// "which message, from where, to where"; this refusal happens because of a
     /// THIRD node, which is none of them — `resolved_target` is the address that
     /// was refused and `sender_path` the caller. Without this the receipt could
@@ -121,6 +121,21 @@ pub enum DeadLetterReason {
     HiveBoundary {
         /// Absolute path of the hive that refused the address.
         hive: Option<String>,
+    },
+    /// GH #850 (R-SN-5): the target cell's overflow is at its cap
+    /// (`colony.json mailbox_overflow_cap_messages` / `…_cap_bytes`), so the
+    /// message cannot be kept. A full mailbox alone is NOT this — below the cap
+    /// the message waits in the cell's overflow and is delivered in order. The
+    /// message was routed and is in the message log; it is the delivery that is
+    /// refused. Canonical string `mailbox_full`.
+    ///
+    /// `detail` is `None` for the cap. The one other case is a row of the
+    /// persisted overflow whose message id is missing from `message_log`
+    /// (`Some("missing_from_log")`): the overflow stores only the id, so such a
+    /// row cannot be delivered — and is dead-lettered rather than dropped.
+    MailboxFull {
+        /// The reason-specific fact, see above.
+        detail: Option<String>,
     },
 }
 
@@ -146,6 +161,7 @@ impl DeadLetterReason {
             Self::SlotParkOverflow => "slot_park_overflow",
             Self::ShutdownDraining => "shutdown_draining",
             Self::HiveBoundary { .. } => "hive_boundary",
+            Self::MailboxFull { .. } => "mailbox_full",
         }
     }
 
@@ -172,6 +188,7 @@ impl DeadLetterReason {
             "slot_park_overflow" => Self::SlotParkOverflow,
             "shutdown_draining" => Self::ShutdownDraining,
             "hive_boundary" => Self::HiveBoundary { hive: None },
+            "mailbox_full" => Self::MailboxFull { detail: None },
             _ => return None,
         })
     }
@@ -182,14 +199,16 @@ impl DeadLetter {
     /// has one.
     ///
     /// One value per reason, machine-readable rather than prose: for
-    /// `hive_boundary` the absolute path of the hive that refused the address,
-    /// and nothing else. `None` for every other reason, which is every other
-    /// reason today. This is what the persisted `detail` column and the
+    /// `hive_boundary` the absolute path of the hive that refused the address;
+    /// for `mailbox_full` (GH #850) `missing_from_log` on a persisted overflow
+    /// row whose message is gone, and nothing on a cap refusal. `None` for
+    /// every other reason. This is what the persisted `detail` column and the
     /// `/colony/dead_letters` `detail` field carry.
     #[must_use]
     pub fn detail(&self) -> Option<&str> {
         match &self.reason {
             DeadLetterReason::HiveBoundary { hive } => hive.as_deref(),
+            DeadLetterReason::MailboxFull { detail } => detail.as_deref(),
             _ => None,
         }
     }
@@ -251,10 +270,12 @@ mod tests_3a {
             SlotUnbound,
             SlotParkOverflow,
             ShutdownDraining,
-            // The one reason that carries a fact. `from_code` reads a bare
+            // A reason that carries a fact. `from_code` reads a bare
             // string, so `None` is the form that round-trips — the path comes
             // back from the row's own column, not from the code.
             HiveBoundary { hive: None },
+            // GH #850: same shape — the detail comes back from the row.
+            MailboxFull { detail: None },
         ];
         // The compile-time half of "closed": this match names every variant and
         // has no catch-all, so a new one is a compiler error in this function.
@@ -276,13 +297,14 @@ mod tests_3a {
                 DeadLetterReason::SlotParkOverflow => "slot_park_overflow",
                 DeadLetterReason::ShutdownDraining => "shutdown_draining",
                 DeadLetterReason::HiveBoundary { .. } => "hive_boundary",
+                DeadLetterReason::MailboxFull { .. } => "mailbox_full",
             }
         }
 
         assert_eq!(
             all.len(),
-            16,
-            "the canonical set is 16 codes; a variant was added or removed \
+            17,
+            "the canonical set is 17 codes; a variant was added or removed \
              without moving this count, and the spec list has to move with it"
         );
 

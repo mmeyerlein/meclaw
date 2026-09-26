@@ -1,12 +1,20 @@
-# `meclaw-os@1.8.14`
+# `meclaw-os@1.10.0`
 
 The colony shell: the outermost of the four composition levels, and the tree everything
-else is grown into. It holds no cell of its own. It holds four occupants, one empty
+else is grown into. It holds no cell of its own. It holds five occupants, one empty
 container and the transit graph between them, and its entire job is to be the boundary
 those things share.
 
-Since 1.7.0 ([#556](https://github.com/mmeyerlein/meclaw/issues/556)) it is four and not
-five. The **submitter** stopped being a hive of this level and became an occupant of the
+Since 1.9.0 ([#855](https://github.com/mmeyerlein/meclaw/issues/855)) the fifth is the
+colony's **model registry**, `./llm-registry`, and it is the one way to operate models here:
+`.env` gives every brain its start value, and the registry is what moves it at run time --
+a global replacement, a replacement for one brain, a tier, all visible per cell. See
+[The model registry](#the-model-registry) below. Since 1.10.0 it pins `llm-registry@2.3.0`
+([#858](https://github.com/mmeyerlein/meclaw/issues/858)): a cell may state in prose what it
+needs, and the registry's translator chooses from the catalogue once per change.
+
+Between 1.7.0 and 1.9.0 ([#556](https://github.com/mmeyerlein/meclaw/issues/556)) it was
+four and not five. The **submitter** stopped being a hive of this level and became an occupant of the
 front door: `/os/operator/submit`. One front, one place a submission lives, and a road that
 can be read off the graph — a submission used to cross `./operator` and then `./submit` for
 what is one job. What did NOT move is the guardrail: the drafter and the submitter are still
@@ -46,11 +54,12 @@ level's own responsibility being exercised — never a right the organisation le
 |---|---|---|
 | `access` | a `ref` to the `access` template — the capability broker, with its own interior `vault` | every organisation asks the same broker; two brokers are two answers to one question |
 | `argus` | a `ref` to the `argus` template — the control loop | one colony, one loop; it ships with every goal disabled |
-| `builder` | a `ref` to the `builder` template — the intake that drafts a manifest | one authoring path per colony; a second baumeister would be a second audit trail |
+| `builder` | a `ref` to the `builder` template — the intake that drafts a manifest. Its ref sets `recipes.model_registry_scope` to `/os/orgs`, so a grown assistant's brains become subscribers of the registry beside it | one authoring path per colony; a second baumeister would be a second audit trail |
+| `llm-registry` | a `ref` to the `llm-registry` template — the catalogue of model packages, the replacements and the tier index, and the hand that pushes a package into a brain | one colony, one answer to "which model does this brain run, and why": two registries would push two packages at one brain. Since 1.9.0 |
 | `operator` | a `ref` to the `operator` template — the one front door a person addresses the OS through, and since 1.7.0 the hive the **submitter** lives in | a POST carries no sender, and only this level stands beside both the front door and the container the request has to reach. The submitter went inside it because one submission has one front and one place, and the guardrail it carries is a missing edge between the DRAFTER and the submitter — which is missing wherever the submitter stands |
 | `orgs` | a real, empty, open container hive that declares nothing | the address an organisation is instantiated **at**; the shell declares where, not which — and declares the container's lanes for it (see below) |
 
-All four occupants are pinned to an **exact** version. A bare name resolves to the newest
+All five occupants are pinned to an **exact** version. A bare name resolves to the newest
 version present on disk, so a shell that named one would silently adopt a new broker the
 day a bump landed — which is exactly the drift `registry.template_chain` exists to make
 visible, not to excuse. Whatever the reference form, the resolved exact version is what
@@ -66,6 +75,8 @@ open state — so the shell draws no boundary of its own around its occupants.
 | `in_request` | `context.requester` | the broker: may this actor do this thing |
 | `in_invoke` | `context.requester` | the broker: spend a grant it already issued |
 | `in_cycle` | — | the control loop: run a cycle now rather than at the next tick |
+| `in_hand` | — | the model registry: a command (`remap`, `override_set`, `override_clear`, `reset`, `subscribe`, `show`, and since 1.10.0 `model_upsert`, `model_retire`, `retranslate`). The door promotes `context.actor = 'operator'`, because whoever posts at this rim is this colony's operator and the registry refuses a command with no actor. Since 1.9.0 |
+| `in_select` | — | the model registry: which model serves this tier or these requirements. The door promotes `context.asker = 'operator'`. Since 1.9.0 |
 | `in_turn` | — | the `orgs` container, and through it whichever organisation stands inside |
 | `in_recall` | — | a question against a member's memory, asked from outside the organisation |
 | `in_brief` | — | a read against a member's curated record |
@@ -80,10 +91,10 @@ open state — so the shell draws no boundary of its own around its occupants.
 | Out | What it carries |
 |---|---|
 | `grant` | the broker's verdict — a handle, never a credential |
-| `ack` | an outcome that was **decided**: the broker spending a grant, or an organisation acknowledging a proposed change. Two senders, one lane |
+| `ack` | an outcome that was **decided**: the broker spending a grant, an organisation acknowledging a proposed change, or (since 1.9.0) the model registry answering a command. Three senders, one lane |
 | `mutate` | the change the loop decided on, as an ordinary params update |
 | `alert` | a symptom the loop **watched** for and counted -- the metric, the goal, the count and the window. Deterministic, no model asked, and deliberately not a decision. Nothing here can act on it, so the shell hands it out |
-| `answer` | what an organisation produced for whoever asked — a turn answered, a brief read |
+| `answer` | what an organisation produced for whoever asked — a turn answered, a brief read — and since 1.9.0 what the model registry answers: a lookup, or the view per cell `show` returns |
 | `bundle` | the answer to a question asked at a member's own `in_recall` door, carried out of the organisation and out of the shell. The lane arrived with [#533](https://github.com/mmeyerlein/meclaw/issues/533): the question has crossed this level since it was written, and the answer had no exit at any of the three levels it has to leave |
 | `reject` | a refusal from inside an organisation that is a **verdict**, not a failure |
 | `error` | a lane of the broker, of the loop or of an organisation failed and it was not a verdict. **The colony that instantiates this shell must drain it, and `reject` with it.** |
@@ -101,14 +112,14 @@ this shell without having promoted the requester somewhere upstream is refused w
 `hive_contract` before anything is staged — a grant issued to whoever asked loudest is the
 one failure the broker cannot recover from afterwards.
 
-## The forty-nine edges
+## The fifty-nine edges
 
-Thirty-six of them are a door or an exit, and every declared lane has at least one. The
+Forty-two of them are a door or an exit, and every declared lane has at least one. The
 broker knows nothing about the loop, the loop asks the colony rather than the broker, and
 neither of them knows an organisation exists.
 
-**Thirteen wire two occupants to each other, and that is what owning a baumeister and a
-front door looks like.**
+**Seventeen wire two occupants to each other, and that is what owning a baumeister, a
+front door and a model registry looks like.**
 Until R6 every edge here touched the rim, and it was tempting to read that as a rule. It
 was a coincidence of who lived at this level: `assistant` wires `./cogny -> ./tools` and
 `member` wires `./assistants -> ./firewall`, because a level owns what its siblings must
@@ -262,6 +273,126 @@ counts are the only thing that tells *nothing was missing* from *the nudge never
 ]}
 ```
 
+## The model registry
+
+**The registry is the one way to operate models in this colony; `.env` gives the start
+value.** A brain is born on `${ctx.model_surface}` or `${ctx.model}` -- in the end a `.env`
+key -- and that stays its start value for life. What moves it at run time is the registry at
+`./llm-registry` (`templates/llm-registry/README.md` has the precedence, the package form and
+every op): it resolves each subscriber by **targeted > global > tier > start value** and
+pushes the whole model package as a params-only message, only when it changed.
+
+Ten edges of this level carry it, and four of them are between siblings:
+
+```json
+{"from": ".",              "to": "./llm-registry", "condition": "has(hop.route) && hop.route == 'in_hand'",
+ "modifier": {"set_context": {"actor": "'operator'"}}},
+{"from": ".",              "to": "./llm-registry", "condition": "has(hop.route) && hop.route == 'in_select'",
+ "modifier": {"set_context": {"asker": "'operator'"}}},
+{"from": "./llm-registry", "to": ".",              "condition": "has(hop.route) && hop.route == 'answer'"},
+{"from": "./llm-registry", "to": ".",              "condition": "has(hop.route) && hop.route == 'ack'"},
+{"from": "./llm-registry", "to": ".",              "condition": "has(hop.route) && hop.route == 'error'"},
+{"from": "./llm-registry", "to": "./orgs",         "condition": "has(hop.route) && hop.route == 'update' && has(hop.subscriber) && hop.subscriber.startsWith('/os/orgs/')",
+ "modifier": {"set_hop": {"route": "'in_model'"}}},
+{"from": "./llm-registry", "to": "./argus",        "condition": "has(hop.route) && hop.route == 'update' && has(hop.subscriber) && hop.subscriber == '/os/argus/judge'",
+ "modifier": {"set_hop": {"route": "'in_model'"}}},
+{"from": "./llm-registry", "to": "./builder",      "condition": "has(hop.route) && hop.route == 'update' && has(hop.subscriber) && hop.subscriber == '/os/builder/compose'",
+ "modifier": {"set_hop": {"route": "'in_model'"}}},
+{"from": "./orgs",         "to": "./llm-registry", "condition": "has(hop.route) && hop.route == 'model_subscribe'",
+ "modifier": {"set_hop": {"route": "'in_hand'"}, "set_context": {"model_announcer": "'meclaw-os'"},
+              "delete_context": ["actor"]}},
+{"from": ".",              "to": "./llm-registry", "condition": "has(hop.route) && hop.route == 'mutation_committed'",
+ "modifier": {"set_hop": {"route": "'in_hand'"},
+              "set_context": {"model_announcer": "'meclaw-os'", "model_generation": "'/os'",
+                              "model_announced": "'[{\"cell_path\":\"/os/argus/judge\", \"start_model\":\"\", …}]'"},
+              "delete_context": ["actor"]}}
+```
+
+**The shell's own judge is a subscriber from boot** (since 1.10.0,
+[#858](https://github.com/mmeyerlein/meclaw/issues/858)). `./argus` runs its judge on a model
+and `./builder` composes on one, and both hives open an `in_model` door. The shell announces
+`/os/argus/judge` itself: on every mutation receipt that reaches `/os`, the last edge above hands
+the registry a `model_subscribe` naming the judge with the need its template cell states in
+`params.requirement` -- and with an EMPTY start value. The shell configures nothing and
+substitutes nothing in its own values (`gh302`), and a token written there would not be bound
+either when the shell is grown by a mutation: measured, the row read the judge's environment token
+literally. The registry takes an announced cell with no start value when it states a need, and
+the start rank still means "back to what the cell was born on" (`$reset`), never an empty model.
+Until somebody states it, `show` prints an empty `model_id` for the judge on the start rank and a
+global replacement "model X everywhere" does not reach it through its start value; an operator
+states it once with `in_hand` `{"op": "subscribe", "cell_path": "/os/argus/judge",
+"start_model": "<ARGUS_JUDGE_MODEL>", "requirement": …}`, and since an announcement with no start
+value never clears one the row holds, it stays through every later receipt -- also after
+`ARGUS_JUDGE_MODEL` changes, so restate it then. The first receipt of a colony -- the boot's -- makes the row; the
+registry answers an announcement it already knows with nothing. Pushes take the sibling edges
+onto `./argus` and `./builder`, each carrying only the pushes addressed to that cell; everything
+addressed below `/os/orgs/` takes the edge into the container, and nothing else does. The
+announcement is template truth: the builder cannot draw it, and no submission can reach it.
+
+**The composer is not announced.** `builder/compose` is born on `LOCAL_LLM_BASE_URL` with no
+`base_url_allow`. A registry push carries the `base_url` of its catalogue row, every shipped row
+names the hosted provider, and an `llm` cell refuses a run-time `base_url` that is neither its
+start endpoint nor in that list. Announced, the composer would refuse every package while the
+registry booked it as delivered. Its door, its road (the third sibling edge above) and its
+`requirement` stay: an operator whose `LOCAL_LLM_BASE_URL` is a catalogue endpoint subscribes it
+on `in_hand` (`{"op": "subscribe", "cell_path": "/os/builder/compose", "start_model": …,
+"requirement": …}`). A lock (`gh858_every_llm_cell_states_its_need`) holds every subscriber the
+shipped tree announces to an endpoint the shipped catalogue's pushes can land on, in the default
+environment.
+
+**Upgrading to 1.10.0: the judge and every member's memory follow the registry.** `argus/judge`
+and the four llm cells of every member grown here run what the registry resolves for their need,
+before the `.env` start value they fall back to. Whoever sets `ARGUS_JUDGE_BASE_URL` or
+`MEMORY_LLM_BASE_URL` to an endpoint of their own keeps the cell there with `pinned: 1`
+(`subscribe`), with a `target` replacement onto a catalogue row of that endpoint, or -- for the
+memory -- by unsetting `recipes.model_registry_scope` on the shell's builder ref (a setting of the
+whole colony: no member or assistant grown afterwards subscribes). Otherwise the cell refuses the push
+(`invalid_input`, answered as an error on the cell's own exit; the judge's exit is the loop's
+mutator), and a refused push is not reported back to the registry today: `show` names the
+refused model until the next change.
+
+**The push goes into `./orgs` and no further from here.** `update` names its subscriber on
+`hop.subscriber`; this level restamps it `in_model` and hands it to the container, and the
+last hop is an edge the builder's `grow_level assistant` draws at `/os/orgs` when it grows a
+generation -- one per brain, onto the composite's `in_model` door, addressed by that path.
+A push for a path nobody grew an edge for dead-letters at `/os/orgs` as `hive_no_route`,
+which is the loud form of "this subscriber has no road".
+
+**The subscriber row comes from the tree, after the commit.** The same declaration draws one
+edge from the generation to `/os/orgs` on `mutation_committed`, restamped `model_subscribe`
+with the brains and their start values on `context.model_announced`, and this level hands it to the
+registry's `in_hand`. So the first mutation receipt after the generation stands makes its
+brains subscribers, and a lost row comes back with the next receipt or the boot's. It needs
+`mutation_receipts.to` in `colony.json` (GH #553), which every tree that runs tool menus has.
+
+**What crosses that bridge is an announcement and never a command.** The lane comes up from the
+organisations, where cells emit tool calls a model wrote, so the last edge stamps its own key,
+`context.model_announcer`, and drops any `actor` a chain still carries from upstream; the
+registry reads nothing arriving that way as a command, and takes only brains inside the
+generation the announcing edge stamped (`context.model_generation`). Both road edges at
+`/os/orgs` are forms the submit gate checks (`submit`, since its 2.3.2; `model_push_form`,
+`model_announcement_form`): a push edge carries only the pushes addressed to its own composite's
+brain, and an announcement edge is drawn only in the manifest that grows its generation. The
+gate also refuses any edge that writes the hop keys the road is addressed by or computes a
+route it cannot list (`model_road_key`, `model_route_computed`). An edge that leaves the road's
+keys and its route as they are (no modifier, other keys, `set_hop route "hop.route"`) is
+a broker question like any other, and the shipped default permits it at `/os/orgs`: it can copy
+pushes into a brain nobody addressed, as a `swap_nodes` there can replace that brain
+(`templates/llm-registry/README.md` § How a brain becomes a subscriber).
+
+**Why the builder draws those edges at `/os/orgs` and not here.** A declaration that wrote a
+row into `./llm-registry/store` or drew an edge out of `./llm-registry` would have the scope
+root `/os`, and the shipped broker refuses that for every submission through the front door
+(`colony.mutate.default` is scoped `/os/orgs`; the shell-wide row ships disabled). The
+container scope is the one the broker already permits.
+
+**A brain grown before 1.9.0 is no subscriber yet.** It has no push edge and no announcement
+edge. Register it with `in_hand`
+`{"op": "subscribe", "cell_path": "<brain path>", "start_model": "<its start value>"}` and draw
+its push edge with one manifest at `/os/orgs` -- the push form the builder renders, for its
+path. The announcement edge is not drawable for it: the gate takes one only in the manifest
+that grows its generation, so the row of an upgraded brain is the operator's and stays.
+
 **The submitter asks the broker, and only the shell can draw that pair** — since 1.7.0
 across the front door's rim rather than the submitter's own, because the two hives are
 siblings here and nowhere else. The submitter
@@ -410,7 +541,7 @@ in it at all**.
 seed-ref/
 ├── colony.json            substrate defaults. two lines.
 ├── main/config.json       type: "hive", one edge, and not one cell
-└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@1.8.14"}}
+└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@1.10.0"}}
 ```
 
 ```bash
@@ -459,8 +590,9 @@ for either in the environment would go nowhere. What tunes them now is an
 `{"builder/dispatcher": {"max_calls": 8}}` -- and what stays here is the
 provider lane and nothing else.
 
-Exactly **one** of those keys is required, and it is the only value in the whole shell written
-with no default: `OPENROUTER_API_KEY`, the credential of the control loop's judge. A colony that
+Exactly **one** of those keys is required, and it is the only key the shell writes somewhere
+with no default: `OPENROUTER_API_KEY`, the credential of the control loop's judge (the model
+registry's translator reads the same key with an empty default). A colony that
 grows this shell without it is refused with `requirement_missing` **before a single byte is
 staged** — the marker is still a marker afterwards, there is nothing to clean up, and the
 refusal quotes the declaration's own sentence so a reader learns what the key is for. The
@@ -476,7 +608,9 @@ names of the vault inside it and the library's four windows became params
 of the cells that read them (GH #138), so they are set in the manifest that grows the
 shell and are no longer asked for here. A declared key that binds nothing is a
 leaflet, and the roll-up is derived by test rather than transcribed, so it went out
-with them.
+with them. Since `meclaw-os@1.10.0` it is nine: the model registry's translator adds
+`LLM_REGISTRY_TRANSLATOR_MODEL` and `LLM_REGISTRY_TRANSLATOR_BASE_URL`, its start value, both
+with defaults.
 Two of the remaining keys are worth knowing before you start:
 [`MODEL_BUILDER`](../builder/) and `LOCAL_LLM_BASE_URL` are what the composer asks its model
 through, they default to empty, and unset they leave the authoring path inert — the shell boots,
@@ -491,7 +625,7 @@ root tree:
 
 ```json
 {"scope": "/",
- "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.8.14"}],
+ "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.10.0"}],
           "add_edges": []}}
 ```
 

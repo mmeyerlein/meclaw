@@ -25,7 +25,7 @@ Release detail is in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
 When Now is empty, the tree is between two waves: what the last one built is in
-v0.45.0, under [§ Shipped](#shipped), and the open findings wait in the tracker
+v0.46.0, under [§ Shipped](#shipped), and the open findings wait in the tracker
 for the next wave to give them a horizon. A horizon holds bullets only — a
 sentence like this one stands up here, above the first heading, where the gate
 does not read it.
@@ -109,6 +109,12 @@ worked examples listed in [`templates/README.md`](templates/README.md), where
 One line per release. Details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- v0.46.0: a turn always ends with a reason, the other side has a role and a name, one busy cell
+  never ends a colony, the boundary sends only where it is told, and a model is operated in one
+  place. `origin: "peer"` with `speaker`/`speaker_ref` and a roster legend; memory keeps who said
+  what (`facts.source`); a full mailbox spills in order instead of ending the colony; `params.egress`
+  on a peer cell; and `llm-registry@2.3.0` chooses each cell's model from what the cell says it needs,
+  in prose, once per change (`params.requirement`, an `in_model` door in every composite).
 - v0.45.0: agents behind one member, each answering for itself. An accepted proposal about a
   disclosure becomes the disclosure row and a trust level says no on purpose (`affinity@3.5.0`); a turn
   on a channel with many counterparts briefs the member's record about the counterpart (a third turn

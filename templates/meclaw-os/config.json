@@ -24,6 +24,14 @@
           "because": "run the control loop NOW rather than at its next tick -- a cost alert or a dead-letter spike is a reason not to wait for the clock, and the loop is one per colony, so the lane is the shell's. Derived from argus@1.0.0"
         },
         {
+          "route": "in_hand",
+          "because": "a command for the colony's model registry: move a tier, set or clear a replacement (\"model X everywhere -> Y\", \"this brain -> Y\"), reset one cell, register a subscriber and what it states it needs, keep the catalogue (`model_upsert`, `model_retire`), ask again what a failed translation left open (`retranslate`), or read the view per cell (`show`). The shell carries the lane because the registry is ONE per colony and every brain an organisation grows is its subscriber. The door edge promotes `context.actor` to `operator`: whoever posts at this rim is the operator of this colony, and a command with no actor would be refused inside. Derived from llm-registry@2.3.0"
+        },
+        {
+          "route": "in_select",
+          "because": "a question for the colony's model registry: which model serves this tier or these requirements, right now. The door edge promotes `context.asker` to `operator`. Derived from llm-registry@2.3.0"
+        },
+        {
           "route": "in_turn",
           "because": "one turn on its way to an organisation. The LEVEL declares this lane and routes it into `./orgs`, because the container is empty by construction and a contract on an empty hive would have doors that lead nowhere (W7-R2). Derived from org@1.4.1"
         },
@@ -75,7 +83,7 @@
         },
         {
           "route": "ack",
-          "because": "an outcome that was decided rather than answered: the broker spending a grant (ok or denied plus a reason_code), or an organisation acknowledging a proposed change to a member's record. TWO senders, ONE lane -- a caller subscribes to the lane, not to whoever raised it. Derived from access@2.3.2 and org@1.4.1"
+          "because": "an outcome that was decided rather than answered: the broker spending a grant (ok or denied plus a reason_code), or an organisation acknowledging a proposed change to a member's record. TWO senders, ONE lane -- a caller subscribes to the lane, not to whoever raised it. Derived from access@2.3.2 and org@1.4.1 Since 1.9.0 the model registry raises it too, for every command on `in_hand` (GH #855)."
         },
         {
           "route": "mutate",
@@ -87,7 +95,7 @@
         },
         {
           "route": "answer",
-          "because": "what an organisation produced for whoever asked -- a turn answered, a brief read. Note that `turn` is NOT a lane of this level: it is consumed inside the member that raised it, and a shell that re-declared it would offer an exit no message ever takes. Derived from org@1.4.1"
+          "because": "what an organisation produced for whoever asked -- a turn answered, a brief read. Note that `turn` is NOT a lane of this level: it is consumed inside the member that raised it, and a shell that re-declared it would offer an exit no message ever takes. Derived from org@1.4.1 Since 1.9.0 a SECOND sender raises it: the model registry, with the model a lookup resolved or the view per cell `show` answers with (GH #855). One lane, two senders -- a caller subscribes to the lane, not to whoever raised it."
         },
         {
           "route": "bundle",
@@ -99,7 +107,7 @@
         },
         {
           "route": "error",
-          "because": "a lane of the broker, of the control loop or of an organisation failed and it was not a verdict; which of the three produced it is not the caller's business, and a colony that drains nothing loses every refusal. Derived from access@2.3.2, argus@1.0.0 and org@1.4.1"
+          "because": "a lane of the broker, of the control loop or of an organisation failed and it was not a verdict; which of the three produced it is not the caller's business, and a colony that drains nothing loses every refusal. Derived from access@2.3.2, argus@1.0.0 and org@1.4.1 Since 1.9.0 the model registry's lanes fail here as well (GH #855)."
         },
         {
           "route": "write",
@@ -221,6 +229,126 @@
               "operator_caller",
               "requester_build_op",
               "sub_sha"
+            ]
+          }
+        },
+        {
+          "from": ".",
+          "to": "./llm-registry",
+          "condition": "has(hop.route) && hop.route == 'in_hand'",
+          "modifier": {
+            "set_context": {
+              "actor": "'operator'"
+            }
+          }
+        },
+        {
+          "from": ".",
+          "to": "./llm-registry",
+          "condition": "has(hop.route) && hop.route == 'in_select'",
+          "modifier": {
+            "set_context": {
+              "asker": "'operator'"
+            }
+          }
+        },
+        {
+          "from": "./llm-registry",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'answer'",
+          "modifier": {
+            "delete_context": [
+              "operator_caller",
+              "requester_build_op",
+              "sub_sha"
+            ]
+          }
+        },
+        {
+          "from": "./llm-registry",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'ack'",
+          "modifier": {
+            "delete_context": [
+              "operator_caller",
+              "requester_build_op",
+              "sub_sha"
+            ]
+          }
+        },
+        {
+          "from": "./llm-registry",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'error'",
+          "modifier": {
+            "delete_context": [
+              "operator_caller",
+              "requester_build_op",
+              "sub_sha"
+            ]
+          }
+        },
+        {
+          "from": "./llm-registry",
+          "to": "./orgs",
+          "condition": "has(hop.route) && hop.route == 'update' && has(hop.subscriber) && hop.subscriber.startsWith('/os/orgs/')",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_model'"
+            }
+          }
+        },
+        {
+          "from": "./llm-registry",
+          "to": "./argus",
+          "condition": "has(hop.route) && hop.route == 'update' && has(hop.subscriber) && hop.subscriber == '/os/argus/judge'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_model'"
+            }
+          }
+        },
+        {
+          "from": "./llm-registry",
+          "to": "./builder",
+          "condition": "has(hop.route) && hop.route == 'update' && has(hop.subscriber) && hop.subscriber == '/os/builder/compose'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_model'"
+            }
+          }
+        },
+        {
+          "from": "./orgs",
+          "to": "./llm-registry",
+          "condition": "has(hop.route) && hop.route == 'model_subscribe'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_hand'"
+            },
+            "set_context": {
+              "model_announcer": "'meclaw-os'"
+            },
+            "delete_context": [
+              "actor"
+            ]
+          }
+        },
+        {
+          "from": ".",
+          "to": "./llm-registry",
+          "condition": "has(hop.route) && hop.route == 'mutation_committed'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_hand'"
+            },
+            "set_context": {
+              "model_announcer": "'meclaw-os'",
+              "model_generation": "'/os'",
+              "model_announced": "'[{\"cell_path\":\"/os/argus/judge\",\"start_model\":\"\",\"requirement\":\"Decides whether the colony should change itself: it weighs measurements against a charter, reasons through what would happen otherwise and states a decision with its way back. It needs the strongest reasoning available and careful, structured output of a few thousand tokens. It runs on a slow cycle and nobody waits on it, so up to two minutes and a high price per call are acceptable, and a weaker model here is a false economy.\"}]'"
+            },
+            "delete_context": [
+              "actor"
             ]
           }
         },

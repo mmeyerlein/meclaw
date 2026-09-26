@@ -6,7 +6,7 @@
         "add_nodes": [
           {
             "name": "os",
-            "template": "meclaw-os@1.8.14"
+            "template": "meclaw-os@1.10.0"
           }
         ],
         "add_edges": []
@@ -131,7 +131,7 @@
         "add_nodes": [
           {
             "name": "alex",
-            "template": "member@1.10.0"
+            "template": "member@1.10.2"
           }
         ],
         "add_edges": [
@@ -249,7 +249,7 @@
         "add_nodes": [
           {
             "name": "scribe",
-            "template": "assistant@2.9.0",
+            "template": "assistant@2.9.2",
             "override_params": {
               "cogny/brain": {
                 "temperature": 0.2

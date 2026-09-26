@@ -1,4 +1,4 @@
-//! The two frames that cross between colonies, and the ten codes a crossing
+//! The two frames that cross between colonies, and the eleven codes a crossing
 //! can fail with.
 
 use meclaw_core::{Message, Uuid};
@@ -8,7 +8,7 @@ use serde_json::{Map, Value, Value as JsonValue, json};
 use super::lanes::Refusal;
 use super::params::Lane;
 
-// The ten codes. `protocol_mismatch`, `invalid_frame` and `ttl_exhausted` are
+// The eleven codes. `protocol_mismatch`, `invalid_frame` and `ttl_exhausted` are
 // deliberately the words of `subcolony/wire.rs` and `meclaw-cli/src/bridge.rs`:
 // a boundary that renamed them would make an operator learn the same failure
 // twice. The set is closed and disjoint from the five Telegram codes at the
@@ -18,7 +18,9 @@ use super::params::Lane;
 pub const LANE_UNDECLARED: &str = "lane_undeclared";
 /// The body carries a field the lane does not name.
 pub const LANE_FIELD_DENIED: &str = "lane_field_denied";
-/// A whole-body blob, `attachments[]` or a body that is not inline.
+/// A whole-body blob, `attachments[]`, a body that is not inline, or a turn in
+/// `messages[]` that is a blob reference (`text_id`, `messages_id`, GH #839):
+/// the receiving colony would resolve it against its own store.
 pub const LANE_BODY_UNSUPPORTED: &str = "lane_body_unsupported";
 /// The carrier failed: no connection, no answer, or a non-200.
 pub const PEER_UNREACHABLE: &str = "peer_unreachable";
@@ -35,6 +37,11 @@ pub const TTL_EXHAUSTED: &str = "ttl_exhausted";
 /// GH #828: the credential could not be obtained (the token endpoint did not
 /// answer, or answered no token), so the frame never left this side.
 pub const AUTH_UNAVAILABLE: &str = "auth_unavailable";
+/// GH #840: `hop.peer_url` names an origin outside `params.egress`, carries
+/// credentials, is not `http(s)`, or the cell declares no `egress` at all
+/// (fail-closed). Decided before any token request and any connect: a policy
+/// verdict, not a carrier failure, so never `peer_unreachable`.
+pub const EGRESS_DENIED: &str = "egress_denied";
 
 /// The protocol integer every frame carries as `v`. This build speaks exactly one.
 pub const PROTOCOL_VERSION: u64 = 1;

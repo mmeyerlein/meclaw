@@ -1,6 +1,11 @@
 {
   "cell": {
     "type": "ref",
-    "template": "builder@1.13.0"
+    "template": "builder@1.15.0"
+  },
+  "override_params": {
+    "recipes": {
+      "model_registry_scope": "/os/orgs"
+    }
   }
 }

@@ -1,4 +1,4 @@
-# `builder@1.13.0`
+# `builder@1.15.0`
 
 The intake that turns a structural wish into a **manifest** — an ordered list of
 mutation declarations, ready to be submitted by whoever asked for it.
@@ -72,6 +72,7 @@ address them.
 | out | `manifest` | the draft: the declaration list, `hop.manifest_sha256`, `hop.manifest_class`, `hop.declaration_count` |
 | out | `error` | a wish this hive did not turn into a manifest, named in `hop.error_code` |
 | in | `in_ingest` | a nudge to reconcile the corpus behind this hive against the colony's own template registry. The body is not read: the message IS the nudge |
+| in | `in_model` | a model package for `./compose`, pushed by the colony's `llm-registry`: a params-only body (an empty `system` slot, no `messages`) the cell merges into its live params and answers with nothing. See *The model door*. Since 1.15.0 ([#858](https://github.com/mmeyerlein/meclaw/issues/858)) |
 | out | `catalogue` | what that reconciliation did — `hop.catalogue_known`, `hop.catalogue_ingested` and the names it wrote |
 
 A build that stops says so on a lane. Never as silence, and never as an empty
@@ -99,6 +100,37 @@ The two are paired in `params.required_drains`: a caller that nudges and does no
 subscribe to `catalogue` is refused. The counts are the only difference between
 *nothing was missing* and *the nudge never ran*, and those two facts must not
 look alike.
+
+### The model door (`in_model`, [#858](https://github.com/mmeyerlein/meclaw/issues/858))
+
+**A model package reaches `./compose` through `in_model` and nothing else.** The hive is sealed,
+so no edge from outside may name `./compose`; since 1.15.0 one door edge is the way in, drawn for
+the colony's `llm-registry`:
+
+```json
+{"from": ".", "to": "./compose", "condition": "has(hop.route) && hop.route == 'in_model'"}
+```
+
+The body is params-only -- an empty `system` slot, no `messages` -- which the `llm` cell
+merges into its live params, persists in its own `cell.db` and answers with nothing
+(`docs/cell-types.md` § `llm`). A request on any other lane cannot change the model a
+cell runs on: package keys are taken from a params-only message only (GH #853).
+
+**`./compose` says what it needs, in prose.** `params.requirement` names the role, the latency,
+the context, the depth of reasoning and the price the cell can bear, and never a model; a
+registry translates it against its catalogue once per change and keeps the result
+(`templates/llm-registry/README.md`). Without a registry the door stays unused and the
+cell runs its start value.
+
+In `meclaw-os` the shell draws the road for `./compose` -- a sibling edge carries the
+registry's pushes addressed to `/os/builder/compose` onto this door -- and does NOT announce
+it (`templates/meclaw-os/README.md` § The model registry). `./compose` is born on
+`LOCAL_LLM_BASE_URL` with no `base_url_allow`, and an `llm` cell refuses a run-time `base_url`
+that is not its start endpoint; the shipped catalogue names the hosted provider only, so a push
+would be refused at the cell while the registry booked it. An operator whose
+`LOCAL_LLM_BASE_URL` is the endpoint of a catalogue row makes it a subscriber by hand: `in_hand`
+`{"op": "subscribe", "cell_path": "/os/builder/compose", "start_model": "<MODEL_BUILDER>",
+"requirement": "<the cell's params.requirement>"}`.
 
 ## The two classes
 
@@ -804,6 +836,95 @@ as a noun anywhere in the sentence: *… next to the member's door* and *…, no
 none. An explicit `door` argument beats the words, as it does for `birth`. The worked example is `examples/organism/grow-member-door.json`, held to the renderer
 byte for byte by `crates/meclaw-cells/tests/gh835_a_door_takes_the_turn_nobody_addressed.rs`.
 
+### A grown brain is a subscriber of the colony's model registry
+
+Since `1.14.0` ([#855](https://github.com/mmeyerlein/meclaw/issues/855)) `grow_level assistant`
+knows the colony's `llm-registry`. The `recipes` cell has a fourth setting,
+`model_registry_scope` -- empty as shipped, `/os/orgs` on the builder `meclaw-os` refs, because
+that is where its shell hands the registry's `update` lane in (restamped `in_model`). Set, and
+for a generation of the shipped `assistant` template that lies under it, the manifest gets a
+**second declaration** behind the level, at that scope:
+
+```json
+{"scope": "/os/orgs", "ctx": {}, "diff": {"add_edges": [
+  {"from": ".", "to": "./<org>/members/<member>/assistants/<name>/talky",
+   "condition": "has(hop.route) && hop.route == 'in_model' && has(hop.subscriber) && hop.subscriber == '<gen>/talky/brain'",
+   "modifier": {"set_hop": {"route": "'in_model'"}}},
+  … the same for talky-chat and cogny …,
+  {"from": "./<org>/members/<member>/assistants/<name>", "to": ".",
+   "condition": "has(hop.route) && hop.route == 'mutation_committed'",
+   "modifier": {"set_hop": {"route": "'model_subscribe'"},
+                "set_context": {"model_generation": "'<gen>'",
+                                "model_announced": "'[{\"cell_path\":\"<gen>/talky/brain\",\"start_model\":\"<ctx.model_surface>\",\"requirement\":\"<what talky/brain states>\"}, …]'"}}}
+]}}
+```
+
+Three push edges, one per brain onto its composite's `in_model` door and addressed by the
+brain's path, and one **announcement** edge: every mutation receipt that reaches the generation
+also leaves it for the container as `model_subscribe`, with the brains and their start values
+(`ctx.model_surface` for both talkies, `ctx.model` for the core), and the shell hands it to the
+registry, which makes a subscriber of each brain it does not know. So the row appears after the
+commit that made the cell, and a lost row comes back with the next receipt. The generation and
+the brains ride as context (`model_generation`, `model_announced`), which only an edge writes,
+and the registry takes only brains inside the generation. The list is written as it is (no
+ASCII escaping), so a generation named beyond ASCII keeps its road; a brain whose path or
+entry would still not be a plain CEL literal (a `'`, or a `"` in its start value, which JSON
+escapes with a backslash) is left out of the road, and the recipe says so on stderr and in its
+answer -- that brain keeps its start value until it is registered by hand.
+
+**Both forms are checked at the submit gate** (`submit`, since its 2.3.2): an edge that names the road --
+`in_model`, `model_subscribe`, `context.model_announcer`, `context.model_generation`,
+`context.model_announced` -- must be
+one of these two, byte for byte. A push edge starts at the declaration's container and carries
+only the pushes addressed to one cell standing directly in its composite; an announcement edge starts at a
+generation the same manifest instantiates. Anything else is refused as `model_push_form` or
+`model_announcement_form` before the broker is asked, and so is any edge that writes the hop keys
+the road is addressed by (`model_road_key`) or computes a route the gate cannot list
+(`model_route_computed`). An edge drawn later at `/os/orgs` therefore cannot readdress a push or
+carry a tool call onto the announcement lane. One that leaves the road's keys and its route as
+they are (no modifier, other keys, `set_hop route "hop.route"`) stays a broker question
+and can copy pushes into a foreign brain -- `templates/submit/README.md` says what that costs
+(`crates/meclaw-cells/tests/gh855_the_model_road_is_a_form_at_the_gate.rs`).
+
+**Why a second declaration, and why the rows are not in it.** The edges live in the graph of the
+container scope, above the one the level declares itself at, and a declaration has one scope.
+Writing the rows here instead (`seed_rows` into `/os/llm-registry/store`) or drawing an edge out
+of the registry would make the manifest's scope root `/os`, which the shipped broker refuses for
+every submission through the front door (`colony.mutate.default` is scoped `/os/orgs`). The
+container scope is the one it already permits, so the level's own declaration does not move by
+a byte, and `gh466`'s pins hold.
+
+Without the setting, for another template, or for a generation outside the scope, nothing extra
+is rendered: a tree with no registry keeps its start values and the substrate's params road.
+Pinned in `crates/meclaw-cells/tests/gh855_a_grown_assistant_is_a_subscriber.rs`, including a
+grown generation in the shipped shell whose three brains land as rows in the registry's store.
+
+**Every announced brain carries what it needs** (since `1.15.0`, [#858](https://github.com/mmeyerlein/meclaw/issues/858)).
+Each entry of `model_announced` has a third key, `requirement`: the prose the brain's template
+cell states in its own `params.requirement`, which the registry translates against its
+catalogue. The recipe reads nothing but its stdin, so it carries a copy of each need it
+announces -- `talky/brain` for both talkies, `cogny/brain`, the member's four memory cells --
+and `gh858_every_llm_cell_states_its_need.rs` holds every copy byte-equal to the template it
+was taken from. The gate takes the key as optional, a non-empty string within the 2 KiB the
+llm cell holds it to.
+
+**A member is grown as a subscriber too** (since `1.15.0`). For a member of the shipped
+`member` template under the scope, `grow_level member` renders the same second declaration for
+the four llm cells of the member's memory hive: four push edges onto `<member>/memory-hive`, each
+addressed by one cell's path (`hop.subscriber == '<member>/memory-hive/closer'` and so on), and
+one announcement edge from the member on its mutation receipt. The memory hive's door reads the
+last segment of the path and hands the push to that cell (`templates/memory-hive/README.md`
+§ The model door). The memory cells are born on the environment, not on the manifest's `ctx`,
+so the announcement carries the same tokens -- `${MODEL_CLOSER:-}`, `${MODEL_DIALECTIC:-}`,
+`${MODEL_DREAMER:-}`, and `MODEL_JUDGE` with the default the cell has -- and the door binds them
+when it applies the manifest, from the environment the cells read. A plain `${VAR}` is announced
+with an empty default, so an unset key leaves the cell without a start value at the registry
+(its need still resolves) instead of failing the whole growth on an edge. The recipe spells
+those tokens in two pieces, because the colony binds every whole `${...}` in the script itself
+when it reads the recipe cell's config. The push form the gate checks is one segment below the
+edge's `to`: a talky's `brain`, or one of the memory hive's four cells, and nothing deeper
+(`crates/meclaw-cells/tests/gh858_a_grown_member_announces_its_memory.rs`).
+
 ## An app is a declaration
 
 An application is installed into a MEMBER by one mutation, and until `1.12.2`
@@ -1351,6 +1472,10 @@ no.
 | `MODEL_BUILDER` | the model the composer asks |
 | `LOCAL_LLM_BASE_URL` | the OpenAI-shaped endpoint it asks at |
 | `LOCAL_LLM_API_KEY` | the credential, if the endpoint wants one — empty means absent, and no `Authorization` header is sent (GH #271) |
+
+The four settings of the `recipes` cell are params, set with `override_params` on the builder:
+`member_screen_template`, `member_app_template`, `screen_mount` (see *A member grows a screen*
+above) and, since `1.14.0`, `model_registry_scope` (see *A grown brain is a subscriber*).
 
 The retrieval knobs are NOT here any more. Since `builder-librarian@2.2.0`
 ([#138](https://github.com/mmeyerlein/meclaw/issues/138)) they are params of

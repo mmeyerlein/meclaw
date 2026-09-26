@@ -6,6 +6,7 @@
   "params": {
     "provider": "openai",
     "model": "${MODEL_DIALECTIC}",
+    "requirement": "Answers a question from memory by weighing a handful of recalled candidates with a fixed source priority, and states plainly what memory does not know. It needs faithful reasoning that invents nothing and a short, structured answer. It runs while a conversation waits, so it must answer within seconds at a moderate price.",
     "api_key": "${OPENROUTER_API_KEY}",
     "base_url": "${MEMORY_LLM_BASE_URL:-https://openrouter.ai/api/v1}",
     "temperature": 0,
@@ -75,9 +76,13 @@
       "body": {
         "messages": {
           "type": "array",
-          "required": true
+          "required": false
         },
         "system": {
+          "type": "object",
+          "required": false
+        },
+        "params": {
           "type": "object",
           "required": false
         }
@@ -92,7 +97,7 @@
     "use_when": "Hard questions only ('has his position on X changed, and why?'). recall routes here when memory_tier=2; tier 0 and 1 never touch it.",
     "not_in_scope": "No retrieval (recall has already ranked and budgeted the candidates), no store access, no writes, no tool loop — one provider call per question.",
     "emits_meaning": "messages[]: one assistant turn holding the answer JSON {answer, gap, sources, confidence}. hop.finish_reason='error' is not a crash: recall downgrades the request to the tier-1 candidate bundle and marks hop.tier_downgraded.",
-    "consumes_meaning": "system.instructions.text: the answer contract, built by recall so prompt and parser stay in one file. messages[]: one user turn with {question, as_of, beliefs, candidates} as JSON.",
+    "consumes_meaning": "system.instructions.text: the answer contract, built by recall so prompt and parser stay in one file. messages[]: one user turn with {question, as_of, beliefs, candidates} as JSON. The one body without messages[] is a params-only push on the hive's `in_model` door (GH #858): an empty system slot and a params slot the cell merges into its live params, answered with nothing.",
     "examples": [
       "candidates about diet -> {\"answer\":\"keto since january\",\"gap\":\"nothing recorded after 2026-05\",\"sources\":[\"f1\"],\"confidence\":80}",
       "no candidate covers the question -> {\"answer\":\"memory does not contain this\",\"gap\":\"no episode mentions the topic at all\",\"sources\":[],\"confidence\":5}"

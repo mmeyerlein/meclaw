@@ -29,6 +29,8 @@ const INVALID_INPUT: &str = "invalid_input";
 pub struct MeclawCell {
     params: MeclawParams,
     lanes: Arc<Lanes>,
+    /// GH #840: the parsed `params.egress`, `None` when the key is absent.
+    egress: Option<Vec<String>>,
     client: PeerClient,
     emit_to: Path,
     /// The mount half, consumed exactly once by `split_io`.
@@ -51,6 +53,7 @@ impl MeclawCell {
         Self {
             params: p.clone(),
             lanes: Arc::new(p.lanes.clone()),
+            egress: p.egress_origins(),
             client,
             emit_to: p.emit_to_path(),
             initial_io_cfg: None,
@@ -126,6 +129,16 @@ impl MeclawCell {
             let r = Refusal::new(wire::PEER_UNREACHABLE, "no peer_url on the hop");
             return refused(route, r);
         };
+        // 6b. GH #840: only to an origin this side lists, judged here and not
+        //     in the client, so the verdict falls before the token request and
+        //     before any connect. `peer_url` is whatever the message's writer
+        //     stamped (any edge, any `header` slot, any `/messages` caller);
+        //     posting there unchecked hung `params.auth` on a request to an
+        //     address nobody declared (`gh840_a_peer_url_outside_egress_is_refused.rs`
+        //     counted the connects on both listeners).
+        if let Err(r) = judge_egress(self.egress.as_deref(), peer_url) {
+            return refused(route, r);
+        }
         // 7. One POST under the operation timeout (hard rule 12), then the far
         //    side's receipt.
         let answer = self
@@ -211,10 +224,11 @@ impl LongRunningCell for MeclawCell {
                     ttl,
                     fields,
                     context,
+                    claims,
                     body,
                 } => {
                     let receipt = crossed_emission(&lane, boundary, &fields);
-                    let content = arrived_emission(&lane, &peer, boundary, &context, body);
+                    let content = arrived_emission(&lane, &peer, boundary, &context, &claims, body);
                     // `route()` takes one hop from every input budget. The
                     // frame's `ttl` is already the budget AFTER the crossing
                     // (`wire::message_frame` took that hop), so the input handed
@@ -250,6 +264,66 @@ impl LongRunningCell for MeclawCell {
                 }
             }
         }
+    }
+}
+
+/// GH #840: `Ok` when `peer_url` is an `http(s)` URL without credentials
+/// whose origin `egress` lists. Without a list nothing goes out (R-SN-6,
+/// fail-closed), and the detail is the migration line. A URL with credentials
+/// in it is not echoed (the `auth.token_url` precedent).
+fn judge_egress(egress: Option<&[String]>, peer_url: &str) -> Result<(), Refusal> {
+    let parsed = reqwest::Url::parse(peer_url);
+    let url = parsed
+        .as_ref()
+        .ok()
+        .filter(|u| matches!(u.scheme(), "http" | "https") && u.host().is_some());
+    let Some(url) = url else {
+        // Review G, Minor 1: userinfo is checked below only for http(s), so
+        // this arm never echoes the string itself. A parsed URL is named by
+        // scheme and host, which carry no credentials; an unparsable one only
+        // when it holds no `@` (`ftp://id:pw@host` and `http://id:pw@[x`
+        // echoed the password into the receipt until this fix).
+        let shown = match &parsed {
+            Ok(u) => match u.host_str() {
+                Some(h) => format!("(scheme {:?}, host {h:?})", u.scheme()),
+                None => format!("(scheme {:?})", u.scheme()),
+            },
+            Err(_) => super::params::quoted_url(peer_url),
+        };
+        return Err(Refusal::new(
+            wire::EGRESS_DENIED,
+            format!(
+                "hop.peer_url {shown} is not an http or https URL, so it cannot be judged \
+                 against params.egress; nothing was sent"
+            ),
+        ));
+    };
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(Refusal::new(
+            wire::EGRESS_DENIED,
+            "hop.peer_url carries credentials in the URL; it is not echoed, and nothing was sent",
+        ));
+    }
+    let origin = url.origin().ascii_serialization();
+    match egress {
+        None => Err(Refusal::new(
+            wire::EGRESS_DENIED,
+            format!(
+                "this cell declares no params.egress, and without it a peer cell sends nothing \
+                 out (fail-closed since 0.46.0); list the origin of the gateway in front of the \
+                 peer, for example \"egress\": [\"https://<gateway-origin>\"]; this message \
+                 was addressed to {origin}"
+            ),
+        )),
+        Some(list) if list.contains(&origin) => Ok(()),
+        Some(list) => Err(Refusal::new(
+            wire::EGRESS_DENIED,
+            format!(
+                "the origin {origin} of hop.peer_url is not in params.egress [{}]; nothing was \
+                 sent",
+                list.join(", ")
+            ),
+        )),
     }
 }
 

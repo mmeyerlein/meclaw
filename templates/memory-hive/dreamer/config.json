@@ -6,6 +6,7 @@
   "params": {
     "provider": "openai",
     "model": "${MODEL_DREAMER}",
+    "requirement": "Writes one sentence per changed fact over a night of memory, naming both values and the date. It needs precise, faithful summarising of structured input and exact adherence to the output form. It runs once a night and never while anybody waits, so it may be slow, and quality comes first.",
     "api_key": "${OPENROUTER_API_KEY}",
     "base_url": "${MEMORY_LLM_BASE_URL:-https://openrouter.ai/api/v1}",
     "temperature": 0,
@@ -75,9 +76,13 @@
       "body": {
         "messages": {
           "type": "array",
-          "required": true
+          "required": false
         },
         "system": {
+          "type": "object",
+          "required": false
+        },
+        "params": {
           "type": "object",
           "required": false
         }
@@ -92,7 +97,7 @@
     "use_when": "Called by dream-glue once per consolidation run with the scoped clusters.",
     "not_in_scope": "No store access, no application of its own verdicts (dream-glue applies them, logged and reversible), no extraction, and since R9 no supersession verdict at all — the request shape has no `supersede` slot any more.",
     "emits_meaning": "messages[]: one assistant turn holding the verdict JSON (beliefs / retract). hop.finish_reason='error' closes the run cleanly with an error verdict instead of leaving it 'running'.",
-    "consumes_meaning": "system.instructions.text: the belief contract, handed over by dream-glue's scope phase (an llm cell has no params.system — the prompt travels in the message, which is why it lives in dream-glue). messages[]: the window's facts grouped by subject, oldest first, each with valid_from/valid_until.",
+    "consumes_meaning": "system.instructions.text: the belief contract, handed over by dream-glue's scope phase (an llm cell has no params.system — the prompt travels in the message, which is why it lives in dream-glue). messages[]: the window's facts grouped by subject, oldest first, each with valid_from/valid_until. The one body without messages[] is a params-only push on the hive's `in_model` door (GH #858): an empty system slot and a params slot the cell merges into its live params, answered with nothing.",
     "examples": [
       "two diet facts on one axis -> {\"beliefs\":[{\"holder\":\"self\",\"statement\":\"Alex drank tea until 2026-05, then switched\",\"source_fact_ids\":[\"f1\",\"f2\"]}]}"
     ]

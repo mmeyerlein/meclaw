@@ -32,11 +32,26 @@ pub enum VoiceEvent {
     /// is served by this same task on the next life (ruling O-P-2).
     MountFailed(String),
     /// A client connected; `mode` already reflects `?mode=` or the default.
+    ///
+    /// **The connection waits for this event to be taken** (GH #836). The
+    /// handler's loop is biased `stop > mailbox > events`, so an `in_speak`
+    /// that was already waiting overtook this event and was refused
+    /// `unknown_session` for a call whose client already held its `hello`
+    /// (measured: 1 of 500 runs of `voice_t5_behaviour`/`gh620`, a 30 s timeout
+    /// in `barge_in_cancels_speak`). The bias is a contract of every
+    /// long-running cell and stays; what moved is the handshake: the
+    /// connection sends `hello` only after `ack` has fired, and the handler
+    /// fires it once the session is in its table.
     Connected {
         /// The session this connection claimed.
         session_id: String,
         /// The mode this connection starts in.
         mode: Mode,
+        /// Fired by the handler once the session is in its table; the
+        /// connection says `hello` only after it. `None` on an event built by
+        /// hand (a test standing in for the I/O half), which nobody waits on.
+        /// A handler of its own calls [`VoiceEvent::acknowledge`].
+        ack: Option<tokio::sync::oneshot::Sender<()>>,
     },
     /// A client went away.
     ///
@@ -173,6 +188,26 @@ pub enum VoiceEvent {
         /// as a number that climbs, which needs no threshold to justify.
         count: u32,
     },
+}
+
+impl VoiceEvent {
+    /// Tell the I/O half that the session of a `Connected` is taken (GH #836).
+    ///
+    /// [`VoiceCell`]'s own handler does it right after the session is in its
+    /// table. Whoever consumes the events of a [`crate::voice::io::VoiceIo`]
+    /// without a `VoiceCell` behind it -- a test that stands in for the handler
+    /// -- calls this, or every connection waits `external_timeout` for a
+    /// `hello` and is then closed with `1013`. A no-op on every other event and
+    /// on a second call.
+    pub fn acknowledge(&mut self) {
+        if let Self::Connected { ack, .. } = self
+            && let Some(ack) = ack.take()
+        {
+            // The connection may already have given up (its deadline ran out,
+            // or the client left); an answer nobody waits for is not an error.
+            let _ = ack.send(());
+        }
+    }
 }
 
 /// What the handler tells the I/O half.
@@ -1991,13 +2026,30 @@ impl LongRunningCell for VoiceCell {
                         "voice: mount refused — send this cell a params update with a free mount"
                     );
                 }
-                VoiceEvent::Connected { session_id, mode } => {
+                VoiceEvent::Connected {
+                    session_id,
+                    mode,
+                    ack,
+                } => {
+                    // GH #836: the connection holds its `hello` until `ack`
+                    // fires, and it fires only AFTER the insert below -- so a
+                    // client that has a `hello` has a session this table knows,
+                    // and an answer queued in the mailbox can no longer be
+                    // refused `unknown_session` for it. A connection that gave
+                    // up waiting has dropped its receiver; the send is then a
+                    // no-op.
+                    let take = |ack: Option<tokio::sync::oneshot::Sender<()>>| {
+                        if let Some(ack) = ack {
+                            let _ = ack.send(());
+                        }
+                    };
                     // Two kinds of session, one event. Which one it is comes
                     // from the params rather than from the event, because the
                     // engine cannot change under a live cell.
                     if self.duplex {
                         self.live_sessions
                             .insert(session_id, LiveSessionState::new(mode));
+                        take(ack);
                         return;
                     }
                     // A generation this cell has never handed out, so a timer
@@ -2012,6 +2064,7 @@ impl LongRunningCell for VoiceCell {
                     );
                     state.grace_token = generation;
                     self.sessions.insert(session_id, state);
+                    take(ack);
                 }
                 VoiceEvent::Disconnected { session_id } => {
                     self.sessions.remove(&session_id);

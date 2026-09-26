@@ -118,6 +118,115 @@ pub fn apply_update<P: OverlayParams>(
     Ok((merged, overlay))
 }
 
+/// GH #853: the reserved update key that returns params to their start value.
+///
+/// `{"params": {"$reset": ["model", "base_url"]}}` removes those keys from the
+/// overlay, so the birth value (`config.json`, `${VAR}`-substituted) holds
+/// again. Before it, the only way back was a `cell.db` wipe — and an overlay
+/// silently outranked every later change of the environment (GH #825).
+pub const RESET_KEY: &str = "$reset";
+
+/// The result of [`apply_update_over_start`]: the new effective params, the
+/// whole overlay they were built from, and the delta to persist.
+#[derive(Debug)]
+pub struct OverlayChange<P> {
+    /// Start value with the new overlay replayed over it, re-parsed.
+    pub merged: P,
+    /// The complete overlay after this update (what `cell.db` will hold).
+    pub overlay: serde_json::Map<String, Value>,
+    /// Keys set by this update, to UPSERT.
+    pub set: Vec<(String, Value)>,
+    /// Keys `$reset` named, to DELETE (before the UPSERTs).
+    pub reset: Vec<String>,
+}
+
+/// Apply a runtime params-update against the START value and the current
+/// overlay (GH #853). Pure — no IO.
+///
+/// Same reject rules as [`apply_update`] for every key it sets; on top of it
+/// the reserved [`RESET_KEY`]: a list of param names whose overlay entries are
+/// dropped FIRST, then the keys beside it are set. A reset name outside
+/// `KNOWN_KEYS` is `Unknown`, an immutable one `Immutable` (it can never be in
+/// the overlay, so naming it is a mistake worth hearing about), a `$reset`
+/// that is not a list of strings `Invalid`. The merge is rebuilt from the
+/// start value rather than from the current params, so a reset key really
+/// falls back to its birth value and not to whatever the last overlay left.
+pub fn apply_update_over_start<P: OverlayParams>(
+    start: &Value,
+    overlay: &serde_json::Map<String, Value>,
+    update: &serde_json::Map<String, Value>,
+) -> Result<OverlayChange<P>, ParamUpdateError> {
+    let mut reset: Vec<String> = Vec::new();
+    for (key, value) in update {
+        if key == RESET_KEY {
+            let names = value.as_array().ok_or_else(|| {
+                ParamUpdateError::Invalid(format!("'{RESET_KEY}' must be a list of param names"))
+            })?;
+            for name in names {
+                let name = name.as_str().ok_or_else(|| {
+                    ParamUpdateError::Invalid(format!(
+                        "'{RESET_KEY}' must be a list of param names"
+                    ))
+                })?;
+                if P::IMMUTABLE_KEYS.contains(&name) {
+                    return Err(ParamUpdateError::Immutable(name.to_string()));
+                }
+                if !P::KNOWN_KEYS.contains(&name) {
+                    return Err(ParamUpdateError::Unknown(name.to_string()));
+                }
+                reset.push(name.to_string());
+            }
+            continue;
+        }
+        if P::IMMUTABLE_KEYS.contains(&key.as_str()) {
+            return Err(ParamUpdateError::Immutable(key.clone()));
+        }
+        if !P::KNOWN_KEYS.contains(&key.as_str()) {
+            return Err(ParamUpdateError::Unknown(key.clone()));
+        }
+    }
+    let mut next = overlay.clone();
+    for name in &reset {
+        next.remove(name);
+    }
+    let set: Vec<(String, Value)> = update
+        .iter()
+        .filter(|(k, _)| k.as_str() != RESET_KEY)
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    for (key, value) in &set {
+        next.insert(key.clone(), value.clone());
+    }
+    let pairs: Vec<(String, Value)> = next.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let merged =
+        P::parse(&merge_params_overlay(start, &pairs)).map_err(ParamUpdateError::Invalid)?;
+    Ok(OverlayChange {
+        merged,
+        overlay: next,
+        set,
+        reset,
+    })
+}
+
+/// Persist an [`OverlayChange`] delta in ONE transaction: the reset keys are
+/// deleted, then the set keys upserted — so "reset and set the same key in one
+/// message" ends with the key set, the order the update promised (GH #853).
+pub(crate) fn persist_overlay_change(
+    conn: &mut rusqlite::Connection,
+    set: &[(String, Value)],
+    reset: &[String],
+    now: i64,
+) -> rusqlite::Result<()> {
+    let tx = conn.transaction()?;
+    for key in reset {
+        tx.execute("DELETE FROM params WHERE key = ?", rusqlite::params![key])?;
+    }
+    for (key, value) in set {
+        upsert_param_overlay(&tx, key, value, now)?;
+    }
+    tx.commit()
+}
+
 /// Rebuild the effective params for a wake/respawn (W4b restore).
 ///
 /// Reads the runtime-param overlay from `cell.db` and replays it over the
@@ -305,6 +414,74 @@ mod tests {
             .unwrap()
             .clone();
         let err = apply_update(&d, &upd).unwrap_err();
+        assert!(matches!(err, ParamUpdateError::Immutable(ref k) if k == "id"));
+    }
+
+    // ---- GH #853: $reset ----
+
+    fn dummy_start() -> Value {
+        json!({"id": "x", "label": "start"})
+    }
+
+    #[test]
+    fn reset_drops_the_overlay_key_and_the_start_value_holds_again() {
+        let mut overlay = serde_json::Map::new();
+        overlay.insert("label".into(), json!("overlaid"));
+        let upd = json!({"$reset": ["label"]}).as_object().unwrap().clone();
+        let change = apply_update_over_start::<Dummy>(&dummy_start(), &overlay, &upd).unwrap();
+        assert_eq!(change.merged.label, "start");
+        assert!(change.overlay.is_empty());
+        assert_eq!(change.reset, vec!["label".to_string()]);
+        assert!(change.set.is_empty());
+    }
+
+    #[test]
+    fn reset_and_set_in_one_message_resets_first_then_sets() {
+        let mut overlay = serde_json::Map::new();
+        overlay.insert("label".into(), json!("old"));
+        let upd = json!({"$reset": ["label"], "label": "new"})
+            .as_object()
+            .unwrap()
+            .clone();
+        let change = apply_update_over_start::<Dummy>(&dummy_start(), &overlay, &upd).unwrap();
+        assert_eq!(change.merged.label, "new");
+        assert_eq!(change.overlay.get("label"), Some(&json!("new")));
+
+        // …and the persisted rows say the same after DELETE-then-UPSERT.
+        let td = TempDir::new().unwrap();
+        let mut conn = open_or_create_cell_db(&td.path().join("cell.db")).unwrap();
+        upsert_param_overlay(&conn, "label", &json!("old"), 1).unwrap();
+        persist_overlay_change(&mut conn, &change.set, &change.reset, 2).unwrap();
+        assert_eq!(
+            read_params_overlay(&conn).unwrap(),
+            vec![("label".to_string(), json!("new"))]
+        );
+    }
+
+    #[test]
+    fn an_unknown_reset_name_is_refused() {
+        let upd = json!({"$reset": ["labl"]}).as_object().unwrap().clone();
+        let err = apply_update_over_start::<Dummy>(&dummy_start(), &serde_json::Map::new(), &upd)
+            .unwrap_err();
+        assert!(matches!(err, ParamUpdateError::Unknown(ref k) if k == "labl"));
+    }
+
+    #[test]
+    fn a_reset_that_is_not_a_list_of_names_is_refused() {
+        for bad in [json!("label"), json!([1])] {
+            let upd = json!({"$reset": bad}).as_object().unwrap().clone();
+            let err =
+                apply_update_over_start::<Dummy>(&dummy_start(), &serde_json::Map::new(), &upd)
+                    .unwrap_err();
+            assert!(matches!(err, ParamUpdateError::Invalid(_)), "{err:?}");
+        }
+    }
+
+    #[test]
+    fn resetting_an_immutable_key_is_refused() {
+        let upd = json!({"$reset": ["id"]}).as_object().unwrap().clone();
+        let err = apply_update_over_start::<Dummy>(&dummy_start(), &serde_json::Map::new(), &upd)
+            .unwrap_err();
         assert!(matches!(err, ParamUpdateError::Immutable(ref k) if k == "id"));
     }
 

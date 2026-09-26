@@ -1,4 +1,4 @@
-# `memory-drain@2.0.6`
+# `memory-drain@2.1.0`
 
 The adapter between a write batch and the central memory (GitHub #101).
 
@@ -185,6 +185,15 @@ of a generation's lifetime, ADR-0002 E8) and the connector promotes the room to
 `context.channel`. Such a tree wires this adapter exactly as it always did and adds
 nothing. A tree that holds its channels some other way declares both on the `in_batch` edge
 itself.
+
+## What counts as a turn
+
+A turn of `origin` `user`, `assistant` or `peer`, of type `text`. Since 2.1.0 a `peer` turn
+passes too ([#849](https://github.com/mmeyerlein/meclaw/issues/849)): the words of another
+participant of a peer or group channel. Its `speaker` and `speaker_ref` ride with it into the
+ledger and onto the episode it becomes, so the memory hive's writer files the words under the
+participant reference that said them (memory-hive README, *Peer and group channels*). The two
+fields are carried only on a peer turn, the one turn the body schema allows them on.
 
 ## The chain
 

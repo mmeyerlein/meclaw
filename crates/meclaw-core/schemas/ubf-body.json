@@ -33,13 +33,26 @@
       "type": "object",
       "required": ["origin", "type"],
       "properties": {
-        "origin": {"enum": ["user", "assistant", "tool", "system"]},
+        "origin": {
+          "enum": ["user", "assistant", "tool", "system", "peer"],
+          "description": "Who a turn is from. `peer` (GH #847) is the other side's words: a turn that arrived from another colony or from another speaker in a room — never the agent's own person (`user`) and never its own answer (`assistant`)."
+        },
         "type": {"enum": ["text", "tool_call", "tool_result", "image", "audio"]},
         "text": {"type": "string"},
         "id": {"type": "string"},
         "happened_at": {
           "type": "string",
           "description": "Optional EVENT time of this turn, as opposed to the instant a consumer received it. The one sanctioned slot for per-turn time (GH #135): a batch of turns replayed out of an import or an archive carries a different time per turn, so the time cannot live in the header, which is one per message. Consumers that stamp their own clock ignore it; a turn that omits it is unchanged, which is why the slot is additive."
+        },
+        "speaker": {
+          "type": "string",
+          "maxLength": 120,
+          "description": "Optional short name of who a `peer` turn is from (GH #847). Allowed only with `origin: \"peer\"`. Set on this side of a boundary, from a checked identity — the peer mount moves a value the other side sent into `hop.peer_speakers`."
+        },
+        "speaker_ref": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}([0-9a-f]{4})?$",
+          "description": "Optional participant reference of who a `peer` turn is from (GH #847): 8 or 12 lowercase hex digits, the same reference in every channel and in memory. Allowed only with `origin: \"peer\"`; the form leaves no room for a path, a bracket or a second name."
         }
       },
       "allOf": [
@@ -49,6 +62,13 @@
             "required": ["type"]
           },
           "then": {"required": ["id"]}
+        },
+        {
+          "if": {
+            "properties": {"origin": {"const": "peer"}},
+            "required": ["origin"]
+          },
+          "else": {"properties": {"speaker": false, "speaker_ref": false}}
         }
       ],
       "additionalProperties": false

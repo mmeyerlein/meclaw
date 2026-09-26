@@ -1,4 +1,4 @@
-# `dispatcher@1.2.0`
+# `dispatcher@1.2.1`
 
 The fan-**out** half of a tool loop, as one `code` cell -- no new cell type, no Rust.
 Its counterpart is the fan-**in**: [`collector`](../collector/), which assembles the
@@ -25,7 +25,11 @@ messages a graph can route.
   has to respond to it. A silently dropped call would stall the fan-in until the TTL runs
   out, and TTL expiry emits **nothing** towards the surface.
 - **A final answer, passed through.** `finish_reason == 'stop'` leaves on its own lane,
-  unchanged.
+  unchanged -- and since `1.2.1` so does a completion cut on `length` without a tool call
+  ([#842](https://github.com/mmeyerlein/meclaw/issues/842)): its partial text is the answer,
+  `hop.finish_reason = 'length'` stays on it, and whoever reads the lane can mark it as cut.
+  Until `1.2.1` such a completion left **nothing** -- no answer, no error, no line on stderr --
+  which from the outside looks exactly like a hang.
 - **A sentence next to the bundle, delivered at once.** One brain response may carry
   `content` **and** `tool_calls`. The text leaves on the `answer` lane while the calls keep
   running: the turn ends with "one moment, I am asking" instead of with silence, and no
@@ -245,7 +249,7 @@ brain answers, and a bundle of fifteen calls is one answer, one iteration, one r
 Derivation and hop table: [`docs/store-backed-tool-loop.md`](../../docs/store-backed-tool-loop.md).
 
 **2. A failed inference.** A turn that is neither a bundle nor a final answer is terminal
-here (empty multi-send). The `llm` cell's error path echoes the **input** conversation back
+here (empty multi-send), and since `1.2.1` it says so on stderr. The `llm` cell's error path echoes the **input** conversation back
 with `finish_reason: "error"`, and forwarding that onto the answer lane would file the
 prompt as the agent's own words. Give the error its own edge off the brain, in front of the
 dispatcher edge:
@@ -268,8 +272,8 @@ same `tool_call_id`, keyed on the names you did **not** wire.
 | `tool_call` turns present, count ≤ budget | `calls` (the assistant turn), then the interim `answer` if a text turn stood next to them, then one `tool` per call, in bundle order (with `interim` off, the interim `answer` is not emitted; a *final* sentence still is) |
 | `tool_call` turns present, count > budget | `calls`, then the interim `answer` if a text turn stood next to them (the sentence is appended **before** the budget branch runs, so an over-budget bundle still says it), then one `result` per call: `call budget exceeded`, no tool message at all |
 | a call whose `text` is not `{name, arguments}` | `result` with `error_code: malformed_tool_call` in place of that one call; the sound calls still run |
-| no calls, `finish_reason == 'stop'` | one `answer` |
-| anything else | nothing (empty multi-send, terminal) |
+| no calls, `finish_reason == 'stop'` or `'length'` | one `answer`, `hop.finish_reason` kept |
+| anything else | nothing (empty multi-send, terminal) and one stderr line: `dispatcher: finish '<reason>' without a tool call -- nothing dispatched` |
 
 The OpenAI unwrap is the only content work the cell does: the `llm` cell emits a
 `tool_call` turn whose `text` is the stringified `function` object, and a tool cell wants
@@ -279,3 +283,5 @@ correlates on it.
 Pinned in [`crates/meclaw-cells/tests/dispatcher_template.rs`](../../crates/meclaw-cells/tests/dispatcher_template.rs):
 the script half runs the shipped `script_inline` against real stdin documents, the colony
 half boots this template and routes a two-tool round through real edges.
+[`gh842_a_cut_answer_without_a_call_still_answers.rs`](../../crates/meclaw-cells/tests/gh842_a_cut_answer_without_a_call_still_answers.rs)
+pins the `length` answer and the stderr line of every other finish without a call.

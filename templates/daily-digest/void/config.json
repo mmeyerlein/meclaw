@@ -4,6 +4,7 @@
   },
   "params": {
     "runner": "python3",
+    "runner_mode": "warm",
     "script_inline": "\nimport sys, json\njson.load(sys.stdin)\n# Silent terminal: inbound user messages to a push-only bot carry nothing to\n# persist (cookbook: swallow what you expect). Emits NOTHING, ever.\nsys.stdout.write(json.dumps([]))\n",
     "external_timeout_ms": 5000
   },

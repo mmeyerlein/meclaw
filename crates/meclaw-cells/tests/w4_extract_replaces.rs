@@ -275,11 +275,14 @@ fn a_valid_replaces_becomes_exactly_the_write_form_the_judge_uses() {
         closures[0]["where"],
         serde_json::json!({"id": "f1", "canonical_subject": "user",
                            "canonical_predicate": "favorite_editor",
-                           "expired_at": {"is_null": true}}),
+                           "expired_at": {"is_null": true},
+                           "source": {"or_null": {"eq": ""}}}),
         "the axis echo comes from the WINDOW rather than from the model, so a row \
          that moved axis since the prompt is not closed by a stale reference -- \
          and `expired_at is_null` means an extractor closure never overwrites a \
-         judged one"
+         judged one; since GH #849 the source is pinned too, so the member's own \
+         statement (no source, or a row from before the column) is the only one \
+         the member's own turn can close"
     );
 }
 

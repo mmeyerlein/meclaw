@@ -21,8 +21,8 @@ a display on a laptop or to two displays at once.
 Since 0.32.0 there is a path from an answer to that screen. A front model may append one fenced
 `sidecar` block to its reply, and every top-level key in it is a section. The member sorts the
 sections, `memory` goes into the memory hive and everything else into `./apps`, and the mutation
-that installed an app drew the edge for the section that app offered (`member@1.10.0`,
-`assistant@2.9.0`). A section is an offer and never an instruction, so what a model proposes and
+that installed an app drew the edge for the section that app offered (`member@1.10.2`,
+`assistant@2.9.2`). A section is an offer and never an instruction, so what a model proposes and
 what an app accepts stay two decisions.
 
 [`colony-view`](../../templates/colony-view/) is the app the library ships: a committed mutation

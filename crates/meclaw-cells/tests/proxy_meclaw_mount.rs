@@ -295,6 +295,15 @@ async fn handle_once(peer_url: Option<String>, timeout_ms: u64) -> Value {
     use meclaw_core::{Body, Headers, MessageBuilder, OutputSink, Path};
     let mut v = params(HDR);
     v["external_timeout_ms"] = json!(timeout_ms);
+    // GH #840: the loopback origin the test posts to is the one entry of
+    // `egress`; without it every crossing would be `egress_denied`.
+    if let Some(origin) = peer_url
+        .as_deref()
+        .and_then(|u| reqwest::Url::parse(u).ok())
+        .map(|u| u.origin().ascii_serialization())
+    {
+        v["egress"] = json!([origin]);
+    }
     let mut cell = MeclawCell::new(&MeclawParams::parse(&v).expect("params")).expect("cell");
     let (tx, mut rx) = mpsc::channel(8);
     let sink = OutputSink::new(
@@ -398,7 +407,8 @@ fn the_canonical_contract_block_of_a_peer_proxy_is_complete() {
                     "boundary": str_spec("string"), "lane": str_spec("string"),
                     "fields": str_spec("array"), "error_code": str_spec("string"),
                     "peer_event": {"type": "string", "values": ["crossed", "refused"],
-                        "required": false}}},
+                        "required": false},
+                    "peer_origins": str_spec("array"), "peer_speakers": str_spec("array")}},
             "consumes": {"body": {"messages": str_spec("array")},
                 "hop": {"route": str_spec("string"), "peer": str_spec("string"),
                     "peer_url": str_spec("string")}},

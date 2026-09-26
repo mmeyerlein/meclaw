@@ -188,7 +188,7 @@ fn config_is_silencer(cfg: &Value) -> bool {
 
 // ──────────────────────────────────────────────────── resolving an endpoint
 
-/// `terminal`, from either `"terminal"` or `"terminal@1.0.1"`.
+/// `terminal`, from either `"terminal"` or `"terminal@1.0.2"`.
 fn template_name(raw: &str) -> &str {
     raw.split('@').next().unwrap_or(raw)
 }

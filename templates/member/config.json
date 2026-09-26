@@ -817,7 +817,7 @@
               "audience_now": "has(context.audience_set) ? context.audience_set : ''",
               "channel": "has(context.channel) ? context.channel : ''",
               "session_id": "has(context.session_id) ? context.session_id : ''",
-              "turn_id": "has(hop.turn_id) ? hop.turn_id : ''"
+              "turn_id": "has(hop.turn_id) ? hop.turn_id : (has(context.turn_id) ? context.turn_id : '')"
             }
           }
         },

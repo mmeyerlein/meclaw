@@ -111,10 +111,11 @@ async fn the_object_wins_over_the_shorthand_on_the_wire() {
 }
 
 /// A deliberation budget is a knob, not an identity — it must be changeable by
-/// message at runtime, and the SAME call must already use the new value
-/// (params-slot ordering, cell-types § llm).
+/// message at runtime, and the NEXT call must use the new value. Since GH #853
+/// it is a model-package key, so the change comes from a params-only message:
+/// a turn cannot retune the model it talks to.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_params_message_can_retune_the_budget_for_the_very_same_call() {
+async fn a_params_message_retunes_the_budget_for_the_next_call() {
     let mock = MockOpenAI::start(vec![canned_chat_completion("ok", "stop")]).await;
     let raw = json!({
         "provider": "openai",
@@ -142,10 +143,14 @@ async fn a_params_message_can_retune_the_budget_for_the_very_same_call() {
         meclaw_core::Headers::new(),
         None,
     );
+    // GH #853: a package key takes effect only from a params-only message.
+    let update = MessageBuilder::new(Path::new("/llm"))
+        .body(Body::Inline(json!({"params": {"reasoning_effort": "low"}})))
+        .build();
+    cell.handle(update, &sink, &mut conn).await;
     let msg = MessageBuilder::new(Path::new("/llm"))
         .reply_to(Path::new("/observer"))
         .body(Body::Inline(json!({
-            "params": {"reasoning_effort": "low"},
             "messages": [{"origin":"user","type":"text","text":"Hi"}]
         })))
         .build();

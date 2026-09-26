@@ -12,6 +12,197 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.46.0] — 2026-09-26
+
+A turn always ends — with an answer, with the reason it was cut, or with an error, never in silence; the other side's
+words get a role and a name of their own, and memory keeps who said what; one busy cell, one full mailbox or one burst
+at a mount no longer ends a colony; the peer boundary resolves nothing foreign and sends only where it is told; a model
+has a start value, a guarded run-time path and a package, and the registry is the one place to operate it and chooses it from what a cell says it needs, in prose.
+
+### Breaking
+
+- **A full mailbox overflows instead of blocking the colony** ([#850](https://github.com/mmeyerlein/meclaw/issues/850)).
+  Messages for a full mailbox queue in order, in memory and then in `colony.db`; only above the per-cell cap are they
+  dead-lettered, as the new code `mailbox_full` (ADR-0045 supersedes ADR-0004's blocking send). An overflow belongs to
+  its mailbox: a respawn continues it, a lift, disconnect or failure dead-letters it as `cell_inactive`, and after a
+  restart it reaches only an active cell at its path. **Migration: none — `colony.db` migrates to schema v11 on its
+  own; a deployment that relied on back-pressure sets the five `mailbox_overflow_*` keys of `colony.json` lower.**
+- **A peer proxy sends only where its own list says** ([#840](https://github.com/mmeyerlein/meclaw/issues/840)). A
+  `proxy` cell on platform `meclaw` posts only to an origin in its new `params.egress`; without it, it sends nothing.
+  `hop.peer_url` is written by whoever wrote the message, and the POST carries the credential of `params.auth` — the
+  list keeps both at the gateways the operator named. Anything else is `egress_denied`, before any token request or
+  connection. **Migration, one line per peer cell: `"egress": ["https://<gateway-origin>"]`** (`http(s)://host[:port]`,
+  no path, no credentials). `proxy/meclaw` refuses unknown keys, so the line goes in together with the binary.
+- **A run-time `base_url` needs `params.base_url_allow`** ([#853](https://github.com/mmeyerlein/meclaw/issues/853)).
+  A params message could move the endpoint while the credential stayed. A run-time `base_url` outside the new
+  immutable list is refused, and so is `base_url: null`. **Migration: list the origins the cell may move to in its
+  `config.json` params.** An overlay written before 0.46.0 stays in force on restore; it shows as `[overlay]` on the
+  cell's `llm: params` line, one the run-time guards would refuse is named on a warning beside it, and `$reset`
+  returns it to the start value.
+- **Model package keys ride only on a params-only message** ([#853](https://github.com/mmeyerlein/meclaw/issues/853)).
+  A `params` slot with a package key (`model`, `base_url`, `wire_dialect`, the reasoning keys, `max_tokens`, …) on a
+  message that carries `messages` is skipped whole with a warning, and the turn runs on. **Migration: send the change as
+  its own message without `messages` (`{"system": {}, "params": {…}}`)**, as `llm-registry`, `argus` and `steward` do.
+- **The `meclaw` proxy stamps every arriving turn `peer`** ([#847](https://github.com/mmeyerlein/meclaw/issues/847)).
+  What the other side claimed (`user`, `assistant`, …) moves to `hop.peer_origins`, speaker fields it sent to
+  `hop.peer_speakers`; a turn with an origin outside the schema stays `invalid_frame` as before. **Migration: a receiver
+  that read the sender's `origin` from the turn reads it from `hop.peer_origins`.**
+- **An `llm` brain with a `system_writable` allowlist must list `roster`** — `collector@4.4.0` (#847). The collector
+  writes `system.roster` on every assembly, and the gate refuses the whole update when one slot is outside the list, so
+  such a brain would refuse every turn. **Migration: add `roster` before lifting the collector.**
+- **The model registry's road is a form at the submit gate** — `submit@2.3.3`, carried by `operator@1.2.2`
+  ([#855](https://github.com/mmeyerlein/meclaw/issues/855)). An edge naming `in_model`, `model_subscribe` or the
+  announcement's context keys must be the form the builder renders (`model_push_form`, `model_announcement_form`). On
+  every edge, a `set_hop` of `subscriber`/`subscribe` or a `delete_hop` of those or `route` is `model_road_key`, and a
+  `set_hop` `route` whose values are not all literals written in it is `model_route_computed`. **Migration: write a
+  computed route as a condition over literals (`c ? 'in_a' : 'in_b'`; `hop.route` passes) and leave those keys to the
+  registry.** Every builder rendering passes unchanged. An edge that leaves the road's keys as they are stays a broker
+  question, and with `code.author` granted the gate does not read a class's inner edges (`templates/submit/README.md`).
+
+No shipped template sets `system_writable`, changes `base_url` at run time or attaches params to a turn.
+
+### Upgrade
+
+- A brain grown before 0.46.0 is no subscriber and stays on its start value. Lift it to `talky@5.4.1` / `cogny@5.1.1`,
+  register it on the registry's `in_hand` with `{"op": "subscribe", "cell_path": …, "start_model": …}` and draw its
+  push edge in one manifest at `/os/orgs` (`templates/meclaw-os/README.md` § The model registry). An announcement edge
+  is accepted only in the manifest that grows its generation.
+- `llm-registry` is a public template from this release on; `meclaw-os@1.10.0` instantiates it as `/os/llm-registry`.
+- A registry grown before this release keeps its catalogue rows (a seed applies only to a new store): bring the shipped
+  rows in with `model_upsert`. Subscribers without a requirement resolve as before.
+- `argus/judge` in `meclaw-os` and the four llm cells of every member grown there now follow the registry before their
+  `.env` start value. A push carries the `base_url` of its catalogue row, and an `llm` cell takes a run-time `base_url`
+  only when it is its own start endpoint or in `params.base_url_allow`. If you set `ARGUS_JUDGE_BASE_URL` or
+  `MEMORY_LLM_BASE_URL` to an endpoint of your own, hold the cell there with `pinned: 1` (`subscribe`) or a `target`
+  replacement onto a catalogue row of that endpoint, or leave the builder ref's `recipes.model_registry_scope` unset
+  (colony-wide: no grown assistant or member subscribes then). Otherwise the cell refuses the push (`invalid_input`),
+  and a refused push is not reported back to the registry yet: `show` names the refused model until the next change.
+- The shell announces its judge with no start value: state it with `in_hand` `{"op": "subscribe", "cell_path":
+  "/os/argus/judge", "start_model": "<ARGUS_JUDGE_MODEL>", "requirement": …}` if `show` should name it, and again after
+  changing `ARGUS_JUDGE_MODEL`.
+- A member grown before 0.46.0 is no subscriber: register its four memory cells with `in_hand` `subscribe` (with
+  `requirement`) and draw one push edge per cell onto its memory hive at `/os/orgs`, as the builder renders it.
+
+### Added
+
+- **Body format: the role `peer`** ([#847](https://github.com/mmeyerlein/meclaw/issues/847)). `origin: "peer"` is the
+  other side's words, never the agent's own person; the turn fields `speaker` (≤ 120 characters) and `speaker_ref`
+  (8 or 12 hex digits) are allowed only with it. The `llm` cell sends a peer turn as `user` behind a frame
+  `[peer <ref> · <name>]` built from those fields alone (name neutralised), in both wire dialects. The `meclaw` proxy
+  stamps every arriving turn `peer` and keeps the sender's claims in `hop.peer_origins` / `hop.peer_speakers`.
+- **The other side of a channel has a role and a name** — `collector@4.4.0` (#847). A peer turn is kept as `peer` with
+  `speaker` / `speaker_ref` (from affinity's `who` or a trusted gate), never as the person's words or the agent's own.
+  Every assembly writes `system.roster`, the legend `<ref> = <name> (<identity>)`, and the fixed rule
+  `system.instructions.peer`, both empty until a peer turn with text stood in the session; a gate adds and removes
+  participants with `context.roster_add` / `roster_leave`. `turn_write` and `write` drain peer turns with their source.
+  `assemble` contract 2.3.0.
+- **A channel narrows the tool menu of its sessions** — `collector@4.4.0`, `llm`
+  ([#845](https://github.com/mmeyerlein/meclaw/issues/845)). The channel edge stamps `context.tools_allow` /
+  `tools_deny`; the collector sends them with every brain call of the session as the body slot `tool_scope`, which the
+  `llm` cell applies to that one request. The stored menu stays whole and in order, so the provider sees the same
+  prefix. An empty list at the channel narrows nothing; a changed scope is reported (`hop.scope_changed`).
+- **affinity names who is speaking** — `affinity@3.6.0` ([#848](https://github.com/mmeyerlein/meclaw/issues/848)).
+  A participant's reference is the first 8 hex characters of its identity's sha256 (12 when its own store holds an
+  8-character twin), computed and never stored, so affinity instances and application gates agree without
+  coordination. The served brief carries `who {ref, name, identity, known}`, and so does a refusal whose subject is in
+  the round; a refusal about a subject outside it carries none. `member@1.10.2` documents `context.counterpart`.
+- **Peer and group channels are remembered with their source** — `memory-hive@3.6.0`, `memory-drain@2.1.0`
+  ([#849](https://github.com/mmeyerlein/meclaw/issues/849)). Peer turns become episodes with the reference as `speaker`,
+  facts carry it in the new column `facts.source`, recall renders `<ref> says: …`, and no closure or belief spans two
+  sources. In a group channel the sidecar contract asks the model for the participant reference of each fact's speaker
+  (`source`, copied from the `[peer <ref> · <name>]` frame); the ingress binds a named fact to that participant's
+  turn among the turns since the last answer, drops a name that is not there with a receipt on `reject`
+  (`unknown_source`), and leaves only unnamed facts between several speakers to the close pass
+  (`ambiguous_speaker`).
+- **`llm`: a start value and a guarded run-time path** ([#853](https://github.com/mmeyerlein/meclaw/issues/853),
+  [#854](https://github.com/mmeyerlein/meclaw/issues/854)). `{"params": {"$reset": [...]}}` returns keys to the start
+  value, across a respawn too; every update and restore logs one `llm: params` line naming each key's source, never a
+  secret. New params: `base_url_allow`, `model_prompt` (≤ 8 KiB, first in the system part), `reasoning_wire`
+  (`nested` | `top_level`) and `thinking_budget`. `wire_dialect` changes at run time; a run-time `external_timeout_ms`
+  the backstop does not clear is refused. The peer mount refuses a top-level `params` slot.
+- `params.egress` on the `meclaw` proxy (immutable) and the peer `error_code` `egress_denied`; entries compare as
+  normalised origins, and a URL carrying credentials is named, never echoed (#840).
+- `colony.json` keys `mailbox_overflow_spill_messages` (10 000), `mailbox_overflow_spill_bytes` (32 MiB),
+  `mailbox_overflow_memory_bytes` (256 MiB), `mailbox_overflow_cap_messages` (100 000), `mailbox_overflow_cap_bytes`
+  (256 MiB), and the dead-letter code `mailbox_full` (#850).
+- **One place to operate models** — `llm-registry@2.3.0` ([#855](https://github.com/mmeyerlein/meclaw/issues/855),
+  absorbs [#825](https://github.com/mmeyerlein/meclaw/issues/825)). A package per model, global ("model X everywhere
+  → Y") and targeted replacements, resolved per subscriber by targeted > global > tier > start value and pushed as a
+  params-only message only when it changed. Ops on `in_hand`: `override_set`, `override_clear`, `reset`, `subscribe`,
+  `show` (model, rank, reason and since per subscriber). `meclaw-os@1.10.0` carries the pushes into `./orgs`;
+  `builder@1.15.0` makes every brain of a grown assistant generation a subscriber, and names on stderr and in its answer
+  a brain it has to leave out; `talky@5.4.1` and `cogny@5.1.1` take them on the `in_model` door, past the collector.
+  The registry's two doors clear the context keys of its internal store round trip, so a sender at the rim cannot
+  pose as a store answer and have a command run without an actor.
+
+- **Each llm cell states in prose what it needs, and the registry chooses once** — `llm-registry@2.3.0`
+  ([#858](https://github.com/mmeyerlein/meclaw/issues/858)). A new immutable `llm` param `requirement` says what the
+  cell needs from a model in prose (role, latency, context, depth, cost), never a model name, at most 2 KiB; the cell
+  never reads it on a call, the params line shows it as `requirement=len:<n>,sha:<8 hex>[start]`, and a run-time update
+  naming it is `invalid_input`. The registry chooses a model for each requirement from its catalogue once per
+  (requirement, catalogue): a new `translate` cell — the one llm cell in the hive, on a start-value model the registry
+  never resolves — answers `{model_id, reason}`, the hand checks the answer against the catalogue and stores it, and
+  every resolution after that reads the row. Two subscriptions with the same new requirement in flight together still
+  ask once; an open question closes with its answer or failure and expires after 120 s. Precedence is targeted > global
+  > prose > tier > start value, and `show` names the translator's sentence as `because` ("held until the new requirement
+  is answered" while a changed requirement keeps the old model). A question whose catalogue moved between an op's read
+  and its write is asked against the current catalogue. Until a new or changed requirement is answered — or while the
+  translator fails, or its answer is refused — a cell keeps the prose model it holds, else its tier, else its start
+  value: no `$reset` on the way, one push when the answer lands. New ops on `in_hand`: `model_upsert` (a `prompt` over 8
+  KiB, `strengths` over 2 KiB or an id that is not one short token are refused with `invalid_model_field`),
+  `model_retire`, `retranslate`. The catalogue ships six models a hosted provider lists publicly, with prices and
+  context as of 2026-09-26. `meclaw-os@1.10.0` names the translator's start value in `requires.env`
+  (`LLM_REGISTRY_TRANSLATOR_MODEL`, `LLM_REGISTRY_TRANSLATOR_BASE_URL`, both with defaults).
+- **Every shipped llm cell carries its requirement and a door for the registry**
+  ([#858](https://github.com/mmeyerlein/meclaw/issues/858)). `params.requirement` in `talky`, `cogny`, `memory-hive`
+  (four cells), `argus`, `steward`, `builder`, `summarizer`, `egon`, `slack-agent`, `research-assistant`,
+  `coder-pipeline` (three cells) and the four examples; `display/judge` is left out on purpose, and without a registry
+  the param is inert. Every sealed composite that runs a model takes pushes on an `in_model` door: `memory-hive@3.6.0`
+  (one edge per llm cell, addressed by `hop.subscriber`), `argus@1.2.0`, `steward@2.1.0`, `builder@1.15.0`,
+  `summarizer@2.2.0`, `egon@2.1.0`, `slack-agent@2.1.0`, `research-assistant@2.1.0`, `coder-pipeline@2.2.0`.
+  `builder@1.15.0` announces each brain with its template cell's `requirement`, and `grow_level member` makes the four
+  llm cells of the member's memory hive subscribers of the colony's registry. `meclaw-os@1.10.0` announces its own
+  `argus/judge` on every mutation receipt and carries registry pushes onto the doors of `./argus` and `./builder`;
+  `builder/compose` is not announced — it is born on `LOCAL_LLM_BASE_URL` with no `base_url_allow`, so no catalogue
+  push could land in it, and an operator whose local endpoint is a catalogue endpoint subscribes it by hand. An
+  announcement with an empty start value never clears a start value the registry holds. `submit@2.3.3` (carried by `operator@1.2.2`) accepts a
+  push edge one path segment below its target and an announced brain with a `requirement`.
+
+### Changed
+
+- `talky@5.4.1`: the brain's `cell.message_timeout` is 240 000 ms (was 180 000), so an `external_timeout_ms` of
+  180 000 keeps the backstop rule. `assistant@2.9.2`: the consult edges drop the tool scope before the core (#845).
+- **High-frequency sinks and gates run `warm`** (#852): `terminal@1.0.2`, `daily-digest@2.1.1` (`void`) and
+  `affinity@3.6.0` (`gate`); `cold` stays the default, and the docs say when to pick which.
+- **An unchanged store buys no dream** — `memory-hive@3.6.0` ([#857](https://github.com/mmeyerlein/meclaw/issues/857)).
+  The nightly run closes `skipped: unchanged` with `llm_calls 0` when no fact was recorded or expired since the last
+  one; never on the first night, after a crash or with work left over from the night before.
+- Pins: `member@1.10.2` (affinity, memory-hive), `meclaw-os@1.10.0` (builder, argus, operator), `freeswitch@2.1.3`
+  (voice). `builder-librarian@2.2.3` carries the regenerated corpus; `builder@1.15.0` pins it.
+
+### Fixed
+
+- A model-initiated `memory_recall` round closes under its own turn, so later turns are no longer deferred behind it
+  (`member@1.10.2`, #841).
+- A completion cut on `length` without a tool call answers with the partial text instead of nothing
+  (`dispatcher@1.2.1`, #842), leaves talky without its sidecar, and every collector `answer` carries
+  `hop.finish_reason` and `hop.truncated` (`talky@5.4.1`, `cogny@5.1.1`, `collector@4.4.0`, #843).
+- **A mutation on a busy cell no longer ends the colony** ([#838](https://github.com/mmeyerlein/meclaw/issues/838)).
+  The death-ack wait beats the watchdog, and all cells one step stops share one `term_timeout` (5 s) instead of 5 s
+  each. A disconnect or swap is still refused as `term_timeout`; a move commits with a warning, and the rollback
+  after a reject waits a 250 ms grace instead of a second `term_timeout`.
+- **A burst at a mount is served instead of refused** ([#851](https://github.com/mmeyerlein/meclaw/issues/851)). A full
+  handoff queue (now 64, was 16) waits up to one second for a slot before `503 surface busy`.
+- A turn carrying a blob reference (`text_id`, `messages_id`) no longer crosses a colony boundary; it is
+  `lane_body_unsupported`, so the far side never resolves it against its own store (#839).
+- The judges of `argus@1.2.0`, `steward@2.1.0` and `memory-hive@3.6.0` default to `anthropic/claude-opus-5.5`; the old
+  default is no longer listed by the hosted provider (#856).
+- `code`: an oversized inline script runs as `python3 -I`, so a stray module in the temp directory cannot shadow the
+  standard library; leftovers of the new name form are swept (only the colony user's own files), those of the old
+  `meclaw-code-<uuid>.py` may be deleted by hand (#844).
+- `voice@2.2.2`: `hello` is sent only after the cell has taken the session, so a queued `in_speak` is no longer refused
+  `unknown_session`; without the acknowledgement the client is closed with `1013` (#836).
+
 ## [0.45.0] — 2026-09-24
 
 Agents behind one member, each answering for itself. An accepted proposal about a disclosure becomes the disclosure
@@ -1508,7 +1699,6 @@ migration is needed from 0.36.x, a screen grown from an older `display` is
 lifted with `replace_nodes`, and the way back is the same act with the old
 version.
 
-
 ### Added
 
 - **The screen curates what it shows** (`display@2.2.0`, GH #679, ADR-0037,
@@ -2520,7 +2710,6 @@ change is breaking, and it is the first item below.
   `/colony/trace`. The entry carries the `trace_id` and `message_id` of the
   posted message, so a caller polling `/colony/dead_letters` can still attribute
   it (GH #612).
-
 
 ## [0.32.1] — 2026-09-08
 
@@ -5339,7 +5528,6 @@ move for the bump; what moved is what may be asked for.
 One comment repair rides in the same number (GH #558, second half): the cell a grown
 door is attributed to is `/os/operator/intake` since the submitter moved into the front
 door (#556), where the recipe still said `/os/operator/submit`.
-
 
 ### Fixed
 

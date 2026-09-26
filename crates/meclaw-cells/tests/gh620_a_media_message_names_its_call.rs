@@ -56,6 +56,9 @@ struct Fixture {
     _td: tempfile::TempDir,
     h: ColonyHandle,
     egress: mpsc::Receiver<Message>,
+    /// Emissions a wait already took off `egress` (GH #836): whoever asks the
+    /// door next is handed them first, so nothing a test watched is lost.
+    seen: Vec<Message>,
     /// `ws://<listener>/<mount>`.
     ws_base: String,
     listener: tokio::task::JoinHandle<()>,
@@ -137,6 +140,7 @@ impl Fixture {
             _td: td,
             h,
             egress,
+            seen: Vec::new(),
             ws_base: format!("ws://{addr}/{MOUNT}"),
             listener,
         }
@@ -189,7 +193,7 @@ impl Fixture {
         want: impl Fn(&Message) -> bool,
     ) -> Vec<Message> {
         let deadline = Instant::now() + DEADLINE;
-        let mut out = Vec::new();
+        let mut out = std::mem::take(&mut self.seen);
         loop {
             if out.iter().any(&want) {
                 return out;
@@ -230,11 +234,36 @@ fn hop_of(m: &Message, key: &str) -> String {
 /// produces. With no synthesis provider that pair is a `speak_end` carrying
 /// `failed`, which is a receipt of DELIVERY and nothing else — and delivery is
 /// what this file measures.
-async fn heard_the_order(client: &mut VoiceClient) -> Value {
-    client
-        .next_frame_of_type("speak_end", DEADLINE)
-        .await
-        .expect("the addressed connection is told what happened to the order")
+///
+/// GH #836: the wait ends AT ONCE, with a name, when the cell answers the order
+/// `unknown_session` for `call` on its error lane -- the shape the race between
+/// an order and the handshake had, which used to surface as a 30 s timeout
+/// that said nothing. Whatever the door carried on the way is kept for the
+/// next reader.
+async fn heard_the_order(fx: &mut Fixture, client: &mut VoiceClient, call: &str) -> Value {
+    let Fixture { egress, seen, .. } = fx;
+    let refused = async {
+        loop {
+            let Some(m) = egress.recv().await else {
+                return std::future::pending::<()>().await;
+            };
+            let hit =
+                hop_of(&m, "error_code") == "unknown_session" && hop_of(&m, "call_id") == call;
+            seen.push(m);
+            if hit {
+                return;
+            }
+        }
+    };
+    tokio::select! {
+        heard = client.next_frame_of_type("speak_end", DEADLINE) => {
+            heard.expect("the addressed connection is told what happened to the order")
+        }
+        () = refused => panic!(
+            "the cell answered `unknown_session` for {call:?}, a connection whose client \
+             already held its hello: the order overtook the handshake (GH #836)"
+        ),
+    }
 }
 
 /// **The call is the key, and the keeper's session is not.**
@@ -245,7 +274,7 @@ async fn heard_the_order(client: &mut VoiceClient) -> Value {
 /// the call.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn in_speak_prefers_the_call_over_the_keepers_session() {
-    let fx = Fixture::boot().await;
+    let mut fx = Fixture::boot().await;
     let (mut call_a, hello_a) = fx.connect("call-a").await;
     let (mut call_b, _hello_b) = fx.connect("call-b").await;
 
@@ -264,7 +293,7 @@ async fn in_speak_prefers_the_call_over_the_keepers_session() {
     )
     .await;
 
-    let heard = heard_the_order(&mut call_a).await;
+    let heard = heard_the_order(&mut fx, &mut call_a, "call-a").await;
     assert_eq!(
         heard["reason"], "failed",
         "the order was delivered and ended where an unconfigured synthesis ends: {heard}"
@@ -285,7 +314,7 @@ async fn in_speak_prefers_the_call_over_the_keepers_session() {
 /// key, never in place of it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn in_speak_still_reads_the_session_key() {
-    let fx = Fixture::boot().await;
+    let mut fx = Fixture::boot().await;
     let (mut only_one, _hello) = fx.connect("older-wiring").await;
 
     fx.speak(
@@ -294,7 +323,7 @@ async fn in_speak_still_reads_the_session_key() {
     )
     .await;
 
-    let heard = heard_the_order(&mut only_one).await;
+    let heard = heard_the_order(&mut fx, &mut only_one, "older-wiring").await;
     assert!(
         heard["speak_id"].is_string(),
         "the connection named by the old key is the one that was spoken into: {heard}"
@@ -315,7 +344,7 @@ async fn the_speak_end_and_error_lanes_name_the_call() {
 
     fx.speak(json!({"call_id": "named-call"}), "say something")
         .await;
-    let _ = heard_the_order(&mut client).await;
+    let _ = heard_the_order(&mut fx, &mut client, "named-call").await;
 
     let emissions = fx
         .emissions_until("a speak_end on the lane", |m| {
@@ -333,9 +362,11 @@ async fn the_speak_end_and_error_lanes_name_the_call() {
         "one value under both names"
     );
 
+    // The one error this order is expected to produce; an `unknown_session`
+    // would be a different defect and is named by `heard_the_order` above.
     let error = emissions
         .iter()
-        .find(|m| hop_of(m, "route") == "error")
+        .find(|m| hop_of(m, "route") == "error" && hop_of(m, "error_code") == "speak_failed")
         .unwrap_or_else(|| panic!("a synthesis with no provider is reported: {emissions:#?}"));
     assert_eq!(hop_of(error, "error_code"), "speak_failed");
     assert_eq!(
@@ -393,7 +424,7 @@ async fn a_speak_that_names_no_call_is_refused_by_name() {
 /// key. The empty string is skipped and `context.session_id` decides.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_empty_call_id_falls_through_to_the_session() {
-    let fx = Fixture::boot().await;
+    let mut fx = Fixture::boot().await;
     let (mut only_one, _hello) = fx.connect("still-here").await;
 
     fx.speak(
@@ -402,7 +433,7 @@ async fn an_empty_call_id_falls_through_to_the_session() {
     )
     .await;
 
-    let heard = heard_the_order(&mut only_one).await;
+    let heard = heard_the_order(&mut fx, &mut only_one, "still-here").await;
     assert!(
         heard["speak_id"].is_string(),
         "an empty call key is no key at all, and the session behind it is the \

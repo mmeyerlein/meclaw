@@ -561,8 +561,9 @@ fn the_declared_lane_is_the_one_the_script_writes() {
     );
     assert_eq!(
         hop["finish_reason"]["values"],
-        serde_json::json!(["stop", "tool_calls"]),
-        "the two the answer path carries"
+        serde_json::json!(["stop", "tool_calls", "length"]),
+        "the three the answer path carries -- `length` since splitter 1.0.2, when a cut \
+         completion started coming through here to lose its sidecar (GH #843)"
     );
     assert_eq!(hop["sidecar"]["values"], serde_json::json!(["malformed"]));
     assert_eq!(

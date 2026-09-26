@@ -28,6 +28,10 @@
           "because": "a durable `system.*` slot for this core's brain -- the door in the wall (GH #458). This composite is sealed: an edge naming `./brain` is refused with `hive_port_boundary`, so until this lane existed there was no way at all for an identity to reach it from outside. The pack enters at this path and the collector turns it into a system-slot upsert. It is a LANE rather than a body flag because what lands in `system.*` is UPSERTed into the brain's own `cell.db` and stands until something overwrites that exact path -- durable state, told apart from the evidence of one round by the topology and not by a key a model could have written. Body: `system` carrying one or more slot subtrees (what `affinity`'s push lane emits: the slots and NO turn beside them, so the update costs a write and not an inference, GH #263), or `slot` + `content` for a single one written by hand. Only `identity`, `persona`, `handover` and `instructions` may be written -- a subset of the collector's `SYS_KEEP`, so what arrives is out of the curator's reach at any budget. `instructions` joined that list in GH #488: holding the charter out of the lane assumed it had another owner, and it had none -- nothing exported it and no template seeded it, so a rebuilt core came up with an empty charter and answered as the vendor's default assistant. What guards it now is the edge that stamps the lane, drawn only where a brain may draw its OWN push edge, from a source whose single writer is `affinity`'s audited gate; anything else refuses the WHOLE pack with `slot_unknown`, an empty one with `pack_empty`. The owner is taken from `envelope.reply_to` and never from the body. PAIRED with `pack_ack` in `params.required_drains`"
         },
         {
+          "route": "in_model",
+          "because": "a model package for the brain, pushed by the colony's llm-registry (GH #855): a PARAMS-ONLY body -- an empty `system` slot, no `messages` -- that the brain merges into its live params and answers with nothing. It goes from this path straight to `./brain`, past the collector, because a params body is not a turn. The one way a model package reaches the core's brain; draw it only from the registry's `update` lane, restamped `in_model`"
+        },
+        {
           "route": "in_menu",
           "because": "the tool declarations coming back from a tools hive the parent wired (GH #464). Since cogny@4.3.0 this core ASKS what its tools look like instead of carrying a menu somebody typed, and it declares `[\"*\"]`: a reasoning core is the one caller of an assistant that should be able to reach everything the surface can, and a list typed here would be a second copy of the hive's own catalogue that drifts on the first tool added. The request leaves on `schemas`, and the answer is written into `./brain` as durable `system.tools` -- the collector emits `menu` once and this template's edge carries it, exactly as it does with `pack`. Since 4.4.0 the menu the collector writes also carries the two tools it serves ITSELF -- `memory_recall` and `thread_recall` (`collector@3.3.1`, GH #512) -- because this core routes both by name and no tools hive has a declaration for either. PAIRED with `schemas`. The full account of the lane pair lives in `templates/talky/README.md` § The menu is asked for; everything there holds here"
         },
@@ -51,7 +55,7 @@
       "emits": [
         {
           "route": "answer",
-          "because": "the core's answer, for whoever asked. Since collector@2.1.1 a THIRD sort travels here and it is told apart by `hop.degraded`, not by `round_capped` (which such a message does not carry): a turn that could not be assembled at all because the store refused a read or a write (GH #343). `hop.store_error` carries the store's `error_code`, `hop.store_operation` the op it refused, and the text names both. A parent that renders an answer must branch on `degraded` -- without it a failure reads as a real reply"
+          "because": "the core's answer, for whoever asked. Since collector@2.1.1 a THIRD sort travels here and it is told apart by `hop.degraded`, not by `round_capped` (which such a message does not carry): a turn that could not be assembled at all because the store refused a read or a write (GH #343). `hop.store_error` carries the store's `error_code`, `hop.store_operation` the op it refused, and the text names both. A parent that renders an answer must branch on `degraded` -- without it a failure reads as a real reply. Since `collector@4.4.0` every answer also says how the completion behind it ended (GH #843): `hop.finish_reason` (`stop`, `length`, or empty where the collector knows no reason) and `hop.truncated`, `\"1\"` when the completion was cut on `length` -- the core's `length` edge still goes straight to its collector (it has no splitter), and the mark is made there"
         },
         {
           "route": "tool",
@@ -97,6 +101,11 @@
           "from": ".",
           "to": "./collector",
           "condition": "has(hop.route) && (hop.route == 'in_tool' || hop.route == 'in_bundle' || hop.route == 'in_pack' || hop.route == 'in_menu')"
+        },
+        {
+          "from": ".",
+          "to": "./brain",
+          "condition": "has(hop.route) && hop.route == 'in_model'"
         },
         {
           "from": ".",

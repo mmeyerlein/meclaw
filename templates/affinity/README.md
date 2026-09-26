@@ -1,4 +1,4 @@
-# `affinity@3.5.0`
+# `affinity@3.6.0`
 
 The curated record of the people and agents a colony knows -- as one hive of existing
 cell types. No new cell type, no Rust, and no model: every judgement in here is a
@@ -11,7 +11,7 @@ Six cells:
 |---|---|---|
 | `store` | `store` | the domain: entities, relations, trust, disclosure, subscribers, proposals, audit -- plus `port_scratch`, which is not domain at all (§ The seed) |
 | `brief` | `code` | the only reader of the domain -- audience filter and pack rendering. Appends its own `audit` row per brief |
-| `gate` | `code` | the only writer of the domain -- AIeOS validation, minting, audit |
+| `gate` | `code` | the only writer of the domain -- AIeOS validation, minting, audit. Runs `warm` since 3.6.0 (#852): it sits under every member door, keeps no state between messages and reads stdin as text only |
 | `push` | `code` | push-on-change: hashes what a subscriber would get, and stays silent when it did not move. Writes that hash and `sent_at` back onto the subscriber row, plus an `audit` row |
 | `clock` | `timer` | the push tick (6-field Quartz cron, **UTC**) |
 | `porter` | `code` | the transfer lane: walks the record out as a versioned document, takes one part back into a running hive. It transfers and decides nothing (§ Taking the record out) |
@@ -143,7 +143,7 @@ only affinity is quoted. Memory is allowed to be wrong; affinity has to have dec
 affinity/                     hive  -- scope marker, ten internal edges
   store/                      store -- 7 domain tables + `port_scratch` + 2 store-owned alias tables
     seed/{entities,relations,trust,disclosure,subscribers}.jsonl
-  brief/                      code  -- read port: trust -> disclosure -> traverse -> entity
+  brief/                      code  -- read port: who -> trust -> disclosure -> traverse -> entity
   gate/                       code  -- write port: validate -> store ops -> audit -> ack
   push/                       code  -- change detector, renders nothing itself
   clock/                      timer -- the tick
@@ -161,7 +161,7 @@ round trip *is* the cell's memory. That is why this hive has ten internal edges 
 | port | direction | lane |
 |---|---|---|
 | `in_brief` | in -> the **hive path** | the request as a `tool_call` turn (`{subject, channel, slots}`), plus TWO facts a body may never carry: `hop.audience` (who asks) and `hop.audience_set` (the round, a JSON array of participant ids). The door edge promotes both to `context.asker` and `context.audience_set` -- a caller that promotes those keys on its own edge is served the same way, and **wins** where both exist (see § Identity comes from the edge). `participants` is **retired, not aliased** ([#330](https://github.com/mmeyerlein/meclaw/issues/330); see the retraction note under the audience-SET rule) -- a request that spells the round that way declared no round at all. **Both facts are required** -- no asker is `no_audience`, no round is `no_round`, and either is a denial with an `audit` row and no `system` slot at all |
-| `out_brief` | `./brief` -> the asking `llm` cell, or an agent hive's tool lane | `hop.route == 'answer' && hop.subscriber == ''`: the `system.*` slots the request asked for **and** the same pack as JSON in the `tool_result`, under the id of the call being answered |
+| `out_brief` | `./brief` -> the asking `llm` cell, or an agent hive's tool lane | `hop.route == 'answer' && hop.subscriber == ''`: the `system.*` slots the request asked for **and** the same pack as JSON in the `tool_result`, under the id of the call being answered, plus the body slot `who {ref, name, identity, known}` -- on the served brief and on every refusal after the subject was read whose subject is in the round (§ Who is speaking, since 3.6.0) |
 | `in_propose` | in -> the **hive path** | the proposal as a `tool_call` turn (`{op, ...}`); the edge **MUST** promote the writer to `context.actor` and, for `subscribe`, the subscribing cell's address to `context.subscriber` |
 | `out_ack` | `./gate` -> the proposer | `hop.route == 'ack'`, `accepted` or `rejected` plus a `reason_code` |
 | `out_push` | `./brief` -> each subscribed `llm` cell | `hop.route == 'answer' && hop.subscriber == '<cell path>'`: the `system.*` slots the subscription asked for and **no** turn beside them, so the update costs a write and not an inference (GH #263; the `llm` cell returns without calling when a body carries no `messages[]`) |
@@ -473,6 +473,102 @@ merely written: `a_present_speaker_is_written_exactly_as_it_arrived`
 (`crates/meclaw-cells/tests/gh272_identity_travels_per_message.rs`) hands the writer a
 reference and reads the stored column back unchanged.
 
+### Who is speaking: one reference per participant (#848)
+
+A model in a channel with several participants has to know, turn by turn, who a turn is
+from -- by name AND by exact identity -- and memory has to know whom a statement came from.
+Both read the same short **participant reference**, and this hive is where it comes from
+([#848](https://github.com/mmeyerlein/meclaw/issues/848)).
+
+**The identity.** A subject is an identity with the road it came by in front of it:
+`peer:` for a counterpart colony (the member's entry edge composes
+`context.counterpart = 'peer:' + ...`), `member:` and `agent:` for this colony's own people
+and agents. The identity is the subject without that prefix, in the form
+`<colony>/<org>/<member>/<agent>`, a missing part written `-`: `colA/org1/jonas/-`. Its first
+segment is the colony the substrate verified at the mount (`hop.peer`); the rest is what that
+colony says about its own members -- the same trust its `origin user` already gets. Who
+composes the form is the edge or the application gate that stamps `context.counterpart`
+(member README § *The two channel keys*). The identity is compared byte for byte and never
+normalised: `colA/org1/jonas` and `colA/org1/jonas/-` are two identities with two references,
+so whoever composes it writes all four segments, `-` for a missing one, every time.
+
+**The reference is a function, not a record.** It is the first 8 hex characters of the
+identity's sha256; if this hive's own store holds ANOTHER identity with the same 8, it is 12.
+`./brief` runs exactly this, and it is published here so that anybody who needs the
+reference before this hive has answered computes the same one:
+
+```python
+IDENTITY_PREFIXES = ("peer:", "member:", "agent:")
+
+
+def identity_of(subject):
+    """The identity a subject names: the subject without its road prefix."""
+    s = str(subject or "")
+    for prefix in IDENTITY_PREFIXES:
+        if s.startswith(prefix):
+            return s[len(prefix):]
+    return s
+
+
+def participant_ref(identity, stored=()):
+    """The participant reference of `identity`: the first 8 hex characters of its
+    sha256, or 12 when another identity in `stored` has the same 8."""
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+    for other in stored:
+        if other != identity and \
+                hashlib.sha256(other.encode("utf-8")).hexdigest()[:8] == digest[:8]:
+            return digest[:12]
+    return digest[:8]
+```
+
+Three things follow from computing it rather than storing it. Every affinity instance of an
+organisation arrives at the same reference for the same identity without asking any other one,
+so it is the same in every channel and in memory. A stranger this record never stored has it
+already: an application gate that admits an unknown participant computes the **provisional
+reference** itself, and it is the same string the record will use once it knows them -- there
+is no hand-over from a provisional to a final value. And `./brief` stays a reader: nothing is
+minted, `./gate` remains the only door that writes.
+
+All of that holds while no store involved holds an 8-character twin of the identity -- another
+identity whose sha256 starts with the same 8 hex characters, about n/2^32 for a store of n
+identities. The 12-character form depends on the OWN store: an instance that holds a twin
+answers 12 characters where another instance, or an application gate that has no store, computes
+8, and a reference that was 8 characters long grows to 12 once a twin is stored, so what memory
+recorded as the source before then no longer matches it. The rule is deterministic within one
+store -- both twins see the collision the same way -- and it only ever grows: a reference once
+12 characters long stays so (superseded rows count, and no row is ever deleted).
+
+**The brief says who.** Every answer on the tool lane that names a subject carries a
+top-level body slot beside `messages` and `system`:
+
+```json
+{"who": {"ref": "3a47fe3e", "name": "Jonas", "identity": "colA/org1/jonas/-", "known": false}}
+```
+
+`known` is whether an active entity of this record has the subject as its `entity_id` (or the
+same identity under another prefix); `name` is that entity's `display_name`, else the name an
+edge stamped as `context.counterpart_name`, else the last segment of the identity that is not
+`-`, capped at 64 characters. `who` rides the served brief AND every refusal after the lane
+read it -- `audience_not_subset`, `not_disclosed`, `unknown_subject` -- whose subject is **in the
+round**: the declared set plus the asker, compared identity to identity. The identity of
+somebody in the room is what the channel already shows, so naming it discloses nothing, and a
+refusal still carries no slot content at all. A subject outside the round is a different
+question -- the tool lane lets a model ask about anybody it can spell -- and its refusal carries
+no `who`, whether the record knows the subject or not: the one sentence it was before 3.6.0, so
+it says neither a `display_name` nor whether a record exists. The requests refused at the door
+-- `no_subject`, `no_audience`, `no_round`, `slots_conflict` -- carry no `who`, and neither does
+the push lane, whose body stays `system.*` and nothing else. The price is one read of three short
+columns of `entities` per tool-lane brief, ordered by `entity_id` and bounded at 5 000 rows.
+Beyond that bound the check sees the first rows only: a collision further on is missed (the
+reference stays 8 characters), and a subject whose row lies further on reads as `known: false`
+with the stamped name or its segment -- a less precise name, never another participant's.
+
+**What reads it.** The collector turns `who` into the session's legend and into the
+`speaker_ref`/`speaker` of a peer turn, and the llm cell frames such a turn as
+`[peer <ref> · <name>]`. Memory keeps the reference as the **source** of what that participant
+said: a statement by one participant about another stays that participant's statement, next to
+the other's own, never a self-statement of the one it is about.
+
 ## The AIeOS schema is vendored, and only vendored
 
 `aieos.schema.json` in this directory is a **copy** of the AIeOS 1.1.0 skeleton, pinned at
@@ -542,7 +638,7 @@ so without a second declaration an `import` would write rows straight past the o
 sentence this hive is built on. `store/config.json` therefore also carries
 `"write_surface": "internal"` in its **`contract`** block. Both halves compute the same
 owning scope, so the store has exactly one boundary; an `export` is a read and neither
-half bounds it. The transfer lane of `affinity@3.5.0` is not an exception to that and does
+half bounds it. The transfer lane of `affinity@3.6.0` is not an exception to that and does
 not need to be: `./porter` stands **inside** the hive scope and writes through the store's
 own ops, so it is bounded by the same sentence as `./gate` is. `clock` carries the contract half as well: its `cell.db` is where the
 schedules live, and a planted schedule fires into `./push` with an `emit_to` of the
@@ -856,7 +952,7 @@ the export carries it -- a fictional `Alex Kern` beside an imported record would
 person nobody imported. `in_import` is the other half: the way into a hive that is already
 running, which no seed can reach.
 
-`affinity` hangs directly under the member (`member/affinity`, a `ref` to `affinity@3.5.0`) and
+`affinity` hangs directly under the member (`member/affinity`, a `ref` to `affinity@3.6.0`) and
 its `in_export` is fanned by the member's own. The sink files the parts under
 `<export_dir>/affinity/seed/`, and a directory per hive is a requirement rather than tidiness:
 `memory-hive` and `affinity` both have a table called `entities`, and a flat sink would have
@@ -933,8 +1029,10 @@ beside the old one.
   (R-AF-1), `auto_accept: false` asks for a row that waits, and an audience beginning with
   `directory:` gets one whether it asked or not.
 - **No name resolution.** A `subject` is an entity_id. The store carries the canonical name
-  binding (`display_name` -> `canonical_name`, normalising) and an FTS index over it, so a
-  lookup lane is a small addition -- it is just not v1.
+  binding (`display_name` -> `canonical_name`, normalising) and an FTS index over it, but
+  nothing turns a free-text name into a subject. For a channel the brief answer IS the lookup
+  since 3.6.0: it names the subject it was asked about -- reference, name, identity, whether
+  the record knows it (§ Who is speaking) -- and it resolves nothing it was not handed.
 - **Per turn only when asked, and never into `system.*`.** Until
   [#834](https://github.com/mmeyerlein/meclaw/issues/834) nothing in a turn asked this hive at
   all. Since `collector@4.3.0` a turn on a channel with many counterparts asks it ONCE, at the

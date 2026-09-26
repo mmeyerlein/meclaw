@@ -14,11 +14,13 @@
 //!
 //! # What is asserted, and why each one is asserted of the substrate
 //!
-//! 1. **Shape.** The shell is a hive with exactly five occupants: `access`,
-//!    `argus`, `builder` and `operator` as `ref`s, and `orgs` as a real, open,
-//!    empty container hive. There was a fifth ref until GH #556 took one AWAY:
-//!    the submitter is an occupant of `operator` now, so the shell holds four
-//!    refs and reaches the mutation door through the front door alone.
+//! 1. **Shape.** The shell is a hive with exactly six occupants: `access`,
+//!    `argus`, `builder`, `llm-registry` and `operator` as `ref`s, and `orgs`
+//!    as a real, open, empty container hive. There was a fifth ref until GH
+//!    #556 took one AWAY -- the submitter is an occupant of `operator` now, so
+//!    the shell reaches the mutation door through the front door alone -- and
+//!    GH #855 added the model registry back as the fifth. The test that pins it
+//!    keeps its old name (`…four_refs…`) because an ADR anchors on it.
 //! 2. **The pins resolve.** Both refs name `<name>@<version>` and the
 //!    `TemplatesRegistry` — the same registry a mutation resolves against —
 //!    answers with the directory on disk. A bare name would resolve to the
@@ -101,6 +103,10 @@ const FRONT_DOOR: &str = "operator";
 const SUBMITTER: &str = "submit";
 /// The container the organisations are instantiated into.
 const CONTAINER: &str = "orgs";
+/// GH #855 -- the colony's model registry, the fifth occupant since
+/// `meclaw-os@1.9.0`. Every organisation's brains are its subscribers, which
+/// is the ADR-0013 question answered yes: all organisations share it.
+const REGISTRY: &str = "llm-registry";
 /// The one lane of the broker that is deliberately NOT re-emitted outward.
 const NOT_RE_EMITTED: &str = "connect";
 
@@ -139,7 +145,7 @@ const NOT_RE_EMITTED: &str = "connect";
 ///
 /// GH #556 SHORTENED this list by two rather than lengthening it. `in_apply`
 /// and `apply` were the `./operator -> ./submit` edge, and that edge is now an
-/// interior edge of `operator@1.2.0`. Neither name is shipped by any occupant
+/// interior edge of `operator@1.2.2`. Neither name is shipped by any occupant
 /// of this level any more, so subtracting them would be subtracting nothing —
 /// and a subtraction with no subject is how a list starts agreeing with itself.
 /// Three names took their place, and all three are the SAME shape: `ask`,
@@ -215,6 +221,17 @@ const CONSUMED_INSIDE: &[&str] = &[
     // builder emits it and this level re-emits it, because nothing inside
     // consumes a report.
     "in_ingest",
+    // GH #855 -- the registry's push. `./llm-registry` raises `update` and this
+    // level's own `./llm-registry -> ./orgs` edge re-stamps it `in_model` for
+    // the push edges a grown generation brings; producer and consumer are both
+    // inside, so the name never reaches the rim.
+    "update",
+    // GH #858 -- the model door of the two occupants that run a model of
+    // their own. `./argus` and `./builder` accept `in_model`, and this
+    // level's `./llm-registry -> ./argus` and `./llm-registry -> ./builder`
+    // edges are the only ones that stamp it for them: the registry is a
+    // sibling, so the lane never reaches the rim.
+    "in_model",
 ];
 /// The template an organisation is grown from. Its lanes are read off the tree,
 /// never listed here — see `the_org_lanes_cross_this_level_unchanged`.
@@ -393,14 +410,15 @@ fn the_shell_holds_four_refs_and_one_empty_container() {
         CONTAINER.to_string(),
         FRONT_DOOR.to_string(),
         LOOP.to_string(),
+        REGISTRY.to_string(),
     ];
     want.sort();
     assert_eq!(
         children(&dir),
         want,
         "the shell's occupants are exactly `{BROKER}`, `{LOOP}`, `{BAUMEISTER}`, \
-         `{FRONT_DOOR}` and the `{CONTAINER}` container — a level that \
-         grows a sixth sibling has taken on something its siblings do not share"
+         `{FRONT_DOOR}`, `{REGISTRY}` and the `{CONTAINER}` container — a level that \
+         grows a seventh sibling has taken on something its siblings do not share"
     );
 
     // GH #556, asserted as the two halves of one sentence: the submitter is
@@ -423,7 +441,7 @@ fn the_shell_holds_four_refs_and_one_empty_container() {
     // A ref directory holds nothing besides its own `config.json` (the
     // substrate refuses anything else with `schema`,
     // `mutation/subtree.rs:612-634`).
-    for name in [BROKER, LOOP, BAUMEISTER, FRONT_DOOR] {
+    for name in [BROKER, LOOP, BAUMEISTER, FRONT_DOOR, REGISTRY] {
         let d = dir.join(name);
         assert!(
             ref_target(&d).is_some(),
@@ -451,7 +469,7 @@ fn both_refs_pin_an_exact_version_the_registry_can_resolve() {
     let dir = shell_dir();
     let registry = registry();
 
-    for name in [BROKER, LOOP] {
+    for name in [BROKER, LOOP, REGISTRY] {
         let reference = ref_target(&dir.join(name))
             .unwrap_or_else(|| panic!("templates/{SHELL}/{name} names no template"));
         let (named, version) = reference.split_once('@').unwrap_or_else(|| {
@@ -516,8 +534,9 @@ fn the_shells_contract_is_its_occupants_lanes_minus_the_ones_that_stay_inside() 
     let (loop_in, loop_out) = occupant_routes(LOOP);
     let (builder_in, builder_out) = occupant_routes(BAUMEISTER);
     let (door_in, door_out) = occupant_routes(FRONT_DOOR);
+    let (registry_in, registry_out) = occupant_routes(REGISTRY);
 
-    // Four refs, and the one in the container — the organisation — has no
+    // Five refs, and the one in the container — the organisation — has no
     // contract of its own to read here, because it does not exist until
     // somebody instantiates one. Its lanes are the `org` template's, read off
     // the tree exactly like the rest.
@@ -525,17 +544,24 @@ fn the_shells_contract_is_its_occupants_lanes_minus_the_ones_that_stay_inside() 
 
     // GH #556 — the submitter's contract is deliberately NOT read here, and
     // that is the whole of what the union rule says. It is not an occupant of
-    // this level, so its lanes reach the shell only as far as `operator@1.2.0`
+    // this level, so its lanes reach the shell only as far as `operator@1.2.2`
     // re-declares them: `ask`, `mutate` and `sub_receipt` out, `in_verdict` in.
     // Reading `submit` here as well would produce a union that agrees with the
     // rim by accident, and would go on agreeing with it after the front door
     // stopped forwarding a lane.
     let expect_in = sorted(
-        [broker_in, loop_in, tenant_in, builder_in, door_in.clone()]
-            .concat()
-            .into_iter()
-            .filter(|r| !CONSUMED_INSIDE.contains(&r.as_str()))
-            .collect::<Vec<_>>(),
+        [
+            broker_in,
+            loop_in,
+            tenant_in,
+            builder_in,
+            door_in.clone(),
+            registry_in,
+        ]
+        .concat()
+        .into_iter()
+        .filter(|r| !CONSUMED_INSIDE.contains(&r.as_str()))
+        .collect::<Vec<_>>(),
     );
     let expect_out = sorted(
         [
@@ -544,6 +570,7 @@ fn the_shells_contract_is_its_occupants_lanes_minus_the_ones_that_stay_inside() 
             tenant_out,
             builder_out,
             door_out.clone(),
+            registry_out,
         ]
         .concat()
         .into_iter()
@@ -831,7 +858,7 @@ fn the_org_lanes_cross_this_level_unchanged() {
     // RIM. `mutate` and `receipt` stay green because the front door declares
     // them itself — which is exactly the statement the union rule makes.
     let raises_or_takes = |lane: &String| -> bool {
-        [BROKER, LOOP, TENANT, FRONT_DOOR, BAUMEISTER]
+        [BROKER, LOOP, TENANT, FRONT_DOOR, BAUMEISTER, REGISTRY]
             .into_iter()
             .any(|t| {
                 let (accepts, emits) = occupant_routes(t);
@@ -842,8 +869,8 @@ fn the_org_lanes_cross_this_level_unchanged() {
         assert!(
             raises_or_takes(lane),
             "this level declares `{lane}`, and no occupant raises or takes it — \
-             `{BROKER}`, `{LOOP}`, `{TENANT}`, `{FRONT_DOOR}` and `{BAUMEISTER}` \
-             were all read at the tree, and `{SUBMITTER}` deliberately was not: since GH #556 \
+             `{BROKER}`, `{LOOP}`, `{TENANT}`, `{FRONT_DOOR}`, `{BAUMEISTER}` and \
+             `{REGISTRY}` were all read at the tree, and `{SUBMITTER}` deliberately was not: since GH #556 \
              it stands inside `{FRONT_DOOR}` and its lanes reach this rim only where the front \
              door re-declares them. A lane with no occupant behind it is an edge that can \
              never fire, declared as if it could."

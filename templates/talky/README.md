@@ -1,4 +1,4 @@
-# `talky@5.3.0`
+# `talky@5.4.1`
 
 A whole conversational agent as one template. Three referenced units under one hive:
 [`session-keeper`](../session-keeper/), [`collector`](../collector/) and
@@ -7,7 +7,7 @@ A whole conversational agent as one template. Three referenced units under one h
 and one error collector. No new cell type, no Rust.
 
 **The first production rollout wired this by hand.** Keeper in the ingress, collector at the seam,
-dispatcher for the fan-out, the close batch out to the write port -- thirty-five edges,
+dispatcher for the fan-out, the close batch out to the write port -- thirty-six edges,
 each of them a decision that had already been made in a README. That is the definition of a
 composite: a recurring unit that should be instantiated, not re-derived. Here it is one
 `add_nodes` plus the four port edges the parent has to draw anyway.
@@ -62,13 +62,13 @@ The three sub-units are **references**, not copies. Each of the three directorie
 one `config.json` and nothing else:
 
 ```json
-{"cell": {"type": "ref", "template": "collector@4.3.0"}}
+{"cell": {"type": "ref", "template": "collector@4.4.0"}}
 ```
 
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`talky@5.3.0` above it in its provenance chain. `5.2.2` moves the `collector` pin to
+`talky@5.4.1` above it in its provenance chain. `5.2.2` moves the `collector` pin to
 `4.2.1` ([#728](https://github.com/mmeyerlein/meclaw/issues/728)): the answer of an advice or a
 delegation round carries the member's turn, and `hop.late` beside it. The same version gives
 `brain` the OpenRouter app attribution (`http_referer` / `x_title`, overridable by
@@ -76,7 +76,13 @@ delegation round carries the member's turn, and `hop.late` beside it. The same v
 talky's request names its app at the provider. `5.3.0` moves the `collector` pin to `4.3.0`
 ([#834](https://github.com/mmeyerlein/meclaw/issues/834)) and carries its brief leg across
 this rim: `brief` leaves `./collector` for `.`, and `in_briefing` joins the entrance list into
-`./collector` beside `in_bundle`. The knob `brief_slots` stays empty here -- a standalone talky
+`./collector` beside `in_bundle`. `5.4.0` moves the `collector` pin to `4.4.0` and the
+`dispatcher` pin to `1.2.1` and sends a completion cut on `length` through the splitter
+([#843](https://github.com/mmeyerlein/meclaw/issues/843)): `./brain -> ./splitter` takes
+`length` beside `stop` and `tool_calls`, and `./splitter -> ./collector` restamps it to
+`in_answer` -- the old `./brain -> ./collector` edge sent it past the splitter, sidecar and
+all, into an answer that looked complete. `length` never reaches the dispatcher, and the
+answer that leaves carries `hop.finish_reason` and `hop.truncated = "1"`. The knob `brief_slots` stays empty here -- a standalone talky
 has no record of people beside it, and a brief that leaves for an address nobody wired would
 hold every turn with a counterpart for ever; the assistant's ref markers set it, where the
 member's brief road is drawn.
@@ -108,7 +114,7 @@ spawns.
 
 | lane | direction | what travels |
 |---|---|---|
-| `in_turn` | in | the surface turn. The edge MUST promote the channel identity to `context.channel`, and the round to `context.audience_set` if closed sessions are to reach a memory |
+| `in_turn` | in | the surface turn. The edge MUST promote the channel identity to `context.channel`, and the round to `context.audience_set` if closed sessions are to reach a memory. Since 5.4.0 the rim carries two more things through to the collector untouched: the channel's tool scope (`context.tools_allow` / `context.tools_deny`, stamped by the channel edge, constant per session -- the collector sends it with every brain call of the session as `tool_scope`, [#845](https://github.com/mmeyerlein/meclaw/issues/845)) and turns of `origin: "peer"` with their `speaker` / `speaker_ref`, which the collector keeps as role `peer` and never as this agent's own answer ([#847](https://github.com/mmeyerlein/meclaw/issues/847)). See the collector's README, "The channel's tool scope" and "The other side's words" |
 | `answer` | out | the finished turn. **Three** sorts since `collector@2.1.1`: a real answer, a round that hit `max_iter` (`hop.round_capped`, and since `collector@3.5.0` `hop.partial == "1"` with a named partial answer as its last turn, #570), and a turn the store refused to let be assembled (`hop.degraded`, which carries no `round_capped`) |
 | `write` | out | the closed session as one batch |
 | `error` | out | a normalised failure report. **MUST** be wired |
@@ -131,6 +137,7 @@ The rest, each optional and each still at the same address:
 | `in_round_sweep` | in | the other operator lane of the context window: a round that ran out of iterations |
 | `in_pack` | in | a durable `system.*` slot for the brain: `identity`, `persona`, `handover` or `instructions`, and nothing else. **Paired**: see `pack_ack`. Since 4.4.0 |
 | `pack_ack` | out | the receipt `in_pack` answers with, accepted and refused alike: `hop.pack_owner`, `hop.pack_slots`, `hop.error_code` (empty, `slot_unknown` or `pack_empty`), `hop.pack_unknown`. Since 4.4.0 |
+| `in_model` | in | a model package for the brain: a **params-only** body (an empty `system` slot, no `messages`) the colony's `llm-registry` pushes. It goes straight to `./brain`, past the collector, and nothing answers it. See "The model door". Since 5.4.0 ([#855](https://github.com/mmeyerlein/meclaw/issues/855)) |
 | `schemas` | out | the tool names this agent declares it uses (`{"tools": [...]}`), for a tools hive's `in_schemas` door. It leaves on a TICK, not per turn. **Paired**: see `in_menu`. Since 4.5.0 |
 | `in_menu` | in | their declarations coming back, plus the names that hive had nothing under. Since 4.5.0 |
 | `in_export` | in | a demand for the session ledger as a versioned document. It crosses to `./session-keeper` unchanged and the keeper's own walk answers it. **Paired**: see `dump`. Since 4.5.0 |
@@ -482,10 +489,10 @@ downstream as well.
 
 ## The internal wiring, edge by edge
 
-Fifteen edges of round in this hive's `params.graph` -- plus the twenty that ARE the
-boundary (seven door edges from `.`, thirteen leaving towards it, and those are the lanes
-above; the thirteenth is the brief leg's request, GH #834; the sixth door is the mutation receipt, GH #553, and the seventh is the `in_menu`
-fan that reaches `./schemas` beside the collector, GH #783). The two halves are the whole of this file, counted from it. Every one of the
+Fifteen edges of round in this hive's `params.graph` -- plus the twenty-one that ARE the
+boundary (eight door edges from `.`, thirteen leaving towards it, and those are the lanes
+above; the thirteenth is the brief leg's request, GH #834; the sixth door is the mutation receipt, GH #553, the seventh is the `in_menu`
+fan that reaches `./schemas` beside the collector, GH #783, and the eighth is the model door straight into `./brain`, GH #855). The two halves are the whole of this file, counted from it. Every one of the
 fifteen names a sub-unit **by its path**: two of the seven nodes below are sealed hives, so
 the address is the hive and the lane in the third column is what the door behind it
 reads; what those two draw INSIDE themselves is theirs and is not counted here. Read it
@@ -498,11 +505,12 @@ session-keeper --(close, session_id + channel + audience_set -> context)->  coll
 collector ==(brain, int(hop.iter) < 12, restore_ttl)==>  brain      <- THE SEAM
 collector --(pack)--------------> brain      <- THE DOOR IN THE WALL, GH #458
 collector --(menu)--------------> brain      <- the answered tool menu, GH #464
+   .      --(in_model)----------> brain      <- THE MODEL DOOR, past the collector, GH #855
 schemas --(operation == schemas)-> collector  in_menu   <- this agent's own sidecar offer, GH #783
-brain --(stop | tool_calls)------> splitter      <- the sidecar cut, GH #379
+brain --(stop | tool_calls | length)--> splitter  <- the sidecar cut, GH #379; length since 5.4.0, GH #843
 splitter --(stop | tool_calls)---> dispatcher
+splitter --(length)--------------> collector    in_answer   <- a cut answer, its sidecar cut too
 splitter --(sidecar)------------->  .        <- one per section, out of the sidecar port
-brain --(length)-----------------> collector    in_answer
 brain --(error | content_filter)-> errors
 session-keeper --(reject)--------> errors    <- the session store refused a step
 
@@ -647,6 +655,41 @@ refuse. Nobody mints a token for either half: `hop.subscriber` carries the subsc
 row's own `cell_path`, so the subscriber's address **is** the token and both halves can
 name it before either has run.
 
+### The model door (`in_model`, GH #855)
+
+**A model package reaches the brain through `in_model` and nothing else.** The seal that
+keeps `./brain` out of reach (`hive_port_boundary`) keeps the colony's own model registry out
+too, and until 5.4.0 that was complete: `llm-registry` could resolve a package for this
+brain and had no edge to send it along. `in_model` is the one door for it, and it is drawn
+from `.` straight to `./brain`:
+
+```json
+{"from": ".", "to": "./brain", "condition": "has(hop.route) && hop.route == 'in_model'"}
+```
+
+**Past the collector, on purpose.** What travels here is a params-only body --
+`{"system": {}, "params": {"model": ..., "model_prompt": ..., "$reset": [...]}}`, an empty
+`system` slot and no `messages` -- which the `llm` cell merges into its live params, persists in its own `cell.db`
+and answers with nothing (`docs/cell-types.md` § `llm`). It is not a turn: the collector
+would have nothing to assemble, nothing to stamp and nothing to wait for, and a lane
+through it would be a round with no answer. So the door skips it, the brain stays silent,
+and there is no receipt and no drain to pair.
+
+**A conversation cannot change the model it talks to.** The brain takes package keys from a
+params-only message only; a `params` slot riding beside turns is ignored with a stderr line
+(GH #853). So the door is the whole of the way in, and the edge onto it is drawn once, by
+whoever grows the generation -- in `meclaw-os` the builder's `grow_level assistant`, from the
+registry's `update` lane, restamped `in_model` and addressed by `hop.subscriber` (the brain's
+cell path). `templates/llm-registry/README.md` has the precedence, the package and the ops.
+
+**The brain says what it needs, in prose** (since 5.4.1, [#858](https://github.com/mmeyerlein/meclaw/issues/858)).
+`./brain` carries `params.requirement`: a voice that answers a person turn by turn and must start
+within seconds, reads a context of some thousands to some tens of thousands of tokens, calls
+tools reliably, hands the deep work to a reasoning core and runs on every turn, so the price per
+call stays low -- and no model name. A registry translates it against its catalogue once per
+change and keeps the result; the builder's `grow_level assistant` announces it with the brain.
+The param is immutable and inert without a registry: the brain runs its start value.
+
 ### The menu is asked for, not typed (`schemas` / `in_menu`, GH #464)
 
 Until 4.5.0 a talky's tool declarations were a list somebody had written into its brain's
@@ -659,7 +702,7 @@ tools this agent uses -- shipped as `["web_search", "web_fetch"]`, `["*"]` for e
 tools hive has -- and the schemas behind those names are asked for:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "talky@5.3.0",
+{"add_nodes": [{"name": "scribe", "template": "talky@5.4.1",
                 "override_params": {"collector/assemble": {"tools": ["web_search", "bash"]}}}]}
 ```
 
@@ -1208,6 +1251,8 @@ form to stay vendor-neutral. Since `4.3.0` the composite carries exactly ONE `ll
 the brain, so the key has one reader; a subscription or another provider for it is
 `override_params` on `brain.params` (`provider`, `auth`, `auth_ref`, `base_url`).
 
+**The brain's backstop is 240 000 ms since 5.4.0.** `brain` carries `cell.message_timeout` 240 000 over its `external_timeout_ms` 120 000. It was 180 000; the wider margin lets an instance whose provider needs a longer call -- a local model with `external_timeout_ms` 180 000 -- keep the rule that the backstop outlasts the call it guards (`crates/meclaw-cells/tests/a_shipped_llm_backstop_outlasts_its_own_call.rs`: at least 10 s and 10 % above) without a template of its own.
+
 **The TTL budget.** With `restore_ttl` on the seam the colony default of 64 carries the
 loop: only ONE round has to fit the budget. A tree that removes the restoring edge sizes
 `message_default_ttl >= 4 + rounds * 12` in its `colony.json` instead.
@@ -1332,6 +1377,11 @@ of the same round.
   `in_advice`, and the bilateral question-back under one `consult_id`. Plus the pin that
   no idle window ever waits for the core (one-millisecond window, two sweeps, nothing
   swept).
+- `crates/meclaw-cells/tests/gh855_an_override_reaches_the_brain_through_its_door.rs` --
+  the model door in a running colony: a targeted replacement set at the registry reaches
+  this brain through `in_model` with the new model and its prompt block first in the system
+  part of the next provider call, clearing it restores the start value, and an edge from
+  outside onto `./brain` is still refused.
 - `crates/meclaw-cells/tests/talky_composite.rs` -- the shipped template in a running
   colony against the mock OpenAI wire: one turn through session-keeper, seam, brain,
   dispatcher, a tool and back to the seam (two provider calls, the second one carrying

@@ -1,4 +1,4 @@
-# `cogny@5.0.4`
+# `cogny@5.1.1`
 
 The agent core as one template. Four units under one hive:
 [`collector`](../collector/) and [`dispatcher`](../dispatcher/) -- each carrying its
@@ -90,12 +90,21 @@ The two sub-units are **references**, not copies. Each of the two directories ho
 `config.json` and nothing else:
 
 ```json
-{"cell": {"type": "ref", "template": "collector@4.3.0"},
+{"cell": {"type": "ref", "template": "collector@4.4.0"},
  "override_params": {"assemble": {"context_window": 128000,
                                   "curate_soft": 0.5,
                                   "curate_hard": 0.75,
                                   "tools": ["*"]}}}
 ```
+
+**`5.1.0` moves both pins, `collector` to 4.4.0 and `dispatcher` to 1.2.1**
+([#843](https://github.com/mmeyerlein/meclaw/issues/843), [#842](https://github.com/mmeyerlein/meclaw/issues/842)):
+the `length` edge above still goes straight to the collector, because a core has no
+splitter, and the answer it becomes now carries `hop.finish_reason = 'length'` and
+`hop.truncated = "1"` -- whoever asked can tell a cut advice from a finished one. It also
+opens the door `in_model` ([#855](https://github.com/mmeyerlein/meclaw/issues/855)): a model
+package the colony's `llm-registry` pushes goes straight to `./brain`, past the collector, and
+nothing answers it (see the port table below).
 
 **`5.0.1` moved that pin and nothing else** ([#606](https://github.com/mmeyerlein/meclaw/issues/606)).
 The `collector` composes the block contract it asks a brain for out of the sections its
@@ -458,7 +467,7 @@ nothing ever answers.
 
 ## The internal wiring, edge by edge
 
-Twenty edges in this hive's `params.graph`, plus the four the sealed collector brings
+Twenty-one edges in this hive's `params.graph`, plus the four the sealed collector brings
 with it -- those four are its own door and store edges and are neither drawn nor wireable
 from here. Every edge below names `collector` by its HIVE path; the lane in the third
 column is what the door behind it reads:
@@ -470,7 +479,8 @@ collector --(pack)-----------------------------------> brain       <- THE DOOR I
 collector --(menu)-----------------------------------> brain       <- the answered
                                                                       menu, #464
 brain      --(stop | tool_calls)--> dispatcher
-brain      --(length)-------------> collector  in_answer
+brain      --(length)-------------> collector  in_answer   <- no splitter here; the
+                                                             collector marks it truncated
 
 dispatcher --(calls)---> collector  in_calls
 dispatcher --(result)--> collector  in_tool
@@ -480,6 +490,7 @@ dispatcher --(tool_name == thread_recall)--> collector  in_thread_call
 .          --(in_turn)-----------> collector         THE DOORS
 .          --(in_tool|in_bundle|in_pack|in_menu)-> collector
 .          --(in_schemas)--------> schemas           <- #528
+.          --(in_model)----------> brain             <- THE MODEL DOOR, #855
 collector  --(answer)-----------> .                  THE EXITS
 collector  --(recall)-----------> .
 collector  --(pack_ack)---------> .
@@ -591,7 +602,7 @@ Now the knob is set where it belongs, and the sub-unit stays a reference to the 
 `collector`:
 
 ```json
-{"op": "instantiate", "template": "cogny@5.0.4", "at": "/cores/deep",
+{"op": "instantiate", "template": "cogny@5.1.1", "at": "/cores/deep",
  "override_params": {"collector/assemble": {"context_window": 200000,
                                             "recoverability": "lookup:repeatable,write:env"}}}
 ```
@@ -676,7 +687,7 @@ default of 64 carries the loop: only ONE round has to fit the budget.
 ```bash
 curl -s -X POST http://127.0.0.1:PORT/colony/mutations -H 'Content-Type: application/json' \
   -d '{"scope":"/main/agent",
-       "ctx":{"model":"anthropic/claude-opus-5"},
+       "ctx":{"model":"anthropic/claude-opus-5.5"},
        "diff":{
         "add_nodes":[{"name":"cogny","template":"cogny"}],
         "add_edges":[ ... the two port PAIRS plus the tool lanes, in the SAME mutation ... ]}}'
@@ -804,6 +815,8 @@ of the same round.
   two golden manifests over the instantiated tree (the sub-unit refs produce the same
   bytes the copies did) plus the stamp pin: a cell inside a referenced sub-unit carries
   its OWN template and names the composite above it.
+- `crates/meclaw-cells/tests/gh855_an_override_reaches_the_brain_through_its_door.rs` --
+  the model door of both composites, with the talky half measured end to end at the mock.
 - `crates/meclaw-cells/tests/talky_cogny_advisor.rs` -- the other half: the bilateral
   advisor connection end to end, from a talky's interim answer to the correlated
   follow-up in the channel.
@@ -831,6 +844,7 @@ rides on `hop.route`.
 | `error` | out | a failed inference on the brain. **Wire it** -- unwired it dead-letters, loudly |
 | `in_pack` | in | a durable `system.*` slot for the brain: `identity`, `persona`, `handover` or `instructions`, and nothing else. **Paired**: see `pack_ack`. Since 4.2.0 |
 | `pack_ack` | out | the receipt `in_pack` answers with -- ONE per pack, not one per brain: `hop.pack_owner`, `hop.pack_slots`, `hop.error_code` (empty, `slot_unknown` or `pack_empty`), `hop.pack_unknown`. Since 4.2.0 |
+| `in_model` | in | a model package for the brain: a **params-only** body (an empty `system` slot, no `messages`) the colony's `llm-registry` pushes. It goes straight to `./brain`, past the collector, and nothing answers it. Since 5.1.0 ([#855](https://github.com/mmeyerlein/meclaw/issues/855)) |
 | `schemas` | out | the tool names this core declares it uses (`{"tools": ["*"]}` as shipped), for a tools hive's `in_schemas` door. It leaves on a TICK, not per turn. **Paired**: see `in_menu`. Since 4.3.0 |
 | `in_menu` | in | their declarations coming back, plus the names that hive had nothing under. They are written into the brain as durable `system.tools`. Since 4.3.0 |
 | `in_schemas` | in | somebody asking what THIS core's errand looks like: `{"tools": ["consult_cogny"]}` or `["*"]`. **Paired**: see `tool_schemas`. Since 4.4.0 |
@@ -857,6 +871,20 @@ owner comes off `envelope.reply_to`, never out of the body. The full account of 
 its two body shapes and the mutation that opens it lives in
 [`templates/talky/README.md`](../talky/README.md) § "The door in the wall"; everything
 there holds here without exception.
+
+**The model door (`in_model`, GH #855).** A model package reaches the brain through
+`in_model` and nothing else: the door is one edge from `.` straight to `./brain`, past the
+collector, because a params-only body is not a turn and nothing answers it. The brain takes
+package keys from a params-only message only, so a turn on any other lane cannot change the
+model it talks to. The full account lives in [`templates/talky/README.md`](../talky/README.md)
+§ "The model door"; everything there holds here without exception.
+
+**The brain says what it needs, in prose** (since 5.1.1, [#858](https://github.com/mmeyerlein/meclaw/issues/858)).
+`./brain` carries `params.requirement`: a reasoning core that plans and works through tools over
+several steps, needs a long context and dependable tool calling, may take a minute or more and is
+called far less often than the voice, so a higher price per call is acceptable -- and no model
+name. A registry translates it against its catalogue once per change and keeps the result; the
+param is immutable and inert without a registry.
 
 **The menu is asked for, not typed (`schemas` / `in_menu`, GH #464).** Since 4.3.0 this core
 does not carry a tool menu either. `./collector`'s `params.tools` names what it uses and the

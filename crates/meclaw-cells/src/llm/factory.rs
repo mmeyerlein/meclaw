@@ -20,17 +20,38 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-/// Rebuild the effective `LlmParams` for a wake/respawn (W4b restore).
+/// Rebuild the cell for a wake/respawn (W4b restore, GH #853).
 ///
 /// Reads the runtime-param overlay from `cell.db` and replays it over the
 /// birth-params (`config.json` `params`, already `${VAR}`-substituted by the
-/// bootstrap), then re-parses. `config.json` is never written; a `cell.db`-wipe
-/// (empty overlay) restores the bootstrap state (config.md § Access l.20).
+/// bootstrap), then re-parses. `config.json` is never written; `$reset` (or a
+/// `cell.db`-wipe) restores the bootstrap state (config.md § Access l.20).
+/// The cell keeps the birth params as its start value, is told its backstop,
+/// and the restore writes the params line — an overlay that outlives an
+/// environment change is visible on every wake instead of silent (GH #825).
 /// Used by both the WakeFn and RespawnFn closures.
-fn restore_params(conn: &rusqlite::Connection, birth: &JsonValue) -> Result<LlmParams, String> {
-    // β: delegate to the generic params-overlay core (read overlay → merge over
-    // birth → re-parse). `config.json` stays the instantiation snapshot.
-    crate::params_overlay::restore::<LlmParams>(conn, birth)
+fn restore_cell(
+    conn: &rusqlite::Connection,
+    birth: &JsonValue,
+    http: reqwest::Client,
+    path: &Path,
+    message_timeout: Option<std::time::Duration>,
+) -> Result<LlmCell, String> {
+    let cell = LlmCell::restored(conn, birth, http)?.with_message_timeout(message_timeout);
+    tracing::info!(
+        target: "meclaw::llm::params",
+        "{}",
+        cell.params_line(path.as_str())
+    );
+    if let Err(why) = cell.restore_check() {
+        tracing::warn!(
+            target: "meclaw::llm::params",
+            path = %path.as_str(),
+            "the restored overlay does not pass the run-time guards ({why}) — it stays in \
+             force; '$reset' returns the key to its start value"
+        );
+    }
+    Ok(cell)
 }
 
 /// Phase-8 `llm`-Cell factory. Unit-struct (no fields) — all per-instance
@@ -164,11 +185,16 @@ impl CellFactory for LlmCellFactory {
                 let conn = open_or_create_cell_db(&respawn_cell_dir.join("cell.db"))
                     .expect("respawn: open_or_create_cell_db failed");
                 // W4b: replay the persisted params overlay over birth-params.
-                let effective = restore_params(&conn, &respawn_birth)
-                    .expect("respawn: restore params from cell.db overlay");
+                let cell = restore_cell(
+                    &conn,
+                    &respawn_birth,
+                    respawn_client.clone(),
+                    &respawn_path,
+                    message_timeout,
+                )
+                .expect("respawn: restore params from cell.db overlay")
+                .with_attachment_reader(respawn_attachments.clone());
                 let db = meclaw_colony::DbConn::wrap(conn, None);
-                let cell = LlmCell::new(effective, respawn_client.clone())
-                    .with_attachment_reader(respawn_attachments.clone());
                 let (s, r) = mpsc::channel::<Message>(respawn_mailbox_capacity);
                 let (j, peace_rx, stop_tx, death_ack_rx, backstop_rx) = build_stateful_task_with_peace(
                     respawn_path.clone(),
@@ -218,11 +244,16 @@ impl CellFactory for LlmCellFactory {
             let conn = open_or_create_cell_db(&wake_cell_dir.join("cell.db"))
                 .expect("wake: open_or_create_cell_db failed");
             // W4b: replay the persisted params overlay over birth-params.
-            let effective = restore_params(&conn, &wake_birth)
-                .expect("wake: restore params from cell.db overlay");
+            let cell = restore_cell(
+                &conn,
+                &wake_birth,
+                wake_client.clone(),
+                &wake_path,
+                message_timeout,
+            )
+            .expect("wake: restore params from cell.db overlay")
+            .with_attachment_reader(wake_attachments.clone());
             let db = meclaw_colony::DbConn::wrap(conn, None);
-            let cell = LlmCell::new(effective, wake_client.clone())
-                .with_attachment_reader(wake_attachments.clone());
             let (join, peace_rx, stop_tx, death_ack_rx, backstop_rx) =
                 build_stateful_task_with_peace(
                     wake_path.clone(),
@@ -286,7 +317,15 @@ mod tests {
         )
         .unwrap();
         let birth = json!({"provider": "openai", "model": "gpt-4o", "api_key": "x"});
-        let effective = restore_params(&conn, &birth).unwrap();
+        let effective = restore_cell(
+            &conn,
+            &birth,
+            reqwest::Client::new(),
+            &Path::new("/l"),
+            None,
+        )
+        .unwrap()
+        .params;
         assert_eq!(effective.model, "gpt-4o-mini");
         assert_eq!(effective.api_key.as_deref(), Some("x"));
     }
@@ -298,7 +337,15 @@ mod tests {
         let td = tempfile::TempDir::new().unwrap();
         let conn = open_or_create_cell_db(&td.path().join("cell.db")).unwrap();
         let birth = json!({"provider": "openai", "model": "gpt-4o", "api_key": "x"});
-        let effective = restore_params(&conn, &birth).unwrap();
+        let effective = restore_cell(
+            &conn,
+            &birth,
+            reqwest::Client::new(),
+            &Path::new("/l"),
+            None,
+        )
+        .unwrap()
+        .params;
         assert_eq!(effective.model, "gpt-4o");
     }
 

@@ -5,6 +5,7 @@
   "params": {
     "provider": "openai",
     "model": "openai/gpt-4o-mini",
+    "requirement": "The thinking step of a small tool loop: it either calls one of two tools or gives the final answer in a few hundred tokens. It needs dependable tool calling over a short context, and it should be fast and inexpensive.",
     "api_key": "${OPENROUTER_API_KEY}",
     "base_url": "https://openrouter.ai/api/v1",
     "temperature": 0.2,

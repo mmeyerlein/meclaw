@@ -5,6 +5,7 @@
   "params": {
     "provider": "openai",
     "model": "gpt-4o-mini",
+    "requirement": "Answers one short prompt to show that a sealed credential reached it. Any small, inexpensive chat model will do: the context is short and a reply within seconds is enough.",
     "api_key": "${EXAMPLE_PROVIDER_KEY:-}",
     "base_url": "${EXAMPLE_PROVIDER_BASE_URL:-https://api.openai.com/v1}",
     "credential_grant_id": "grant:example-provider-primary@member-example",

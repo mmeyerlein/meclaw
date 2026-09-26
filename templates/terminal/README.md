@@ -1,4 +1,4 @@
-# `terminal@1.0.1`
+# `terminal@1.0.2`
 
 The last cell of a lane, as one `code` cell. It accepts anything and emits nothing.
 
@@ -36,6 +36,18 @@ Pinned by
 [`crates/meclaw-cells/tests/gh284_no_shipped_topology_silences_a_reject.rs`](../../crates/meclaw-cells/tests/gh284_no_shipped_topology_silences_a_reject.rs),
 which scans every shipped `templates/` and `examples/` declaration and fails on the first
 `reject`/`error` edge that ends in a cell which swallows it.
+
+## Since 1.0.2 it runs `warm`
+
+The cell sits at the end of every lane it is wired on, so it is the one place in a tree
+that sees every message of those lanes. Until `1.0.1` it ran `cold`: a fresh interpreter
+per arrival, and under the default-deny sandbox a fresh user and network namespace as well,
+for a script that writes `[]`. Since `1.0.2` it declares `runner_mode: "warm"`
+([#852](https://github.com/mmeyerlein/meclaw/issues/852)): the interpreter stays, the
+namespace is still fresh per message, and nothing about what it does changes. The script
+keeps no state and never reads stdin, which is what makes the move safe
+(`docs/cell-types.en.md` § `code` → runner modes). Third digit: a repair of what a stop
+costs, not a new surface.
 
 ## What it delivers
 

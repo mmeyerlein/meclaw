@@ -5,6 +5,7 @@
   "params": {
     "provider": "openai",
     "model": "openai/gpt-4o-mini",
+    "requirement": "Chooses the next research step for a question and answers with exactly one tool call: search, fetch or remember. It needs dependable tool calling and short, focused reasoning over a small context. It runs several times per question, so it must be fast and inexpensive.",
     "api_key": "${OPENROUTER_API_KEY}",
     "base_url": "${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}",
     "temperature": 0.2,

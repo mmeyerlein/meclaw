@@ -1,4 +1,4 @@
-# `argus@1.1.0`
+# `argus@1.2.0`
 
 The colony's watcher and its control loop, as a hive of seven cells. It is what
 turns "the system can improve itself" from a claim into something you can check.
@@ -241,6 +241,7 @@ and it is named for what a caller asks for, never for the cell it lands on.
 | lane | direction | carries |
 |---|---|---|
 | `in_cycle` | in → the hive | run a cycle now (a cost alert, a DLQ spike). The timer is the ordinary trigger; this is the extra one |
+| `in_model` | in → the hive | a model package for `./judge`, pushed by the colony's `llm-registry`: a params-only body (an empty `system` slot, no `messages`) the cell merges into its live params and answers with nothing. See *The model door*. Since 1.2.0 ([#858](https://github.com/mmeyerlein/meclaw/issues/858)) |
 | `mutate` | out → the hive | a params update — body `{system:{}, params:{…}}`, `hop.target` naming the cell it is for. A parent draws one edge per cell the loop may reach |
 | `alert` | out → the hive | a watched symptom crossed zero, counted deterministically and with no model asked: the metric, the goal that watched for it, the count and the window |
 | `error` | out → the hive | a step of the cycle could not complete — including the one state this loop cannot leave on its own: an unhealthy colony whose applied change carries no revert plan |
@@ -276,6 +277,38 @@ not let it read a row, a header or another cell's state, and it moves nothing.
 The two of them are the whole list -- a `/colony/*` path is not sanctioned by
 being one, and the argus's own edge test asserts against the literal pair.
 
+### The model door (`in_model`, [#858](https://github.com/mmeyerlein/meclaw/issues/858))
+
+**A model package reaches `./judge` through `in_model` and nothing else.** The hive is sealed,
+so no edge from outside may name `./judge`; since 1.2.0 one door edge is the way in, drawn for
+the colony's `llm-registry`:
+
+```json
+{"from": ".", "to": "./judge", "condition": "has(hop.route) && hop.route == 'in_model'"}
+```
+
+The body is params-only -- an empty `system` slot, no `messages` -- which the `llm` cell
+merges into its live params, persists in its own `cell.db` and answers with nothing
+(`docs/cell-types.md` § `llm`). A request on any other lane cannot change the model a
+cell runs on: package keys are taken from a params-only message only (GH #853).
+
+**`./judge` says what it needs, in prose.** `params.requirement` names the role, the latency,
+the context, the depth of reasoning and the price the cell can bear, and never a model; a
+registry translates it against its catalogue once per change and keeps the result
+(`templates/llm-registry/README.md`). Without a registry the door stays unused and the
+cell runs its start value.
+
+In `meclaw-os` the shell makes `./judge` a subscriber of its own registry: it announces
+the cell on every mutation receipt with its need and no start value (the shell substitutes
+nothing; an operator states `ARGUS_JUDGE_MODEL` once with `subscribe`, and no later receipt
+clears it -- restate it after changing `ARGUS_JUDGE_MODEL`), and carries the registry's pushes for it onto this door
+(`templates/meclaw-os/README.md` § The model registry). From then on the judge runs what the
+registry resolves and falls back to `ARGUS_JUDGE_MODEL`. A push carries the `base_url` of its
+catalogue row, and the cell takes no other endpoint than its start one (it has no
+`base_url_allow`): whoever sets `ARGUS_JUDGE_BASE_URL` to an endpoint of their own pins the
+judge (`subscribe` with `pinned: 1`) or targets it at a catalogue row of that endpoint, or the
+push is refused at the cell -- and a refused push is not reported back to the registry today.
+
 ## Relationship to `llm-registry`
 
 **The registry is the book, the argus is the brain.** The registry stays a
@@ -300,7 +333,7 @@ they share could not say -- and the manifest that grows one sets them with
 
 ```json
 {"op": "add_nodes", "scope": "/os",
- "nodes": [{"name": "argus", "template": "argus@1.1.0",
+ "nodes": [{"name": "argus", "template": "argus@1.2.0",
             "override_params": {
               "probe": {"probe_window_sec": 900, "probe_max_errors": 2},
               "mutator": {"numeric_param_keys": ["temperature", "top_p"]},
@@ -340,7 +373,7 @@ The provider lane, in `.env`, and all of it:
 
 | variable | default | meaning |
 |---|---|---|
-| `ARGUS_JUDGE_MODEL` | `anthropic/claude-opus-4` | the thinking model. The one cell in the hive where a weaker model is a false economy: it decides what the colony does to itself |
+| `ARGUS_JUDGE_MODEL` | `anthropic/claude-opus-5.5` | the thinking model. The one cell in the hive where a weaker model is a false economy: it decides what the colony does to itself |
 | `ARGUS_JUDGE_PROVIDER` | `openai` | provider adapter of the judge. `openai` is the only value `LlmParams` accepts today; it names the Chat-Completions **wire**, not the vendor, and the endpoint it talks to is `ARGUS_JUDGE_BASE_URL` ([#387](https://github.com/mmeyerlein/meclaw/issues/387)) |
 | `ARGUS_JUDGE_BASE_URL` | `https://openrouter.ai/api/v1` | provider endpoint of the judge |
 | `OPENROUTER_API_KEY` | — (required) | the judge's key. Bound late, never stored in the tree |

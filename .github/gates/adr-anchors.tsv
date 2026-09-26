@@ -10,9 +10,6 @@ adr	status	anchor_home	target
 0002-kanal-talky-generation-und-das-publikum-einer-erinnerung.md	accepted	README	test:the_brief_answers_a_disclosed_audience_and_a_stranger_gets_nothing
 0002-kanal-talky-generation-und-das-publikum-einer-erinnerung.md	accepted	README	test:the_edge_pinned_audience_set_is_a_round_in_both_directions
 0003-rust-toolchain-floating-stable.md	accepted	self	file:rust-toolchain.toml#channel = "stable"
-0004-bounded-mailboxes-block-by-default.md	accepted	self	test:bounded_mailbox_blocks_send_when_full_then_unblocks_on_drain
-0004-bounded-mailboxes-block-by-default.md	accepted	self	code:mailbox_default_capacity
-0004-bounded-mailboxes-block-by-default.md	accepted	self	code:fn enqueue_hive_transit
 0005-blobs-live-colony-wide.md	accepted	self	code:pub struct DiskBlobStore
 0005-blobs-live-colony-wide.md	accepted	self	code:cli.root.join("blobs")
 0005-blobs-live-colony-wide.md	accepted	self	test:parses_api_daemon_validate_blobs_flags
@@ -139,3 +136,9 @@ adr	status	anchor_home	target
 0043-a-cap-is-a-sandbox-shape-of-its-own.md	accepted	self	test:syscalls_without_a_filesystem_view_is_still_refused
 0044-a-browser-is-a-cell-and-its-picture-is-a-topic.md	accepted	self	test:a_page_topic_rides_the_same_socket
 0044-a-browser-is-a-cell-and-its-picture-is-a-topic.md	accepted	self	test:the_last_viewer_out_leaves_a_page_that_then_decays
+0045-a-full-mailbox-overflows-and-never-stops-the-loop.md	accepted	self	test:a_flood_neither_stops_the_colony_nor_loses_a_message
+0045-a-full-mailbox-overflows-and-never-stops-the-loop.md	accepted	self	test:a_cell_with_room_never_meets_the_overflow
+0045-a-full-mailbox-overflows-and-never-stops-the-loop.md	accepted	self	test:a_cell_that_dies_mid_drain_gets_its_rescued_mail_first_and_then_the_rest
+0045-a-full-mailbox-overflows-and-never-stops-the-loop.md	accepted	self	test:a_restart_dead_letters_the_overflow_no_cell_can_take
+0045-a-full-mailbox-overflows-and-never-stops-the-loop.md	accepted	self	test:gh850_new_post_after_a_lift_reaches_the_new_cell_and_the_old_overflow_is_dead_lettered
+0045-a-full-mailbox-overflows-and-never-stops-the-loop.md	accepted	self	code:fn routed_like_the_corridor

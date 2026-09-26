@@ -306,6 +306,33 @@ pub enum ColonyWriteOp {
         /// every reason that has none.
         detail: Option<String>,
     },
+    /// GH #850: move one block of a cell's overflow from memory to disk — one
+    /// `mailbox_overflow` row per message, in ONE transaction.
+    ///
+    /// Only the id goes to disk: the message row is already in `message_log`,
+    /// written by the colony when it accepted the message into the overflow,
+    /// and — the writer channel being FIFO — enqueued before this op. `ack`
+    /// fires after the commit, so the drain task that asked for the spill can
+    /// read the block back.
+    InsertOverflow {
+        /// The cell whose overflow this is.
+        cell_path: String,
+        /// `(seq, message_id, bytes)` per message, oldest first.
+        rows: Vec<(i64, String, i64)>,
+        /// Unix seconds of the spill.
+        enqueued_at: i64,
+        /// Fires after the batch holding this op is committed.
+        ack: Option<tokio::sync::oneshot::Sender<()>>,
+    },
+    /// GH #850: forget the disk rows of a cell's overflow that were delivered
+    /// (or dead-lettered). Fire-and-forget: the drain task reads past them by
+    /// `seq`, so a delete that is still in the channel is never read twice.
+    DeleteOverflow {
+        /// The cell whose overflow this is.
+        cell_path: String,
+        /// Message ids of the rows to delete.
+        ids: Vec<String>,
+    },
     /// Phase-16 W6d (A6): delete ALL rows from the `dead_letters` table — the
     /// DB-side of the DLQ drain/DELETE (`/colony/dead_letters` DELETE). The read
     /// side snapshots the rows first; this op clears them durably.
@@ -747,6 +774,32 @@ fn apply_op(
                     detail
                 ],
             )?;
+        }
+        ColonyWriteOp::InsertOverflow {
+            cell_path,
+            rows,
+            enqueued_at,
+            ack,
+        } => {
+            let mut stmt = tx.prepare_cached(
+                "INSERT OR IGNORE INTO mailbox_overflow
+                   (cell_path, message_id, seq, bytes, enqueued_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+            )?;
+            for (seq, id, bytes) in rows {
+                stmt.execute(rusqlite::params![cell_path, id, seq, bytes, enqueued_at])?;
+            }
+            if let Some(a) = ack {
+                acks.push(a);
+            }
+        }
+        ColonyWriteOp::DeleteOverflow { cell_path, ids } => {
+            let mut stmt = tx.prepare_cached(
+                "DELETE FROM mailbox_overflow WHERE cell_path = ?1 AND message_id = ?2",
+            )?;
+            for id in ids {
+                stmt.execute(rusqlite::params![cell_path, id])?;
+            }
         }
         ColonyWriteOp::DeleteAllDeadLetters { ack } => {
             tx.execute("DELETE FROM dead_letters", [])?;

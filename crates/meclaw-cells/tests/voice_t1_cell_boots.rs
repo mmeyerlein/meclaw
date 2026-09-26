@@ -179,6 +179,7 @@ async fn a_client_that_stopped_reading_leaves_its_reason_on_the_error_lane() {
         VoiceEvent::Connected {
             session_id: "call-1".to_string(),
             mode: Mode::Auto,
+            ack: None,
         },
         &sink,
         &mut db,
@@ -274,6 +275,7 @@ async fn every_connection_bound_emission_carries_session_id() {
         VoiceEvent::Connected {
             session_id: "call-1".to_string(),
             mode: Mode::Auto,
+            ack: None,
         },
         &sink,
         &mut db,
@@ -433,6 +435,7 @@ async fn a_flag_update_reaches_open_sessions() {
         VoiceEvent::Connected {
             session_id: "call-1".to_string(),
             mode: Mode::Auto,
+            ack: None,
         },
         &origin,
         &mut db,

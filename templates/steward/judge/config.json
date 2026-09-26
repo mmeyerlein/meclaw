@@ -6,7 +6,8 @@
   "params": {
     "provider": "${STEWARD_JUDGE_PROVIDER:-openai}",
     "base_url": "${STEWARD_JUDGE_BASE_URL:-https://openrouter.ai/api/v1}",
-    "model": "${STEWARD_JUDGE_MODEL:-anthropic/claude-opus-4}",
+    "model": "${STEWARD_JUDGE_MODEL:-anthropic/claude-opus-5.5}",
+    "requirement": "Decides whether the colony should change itself under the older name of the control loop: it weighs measurements against a charter, reasons through what would happen otherwise and states a decision with its way back. It needs the strongest reasoning available and careful, structured output of a few thousand tokens. Nobody waits on it, so up to two minutes and a high price per call are acceptable.",
     "api_key": "${OPENROUTER_API_KEY}",
     "external_timeout_ms": 120000,
     "max_tokens": 4000,
@@ -25,7 +26,7 @@
       "judge_model": {
         "type": "string",
         "secret": false,
-        "default": "anthropic/claude-opus-4",
+        "default": "anthropic/claude-opus-5.5",
         "description": "STEWARD_JUDGE_MODEL -- the thinking model. This is the one cell in the hive where a weaker model is a false economy: it decides what the colony does to itself."
       },
       "judge_provider": {
@@ -50,7 +51,15 @@
       "body": {
         "messages": {
           "type": "array",
-          "required": true
+          "required": false
+        },
+        "system": {
+          "type": "object",
+          "required": false
+        },
+        "params": {
+          "type": "object",
+          "required": false
         }
       }
     },

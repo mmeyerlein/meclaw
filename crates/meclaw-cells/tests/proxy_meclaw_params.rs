@@ -82,14 +82,16 @@ fn a_duplicate_route_an_empty_route_and_a_relative_emit_to_are_each_refused() {
     // A boundary a message can rename is not a boundary (README § 0a A9).
     // Nine since GH #828: `auth`, the credential, is a key of the boundary too.
     // Ten since GH #833: whose header the mount believes is part of who may cross.
+    // Eleven since GH #840: where the cell may send is part of the boundary too.
     assert_eq!(
         IMMUTABLE_KEYS.len(),
-        10,
+        11,
         "every key of the variant, and no more"
     );
     assert!(IMMUTABLE_KEYS.contains(&"lanes") && IMMUTABLE_KEYS.contains(&"mount"));
     assert!(IMMUTABLE_KEYS.contains(&"auth"));
     assert!(IMMUTABLE_KEYS.contains(&"trusted_proxies"));
+    assert!(IMMUTABLE_KEYS.contains(&"egress"));
 }
 
 /// GH #833: a typo in the list is a refusal at plan time that names the entry,
@@ -116,5 +118,80 @@ fn a_trusted_proxies_entry_that_is_not_an_address_is_refused_by_name() {
         absent.trusted(),
         meclaw_colony::surfaces::loopback_only(),
         "no key is loopback (R-AG-1)"
+    );
+}
+
+/// GH #840: every `egress` entry is one origin; a typo is a refusal at plan
+/// time that names the entry by index, like `trusted_proxies`.
+#[test]
+fn an_egress_entry_that_is_not_an_origin_is_refused_by_index() {
+    for (bad, idx) in [
+        (json!(["https://gateway.example", "gateway.example"]), 1),
+        (json!(["https://gateway.example/peer/"]), 0),
+        (json!(["ftp://gateway.example"]), 0),
+        (
+            json!(["https://gateway.example", "https://a.example?x=1"]),
+            1,
+        ),
+    ] {
+        let mut v = minimal();
+        v["egress"] = bad.clone();
+        let err = MeclawParams::parse(&v).expect_err("not an origin");
+        assert!(err.starts_with(&format!("egress[{idx}]: ")), "{bad}: {err}");
+    }
+    let mut v = minimal();
+    v["egress"] = json!(["https://id:pw-840@gateway.example"]);
+    let err = MeclawParams::parse(&v).expect_err("credentials in an origin");
+    assert!(
+        err.starts_with("egress[0]: ") && !err.contains("pw-840"),
+        "{err}"
+    );
+    // An entry that does not parse or is no http(s) origin is not echoed
+    // when it may carry credentials (review G, Minor 1).
+    for bad in ["http://id:pw-840@[x", "foo:id:pw-840@x"] {
+        let mut v = minimal();
+        v["egress"] = json!([bad]);
+        let err = MeclawParams::parse(&v).expect_err("not an origin");
+        assert!(
+            err.starts_with("egress[0]: ") && !err.contains("pw-840"),
+            "{bad}: {err}"
+        );
+    }
+    let mut ok = minimal();
+    ok["egress"] = json!([
+        "https://gateway.example",
+        "http://127.0.0.1:7898/",
+        "https://[::1]:8443"
+    ]);
+    let p = MeclawParams::parse(&ok).expect("origins parse");
+    assert_eq!(p.egress.as_ref().map(Vec::len), Some(3));
+    assert!(
+        MeclawParams::parse(&minimal())
+            .expect("parses")
+            .egress
+            .is_none(),
+        "absent parses; the cell is what refuses (fail-closed)"
+    );
+}
+
+/// GH #840: an entry is kept as its origin's ASCII serialisation, the form the
+/// cell compares `hop.peer_url` in: scheme and host lower-case, an IDN host as
+/// punycode, the default port dropped, a trailing `/` gone (review G, Minor 5).
+#[test]
+fn an_egress_entry_is_kept_as_its_normalised_origin() {
+    let mut v = minimal();
+    v["egress"] = json!([
+        "HTTPS://GATEWAY.Example:443",
+        "http://b\u{fc}cher.example:80/",
+        "https://gateway.example:8443/"
+    ]);
+    let p = MeclawParams::parse(&v).expect("origins parse");
+    assert_eq!(
+        p.egress_origins(),
+        Some(vec![
+            "https://gateway.example".to_string(),
+            "http://xn--bcher-kva.example".to_string(),
+            "https://gateway.example:8443".to_string(),
+        ])
     );
 }

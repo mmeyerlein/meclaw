@@ -1,6 +1,6 @@
 {
   "name": "summarizer",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": {
     "purpose": "The session handover step (R-OS-3): when a session generation closes and the collector hands the day out as one write batch, this hive turns that batch into ONE fresh, recency-weighted summary - more from the last turns, phase-out before, hard facts kept - and emits it as a system.handover update, the form an llm cell consumes without a provider call. The next generation opens lazily and wakes up with yesterday instead of with nothing, so the transition is not noticeable. A glue cell shapes the prompt (the prompt lives in the glue phase, not in the llm config), a writer llm writes the prose, and a failed call leaves on its own error route instead of being swallowed. Since 2.1.0 the four weighting knobs of `./prep` are params of that cell instead of environment substitution tokens ([#138](https://github.com/mmeyerlein/meclaw/issues/138)): an `override_params` entry can name them, so two summarizers in one colony weight their days apart.",
     "use_when": "One per agent, behind the collector's 'write' route. Instantiate with ctx.model (a resolved literal, K-H2) and wire the ports in the SAME mutation: the batch lane in, the summary route to wherever the handover belongs - typically the agent llm's system.handover slot - and a drain or alarm for summary_error. This hive is the ONLY writer of system.handover (R-OS-1 slot discipline).",
@@ -9,7 +9,8 @@
       "PORTS - Entry (onto the hive path, the parent edge names the lane): in_batch, wired as {from: <collector>, to: <summarizer>, condition: has(hop.route) && hop.route == 'write', modifier: {set_hop: {route: 'in_batch'}}} - it consumes exactly the collector's close-batch form (messages[] the whole day, top-level slot 'rounds', hop.session_id/turn_count/round_count). Exit (from the hive path, on hop.route): 'summary' -> one system.handover update per batch (hop.session_id, hop.summary_chars), typically to the agent llm; 'summary_error' -> the degradation lane (hop.error_code), MUST be drained by the parent.",
       "a 40-turn day closes -> the newest 12 turns travel verbatim, the older 28 condensed to 200 chars each and counted, tool rounds as capped previews -> one summary on route 'summary'",
       "the provider fails with a 500 -> exactly one message on route 'summary_error' with error_code provider_error, and no half-summary behind it",
-      "an empty session closes -> the prompt says '0 turns' and the shipped instructions demand a short honest summary instead of invention"
+      "an empty session closes -> the prompt says '0 turns' and the shipped instructions demand a short honest summary instead of invention",
+      "MODEL DOOR (since 2.2.0, GH #858): `in_model` takes a params-only body -- a model package the colony's llm-registry pushes -- from the hive's own path straight to `./writer`, its one llm cell, which merges it into its live params and answers nothing. `./writer` states what it needs in `params.requirement` (prose, never a model name); without a registry the door stays unused."
     ]
   },
   "requires": {

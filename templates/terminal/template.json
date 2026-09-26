@@ -1,6 +1,6 @@
 {
   "name": "terminal",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": {
     "purpose": "The last cell of a lane, as one code cell: it accepts anything and emits nothing. Its whole job is to be an address, so that a lane which has no destination yet still HAS a destination -- the message arrives, the trace records it, and the dead-letter queue stays empty.",
     "use_when": "Once per colony while lanes are still being decided, or permanently for lanes whose only consumer is the trace. Instantiate it under any name -- `sink` is the usual one -- and point every undecided lane at it that has nowhere else to go.",

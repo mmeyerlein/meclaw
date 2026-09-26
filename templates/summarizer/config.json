@@ -9,6 +9,10 @@
         {
           "route": "in_batch",
           "because": "one closed session as a single write batch, as a collector hands it out"
+        },
+        {
+          "route": "in_model",
+          "because": "a model package for this hive's model call, pushed by the colony's llm-registry (GH #858): a PARAMS-ONLY body -- an empty `system` slot, no `messages` -- that the llm cell merges into its live params and answers with nothing. It goes from this path straight to `./writer`, the one llm cell of this hive, past every other cell, because a params body is not a request. The llm cell takes package keys from a params-only message only (GH #853), so no request on another lane can change the model it runs on. Draw it only from the registry's `update` lane, restamped `in_model`"
         }
       ],
       "emits": [
@@ -27,7 +31,12 @@
         {
           "from": ".",
           "to": "./prep",
-          "condition": "has(hop.route) && hop.route.startsWith('in_')"
+          "condition": "has(hop.route) && hop.route.startsWith('in_') && hop.route != 'in_model'"
+        },
+        {
+          "from": ".",
+          "to": "./writer",
+          "condition": "has(hop.route) && hop.route == 'in_model'"
         },
         {
           "from": "./prep",

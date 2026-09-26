@@ -180,7 +180,7 @@ fn the_mode_never_touches_the_charter_beside_it() {
 
     assert_eq!(
         instructions.keys().collect::<Vec<_>>(),
-        vec!["mode"],
+        vec!["mode", "peer"],
         "`instructions.charter` is written by the pack lane and upserted per \
          slot PATH: a sibling key here would be a revocation of somebody \
          else's durable state: {}",

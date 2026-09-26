@@ -5,7 +5,8 @@
   },
   "params": {
     "provider": "openai",
-    "model": "${MODEL_JUDGE:-anthropic/claude-opus-5}",
+    "model": "${MODEL_JUDGE:-anthropic/claude-opus-5.5}",
+    "requirement": "Decides in the nightly memory round which relation names mean the same thing and which candidate pairs are the same person, place or thing. It needs the most careful judgement available, since a wrong merge corrupts memory, and strictly structured output. It runs once a night and never while anybody waits, so speed and price matter little.",
     "api_key": "${OPENROUTER_API_KEY}",
     "base_url": "${MEMORY_LLM_BASE_URL:-https://openrouter.ai/api/v1}",
     "temperature": 0,
@@ -28,7 +29,7 @@
       "model": {
         "type": "string",
         "secret": false,
-        "default": "anthropic/claude-opus-5",
+        "default": "anthropic/claude-opus-5.5",
         "description": "MODEL_JUDGE - the identity judgement of the nightly canonicalisation round (ruling Q1). This is the one place in the hive that deliberately carries the STRONGEST model available, not the cheapest that works: the verdict is written into the store as an alias and every later read consumes it. The default is a top-tier placeholder rather than an empty string, because an unconfigured judge would silently skip the canonicalisation round every night; set it explicitly at rollout."
       },
       "provider_extra": {
@@ -76,9 +77,13 @@
       "body": {
         "messages": {
           "type": "array",
-          "required": true
+          "required": false
         },
         "system": {
+          "type": "object",
+          "required": false
+        },
+        "params": {
           "type": "object",
           "required": false
         }
@@ -93,7 +98,7 @@
     "use_when": "Called by dream-glue once per consolidation run, after the dreamer's verdicts are parked and before the supersession arithmetic, with the predicate inventory and the fuzzy entity candidates in one payload.",
     "not_in_scope": "No store access and no effect of its own: dream-glue turns the verdict into set_alias / reject_pair / canonicalize, all additive and revertible. It never deletes, never rewrites a written value, and never judges supersession (that is arithmetic). It also never invents a name - every value it returns has to come from the payload.",
     "emits_meaning": "messages[]: one assistant turn holding the judgement JSON {predicates:[{alias,canonical}], entities:[{alias,canonical}], different:[{dimension,left,right}]}. hop.finish_reason='error' makes dream-glue skip the round and continue with the rest of the run instead of leaving it hanging.",
-    "consumes_meaning": "system.instructions.text: the judgement contract, handed over by dream-glue (an llm cell has no params.system - the prompt travels in the message). messages[]: the predicate inventory with the subjects each key is used on, plus the candidate entity pairs with the facts of both sides.",
+    "consumes_meaning": "system.instructions.text: the judgement contract, handed over by dream-glue (an llm cell has no params.system - the prompt travels in the message). messages[]: the predicate inventory with the subjects each key is used on, plus the candidate entity pairs with the facts of both sides. The one body without messages[] is a params-only push on the hive's `in_model` door (GH #858): an empty system slot and a params slot the cell merges into its live params, answered with nothing.",
     "examples": [
       "predicates 'Lieblingseditor' and 'favorite_editor', both used on subject 'user' -> {\"predicates\":[{\"alias\":\"Lieblingseditor\",\"canonical\":\"favorite_editor\"}]}",
       "entity pair ('ashford','ashfrd'), one with two facts and one with a single typo-shaped fact -> {\"entities\":[{\"alias\":\"elvse\",\"canonical\":\"elvese\"}]}",

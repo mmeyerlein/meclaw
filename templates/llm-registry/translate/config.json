@@ -1,0 +1,87 @@
+{
+  "cell": {
+    "type": "llm",
+    "message_timeout": 90000
+  },
+  "params": {
+    "provider": "openai",
+    "base_url": "${LLM_REGISTRY_TRANSLATOR_BASE_URL:-https://openrouter.ai/api/v1}",
+    "model": "${LLM_REGISTRY_TRANSLATOR_MODEL:-anthropic/claude-opus-5.5}",
+    "api_key": "${OPENROUTER_API_KEY:-}",
+    "temperature": 0,
+    "max_tokens": 600,
+    "external_timeout_ms": 60000,
+    "system_order": [
+      "instructions"
+    ],
+    "system_writable": [
+      "instructions"
+    ],
+    "requirement": "Chooses one model from a catalogue for a stated need and names the reason in one sentence. Rare calls, a few kilobytes in, a short JSON answer out; careful reading and exact instruction-following matter far more than speed or price."
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {
+      "translator_model": {
+        "type": "string",
+        "secret": false,
+        "default": "anthropic/claude-opus-5.5",
+        "description": "LLM_REGISTRY_TRANSLATOR_MODEL -- the START VALUE of the translator's model. The registry never resolves it: a registry that needed its own resolution to translate could not repair one, so this cell stays on what it was born on: no edge brings a params message into it, only questions from ./hand."
+      },
+      "translator_base_url": {
+        "type": "string",
+        "secret": false,
+        "default": "https://openrouter.ai/api/v1",
+        "description": "LLM_REGISTRY_TRANSLATOR_BASE_URL -- the translator's endpoint."
+      },
+      "api_key": {
+        "type": "string",
+        "secret": true,
+        "description": "OPENROUTER_API_KEY -- bound late, never stored in the tree. Empty is allowed: the registry still boots, resolves and pushes, and every translation fails loudly into the journal until a key is there."
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "system": {
+          "type": "object",
+          "required": false
+        }
+      }
+    },
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "meta": {
+          "type": "object",
+          "required": false
+        }
+      },
+      "hop": {
+        "finish_reason": {
+          "type": "string",
+          "required": true
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "network:llm",
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "The translator of the registry (GH #858): one prose requirement and the active catalogue in, one `{\"model_id\", \"reason\"}` out. It is asked ONLY when a (requirement, catalogue) pair has no translation yet, and its answer is a candidate, not a decision -- `hand` checks it against the catalogue and stores it as a row, and every resolution after that reads the row.",
+    "use_when": "Inside the llm-registry hive, behind `hand`. Nothing else addresses it: `params.ports` of the hive is empty, and the only edges into and out of it are the two internal ones to `./hand`.",
+    "not_in_scope": "It resolves nothing and is resolved by nothing: its own model is a start value (the environment key LLM_REGISTRY_TRANSLATOR_MODEL), and no `update` edge of the registry reaches it -- so a broken translator can never stand between the registry and a repair. When it fails or answers outside the catalogue, every subscriber keeps the resolution it had. It keeps no history: each question carries the whole catalogue, and the answer is stored by `hand`, not here."
+  }
+}

@@ -4,9 +4,10 @@
 //! (1:1 the config.json `params` block). The cell merges it into its live params
 //! (last-write-wins) and persists the overlay in its own cell.db; config.json is
 //! never touched. These end-to-end tests pin the wire-observable effect:
-//! (a) combined — params + messages in ONE message → THIS call already uses the
-//! new model + attribution header; (a-separate) a params-only message emits
-//! nothing, the NEXT inference message uses the updated model.
+//! (a) combined — params + messages in ONE message → THIS call already uses a
+//! new attribution header, while a model-package key on a turn is not applied
+//! at all (GH #853); (a-separate) a params-only message emits nothing, the
+//! NEXT inference message uses the updated model.
 
 #[path = "mock_openai.rs"]
 mod mock_openai;
@@ -50,43 +51,60 @@ fn mk_sink() -> (OutputSink, mpsc::Receiver<CellEmission>) {
     (sink, rx)
 }
 
-// ───── (a) combined: params + messages in one message → this call uses the new model+header ─────
+// ───── (a) combined: params + messages in one message → a non-package key applies this call,
+// a package key does not apply at all (GH #853: a conversation cannot change its model) ─────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn combined_params_and_messages_use_new_model_and_header_this_call() {
-    let mock = MockOpenAI::start(vec![canned_chat_completion("hi back", "stop")]).await;
+async fn combined_params_and_messages_apply_the_header_this_call_but_never_the_model() {
+    let mock = MockOpenAI::start(vec![
+        canned_chat_completion("hi back", "stop"),
+        canned_chat_completion("again", "stop"),
+    ])
+    .await;
     let td = TempDir::new().unwrap();
     let (mut cell, mut db) = mk_cell_and_db(&format!("{}/v1", mock.base_url), &td);
     let (sink, _rx) = mk_sink();
 
+    // A non-package key rides on a turn as it always did.
     let msg = MessageBuilder::new(Path::new("/llm"))
         .reply_to(Path::new("/observer"))
         .body(Body::Inline(json!({
-            "params": {"model": "gpt-4o-mini", "http_referer": "https://example.com"},
+            "params": {"http_referer": "https://example.com"},
+            "messages": [{"origin": "user", "type": "text", "text": "Hi"}]
+        })))
+        .build();
+    cell.handle(msg, &sink, &mut db).await;
+
+    // A package key on a turn: the whole slot is not applied (GH #853).
+    let msg = MessageBuilder::new(Path::new("/llm"))
+        .reply_to(Path::new("/observer"))
+        .body(Body::Inline(json!({
+            "params": {"model": "gpt-4o-mini", "x_title": "Never"},
             "messages": [{"origin": "user", "type": "text", "text": "Hi"}]
         })))
         .build();
     cell.handle(msg, &sink, &mut db).await;
 
     let snaps = mock.recorded_requests().await;
-    assert_eq!(snaps.len(), 1, "exactly one provider call");
-    // params applied BEFORE inference → this very call uses the new model …
-    assert_eq!(snaps[0].model(), Some("gpt-4o-mini"));
-    // … and the new attribution param reached the wire as a header.
+    assert_eq!(snaps.len(), 2, "both turns reached the provider");
+    // params applied BEFORE inference → this very call carries the header …
     assert_eq!(
         snaps[0].headers.get("http-referer").map(|s| s.as_str()),
         Some("https://example.com")
     );
-    // overlay persisted to cell.db.
-    let stored: String = db
+    // … while the model a turn names never takes effect, nor anything beside it.
+    assert_eq!(snaps[1].model(), Some("gpt-4o"));
+    assert!(!snaps[1].headers.contains_key("x-title"));
+    let rows: Vec<String> = db
         .call(|conn| {
-            conn.query_row("SELECT value FROM params WHERE key='model'", [], |r| {
-                r.get(0)
-            })
-            .unwrap()
+            let mut stmt = conn.prepare("SELECT key FROM params ORDER BY key").unwrap();
+            stmt.query_map([], |r| r.get(0))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect()
         })
         .await;
-    assert_eq!(stored, r#""gpt-4o-mini""#);
+    assert_eq!(rows, vec!["http_referer".to_string()]);
 }
 
 // ───── (a-separate) params-only message emits nothing; the next inference uses the new model ─────

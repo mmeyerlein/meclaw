@@ -235,7 +235,17 @@ impl CodeCell {
 /// pointed at that path instead of being handed the script in `argv`.
 fn build_command(p: &CodeParams, materialised: Option<&std::path::Path>) -> (String, Vec<String>) {
     if let Some(path) = materialised {
-        return (p.runner.clone(), vec![path.to_string_lossy().into_owned()]);
+        // GH #844: `-I` (isolated mode) on THIS path and nowhere else. The file
+        // sits in the shared temp directory, and `python3 <path>` would put that
+        // directory first on `sys.path`, where any stray `json.py` wins the
+        // import. The `-c` path below stays byte-identical (see the module note
+        // of `script_file` on why the small scripts are not touched), and so does
+        // `script_path`, whose own directory on `sys.path` is part of what a path
+        // script is.
+        return (
+            p.runner.clone(),
+            vec!["-I".into(), path.to_string_lossy().into_owned()],
+        );
     }
     match &p.script {
         Script::Path(path) => (p.runner.clone(), vec![path.clone()]),
@@ -610,6 +620,39 @@ mod tests {
             sandbox: None,
             runner_mode: RunnerMode::Cold,
         }
+    }
+
+    /// GH #844: `-I` rides on the materialised temp path and nowhere else; the
+    /// `-c` form and a `script_path` stay what they were.
+    #[test]
+    fn only_the_materialised_path_runs_isolated() {
+        let inline = CodeParams {
+            script: Script::Inline("print(1)".into()),
+            ..sample_params()
+        };
+        assert_eq!(
+            build_command(&inline, None),
+            (
+                "python3".to_string(),
+                vec!["-c".to_string(), "print(1)".to_string()]
+            ),
+            "below the cap the argv path is byte-identical"
+        );
+        let file = std::path::Path::new("/tmp/meclaw-code-1-x.py");
+        assert_eq!(
+            build_command(&inline, Some(file)).1,
+            vec!["-I".to_string(), file.display().to_string()],
+            "a materialised script runs isolated"
+        );
+        let path = CodeParams {
+            script: Script::Path("/srv/s.py".into()),
+            ..sample_params()
+        };
+        assert_eq!(
+            build_command(&path, None).1,
+            vec!["/srv/s.py".to_string()],
+            "a script_path keeps its own directory on sys.path"
+        );
     }
 
     #[test]

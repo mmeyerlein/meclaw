@@ -266,7 +266,7 @@ fn the_door_extra_is_known_in_all_three_copies() {
     // 3. What the RENDERER draws: one edge more for the same assistant wish.
     let edges = |door: bool| -> usize {
         let mut params = json!({"scope": "/os/orgs/acme/members/alex", "level": "assistant",
-                                "name": "scribe", "template": "assistant@2.9.0"});
+                                "name": "scribe", "template": "assistant@2.9.2"});
         if door {
             params["door"] = json!(true);
         }

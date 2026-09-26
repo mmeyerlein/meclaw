@@ -9,6 +9,9 @@
     "boundary": "north",
     "emit_to": "/",
     "external_timeout_ms": 5000,
+    "egress": [
+      "__PEER_ORIGIN__"
+    ],
     "lanes": {
       "accepts": [],
       "emits": [

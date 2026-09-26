@@ -78,6 +78,31 @@ fn parse_panic_on_stop(params: &JsonValue) -> bool {
         .unwrap_or(false)
 }
 
+/// GH #850: `params.stall_mailbox: N` (default: absent) gives the pump a
+/// mailbox of `N` and makes it read NOTHING until the colony stops it — a
+/// cell whose mailbox is full the moment a flood arrives, so the rest of the
+/// flood waits in its overflow. The stop is served as usual.
+fn parse_stall_mailbox(params: &JsonValue) -> Option<usize> {
+    params
+        .get("stall_mailbox")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as usize)
+}
+
+/// The fixture knobs of one echo cell.
+#[derive(Clone, Copy)]
+struct EchoOpts {
+    panic_on_stop: bool,
+    stall_mailbox: Option<usize>,
+}
+
+fn parse_opts(params: &JsonValue) -> EchoOpts {
+    EchoOpts {
+        panic_on_stop: parse_panic_on_stop(params),
+        stall_mailbox: parse_stall_mailbox(params),
+    }
+}
+
 /// What one build of an echo cell hands back: the registry-facing mailbox
 /// sender, the task, its peace and backstop receivers, and the stop pair the
 /// colony uses to peace-stop it.
@@ -101,11 +126,16 @@ type BuiltEcho = (
 fn build_echo(
     path: &Path,
     echo_to: &Path,
-    panic_on_stop: bool,
+    opts: EchoOpts,
     outputs_tx: &mpsc::Sender<CellEmission>,
     colony_inbox: Option<&mpsc::Sender<ColonyMsg>>,
 ) -> BuiltEcho {
-    let (tx, mut rx) = mpsc::channel::<Message>(1000);
+    let EchoOpts {
+        panic_on_stop,
+        stall_mailbox,
+    } = opts;
+    let (tx, mut rx) = mpsc::channel::<Message>(stall_mailbox.unwrap_or(1000));
+    let stall = stall_mailbox.is_some();
     let (inner_tx, inner_rx) = mpsc::channel::<Message>(1000);
     let (peace_tx, peace_rx) = oneshot::channel();
     let (_backstop_tx, backstop_rx) = oneshot::channel();
@@ -139,7 +169,7 @@ fn build_echo(
                     }
                     break;
                 }
-                next = rx.recv() => match next {
+                next = rx.recv(), if !stall => match next {
                     Some(msg) => {
                         if inner_tx.send(msg).await.is_err() {
                             break;
@@ -161,18 +191,13 @@ fn build_echo(
 fn make_echo_respawn(
     path: Path,
     echo_to: Path,
-    panic_on_stop: bool,
+    opts: EchoOpts,
     outputs_tx: mpsc::Sender<CellEmission>,
     colony_inbox: mpsc::Sender<ColonyMsg>,
 ) -> RespawnFn {
     Box::new(move || {
-        let (tx, join, peace_rx, backstop_rx, stop_tx, death_ack_rx) = build_echo(
-            &path,
-            &echo_to,
-            panic_on_stop,
-            &outputs_tx,
-            Some(&colony_inbox),
-        );
+        let (tx, join, peace_rx, backstop_rx, stop_tx, death_ack_rx) =
+            build_echo(&path, &echo_to, opts, &outputs_tx, Some(&colony_inbox));
         renotify_stop_wiring(&colony_inbox, path.clone(), stop_tx, death_ack_rx);
         (tx, join, peace_rx, backstop_rx)
     })
@@ -198,15 +223,10 @@ impl CellFactory for SubtreeEchoFactory {
         _mailbox_capacity: usize,
     ) -> Result<SpawnedCellKind, String> {
         let echo_to = parse_echo_to(&params)?;
-        let panic_on_stop = parse_panic_on_stop(&params);
-        let (sender, join, peace_rx, backstop_rx, stop_tx, death_ack_rx) = build_echo(
-            &path,
-            &echo_to,
-            panic_on_stop,
-            &outputs_tx,
-            Some(&colony_inbox_tx),
-        );
-        let respawn = make_echo_respawn(path, echo_to, panic_on_stop, outputs_tx, colony_inbox_tx);
+        let opts = parse_opts(&params);
+        let (sender, join, peace_rx, backstop_rx, stop_tx, death_ack_rx) =
+            build_echo(&path, &echo_to, opts, &outputs_tx, Some(&colony_inbox_tx));
+        let respawn = make_echo_respawn(path, echo_to, opts, outputs_tx, colony_inbox_tx);
         Ok(SpawnedCellKind::Active {
             sender,
             join,
@@ -236,7 +256,7 @@ impl CellFactory for SubtreeEchoFactory {
         Some(make_echo_respawn(
             path,
             echo_to,
-            parse_panic_on_stop(&params),
+            parse_opts(&params),
             outputs_tx,
             colony_inbox_tx,
         ))
@@ -3365,4 +3385,181 @@ fn the_docs_name_the_lift() {
             path.display()
         );
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GH #850 — a lifted child does not inherit the displaced child's overflow
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// How many messages flood the stalled 1.0.0 bump: four fill its mailbox,
+/// the rest waits in its overflow (GH #850, R-SN-5).
+const FLOOD: usize = 50;
+
+/// The screen grown at 1.0.0 with a `bump` that reads nothing (a mailbox of
+/// four, see [`parse_stall_mailbox`]), then flooded directly at the bump with
+/// `FLOOD` messages the lift will displace. Returns their texts in send
+/// order. The flood carries a parent (a hop of a turn already inside the
+/// colony), so the hive boundary (GH #612) lets it address the interior cell.
+async fn grown_with_a_flooded_bump(td: &TempDir) -> (Colony, Vec<String>) {
+    write_alex_topology(td.path());
+    write_screen_templates(td.path());
+    write(
+        &td.path().join("templates/local/screen@1.0.0"),
+        "bump/config.json",
+        r#"{"cell":{"type":"echo_sub"},"params":{"echo_to":"/capture","stall_mailbox":4},"contract":{"version":"1.0.0","settings":{},"consumes":{}}}"#,
+    );
+    let colony = start_colony(td).await;
+    assert!(
+        matches!(
+            grow_screen(&colony.h).await,
+            MutationOutcome::Committed { .. }
+        ),
+        "growing screen@1.0.0 must commit"
+    );
+    let mut texts = Vec::with_capacity(FLOOD);
+    for i in 0..FLOOD {
+        let text = format!("old-{i}");
+        colony
+            .h
+            .send_from(Path::new("/alex/sender"), to_bump(&text))
+            .await;
+        texts.push(text);
+    }
+    (colony, texts)
+}
+
+/// One message addressed straight at the bump.
+fn to_bump(text: &str) -> Message {
+    MessageBuilder::new(Path::new("/alex/display/bump"))
+        .parent_message_id(Uuid::now_v7())
+        .body(Body::Inline(
+            json!({"messages":[{"origin":"user","type":"text","text":text}]}),
+        ))
+        .ttl(16)
+        .build()
+}
+
+/// The first text of a message — the one the test put there.
+fn first_text(m: &Message) -> String {
+    texts_of(m).into_iter().next().unwrap_or_default()
+}
+
+/// Dead letters until `want` of them name the bump, or the marker runs out.
+async fn bump_dead_letters(h: &ColonyHandle, want: usize) -> Vec<meclaw_colony::DeadLetter> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let mut got = Vec::new();
+    loop {
+        got.extend(h.drain_dead_letters().await);
+        let n = got
+            .iter()
+            .filter(|d| d.resolved_target.as_str() == "/alex/display/bump")
+            .count();
+        if n >= want || tokio::time::Instant::now() > deadline {
+            return got;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// GH #850 (I-2): the lift displaces a bump whose mailbox is full and whose
+/// overflow holds the rest of a flood, and new post for the bump follows.
+/// The new post reaches the NEW bump, in order, and nothing of the old
+/// flood does: the displaced mailbox's remainder and the displaced overflow
+/// are both dead-lettered `cell_inactive` (GH #682: the new child never
+/// inherits the old one's remainder) — every old message accounted for.
+///
+/// Before the fix the overflow was keyed by path alone: the new post went
+/// into the OLD overflow (and on into the displaced mailbox), and once that
+/// mailbox closed the overflow was pointed at the new bump, which then
+/// received the old flood first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gh850_new_post_after_a_lift_reaches_the_new_cell_and_the_old_overflow_is_dead_lettered() {
+    let td = TempDir::new().unwrap();
+    let (mut colony, old) = grown_with_a_flooded_bump(&td).await;
+    lift_to(&colony.h, "1.1.0").await;
+
+    let new: Vec<String> = (0..10).map(|i| format!("new-{i}")).collect();
+    for t in &new {
+        colony
+            .h
+            .send_from(Path::new("/alex/sender"), to_bump(t))
+            .await;
+    }
+    let mut got = Vec::with_capacity(new.len());
+    for _ in 0..new.len() {
+        let m = expect_capture(&mut colony, "new post through the new bump").await;
+        assert_eq!(
+            texts_of(&m).last().map(String::as_str),
+            Some("echo from /alex/display/bump"),
+            "it went through a bump: {:?}",
+            texts_of(&m)
+        );
+        got.push(first_text(&m));
+    }
+    assert_eq!(got, new, "only the new post reaches the new bump, in order");
+
+    let dead = bump_dead_letters(&colony.h, FLOOD).await;
+    let mut dead_texts: Vec<String> = dead
+        .iter()
+        .filter(|d| d.resolved_target.as_str() == "/alex/display/bump")
+        .map(|d| {
+            assert_eq!(d.reason.as_code(), "cell_inactive", "{d:?}");
+            first_text(&d.message)
+        })
+        .collect();
+    dead_texts.sort_by_key(|t| t[4..].parse::<usize>().unwrap_or(usize::MAX));
+    assert_eq!(
+        dead_texts, old,
+        "every old message is dead-lettered, none lost"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), colony.capture_rx.recv())
+            .await
+            .is_err(),
+        "and no old message reaches the new bump later"
+    );
+    colony.h.shutdown().await;
+}
+
+/// GH #850 (I-2), without new post: once the displaced mailbox closes, the
+/// displaced overflow is dead-lettered — it is not handed to the new bump
+/// standing at the path (the drain task's mailbox closed, and the mailbox
+/// at the path is another cell's).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gh850_a_lift_dead_letters_the_displaced_overflow_instead_of_handing_it_on() {
+    let td = TempDir::new().unwrap();
+    let (mut colony, old) = grown_with_a_flooded_bump(&td).await;
+    lift_to(&colony.h, "1.1.0").await;
+
+    let dead = bump_dead_letters(&colony.h, FLOOD).await;
+    let mut dead_texts: Vec<String> = dead
+        .iter()
+        .filter(|d| d.resolved_target.as_str() == "/alex/display/bump")
+        .map(|d| {
+            assert_eq!(d.reason.as_code(), "cell_inactive", "{d:?}");
+            first_text(&d.message)
+        })
+        .collect();
+    dead_texts.sort_by_key(|t| t[4..].parse::<usize>().unwrap_or(usize::MAX));
+    assert_eq!(
+        dead_texts, old,
+        "every old message is dead-lettered, none lost"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), colony.capture_rx.recv())
+            .await
+            .is_err(),
+        "no old message reaches the new bump"
+    );
+    // The new bump works.
+    let walked = walk(&mut colony, "in_view", "after_lift").await;
+    assert_eq!(
+        walked,
+        vec![
+            "after_lift",
+            "echo from /alex/display/keep",
+            "echo from /alex/display/bump",
+        ]
+    );
+    colony.h.shutdown().await;
 }

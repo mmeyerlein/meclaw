@@ -5,8 +5,8 @@ use crate::llm::params::{AuthMode, WireDialect};
 use crate::llm::translate::{TranslateError, TranslatedResponse};
 use crate::llm::wire::WireError;
 use crate::llm::{
-    auth, latency, output, params::LlmParams, state, system_gate, translate, translate_responses,
-    wire,
+    auth, latency, output, package, params::LlmParams, state, system_gate, tool_scope, translate,
+    translate_responses, wire,
 };
 use meclaw_colony::stateful_cell::StatefulCell;
 use meclaw_colony::{AttachmentReadError, AttachmentReader};
@@ -395,6 +395,17 @@ pub struct LlmCell {
     /// has no finite size. `handle` drains this queue after the delivery is
     /// done, which is the same order with a flat call stack.
     released: std::collections::VecDeque<ParkedTurn>,
+    /// GH #853: the START value — the birth params (`config.json`, already
+    /// `${VAR}`-substituted). `$reset` falls back to it, and the params line
+    /// names a key's source against it.
+    start: Value,
+    /// GH #853: the run-time overlay the effective params were built from —
+    /// the same pairs `cell.db.params` holds.
+    overlay: meclaw_core::serde_json::Map<String, Value>,
+    /// GH #853: the cell's resolved backstop (`cell.message_timeout`), in ms,
+    /// so a run-time `external_timeout_ms` is held to the rule the shipped
+    /// templates are gated on. `None` = no backstop (or not told).
+    message_timeout_ms: Option<u64>,
 }
 
 impl LlmCell {
@@ -404,14 +415,108 @@ impl LlmCell {
     #[doc(hidden)]
     pub fn new(params: LlmParams, http: reqwest::Client) -> Self {
         Self {
-            params,
             http,
             attachments: None,
             credential: None,
             pending_recipient: None,
             credential_wait: None,
             released: std::collections::VecDeque::new(),
+            // A cell built from parsed params alone treats them as its start
+            // value; the factory uses [`Self::restored`] with the real birth.
+            start: meclaw_core::serde_json::to_value(&params).unwrap_or_default(),
+            overlay: meclaw_core::serde_json::Map::new(),
+            message_timeout_ms: None,
+            params,
         }
+    }
+
+    /// GH #853: the cell as the factory births it on wake and respawn — the
+    /// birth params as start value, the `cell.db` overlay replayed over them.
+    /// Writes the params line, so a restore is as visible as an update.
+    #[doc(hidden)]
+    pub fn restored(
+        conn: &rusqlite::Connection,
+        birth: &Value,
+        http: reqwest::Client,
+    ) -> Result<Self, String> {
+        let pairs = crate::params_overlay::read_params_overlay(conn)
+            .map_err(|e| format!("read params overlay: {e}"))?;
+        let params = LlmParams::parse(&crate::params_overlay::merge_params_overlay(birth, &pairs))?;
+        let mut cell = Self::new(params, http);
+        cell.start = birth.clone();
+        cell.overlay = pairs.into_iter().collect();
+        Ok(cell)
+    }
+
+    /// GH #853: tell the cell its resolved backstop (the factory's
+    /// `message_timeout`).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_message_timeout(mut self, timeout: Option<std::time::Duration>) -> Self {
+        self.message_timeout_ms = timeout.map(|d| d.as_millis() as u64);
+        self
+    }
+
+    /// The run-time guards over the RESTORED overlay (review of L2, M-1): an
+    /// overlay written before 0.46.0 may carry a `base_url` no list allows, or
+    /// an `external_timeout_ms` a later `message_timeout` mutation no longer
+    /// clears. The restore keeps it in force -- refusing a boot over an old
+    /// overlay would take the brain down -- and the factory names what fails
+    /// on a warning beside the params line. `Err` = the guard's detail, which
+    /// names the key and the rule, and never a secret: a `base_url` refused
+    /// for want of a list is not named at all, one whose origin is not on the
+    /// list is named by that origin only (no path, no userinfo), and a refused
+    /// `external_timeout_ms` by its ms beside the backstop it needs (review
+    /// rev-F2, m5; locked in `gh853_the_params_line_is_written_at_the_seam.rs`).
+    #[doc(hidden)]
+    pub fn restore_check(&self) -> Result<(), String> {
+        let start_base_url = self.start.get("base_url").and_then(Value::as_str);
+        self.params.check_run_time_update(
+            start_base_url,
+            &self.overlay,
+            &self.params,
+            self.message_timeout_ms,
+        )
+    }
+
+    /// GH #853: the one visible line — effective package, each key's source.
+    #[doc(hidden)]
+    pub fn params_line(&self, path: &str) -> String {
+        package::params_line(path, &self.params, &self.overlay)
+    }
+
+    /// GH #853: a params update on the run-time path — `$reset`, the merge over
+    /// the START value, and the run-time guards. The detail never names a
+    /// value; a credential key is told it needs a mutation.
+    fn apply_run_time_update(
+        &self,
+        update: &meclaw_core::serde_json::Map<String, Value>,
+    ) -> Result<crate::params_overlay::OverlayChange<LlmParams>, String> {
+        let change = crate::params_overlay::apply_update_over_start::<LlmParams>(
+            &self.start,
+            &self.overlay,
+            update,
+        )
+        .map_err(|e| match &e {
+            crate::params_overlay::ParamUpdateError::Immutable(key)
+                if crate::llm::params::CREDENTIAL_KEYS.contains(&key.as_str()) =>
+            {
+                format!(
+                    "{} — provider and credential are fixed at birth; a model package that \
+                     needs another one needs a mutation",
+                    e.detail()
+                )
+            }
+            _ => e.detail(),
+        })?;
+        let start_base_url = self.start.get("base_url").and_then(Value::as_str);
+        self.params.check_run_time_update(
+            start_base_url,
+            update,
+            &change.merged,
+            self.message_timeout_ms,
+        )?;
+        Ok(change)
     }
 
     /// GH #457: hold this turn back until the sealed box arrives.
@@ -799,12 +904,14 @@ async fn reject_invalid_system(
 ///
 /// Each leaf `{"text": "<json>"}` under `system.tools` is parsed as the
 /// OpenAI tool-object JSON. Keys are visited in alphabetical order so the
-/// resulting `Vec<Value>` is deterministic. Missing `tools` key, non-object
-/// `tools`, or empty `tools` all return `Ok(Vec::new())`.
+/// resulting `Vec` is deterministic — this order IS the menu order a
+/// `tool_scope` preserves (GH #845). Each entry keeps its slot key next to the
+/// object, because a scope may name a tool by either. Missing `tools` key,
+/// non-object `tools`, or empty `tools` all return `Ok(Vec::new())`.
 ///
 /// `concat_system_prompt` (T4) skips `tools` at top-level, so `system_tree`
 /// can be passed unchanged to both helpers.
-fn extract_tools(system_tree: &Value) -> Result<Vec<Value>, TranslateError> {
+fn extract_tools(system_tree: &Value) -> Result<Vec<(String, Value)>, TranslateError> {
     let Some(obj) = system_tree.as_object() else {
         return Ok(Vec::new());
     };
@@ -823,7 +930,7 @@ fn extract_tools(system_tree: &Value) -> Result<Vec<Value>, TranslateError> {
         };
         let parsed: Value = meclaw_core::serde_json::from_str(text)
             .map_err(|e| TranslateError::ToolCallParse(format!("system.tools.{name}: {e}")))?;
-        out.push(parsed);
+        out.push((name.clone(), parsed));
     }
     Ok(out)
 }
@@ -918,6 +1025,31 @@ impl LlmCell {
                     return;
                 }
             };
+            // Step 1a (GH #845): the per-request tool scope. Parsed before
+            // anything is applied or persisted, so a scope that cannot be read
+            // refuses the whole message with no partial effect — silently
+            // ignoring it would hand the model the WHOLE menu, the opposite of
+            // what the sender asked for.
+            let tool_scope = match tool_scope::ToolScope::parse(content_obj.get("tool_scope")) {
+                Ok(s) => s,
+                Err(detail) => {
+                    output::emit_error(
+                        sink,
+                        reply_target,
+                        "invalid_input",
+                        &detail,
+                        "parse",
+                        vec![],
+                        started_at_unix_ms,
+                        0,
+                        None,
+                        None,
+                        None,
+                    )
+                    .await;
+                    return;
+                }
+            };
             // Step 1b (W4b): params-update slot (config.md § Access l.20).
             // Handled FIRST and strictly: the `params` block is merged into
             // self.params + persisted to cell.db, THEN any system/messages run
@@ -925,7 +1057,15 @@ impl LlmCell {
             // A params-only message persists and returns silently (analog Q3).
             // All-or-nothing: an immutable/unknown/malformed update is a loud
             // `invalid_input` reject with NO partial apply.
+            //
+            // GH #853: package keys (`MODEL_PACKAGE_KEYS`) take effect only
+            // from a params-only message — a body without `messages`. A cell
+            // knows no sender, so the form decides: a slot riding on a turn and
+            // naming a package key is not applied at all, the line says so,
+            // and the turn runs on (a conversation is never broken off, and it
+            // cannot change the model it talks to).
             let has_params = content_obj.contains_key("params");
+            let is_turn = content_obj.contains_key("messages");
             if let Some(params_val) = content_obj.get("params") {
                 let update_obj = match params_val.as_object() {
                     Some(o) => o.clone(),
@@ -947,20 +1087,64 @@ impl LlmCell {
                         return;
                     }
                 };
-                match self.params.apply_update(&update_obj) {
-                    Ok((new_params, overlay)) => {
-                        let now = unix_secs_now();
-                        let persist_result = db
-                            .call(move |conn| {
-                                crate::params_overlay::persist_params_overlay(conn, &overlay, now)
-                            })
-                            .await;
-                        if let Err(e) = persist_result {
+                if is_turn && package::touches_package(&update_obj) {
+                    tracing::warn!(
+                        target: package::PARAMS_LOG_TARGET,
+                        "llm: params {} not applied: a turn message cannot change the model \
+                         package ({}); send a params-only message",
+                        msg.target.as_str(),
+                        package::package_keys_in(&update_obj).join(",")
+                    );
+                } else {
+                    match self.apply_run_time_update(&update_obj) {
+                        Ok(change) => {
+                            let now = unix_secs_now();
+                            let set = change.set.clone();
+                            let reset = change.reset.clone();
+                            let persist_result = db
+                                .call(move |conn| {
+                                    crate::params_overlay::persist_overlay_change(
+                                        conn, &set, &reset, now,
+                                    )
+                                })
+                                .await;
+                            if let Err(e) = persist_result {
+                                output::emit_error(
+                                    sink,
+                                    reply_target,
+                                    "provider_error",
+                                    &format!("cell.db params write failed: {e}"),
+                                    "parse",
+                                    vec![],
+                                    started_at_unix_ms,
+                                    0,
+                                    None,
+                                    None,
+                                    None,
+                                )
+                                .await;
+                                return;
+                            }
+                            // Live apply — this call's inference (if any) uses it.
+                            self.params = change.merged;
+                            self.overlay = change.overlay;
+                            // GH #853: the sight. Every update, `{"params": {}}`
+                            // included, answers with this line rather than an
+                            // emission — the shipped brains' out-edges would
+                            // take an emission for a model answer or dead-letter
+                            // it (OR-SN.L2.1).
+                            tracing::info!(
+                                target: package::PARAMS_LOG_TARGET,
+                                "{}",
+                                self.params_line(msg.target.as_str())
+                            );
+                        }
+                        Err(detail) => {
                             output::emit_error(
                                 sink,
                                 reply_target,
-                                "provider_error",
-                                &format!("cell.db params write failed: {e}"),
+                                "invalid_input",
+                                &detail,
                                 "parse",
                                 vec![],
                                 started_at_unix_ms,
@@ -972,25 +1156,6 @@ impl LlmCell {
                             .await;
                             return;
                         }
-                        // Live apply — this call's inference (if any) uses it.
-                        self.params = new_params;
-                    }
-                    Err(e) => {
-                        output::emit_error(
-                            sink,
-                            reply_target,
-                            "invalid_input",
-                            &e.detail(),
-                            "parse",
-                            vec![],
-                            started_at_unix_ms,
-                            0,
-                            None,
-                            None,
-                            None,
-                        )
-                        .await;
-                        return;
                     }
                 }
             }
@@ -1089,6 +1254,19 @@ impl LlmCell {
                     None,
                 )
                 .await;
+                return;
+            }
+            // GH #853 (B-8): a package push is `{"system": {}, "params": …}` —
+            // the form the registry, `argus` and `steward` send. It writes no
+            // system leaf and asks no provider, so it needs no credential:
+            // without this return a cell that spends a grant and holds no
+            // bearer yet parked the push as a turn, asked the vault, and put a
+            // `credential_request` on its lane for a message that was already
+            // applied above (measured: gh853 lock
+            // `a_params_only_push_never_opens_a_credential_round`).
+            if messages.is_none()
+                && system.is_none_or(|s| s.as_object().is_some_and(|o| o.is_empty()))
+            {
                 return;
             }
 
@@ -1331,9 +1509,23 @@ impl LlmCell {
                 return;
             }
 
-            // 5b: extract OpenAI tool objects from system.tools.*.
+            // 5b: extract OpenAI tool objects from system.tools.*, narrowed by
+            // this request's `tool_scope` (GH #845). The stored menu is never
+            // written: the scope lives exactly as long as this call.
             let tools = match extract_tools(&system_tree) {
-                Ok(t) => t,
+                Ok(menu) => match &tool_scope {
+                    None => menu.into_iter().map(|(_, t)| t).collect(),
+                    Some(scope) => {
+                        let scoped = scope.apply(menu);
+                        if !scoped.unknown.is_empty() {
+                            tracing::warn!(
+                                unknown = ?scoped.unknown,
+                                "llm: tool_scope names tools the menu does not carry; ignored"
+                            );
+                        }
+                        scoped.tools
+                    }
+                },
                 Err(e) => {
                     output::emit_error(
                         sink,
@@ -1357,8 +1549,12 @@ impl LlmCell {
             // Infallible since GH #86: the only failure it ever had was an
             // unresolved `{text_id}` leaf, and the substrate resolves those at
             // the delivery boundary now.
-            let system_string =
-                translate::concat_system_prompt(&system_tree, &self.params.system_order);
+            // GH #853: the model's own block goes FIRST, apart from the persona.
+            let system_string = translate::compose_system_prompt(
+                self.params.model_prompt.as_deref(),
+                &system_tree,
+                &self.params.system_order,
+            );
 
             // 5c.2 (GH #87 / GH #94): resolve declared `attachments[]` into
             // dialect-native image parts. A cell without the declaration holds
@@ -1408,7 +1604,11 @@ impl LlmCell {
                     Ok(mut request_json) => {
                         // GH #94: fold the resolved images into the typed
                         // input[]. No-op for an empty vector.
-                        translate_responses::attach_input_images(&mut request_json, image_parts);
+                        translate_responses::attach_input_images(
+                            &mut request_json,
+                            &input_messages,
+                            image_parts,
+                        );
                         // GH #124: same phase boundary as the chat lane.
                         clock.translated();
                         if tracing::enabled!(target: latency::LATENCY_TARGET, tracing::Level::DEBUG)
@@ -1479,9 +1679,10 @@ impl LlmCell {
                 &tools,
             ) {
                 Ok(mut r) => {
-                    // GH #87: fold the resolved images into the last user
-                    // message. No-op for an empty vector.
-                    translate::attach_image_parts(&mut r, image_parts);
+                    // GH #87: fold the resolved images into the message of
+                    // the last user turn (GH #847: never a peer turn). No-op
+                    // for an empty vector.
+                    translate::attach_image_parts(&mut r, &input_messages, image_parts);
                     r
                 }
                 Err(e) => {

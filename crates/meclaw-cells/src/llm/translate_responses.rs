@@ -162,6 +162,13 @@ fn map_turn(turn: &Value) -> Result<Value, TranslateError> {
     let id = turn.get("id").and_then(|v| v.as_str()).unwrap_or("");
     match (origin, type_) {
         ("user", "text") => Ok(message_item("user", "input_text", text)),
+        // GH #847: the other side's words go out as role `user` behind the
+        // same one-line frame as on chat completions (`translate::peer_frame`).
+        ("peer", "text") => Ok(message_item(
+            "user",
+            "input_text",
+            &crate::llm::translate::peer_content(turn),
+        )),
         ("system", "text") => Ok(message_item("system", "input_text", text)),
         // Assistant text is echoed back as `output_text` — the reference
         // distinguishes model-produced from user-supplied content by that tag.
@@ -225,13 +232,18 @@ pub(crate) fn input_image_item(mime_type: &str, bytes: &[u8]) -> Value {
 /// Fold resolved image items into a built Responses request — GH #94.
 ///
 /// Mirror of `translate::attach_image_parts`, adapted to the typed `input[]`:
-/// the images join the content array of the **last user message item**;
-/// without one they become an appended user message item of their own — an
-/// attachment always has to reach the model as user input.
+/// the images join the content array of the message item of the **last `user`
+/// turn** (`translate::image_anchor`, GH #847 — never a `peer` turn); without
+/// one they become an appended user message item of their own — an attachment
+/// always has to reach the model as user input.
 ///
 /// **Empty `image_items` is a no-op**: a cell that declares no attachment
 /// consumption produces the pre-GH-#94 request byte for byte.
-pub(crate) fn attach_input_images(request: &mut Value, image_items: Vec<Value>) {
+pub(crate) fn attach_input_images(
+    request: &mut Value,
+    input_messages: &[Value],
+    image_items: Vec<Value>,
+) {
     use serde_json::json;
     if image_items.is_empty() {
         return;
@@ -239,13 +251,12 @@ pub(crate) fn attach_input_images(request: &mut Value, image_items: Vec<Value>) 
     let Some(input) = request.get_mut("input").and_then(|i| i.as_array_mut()) else {
         return;
     };
-    let last_user = input
-        .iter_mut()
-        .rposition(|item| {
-            item.get("type").and_then(|t| t.as_str()) == Some("message")
-                && item.get("role").and_then(|r| r.as_str()) == Some("user")
-        })
-        .map(|idx| &mut input[idx]);
+    let anchor = crate::llm::translate::image_anchor(input_messages);
+    let last_user = crate::llm::translate::nth_user_index(input, anchor, |item| {
+        item.get("type").and_then(|t| t.as_str()) == Some("message")
+            && item.get("role").and_then(|r| r.as_str()) == Some("user")
+    })
+    .map(|idx| &mut input[idx]);
     match last_user {
         Some(item) => {
             if let Some(content) = item.get_mut("content").and_then(|c| c.as_array_mut()) {
@@ -899,7 +910,7 @@ mod tests {
             json!({"origin":"user","type":"text","text":"look at this"}),
         ];
         let mut b = build_responses_request(&params(false), "", &turns, &[]).unwrap();
-        attach_input_images(&mut b, vec![input_image_item("image/png", b"x")]);
+        attach_input_images(&mut b, &turns, vec![input_image_item("image/png", b"x")]);
         let input = b["input"].as_array().unwrap();
         let content = input[2]["content"].as_array().unwrap();
         assert_eq!(content[0]["type"], "input_text");
@@ -915,7 +926,7 @@ mod tests {
     fn attach_input_images_without_user_message_appends_one() {
         let turns = vec![json!({"origin":"assistant","type":"text","text":"a"})];
         let mut b = build_responses_request(&params(false), "", &turns, &[]).unwrap();
-        attach_input_images(&mut b, vec![input_image_item("image/jpeg", b"j")]);
+        attach_input_images(&mut b, &turns, vec![input_image_item("image/jpeg", b"j")]);
         let input = b["input"].as_array().unwrap();
         assert_eq!(input.len(), 2, "the images become their own user message");
         assert_eq!(input[1]["type"], "message");
@@ -928,7 +939,7 @@ mod tests {
         let turns = vec![json!({"origin":"user","type":"text","text":"hi"})];
         let mut b = build_responses_request(&params(false), "", &turns, &[]).unwrap();
         let before = b.clone();
-        attach_input_images(&mut b, Vec::new());
+        attach_input_images(&mut b, &turns, Vec::new());
         assert_eq!(b, before, "no images ⇒ byte-identical request");
     }
 

@@ -49,7 +49,8 @@
         "expired_at": "text",
         "superseded_by": "text",
         "closure_source": "text",
-        "confidence": "int"
+        "confidence": "int",
+        "source": "text"
       },
       "entities": {
         "id": "text",
@@ -136,7 +137,8 @@
         "batch_id": "text",
         "claimed_at": "text",
         "attempts": "int",
-        "not_before": "text"
+        "not_before": "text",
+        "speaker": "text"
       },
       "recall_scratch": {
         "request_id": "text",
@@ -258,6 +260,7 @@
       "entity identity: facts.canonical_subject is the same mechanism one dimension over, plus normalisation (Unicode composition, case fold, whitespace collapse) -- two spellings equal after it are ONE axis at mint time, with no alias and no judgement",
       "statement identity: facts.canonical_claim is the same mechanism a third dimension over, and it is what makes the SUPERSESSION unit the statement (canonical_subject, canonical_predicate, canonical_claim) while the axis stays the retrieval grouping -- byte identity of the claim is the day-one canonical value, judged claim aliases are a later package",
       "closure attribution: facts.closure_source names WHO closed a statement (a judgement), and it is empty on a closure the chain re-derives by itself (a later assertion of the same statement). An unattributed closure is withdrawn by the next re-derive, which is the revert path for judgements",
+      "source attribution (GH #849): facts.source names WHO stated a fact -- empty for the member's own side and the agent's own answers, the participant reference of the speaker for a fact extracted from a peer turn. Written once at the insert from the episode, never rewritten, and part of the statement identity: a closure never crosses two sources. pending_extraction.speaker carries the same speaker on the queue row",
       "run books: consolidation_log carries what one night COST -- llm_calls counts the model calls of that run and tokens_prompt/tokens_completion sum what those replies reported. NULL in a token column means 'no reply reported usage', never 'nothing was spent'",
       "cardinality: predicate_cardinality holds one judged verdict per canonical predicate (single | multi) with the source that decided it, and the read stack is seed > judged > learned-with-session-guard. The seed list is authority and never becomes a row, so a predicate ON that list carrying a judged row is a contradiction the write path refuses rather than a precedence the reader has to untangle. The revert is a delete on the source of one night",
       "{operation: set_alias, table: facts, column: 'predicate', alias: 'Lieblingseditor', canonical: 'favorite_editor'} -> upsert into predicate_aliases; then {operation: canonicalize, table: facts} pulls BOTH derived columns, rows_affected = identities that MOVED",

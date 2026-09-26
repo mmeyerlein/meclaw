@@ -317,8 +317,9 @@ fn an_inbound_turn_is_written_before_the_window_is_read() {
         .collect();
     assert_eq!(
         calls.iter().map(|a| a["table"].clone()).collect::<Vec<_>>(),
-        ["turns", "round", "turns", "turns"],
-        "the row, the open-round check, the window, the per-turn scan: {calls:?}"
+        ["turns", "round", "turns", "session", "roster", "turns"],
+        "the row, the open-round check, the window, the session row and the legend \
+         (GH #845/#847), the per-turn scan: {calls:?}"
     );
     let op = calls[0].clone();
     assert_eq!(op["operation"], "insert");
@@ -356,8 +357,9 @@ fn the_turn_chain_asks_for_open_rounds_before_it_reads_the_window() {
     // Four calls since GH #298: the row, the round check, the window, and --
     // `turn_write` ships ON -- the per-turn episode scan, deliberately NEXT to
     // the machine rather than inside it (the round check keeps deciding what
-    // happens to this turn).
-    assert_eq!(calls.len(), 4, "{calls:?}");
+    // happens to this turn). Six since GH #845/#847: the session row and the
+    // legend are read beside the window, in front of the scan.
+    assert_eq!(calls.len(), 6, "{calls:?}");
     let check = calls[1].clone();
     assert_eq!(check["operation"], "select");
     assert_eq!(check["table"], "round");
@@ -1924,7 +1926,11 @@ fn a_mid_round_turn_is_deferred_not_assembled() {
         op["where"]["turn_id"], "t1",
         "the NEW turn is the one stamped, not the round's turn"
     );
-    assert_eq!(op["where"]["role"], "user");
+    assert_eq!(
+        op["where"]["role"],
+        serde_json::json!({"in": ["user", "peer"]}),
+        "a deferred turn's peer rows are deferred rows too (GH #847)"
+    );
 }
 
 #[test]
@@ -2470,7 +2476,9 @@ fn an_aged_batched_session_is_cut_exactly_at_its_evidence() {
         assert_eq!(
             calls.iter().map(|a| a["table"].clone()).collect::<Vec<_>>(),
             ["turns", "round"],
-            "the turns and their rounds, in one message: {calls:?}"
+            "the turns and their rounds, in one message -- and nothing else: the \
+             session's scope row and its legend (GH #845/#847) are the channel's \
+             state, not the window's, and a session goes on past its cut: {calls:?}"
         );
         assert!(
             calls.iter().all(|a| a["operation"] == "delete"),
@@ -3279,11 +3287,14 @@ fn a_window_without_advice_carries_the_consult_slot_emptied() {
     assert_eq!(
         out[0]["system"],
         serde_json::json!({"consult": {"open": [], "text": ""},
-                           "instructions": {"mode": {"text": ""}}}),
+                           "instructions": {"mode": {"text": ""},
+                                            "peer": {"text": ""}},
+                           "roster": {"text": ""}}),
         "no memory leg, so the two UNCONDITIONAL slots are the whole tree -- and \
          both are the EMPTY ones: a slot that is never sent empty is never \
          revoked. `instructions.mode` joined the pair with the duplex advise \
-         mode (welle-live) and is written on the same argument: {}",
+         mode (welle-live) and is written on the same argument, and so are \
+         `instructions.peer` and `roster` (GH #847): {}",
         out[0]
     );
 }

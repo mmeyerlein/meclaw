@@ -1,4 +1,4 @@
-# `memory-hive@3.4.1`
+# `memory-hive@3.6.0`
 
 A **member's** memory as a hive of existing cell types — no new cell type, no Rust. Fifteen cells:
 `store` (all durable data), `writer`, `recall`, `extract-glue`, `close-glue`, `closer`,
@@ -368,13 +368,14 @@ ruling F3. Both halves use the same owning scope, so the store still has exactly
 | `in_import` | in → `./memory` | `hop.import_from` names the same run directory; nothing in the body and nothing in the context. The WHOLE directory is applied in one message and every file of it is parsed before the first row is written, so a document with one broken file writes nothing at all. Applying the same directory twice leaves the same state. A document whose declared schema disagrees with this store by a single column, in either direction, is refused on `reject` with nothing written |
 | `tool_call` | in → `./memory` | one `memory_recall` call a brain made (#552), split out by a dispatcher and carried here by the member the asker stands in. The body is the tool_call turn and nothing else; `hop.tool_call_id` is the correlation the asking round waits on, and the hive's own door promotes it to `context.memory_call_id`. **Plus the asking round**, exactly as on `in_query`: `audience_now` and `channel`, and `session_id` if the session leg is to be scoped. The tier is NOT on this lane — how deep a recall runs is `tool`'s own `params.tier`, because a model that could choose its own depth could ask for one the instance was tuned away from. Wire `tool_result` in the SAME mutation |
 | `in_schemas` | in → `./memory` | the names a collector declares it uses — `{"tools": ["memory_recall"]}` in the body, or `["*"]` for everything this hive declares, which is one schema. Nothing on the hop but the lane, nothing in the context. It is not a tool round and carries no `tool_name`. **The answer is not only about the names asked for** ([#606](https://github.com/mmeyerlein/meclaw/issues/606)): every answer of this lane also carries `sidecar[]`, what this memory asks of whoever talks to it. Wire `tool_schemas` in the SAME mutation |
+| `in_model` | in → `./memory` | a model package for ONE of the four llm cells, pushed by the colony's `llm-registry` ([#858](https://github.com/mmeyerlein/meclaw/issues/858)): a **params-only** body (an empty `system` slot, no `messages`), with `hop.subscriber` naming the cell's path. The door reads the last segment of that path and hands the push to `./closer`, `./dialectic`, `./dreamer` or `./judge`; a message with no `hop.subscriber` at all would reach all four (the permissive guard of GH #478), and only a hop set by hand -- `POST /messages` or an edge the owner applied -- can be one, since the registry always names the cell; the cell merges it into its live params and answers nothing. See [The model door](#the-model-door-and-what-each-cell-needs-858). Since 3.6.0 |
 | `bundle` | out → your consumer | condition `hop.route == 'bundle'` on an edge FROM `./memory`. It carries `hop.recall_caller` back, off the `context.recall_caller` the question came in with and empty when it came with none — a caller with more than one asker routes the answer on it, and one with a single asker ignores it ([#532](https://github.com/mmeyerlein/meclaw/issues/532)) |
 | `close_report` | out → your drain | condition `hop.route == 'close_report'` on an edge FROM `./memory`. **Drain it.** It is the ONLY positive signal the close lane has — the pass writes through the inline ingress, which answers nobody, so without this drain a caller cannot tell a pass that ran and changed nothing from a pass that never ran at all. Eight numbers ride on the hop: `added`, `sharpened`, `corrected`, `closed`, `restated`, `unseen_refs`, `exceptions` (the `pending` rows of this session the pass swept) and `truncated` (what the page bounds left behind). A pass that got no verdict leaves on `reject` instead, with `hop.reject_reason == 'closer_failed'` — nothing was written and the exception list was NOT swept |
 | `export_done` | out → your drain | condition `hop.route == 'export_done'` on an edge FROM `./memory`, PLAIN: this hive's store has written its whole seed set into `<fence>/<dir>/seed/`, marker and all, and says so itself ([#555](https://github.com/mmeyerlein/meclaw/issues/555)). `hop.seed_dir` names the directory RELATIVE to the fence the store declares (`params.transfer.base_path`), `hop.export_hive` names the hive, `hop.export_of` how many tables travelled and `hop.rows_written` how many rows |
 | `dump` | out → your drain | condition `hop.route == 'dump'` on an edge FROM `./memory`, and make it a PLAIN one: an edge that also tests a second hop key evaluates to `false` under the `required_drains` probe and reads as no drain. Since #555 it carries ONE thing, and since [#261](https://github.com/mmeyerlein/meclaw/issues/261) exactly ONE message of it: the receipt of an applied import, for the whole directory rather than per part (`hop.export_of` counts the tables applied, `hop.rows_written` the rows that were new, `hop.export_final` is always `'1'` because a directory is applied whole or not at all) — the export writes its own files and reports on `export_done`, so the `dump_kind` key that told the two apart is gone with the distinction |
 | `tool_result` | out → your caller | condition `hop.route == 'tool_result'` on an edge FROM `./memory`. One tool_result turn under the original `hop.tool_call_id`, ready to re-enter the round that made the call. A REFUSAL leaves here too and not on `reject`: `hop.error_code` carries the recall cell's own `reject_reason` verbatim (`missing_audience`, `missing_channel`, `half_open_window`, `store_refused`) plus this hive's own two (`malformed_tool_call`, `memory_not_configured`). A call that is not answered stalls the asking round until its idle window runs out, which is why every case answers |
 | `tool_schemas` | out → your caller | condition `hop.route == 'tool_schemas'` on an edge FROM `./memory`. One `{name, description, parameters}` for `memory_recall`, provider-neutral, plus in `unknown[]` the asked names this hive does not serve and in `sidecar[]` the section this hive asks for in return: one `{section, required, schema, instruction}` with `section: "memory"` and `required: true` ([#606](https://github.com/mmeyerlein/meclaw/issues/606)). All three slots are `required: true` in the emitted body — `schemas` carries `contract.version` `1.1.0` for the new one — and `sidecar[]` is filled on EVERY answer of the cell, the `tools_missing` one included, because a section is not a response to a name. A lane of its own and NOT `tool_result`: a result belongs to a call somebody made, this belongs to a start-up question |
-| `reject` | out → your drain | condition `hop.route == 'reject'` on an edge FROM `./memory`. **Drain it.** `hop.reject_reason` names the case: `missing_audience` and `missing_channel` for a turn, block or question whose provenance was incomplete (#244), `inline_invalid` for a block that did not survive validation. The transfer lane adds exactly two of its own since [#261](https://github.com/mmeyerlein/meclaw/issues/261) — `export_write_failed` (the store would not write its seed set: no marker, so the directory is not a document) and `import_failed` — and carries the substrate's own code beside them on `hop.store_error` (`transfer_seed_malformed`, `transfer_io_error`, `transfer_path_out_of_bounds`, `import_schema_drift`, …) with `hop.store_operation` naming the operation, for the reason this hive states everywhere else: that code list is OPEN, and a reason enum that had to grow with it would turn the next new code into a failed emit. Beyond those, two older things arrive here and the body says which: an inline block the hive could not bind, and a HALF window (exactly one of `recall_window_from`/`_to` non-empty), which is a caller bug and leaves at request entry before the leg fan. Undrained, a refused block is an unrouted dead end — nobody ever learns the memory was not written — and a refused question leaves the caller waiting for a bundle that never comes. A colony that ran the inline lane for weeks with only the recall half drained is where that lesson comes from. **Since 2.3.1 the same lane also carries what this hive's own STORE would not do** (`hop.reject_reason == 'store_refused'`, `hop.store_error` = the store's `error_code`, `hop.store_operation` = the op it refused): a read or a write that came back refused stops its lane there instead of being read as zero rows. The nightly consolidation reports here too -- it has no caller of its own, and the alternative was reporting nowhere. See [When the store says no](#when-the-store-says-no-gh-343-since-231) |
+| `reject` | out → your drain | condition `hop.route == 'reject'` on an edge FROM `./memory`. **Drain it.** `hop.reject_reason` names the case: `missing_audience` and `missing_channel` for a turn, block or question whose provenance was incomplete (#244), `inline_invalid` for a block that did not survive validation, `ambiguous_speaker` (since 3.5.0, [#849](https://github.com/mmeyerlein/meclaw/issues/849)) for facts that name no source while the turns they may answer name more than one -- they are not filed inline and the close pass speaks for the turn, and `unknown_source` for facts that name a source who is not behind a turn they can be bound to (the receipt shows a dropped source only in reference form and counts any other value, since the name is the model's text); both may leave next to what the same block did file. The transfer lane adds exactly two of its own since [#261](https://github.com/mmeyerlein/meclaw/issues/261) — `export_write_failed` (the store would not write its seed set: no marker, so the directory is not a document) and `import_failed` — and carries the substrate's own code beside them on `hop.store_error` (`transfer_seed_malformed`, `transfer_io_error`, `transfer_path_out_of_bounds`, `import_schema_drift`, …) with `hop.store_operation` naming the operation, for the reason this hive states everywhere else: that code list is OPEN, and a reason enum that had to grow with it would turn the next new code into a failed emit. Beyond those, two older things arrive here and the body says which: an inline block the hive could not bind, and a HALF window (exactly one of `recall_window_from`/`_to` non-empty), which is a caller bug and leaves at request entry before the leg fan. Undrained, a refused block is an unrouted dead end — nobody ever learns the memory was not written — and a refused question leaves the caller waiting for a bundle that never comes. A colony that ran the inline lane for weeks with only the recall half drained is where that lesson comes from. **Since 2.3.1 the same lane also carries what this hive's own STORE would not do** (`hop.reject_reason == 'store_refused'`, `hop.store_error` = the store's `error_code`, `hop.store_operation` = the op it refused): a read or a write that came back refused stops its lane there instead of being read as zero rows. The nightly consolidation reports here too -- it has no caller of its own, and the alternative was reporting nowhere. See [When the store says no](#when-the-store-says-no-gh-343-since-231) |
 
 **The drain is enforced, and it is enforced in lanes** ([#237](https://github.com/mmeyerlein/meclaw/issues/237)).
 `params.required_drains` used to pair a PORT with the route it must drain, and it fired when
@@ -797,6 +798,77 @@ The flag is absent unless true, so a bundle no invisible version touched is byte
 what it was before the gate, and an unaffected candidate costs no token budget.
 
 
+## Peer and group channels: remembered in full, attributed to the speaker ([#849](https://github.com/mmeyerlein/meclaw/issues/849))
+
+A channel with more than two participants carries turns of `origin: "peer"`: another person's
+or another agent's words, framed on the wire and never the member's own. The hive remembers them
+as fully as the member's own turns, under two rules the owner set for group channels.
+
+The set. Every episode and every fact of such a turn carries the channel's `audience_set`, the
+same as any other row. It may be used only while the current participants are a subset of it, so
+a claim made in a group is never told to someone who was not there.
+
+The source. The writer files the turn with `sender: "peer"` and `speaker` = the participant
+reference affinity mints (`speaker_ref` on the turn: 8 hex characters, 12 when two participants
+of an org would collide on 8). A fact extracted from it carries that reference in
+`facts.source`. The member's own side and the agent's own answers leave the column empty. A peer
+turn without a reference keeps an empty speaker, never the agent's id, and no fact is minted
+from it: an empty source would make a peer's words the member's own.
+
+Which turn a block answers. A sidecar or `remember` block names no episode, so the ingress binds
+it to the newest `user` or `peer` episode of the session, as it always did. It reads the recent
+episodes of all three roles for that, not one row. When they name a single source (a one-to-one
+channel, or a group with one speaker) nothing changes. When the turns the block may be answering
+name more than one source, a block whose facts name no source is not filed: the ingress refuses
+it with `ambiguous_speaker`. That happens when two participants arrive together, when a peer
+speaks next to the member, or when a turn arrives above an assistant episode that may be this
+answer's own. A peer turn without a reference refuses the same way, and so does a full page (32
+episodes) whose unanswered run reaches its end, one speaker or not: the run may go on below the
+page. One limit stays: the bind trusts that the answered turn is stored before the block arrives
+(the collector writes a turn before it calls the brain). A block that overtakes a turn still on
+its way is bound to the turn before it. The turn keeps its `pending` row, and the close pass,
+which names one episode per fact, speaks for it.
+
+A fact that names its speaker does not wait. The model sees the frame `[peer <ref> · <name>]` on
+the first line of every peer turn, and the contract asks it to copy that reference into the fact
+as `source`; a fact of the member's own side carries none. The ingress binds a named fact to the
+newest turn of exactly that participant among the turns the block may be answering, the same
+turns the ambiguity check counts. A name that is not among them drops the fact and receipts it
+on `reject` with `unknown_source`; it is never filed under the participant who happened to be
+there, or under the member. What the ingress vouches for is that the named participant spoke
+among those turns, not that the words were theirs. A frame one participant writes into the text
+of their turn is text, and the contract names the mark on the first line for that reason; a
+model that copies the quoted reference anyway files the fact under the participant it quotes.
+That risk stays with the model. Unnamed facts keep the rule above: one source binds, several
+leave them to the close pass, receipted as `ambiguous_speaker` next to what was filed. The turns
+a fact was bound to leave `pending`. On a page with one source, so does the answered turn as
+soon as anything of the block is filed, an entity alone included; a turn only an unfiled item
+may belong to keeps its row. On the road where a block names its own episode (the close pass), a
+named source that is not that episode's speaker drops the fact the same way.
+
+What was said stays what was said. A fact with a source is that participant's statement, not a
+statement of the person it is about. `subject` stays what the claim is about; the attribution
+lives in the column. If `3a47fe3e` says the member agreed to drive, the memory holds
+`3a47fe3e says: the member agreed to drive` next to whatever the member said themselves.
+Recall renders it exactly so, in the text and as `source` in the JSON. The `roster` legend of
+the round turns the reference into a name.
+
+No closure crosses sources. A fact of one source never ends a statement of another, in either
+direction. The ingress refuses such a `replaces` and receipts the refusal, the write itself
+pins the source in its `where`, the close pass is told the rule, the night's judge sees the
+source on every page, and the night's chain arithmetic withdraws any closure that crossed
+anyway, including on an axis page too full to derive anything else. The statement identity of the chain includes the source, so two sources saying the same
+thing are two statements, never one statement asserted twice.
+
+Beliefs keep the source too. The night derives a belief's source from the facts it rests on, by
+code and the way it derives the audience. A belief over facts of more than one source is not
+written, and the run receipt lists it under `belief_refusals`. A belief over one participant's
+facts carries their reference in `observer`, and recall renders it as `<ref> says: <statement>`.
+An episode hit from a peer turn is shown as `peer <ref>`.
+
+The per-turn contract tells a front model the same: a turn marked `[peer <ref> · <name>]` is
+recorded as what that participant stated (`inline-contract.md`).
+
 ## Taking a memory out, putting it into another (#243)
 
 Until 2.2.0 there was no way to get the content a hive had accumulated *out* of it, and no way
@@ -821,7 +893,7 @@ the substrate answers a `transfer` body slot for every cell that has a `cell.db`
 type and before `handle()` runs ([#253](https://github.com/mmeyerlein/meclaw/issues/253), and
 since [#555](https://github.com/mmeyerlein/meclaw/issues/555) it writes and reads DIRECTORIES).
 
-`memory-hive@3.4.1` therefore carries a **walk** and nothing else. Two messages, one each way:
+`memory-hive@3.6.0` therefore carries a **walk** and nothing else. Two messages, one each way:
 
 ```json
 {"operation": "export", "to": "<dir>/memory-hive", "tables": [ …the sixteen… ]}
@@ -1113,6 +1185,72 @@ against a colony that never saw the memory written.
   it is the nightly identity round that decides whether they are one. That is the same division
   of labour as everywhere else here: the store never merges on similarity, the judge decides.
 
+## The model door, and what each cell needs ([#858](https://github.com/mmeyerlein/meclaw/issues/858))
+
+**A model package reaches a model cell of this hive through `in_model` and nothing else.** The
+seal that keeps every cell out of reach (`hive_port_boundary`) keeps the colony's model registry
+out too, and until 3.6.0 that was complete: `llm-registry` could resolve a package for `judge` and
+had no edge to send it along. Since 3.6.0 the hive has four door edges on one lane, one per llm
+cell, each reading the cell path the registry addresses the push by:
+
+```json
+{"from": ".", "to": "./judge",
+ "condition": "has(hop.route) && hop.route == 'in_model' && (!has(hop.subscriber) || hop.subscriber.endsWith('/judge'))"}
+```
+
+The guard is permissive, the form of GH #478: a message with no `hop.subscriber` at all would
+reach all four cells. The registry never sends one; what the form buys is that the substrate's
+lane check, which probes a door with the lane alone, sees one for `in_model`.
+
+The body is a params-only message -- `{"system": {}, "params": {"model": ..., "$reset": [...]}}`
+-- which the `llm` cell merges into its live params, persists in its own `cell.db` and answers
+with nothing (`docs/cell-types.md` § `llm`). No other door of this hive takes the lane, so a push
+addressed to `closer` moves `closer` and nothing beside it. What arrives on any other lane cannot
+change a model: the cell takes package keys from a params-only message only (GH #853).
+
+**Each of the four cells says what it needs, in prose.** `params.requirement` is an immutable
+param of the `llm` cell since 0.46.0: two to four sentences on the role, the latency, the context,
+the depth of reasoning and the price the cell can bear, and never a model name. The registry
+translates it against its catalogue once per change of the need or the catalogue and keeps the
+result; without a registry the param is inert and the cell runs its start value.
+
+| cell | what it states it needs, in short |
+|---|---|
+| `closer` | careful reasoning over a whole transcript, strict structured output; once per session, nobody waits -- quality before speed or price |
+| `dialectic` | faithful weighing of a few candidates, a short structured answer; a conversation waits -- seconds, moderate price |
+| `dreamer` | precise summarising of structured input; once a night -- may be slow |
+| `judge` | the most careful judgement available, strict output; once a night -- speed and price matter little |
+
+**In a colony with a registry, a member's memory is a subscriber from the day it is grown.** The
+builder's `grow_level member` renders, beside the member, one push edge per cell from the
+registry's scope onto this hive's path, and one announcement edge that turns the member's
+mutation receipt into a `model_subscribe` naming the four cells, the token each is born on
+(`${MODEL_CLOSER:-}`, `${MODEL_DIALECTIC:-}`, `${MODEL_DREAMER:-}`, and `MODEL_JUDGE` with its
+default) and the need each states (`templates/builder/README.md` § The model registry's road).
+The tokens are bound once, when the growth is applied: after an edit of the `.env` the cells boot
+on the new value while the registry keeps the old `start_model` until the member is grown again.
+Whether an operator's `subscribe` outlasts that depends on the bound value: the member's
+announcement edge carries it and fires on every mutation receipt, and an announcement moves a
+start value only when it states one. `MODEL_JUDGE` has a default, so the next receipt anywhere in
+the colony states the old value again; `MODEL_CLOSER`, `MODEL_DIALECTIC` and `MODEL_DREAMER` are
+bound as `${VAR:-}` and, left unset at growth, announce an empty start value -- then the operator's
+`subscribe` outlasts every receipt. Set at growth, they behave like `MODEL_JUDGE`.
+The `.env` keys below stay what they are: the start value every cell is born on and falls back to.
+
+**The four cells now follow the registry before their start value.** A grown member's memory
+runs what the registry resolves for its need, and the `.env` value is what it falls back to.
+The registry pushes the `base_url` of the catalogue row it chose, and an `llm` cell takes a
+run-time `base_url` only when it is its own start endpoint or its origin is in
+`params.base_url_allow` -- the shipped cells have no list, and every shipped catalogue row names
+the hosted provider the default `MEMORY_LLM_BASE_URL` names. Whoever points `MEMORY_LLM_BASE_URL`
+at an endpoint of their own keeps each cell there with `pinned: 1` (`subscribe`, which holds the
+start value against every change not addressed at the cell), with a `target` replacement onto a
+catalogue row of that endpoint (`model_upsert` first), or by unsetting
+`recipes.model_registry_scope` on the shell's builder ref -- a setting of the whole colony: no
+member or assistant grown afterwards subscribes. Otherwise the cell refuses the push (`invalid_input`, answered as
+an error on the cell's own exit) and keeps what it runs, and the refusal is not reported back to the registry today: `show` names the
+refused model until the next change.
+
 ## Variables and params
 
 **Since 3.2.0 every behaviour knob of this hive is a `param` of the cell that reads it**
@@ -1132,7 +1270,7 @@ nothing, and two members of one colony shared one memory configuration. Now a mu
 member's recall and leaves the other alone:
 
 ```json
-{"add_nodes": [{"name": "alex", "template": "member@1.10.0",
+{"add_nodes": [{"name": "alex", "template": "member@1.10.2",
                 "override_params": {"memory-hive/recall": {"tier1_topk": 40,
                                                            "sem_max_distance": 0.35}}}]}
 ```
@@ -1165,7 +1303,7 @@ rollout, and set it to the strongest model you have (see below).
 | `MODEL_CLOSER` | — (required) | close-pass model (GH #300, ruling Q9 of 2026-08-21). **Put the strongest model you have here.** It is the one call that sees a whole session at once and it is the only party that can supply the replacement window, so a quiet fallback to a cheap model would not just measure less, it would revoke the ruling. Deliberately without a default for exactly that reason |
 | `MODEL_DREAMER` | — (required) | consolidation model (change narrative) |
 | `MODEL_DIALECTIC` | — (required) | tier-2 answer model (the dialectic with its mandatory gap statement) |
-| `MODEL_JUDGE` | `anthropic/claude-opus-5` | identity judgement of the nightly canonicalisation round — **the strongest model of the hive belongs here** |
+| `MODEL_JUDGE` | `anthropic/claude-opus-5.5` | identity judgement of the nightly canonicalisation round — **the strongest model of the hive belongs here** |
 | `MEMORY_LLM_BASE_URL` | `https://openrouter.ai/api/v1` | OpenAI-compatible endpoint of every llm cell |
 | `MEMORY_EMBED_ENDPOINT` | `https://openrouter.ai/api/v1/embeddings` | OpenAI-compatible embeddings endpoint |
 | `MEMORY_EMBED_MODEL` | `google/gemini-embedding-2` | the embedding model. Must match the `model_id` in `store/seed/emb_models.jsonl` |
@@ -1270,6 +1408,31 @@ with a `modify` op by `schedule_id`.
 | where | default | effect |
 |---|---|---|
 | `params.schedules[0].cron` | `0 0 3 * * *` | 6-field Quartz schedule of the nightly run, **in UTC**. The `timer` cell type plans every occurrence on `DateTime<Utc>` and has no timezone knob (`crates/meclaw-cells/src/timer/io.rs`), so the default fires at 03:00 UTC — 05:00 in Berlin summer time, 04:00 in winter. Pick the field for the UTC hour you want, not for the local one |
+
+### No model call over an unchanged store ([#857](https://github.com/mmeyerlein/meclaw/issues/857))
+
+A night that finds nothing new pays nothing. Before the dreamer is asked, `dream-glue` asks the
+store two questions with `limit 1`: was a fact recorded since the last run (`recorded_at >
+delta_from`), and did one expire since (`expired_at > delta_from`)? Two answers of "no" close the
+run without a model call. The embedding backfill and the scratch sweep still run, and the run is
+booked `done` up to `delta_to`, so the next window starts where this one ended.
+
+The lower bound travels as `context.dream_from`, set by the edge into the store from the hop of
+every store op and deleted on the hive's exits with `dream_run` and `dream_to`. Three nights are
+never skipped. The first one has nothing to compare with. A crash recovery re-runs a half-written
+night. A night after one whose receipt still owes pages of an over-cap axis (`verdicts.pages`)
+always asks the judge. So does a night after one whose canonicalisation round hit a cap on alias
+pairs or on cardinality questions (`verdicts.backlog`), and a night after one whose receipt
+cannot be read. The cap on currency axes (`canon_max_axes`) does not count: an axis whose
+statements still coexist is offered again every night by design, so on a busy store that cap
+is always reached and would never let a night skip.
+
+A skipped night reads like this in the books:
+
+```sql
+select run_id, status, llm_calls, verdicts from consolidation_log order by delta_to desc limit 1;
+-- r-0925 | done | 0 | {"since": "2026-09-24T03:00:00Z", "skipped": "unchanged"}
+```
 
 ### The deliberation budget of the four model cells
 
@@ -2194,9 +2357,10 @@ What is deliberately **not** answerable:
 | `claim_hash = sha256(episode_id\|subject\|predicate\|claim)[:16]`, filtered before insert | inline extraction |
 | guarded `update … set {status:'inline'\|'nothing'\|'close'} where {episode_id in …, status:'pending'}` | the coverage guard (#52, #298, #300) -- the annotation of a turn settles that turn's row, and the value names the reader: `inline` when the front model's block carried content, `nothing` when its verdict was an honest empty one, `close` when the annotation came from the close pass. Guarded on `pending`, so re-running the same annotation moves nothing a second time and a settled row keeps the verdict that settled it |
 | guarded `update … set {status:'close'} where {session_id, status:'pending'}` | the close pass's sweep (#300) -- the second writer of `status`, and the last one: when a pass finishes a session it settles the rows of that session nobody ever annotated. Both writers guard on `status:'pending'`, so whichever lands first wins and neither overwrites a settled row; the two are the ONLY writers besides the enqueue (no claim, no gate, no recovery sweep survived #298), which is what keeps `pending` readable as exactly one thing -- a turn nobody has answered for yet |
-| `select episodes where {session_id, sender:'user'} order by recorded_at desc limit 1` | the inline BIND -- the turn a block that names none is speaking for. `sender` is what makes it deterministic: the answer's own episode is written by the same per-turn lane, concurrently, so "newest episode" would be a race and "newest user turn" is not |
+| `select episodes where {session_id, sender in ['user','peer','assistant']} order by recorded_at desc limit 32` | the inline BIND -- the turn a block that names none is speaking for, and since the #849 follow-up the turn of each participant a fact names as its `source`. The `assistant` rows are only the boundaries of what was answered. `sender` is what makes it deterministic: the answer's own episode is written by the same per-turn lane, concurrently, so "newest episode" would be a race and "newest turn somebody else spoke" is not. Since 3.5.0 a `peer` turn is one of them ([#849](https://github.com/mmeyerlein/meclaw/issues/849)) |
 | the trailing `select recall_scratch` of a parking bundle | the exactly-once election of the tier-1 read path. Of two hops that park concurrently exactly ONE reads a complete set, because the `store` is stateful and a bundle is one message — and a leg that arrives TWICE is a duplicate, not a complete set, so it parks (loudly, on stderr) instead of emitting a second time. **Explicit withdrawal (GH #418):** the guarded `update recall_scratch set fired=1 where {request_id, leg, fired:0}` this row used to describe no longer exists, and no read path writes or reads `fired`. Tier 0 has had no gate to guard since 2.3.4 — see [One round trip for tier 0](#one-round-trip-for-tier-0-gh-295) |
 | window guard on `(delta_from, delta_to)` and on `run_id` | dream lane, stage 2 |
+| two `limit 1` reads on `facts` (`recorded_at > delta_from`, then `expired_at > delta_from`) before the dreamer | dream lane, the change gate ([#857](https://github.com/mmeyerlein/meclaw/issues/857)): nothing moved, no model call, the window still advances |
 | `set_alias` upserts on the alias, `reject_pair` upserts on the ordered pair, `canonicalize` reports only the rows that MOVED | canonicalisation round — re-judging a pair writes no second row, and a second run over unchanged data reports 0 |
 | every dream write derives its timestamp from `delta_to`, belief ids from `sha256(holder\|statement)` | dream lane, stage 3 — replay is byte-identical |
 | `max_concurrency: 1` on `extract-glue`, `dream-glue`, `recall`, `porter` | serialises the read-modify-write handlers (a `code` cell is a stateless dispatcher and would otherwise run them in parallel). `embed` is the one glue cell that is deliberately **not** serialised (`max_concurrency: 4`): it writes one column of one row per message and holds no chain state between them |

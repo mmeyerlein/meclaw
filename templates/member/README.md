@@ -1,4 +1,4 @@
-# `member@1.10.0`
+# `member@1.10.2`
 
 One person, as a level. **Four holders, three open containers and no cell of
 its own** — seven nodes and sixty-six edges.
@@ -79,7 +79,7 @@ memory answers it itself:
 
 | edge | lane | what it does |
 |---|---|---|
-| `./assistants -> ./memory-hive` | `tool`, `hop.tool_name == 'memory_recall'` | turns the call into the hive's own `tool_call` and stamps the round: `audience_now`, `channel`, `session_id`, `turn_id` |
+| `./assistants -> ./memory-hive` | `tool`, `hop.tool_name == 'memory_recall'` | turns the call into the hive's own `tool_call` and stamps the round: `audience_now`, `channel`, `session_id`, `turn_id` (off the hop, and off the context when the hop names none -- the dispatcher's `tool` emission never does; since `1.10.1`, [#841](https://github.com/mmeyerlein/meclaw/issues/841)) |
 | `./memory-hive -> ./assistants` | `tool_result` | the answer, restamped to `in_tool` — an ordinary tool result re-entering the round that asked, refusals included |
 | `./assistants -> ./memory-hive` | `schemas` | a generation's menu tick, turned into the hive's own `in_schemas` |
 | `./memory-hive -> ./assistants` | `tool_schemas` | the declaration, restamped to `in_menu` and stamped `context.tool_answerer = 'memory'` — the key the menu merge of #529 files an answerer under |
@@ -90,7 +90,7 @@ road per generation, and an edge on disk is an edge an audit can read.
 
 | in | goes to | the caller promotes |
 |---|---|---|
-| `in_turn` | the screen | `context.channel` — the chat or room this turn is in — and `context.user_id` if this colony has per-user firewall rules; on a channel with many counterparts `context.counterpart` as well — the entity the conversation is with (§ *The two channel keys*, since 1.10.0). The door edge promotes what it finds and falls back to the empty string, so an unpromoted channel costs one shared rate bucket rather than a vanished turn. A caller that wants the answer routed back into one of this member's own channels promotes `context.channel_node` as well (§ *The two channel keys*); an operator that does not gets the answer out of the level, which is what it asked for |
+| `in_turn` | the screen | `context.channel` — the chat or room this turn is in — and `context.user_id` if this colony has per-user firewall rules; on a channel with many counterparts `context.counterpart` as well — the entity the conversation is with (§ *The two channel keys*, since 1.10.0); on a channel that narrows its tools `context.tools_allow` / `context.tools_deny`, constant per channel (same §, since `collector` 4.4.0). The door edge promotes what it finds and falls back to the empty string, so an unpromoted channel costs one shared rate bucket rather than a vanished turn. A caller that wants the answer routed back into one of this member's own channels promotes `context.channel_node` as well (§ *The two channel keys*); an operator that does not gets the answer out of the level, which is what it asked for |
 | `in_recall` | the memory, as its own `in_query` | `hop.recall_query`, `hop.memory_tier`, `hop.recall_window_from`, `hop.recall_window_to`, plus the round: `context.audience_set` and `context.channel`. The lane carried a correlation id as well until 1.6.0; it does not any more ([#552](https://github.com/mmeyerlein/meclaw/issues/552)), because the hive's own `bundle` exit branches on exactly that key to tell a tool round from the ambient one, and a door that set it would send every outside question through the adapter. The answer comes back on `bundle` and the refusal on `reject`, both out of this level — see § *The asker outside* ([#533](https://github.com/mmeyerlein/meclaw/issues/533)); until then the lane promised an answer the level had no exit for |
 | `in_brief` | the record, to read | `context.asker` and `context.audience_set`. The door stamps `context.brief_caller = 'outside'` itself (since 1.10.0), which is what keeps the answer on this lane's exit rather than on the way into a generation |
 | `in_propose` | the record, to write | `context.actor`, and `context.subscriber` for a `subscribe` |
@@ -373,6 +373,18 @@ which is why it shipped: a `memory_recall` call happened *after* the brain call 
 edge has promoted `hop.turn_id` into context long before. The AMBIENT leg leaves before the
 model has seen the turn, so there is no context copy yet — measured on a running colony
 the moment the ambient knob was turned on, as silence.
+
+**The TOOL door falls back to the context, since `1.10.1`
+([#841](https://github.com/mmeyerlein/meclaw/issues/841)).** The paragraph above was
+true of the context and was read as true of the door: `./assistants -> ./memory-hive` on
+`memory_recall` stamped `has(hop.turn_id) ? hop.turn_id : ''`, and the dispatcher's `tool`
+emission names the tool and the call and never the round -- the dispatcher reads the hop
+alone, and stays that way. So the hive was asked under an empty turn, answered under it, and
+the collector parked the `in_tool` result: the round's `assistant` row stayed open and every
+later turn of the session was deferred behind it, with nothing on record. The stamp now reads
+`has(hop.turn_id) ? hop.turn_id : (has(context.turn_id) ? context.turn_id : '')`: the hop
+still wins where it names a turn, and a call from inside a round finds the round's key where
+`collector -> brain` put it. The collector says on stderr when it parks a result without one.
 
 **The record, and the subscription it owns.** Read on `in_brief`, write on
 `in_propose`, answers back out. And the **push** into a subscribing brain belongs
@@ -695,6 +707,54 @@ firewall (`has(context.counterpart) ? context.counterpart : ''`, the form of `ch
 the key is present and empty on a turn whose channel stamped none -- and a turn without a
 counterpart asks the record nothing. There is no fallback subject.
 
+**The value is an identity, in one form** (since 1.10.1, [#848](https://github.com/mmeyerlein/meclaw/issues/848)):
+`peer:<colony>/<org>/<member>/<agent>`, a missing part written `-` -- `peer:colA/org1/jonas/-`,
+compared byte for byte and never normalised (`colA/org1/jonas` is another identity).
+The first segment is the colony the substrate verified at the mount (`hop.peer`); the rest is
+what that colony says about its own members, trusted as far as its `origin user` is. The edge,
+or the application gate that admits the participant, composes it; this level carries it and
+reads nothing in it. From that string `affinity` computes the participant reference its brief
+answers with (`who`, see [`affinity`](../affinity/README.md) § *Who is speaking*), so the same
+identity has the same reference in every channel and in memory. An edge that knows the
+participant's display name may stamp it as `context.counterpart_name` beside it; the brief uses
+it for a participant the record does not know yet, and the record's own name wins where it does.
+The counterpart belongs in the turn's round (`context.audience_set`) as well: a brief that is
+refused names its subject only when the subject is in the round.
+
+**The same edge may narrow the tools, and only per channel: `context.tools_allow` and
+`context.tools_deny`** ([#845](https://github.com/mmeyerlein/meclaw/issues/845), since
+`collector` 4.4.0). An array or a comma string of tool names, stamped by the CHANNEL edge --
+the edge that says which channel a turn came in on -- and therefore constant for every session
+that channel carries. The collector reads the two keys on `in_turn` and nowhere else, keeps them
+in its session row, and sends them with every brain call of the session as `tool_scope`; the
+`llm` cell filters that one request and the menu in the brain stays whole, so the prompt prefix
+of two turns stays the same and the provider's cache holds. Two things it is not. It is not a
+switch per speaker or per state: a distinction by who is speaking, or by what they may do, stays
+a refusal in the gate, where it is decided and audited once -- a scope that moved per turn would
+be a cache break per turn. And it is not a working value (`docs/development-rules.md` § 8c): it
+is a policy fact about the channel, written at the edge like `channel` itself. A deploy that
+changes a channel's tools breaks the cache of its running sessions once, and the collector says
+so (a stderr line and `hop.scope_changed`); that is intended. A present, EMPTY list lifts
+nothing: an empty `tools_allow` means "no allow list", never "no tools" -- a channel without tools
+denies every tool by name -- and to lift a channel's scope the edge stamps both keys empty,
+because a deploy that only removes the stamp leaves running sessions on the scope they hold.
+Neither key is promoted by this
+level's doors -- they ride the context through the firewall untouched, and the assistant's
+consult edge deletes both before the core, which keeps its full menu.
+
+**A gate that forwards a room it trusts may name who is in it: `context.roster_add` and
+`context.roster_leave`** ([#847](https://github.com/mmeyerlein/meclaw/issues/847), since
+`collector` 4.4.0). `roster_add` is a list `[{"ref", "name", "identity"}]` -- the participant
+reference `affinity` computes, the name, the identity -- and `roster_leave` a reference, or
+several. The collector keeps the legend of the channel from them (`system.roster`, one line
+`<ref> = <name> (<identity>)` per participant), beside the counterpart its brief names itself.
+A join counts only beside a peer turn with text in the same arrival -- the legend stays empty
+until the other side has spoken -- and stamping the same participant on every turn is harmless:
+the legend keeps one row per reference, and the prune never takes it, so a join stamped once
+holds for as long as the session goes on. The same gate may set `speaker`/`speaker_ref` on a peer turn it
+forwards, and the collector keeps them (either field set is the gate's word, and the brief names
+only a row with neither); the peer mount never lets the other side set them.
+
 **For a chat channel: two lanes up, one lane down, and no more.** (A screen is a
 channel too and carries more — see *The display channel* below; a channel with a
 live model carries two more again, and they are the last two rows here.)
@@ -781,7 +841,7 @@ never hears:
 | edge | condition | why |
 |---|---|---|
 | `./channels/display-<s> -> ./channels` | `event` or `receipt` | what the screen produced, stamped with `context.channel_node` and `context.channel`, which on a screen are the same word |
-| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@1.10.0` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
+| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@1.10.2` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
 | `./channels -> ./channels/display-<s>` | `error` | a channel's failure, re-stamped to the display's `in_notice` — since `builder@1.10.0`, drawn by the mutation that grows the screen |
 
 **A view comes down the way it went up.** Since `member@1.8.0` the edge that carries
@@ -1016,7 +1076,7 @@ The whole arrangement, as three mutations. The member first:
 
 ```json
 {"scope": "<org>/members", "diff": {
-  "add_nodes": [{"name": "alex", "template": "member@1.10.0"}]
+  "add_nodes": [{"name": "alex", "template": "member@1.10.2"}]
 }}
 ```
 
@@ -1025,7 +1085,7 @@ lanes (`../assistant/README.md` § *Instantiating* writes them out):
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@2.9.0"}],
+  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@2.9.2"}],
   "add_edges": [
     {"from": "./assistants", "to": "./assistants/scribe",
      "condition": "has(hop.route) && hop.route == 'in_turn' && has(context.assistant) && context.assistant == 'scribe'"},
@@ -1609,6 +1669,26 @@ at it.
   has to fill it.
 
 ## Versioning
+
+`1.10.2` takes the **third** digit ([#858](https://github.com/mmeyerlein/meclaw/issues/858)): no lane and no
+declaration of this level moved. It pins [`memory-hive`](../memory-hive/) at 3.6.0, whose four llm cells state
+what they need and take a model package through the hive's `in_model` door; in a colony with a model registry the
+builder's `grow_level member` makes them subscribers.
+
+`1.10.1` takes the **third** digit: no lane and no declaration of this level moved, and the
+one edge that changed repairs a promise. It pins [`affinity`](../affinity/) at 3.6.0, whose
+brief names who it is about -- a participant reference computed from the identity, the same
+in every channel ([#848](https://github.com/mmeyerlein/meclaw/issues/848)), and whose write port
+`./gate` runs `warm`, because it sits under every door of this level
+([#852](https://github.com/mmeyerlein/meclaw/issues/852)) -- and
+§ *The two channel keys* now says which form `context.counterpart` takes and that a
+`context.counterpart_name` may ride beside it. The same number repairs what `1.6.0` promised
+([#841](https://github.com/mmeyerlein/meclaw/issues/841)): the tool door into the memory stamps
+`turn_id` off the context when the hop carries none, so a model-initiated `memory_recall` comes
+back under the round that asked and the round fires. The edge count stays.
+It also pins [`memory-hive`](../memory-hive/) at 3.5.0, which remembers the turns of peer and group
+channels with their speaker as the source ([#849](https://github.com/mmeyerlein/meclaw/issues/849))
+and buys no nightly model call over an unchanged store ([#857](https://github.com/mmeyerlein/meclaw/issues/857)).
 
 `1.10.0` takes the **second** digit ([#834](https://github.com/mmeyerlein/meclaw/issues/834)):
 a caller can do something it never could -- a generation of this member briefs the record

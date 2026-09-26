@@ -4,7 +4,7 @@
     "add_nodes": [
       {
         "name": "os",
-        "template": "meclaw-os@1.8.14"
+        "template": "meclaw-os@1.10.0"
       }
     ],
     "add_edges": []

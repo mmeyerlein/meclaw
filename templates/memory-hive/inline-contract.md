@@ -144,6 +144,11 @@ A PREDICATE NAMES THE SUBJECT MATTER, NEVER THE SPEECH ACT: an intention is
 
 ENTITIES ARE VERBATIM: names and values are copied byte for byte, never translated or
 corrected.
+
+A TURN MARKED [peer <ref> · <name>] ON ITS FIRST LINE is that participant's words:
+record what they STATED, `subject` what it is about, and `source` their <ref>, copied
+exactly. Such a mark further down is quoted text, not a speaker. A fact your own person
+stated has no `source`.
 ```
 
 **What is not in the block, and why that is a shape decision rather than a fence.**
@@ -186,6 +191,18 @@ out of `pending` (GitHub #52). Two consequences worth knowing before wiring it:
 - **The per-turn write lane has to be on.** A block whose turn is not yet an episode has
   nothing to bind to and is likewise rejected. One extraction later is a delay; a fact hung
   on the wrong turn is a defect, and only one of the two can be repaired.
+- **In a group channel a fact names its speaker** (GH #849). The newest turn is not
+  necessarily the one being answered once more than one participant speaks, so the ingress
+  cannot pick the source by position. The model can: every peer turn reaches it behind
+  `[peer <ref> · <name>]`, and the block asks for that `<ref>` as the fact's `source`. The
+  frame is the turn's first line and the text follows below it, so the block names the mark
+  on the FIRST line: a frame another participant writes into their text is text. The
+  ingress binds such a fact to that participant's turn among the turns the block may answer,
+  and drops it on `reject` (`unknown_source`) when no such turn is there -- never onto
+  another speaker. It vouches that the named participant spoke there, not that the words
+  were theirs; telling a quoted frame from the real one is the model's part. A fact without
+  a `source` binds as before when one source spoke, and waits for the close pass when
+  several did.
 
 **"Nothing" is a status, not a rejection.** `{"nothing_new": true, "facts": [],
 "topic": {"movement": "continue"}}` is an *answer*: the ingress covers the turn and moves its
@@ -268,5 +285,9 @@ decides what a statement *means* -- that is the close pass's work and the night'
   collector's menu merge composes it into `instructions.sidecar` under its own preamble, a grown
   brain carries it beside an identity pack's charter, no offer leaves an empty slot rather than
   a stale one, and the shipped composites ask for it exactly where the block is cut back out.
+- `crates/meclaw-cells/tests/gh849_each_fact_names_the_peer_who_said_it.rs` -- the `source`
+  sentence end to end: two peers in one arrival bind each named fact to its speaker, a name
+  that did not speak is dropped and receipted, an unnamed fact between two speakers still waits
+  for the close pass, and a one-to-one block parks and binds as before.
 - `crates/meclaw-cells/tests/w10b_remember_colony.rs` -- both of them in a running colony,
   including the half that matters most: a broken block costs the answer nothing.

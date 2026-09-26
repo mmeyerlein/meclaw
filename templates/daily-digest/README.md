@@ -1,4 +1,4 @@
-# `daily-digest@2.1.0`
+# `daily-digest@2.1.1`
 
 Scheduled fetch-and-forward: timer → web_fetch → format (code) → Telegram proxy.
 
@@ -102,6 +102,14 @@ than the first.
 the subtree, so a digest hive grown from an earlier version still holds a `cron`
 directory and still fires; a path IS a cell's identity and only `move_nodes`
 changes one. Renaming it is an operator's act and is never required.
+
+## Since 2.1.1: `void` runs warm
+
+`./void` is the terminal of the notifier's inbound lane: every chat message the bot is
+sent ends there. It declares `runner_mode: "warm"` since `2.1.1`
+([#852](https://github.com/mmeyerlein/meclaw/issues/852)) -- one interpreter that stays,
+a fresh namespace per message, the same `[]` out. The script keeps no state and reads
+stdin as text only (`json.load(sys.stdin)`), so the move changes cost and nothing else.
 
 ## Status
 

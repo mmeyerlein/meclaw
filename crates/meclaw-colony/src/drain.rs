@@ -37,9 +37,40 @@ use std::collections::HashMap;
 #[derive(Debug, Default)]
 pub(crate) struct DrainLedger {
     owed: HashMap<Path, u32>,
+    /// GH #850: the overflow of every cell whose mailbox was full. It rides in
+    /// the ledger (OR-SN.K2.1) because both answer what the colony still owes a
+    /// cell, and the ledger already reaches every call site of the router —
+    /// including those inside the mutation handling, which this strand does not
+    /// touch. A colony whose overflow is not empty is never quiescent, whatever
+    /// the tickets say.
+    ///
+    /// Tickets (GH #850 review M-3, OR-SN.K2.4): a message the router puts into
+    /// an overflow takes a ticket like any delivery, and it holds it until the
+    /// cell handled it — unless the cell dies, sleeps or stops first: then
+    /// [`Self::forget`] clears the path's debt, overflow tickets included, as
+    /// it always has. What is still in the overflow then is guarded by the
+    /// overflow check above; what it later delivers is ticketless, like a
+    /// rescued mailbox (GH #18), and is guarded only by the mailbox backlog —
+    /// a message a cell has taken out of its mailbox and not finished can be
+    /// cut by a shutdown, the same class GH #47 names for rescued mail. Keeping
+    /// those tickets instead would need the drain task's unreported deliveries,
+    /// and one message lost in the death (the one the cell was handling) would
+    /// then hold a ticket nobody ever returns: every later drain would run into
+    /// its deadline. A dead-lettered overflow message gives its ticket back
+    /// with [`Self::leave`], which is forgiving.
+    pub(crate) overflow: crate::overflow::Overflow,
 }
 
 impl DrainLedger {
+    /// GH #850: read the persisted overflow counters once at boot and hold one
+    /// ticket per persisted message.
+    pub(crate) fn hydrate_overflow(&mut self, conn: &rusqlite::Connection) {
+        for (path, n) in self.overflow.hydrate(conn) {
+            let owed = self.owed.entry(path).or_insert(0);
+            *owed = owed.saturating_add(u32::try_from(n).unwrap_or(u32::MAX));
+        }
+    }
+
     /// The colony is about to put a message into this cell's mailbox.
     pub(crate) fn enter(&mut self, path: &Path) {
         *self.owed.entry(path.clone()).or_insert(0) += 1;
@@ -97,7 +128,11 @@ pub(crate) fn is_quiescent(
     inbox_len: usize,
     outputs_len: usize,
 ) -> bool {
-    ledger.total() == 0 && mailbox_backlog == 0 && inbox_len == 0 && outputs_len == 0
+    ledger.total() == 0
+        && ledger.overflow.is_empty()
+        && mailbox_backlog == 0
+        && inbox_len == 0
+        && outputs_len == 0
 }
 
 #[cfg(test)]

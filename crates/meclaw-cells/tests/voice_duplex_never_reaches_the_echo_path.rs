@@ -47,7 +47,14 @@ fn loopback() -> Arc<dyn DuplexProvider> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_duplex_cell_answers_as_a_duplex_cell() {
     let surfaces = Arc::new(meclaw_colony::SurfaceRegistry::new());
-    let (events_tx, _events_rx) = mpsc::channel(64);
+    // The test stands in for the handler, and the one thing a handler owes a
+    // connection before its `hello` is to take the session (GH #836).
+    let (events_tx, mut events_rx) = mpsc::channel::<meclaw_cells::voice::cell::VoiceEvent>(64);
+    tokio::spawn(async move {
+        while let Some(mut event) = events_rx.recv().await {
+            event.acknowledge();
+        }
+    });
     let (_reconfig_tx, reconfig_rx) = mpsc::channel(64);
     let mut io = VoiceIo::new(
         MOUNT.to_string(),

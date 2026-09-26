@@ -390,6 +390,34 @@ impl VoiceIoShared {
         self.shutdown.clone()
     }
 
+    /// A cascade half on the echo provider with nothing else configured, for a
+    /// unit test that drives one connection by hand (GH #836).
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        events_tx: mpsc::Sender<VoiceEvent>,
+        external_timeout: Duration,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            stt: Arc::new(crate::voice::providers::echo::EchoStt::new()),
+            tts: None,
+            duplex: None,
+            spoken_quiet_ms: crate::voice::params::DEFAULT_SPOKEN_QUIET_MS,
+            spoken_cap_ms: crate::voice::params::DEFAULT_SPOKEN_CAP_MS,
+            close_grace_ms: crate::voice::params::DEFAULT_CLOSE_GRACE_MS,
+            duplex_tick_ms: crate::voice::params::DEFAULT_DUPLEX_TICK_MS,
+            default_mode: Mode::Auto,
+            external_timeout,
+            idle_timeout: external_timeout,
+            audio_out_frame_ms: 20,
+            speak_plain: false,
+            release_grace_ms: 1500,
+            events_tx,
+            liveness: meclaw_colony::io_liveness::IoLivenessMark::disabled(),
+            sessions: Mutex::new(Registry::default()),
+            shutdown: None,
+        })
+    }
+
     /// Emit one event to the handler, blocking on a full channel.
     ///
     /// The block is the design (spec § 2): a handler that cannot keep up stalls
@@ -662,11 +690,12 @@ pub async fn run_io(mut io: VoiceIo, mut reconfig_rx: mpsc::Receiver<VoiceReconf
     // socket that had already upgraded gets its close frame while the tasks
     // around it are still standing. `handoff` goes before `registration`, and
     // that pair is the point: in the window between them the name is still on
-    // the table and its channel is already closed, so the listener's `try_send`
-    // fails and the connection reads `503 surface busy` (`surfaces::listener`,
-    // `refuse_busy`) instead of the API fallback's `404`. The other order would
-    // leave an open channel with nobody reading it — the `try_send` would land
-    // in the queue and the connection would be swallowed without an answer.
+    // the table and its channel is already closed, so the listener's handoff
+    // fails at once and the connection reads `503 surface busy`
+    // (`surfaces::listener`, `refuse_busy`) instead of the API fallback's `404`.
+    // The other order would leave an open channel with nobody reading it — the
+    // handoff would land in the queue and the connection would be swallowed
+    // without an answer.
     // A `503` says "this name is here and cannot take you now"; the `404` would
     // say "no such mount", which is the one thing that is not true at that
     // moment.
@@ -824,13 +853,17 @@ async fn recv_opt_handed(
 /// completes cannot leave an entry behind. The order of the two events is the
 /// one a reader expects: the old connection is reported gone before the new one
 /// is reported connected.
+///
+/// Returns the receiving half of the `Connected` acknowledgement (GH #836):
+/// the caller holds its `hello` until the handler has fired it, see
+/// [`crate::voice::connection`]'s `session_taken`.
 pub(crate) async fn register(
     shared: &Arc<VoiceIoShared>,
     session_id: &str,
     conn_id: u64,
     to_conn: mpsc::Sender<ToConnection>,
     mode: Mode,
-) {
+) -> tokio::sync::oneshot::Receiver<()> {
     let dispatch = spawn_delivery(shared.clone(), session_id.to_string(), conn_id, to_conn);
     if let Some(old) = shared.claim(session_id, conn_id, dispatch).await {
         deliver_close(old, CLOSE_SESSION_REPLACED);
@@ -840,12 +873,15 @@ pub(crate) async fn register(
             })
             .await;
     }
+    let (ack, taken) = tokio::sync::oneshot::channel();
     shared
         .emit(VoiceEvent::Connected {
             session_id: session_id.to_string(),
             mode,
+            ack: Some(ack),
         })
         .await;
+    taken
 }
 
 /// Give up a session and report the disconnect, if this connection still held it.
@@ -976,6 +1012,20 @@ mod tests {
     use super::*;
     use crate::voice::providers::echo::EchoStt;
     use meclaw_colony::HandedConnection;
+
+    /// An event channel whose reader stands in for the handler and does only
+    /// what the handshake needs of it: take every `Connected` (GH #836), so a
+    /// connection gets its `hello`. Every event is dropped after that -- these
+    /// tests measure the socket, not the handler.
+    fn acknowledging_events() -> mpsc::Sender<VoiceEvent> {
+        let (tx, mut rx) = mpsc::channel::<VoiceEvent>(32);
+        tokio::spawn(async move {
+            while let Some(mut event) = rx.recv().await {
+                event.acknowledge();
+            }
+        });
+        tx
+    }
 
     /// A mount another cell holds is refused out loud, and the life goes on.
     ///
@@ -1177,7 +1227,7 @@ mod tests {
 
         const MARKER: Duration = Duration::from_secs(30);
         let surfaces = Arc::new(meclaw_colony::SurfaceRegistry::new());
-        let (events_tx, _events_rx) = mpsc::channel::<VoiceEvent>(32);
+        let events_tx = acknowledging_events();
         let (reconfig_tx, reconfig_rx) = mpsc::channel::<VoiceReconfig>(8);
         let mut io = VoiceIo::new(
             "voice".to_string(),
@@ -1301,7 +1351,7 @@ mod tests {
 
         const MARKER: Duration = Duration::from_secs(30);
         let surfaces = Arc::new(meclaw_colony::SurfaceRegistry::new());
-        let (events_tx, _events_rx) = mpsc::channel::<VoiceEvent>(32);
+        let events_tx = acknowledging_events();
         let (_reconfig_tx, reconfig_rx) = mpsc::channel::<VoiceReconfig>(8);
         let mut io = VoiceIo::new(
             "voice".to_string(),
@@ -1384,7 +1434,7 @@ mod tests {
     async fn an_aborted_io_half_takes_its_mount_off_the_table() {
         const MARKER: Duration = Duration::from_secs(30);
         let surfaces = Arc::new(meclaw_colony::SurfaceRegistry::new());
-        let (events_tx, _events_rx) = mpsc::channel::<VoiceEvent>(32);
+        let events_tx = acknowledging_events();
         let (_reconfig_tx, reconfig_rx) = mpsc::channel::<VoiceReconfig>(8);
         let mut io = VoiceIo::new(
             "voice".to_string(),
@@ -1539,7 +1589,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn an_advise_reaches_the_connection_it_names() {
         const MARKER: Duration = Duration::from_secs(30);
-        let (events_tx, _events_rx) = mpsc::channel::<VoiceEvent>(32);
+        let events_tx = acknowledging_events();
         let shared = Arc::new(VoiceIoShared {
             stt: Arc::new(EchoStt::new()),
             tts: None,

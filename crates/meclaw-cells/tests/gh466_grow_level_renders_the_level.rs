@@ -454,7 +454,7 @@ fn a_named_grow_level_missing_its_per_level_parameter_is_refused_not_downgraded(
 #[test]
 fn the_grow_sentence_takes_the_fast_lane_and_a_half_sentence_does_not() {
     let full = run_classify(json!({
-        "request": "grow an assistant named scribe from assistant@2.9.0 under \
+        "request": "grow an assistant named scribe from assistant@2.9.2 under \
                     /os/orgs/acme/members/alex",
         "ctx": {"model": "m", "model_fast": "f", "model_surface": "s"}}));
     assert_eq!(full["header"]["route"], json!("recipe"));
@@ -580,7 +580,7 @@ fn the_door_is_one_edge_more_and_the_readme_counts_it() {
 #[test]
 fn a_door_on_any_level_but_an_assistant_is_refused_by_name() {
     let params = json!({"scope": "/os/orgs/acme", "level": "member", "name": "alex",
-                        "template": "member@1.10.0", "door": true});
+                        "template": "member@1.10.2", "door": true});
     let early = run_classify(json!({"request": "…", "recipe": "grow_level",
                                     "params": params.clone()}));
     assert_eq!(early["header"]["route"], json!("error"));
@@ -631,7 +631,7 @@ fn a_door_that_is_not_a_boolean_is_refused_by_name() {
     // The sentence lane reads the same key, and a key beats the words.
     let ctx = json!({"model": "m", "model_fast": "f", "model_surface": "s"});
     let spoken = run_classify(json!({
-        "request": "grow an assistant named scribe from assistant@2.9.0 under \
+        "request": "grow an assistant named scribe from assistant@2.9.2 under \
                     /os/orgs/acme/members/alex",
         "ctx": ctx, "door": "true"}));
     assert_eq!(
@@ -679,21 +679,21 @@ fn the_grow_sentence_hears_the_door() {
     };
     assert_eq!(
         door_of(
-            "grow the member's door named reception from assistant@2.9.0 under \
+            "grow the member's door named reception from assistant@2.9.2 under \
              /os/orgs/acme/members/alex"
         ),
         json!(true)
     );
     assert_eq!(
         door_of(
-            "grow an assistant named scribe from assistant@2.9.0 under \
+            "grow an assistant named scribe from assistant@2.9.2 under \
              /os/orgs/acme/members/alex as the member's door"
         ),
         json!(true)
     );
     assert_eq!(
         door_of(
-            "grow an assistant named scribe from assistant@2.9.0 under \
+            "grow an assistant named scribe from assistant@2.9.2 under \
              /os/orgs/acme/members/alex"
         ),
         Value::Null,
@@ -705,18 +705,18 @@ fn the_grow_sentence_hears_the_door() {
     // one sender on one lane, and every unaddressed turn would be answered
     // twice (review of #835, Minor 1, measured on both sentences below).
     for mention in [
-        "grow an assistant named helper from assistant@2.9.0 under \
+        "grow an assistant named helper from assistant@2.9.2 under \
          /os/orgs/acme/members/alex next to the member's door",
-        "grow an assistant named helper from assistant@2.9.0 under \
+        "grow an assistant named helper from assistant@2.9.2 under \
          /os/orgs/acme/members/alex, not as the door",
-        "grow an assistant named helper from assistant@2.9.0 under \
+        "grow an assistant named helper from assistant@2.9.2 under \
          /os/orgs/acme/members/alex, never as the member's door",
         // A possessive is a noun of the door, not a request to be one: `\b`
         // sits in front of the apostrophe, and this drew a second door (review
         // of the #812 fix strand, Minor 2).
-        "grow an assistant named helper from assistant@2.9.0 under \
+        "grow an assistant named helper from assistant@2.9.2 under \
          /os/orgs/acme/members/alex, to stand in as the door's relief",
-        "grow an assistant named helper from assistant@2.9.0 under \
+        "grow an assistant named helper from assistant@2.9.2 under \
          /os/orgs/acme/members/alex, to stand in as the member’s door’s relief",
     ] {
         assert_eq!(
@@ -727,7 +727,7 @@ fn the_grow_sentence_hears_the_door() {
     }
     assert_eq!(
         door_of(
-            "grow an assistant named scribe from assistant@2.9.0 under \
+            "grow an assistant named scribe from assistant@2.9.2 under \
              /os/orgs/acme/members/alex as its door"
         ),
         json!(true),
@@ -736,7 +736,7 @@ fn the_grow_sentence_hears_the_door() {
     // A MEMBER sentence is untouched by the new words: "member" still means the
     // level, and only "member's door" means the switch.
     let member = run_classify(json!({
-        "request": "grow a member named alex from member@1.10.0 under /os/orgs/acme"}));
+        "request": "grow a member named alex from member@1.10.2 under /os/orgs/acme"}));
     let payload: Value =
         meclaw_core::serde_json::from_str(member["messages"][0]["text"].as_str().expect("payload"))
             .expect("json payload");
@@ -771,9 +771,9 @@ fn a_null_door_is_an_absent_key_in_the_sentence() {
         payload["params"]["door"].clone()
     };
     for asked in [
-        "grow the member's door named reception from assistant@2.9.0 under \
+        "grow the member's door named reception from assistant@2.9.2 under \
          /os/orgs/acme/members/alex",
-        "grow an assistant named scribe from assistant@2.9.0 under \
+        "grow an assistant named scribe from assistant@2.9.2 under \
          /os/orgs/acme/members/alex as the member's door",
     ] {
         assert_eq!(
@@ -797,7 +797,7 @@ fn a_null_door_is_an_absent_key_in_the_sentence() {
 /// for byte — the same discipline the six levels above run under.
 fn credentialled_wish() -> Value {
     json!({"scope": "/os/orgs/acme/members/alex", "level": "assistant",
-           "name": "scribe", "template": "assistant@2.9.0",
+           "name": "scribe", "template": "assistant@2.9.2",
            "ctx": {"model": "${MODEL_CORE}", "model_fast": "${MODEL_CORE_FAST}",
                    "model_surface": "${MODEL_SURFACE}"},
            "override_params": {"cogny/brain": {"temperature": 0.2}},

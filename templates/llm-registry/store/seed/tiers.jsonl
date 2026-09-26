@@ -1,0 +1,4 @@
+{"schema": {"tier": "text", "model_id": "text", "since": "text", "decided_by": "text", "active": "int"}}
+{"active": 1, "decided_by": "seed", "model_id": "openai/gpt-6-luna", "since": "2026-09-26T00:00:00Z", "tier": "light"}
+{"active": 1, "decided_by": "seed", "model_id": "anthropic/claude-sonnet-5", "since": "2026-09-26T00:00:00Z", "tier": "mid"}
+{"active": 1, "decided_by": "seed", "model_id": "anthropic/claude-opus-5.5", "since": "2026-09-26T00:00:00Z", "tier": "strong"}

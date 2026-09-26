@@ -384,7 +384,7 @@ fn the_assistant_opens_its_brain_rims_for_tool_and_schemas() {
 fn the_versions_moved_with_the_declarations() {
     if let Some(v) = declared_version("member") {
         assert_eq!(
-            v, "1.10.0",
+            v, "1.10.2",
             "the apps-rim declarations and the two restamp edges shipped as 1.6.2; GH \
              #598 took the receipt restamp edge back out again as 1.6.3; GH #607 made the \
              level 1.7.0 with the `sidecar` lane and the two edges that sort it; and since \
@@ -396,12 +396,14 @@ fn the_versions_moved_with_the_declarations() {
              1.9.1 only pins `affinity@3.4.0`, 1.9.2 only names `display@2.7.0` and \
              1.9.3 pins `memory-hive@3.4.1` and routes a keeper part on its path (GH #712), which is \
              the third digit every time; GH #834 makes it 1.10.0, the brief road through \
-             `./affinity`, a second digit that leaves the apps rim as it was"
+             `./affinity`, a second digit that leaves the apps rim as it was; 1.10.1 only pins \
+             `affinity@3.6.0` (GH #848) and `memory-hive@3.5.0` (GH #849), the third digit; \
+             1.10.2 only pins `memory-hive@3.6.0` (GH #858), the third digit again"
         );
     }
     if let Some(v) = declared_version("assistant") {
         assert_eq!(
-            v, "2.9.0",
+            v, "2.9.2",
             "the connect points on `tool`/`schemas` and the new `tool_result` lane shipped \
              as assistant@2.5.1; GH #607 added `sidecar` and made it 2.6.0; GH #709 made it \
              2.7.0, because the level holds one talky per channel that asks for its own and \
@@ -413,7 +415,10 @@ fn the_versions_moved_with_the_declarations() {
              GH #712 draws the transfer rim at both talkys and pins `talky@5.2.2`, the \
              third digit; and GH #728 rides the same 2.8.1, a repair: the consult edges \
              drop `turn_id` and the ref markers carry `late_after_ms`, no lane added or \
-             taken away; GH #834 makes it 2.9.0, the brief lanes at both surfaces"
+             taken away; GH #834 makes it 2.9.0, the brief lanes at both surfaces; \
+             GH #845 makes it 2.9.1, a repair: the consult edges drop the channel's tool \
+             scope, no lane added or taken away; GH #858 makes it 2.9.2, only the pins \
+             `talky@5.4.1` and `cogny@5.1.1`"
         );
     }
 }

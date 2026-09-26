@@ -30,6 +30,7 @@ pub mod long_running_cell;
 mod mailbox_rescue;
 pub mod mutation;
 pub mod neighbourhood;
+mod overflow;
 pub mod path_truth;
 pub mod persist;
 mod runtime;
@@ -96,6 +97,7 @@ pub use mutation::{
     MutationOutcome,
 };
 pub use neighbourhood::{NeighbourhoodError, NeighbourhoodView};
+pub use overflow::{OverflowProbe, OverflowReport};
 pub use persist::colony_db::{ColonyDb, RegistryOverlay, read_registry_overlay};
 pub use runtime::ColonyRuntime;
 pub use stateful_cell::StatefulCell;

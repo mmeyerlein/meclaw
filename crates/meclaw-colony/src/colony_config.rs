@@ -100,6 +100,35 @@ pub struct ColonyConfig {
     /// unbound `park` slot is refused, and the declaration reads like `error`
     /// with a different code.
     pub slot_park_max: usize,
+    /// GH #850 (R-SN-5) — how many messages a cell's overflow keeps IN MEMORY
+    /// before it moves the oldest of them to `colony.db` (stage 1 → stage 2).
+    ///
+    /// A full mailbox no longer stops the routing loop: the message is appended
+    /// to the cell's overflow and delivered, in order, as the cell makes room.
+    /// Stage 1 is a queue in memory; past this many messages (or past
+    /// `mailbox_overflow_spill_bytes`) the oldest block goes to the
+    /// `mailbox_overflow` table, which stores only the message id — the message
+    /// itself is already in `message_log`. `0` sends every overflowing message
+    /// to disk at once.
+    pub mailbox_overflow_spill_messages: u64,
+    /// GH #850 — the byte twin of `mailbox_overflow_spill_messages`: stage 1 of
+    /// one cell spills once its messages hold more than this many bytes of
+    /// serialized body (an estimate: the length of the body's JSON, or of the
+    /// blob id for an offloaded body).
+    pub mailbox_overflow_spill_bytes: u64,
+    /// GH #850 — the memory ceiling of ALL stage-1 overflow queues together, in
+    /// bytes. Above it the cell holding the most bytes in memory spills its
+    /// oldest block, whatever its own threshold says.
+    pub mailbox_overflow_memory_bytes: u64,
+    /// GH #850 — the most messages one cell's overflow may hold, memory and
+    /// disk together. A message beyond it is dead-lettered as `mailbox_full`
+    /// (after it was logged — it was routed, it just cannot be kept), with one
+    /// warning per second and cell. This is the only point at which a full
+    /// mailbox costs a message.
+    pub mailbox_overflow_cap_messages: u64,
+    /// GH #850 — the byte twin of `mailbox_overflow_cap_messages`, counted the
+    /// same way as `mailbox_overflow_spill_bytes`.
+    pub mailbox_overflow_cap_bytes: u64,
     /// Release-build default for JSON-schema validation against `emits`/`consumes`.
     pub strict_validation: bool,
     /// Tracing default level (overridable via `--log-level`).
@@ -173,6 +202,14 @@ impl Default for ColonyConfig {
             blob_inline_max_bytes: 65_536,
             blob_max_recursion_depth: 64,
             slot_park_max: 64,
+            // GH #850 (R-SN-5, OR-SN-40): the owner's numbers — stage 1 holds
+            // up to 10 000 messages / 32 MiB per cell and 256 MiB for all cells,
+            // a cell's overflow holds up to 100 000 messages / 256 MiB in all.
+            mailbox_overflow_spill_messages: 10_000,
+            mailbox_overflow_spill_bytes: 32 * 1024 * 1024,
+            mailbox_overflow_memory_bytes: 256 * 1024 * 1024,
+            mailbox_overflow_cap_messages: 100_000,
+            mailbox_overflow_cap_bytes: 256 * 1024 * 1024,
             strict_validation: false,
             log_default_level: "info".to_string(),
             // GH #84: exactly the values `meclaw-cli` used to hard-wire. Making
@@ -295,6 +332,8 @@ impl ColonyConfig {
         //     store and read at the cell-delivery boundary.
         //   slot_park_max (GH #285 / W4 T12) — read at both slot-delivery
         //     filters, where it bounds a `park` slot's queue.
+        //   mailbox_overflow_* (GH #850) — read by the overflow a full
+        //     mailbox runs into (`crate::overflow`).
         // Only the two genuinely-unwired fields below remain forensic-only.
         if self.restart_max_retries != d.restart_max_retries {
             warn("restart_max_retries");
@@ -572,6 +611,39 @@ mod tests {
         assert_eq!(c.message_default_ttl, 64);
         assert!(!c.strict_validation);
         assert_eq!(c.log_default_level, "info");
+    }
+
+    /// GH #850 (OR-SN-40): the five overflow caps default to the owner's numbers,
+    /// parse from `colony.json`, and are wired — setting one does not warn.
+    #[test]
+    fn the_overflow_caps_default_to_the_ruling_and_parse() {
+        let c = ColonyConfig::default();
+        assert_eq!(c.mailbox_overflow_spill_messages, 10_000);
+        assert_eq!(c.mailbox_overflow_spill_bytes, 32 * 1024 * 1024);
+        assert_eq!(c.mailbox_overflow_memory_bytes, 256 * 1024 * 1024);
+        assert_eq!(c.mailbox_overflow_cap_messages, 100_000);
+        assert_eq!(c.mailbox_overflow_cap_bytes, 256 * 1024 * 1024);
+        let set = ColonyConfig::parse_str(
+            r#"{"mailbox_overflow_spill_messages": 5, "mailbox_overflow_spill_bytes": 6,
+                "mailbox_overflow_memory_bytes": 7, "mailbox_overflow_cap_messages": 8,
+                "mailbox_overflow_cap_bytes": 9}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            (
+                set.mailbox_overflow_spill_messages,
+                set.mailbox_overflow_spill_bytes,
+                set.mailbox_overflow_memory_bytes,
+                set.mailbox_overflow_cap_messages,
+                set.mailbox_overflow_cap_bytes
+            ),
+            (5, 6, 7, 8, 9)
+        );
+        let warns = capture_unwired_warns(&set);
+        assert!(
+            !warns.iter().any(|w| w.starts_with("mailbox_overflow")),
+            "the overflow caps are wired: {warns:?}"
+        );
     }
 
     // --- GH #84: the watchdog knobs ---

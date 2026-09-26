@@ -408,10 +408,12 @@ fn a_sidecar_memory_section_takes_the_same_bind_road_as_a_remember_call() {
     let select = bind_select(&next).expect("the lane resolves the turn the section speaks for");
     assert_eq!(select["where"]["session_id"], "s1");
     assert_eq!(
-        select["where"]["sender"], "user",
-        "the turn being ANSWERED, exactly as on the call road"
+        select["where"]["sender"],
+        serde_json::json!({"in": ["user", "peer", "assistant"]}),
+        "the turns being ANSWERED and the answers that bound them (GH #849 fix round 1), \
+         exactly as on the call road"
     );
-    assert_eq!(select["limit"], 1);
+    assert!(select["limit"].as_u64().unwrap_or(0) > 1, "{select}");
 }
 
 #[test]
@@ -432,12 +434,15 @@ fn a_block_that_names_no_turn_is_bound_to_the_session_it_travelled_in() {
         "scoped to the conversation it came from"
     );
     assert_eq!(
-        select["where"]["sender"], "user",
-        "the turn being ANSWERED, never the answer -- the answer may not even be stored yet"
+        select["where"]["sender"],
+        serde_json::json!({"in": ["user", "peer", "assistant"]}),
+        "the turns being ANSWERED, and the answers only as their boundaries -- the \
+         block still hangs on the newest user/peer turn, never on an answer, which may \
+         not even be stored yet (GH #849 fix round 1)"
     );
-    assert_eq!(
-        select["limit"], 1,
-        "exactly one turn, deterministically the newest"
+    assert!(
+        select["limit"].as_u64().unwrap_or(0) > 1,
+        "a page: one row cannot say whether it was the only speaker"
     );
     assert_eq!(
         select["order_by"][0]["dir"], "desc",
