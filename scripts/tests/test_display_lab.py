@@ -27,6 +27,7 @@ import os
 import pathlib
 import re
 import signal
+import sqlite3
 import subprocess
 import tempfile
 import threading
@@ -59,6 +60,8 @@ TOOLS = {
     "markers.py": "python3",
     "duplex_proof.mjs": "node",
     "worker_stalls.py": "python3",
+    "identity_probe.py": "python3",
+    "sidecar_quote.py": "python3",
 }
 
 # `callers/` holds TEMPLATES, not bound callers: a caller names one colony's
@@ -66,11 +69,16 @@ TOOLS = {
 # The orchestrator substitutes the placeholders when it plants a caller.
 # `headers.py` reads a colony's database file, not its port.
 # `worker_stalls.py` reads one process's `/proc`, not a port (GH #866).
-PLACEHOLDERS = {"headers.py": ("@LAB@", "@DB@"), "worker_stalls.py": ("@LAB@", "@PID@")}
+# `identity_probe.py` reads one colony's tree, not its port (GH #872).
+# `sidecar_quote.py` reads a colony's database and one brain's hops (GH #871).
+PLACEHOLDERS = {"headers.py": ("@LAB@", "@DB@"), "worker_stalls.py": ("@LAB@", "@PID@"),
+                "identity_probe.py": ("@LAB@", "@ROOT@"),
+                "sidecar_quote.py": ("@LAB@", "@DB@", "@BRAIN@")}
 DEFAULT_PLACEHOLDERS = ("@LAB@", "@PORT@")
 
 # The one argument without which a tool refuses (exit 2); `--port` unless named.
-MANDATORY = {"headers.py": "--db", "worker_stalls.py": "--pid"}
+MANDATORY = {"headers.py": "--db", "worker_stalls.py": "--pid", "identity_probe.py": "--root",
+             "sidecar_quote.py": "--db"}
 
 # Every head says the same five things, whatever the comment syntax around them.
 HEAD_LINES = 60
@@ -989,6 +997,355 @@ class WorkerStallsTest(unittest.TestCase):
                               capture_output=True, text=True, timeout=60)
         self.assertEqual(2, done.returncode)
         self.assertIn("--journal", done.stderr)
+
+
+class IdentityProbeTest(unittest.TestCase):
+    """`identity_probe.py` says whether an agent's identity reached its brains (GH #872).
+
+    A member reborn from a seed that kept its source's `pack_hash` pushed 2 486
+    ticks and not one `in_pack`; three brains came up without `identity.*`. The
+    probe reads the colony's own files, read-only: the packs and their receipts
+    in `message_log`, the slots in each brain's `system` table and the
+    subscription row in the affinity store. It prints paths, slot names,
+    lengths and counts -- never a slot's text. It is exercised against a fixture
+    tree, never against a running colony.
+    """
+
+    MEMBER = "/os/orgs/o/members/m"
+    ASSISTANT = "a"
+    BRAINS = ("talky", "talky-chat", "cogny")
+    SLOTS = ("identity.soul", "instructions.reply")
+    SECRET = "the soul text of the fixture agent, never to be printed"
+    BIRTH = 1000
+
+    def tree(self, tmp, packs=None, acks=None, slot_len=None, extra_brain_db=False):
+        """A colony root: `colony.db`, three brain `cell.db`s, one affinity store.
+
+        `packs` / `acks`: brain -> list of (created_at, error_code) rows; default
+        one clean pack at BIRTH+30 and one clean ack at BIRTH+31 for every brain.
+        `slot_len`: (brain, slot) -> length of the stored value (default: the
+        secret's length).
+        """
+        import sqlite3
+        root = pathlib.Path(tmp) / "colony"
+        root.mkdir()
+        packs = packs if packs is not None else {b: [(self.BIRTH + 30, "")] for b in self.BRAINS}
+        acks = acks if acks is not None else {b: [(self.BIRTH + 31, "")] for b in self.BRAINS}
+        slot_len = slot_len or {}
+        con = sqlite3.connect(str(root / "colony.db"))
+        con.execute(HeadersTest.SCHEMA)
+        n = 0
+        rim = self.MEMBER + "/assistants/" + self.ASSISTANT + "/"
+
+        def log(at, frm, to, hop, body):
+            nonlocal n
+            n += 1
+            con.execute("INSERT INTO message_log VALUES (?, ?, NULL, NULL, 8, ?, ?, NULL, ?, "
+                        "'inline', ?, ?)",
+                        ("m-%05d" % n, "t-%05d" % n, frm, to,
+                         json.dumps({"hop": hop, "context": {}}), json.dumps(body), at))
+
+        system = {"identity": {"soul": {"text": self.SECRET}},
+                  "instructions": {"reply": {"text": "reply rules of the fixture agent"}}}
+        for brain in self.BRAINS:
+            for at, code in packs.get(brain, []):
+                log(at, self.MEMBER + "/assistants/" + self.ASSISTANT, rim + brain,
+                    {"route": "in_pack", "error_code": code}, {"system": system})
+                # a hop INSIDE the rim is the same pack, not a second one
+                log(at, rim + brain, rim + brain + "/brain",
+                    {"route": "in_pack"}, {"system": system})
+            for at, code in acks.get(brain, []):
+                hop = {"route": "pack_ack"}
+                if code:
+                    hop["error_code"] = code
+                log(at, rim + brain, self.MEMBER + "/assistants/" + self.ASSISTANT, hop,
+                    {"messages": []})
+        # noise: another route to the same rim, and a pack to a stranger
+        log(self.BIRTH + 5, self.MEMBER, rim + "talky", {"route": "in_turn"}, {"messages": []})
+        log(self.BIRTH + 5, self.MEMBER, "/os/orgs/o/members/x/assistants/a/talky",
+            {"route": "in_pack"}, {"system": system})
+        con.commit()
+        con.close()
+
+        main = root / "main" / self.MEMBER.strip("/")
+        for brain in self.BRAINS:
+            d = main / "assistants" / self.ASSISTANT / brain / "brain"
+            d.mkdir(parents=True)
+            c = sqlite3.connect(str(d / "cell.db"))
+            c.execute("CREATE TABLE system (slot_path TEXT PRIMARY KEY, value TEXT)")
+            for s in self.SLOTS + ("tools.schema",):
+                c.execute("INSERT INTO system VALUES (?, ?)",
+                          (s, "x" * slot_len.get((brain, s), len(self.SECRET))))
+            c.commit()
+            c.close()
+            # a keeper's store beside the brain: a cell.db without a `system` table
+            k = main / "assistants" / self.ASSISTANT / brain / "session-keeper" / "store"
+            k.mkdir(parents=True)
+            sqlite3.connect(str(k / "cell.db")).execute("CREATE TABLE sessions (id TEXT)").connection.close()
+        if extra_brain_db:
+            d = main / "assistants" / self.ASSISTANT / "talky" / "twin"
+            d.mkdir(parents=True)
+            c = sqlite3.connect(str(d / "cell.db"))
+            c.execute("CREATE TABLE system (slot_path TEXT PRIMARY KEY, value TEXT)")
+            c.commit()
+            c.close()
+        store = main / "affinity" / "store"
+        store.mkdir(parents=True)
+        c = sqlite3.connect(str(store / "cell.db"))
+        c.execute("CREATE TABLE subscribers (id TEXT, cell_path TEXT, subject TEXT, audience TEXT, "
+                  "channel TEXT, slots TEXT, pack_hash TEXT, status TEXT, sent_at TEXT)")
+        c.execute("INSERT INTO subscribers VALUES ('sub:a-self', './assistants/a', 'entity:a', "
+                  "'agent:a', '*', '[\"brain\"]', ?, 'active', '2026-09-28T06:00:30Z')",
+                  ("f" * 64,))
+        c.commit()
+        c.close()
+        return root
+
+    def snapshot(self, root):
+        return sorted((str(p), p.read_bytes()) for p in root.rglob("*") if p.is_file())
+
+    def probe(self, root, extra=(), birth=True):
+        args = ["python3", str(LAB / "identity_probe.py"), "--root", str(root),
+                "--member", self.MEMBER, "--assistant", self.ASSISTANT,
+                "--brains", ",".join(self.BRAINS)]
+        if birth:
+            args += ["--birth", str(self.BIRTH)]
+        before = self.snapshot(root)
+        done = subprocess.run(args + list(extra), capture_output=True, text=True, timeout=60)
+        self.assertEqual(before, self.snapshot(root), "a reader writes nothing")
+        self.assertNotIn(self.SECRET, done.stdout + done.stderr, "no slot text leaves the tool")
+        return done
+
+    def verdict(self, done):
+        last = (done.stdout.strip().splitlines() or [""])[-1]
+        m = re.match(r"IDENTITY (PASS|FAIL) packs=(\d+)/(\d+) acks=(\d+) "
+                     r"slots=(\d+)/(\d+) sent_at=(\S+)$", last)
+        self.assertTrue(m, done.stdout + done.stderr)
+        return m.group(1), tuple(int(x) for x in m.groups()[1:6]), m.group(7)
+
+    def test_every_brain_with_pack_ack_and_slots_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            done = self.probe(self.tree(tmp))
+        self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+        self.assertEqual(("PASS", (3, 3, 3, 6, 6), "2026-09-28T06:00:30Z"), self.verdict(done))
+        self.assertIn("first_pack_after_s=30", done.stdout)
+
+    def test_a_brain_without_a_pack_fails(self):
+        packs = {b: [(self.BIRTH + 30, "")] for b in self.BRAINS if b != "cogny"}
+        with tempfile.TemporaryDirectory() as tmp:
+            done = self.probe(self.tree(tmp, packs=packs))
+        self.assertEqual(1, done.returncode, done.stdout)
+        self.assertEqual(("FAIL", (2, 3, 3, 6, 6)), self.verdict(done)[:2])
+
+    def test_a_pack_before_the_birth_does_not_count(self):
+        packs = dict({b: [(self.BIRTH + 30, "")] for b in self.BRAINS},
+                     talky=[(self.BIRTH - 1, "")])
+        with tempfile.TemporaryDirectory() as tmp:
+            done = self.probe(self.tree(tmp, packs=packs))
+        self.assertEqual(1, done.returncode, done.stdout)
+        self.assertEqual(2, self.verdict(done)[1][0])
+
+    def test_an_empty_slot_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            done = self.probe(self.tree(tmp, slot_len={("talky-chat", "instructions.reply"): 0}))
+        self.assertEqual(1, done.returncode, done.stdout)
+        self.assertEqual(("FAIL", (3, 3, 3, 5, 6)), self.verdict(done)[:2])
+
+    def test_a_refused_pack_fails(self):
+        acks = dict({b: [(self.BIRTH + 31, "")] for b in self.BRAINS},
+                    talky=[(self.BIRTH + 31, "pack_slot_refused")])
+        with tempfile.TemporaryDirectory() as tmp:
+            done = self.probe(self.tree(tmp, acks=acks))
+        self.assertEqual(1, done.returncode, done.stdout)
+        self.assertEqual(("FAIL", (3, 3, 2, 6, 6)), self.verdict(done)[:2])
+        self.assertIn("errors=1", done.stdout)
+
+    def test_without_birth_only_the_brains_and_the_subscription_count(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            done = self.probe(self.tree(tmp, packs={}, acks={}), birth=False)
+        self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+        self.assertEqual("PASS", self.verdict(done)[0])
+
+    def test_json_carries_the_same_numbers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            done = self.probe(self.tree(tmp), extra=["--json"])
+        self.assertEqual(0, done.returncode, done.stderr)
+        doc = json.loads(done.stdout)
+        self.assertEqual("PASS", doc["verdict"])
+        self.assertEqual(30, doc["brains"]["cogny"]["first_pack_after_s"])
+        self.assertEqual({"identity.soul": len(self.SECRET),
+                          "instructions.reply": len(self.SECRET)},
+                         doc["brains"]["cogny"]["slots"])
+        self.assertEqual(64, doc["subscription"]["pack_hash_len"])
+
+    def test_two_candidate_brain_databases_are_refused_not_guessed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            done = self.probe(self.tree(tmp, extra_brain_db=True))
+        self.assertEqual(2, done.returncode, done.stdout)
+        self.assertIn("talky", done.stderr)
+
+
+class SidecarQuoteTest(unittest.TestCase):
+    """`sidecar_quote.py` over a fixture `colony.db` (GH #871): the count and the
+    verdict line, never a running colony."""
+
+    BRAIN = "/a/talky/brain"
+    BLOCK = '```sidecar\n{"memory": {"nothing_new": true, "facts": []}}\n```'
+
+    def make_db(self, tmp, turns):
+        """`turns`: (class, block, tool) triples, one brain answer each."""
+        db = pathlib.Path(tmp) / "colony.db"
+        conn = sqlite3.connect(str(db))
+        conn.execute("CREATE TABLE message_log (id TEXT PRIMARY KEY, trace_id TEXT,"
+                     " parent_message_id TEXT, correlation_id TEXT, ttl INTEGER,"
+                     " from_path TEXT, to_path TEXT, reply_to TEXT, headers TEXT,"
+                     " body_kind TEXT, body_payload TEXT, created_at INTEGER)")
+        collector, splitter = "/a/talky/collector", "/a/talky/splitter"
+        for i, (klass, block, tool) in enumerate(turns):
+            window = [{"origin": "user", "type": "text", "text": "q"}]
+            if klass != "fresh":
+                window = [{"origin": "user", "type": "text", "text": "q0"},
+                          {"origin": "assistant", "type": "text", "text": "a0"}] + window
+            consult = {"open": ["c1"] if klass == "history+consult" else [],
+                       "text": "open consults: c1" if klass == "history+consult" else ""}
+            parent = {"messages": window, "system": {"consult": consult}}
+            if tool:
+                out = {"messages": [{"origin": "assistant", "type": "tool_call", "id": "x",
+                                     "text": "{}"}]}
+                finish = "tool_calls"
+            else:
+                out = {"messages": [{"origin": "assistant", "type": "text",
+                                     "text": "answer" + ("\n\n" + self.BLOCK if block else "")}]}
+                finish = "stop"
+            pid, oid = "p%04d" % i, "o%04d" % i
+            conn.execute("INSERT INTO message_log VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                         (pid, "t", None, None, 8, collector, self.BRAIN, None,
+                          json.dumps({"hop": {}}), "inline", json.dumps(parent), 1000 + i))
+            conn.execute("INSERT INTO message_log VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                         (oid, "t", pid, None, 8, self.BRAIN, splitter, None,
+                          json.dumps({"hop": {"finish_reason": finish,
+                                              "tokens_completion": 12}}),
+                          "inline", json.dumps(out), 1000 + i))
+        conn.commit()
+        conn.close()
+        return db
+
+    def quote(self, turns, *extra):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self.make_db(tmp, turns)
+            done = subprocess.run(["python3", str(LAB / "sidecar_quote.py"), "--db", str(db),
+                                   "--brain", self.BRAIN] + list(extra),
+                                  capture_output=True, text=True, timeout=60, cwd=str(REPO))
+        return done.returncode, done.stdout.strip().splitlines()
+
+    def mixed(self, block_in_history=True):
+        return ([("fresh", True, False)] * 8 + [("history", block_in_history, False)] * 10
+                + [("history+consult", block_in_history, False)] * 4)
+
+    def test_every_answer_with_its_block_passes(self):
+        code, lines = self.quote(self.mixed())
+        self.assertEqual(0, code, lines)
+        self.assertEqual("SIDECAR PASS n=22 with=22 rate=100 history_n=14 history_miss=0",
+                         lines[-1])
+
+    def test_history_without_the_block_fails(self):
+        code, lines = self.quote(self.mixed(block_in_history=False))
+        self.assertEqual(1, code, lines)
+        self.assertEqual("SIDECAR FAIL n=22 with=8 rate=36 history_n=14 history_miss=14",
+                         lines[-1])
+
+    def test_one_history_miss_is_tolerated_two_are_not(self):
+        turns = self.mixed()
+        turns[8] = ("history", False, False)
+        self.assertEqual(0, self.quote(turns)[0])
+        turns[9] = ("history", False, False)
+        code, lines = self.quote(turns)
+        self.assertEqual(1, code, lines)
+        self.assertIn("history_miss=2", lines[-1])
+
+    def test_too_few_answers_fail(self):
+        code, lines = self.quote(self.mixed()[:10])
+        self.assertEqual(1, code, lines)
+        self.assertTrue(lines[-1].startswith("SIDECAR FAIL n=10 "), lines)
+
+    def test_tool_rounds_do_not_count(self):
+        code, lines = self.quote(self.mixed() + [("history", False, True)] * 5)
+        self.assertEqual(0, code, lines)
+        self.assertIn(" n=22 ", lines[-1] + " ")
+
+    def test_the_class_is_the_replay_s_class(self):
+        code, lines = self.quote(self.mixed(), "--json")
+        rows = [json.loads(line) for line in lines[:-1]]
+        self.assertEqual({"fresh": 8, "history": 10, "history+consult": 4},
+                         {c: sum(1 for r in rows if r["class"] == c)
+                          for c in ("fresh", "history", "history+consult")})
+
+    def test_an_unfenced_section_object_is_read_and_cut_whole(self):
+        # GH #871 fix round 1 (review I-2): a model that drops the fence but
+        # keeps the section form wrote `{"memory": {...}}`. The naked probe
+        # found the INNER object first, read it as malformed (one brace too
+        # many) and left `{"memory":` standing in the answer -- in a harness
+        # run, 26 of 26 channel answers ended on it. The outer object is the
+        # section form and is read and cut as a whole.
+        sys.path.insert(0, str(LAB))
+        sys.dont_write_bytecode = True
+        import sidecar_turns
+        for inner in ('{"facts": [], "topic": {"movement": "continue", "name": "tea"}}',
+                      '{"nothing_new": true, "facts": []}'):
+            with self.subTest(inner=inner):
+                text = 'Sure, noted.\n\n{"memory": %s}' % inner
+                self.assertEqual("Sure, noted.", sidecar_turns.stripped(text))
+                self.assertEqual({"found": True, "parsed": True, "memory": True},
+                                 sidecar_turns.verdict(text))
+
+    def test_a_nested_object_before_the_first_marker_is_cut_whole(self):
+        # Fix strand F (review minor M-NR-M1 of #871): the backwards scan
+        # stopped at the FIRST brace whose tail held a marker. With `topic`
+        # written before `facts` that is the inner `topic` object: read alone
+        # it has a brace too many, the answer was flagged malformed and kept
+        # `{"memory": {"topic":` (section form) or `{"topic":` (legacy form).
+        sys.path.insert(0, str(LAB))
+        sys.dont_write_bytecode = True
+        import sidecar_turns
+        topic_first = '{"topic": {"movement": "continue", "name": "tea"}, "facts": []}'
+        for text in ('Sure, noted.\n\n{"memory": %s}' % topic_first,
+                     'Sure, noted.\n\n%s' % topic_first):
+            with self.subTest(text=text):
+                self.assertEqual("Sure, noted.", sidecar_turns.stripped(text))
+                self.assertEqual({"found": True, "parsed": True, "memory": True},
+                                 sidecar_turns.verdict(text))
+
+    def test_prose_after_a_naked_object_stays_in_the_answer(self):
+        # Fix strand F (review minor M-NR-M2 of #871): a naked object was cut
+        # to the END of the answer, so the sentence the model wrote after it
+        # went with it. A readable object is cut as the span it is -- the same
+        # cut a fence gets; only an object that does not read still takes the
+        # rest of the text, because nothing says where it ends.
+        sys.path.insert(0, str(LAB))
+        sys.dont_write_bytecode = True
+        import sidecar_turns
+        for text in ('Example: {"memory": {"facts": ["a"]}} -- that is the form. '
+                     'Anything else?',
+                     'Example: {"facts": ["a"]} -- that is the form. Anything else?'):
+            with self.subTest(text=text):
+                out = sidecar_turns.stripped(text)
+                self.assertTrue(out.startswith("Example:"), out)
+                self.assertTrue(out.endswith("that is the form. Anything else?"), out)
+                self.assertNotIn("{", out)
+                self.assertTrue(sidecar_turns.verdict(text)["parsed"])
+        # Unreadable: still cut to the end, as before.
+        self.assertEqual("Ok.", sidecar_turns.stripped('Ok. {"facts": ["a"'))
+        # An earlier readable object that does not hold the marker is not the
+        # attempt: the broken block after it is, cut to the end.
+        self.assertEqual('See {"a": {"b": 1}} then',
+                         sidecar_turns.stripped('See {"a": {"b": 1}} then {"facts": ['))
+
+    def test_it_only_reads(self):
+        text = (LAB / "sidecar_quote.py").read_text(encoding="utf-8")
+        self.assertIn("mode=ro", text)
+        for word in ("INSERT", "UPDATE", "DELETE", "urlopen", "requests"):
+            with self.subTest(word=word):
+                self.assertNotIn(word, text)
 
 
 if __name__ == "__main__":

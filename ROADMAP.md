@@ -109,6 +109,9 @@ worked examples listed in [`templates/README.md`](templates/README.md), where
 One line per release. Details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- v0.47.1: a member reborn from an exported memory is born with its identity again, a conversation
+  brain keeps writing its annotation block once it sees its own earlier answers, and the memory
+  hive's night closes no fact across an audience.
 - v0.47.0: a surface runs behind a strict Content-Security-Policy and what an app writes to it
   stays text; a model push works only in the cell it names, and a refusal reaches the registry; a
   long-running colony no longer strands on a runtime worker that waits for the disk; the affinity

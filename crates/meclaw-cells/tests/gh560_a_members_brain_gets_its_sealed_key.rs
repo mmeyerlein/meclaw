@@ -463,7 +463,7 @@ fn member_manifest() -> Value {
     json!({"manifest": [{
         "scope": "/members",
         "diff": {
-            "add_nodes": [{"name": MEMBER, "template": "member@1.10.3",
+            "add_nodes": [{"name": MEMBER, "template": "member@1.10.4",
                            "override_params": {
                                "access/vault": {"unlock_env": UNLOCK_ENV},
                                "memory-hive/clock": quiet_night(),
@@ -545,7 +545,7 @@ fn assistant_manifest(base_url: &str) -> Value {
                 "model_surface": "gpt-4o-mini"},
         "diff": {
             "add_nodes": [{"name": format!("assistants/{AGENT}"),
-                           "template": "assistant@2.9.3",
+                           "template": "assistant@2.9.4",
                            "override_params": {
                                // The brain under test: no bearer of its own
                                // (an empty string is not a bearer, GH #271), a

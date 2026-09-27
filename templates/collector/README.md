@@ -1,4 +1,4 @@
-# `collector@4.4.0`
+# `collector@4.4.1`
 
 Context assembly as a hive of existing cell types -- no new cell type, no Rust. Two cells:
 `assemble` (a `code` cell, the state machine) and `window` (a `store` cell, the state). The
@@ -100,7 +100,7 @@ message context.
 | `in_calls` | the tool dispatcher | the assistant `tool_call` turn of the round; `hop.async_calls` names the ids this fan-in must **not** wait for |
 | `in_tool` | a tool cell | one tool result: **every** `tool_result` turn of its `messages[]`, each filed under the call id it answers. See "What a tool result may carry" below |
 | `in_thread_call` | the tool dispatcher, on `hop.tool_name == 'thread_recall'` | the thread tool: brings an elided payload of THIS turn back, uncapped, out of the collector's own slate (wave 11) |
-| `in_answer` | the brain, on `finish_reason == 'stop'` (through the dispatcher), or a completion cut on `length` (in talky through the splitter, in cogny straight from the brain) | writes the answer into the window and lets it out, carrying `hop.finish_reason` onto the answer and marking a `length` finish `hop.truncated = "1"` (since `collector@4.4.0`, [#843](https://github.com/mmeyerlein/meclaw/issues/843)) |
+| `in_answer` | the brain, on `finish_reason == 'stop'` (through the dispatcher), or a completion cut on `length` (in talky through the splitter, in cogny straight from the brain) | writes the answer into the window and lets it out, carrying `hop.finish_reason` onto the answer and marking a `length` finish `hop.truncated = "1"` (since `collector@4.4.0`, [#843](https://github.com/mmeyerlein/meclaw/issues/843)). Since `collector@4.4.1` the body slot `sidecar_raw` -- the block a splitter cut out of this answer -- is kept beside the answer in `turns.sidecar` and never let out ([#871](https://github.com/mmeyerlein/meclaw/issues/871), see "An earlier answer keeps its block") |
 | `in_close` | the session keeper, on `hop.route == 'close'` | reads the whole session back and batches it out |
 | `in_prune` | a timer or an operator, on `hop.route == 'prune'` | prunes delivered-and-aged sessions; the template **never fires this itself** |
 | `in_round_sweep` | a timer or an operator, on `hop.route == 'sweep'` | re-checks every open tool round and closes the stale ones; equally **never fired by the template itself** |
@@ -238,7 +238,7 @@ for how to retune one, and for what `override_params` can and cannot do).
 | `prune_after_ms` | `604800000` | age gate on the prune lane (seven days). A session is pruned only when its close batch left **and** that delivery is older than this. |
 | `turn_write` | `"1"` | **on by default since GH #298** -- it is the only path from a conversation into an episodes table, and a shipped "off" would be a shipped agent that remembers nothing. Every stored turn hands out one message per unwritten turn on route `turn_write`. `""` or `"0"` switch it off, and off means nothing said in this session reaches a memory *at all*, not that it reaches one later. Switch it off only where that route is unwired: an unrouted emission per turn is a dead letter per turn. |
 | `sidecar` | `""` | **the block contract this collector asks its brain for** (GH #606, and GH #525 before it). Non-empty composes the sections OFFERED on the menu lane into ONE contract and writes it beside `system.tools` on `system.instructions.sidecar` -- one write per change and nothing per turn. **What is IN the block is not this cell's business**; what it owns is the frame: one fence, one JSON object, one key per section, required before optional ("One block, several offers" below). It ships OFF, and that is the one place it differs from `turn_write` one row up: what takes the block back OUT of the answer is a `splitter` between the brain and the dispatcher, and this cell cannot see whether one stands behind it -- asking with nothing cutting leaves a json block in the reader's face on every turn. So the COMPOSITE decides: `talky` cuts the block and switches it on, `cogny` has no splitter and leaves it off. Nobody offering anything writes the slot **empty** rather than not writing it -- durable state is revoked, never abandoned. The write carries no `$replace` marker, so a person's charter in `instructions.reply` is untouched, and the leaf name sorts AFTER it on purpose -- an `llm` cell walks a family's leaves alphabetically and the block belongs after the answer it follows. |
-| `sidecar_max_chars` | `6000` | the ceiling of the composed contract, in characters. Every one of them is re-read by the provider on every turn of every conversation, and the sections come from templates this cell does not own -- so the bound lives HERE, where the block is assembled, rather than as a promise each offering template has to keep. Over it, OPTIONAL sections fall from the back of the alphabetical order, with a warn line on stderr naming what fell. A REQUIRED section never falls: a section every turn has to carry is not a budget item, and a contract still over the ceiling with nothing but required sections left is KEPT and the overrun reported, because the alternative is a fence whose contents were never stated. |
+| `sidecar_max_chars` | `6000` | the ceiling of the composed contract, in characters -- and, since `4.4.1`, of the block an earlier answer is shown with in the window (GH #871; a longer block is not kept, never cut). Every one of them is re-read by the provider on every turn of every conversation, and the sections come from templates this cell does not own -- so the bound lives HERE, where the block is assembled, rather than as a promise each offering template has to keep. Over it, OPTIONAL sections fall from the back of the alphabetical order, with a warn line on stderr naming what fell. A REQUIRED section never falls: a section every turn has to carry is not a budget item, and a contract still over the ceiling with nothing but required sections left is KEPT and the overrun reported, because the alternative is a fence whose contents were never stated. |
 | `context_window` | `0` | **the curator's budget**, in tokens. `0` or empty = curation off and every byte of behaviour is the pre-wave-11 behaviour. See "The curator" below. |
 | `curate_soft` | `0.5` | the working mark, as a fraction of the budget: at or above it the curator elides in stages until the projection fits under it again. |
 | `curate_hard` | `0.75` | the emergency mark. It changes no behaviour of its own -- it is *reported* as `hop.curate_mark='hard'` and means the curator is out of stages. |
@@ -359,7 +359,7 @@ caller that may use it, and no caller can offer a model anything nobody typed.
 own template says it uses -- and the schemas behind those names are **asked for**:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "collector@4.4.0",
+{"add_nodes": [{"name": "scribe", "template": "collector@4.4.1",
                 "override_params": {"assemble": {"tools": ["web_search", "web_fetch"]}}}]}
 ```
 
@@ -1364,6 +1364,41 @@ allowlist must list `roster` before it is fed by `collector@4.4.0`: the collecto
 `system.roster` on every assembly, empty included, and the gate refuses the WHOLE update when one
 slot is outside the list -- such a brain would refuse every turn. No shipped template sets
 `system_writable`. `instructions.peer` needs nothing new: it is a path inside `instructions`.
+
+### An earlier answer keeps its block (GH #871, since `collector@4.4.1`)
+
+A splitter cuts the ```` ```sidecar ```` block out of an answer before the answer reaches
+`in_answer`, so until `4.4.1` the window held every earlier answer WITHOUT its block -- and
+showed the model, turn after turn, its own answers without one. The contract in
+`system.instructions.sidecar` lost against that precedent. Measured by replaying the brain
+turns of a running colony (23 turns, 5 repetitions, one model): the block stood in 100 % of
+the turns without an earlier answer in the window and in 38 % of the turns with one. The
+same requests with each earlier answer shown with its block: 98 %. Moving the contract
+behind every other system family (53 %) or adding a sentence to its preamble (38 %) did
+not close the gap.
+
+What the window shows of an earlier answer now:
+
+- `in_answer` reads the body slot `sidecar_raw` -- the block exactly as the model wrote it,
+  fence included, handed on by the splitter and the dispatcher -- and stores it in
+  `turns.sidecar`, beside `content` and never in it. `content` is what every write path
+  and every channel reads; the block reaches neither. The `answer` this lane lets out
+  carries `messages` only.
+- The window read selects the column, and an assistant row renders on the wire as its
+  text, a blank line, and its block. A user, advice, delegation or peer row has no block.
+- `sidecar_max_chars` bounds it: a block longer than the ceiling is not stored (a warn line
+  says so) and not shown -- never cut to fit, because a truncated block is a malformed
+  precedent. The block counts towards `window_bytes` like the text beside it.
+- A row written before the column existed, and an answer whose model wrote no readable
+  block, renders exactly as before: text only.
+- A sentence said beside a tool call arrives here like any answer, and in `talky` it
+  arrives with the memory contract's nothing form as its `sidecar_raw` (the splitter's knob
+  `nothing_block`): on a consult's return it is often the only earlier answer in view, and
+  bare it was the same precedent. This cell stores and shows it like any other block.
+
+`./assemble`'s cell contract moves to 2.3.1 (`sidecar_raw` among the consumed body slots).
+The `window` store gains the `turns.sidecar` column (`text`), additive. A composite without
+a splitter (`cogny`) never hands the slot over, and its window is byte-identical to `4.4.0`.
 
 ### When the store says no (GH #343, since `collector@2.1.1`)
 

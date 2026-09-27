@@ -1,4 +1,4 @@
-# `talky@5.4.2`
+# `talky@5.4.3`
 
 A whole conversational agent as one template. Three referenced units under one hive:
 [`session-keeper`](../session-keeper/), [`collector`](../collector/) and
@@ -62,13 +62,13 @@ The three sub-units are **references**, not copies. Each of the three directorie
 one `config.json` and nothing else:
 
 ```json
-{"cell": {"type": "ref", "template": "collector@4.4.0"}}
+{"cell": {"type": "ref", "template": "collector@4.4.1"}}
 ```
 
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`talky@5.4.2` above it in its provenance chain. `5.2.2` moves the `collector` pin to
+`talky@5.4.3` above it in its provenance chain. `5.2.2` moves the `collector` pin to
 `4.2.1` ([#728](https://github.com/mmeyerlein/meclaw/issues/728)): the answer of an advice or a
 delegation round carries the member's turn, and `hop.late` beside it. The same version gives
 `brain` the OpenRouter app attribution (`http_referer` / `x_title`, overridable by
@@ -85,7 +85,14 @@ all, into an answer that looked complete. `length` never reaches the dispatcher,
 answer that leaves carries `hop.finish_reason` and `hop.truncated = "1"`. The knob `brief_slots` stays empty here -- a standalone talky
 has no record of people beside it, and a brief that leaves for an address nobody wired would
 hold every turn with a counterpart for ever; the assistant's ref markers set it, where the
-member's brief road is drawn.
+member's brief road is drawn. `5.4.3` moves the `collector` pin to `4.4.1` and the
+`dispatcher` pin to `1.2.2` ([#871](https://github.com/mmeyerlein/meclaw/issues/871)): the
+splitter hands the block it cut out of an answer on as the body slot `sidecar_raw`, the
+dispatcher passes it through, and the collector shows every earlier answer with its block in
+the window (*The block rides beside the answer*, below). The same version shows a sentence
+said beside a tool call with the memory contract's nothing form (knob `nothing_block`), and
+reads an unfenced `{"memory": {...}}` as one block (*The legacy fence still reads*, below).
+No lane and no edge moved, so it is the third digit.
 
 **The library has to carry the three.** A reference resolves against the colony's template
 registry, so `collector`, `session-keeper` and `dispatcher` have to sit in
@@ -723,7 +730,7 @@ tools this agent uses -- shipped as `["web_search", "web_fetch"]`, `["*"]` for e
 tools hive has -- and the schemas behind those names are asked for:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "talky@5.4.2",
+{"add_nodes": [{"name": "scribe", "template": "talky@5.4.3",
                 "override_params": {"collector/assemble": {"tools": ["web_search", "bash"]}}}]}
 ```
 
@@ -1006,6 +1013,31 @@ MESSAGE PER SECTION** on lane `sidecar`, out of the composite. Everything else p
 untouched -- a round with tool calls belongs to the dispatcher whole, and **without a
 block contract in the brain's instructions the splitter is a pure pass-through**.
 
+**The block rides beside the answer, not in it** (`5.4.3`,
+[#871](https://github.com/mmeyerlein/meclaw/issues/871)). The answer half carries the cut
+block as its own body slot, `sidecar_raw`: the block exactly as the model wrote it, fence
+included, and only when it was readable -- a malformed block is cut and dropped. The
+dispatcher passes the slot on with the answer (since dispatcher 1.2.2), and the collector keeps
+it beside the answer and shows it with that answer in every later window
+(since collector 4.4.1, "An earlier answer keeps its block"). Before, the window held each
+earlier answer without its block, and a model that saw its own answers without one stopped
+writing it: measured on a running colony's turns, 38 % of the turns with an earlier answer
+in view carried the block, and 98 % once the window showed it. No channel ever receives the
+slot: the `answer` leaving the collector carries `messages` only. The splitter's contract
+moves to 1.0.3.
+
+**A sentence beside a tool call shows a block too** (`5.4.3`,
+[#871](https://github.com/mmeyerlein/meclaw/issues/871)). The text a model writes next to a
+consult call leaves through the dispatcher's interim path and stands in the window when the
+consult comes back -- often as the only earlier answer there. The round itself still passes
+untouched, so that sentence used to stand bare, and on a consult's return the replayed model
+wrote the block in 9 of 20 answers. Now a round whose text carries no block leaves with the
+knob `nothing_block` -- the memory contract's own form of a turn that carried nothing, one
+JSON object -- fenced as ```` ```sidecar ```` on `sidecar_raw`: 14 of 20 in the same
+replay. It is shown to the model only; no section lane and no channel receives it, because
+nobody annotated that turn. A block the model did write beside the call stays in the text
+where it wrote it, and none is laid over it. Empty, the knob shows nothing, as before.
+
 **One fence, sections, and a cell that knows none of them**
 ([#604](https://github.com/mmeyerlein/meclaw/issues/604), built in
 [#605](https://github.com/mmeyerlein/meclaw/issues/605)). The block carries ONE JSON
@@ -1036,7 +1068,11 @@ refusal at the far end, not as an advice.
 **The legacy fence still reads.** A ```` ```memory ```` block is the single-section form
 this cell shipped first, and it becomes the section `memory` with the whole block as its
 payload. So does a bare ```` ```json ```` fence or a naked trailing object carrying the
-memory payload -- the tolerance the harness grades with. Until `talky@5.1.0` the port was
+memory payload -- the tolerance the harness grades with. Since `5.4.3` a naked object in the
+section form, `{"memory": {...}}`, is read as that section and cut whole: the scan used to
+stop at the inner object, flag it malformed and leave `{"memory":` in the answer a reader
+saw ([#871](https://github.com/mmeyerlein/meclaw/issues/871), the leak class of
+[#534](https://github.com/mmeyerlein/meclaw/issues/534)). Until `talky@5.1.0` the port was
 called `extraction` and carried exactly one thing, the raw block as the text of a single
 turn; a parent still wired on `hop.route == 'extraction'` writes nothing.
 

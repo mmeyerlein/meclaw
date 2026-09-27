@@ -1,4 +1,4 @@
-# `meclaw-os@1.10.1`
+# `meclaw-os@1.10.2`
 
 The colony shell: the outermost of the four composition levels, and the tree everything
 else is grown into. It holds no cell of its own. It holds five occupants, one empty
@@ -17,6 +17,9 @@ on the mirror of the edge that carried it, and `show` names it. Since 1.10.1 it 
 ([#867](https://github.com/mmeyerlein/meclaw/issues/867), [#863](https://github.com/mmeyerlein/meclaw/issues/863)),
 whose recipes grow a member's screen as the `display` that runs under a strict
 Content-Security-Policy and draw one way back per composite on the model road.
+Since 1.10.2 it pins `builder@1.15.2` ([#871](https://github.com/mmeyerlein/meclaw/issues/871)),
+whose own dispatcher passes the block a splitter cut out of an answer on to its collector;
+only the pin moved.
 
 Between 1.7.0 and 1.9.0 ([#556](https://github.com/mmeyerlein/meclaw/issues/556)) it was
 four and not five. The **submitter** stopped being a hive of this level and became an occupant of the
@@ -574,7 +577,7 @@ in it at all**.
 seed-ref/
 ├── colony.json            substrate defaults. two lines.
 ├── main/config.json       type: "hive", one edge, and not one cell
-└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@1.10.1"}}
+└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@1.10.2"}}
 ```
 
 ```bash
@@ -658,7 +661,7 @@ root tree:
 
 ```json
 {"scope": "/",
- "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.10.1"}],
+ "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.10.2"}],
           "add_edges": []}}
 ```
 

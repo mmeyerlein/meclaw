@@ -939,7 +939,7 @@ fn the_shipped_contract_declares_every_new_knob_and_key() {
          does not describe the cell"
     );
     assert_eq!(
-        v["contract"]["version"], "2.3.0",
+        v["contract"]["version"], "2.3.1",
         "wave 11 added a lane and seven hop keys; wave 13 moved every setting \
          off the environment onto params; GH #372 added `consumes.hop.handoff_calls`; \
          GH #458 made `messages` optional in BOTH directions and added the `pack` / \
@@ -983,7 +983,9 @@ fn the_shipped_contract_declares_every_new_knob_and_key() {
          nothing taken away. GH #845/#847 ride in the same 2.3.0: \
          an emitted body key (`tool_scope`) and hop key (`scope_changed`), four consumed context keys \
          (`tools_allow`, `tools_deny`, `roster_add`, `roster_leave`) and a consumed body slot (`who`) -- \
-         the channel's scope and the peer role, nothing taken away"
+         the channel's scope and the peer role, nothing taken away. GH #871 is a THIRD \
+         digit: a consumed body slot (`sidecar_raw` on `in_answer`) that the window keeps \
+         beside the answer -- a repair, so the model sees its earlier answers with their block"
     );
 }
 

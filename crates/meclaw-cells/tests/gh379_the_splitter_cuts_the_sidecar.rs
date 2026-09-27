@@ -442,6 +442,54 @@ fn a_naked_trailing_object_is_an_attempt_too() {
 }
 
 #[test]
+fn a_naked_object_is_cut_as_the_object_that_reads() {
+    // (g2) Fix strand F of GH #874 (review minors of #871). The backwards scan
+    // stopped at the FIRST brace whose tail held a marker: with `topic` written
+    // before `facts` that is the inner `topic` object, which read alone has a
+    // brace too many -- flagged malformed, and the answer kept `{"memory":
+    // {"topic":` (section form) or `{"topic":` (legacy form). The attempt is
+    // the object that reads and holds the marker.
+    let topic_first =
+        "{\"topic\": {\"title\": \"tea\", \"movement\": \"continue\"}, \"facts\": []}";
+    for answer in [
+        format!("Notiert.\n\n{{\"memory\": {topic_first}}}"),
+        format!("Notiert.\n\n{topic_first}"),
+    ] {
+        let out = split(completion("stop", serde_json::json!([text_turn(&answer)])));
+        let arr = out
+            .as_array()
+            .unwrap_or_else(|| panic!("a readable naked object is a cut: {out}"));
+        assert_eq!(arr[0]["messages"][0]["text"], "Notiert.", "{out}");
+        assert!(
+            arr[0]["header"].get("sidecar").is_none(),
+            "not malformed: {out}"
+        );
+        assert_eq!(
+            section(&out, "memory")["payload"]["topic"]["movement"],
+            "continue",
+            "{out}"
+        );
+    }
+
+    // A readable object is cut as the span it is, the way a fence is: the
+    // sentence after it stays in the answer. Only an object that does not read
+    // is still cut to the end, since nothing says where it ends.
+    let answer = format!("Noted. {topic_first} Anything else?");
+    let out = split(completion("stop", serde_json::json!([text_turn(&answer)])));
+    let text = out[0]["messages"][0]["text"].as_str().unwrap_or_default();
+    assert!(
+        text.starts_with("Noted.") && text.ends_with("Anything else?") && !text.contains('{'),
+        "the prose after the object stays, the object goes: {out}"
+    );
+    let out = split(completion(
+        "stop",
+        serde_json::json!([text_turn("Notiert. {\"facts\": [\"a\"")]),
+    ));
+    assert_eq!(out["messages"][0]["text"], "Notiert.", "{out}");
+    assert_eq!(out["header"]["sidecar"], "malformed", "{out}");
+}
+
+#[test]
 fn a_bare_string_section_travels_wrapped_in_a_payload() {
     // (b4) GH #799, owner ruling R-L11 of 2026-09-21: option 1, and it has to
     // be proven that it works.

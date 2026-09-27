@@ -423,8 +423,9 @@ fn the_shell_draws_the_edge_no_other_level_could() {
         // 1.13.0 since GH #835 grows an assistant as its member's door;
         // 1.14.0 carries the wave's recipe and pins (dispatcher@1.2.1, GH #842);
         // 1.15.1 pins the member's screen at `display@2.8.0` (GH #867) and draws
-        // one way back per composite on the model road (GH #863).
-        "builder@1.15.1"
+        // one way back per composite on the model road (GH #863);
+        // 1.15.2 pins its own dispatcher at `dispatcher@1.2.2` (GH #871).
+        "builder@1.15.2"
     );
     assert_eq!(
         read("templates/meclaw-os/operator/config.json")["cell"]["template"],

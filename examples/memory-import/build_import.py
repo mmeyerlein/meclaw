@@ -77,6 +77,26 @@ PLACEABLE = {
     "firewall": ("rules", set()),
 }
 
+# Columns of a placed seed table that are RESET rather than carried, per hive
+# and table file: {hive directory: {table file: (column, ...)}}.
+#
+# This is the twin of `RESET` in `templates/affinity/porter` -- the same
+# decision, taken on the other way in. `pack_hash` and `sent_at` do not say
+# what the source DECIDED, they say what the source already DELIVERED, to a
+# cell path in a colony that no longer exists. Placed verbatim, the reborn
+# store holds the hash of a pack it never sent, `./push` computes that very
+# hash over the unchanged record, and stays silent for ever: measured on a
+# rebuilt deployment, thousands of push ticks and not one `in_pack`, and every
+# brain came up without its `identity.*` slots (GH #872). The subscribe
+# decision itself -- `status`, `slots`, `cell_path`, `channel`, who and about
+# whom -- travels untouched.
+#
+# One entry, because there is exactly one such case in the catalogue; a hive
+# that grows a second delivery trace names it here beside its porter's list.
+RESET_ON_SEED = {
+    "affinity": {"subscribers.jsonl": ("pack_hash", "sent_at")},
+}
+
 # The marker the substrate writes after the last table of a complete export
 # (GH #555). Without it the directory is a PREFIX of a document, and a prefix
 # looks exactly like a whole one from the outside -- which is the reason the
@@ -142,6 +162,37 @@ def ref_target(config_text):
     if cell.get("type") != "ref":
         return None
     return str(cell.get("template") or "").split("@")[0]
+
+
+def reset_on_seed(hive_dir, table_file, body):
+    """One seed file with the delivery trace `RESET_ON_SEED` names blanked.
+
+    Line 1 is the `{"schema": ...}` header and stays byte for byte; every data
+    row gets the named columns set to "" (a row without such a column is left
+    as it is). Any file without an entry comes back unchanged.
+    """
+    columns = RESET_ON_SEED.get(hive_dir, {}).get(table_file)
+    if not columns:
+        return body
+    # JSONL rows end at "\n" and nowhere else: `splitlines()` also breaks at
+    # U+2028/U+2029 and U+0085, which a JSON writer leaves raw inside a string,
+    # so one such value cut a row in two and the tool died on its own export.
+    lines = body.rstrip("\n").split("\n")
+    out = []
+    for n, line in enumerate(lines):
+        if n == 0 or not line.strip():
+            out.append(line)
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError as exc:
+            die("%s/%s line %d is not JSON: %s" % (hive_dir, table_file, n + 1, exc))
+        if isinstance(row, dict):
+            for col in columns:
+                if col in row:
+                    row[col] = ""
+        out.append(json.dumps(row, ensure_ascii=False, sort_keys=False))
+    return "\n".join(out) + "\n"
 
 
 def hive_seed_files(seed_dir, own_seed):
@@ -530,7 +581,9 @@ def main():
                     and os.path.basename(k) not in own_seed]:
             del files[rel]
         for table_file, body in table_files.items():
-            files[seed_prefix + table_file] = body
+            # What the source DELIVERED does not travel into a birth seed; see
+            # RESET_ON_SEED (GH #872).
+            files[seed_prefix + table_file] = reset_on_seed(hive_dir, table_file, body)
         seeded[hive_dir] = len(table_files)
 
     # The declaration stands at the `members` container of the org `--scope`

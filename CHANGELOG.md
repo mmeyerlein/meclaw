@@ -12,6 +12,40 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.47.1] — 2026-09-27
+
+A member reborn from an exported memory is born with its identity again, a conversation brain keeps writing its
+annotation block once it sees its own earlier answers, and the memory hive's night closes no fact across an audience.
+
+### Fixed
+
+- **A member reborn from an export seed delivers its first identity pack again** ([#872](https://github.com/mmeyerlein/meclaw/issues/872)).
+  `examples/memory-import/build_import.py` now blanks `pack_hash` and `sent_at` of `affinity`'s `subscribers` rows when it
+  places them as a birth seed — the same decision the affinity porter takes on `in_import`. Before, the reborn store carried
+  the hash of a pack its source had delivered, `./push` computed that very hash over the unchanged record and never sent, and
+  every brain came up without its `identity.*` slots. New lab tool `workshop/tools/display-lab/identity_probe.py` reads,
+  read-only, whether each brain of an assistant received its pack, acknowledged it and holds the slots.
+- **An earlier answer keeps its sidecar block in the window** ([#871](https://github.com/mmeyerlein/meclaw/issues/871)). A model that saw its own earlier answers without
+  their ```` ```sidecar ```` block stopped writing it: replayed on a running colony's turns, the block stood in 38 % of the
+  turns with an earlier answer in view and in 98 % once the window showed each answer with its block. `talky` 5.4.3's
+  splitter hands the cut block on beside the answer as `sidecar_raw` (contract 1.0.3), `dispatcher` 1.2.2 passes it through,
+  and `collector` 4.4.1 keeps it in the new column `turns.sidecar` and renders an earlier answer as text plus block, bounded
+  by `sidecar_max_chars`; no channel ever receives it. A sentence said beside a tool call — the only earlier answer in view
+  when a consult comes back — shows the memory contract's own nothing form (the splitter's new knob `nothing_block`), and the
+  dispatcher carries it on the interim path too; the tool round itself still passes untouched. Replayed with the shipped
+  cells: 94 % of all turns, 90 % of the turns with history. `cogny` 5.1.3, `assistant` 2.9.4, `member` 1.10.4, `builder`
+  1.15.2 and `meclaw-os` 1.10.2 move pins only. `workshop/tools/display-lab/sidecar_quote.py` counts the block rate of a
+  colony's log by class.
+- **An unfenced sidecar object no longer leaks into the answer** ([#871](https://github.com/mmeyerlein/meclaw/issues/871)). A model that dropped the fence but kept the
+  section form, `{"memory": {...}}`, had its block read as malformed and `{"memory":` left at the end of the text a reader
+  saw (the leak class of #534). `talky` 5.4.3's splitter reads that object as the `memory` section and cuts it whole.
+- **memory-hive 3.6.2 — a night's closure no longer crosses an audience** ([#873](https://github.com/mmeyerlein/meclaw/issues/873)). The `sup-axes` phase now reads
+  `audience_set` and withdraws a closure unless the closed fact's audience is a subset of its successor's (or the successor
+  is heard by everyone, `*`), the same way it already withdrew a closure across sources: a private statement no longer
+  closes a fact a room heard. The same boundary holds for the night's other way to close, a statement said again later:
+  repeated in private it leaves the room's fact open, and the next assertion the room can hear closes it. Rows without an
+  audience draw no boundary; the judge's payload is unchanged; stderr carries one count line. `member` 1.10.4 pins it.
+
 ## [0.47.0] — 2026-09-27
 
 A surface runs behind a strict Content-Security-Policy, and what an app writes to it stays text; a model push works only

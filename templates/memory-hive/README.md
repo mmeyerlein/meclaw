@@ -1,4 +1,4 @@
-# `memory-hive@3.6.1`
+# `memory-hive@3.6.2`
 
 A **member's** memory as a hive of existing cell types — no new cell type, no Rust. Fifteen cells:
 `store` (all durable data), `writer`, `recall`, `extract-glue`, `close-glue`, `closer`,
@@ -861,6 +861,22 @@ source on every page, and the night's chain arithmetic withdraws any closure tha
 anyway, including on an axis page too full to derive anything else. The statement identity of the chain includes the source, so two sources saying the same
 thing are two statements, never one statement asserted twice.
 
+No closure crosses an audience either (since 3.6.2, [#873](https://github.com/mmeyerlein/meclaw/issues/873)).
+Source and audience are two axes: what the member says in a room and what the member says in private share a
+source, so the source rule lets the private statement close the room's. The room would then read its fact as
+superseded by something it may not see. So the night's `sup-axes` phase reads `audience_set` along and withdraws
+a closure unless every participant who could hear the closed fact can also hear its successor: the closed fact's
+audience is a subset of the successor's, or the successor carries `*`. A successor heard by more people still
+closes the private statement. The same boundary holds for the night's second way to close, the same statement
+said again later: the room's words repeated in private leave the room's fact open, and the next assertion the
+room can hear closes it. A row written before audiences existed (NULL, blank or empty set) draws no boundary
+on either side, deliberately unlike belief derivation ([#244](https://github.com/mmeyerlein/meclaw/issues/244)),
+which reads an untagged fact as heard by nobody. The withdrawal works like the one across sources, on a full axis page too: both closure columns
+fall back to NULL, the attribution is cleared, the run goes on, and stderr carries one count line,
+`dream-glue: N closure(s) across audiences withdrawn` (a closure that crosses sources as well is counted there
+only), never a claim or a participant. The judge's payload is unchanged, because the judge decides what is true
+and not who may see it.
+
 Beliefs keep the source too. The night derives a belief's source from the facts it rests on, by
 code and the way it derives the audience. A belief over facts of more than one source is not
 written, and the run receipt lists it under `belief_refusals`. A belief over one participant's
@@ -894,7 +910,7 @@ the substrate answers a `transfer` body slot for every cell that has a `cell.db`
 type and before `handle()` runs ([#253](https://github.com/mmeyerlein/meclaw/issues/253), and
 since [#555](https://github.com/mmeyerlein/meclaw/issues/555) it writes and reads DIRECTORIES).
 
-`memory-hive@3.6.1` therefore carries a **walk** and nothing else. Two messages, one each way:
+`memory-hive@3.6.2` therefore carries a **walk** and nothing else. Two messages, one each way:
 
 ```json
 {"operation": "export", "to": "<dir>/memory-hive", "tables": [ …the sixteen… ]}
@@ -1298,7 +1314,7 @@ nothing, and two members of one colony shared one memory configuration. Now a mu
 member's recall and leaves the other alone:
 
 ```json
-{"add_nodes": [{"name": "alex", "template": "member@1.10.3",
+{"add_nodes": [{"name": "alex", "template": "member@1.10.4",
                 "override_params": {"memory-hive/recall": {"tier1_topk": 40,
                                                            "sem_max_distance": 0.35}}}]}
 ```

@@ -1,4 +1,4 @@
-# `dispatcher@1.2.1`
+# `dispatcher@1.2.2`
 
 The fan-**out** half of a tool loop, as one `code` cell -- no new cell type, no Rust.
 Its counterpart is the fan-**in**: [`collector`](../collector/), which assembles the
@@ -29,7 +29,12 @@ messages a graph can route.
   ([#842](https://github.com/mmeyerlein/meclaw/issues/842)): its partial text is the answer,
   `hop.finish_reason = 'length'` stays on it, and whoever reads the lane can mark it as cut.
   Until `1.2.1` such a completion left **nothing** -- no answer, no error, no line on stderr --
-  which from the outside looks exactly like a hang.
+  which from the outside looks exactly like a hang. Since `1.2.2` a body slot `sidecar_raw`
+  the answer arrived with leaves with it, untouched ([#871](https://github.com/mmeyerlein/meclaw/issues/871)):
+  the block a sidecar splitter cut out of the answer, which the collector keeps for the window.
+  The cell rebuilds the answer's body, and until `1.2.2` that rebuild dropped the slot.
+  The sentence next to a bundle carries the slot the same way when the round arrived with
+  one (a splitter's block for text said beside a call).
 - **A sentence next to the bundle, delivered at once.** One brain response may carry
   `content` **and** `tool_calls`. The text leaves on the `answer` lane while the calls keep
   running: the turn ends with "one moment, I am asking" instead of with silence, and no
@@ -95,7 +100,7 @@ Entry is the brain's output; there is one lane in and four out, all on `hop.rout
 | `calls` | the collector's `in_calls` port | the assistant turn **verbatim** (all of it, a text turn next to the calls included) -- the expectation set of the round. `hop.call_count` sizes it (the number of `tool_call` turns in the bundle, as a string), `hop.async_calls` names the ids the fan-in must not wait for |
 | `tool` | one tool cell per name | one `tool_call` turn with the **raw arguments**; `hop.tool_name` selects the cell, `hop.tool_call_id` correlates the result |
 | `result` | the collector's `in_tool` port | a synthetic error `tool_result` for a call that will never run; `hop.error_code` says which kind |
-| `answer` | the collector's `in_answer` port, or the reply sink | the brain's final turn, `hop.finish_reason` carried along -- **or**, with `hop.interim = "1"`, the sentence that stood next to a bundle |
+| `answer` | the collector's `in_answer` port, or the reply sink | the brain's final turn, `hop.finish_reason` carried along -- **or**, with `hop.interim = "1"`, the sentence that stood next to a bundle. Since `1.2.2` the body slot `sidecar_raw` travels with a final answer when the answer arrived with one: the block a sidecar splitter cut out of it, passed through untouched so the collector can keep it for the window ([#871](https://github.com/mmeyerlein/meclaw/issues/871)) -- and with the sentence next to a bundle, when the round carried one. This cell reads none of it |
 
 The tool lanes guard the key they discriminate on:
 

@@ -168,6 +168,20 @@ record they are something else: a second person nobody imported, and a rule set
 nobody wrote. What the RECEIVING hive configures for itself is the exception and
 survives — today that is `memory-hive`'s `emb_models.jsonl` and nothing else.
 
+**What the seed path resets.** Two columns of `affinity`'s `subscribers` table are
+blanked on the way in: `pack_hash` and `sent_at`. They do not record what the
+source DECIDED, they record what it already DELIVERED — to a cell path in a colony
+that no longer exists. Placed verbatim, the reborn store holds the hash of a pack
+it never sent, `./push` computes that very hash over the unchanged record and
+stays silent for ever, and every brain comes up without its `identity.*` slots
+([#872](https://github.com/mmeyerlein/meclaw/issues/872)). Blanked, the first push
+tick after the birth sees a subscription that was never delivered to and sends
+the agent's identity pack. The subscribe decision itself — who, about whom, which
+slots, which channel, active or not — travels untouched, and the schema header
+stays byte for byte. The running import does the same: `affinity`'s porter clears
+the same two columns on `in_import` (its `RESET` list; `RESET_ON_SEED` in the tool
+names it as its twin). No other table and no other column is touched.
+
 **It refuses a hive directory without `export_final.json`.** A walk that aborted
 leaves a PREFIX of a document, and a prefix looks exactly like a whole one from
 the outside. A member born from one has no way to discover what it is missing.
@@ -276,6 +290,11 @@ carries it into the keeper's store.
 drives both keepers of one generation: two directories, two parts, each landing in the
 keeper at the same node of another generation, plus a pre-2.2.2 directory read as the
 default talky's.
+
+`crates/meclaw-cells/tests/gh872_a_seeded_rebirth_pushes_its_first_pack.rs` pins
+the reset: a colony's own `./push` delivers once and writes its hash, the export
+carries it, and the store seeded from what `build_import.py` placed sends exactly
+one identity pack to the brain's rim and writes a new `sent_at`.
 
 `crates/meclaw-cells/tests/gh471_a_member_carries_all_of_itself.rs` does the same
 walk for all three holders at once: one distinctive row is written into each of

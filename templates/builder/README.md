@@ -1,4 +1,4 @@
-# `builder@1.15.1`
+# `builder@1.15.2`
 
 The intake that turns a structural wish into a **manifest** — an ordered list of
 mutation declarations, ready to be submitted by whoever asked for it.
@@ -463,6 +463,11 @@ Since `1.15.1` the screen is `display@2.8.0`, which runs behind a strict
 Content-Security-Policy ([#867](https://github.com/mmeyerlein/meclaw/issues/867));
 for the screen only the pin moved (the same version draws the ways back of
 [#863](https://github.com/mmeyerlein/meclaw/issues/863), *Every composite gets a way back*).
+Since `1.15.2` the hive's own dispatcher is `dispatcher@1.2.2`, which passes a block a splitter
+cut out of an answer on to the collector ([#871](https://github.com/mmeyerlein/meclaw/issues/871));
+the composer has no splitter, so nothing it does changes, and the recipes count an assistant's
+lanes off the current `assistant`; and its librarian is the current `builder-librarian`, whose
+corpus is regenerated over this number's templates and docs. Only pins moved.
 
 **What fills them is the builder's, not the wish's.** `member_screen_template`,
 `member_app_template` and `screen_mount` are `params` of the `recipes` cell,

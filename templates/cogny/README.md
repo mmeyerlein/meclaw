@@ -1,4 +1,4 @@
-# `cogny@5.1.2`
+# `cogny@5.1.3`
 
 The agent core as one template. Four units under one hive:
 [`collector`](../collector/) and [`dispatcher`](../dispatcher/) -- each carrying its
@@ -90,12 +90,18 @@ The two sub-units are **references**, not copies. Each of the two directories ho
 `config.json` and nothing else:
 
 ```json
-{"cell": {"type": "ref", "template": "collector@4.4.0"},
+{"cell": {"type": "ref", "template": "collector@4.4.1"},
  "override_params": {"assemble": {"context_window": 128000,
                                   "curate_soft": 0.5,
                                   "curate_hard": 0.75,
                                   "tools": ["*"]}}}
 ```
+
+**`5.1.3` moves both pins, `collector` to 4.4.1 and `dispatcher` to 1.2.2, and nothing else**
+([#871](https://github.com/mmeyerlein/meclaw/issues/871)). That collector keeps the block a
+splitter cut out of an answer and shows it with that answer in every later window, and that
+dispatcher passes the block on to it. This core has no splitter, so no answer brings a block
+along and its window is what it was. Only the pins move, which is the third digit.
 
 **`5.1.0` moves both pins, `collector` to 4.4.0 and `dispatcher` to 1.2.1**
 ([#843](https://github.com/mmeyerlein/meclaw/issues/843), [#842](https://github.com/mmeyerlein/meclaw/issues/842)):
@@ -603,7 +609,7 @@ Now the knob is set where it belongs, and the sub-unit stays a reference to the 
 `collector`:
 
 ```json
-{"op": "instantiate", "template": "cogny@5.1.2", "at": "/cores/deep",
+{"op": "instantiate", "template": "cogny@5.1.3", "at": "/cores/deep",
  "override_params": {"collector/assemble": {"context_window": 200000,
                                             "recoverability": "lookup:repeatable,write:env"}}}
 ```

@@ -16,7 +16,8 @@
         "interim": "int",
         "episode_written": "int",
         "speaker": "text",
-        "speaker_ref": "text"
+        "speaker_ref": "text",
+        "sidecar": "text"
       },
       "round": {
         "turn_id": "text",
